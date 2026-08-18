@@ -1,9 +1,18 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-import { assertLotStatusTransition, LOT_STATUSES, type LotStatus } from "@/lib/land/lot-lifecycle"
+import {
+  assertLotAttachTransition,
+  assertLotDetachTransition,
+  assertLotStatusTransition,
+  ATTACHED_LOT_STATUS,
+  DETACHED_LOT_STATUS,
+  type LotStatus,
+} from "@/lib/land/lot-lifecycle"
+import { readAllRows } from "@/lib/land/paging"
+import { resolveDivisionScope } from "@/lib/land/scope"
 import { getDivisionAccessForUser } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
-import { getCommunity } from "@/lib/services/communities"
+import { requireCommunityScope } from "@/lib/services/communities"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { requirePermission } from "@/lib/services/permissions"
@@ -175,27 +184,54 @@ async function logLotMutation(input: {
   ])
 }
 
-async function assertCommunityRelations(
+/**
+ * Every phase and takedown named by a batch of lots must belong to this
+ * community. Validated as sets in two queries no matter how many lots are being
+ * written — a 500-lot range create names one phase and one takedown, and asking
+ * per lot turned that into a thousand sequential round trips.
+ */
+async function assertCommunityRelationSets(
+  supabase: SupabaseClient,
+  orgId: string,
+  communityId: string,
+  { phaseIds, takedownIds }: { phaseIds: string[]; takedownIds: string[] },
+) {
+  const expected: Array<{ table: string; ids: string[] }> = []
+  if (phaseIds.length > 0) expected.push({ table: "community_phases", ids: phaseIds })
+  if (takedownIds.length > 0) expected.push({ table: "lot_takedowns", ids: takedownIds })
+  if (expected.length === 0) return
+  const results = await Promise.all(
+    expected.map((entry) =>
+      supabase.from(entry.table).select("id").eq("org_id", orgId).eq("community_id", communityId).in("id", entry.ids),
+    ),
+  )
+  results.forEach((result, index) => {
+    if (result.error || (result.data ?? []).length !== expected[index].ids.length) {
+      throw new Error("Phase or takedown does not belong to this community.")
+    }
+  })
+}
+
+function assertCommunityRelations(
   supabase: SupabaseClient,
   orgId: string,
   communityId: string,
   input: { phaseId?: string | null; takedownId?: string | null },
 ) {
-  const checks: PromiseLike<{ data: { id: string } | null; error: { message: string } | null }>[] = []
-  if (input.phaseId) {
-    checks.push(supabase.from("community_phases").select("id").eq("org_id", orgId).eq("community_id", communityId).eq("id", input.phaseId).maybeSingle())
-  }
-  if (input.takedownId) {
-    checks.push(supabase.from("lot_takedowns").select("id").eq("org_id", orgId).eq("community_id", communityId).eq("id", input.takedownId).maybeSingle())
-  }
-  const results = await Promise.all(checks)
-  if (results.some((result) => result.error || !result.data)) {
-    throw new Error("Phase or takedown does not belong to this community.")
-  }
+  return assertCommunityRelationSets(supabase, orgId, communityId, {
+    phaseIds: input.phaseId ? [input.phaseId] : [],
+    takedownIds: input.takedownId ? [input.takedownId] : [],
+  })
 }
 
 /** The attach-a-home picker is a dropdown; past this it needs a search, not a longer list. */
 const ATTACHABLE_PROJECT_CAP = 500
+/**
+ * How far the picker will read looking for homes that are still free. Unlike the
+ * cap above this bounds the *scan*, not the answer: the "no lot yet" filter runs
+ * in Postgres, so this only ever stops a runaway read.
+ */
+const ATTACHABLE_SCAN_CAP = 5_000
 
 /**
  * Persist a plat arrangement. Somebody drags a community's lots into the shape
@@ -209,32 +245,39 @@ export async function setLotPlatPositions(
 ): Promise<{ updated: number }> {
   const context = await requireOrgContext(orgId)
   await requirePermission("lot.write", context)
-  await getCommunity(communityId, context.orgId)
-  if (positions.length === 0) return { updated: 0 }
+  await requireCommunityScope(communityId, context)
+  const moved = new Map(positions.map((position) => [position.lotId, position]))
+  if (moved.size === 0) return { updated: 0 }
 
   const { data: owned, error: ownedError } = await context.supabase
     .from("lots")
-    .select("id")
+    .select("id, lot_number, block")
     .eq("org_id", context.orgId)
     .eq("community_id", communityId)
-    .in("id", positions.map((position) => position.lotId))
+    .in("id", [...moved.keys()])
   if (ownedError) throw new Error(`Failed to verify lots: ${ownedError.message}`)
-  const ownedIds = new Set((owned ?? []).map((row) => row.id as string))
-  const valid = positions.filter((position) => ownedIds.has(position.lotId))
-  if (valid.length !== positions.length) throw new Error("Some lots do not belong to this community")
+  const ownedRows = owned ?? []
+  if (ownedRows.length !== moved.size) throw new Error("Some lots do not belong to this community")
 
-  const results = await Promise.all(
-    valid.map((position) =>
-      context.supabase
-        .from("lots")
-        .update({ plat_x: position.platX, plat_y: position.platY })
-        .eq("org_id", context.orgId)
-        .eq("id", position.lotId),
-    ),
-  )
-  for (const result of results) {
-    if (result.error) throw new Error(`Failed to save the plat: ${result.error.message}`)
-  }
+  // One upsert, not one UPDATE per lot: arranging a 400-lot plat used to fan out
+  // 400 concurrent PostgREST round trips from a single server action. `lot_number`
+  // and `block` ride along because the payload has to satisfy the table's NOT NULL
+  // columns; they are written back unchanged.
+  const payload = ownedRows.flatMap((row) => {
+    const position = moved.get(row.id as string)
+    if (!position) return []
+    return [{
+      id: row.id as string,
+      org_id: context.orgId,
+      community_id: communityId,
+      lot_number: row.lot_number as string,
+      block: (row.block as string | null) ?? null,
+      plat_x: position.platX,
+      plat_y: position.platY,
+    }]
+  })
+  const { error } = await context.supabase.from("lots").upsert(payload, { onConflict: "id" })
+  if (error) throw new Error(`Failed to save the plat: ${error.message}`)
 
   await recordAudit({
     orgId: context.orgId,
@@ -242,41 +285,57 @@ export async function setLotPlatPositions(
     action: "update",
     entityType: "community",
     entityId: communityId,
-    after: { plat_positions: valid.length },
+    after: { plat_positions: payload.length },
   })
-  return { updated: valid.length }
+  return { updated: payload.length }
 }
 
 /**
- * Homes that can still be attached to a lot in this community. Replaces loading
- * every project in the org to populate one dropdown.
+ * Homes that can still be attached to a lot in this community — a production
+ * project that is live and not already sitting on somebody else's dirt.
+ *
+ * "Not already linked" is answered by paging the candidates rather than trimming
+ * one page of them: the filter used to run in JS *after* a 500-row cap, so an org
+ * past 500 production projects could open this picker and be told there were no
+ * free homes while dozens were free.
  */
 export async function listAttachableProjects(
   communityId: string,
   orgId?: string,
-): Promise<Array<{ id: string; name: string }>> {
+): Promise<{ projects: Array<{ id: string; name: string }>; truncated: boolean }> {
   const context = await requireOrgContext(orgId)
   await requirePermission("community.read", context)
-  await getCommunity(communityId, context.orgId)
-  const scope = await getDivisionAccessForUser({ orgId: context.orgId, userId: context.userId })
-  if (scope.assignedOnly && scope.divisionIds.length === 0) return []
-  let query = context.supabase
-    .from("projects")
-    .select("id, name, lot:lots(id)")
-    .eq("org_id", context.orgId)
-    .not("status", "in", "(completed,cancelled)")
-    .or("property_type.is.null,property_type.eq.production")
-    .order("name")
-    .limit(ATTACHABLE_PROJECT_CAP)
-  if (scope.assignedOnly) query = query.in("division_id", scope.divisionIds)
-  const { data, error } = await query
-  if (error) throw new Error(`Failed to load homes: ${error.message}`)
-  return (data ?? [])
-    .filter((row) => {
-      const linked = row.lot as unknown
-      return Array.isArray(linked) ? linked.length === 0 : linked == null
-    })
-    .map((row) => ({ id: row.id as string, name: row.name as string }))
+  await requireCommunityScope(communityId, context)
+  const decision = resolveDivisionScope(
+    await getDivisionAccessForUser({ orgId: context.orgId, userId: context.userId }),
+  )
+  if (decision.kind === "none") return { projects: [], truncated: false }
+
+  const candidates = await readAllRows<{ id: string; name: string; lot: Array<{ id: string }> | { id: string } | null }>(
+    (from, to) => {
+      let query = context.supabase
+        .from("projects")
+        .select("id, name, lot:lots(id)")
+        .eq("org_id", context.orgId)
+        .not("status", "in", "(completed,cancelled)")
+        .or("property_type.is.null,property_type.eq.production")
+        .order("name")
+        .order("id")
+        .range(from, to)
+      if (decision.kind === "limited") query = query.in("division_id", decision.divisionIds)
+      return query
+    },
+    { cap: ATTACHABLE_SCAN_CAP, label: "Failed to load homes" },
+  )
+
+  const free = candidates.rows.filter((row) => {
+    const linked = row.lot
+    return Array.isArray(linked) ? linked.length === 0 : linked == null
+  })
+  return {
+    projects: free.slice(0, ATTACHABLE_PROJECT_CAP).map((row) => ({ id: row.id, name: row.name })),
+    truncated: candidates.truncated || free.length > ATTACHABLE_PROJECT_CAP,
+  }
 }
 
 async function getLotById(supabase: SupabaseClient, orgId: string, id: string) {
@@ -293,11 +352,19 @@ export async function createLots(
   const parsed = createLotsInputSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("lot.write", context)
-  const community = await getCommunity(communityId, context.orgId)
+  const community = await requireCommunityScope(communityId, context)
+  // Distinct pairs, not per lot: a 500-lot range names one phase and one takedown.
+  const phaseIds = new Set<string>()
+  const takedownIds = new Set<string>()
   for (const lot of parsed.lots) {
-    await assertCommunityRelations(context.supabase, context.orgId, communityId, lot)
     if (lot.status === "started") throw new Error("A new lot cannot start without an attached project.")
+    if (lot.phaseId) phaseIds.add(lot.phaseId)
+    if (lot.takedownId) takedownIds.add(lot.takedownId)
   }
+  await assertCommunityRelationSets(context.supabase, context.orgId, communityId, {
+    phaseIds: [...phaseIds],
+    takedownIds: [...takedownIds],
+  })
   const keys = new Set<string>()
   const repeated = new Set<string>()
   for (const lot of parsed.lots) {
@@ -346,7 +413,7 @@ export async function updateLot(id: string, input: Partial<LotUpdateInput>, orgI
   const context = await requireOrgContext(orgId)
   await requirePermission("lot.write", context)
   const before = await getLotById(context.supabase, context.orgId, id)
-  await getCommunity(before.community_id, context.orgId)
+  await requireCommunityScope(before.community_id, context)
   await assertCommunityRelations(context.supabase, context.orgId, before.community_id, parsed)
   if (parsed.status) assertLotStatusTransition({ from: before.status, to: parsed.status, hasProject: Boolean(before.project_id) })
   const { data, error } = await context.supabase.from("lots").update(lotPayload(parsed, before.dimensions)).eq("org_id", context.orgId).eq("id", id).select(LOT_SELECT).single()
@@ -363,7 +430,7 @@ export async function bulkUpdateLots(
   const parsed = bulkLotPatchSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("lot.write", context)
-  await getCommunity(communityId, context.orgId)
+  await requireCommunityScope(communityId, context)
   await assertCommunityRelations(context.supabase, context.orgId, communityId, parsed.patch)
   const { data: before, error: beforeError } = await context.supabase.from("lots").select("id, status, project_id").eq("org_id", context.orgId).eq("community_id", communityId).in("id", parsed.lotIds)
   if (beforeError) throw new Error(`Failed to load lots: ${beforeError.message}`)
@@ -389,7 +456,7 @@ export async function setLotStatus(
   await requirePermission("lot.write", context)
   if (parsed.force) await requirePermission("community.write", context)
   const before = await getLotById(context.supabase, context.orgId, id)
-  await getCommunity(before.community_id, context.orgId)
+  await requireCommunityScope(before.community_id, context)
   assertLotStatusTransition({ from: before.status, to: parsed.status, hasProject: Boolean(before.project_id), force: parsed.force })
   const { data, error } = await context.supabase.from("lots").update({ status: parsed.status }).eq("org_id", context.orgId).eq("id", id).select(LOT_SELECT).single()
   if (error) throw new Error(`Failed to set lot status: ${error.message}`)
@@ -397,12 +464,32 @@ export async function setLotStatus(
   return mapLot(data as LotRow)
 }
 
-export async function attachProjectToLot(lotId: string, projectId: string, orgId?: string): Promise<LotDTO> {
+/**
+ * Link a home to its dirt.
+ *
+ * Both halves of the link go through `assertLotStatusTransition` like every other
+ * status change. Without it, attaching a home to a `closed` lot silently reversed
+ * a settlement — the one move `setLotStatus` has always demanded `force` for.
+ *
+ * The two writes are ordered so the lot is the last thing to change, and a failed
+ * lot write puts the project's posture back where it was. Postgres cannot give us
+ * one transaction across two PostgREST calls, and the alternative — the current
+ * behaviour — leaves a project converted to production posture with no lot under
+ * it, which nothing in the app can see or repair.
+ */
+export async function attachProjectToLot(
+  lotId: string,
+  projectId: string,
+  { force = false }: { force?: boolean } = {},
+  orgId?: string,
+): Promise<LotDTO> {
   const context = await requireOrgContext(orgId)
   await Promise.all([requirePermission("lot.write", context), requirePermission("project.manage", context)])
+  if (force) await requirePermission("community.write", context)
   const before = await getLotById(context.supabase, context.orgId, lotId)
-  await getCommunity(before.community_id, context.orgId)
+  await requireCommunityScope(before.community_id, context)
   if (before.project_id && before.project_id !== projectId) throw new Error("This lot already has a project attached.")
+  assertLotAttachTransition({ from: before.status, force })
   const { data: project, error: projectError } = await context.supabase.from("projects").select("id, org_id, name, property_type, division_id").eq("org_id", context.orgId).eq("id", projectId).maybeSingle()
   if (projectError || !project) throw new Error("Project not found")
   if (project.property_type && project.property_type !== "production") throw new Error("Only production-posture projects can be attached to lots.")
@@ -411,23 +498,53 @@ export async function attachProjectToLot(lotId: string, projectId: string, orgId
   if (existingLink) throw new Error("This project is already attached to another lot.")
   const { error: projectUpdateError } = await context.supabase.from("projects").update({ property_type: "production", division_id: before.division_id }).eq("org_id", context.orgId).eq("id", projectId)
   if (projectUpdateError) throw new Error(`Failed to prepare project: ${projectUpdateError.message}`)
-  const { data, error } = await context.supabase.from("lots").update({ project_id: projectId, status: "started" }).eq("org_id", context.orgId).eq("id", lotId).select(LOT_SELECT).single()
-  if (error) throw new Error(`Failed to attach project: ${error.message}`)
-  await logLotMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot.project_attached", entityId: lotId, action: "update", before, after: data, payload: { community_id: before.community_id, project_id: projectId, project_name: project.name } })
+  const { data, error } = await context.supabase.from("lots").update({ project_id: projectId, status: ATTACHED_LOT_STATUS }).eq("org_id", context.orgId).eq("id", lotId).select(LOT_SELECT).single()
+  if (error) {
+    await context.supabase
+      .from("projects")
+      .update({ property_type: project.property_type, division_id: project.division_id })
+      .eq("org_id", context.orgId)
+      .eq("id", projectId)
+    throw new Error(`Failed to attach project: ${error.message}`)
+  }
+  await logLotMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot.project_attached", entityId: lotId, action: "update", before, after: data, payload: { community_id: before.community_id, project_id: projectId, project_name: project.name, force } })
   return mapLot(data as LotRow)
 }
 
-export async function detachProjectFromLot(lotId: string, orgId?: string): Promise<LotDTO> {
+/**
+ * Unlink a home from its dirt and return the lot to inventory.
+ *
+ * A started lot moving back to `assigned` is exactly the backward step the
+ * lifecycle asks for an explicit confirmation on, so detaching a house that is
+ * building takes `force` and the `community.write` that goes with it — the same
+ * bar `setLotStatus` sets — rather than reaching around the state machine.
+ */
+export async function detachProjectFromLot(
+  lotId: string,
+  { force = false }: { force?: boolean } = {},
+  orgId?: string,
+): Promise<LotDTO> {
   const context = await requireOrgContext(orgId)
   await Promise.all([requirePermission("lot.write", context), requirePermission("project.manage", context)])
+  if (force) await requirePermission("community.write", context)
   const before = await getLotById(context.supabase, context.orgId, lotId)
-  await getCommunity(before.community_id, context.orgId)
+  await requireCommunityScope(before.community_id, context)
   if (!before.project_id) throw new Error("This lot does not have a project attached.")
-  const { error: projectError } = await context.supabase.from("projects").update({ division_id: null }).eq("org_id", context.orgId).eq("id", before.project_id).eq("division_id", before.division_id)
-  if (projectError) throw new Error(`Failed to clear project division: ${projectError.message}`)
-  const { data, error } = await context.supabase.from("lots").update({ project_id: null, status: "assigned" }).eq("org_id", context.orgId).eq("id", lotId).select(LOT_SELECT).single()
-  if (error) throw new Error(`Failed to detach project: ${error.message}`)
-  await logLotMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot.project_detached", entityId: lotId, action: "update", before, after: data, payload: { community_id: before.community_id, project_id: before.project_id } })
+  assertLotDetachTransition({ from: before.status, force })
+  const projectId = before.project_id
+  const restoreDivisionId = before.division_id
+  if (restoreDivisionId) {
+    const { error: projectError } = await context.supabase.from("projects").update({ division_id: null }).eq("org_id", context.orgId).eq("id", projectId).eq("division_id", restoreDivisionId)
+    if (projectError) throw new Error(`Failed to clear project division: ${projectError.message}`)
+  }
+  const { data, error } = await context.supabase.from("lots").update({ project_id: null, status: DETACHED_LOT_STATUS }).eq("org_id", context.orgId).eq("id", lotId).select(LOT_SELECT).single()
+  if (error) {
+    if (restoreDivisionId) {
+      await context.supabase.from("projects").update({ division_id: restoreDivisionId }).eq("org_id", context.orgId).eq("id", projectId)
+    }
+    throw new Error(`Failed to detach project: ${error.message}`)
+  }
+  await logLotMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot.project_detached", entityId: lotId, action: "update", before, after: data, payload: { community_id: before.community_id, project_id: projectId, force } })
   return mapLot(data as LotRow)
 }
 
@@ -435,7 +552,7 @@ export async function deleteLot(id: string, orgId?: string): Promise<void> {
   const context = await requireOrgContext(orgId)
   await requirePermission("lot.write", context)
   const before = await getLotById(context.supabase, context.orgId, id)
-  await getCommunity(before.community_id, context.orgId)
+  await requireCommunityScope(before.community_id, context)
   if (before.project_id) throw new Error("Detach the project before deleting this lot.")
   if (!(["controlled", "owned", "developed"] as LotStatus[]).includes(before.status)) {
     throw new Error("Only controlled, owned, or developed lots can be deleted.")
@@ -463,16 +580,4 @@ export async function getProjectLotContext(projectId: string, orgId?: string): P
     lotNumber: data.lot_number,
     block: data.block,
   }
-}
-
-export async function listLinkedLotProjectIds(orgId?: string): Promise<string[]> {
-  const context = await requireOrgContext(orgId)
-  await requirePermission("community.read", context)
-  const { data, error } = await context.supabase
-    .from("lots")
-    .select("project_id")
-    .eq("org_id", context.orgId)
-    .not("project_id", "is", null)
-  if (error) throw new Error(`Failed to resolve linked lot projects: ${error.message}`)
-  return (data ?? []).map((row) => row.project_id as string).filter(Boolean)
 }

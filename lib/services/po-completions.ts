@@ -11,6 +11,53 @@ import { rejectPoCompletionSchema, reportPoCompletionSchema, type ReportPoComple
 
 export type PoCompletionStatus = "reported" | "verified" | "approved" | "rejected" | "billed" | "void"
 
+/**
+ * A completion in one of these states still lays claim to the lines it covers.
+ * `rejected` and `void` release them — that is what lets a trade re-report scope
+ * the builder sent back.
+ */
+const CLAIMING_COMPLETION_STATUSES = new Set<string>(["reported", "verified", "approved", "billed"])
+
+export type CompletionCoverage = { id: string; status: string; commitment_line_ids: string[] | null }
+
+/**
+ * Two completions may never cover the same purchase-order line. The aggregate
+ * check inside `approve_po_completion` cannot catch it: on a $100k PO two $40k
+ * completions over identical lines each pass the revised-total test and the PO
+ * gets billed twice.
+ */
+export function findConflictingCompletion({ requestedLineIds, existing }: {
+  requestedLineIds: string[] | null
+  existing: CompletionCoverage[]
+}): { completionId: string; lineIds: string[] | null } | null {
+  for (const completion of existing) {
+    if (!CLAIMING_COMPLETION_STATUSES.has(completion.status)) continue
+    // A null line list means the whole purchase order, so it collides with anything.
+    if (completion.commitment_line_ids == null || requestedLineIds == null) {
+      return { completionId: completion.id, lineIds: completion.commitment_line_ids }
+    }
+    const claimed = new Set(completion.commitment_line_ids)
+    const overlap = requestedLineIds.filter((lineId) => claimed.has(lineId))
+    if (overlap.length > 0) return { completionId: completion.id, lineIds: overlap }
+  }
+  return null
+}
+
+/** The purchase-order lines a live completion already covers. */
+export function claimedCompletionLineIds(existing: CompletionCoverage[]) {
+  const claimed = new Set<string>()
+  for (const completion of existing) {
+    if (!CLAIMING_COMPLETION_STATUSES.has(completion.status)) continue
+    for (const lineId of completion.commitment_line_ids ?? []) claimed.add(lineId)
+  }
+  return claimed
+}
+
+/** True when a whole-purchase-order completion is live, which claims every line. */
+export function hasWholeOrderClaim(existing: CompletionCoverage[]) {
+  return existing.some((completion) => CLAIMING_COMPLETION_STATUSES.has(completion.status) && completion.commitment_line_ids == null)
+}
+
 async function requirePayOnPoEnabled(client: ReturnType<typeof createServiceSupabaseClient>, orgId: string, projectId: string) {
   const [{ data: lot, error: lotError }, { data: settings, error: settingsError }] = await Promise.all([
     client.from("lots").select("community:communities(pay_on_po_enabled)").eq("org_id", orgId).eq("project_id", projectId).maybeSingle(),
@@ -56,6 +103,17 @@ async function createCompletion({
     const { count, error } = await service.from("commitment_lines").select("id", { count: "exact", head: true })
       .eq("org_id", orgId).eq("commitment_id", commitment.id).in("id", parsed.commitment_line_ids)
     if (error || count !== parsed.commitment_line_ids.length) throw new Error("One or more purchase-order lines are invalid.")
+  }
+  const { data: siblings, error: siblingError } = await service.from("po_completions")
+    .select("id,status,commitment_line_ids").eq("org_id", orgId).eq("commitment_id", commitment.id)
+    .order("reported_at", { ascending: false }).limit(200)
+  if (siblingError) throw new Error(`Failed to check existing completions: ${siblingError.message}`)
+  const conflict = findConflictingCompletion({
+    requestedLineIds: parsed.commitment_line_ids ?? null,
+    existing: siblings ?? [],
+  })
+  if (conflict) {
+    throw new Error("Some of this scope is already covered by another completion on this purchase order. Report only the lines that are still outstanding.")
   }
   const selfVerified = parsed.reported_source !== "trade_portal" && !requiresVerification
   const now = new Date().toISOString()
@@ -175,7 +233,26 @@ export async function listPoCompletions({ status, projectId, communityId, page =
   return { items: data ?? [], count: count ?? 0, page, pageSize: size }
 }
 
-export async function listPortalPurchaseOrders(access: PortalAccessToken) {
+export type PortalPurchaseOrder = {
+  id: string
+  title: string
+  status: string
+  totalCents: number
+  contractNumber: string | null
+  scope: string | null
+  lines: Array<{ id: string; description: string; quantity: number; unit: string | null; scheduledValueCents: number; claimed: boolean }>
+  changes: Array<{ id: string; title: string; status: string; totalCents: number; reasonLabel: string | null }>
+  completions: Array<{ id: string; status: string; reportedAt: string; amountCents: number | null; rejectedReason: string | null; vendorBill: { status: string; paidCents: number; totalCents: number } | null }>
+  /** False once every line is claimed by a live completion — a rejected one is not. */
+  hasReportableScope: boolean
+}
+
+function firstRelation(value: unknown) {
+  const row = Array.isArray(value) ? value[0] : value
+  return row && typeof row === "object" ? row as Record<string, unknown> : null
+}
+
+export async function listPortalPurchaseOrders(access: PortalAccessToken): Promise<PortalPurchaseOrder[]> {
   if (!access.company_id || access.permissions.can_view_purchase_orders !== true) throw new Error("Access denied")
   const service = createServiceSupabaseClient()
   try {
@@ -188,11 +265,52 @@ export async function listPortalPurchaseOrders(access: PortalAccessToken) {
     id,title,status,total_cents,contract_number,scope,created_at,
     lines:commitment_lines(id,description,quantity,unit,unit_cost_cents,scheduled_value_cents,sort_order),
     changes:commitment_change_orders(id,title,status,total_cents,reason:variance_reason_codes(label)),
-    completions:po_completions(id,status,reported_at,amount_cents,vendor_bill:vendor_bills(status,paid_cents,total_cents))
+    completions:po_completions(id,status,reported_at,rejected_reason,amount_cents,commitment_line_ids,vendor_bill:vendor_bills(status,paid_cents,total_cents))
   `).eq("org_id", access.org_id).eq("project_id", access.project_id).eq("company_id", access.company_id)
     .eq("commitment_type", "purchase_order").order("created_at", { ascending: false }).limit(100)
   if (error) throw new Error(`Failed to load portal purchase orders: ${error.message}`)
-  return data ?? []
+  return (data ?? []).map((row) => {
+    const rawCompletions: CompletionCoverage[] = (row.completions ?? []).map((completion: Record<string, unknown>) => ({
+      id: String(completion.id), status: String(completion.status),
+      commitment_line_ids: Array.isArray(completion.commitment_line_ids) ? completion.commitment_line_ids.map(String) : null,
+    }))
+    const claimedLineIds = claimedCompletionLineIds(rawCompletions)
+    const wholeOrderClaimed = hasWholeOrderClaim(rawCompletions)
+    const lines = (row.lines ?? [])
+      .slice()
+      .sort((a: Record<string, number>, b: Record<string, number>) => Number(a.sort_order ?? 0) - Number(b.sort_order ?? 0))
+      .map((line: Record<string, unknown>) => ({
+        id: String(line.id), description: String(line.description ?? ""),
+        quantity: Number(line.quantity ?? 0), unit: typeof line.unit === "string" ? line.unit : null,
+        scheduledValueCents: Number(line.scheduled_value_cents ?? 0),
+        claimed: wholeOrderClaimed || claimedLineIds.has(String(line.id)),
+      }))
+    return {
+      id: String(row.id), title: String(row.title ?? "Purchase order"), status: String(row.status),
+      totalCents: Number(row.total_cents ?? 0),
+      contractNumber: typeof row.contract_number === "string" ? row.contract_number : null,
+      scope: typeof row.scope === "string" ? row.scope : null,
+      lines,
+      changes: (row.changes ?? []).map((change: Record<string, unknown>) => ({
+        id: String(change.id), title: String(change.title ?? ""), status: String(change.status),
+        totalCents: Number(change.total_cents ?? 0),
+        reasonLabel: typeof firstRelation(change.reason)?.label === "string" ? String(firstRelation(change.reason)?.label) : null,
+      })),
+      completions: (row.completions ?? [])
+        .map((completion: Record<string, unknown>) => {
+          const bill = firstRelation(completion.vendor_bill)
+          return {
+            id: String(completion.id), status: String(completion.status),
+            reportedAt: String(completion.reported_at),
+            amountCents: typeof completion.amount_cents === "number" ? completion.amount_cents : null,
+            rejectedReason: typeof completion.rejected_reason === "string" ? completion.rejected_reason : null,
+            vendorBill: bill ? { status: String(bill.status), paidCents: Number(bill.paid_cents ?? 0), totalCents: Number(bill.total_cents ?? 0) } : null,
+          }
+        })
+        .sort((a: { reportedAt: string }, b: { reportedAt: string }) => b.reportedAt.localeCompare(a.reportedAt)),
+      hasReportableScope: lines.some((line) => !line.claimed),
+    }
+  })
 }
 
 export async function isPortalPayOnPoEnabled(access: PortalAccessToken) {

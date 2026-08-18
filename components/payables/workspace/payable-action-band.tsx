@@ -40,6 +40,12 @@ interface PayableActionBandProps {
   /** The external-payment form, owned by the workspace that holds its state. */
   recordPaymentForm: ReactNode
   runMembership?: PayableRunMembership
+  /**
+   * Undo a payment recorded by hand. Absent when the viewer cannot release
+   * payments, or when the payment came off the rail — that money returns
+   * through the provider, not by editing Arc's copy of the story.
+   */
+  onReverseManualPayment?: (paymentId: string, reason: string) => void
   awaitingViewerApproval: boolean
   onReviewRun: () => void
   onVendorInvited: () => void
@@ -90,12 +96,15 @@ export function PayableActionBand({
   onToggleRecordPayment,
   recordPaymentForm,
   runMembership,
+  onReverseManualPayment,
   awaitingViewerApproval,
   onReviewRun,
   onVendorInvited,
 }: PayableActionBandProps) {
   const [rejecting, setRejecting] = useState(false)
   const [rejectionReason, setRejectionReason] = useState("")
+  const [reverseOpen, setReverseOpen] = useState(false)
+  const [reverseReason, setReverseReason] = useState("")
 
   const holds = evaluation ? (
     <PayableHoldsPanel billId={bill.id} evaluation={evaluation} onOverridden={onHoldOverridden} />
@@ -267,9 +276,9 @@ export function PayableActionBand({
             {readiness === "verifying"
               ? "This vendor is verifying their bank account — ACH unlocks when that completes."
               : readiness === "suspended"
-                ? "This vendor's electronic payment access is suspended, so it cannot go out by ACH."
+                ? "This vendor's Arc Pay access is suspended, so it cannot go out by ACH."
                 : readiness === "revoked"
-                  ? "This vendor's electronic payment access was revoked, so it cannot go out by ACH."
+                  ? "This vendor's Arc Pay access was revoked, so it cannot go out by ACH."
                   : "This vendor has no bank details on file, so it cannot go out by ACH."}
             {showInvite && bill.company_id ? (
               <VendorPaymentInviteButton
@@ -287,16 +296,70 @@ export function PayableActionBand({
   }
 
   if (stage === "paid") {
-    const last = bill.payments.at(-1)
+    // `payments` arrives newest-first (hydrateVendorBills orders by
+    // `received_at` descending), so the most recent payment is the head.
+    const last = bill.payments[0]
     if (!last) return null
     const paidOn = last.received_at ? new Date(last.received_at) : null
-    return (
-      <StatusLine>
+    const reversible = Boolean(onReverseManualPayment) && (last.provider ?? "manual") === "manual"
+    const summary = (
+      <>
         Paid {formatMoneyFromCents(last.amount_cents)}
         {last.method ? ` by ${last.method}` : ""}
         {paidOn && !Number.isNaN(paidOn.getTime()) ? ` on ${format(paidOn, "MMM d, yyyy")}` : ""}
         {last.reference ? ` · ref ${last.reference}` : ""}
-      </StatusLine>
+      </>
+    )
+
+    if (!reversible) return <StatusLine>{summary}</StatusLine>
+
+    return (
+      <div className="shrink-0 border-y bg-muted/20 px-6 py-2.5 sm:px-8">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-sm text-muted-foreground">{summary}</p>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 text-xs"
+            disabled={isPending}
+            onClick={() => setReverseOpen((open) => !open)}
+          >
+            {reverseOpen ? "Cancel" : "Reverse payment"}
+          </Button>
+        </div>
+        {reverseOpen ? (
+          <div className="mt-3 space-y-2 border-t pt-3">
+            <Label htmlFor="reverse-payment-reason" className="text-xs">
+              Why is this payment being reversed?
+            </Label>
+            <Textarea
+              id="reverse-payment-reason"
+              value={reverseReason}
+              onChange={(event) => setReverseReason(event.target.value)}
+              placeholder="Recorded against the wrong payable; the check was never sent."
+              rows={2}
+            />
+            <p className="text-xs text-muted-foreground">
+              This reopens the payable for {formatMoneyFromCents(last.amount_cents)} and voids the payment in your
+              accounting system. It does not move money.
+            </p>
+            <Button
+              type="button"
+              size="sm"
+              variant="destructive"
+              disabled={isPending || reverseReason.trim().length < 8}
+              onClick={() => {
+                onReverseManualPayment?.(last.id, reverseReason.trim())
+                setReverseOpen(false)
+                setReverseReason("")
+              }}
+            >
+              Reverse {formatMoneyFromCents(last.amount_cents)}
+            </Button>
+          </div>
+        ) : null}
+      </div>
     )
   }
 

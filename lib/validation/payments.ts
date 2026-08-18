@@ -41,11 +41,42 @@ export const recordPaymentInputSchema = z.object({
   metadata: z.record(z.any()).optional(),
 })
 
+export const receivePaymentInputSchema = z.object({
+  received_at: z.string().datetime({ offset: true }),
+  method: paymentMethodInputSchema,
+  reference: z.string().trim().max(120).optional(),
+  idempotency_key: z.string().min(8).max(160),
+  party_type: z.enum(["contact", "company"]).optional(),
+  party_id: z.string().uuid().optional(),
+  allocations: z
+    .array(
+      z.object({
+        invoice_id: z.string().uuid(),
+        amount_cents: z.number().int().positive(),
+      }),
+    )
+    .min(1)
+    .superRefine((allocations, ctx) => {
+      const seen = new Set<string>()
+      for (const [index, allocation] of allocations.entries()) {
+        if (seen.has(allocation.invoice_id)) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: [index, "invoice_id"], message: "Each invoice can appear only once" })
+        }
+        seen.add(allocation.invoice_id)
+      }
+    }),
+  metadata: z.record(z.any()).optional(),
+}).superRefine((value, ctx) => {
+  if (Boolean(value.party_type) !== Boolean(value.party_id)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["party_id"], message: "Party type and id must be supplied together" })
+  }
+})
+
 export type CreatePaymentIntentInput = z.infer<typeof createPaymentIntentInputSchema>
 export type CreatePublicInvoicePaymentIntentInput = z.infer<typeof createPublicInvoicePaymentIntentInputSchema>
 export type GeneratePayLinkInput = z.infer<typeof generatePayLinkInputSchema>
 export type RecordPaymentInput = z.infer<typeof recordPaymentInputSchema>
-
+export type ReceivePaymentInput = z.infer<typeof receivePaymentInputSchema>
 
 
 

@@ -8,10 +8,7 @@ import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { assertPaymentLaunchReady } from "@/lib/services/payment-launch-readiness"
-import {
-  sendVendorArcPayReadyEmail,
-  sendVendorPayoutDestinationChangedEmail,
-} from "@/lib/services/mailer"
+import { sendVendorPayoutDestinationChangedEmail } from "@/lib/services/mailer"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
 import { requireRecentPaymentStepUp } from "@/lib/services/payment-step-up"
 import {
@@ -21,6 +18,7 @@ import {
 } from "@/lib/services/payment-approvers"
 import {
   claimVendorCompany,
+  getVendorPaymentAccessForCompany,
   getVendorPaymentPortalContext,
   requireVendorPayoutPortalAccess,
 } from "@/lib/services/vendor-payment-identities"
@@ -80,42 +78,6 @@ async function listRecipientRelationships(recipientAccountId: string) {
     rows.push(...(data ?? []))
     if ((data ?? []).length < pageSize) return rows
   }
-}
-
-async function notifyArcPayInviters(
-  relationships: Array<{ org_id: string; company_id: string; invited_by: string | null }>,
-) {
-  const invited = relationships.filter(
-    (relationship): relationship is { org_id: string; company_id: string; invited_by: string } =>
-      Boolean(relationship.invited_by),
-  )
-  if (invited.length === 0) return
-  const supabase = createServiceSupabaseClient()
-  const userIds = [...new Set(invited.map((relationship) => relationship.invited_by))]
-  const companyIds = [...new Set(invited.map((relationship) => relationship.company_id))]
-  const orgIds = [...new Set(invited.map((relationship) => relationship.org_id))]
-  const [{ data: users }, { data: companies }, { data: orgs }] = await Promise.all([
-    supabase.from("app_users").select("id,email,full_name").in("id", userIds),
-    supabase.from("companies").select("id,name").in("id", companyIds),
-    supabase.from("orgs").select("id,name,slug,logo_url").in("id", orgIds),
-  ])
-  const userById = new Map((users ?? []).map((user) => [user.id, user]))
-  const companyById = new Map((companies ?? []).map((company) => [company.id, company]))
-  const orgById = new Map((orgs ?? []).map((org) => [org.id, org]))
-  await Promise.all(invited.map((relationship) => {
-    const user = userById.get(relationship.invited_by)
-    const company = companyById.get(relationship.company_id)
-    const org = orgById.get(relationship.org_id)
-    if (!user?.email || !company) return Promise.resolve(false)
-    return sendVendorArcPayReadyEmail({
-      to: user.email,
-      recipientName: user.full_name,
-      companyName: company.name,
-      orgName: org?.name ?? "Arc",
-      orgSlug: org?.slug ?? null,
-      orgLogoUrl: org?.logo_url ?? null,
-    })
-  }))
 }
 
 export interface PaymentRailSettings {
@@ -253,7 +215,7 @@ export async function updatePaymentRailPolicy(input: UpdatePaymentRailPolicyInpu
   if (parsed.enabled) {
     await assertPaymentLaunchReady()
     const { count } = await supabase.from("org_funding_sources").select("id", { count: "exact", head: true }).eq("org_id", context.orgId).eq("status", "active")
-    if (!count) throw new Error("Approve and activate a funding source before enabling electronic payments")
+    if (!count) throw new Error("Approve and activate a funding source before enabling Arc Pay")
     const requiredLimits = {
       per_payment_limit_cents: parsed.per_payment_limit_cents !== undefined ? parsed.per_payment_limit_cents : existing?.per_payment_limit_cents,
       per_run_limit_cents: parsed.per_run_limit_cents !== undefined ? parsed.per_run_limit_cents : existing?.per_run_limit_cents,
@@ -262,7 +224,7 @@ export async function updatePaymentRailPolicy(input: UpdatePaymentRailPolicyInpu
       return_loss_ceiling_cents: parsed.return_loss_ceiling_cents !== undefined ? parsed.return_loss_ceiling_cents : existing?.return_loss_ceiling_cents,
     }
     if (Object.values(requiredLimits).some((value) => value == null)) {
-      throw new Error("Set payment, run, daily, in-flight, and return-loss limits before enabling electronic payments")
+      throw new Error("Set payment, run, daily, in-flight, and return-loss limits before enabling Arc Pay")
     }
     const perPayment = Number(requiredLimits.per_payment_limit_cents)
     const perRun = Number(requiredLimits.per_run_limit_cents)
@@ -318,6 +280,22 @@ export async function isVendorPayoutSetupOpen(orgId: string) {
   const { data, error } = await supabase.from("payment_rail_policies").select("id").eq("org_id", orgId).maybeSingle()
   if (error) return false
   return Boolean(data)
+}
+
+/**
+ * Whether one vendor company should see this builder's payment section at all.
+ *
+ * `isVendorPayoutSetupOpen` answers "has this builder opened payments" and
+ * nothing about the vendor asking, so a vendor whose payment access was
+ * suspended or revoked kept a "Get paid" tab that could only refuse them. This
+ * is the gate a per-company surface wants.
+ */
+export async function isVendorPaymentSectionOpen({ orgId, companyId }: { orgId: string; companyId: string }) {
+  const [railOpen, access] = await Promise.all([
+    isVendorPayoutSetupOpen(orgId),
+    getVendorPaymentAccessForCompany(orgId, companyId),
+  ])
+  return railOpen && access.state !== "withdrawn"
 }
 
 /**
@@ -382,7 +360,6 @@ async function adoptVerifiedRecipient(input: { vendorEntityId: string; relations
       source: "vendor_portal",
     }),
   ])
-  await notifyArcPayInviters([relationship])
   return true
 }
 
@@ -664,7 +641,7 @@ export async function syncVendorRecipient(
 
   const relationships = await listRecipientRelationships(recipient.id)
   const relationshipStatus = snapshot.status === "ready" && snapshot.payoutsEnabled ? "active" : "onboarding"
-  const newlyActivated = await Promise.all(relationships.map(async (relationship) => {
+  await Promise.all(relationships.map(async (relationship) => {
     // A provider readiness sync is not authority to undo a builder's fraud
     // response. Suspended and revoked relationships stay blocked until a
     // builder explicitly restores them through setCompanyPaymentAccessStatus.
@@ -679,13 +656,17 @@ export async function syncVendorRecipient(
     if (relationshipStatus === "active") update = update.neq("status", "active")
     const { data: changed, error: updateError } = await update.select("id").maybeSingle()
     if (updateError) throw new Error(`Unable to update vendor payment relationship: ${updateError.message}`)
+    // The audit trail records every sync; the EVENT only fires on a real
+    // transition. Stripe re-sends `account.updated` for changes Arc does not
+    // care about, and this event now carries an email — emitting it on every
+    // delivery would mail the same "vendor is ready" notice indefinitely.
     await Promise.all([
-      recordEvent({ orgId: relationship.org_id, eventType: "vendor_recipient_status_updated", entityType: "payment_recipient_account", entityId: recipient.id, payload: { status: snapshot.status, payouts_enabled: snapshot.payoutsEnabled } }),
+      changed
+        ? recordEvent({ orgId: relationship.org_id, eventType: "vendor_recipient_status_updated", entityType: "payment_recipient_account", entityId: recipient.id, payload: { status: snapshot.status, payouts_enabled: snapshot.payoutsEnabled, relationship_status: relationshipStatus, company_id: relationship.company_id } })
+        : Promise.resolve(null),
       recordAudit({ orgId: relationship.org_id, action: "update", entityType: "payment_recipient_account", entityId: recipient.id, after: { status: snapshot.status, payouts_enabled: snapshot.payoutsEnabled }, source: auditSource }),
     ])
-    return changed && relationshipStatus === "active" ? relationship : null
   }))
-  await notifyArcPayInviters(newlyActivated.filter((relationship) => relationship !== null))
   return recipient
 }
 

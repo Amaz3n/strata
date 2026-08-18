@@ -397,6 +397,7 @@ interface InvoiceEditableDocumentProps {
   projects: Project[]
   builderInfo?: { name?: string | null; email?: string | null; address?: string | null }
   contacts?: Contact[]
+  initialCustomerId?: string
   costCodes?: CostCode[]
   enableApprovedCostsSource?: boolean
   duplicateFrom?: Invoice | null
@@ -421,6 +422,7 @@ export function InvoiceEditableDocument({
   projects,
   builderInfo,
   contacts = [],
+  initialCustomerId,
   costCodes = [],
   enableApprovedCostsSource = false,
   duplicateFrom = null,
@@ -437,6 +439,9 @@ export function InvoiceEditableDocument({
   const { productTier } = usePageTitle()
 
   const seed = initialInvoice ?? duplicateFrom ?? null
+  const initialCustomer = !seed && initialCustomerId
+    ? contacts.find((contact) => contact.id === initialCustomerId) ?? null
+    : null
   const project = useMemo(() => projects.find((p) => p.id === projectId) ?? projects[0] ?? null, [projects, projectId])
   const projectName = project?.name ?? "Project"
   const productPosture = getProjectPosture(project?.property_type, productTier)
@@ -456,7 +461,7 @@ export function InvoiceEditableDocument({
         : "standard",
   )
   const [customerId, setCustomerId] = useState<string>(
-    (seed?.metadata?.customer_id as string | undefined) ?? "none",
+    (seed?.metadata?.customer_id as string | undefined) ?? initialCustomer?.id ?? "none",
   )
   const [selectedQboCustomer, setSelectedQboCustomer] = useState<QBOCustomerOption | null>(
     seed?.metadata?.qbo_customer_id
@@ -469,9 +474,9 @@ export function InvoiceEditableDocument({
   )
   const [customerDetails, setCustomerDetails] = useState(
     buildPartyDetailsBlock({
-      name: seed?.customer_name ?? String(seed?.metadata?.customer_name ?? ""),
-      email: String(seed?.metadata?.customer_email ?? ""),
-      address: formatAddressBlock(String(seed?.metadata?.customer_address ?? "")),
+      name: seed?.customer_name ?? String(seed?.metadata?.customer_name ?? initialCustomer?.full_name ?? ""),
+      email: String(seed?.metadata?.customer_email ?? initialCustomer?.email ?? ""),
+      address: formatAddressBlock(String(seed?.metadata?.customer_address ?? initialCustomer?.address?.formatted ?? "")),
     }),
   )
   const [fromDetails, setFromDetails] = useState(
@@ -531,7 +536,7 @@ export function InvoiceEditableDocument({
   const [customerResults, setCustomerResults] = useState<QBOCustomerOption[]>([])
   const [customerSearchLoading, setCustomerSearchLoading] = useState(false)
   const [creatingQboCustomer, setCreatingQboCustomer] = useState(false)
-  const customerManuallyChosenRef = useRef(Boolean(seed?.customer_name || seed?.metadata?.qbo_customer_id))
+  const customerManuallyChosenRef = useRef(Boolean(seed?.customer_name || seed?.metadata?.qbo_customer_id || initialCustomer))
   const initialSourceAppliedRef = useRef(Boolean(initialSourceChangeOrder))
 
   // ── Autosave plumbing ──────────────────────────────────────────────────────

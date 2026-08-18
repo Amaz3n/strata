@@ -3,10 +3,9 @@
 import { revalidatePath } from "next/cache"
 
 import { commitmentInputSchema, commitmentLineInputSchema, commitmentUpdateSchema } from "@/lib/validation/commitments"
-import { vendorBillStatusUpdateSchema } from "@/lib/validation/vendor-bills"
 import { createCommitment, createCommitmentLine, listCompanyCommitments, updateCommitment } from "@/lib/services/commitments"
 import { listCostCodes } from "@/lib/services/cost-codes"
-import { listVendorBillsForCompany, updateVendorBillStatus } from "@/lib/services/vendor-bills"
+import { listVendorBillsForCompany } from "@/lib/services/vendor-bills"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 
@@ -65,12 +64,3 @@ export async function listCompanyVendorBillsAction(companyId: string) {
   return await listVendorBillsForCompany(companyId)
 }
 
-export async function updateVendorBillStatusAction(billId: string, companyId: string, input: unknown) {
-  return run(async () => {
-    const parsed = vendorBillStatusUpdateSchema.parse(input)
-    const updated = await updateVendorBillStatus({ billId, input: parsed })
-    revalidatePath(`/companies/${companyId}`)
-    revalidatePath("/directory")
-    return updated
-  })
-}

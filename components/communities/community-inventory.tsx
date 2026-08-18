@@ -231,6 +231,7 @@ export function CommunityInventory({
   money: moneyByProject,
   marginTargetPercent,
   projects,
+  projectsTruncated,
   canWrite,
   canReadMoney,
   view,
@@ -245,6 +246,8 @@ export function CommunityInventory({
   money: Record<string, LotMoney>
   marginTargetPercent: number | null
   projects: Array<{ id: string; name: string }>
+  /** True when more unlinked homes exist than the picker lists. */
+  projectsTruncated: boolean
   canWrite: boolean
   canReadMoney: boolean
   view: "table" | "map"
@@ -658,6 +661,7 @@ export function CommunityInventory({
         community={community}
         money={inspectedLot?.projectId ? (moneyByProject[inspectedLot.projectId] ?? null) : null}
         projects={projects}
+        projectsTruncated={projectsTruncated}
         canWrite={canWrite}
         onOpenChange={(open) => {
           if (!open) setInspecting(null)

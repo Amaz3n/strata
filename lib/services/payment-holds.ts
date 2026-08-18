@@ -249,12 +249,11 @@ export async function assertBillReleasable(
       .eq("org_id", resolvedOrgId)
       .eq("id", bill.project_id)
       .maybeSingle(),
-    getComplianceRules(resolvedOrgId).catch(() => ({
-      require_lien_waiver: false,
-      block_payment_on_missing_docs: true,
-      warn_subcontract_execution_on_missing_docs: true,
-      block_subcontract_execution_on_missing_docs: false,
-    })),
+    // No catch-and-default here. This is the release gate: defaulting
+    // `require_lien_waiver` to false on a read failure meant a transient
+    // database error silently dropped the waiver requirement and let the
+    // payment through. If the rules cannot be read, the payment does not go.
+    getComplianceRules(resolvedOrgId),
     inFlightQuery,
   ])
   if (inFlightError) throw new Error(`Unable to validate in-flight bill payments: ${inFlightError.message}`)

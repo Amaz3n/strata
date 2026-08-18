@@ -220,7 +220,7 @@ export function PlanSheet({
         </>
       ) : null}
 
-      <PlanMarket plan={plan} rows={offering} communities={communities} canWrite={canWrite} />
+      <PlanMarket plan={plan} rows={offering} communities={communities} />
 
       <AlertDialog open={pendingVersionId !== null} onOpenChange={(open) => !open && setPendingVersionId(null)}>
         <AlertDialogContent>

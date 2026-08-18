@@ -7,6 +7,7 @@ import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { requirePermission } from "@/lib/services/permissions"
+import { SCHEDULE_DIGEST_WINDOW_MS, scheduleDigestKey } from "@/lib/starts/even-flow-math"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { lookaheadSchema } from "@/lib/validation/starts"
 
@@ -149,22 +150,19 @@ export async function enqueueTradeScheduleChange(input: {
   newStart: string | null
 }) {
   const supabase = createServiceSupabaseClient()
-  // Outbox dedupe keys are permanently unique, so include the coalescing
-  // window while retaining company/project identity inside that window.
-  const bucket = Math.floor(Date.now() / (15 * 60_000))
-  const dedupeKey = `trade_schedule_change_notice:company_id:${input.companyId}|project_id:${input.projectId}|bucket:${bucket}`
+  const dedupeKey = scheduleDigestKey(input.companyId, input.projectId, Date.now())
   const { data: existing } = await supabase.from("outbox").select("id,payload").eq("org_id", input.orgId).eq("dedupe_key", dedupeKey).eq("status", "pending").maybeSingle()
   const change = { schedule_item_id: input.scheduleItemId, old_start: input.oldStart, new_start: input.newStart }
   if (existing) {
     const payload = existing.payload && typeof existing.payload === "object" ? existing.payload as Record<string, unknown> : {}
     const changes = Array.isArray(payload.changes) ? payload.changes.filter((item) => one(item)?.schedule_item_id !== input.scheduleItemId) : []
-    await supabase.from("outbox").update({ payload: { ...payload, actor_id: input.actorId, changes: [...changes, change] }, run_at: new Date(Date.now() + 15 * 60_000).toISOString() }).eq("id", existing.id)
+    await supabase.from("outbox").update({ payload: { ...payload, actor_id: input.actorId, changes: [...changes, change] }, run_at: new Date(Date.now() + SCHEDULE_DIGEST_WINDOW_MS).toISOString() }).eq("id", existing.id)
     return
   }
   await supabase.from("outbox").insert({
     org_id: input.orgId, job_type: "trade_schedule_change_notice", dedupe_key: dedupeKey,
     payload: { company_id: input.companyId, project_id: input.projectId, actor_id: input.actorId, changes: [change] },
-    run_at: new Date(Date.now() + 15 * 60_000).toISOString(),
+    run_at: new Date(Date.now() + SCHEDULE_DIGEST_WINDOW_MS).toISOString(),
   })
 }
 

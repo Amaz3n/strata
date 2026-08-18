@@ -1,5 +1,6 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
+import { requireAuthorization } from "@/lib/services/authorization"
 import { enqueueReindex, mapAuditEntityTypeToSearchType } from "@/lib/services/search-index"
 
 interface AuditInput {
@@ -11,6 +12,85 @@ interface AuditInput {
   before?: Record<string, unknown> | null
   after?: Record<string, unknown> | null
   source?: string
+}
+
+export interface EntityAuditEntry {
+  id: number
+  action: "insert" | "update" | "delete"
+  source: string | null
+  before: Record<string, unknown> | null
+  after: Record<string, unknown> | null
+  createdAt: string
+  actor: { id: string; name: string; email: string } | null
+}
+
+/**
+ * Permission-checked document history for operational record pages.
+ *
+ * The audit table is intentionally append-only evidence. This reader returns
+ * the snapshots as stored rather than attempting to recreate mutable rows.
+ */
+export async function listEntityAuditTrail(input: {
+  entityType: string
+  entityId: string
+  permission: string
+  orgId?: string
+  projectId?: string | null
+  limit?: number
+}): Promise<EntityAuditEntry[]> {
+  const context = await requireOrgContext(input.orgId)
+  await requireAuthorization({
+    permission: input.permission,
+    userId: context.userId,
+    orgId: context.orgId,
+    projectId: input.projectId ?? undefined,
+    supabase: context.supabase,
+    logDecision: true,
+    resourceType: input.entityType,
+    resourceId: input.entityId,
+  })
+
+  const { data, error } = await context.supabase
+    .from("audit_log")
+    .select(`
+      id,
+      action,
+      source,
+      before_data,
+      after_data,
+      created_at,
+      actor_user:actor_user_id (
+        id,
+        full_name,
+        email
+      )
+    `)
+    .eq("org_id", context.orgId)
+    .eq("entity_type", input.entityType)
+    .eq("entity_id", input.entityId)
+    .order("created_at", { ascending: false })
+    .limit(Math.min(Math.max(input.limit ?? 50, 1), 100))
+
+  if (error) throw new Error(`Failed to load change history: ${error.message}`)
+
+  return (data ?? []).map((row) => {
+    const rawActor = Array.isArray(row.actor_user) ? row.actor_user[0] : row.actor_user
+    return {
+      id: Number(row.id),
+      action: row.action as EntityAuditEntry["action"],
+      source: row.source ?? null,
+      before: (row.before_data as Record<string, unknown> | null) ?? null,
+      after: (row.after_data as Record<string, unknown> | null) ?? null,
+      createdAt: row.created_at,
+      actor: rawActor
+        ? {
+            id: rawActor.id,
+            name: rawActor.full_name || rawActor.email,
+            email: rawActor.email,
+          }
+        : null,
+    }
+  })
 }
 
 export async function recordAudit(input: AuditInput) {

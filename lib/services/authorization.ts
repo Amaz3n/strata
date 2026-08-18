@@ -270,6 +270,17 @@ export async function getDivisionAccessForUser({
   return { assignedOnly: result.divisionAssignedOnly, divisionIds: result.divisionIds }
 }
 
+/** One PostgREST page. The loop below reads as many as the division actually has. */
+const DIVISION_SCOPE_PAGE = 1_000
+/**
+ * Past this a division's project list is too long to travel in an `in(...)` URL
+ * anyway, so the callers below would fail regardless. Failing loudly here is the
+ * only honest option: this list is what a division-scoped user is *allowed to
+ * see*, and silently returning the first slice of it hides their own work from
+ * them with no error anywhere.
+ */
+const DIVISION_SCOPE_PROJECT_CAP = 20_000
+
 export async function getDivisionScopedProjectIds({
   orgId,
   userId,
@@ -282,14 +293,26 @@ export async function getDivisionScopedProjectIds({
   const access = await getDivisionAccessForUser({ orgId, userId })
   if (!access.assignedOnly) return null
   if (access.divisionIds.length === 0) return []
-  const { data, error } = await supabase
-    .from("projects")
-    .select("id")
-    .eq("org_id", orgId)
-    .in("division_id", access.divisionIds)
-    .limit(1000)
-  if (error) throw new Error(`Unable to resolve division project scope: ${error.message}`)
-  return (data ?? []).map((row) => row.id as string)
+  // Read every project in scope. A flat `.limit(1000)` made a division-scoped
+  // user's visibility decay with the org's age: at 250 closings a year they
+  // simply stopped seeing their own projects, with nothing reported anywhere.
+  const ids: string[] = []
+  for (let from = 0; from < DIVISION_SCOPE_PROJECT_CAP; from += DIVISION_SCOPE_PAGE) {
+    const { data, error } = await supabase
+      .from("projects")
+      .select("id")
+      .eq("org_id", orgId)
+      .in("division_id", access.divisionIds)
+      .order("id")
+      .range(from, from + DIVISION_SCOPE_PAGE - 1)
+    if (error) throw new Error(`Unable to resolve division project scope: ${error.message}`)
+    const batch = data ?? []
+    for (const row of batch) ids.push(row.id as string)
+    if (batch.length < DIVISION_SCOPE_PAGE) return ids
+  }
+  throw new Error(
+    `Division scope covers more than ${DIVISION_SCOPE_PROJECT_CAP} projects; narrow the division assignment.`,
+  )
 }
 
 async function fetchPlatformPermissions({ supabase, userId }: { supabase: SupabaseClient; userId: string }) {

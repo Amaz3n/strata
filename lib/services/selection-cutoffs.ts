@@ -257,20 +257,52 @@ export async function revertCutoffToSchedule(input: { projectId: string; groupId
   return recomputeProjectSelectionCutoffs(input.projectId, context.orgId)
 }
 
+const LOCK_SWEEP_BATCH = 200
+/** One sweep may not lock more groups than this; the cron runs again tomorrow. */
+const LOCK_SWEEP_MAX_BATCHES = 200
+
 export async function lockDueGroups(orgId?: string) {
   const supabase = createServiceSupabaseClient()
   const today = new Date().toISOString().slice(0, 10)
-  let query = supabase
-    .from("project_selection_groups")
-    .select("id, org_id, project_id, group_id, metadata, group:selection_groups(name), project:projects(name)")
-    .eq("status", "open")
-    .lt("cutoff_date", today)
-    .limit(1000)
-  if (orgId) query = query.eq("org_id", orgId)
-  const { data, error } = await query
-  if (error) throw new Error(`Failed to load due selection groups: ${error.message}`)
   const lockedAt = new Date().toISOString()
-  for (const group of data ?? []) {
+  let locked = 0
+
+  // Each batch is removed from the `open` filter as it is locked, so the query
+  // drains rather than re-reading the same first page. A single capped page
+  // left the oldest cutoffs open for extra days once an org passed the cap.
+  for (let batch = 0; batch < LOCK_SWEEP_MAX_BATCHES; batch += 1) {
+    let query = supabase
+      .from("project_selection_groups")
+      .select("id, org_id, project_id, group_id, metadata, group:selection_groups(name), project:projects(name)")
+      .eq("status", "open")
+      .lt("cutoff_date", today)
+      .order("cutoff_date", { ascending: true })
+      .order("id", { ascending: true })
+      .limit(LOCK_SWEEP_BATCH)
+    if (orgId) query = query.eq("org_id", orgId)
+    const { data, error } = await query
+    if (error) throw new Error(`Failed to load due selection groups: ${error.message}`)
+    if (!data?.length) break
+    await lockGroupBatch(supabase, data, lockedAt)
+    locked += data.length
+    if (data.length < LOCK_SWEEP_BATCH) break
+  }
+
+  return { locked }
+}
+
+type DueSelectionGroupRow = {
+  id: string
+  org_id: string
+  project_id: string
+  group_id: string
+  metadata: Record<string, unknown> | null
+  group: { name: string } | { name: string }[] | null
+  project: { name: string } | { name: string }[] | null
+}
+
+async function lockGroupBatch(supabase: SupabaseClient, rows: DueSelectionGroupRow[], lockedAt: string) {
+  for (const group of rows) {
     const { error: groupError } = await supabase
       .from("project_selection_groups")
       .update({ status: "locked", locked_at: lockedAt })
@@ -286,7 +318,7 @@ export async function lockDueGroups(orgId?: string) {
       .eq("group_id", group.group_id)
     if (selectionError) throw new Error(`Failed to lock group selections: ${selectionError.message}`)
     await recordEvent({ orgId: group.org_id, eventType: "selection_group_locked", entityType: "project_selection_group", entityId: group.id, payload: { project_id: group.project_id, group_id: group.group_id } })
-    const metadata = typeof group.metadata === "object" && group.metadata !== null && !Array.isArray(group.metadata) ? group.metadata : {}
+    const metadata: Record<string, unknown> = group.metadata && !Array.isArray(group.metadata) ? group.metadata : {}
     const { count: pendingCount, error: countError } = await supabase
       .from("project_selections")
       .select("id", { count: "exact", head: true })
@@ -311,7 +343,6 @@ export async function lockDueGroups(orgId?: string) {
       if (metadataError) throw new Error(`Failed to stamp missed-cutoff notification: ${metadataError.message}`)
     }
   }
-  return { locked: (data ?? []).length }
 }
 
 export async function sendSelectionCutoffReminders() {

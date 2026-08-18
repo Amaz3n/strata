@@ -6,13 +6,14 @@ import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { sendVendorPaymentInviteEmail } from "@/lib/services/mailer"
-import { requireAnyPermission } from "@/lib/services/permissions"
+import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
+import { requireRecentPaymentStepUp } from "@/lib/services/payment-step-up"
 import { isVendorPayoutSetupOpen } from "@/lib/services/payment-rail-setup"
 import { decryptPortalToken, encryptPortalToken, generatePortalToken, hashPortalToken } from "@/lib/services/portal-credentials"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 /**
- * Where a builder's vendor stands on electronic payment, as a company-level
+ * Where a builder's vendor stands on Arc Pay, as a company-level
  * fact. The payout account belongs to the vendor's legal entity, but whether
  * *this* builder can pay them is the `(org_id, company_id)` relationship — which
  * is why readiness lives on the company record and not on any project.
@@ -36,18 +37,48 @@ export interface CompanyPaymentReadiness {
 
 const paymentAccessStatusSchema = z.enum(["active", "suspended", "revoked"])
 
-/** Builder-owned control over whether this vendor may receive this org's money. */
+/**
+ * Builder-owned control over whether this vendor may receive this org's money.
+ *
+ * **Step-up applies to all three directions.** This decides whether an ACH run
+ * can pay a destination, which is the same class of decision as approving a
+ * funding-source change — and that one has required a recent second factor
+ * since `decidePaymentControlChange` shipped. A session hijacked without the
+ * second factor could otherwise stop a legitimate vendor's payments or, worse,
+ * reopen one an AP clerk had deliberately cut off.
+ *
+ * **Restore is held to a higher bar than suspend**, because suspend stops money
+ * and restore starts it:
+ *
+ *  - it needs `payment.manage_rail`, not merely `payment.release`;
+ *  - it re-arms `accepted_at`, which puts the relationship back inside the org's
+ *    `new_vendor_hold_hours` window. The first run after a restore then trips
+ *    `recently_claimed_vendor_relationship` and blocks, exactly as it does for a
+ *    vendor claimed for the first time. That is the cooling period: a restore
+ *    cannot be followed by an immediate payment to a destination nobody
+ *    re-checked.
+ *
+ * Withdrawal is not a one-layer change. `vendor_company_claims` is the mapping
+ * that authorises payouts for this builder, and a revoke tears it down with the
+ * relationship; the vendor-facing payment surface reads the same relationship
+ * status, so it closes at the same moment.
+ */
 export async function setCompanyPaymentAccessStatus(
   input: { companyId: string; status: z.infer<typeof paymentAccessStatusSchema> },
   orgId?: string,
 ) {
   const parsed = z.object({ companyId: z.string().uuid(), status: paymentAccessStatusSchema }).parse(input)
   const context = await requireOrgContext(orgId)
-  await requireAnyPermission(["payment.release", "payment.manage_rail"], context)
+  if (parsed.status === "active") {
+    await requirePermission("payment.manage_rail", context)
+  } else {
+    await requireAnyPermission(["payment.release", "payment.manage_rail"], context)
+  }
+  await requireRecentPaymentStepUp()
   const supabase = createServiceSupabaseClient()
   const { data: relationship, error } = await supabase
     .from("vendor_payment_relationships")
-    .select("id,status,recipient_account_id,recipient:payment_recipient_accounts(status,payouts_enabled)")
+    .select("id,status,vendor_company_claim_id,recipient_account_id,recipient:payment_recipient_accounts(status,payouts_enabled)")
     .eq("org_id", context.orgId)
     .eq("company_id", parsed.companyId)
     .maybeSingle()
@@ -67,6 +98,8 @@ export async function setCompanyPaymentAccessStatus(
       status: nextStatus,
       suspended_at: nextStatus === "suspended" ? now : null,
       revoked_at: nextStatus === "revoked" ? now : null,
+      // See the doc comment: a restore re-enters the new-vendor hold window.
+      ...(parsed.status === "active" ? { accepted_at: now } : {}),
     })
     .eq("org_id", context.orgId)
     .eq("id", relationship.id)
@@ -77,6 +110,21 @@ export async function setCompanyPaymentAccessStatus(
   if (!updatedRelationship) {
     throw new Error("Vendor payment access changed while you were reviewing it. Refresh and try again.")
   }
+
+  // Revoking is terminal, so the claim behind it goes too. Suspension is meant
+  // to be reversible, so it deliberately leaves the claim standing — otherwise
+  // "restore" would have to rebuild a mapping the vendor is the only one who
+  // can re-establish.
+  if (nextStatus === "revoked" && relationship.vendor_company_claim_id) {
+    const { error: claimError } = await supabase
+      .from("vendor_company_claims")
+      .update({ status: "revoked", revoked_at: now })
+      .eq("org_id", context.orgId)
+      .eq("id", relationship.vendor_company_claim_id)
+      .neq("status", "revoked")
+    if (claimError) throw new Error(`Unable to withdraw the vendor claim: ${claimError.message}`)
+  }
+
   await Promise.all([
     recordEvent({
       orgId: context.orgId,
@@ -93,10 +141,105 @@ export async function setCompanyPaymentAccessStatus(
       entityType: "vendor_payment_relationship",
       entityId: relationship.id,
       before: { status: beforeStatus },
-      after: { status: nextStatus },
+      after: {
+        status: nextStatus,
+        ...(nextStatus === "revoked" ? { claim_status: "revoked" } : {}),
+        ...(parsed.status === "active" ? { accepted_at: now, new_vendor_hold_rearmed: true } : {}),
+      },
     }),
   ])
   return { status: nextStatus }
+}
+
+/** Relationship states a token-lifecycle change may still act on. */
+const LIVE_RELATIONSHIP_STATUSES = ["invited", "claim_pending", "onboarding", "active"]
+
+/**
+ * Carries a portal access record's lifecycle through to payment authority.
+ *
+ * The link a vendor followed to claim payout setup is not decoration: it is
+ * recorded on the claim as `source_portal_token_id`, and it is the credential
+ * that established this builder's mapping onto the vendor's global payout
+ * account. Revoking it while leaving `vendor_payment_relationships` active left
+ * the builder paying a destination whose only provenance they had just torn up
+ * — the mirror image of the bug `cascadeGrantStatusForPortalToken` fixed for
+ * account grants. One status, every layer it authorised.
+ *
+ * Deliberately narrow: only the token that CLAIMED the vendor company cascades.
+ * A second contact's sub link is that person's access to a project, and losing
+ * it must not stop the company being paid — the person is the unit.
+ *
+ * Deliberately one-way: resuming a paused token does NOT restore payment
+ * access. Re-opening money movement is `setCompanyPaymentAccessStatus`, which
+ * costs a second factor and re-arms the new-vendor hold.
+ */
+export async function cascadeVendorPaymentAccessForPortalToken({
+  orgId,
+  tokenId,
+  status,
+}: {
+  orgId: string
+  tokenId: string
+  status: "paused" | "revoked" | "active"
+}) {
+  if (status === "active") return
+  const supabase = createServiceSupabaseClient()
+  const { data: claims, error } = await supabase
+    .from("vendor_company_claims")
+    .select("id,company_id,status")
+    .eq("org_id", orgId)
+    .eq("source_portal_token_id", tokenId)
+    .neq("status", "revoked")
+  if (error) throw new Error(`Unable to read vendor claims for this access record: ${error.message}`)
+  if ((claims ?? []).length === 0) return
+
+  const nowIso = new Date().toISOString()
+  const nextRelationshipStatus = status === "revoked" ? "revoked" : "suspended"
+
+  for (const claim of claims ?? []) {
+    const { data: relationship, error: relationshipError } = await supabase
+      .from("vendor_payment_relationships")
+      .update({
+        status: nextRelationshipStatus,
+        suspended_at: nextRelationshipStatus === "suspended" ? nowIso : null,
+        revoked_at: nextRelationshipStatus === "revoked" ? nowIso : null,
+      })
+      .eq("org_id", orgId)
+      .eq("company_id", claim.company_id)
+      .in("status", LIVE_RELATIONSHIP_STATUSES)
+      .select("id,status")
+      .maybeSingle()
+    if (relationshipError) {
+      throw new Error(`Unable to withdraw vendor payment access: ${relationshipError.message}`)
+    }
+    if (status === "revoked") {
+      const { error: claimError } = await supabase
+        .from("vendor_company_claims")
+        .update({ status: "revoked", revoked_at: nowIso })
+        .eq("org_id", orgId)
+        .eq("id", claim.id)
+        .neq("status", "revoked")
+      if (claimError) throw new Error(`Unable to withdraw the vendor claim: ${claimError.message}`)
+    }
+    if (!relationship) continue
+    await Promise.all([
+      recordEvent({
+        orgId,
+        eventType: `vendor_payment_relationship_${nextRelationshipStatus}`,
+        entityType: "vendor_payment_relationship",
+        entityId: relationship.id,
+        payload: { company_id: claim.company_id, status: nextRelationshipStatus, source: "portal_access_lifecycle" },
+      }),
+      recordAudit({
+        orgId,
+        action: "update",
+        entityType: "vendor_payment_relationship",
+        entityId: relationship.id,
+        after: { status: nextRelationshipStatus, portal_access_token_id: tokenId },
+        source: "portal_access_lifecycle",
+      }),
+    ])
+  }
 }
 
 const RELATIONSHIP_STATUS_TO_READINESS: Record<string, CompanyPaymentReadinessStatus> = {
@@ -207,7 +350,7 @@ async function resolveContactPayoutLink(input: {
 }
 
 /**
- * Ask a vendor to set up electronic payment. Idempotent by design: re-inviting a
+ * Ask a vendor to set up Arc Pay. Idempotent by design: re-inviting a
  * vendor who is already verifying or ready never downgrades their relationship,
  * it just re-sends the link.
  */
@@ -233,7 +376,7 @@ export async function inviteCompanyToPaymentSetup(input: { companyId: string }, 
     .eq("org_id", context.orgId)
     .eq("company_id", company.id)
     .maybeSingle()
-  if (relationship?.status === "active") throw new Error(`${company.name} is already set up for electronic payment`)
+  if (relationship?.status === "active") throw new Error(`${company.name} is already set up for Arc Pay`)
   if (relationship?.status === "revoked" || relationship?.status === "suspended") {
     throw new Error(`${company.name}'s payment access is ${relationship.status}. Restore it before re-inviting.`)
   }

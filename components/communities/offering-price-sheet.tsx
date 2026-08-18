@@ -6,6 +6,7 @@ import { Fragment, useMemo, useState, useTransition } from "react"
 import { toast } from "sonner"
 
 import { bulkRepriceCommunityPlansAction, setCommunityPlanPriceAction } from "@/app/(app)/sales/actions"
+import { OfferingPlanManager, type OfferablePlan } from "@/components/communities/offering-plan-manager"
 import { Plan3dDialog } from "@/components/plans/plan-3d-dialog"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -134,6 +135,7 @@ export function OfferingPriceSheet({
   buildCostByPlanId,
   lotsTruncated,
   plansWith3d,
+  offerablePlans,
   canManage,
 }: {
   communityId: string
@@ -148,6 +150,8 @@ export function OfferingPriceSheet({
   lotsTruncated: boolean
   /** Plan ids with a published 3D model — the rows that get a "3D" button. */
   plansWith3d: ReadonlySet<string>
+  /** Released plans this community could sell but is not offering yet. */
+  offerablePlans: OfferablePlan[]
   canManage: boolean
 }) {
   const router = useRouter()
@@ -158,6 +162,11 @@ export function OfferingPriceSheet({
   const [batch, setBatch] = useState<{ mode: "percent" | "amount"; value: string; excluded: Set<string> } | null>(null)
 
   const groups = useMemo(() => groupByPlan(rows), [rows])
+  const offeredPlans = useMemo(() => {
+    const byPlan = new Map<string, { id: string; code: string | null; name: string }>()
+    for (const row of rows) if (!byPlan.has(row.planId)) byPlan.set(row.planId, { id: row.planId, code: row.planCode, name: row.planName })
+    return Array.from(byPlan.values())
+  }, [rows])
   /** The sheet's own order, so the reprice preview is the sheet and not a re-sort of it. */
   const ordered = useMemo(() => groups.flatMap((group) => group.rows), [groups])
   // Columns earn their width. Give and net only exist when something is actually
@@ -272,28 +281,47 @@ export function OfferingPriceSheet({
             {canManage && rows.length > 0 ? " · click a base price to change it" : ""}
           </p>
         </div>
-        {canManage && rows.length > 0 ? (
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-7 rounded-none text-xs"
-            onClick={() => setBatch({ mode: "percent", value: "", excluded: new Set() })}
-          >
-            Reprice sheet
-          </Button>
+        {canManage ? (
+          <div className="flex items-center gap-2">
+            <OfferingPlanManager
+              communityId={communityId}
+              offerablePlans={offerablePlans}
+              offeredPlans={offeredPlans}
+            />
+            {rows.length > 0 ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 rounded-none text-xs"
+                onClick={() => setBatch({ mode: "percent", value: "", excluded: new Set() })}
+              >
+                Reprice sheet
+              </Button>
+            ) : null}
+          </div>
         ) : null}
       </div>
 
       {rows.length === 0 ? (
         <div className="px-4 py-10 text-center">
-          <p className="text-xs font-medium">No plans are released here</p>
+          <p className="text-xs font-medium">This community is not offering any plans</p>
           <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
-            A community has nothing to sell until a plan is published to it. Release plans from the library, then set
-            what they cost here.
+            A community has nothing to sell until you add a released plan to its offering and give it a launch price.
           </p>
-          <Button asChild variant="outline" size="sm" className="mt-3 rounded-none text-xs">
-            <Link href="/plans">Open the plan library</Link>
-          </Button>
+          <div className="mt-3 flex items-center justify-center gap-2">
+            {canManage ? (
+              <OfferingPlanManager
+                communityId={communityId}
+                offerablePlans={offerablePlans}
+                offeredPlans={offeredPlans}
+                triggerLabel="Offer a plan"
+                triggerVariant="default"
+              />
+            ) : null}
+            <Button asChild variant="outline" size="sm" className="rounded-none text-xs">
+              <Link href="/plans">Open the plan library</Link>
+            </Button>
+          </div>
         </div>
       ) : (
         <div className="overflow-x-auto">

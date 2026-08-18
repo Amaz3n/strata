@@ -20,19 +20,73 @@ import { Textarea } from "@/components/ui/textarea"
 import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
 import { estimateSettlement } from "@/lib/payments/settlement-estimate"
 import { usePaymentStepUp } from "@/components/payments/payment-step-up"
-import type { PayableApprovalDetail } from "@/lib/services/payable-approvals"
+import type { PayableApprovalDetail, PayableApprovalOutcome } from "@/lib/services/payable-approvals"
 import type { PaymentHoldEvaluation } from "@/lib/services/payment-holds"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import { cn } from "@/lib/utils"
 import { vendorLabel } from "../payables-ui"
 
 type ReviewStep = "review" | "confirm" | "reject" | "done"
+/** A release that did not happen is not a success, and must not look like one. */
+type ReviewOutcomeTone = "success" | "warning"
 
 /** Bare `YYYY-MM-DD` in, readable date out — never routed through a local timezone. */
 function readableDate(iso: string) {
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(
     new Date(`${iso}T00:00:00Z`),
   )
+}
+
+/**
+ * What the approver is told once their decision lands.
+ *
+ * Approval and release are two different things, and the screen used to have
+ * one line for every way they came apart — a run scheduled for next Tuesday, a
+ * release queued because approving and releasing are separate roles, and a real
+ * gate — all read "release is still gated" over a raw error message. Only the
+ * last of those is a problem, and only it says so.
+ */
+function outcomeCopy(
+  outcome: PayableApprovalOutcome,
+  detail: PayableApprovalDetail,
+  vendorName: string,
+): { title: string; body: string; tone: ReviewOutcomeTone } {
+  switch (outcome.result) {
+    case "released":
+      return {
+        tone: "success",
+        title: "Payment released",
+        body: detail.items.length > 1
+          ? `${formatMoneyFromCents(detail.totalDebitCents)} is on its way to ${detail.items.length} vendors. Each bill updates itself as the provider confirms each stage.`
+          : `${formatMoneyFromCents(detail.vendorAmountCents)} is on its way to ${vendorName}. The bill updates itself as the provider confirms each stage.`,
+      }
+    case "rejected":
+      return {
+        tone: "success",
+        title: "Payment rejected",
+        body: `${vendorName} was not paid. The preparer has been notified with your reason.`,
+      }
+    case "recorded":
+      return {
+        tone: "success",
+        title: "Approval recorded",
+        body: "Your approval is on the record. This payment still needs another approver before it goes out.",
+      }
+    case "scheduled":
+      return {
+        tone: "success",
+        title: "Approved — releases on schedule",
+        body: `Fully approved. ${formatMoneyFromCents(detail.totalDebitCents)} goes out on ${readableDate(outcome.scheduledFor)}, the date the preparer chose. Nothing else is needed from you.`,
+      }
+    case "release_queued":
+      return { tone: "success", title: "Approved — release is on its way", body: outcome.reason }
+    case "approved_release_pending":
+      return {
+        tone: "warning",
+        title: "Approved — release is still gated",
+        body: `${outcome.reason} The approval stands and Arc keeps retrying the release.`,
+      }
+  }
 }
 
 /**
@@ -61,6 +115,7 @@ export function PayableReviewView({
   const [outcome, setOutcome] = useState<{
     title: string
     body: string
+    tone: ReviewOutcomeTone
   } | null>(null)
   const [isPending, startTransition] = useTransition()
   const { requireStepUp, stepUpPrompt } = usePaymentStepUp()
@@ -103,29 +158,7 @@ export function PayableReviewView({
         return
       }
       const data = result.data
-      setOutcome(
-        data.result === "released"
-          ? {
-              title: "Payment released",
-              body: detail.items.length > 1
-                ? `${formatMoneyFromCents(detail.totalDebitCents)} is on its way to ${detail.items.length} vendors. Each bill updates itself as the provider confirms each stage.`
-                : `${formatMoneyFromCents(detail.vendorAmountCents)} is on its way to ${vendorLabel(bill)}. The bill updates itself as the provider confirms each stage.`,
-            }
-          : data.result === "rejected"
-            ? {
-                title: "Payment rejected",
-                body: `${vendorLabel(bill)} was not paid. The preparer has been notified with your reason.`,
-              }
-            : data.result === "recorded"
-              ? {
-                  title: "Approval recorded",
-                  body: "Your approval is on the record. This payment still needs another approver before it goes out.",
-                }
-              : {
-                  title: "Approved — release is still gated",
-                  body: data.reason,
-                },
-      )
+      setOutcome(outcomeCopy(data, detail, vendorLabel(bill)))
       setStep("done")
       onDecided()
     })
@@ -188,7 +221,11 @@ export function PayableReviewView({
             </p>
           ) : step === "done" && outcome ? (
             <div className="space-y-6 pt-6 text-center">
-              <CheckCircle2 className="mx-auto h-10 w-10 text-success" />
+              {outcome.tone === "warning" ? (
+                <TriangleAlert className="mx-auto h-10 w-10 text-warning" />
+              ) : (
+                <CheckCircle2 className="mx-auto h-10 w-10 text-success" />
+              )}
               <div className="space-y-1">
                 <h3 className="text-lg font-semibold">{outcome.title}</h3>
                 <p className="text-sm text-muted-foreground">{outcome.body}</p>
@@ -416,7 +453,9 @@ export function PayableReviewView({
                     debited from {detail.fundingLabel}
                     {detail.requiredApprovals > detail.approvalCount + 1
                       ? ". Another approver is still required after you."
-                      : " as soon as you confirm. ACH payments cannot be recalled once sent."}
+                      : detail.scheduledFor
+                        ? ` on ${readableDate(detail.scheduledFor)}, the release date this run was approved for. ACH payments cannot be recalled once sent.`
+                        : " as soon as you confirm. ACH payments cannot be recalled once sent."}
                   </p>
                   {/*
                     The server requires a genuine second factor verified in the

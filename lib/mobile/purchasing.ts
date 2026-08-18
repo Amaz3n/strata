@@ -20,14 +20,14 @@ async function requireProject(context: MobileOrgContext, projectId: string) {
   if (error || !data) throw new MobileAPIError(404, "project_not_found", "Project not found.")
 }
 
-async function requirePurchasingPermission(context: MobileOrgContext, permission: "price_book.read" | "vpo.request", projectId: string) {
+async function requirePurchasingPermission(context: MobileOrgContext, permission: "price_book.read" | "vpo.request") {
   const allowed = await hasPermission(permission, context.serviceContext)
   if (!allowed) throw new MobileAPIError(403, "purchasing_forbidden", "You do not have permission to use project purchasing.")
 }
 
 export async function listMobileVarianceOrders(context: MobileOrgContext, projectId: string) {
   await requireProject(context, projectId)
-  await requirePurchasingPermission(context, "price_book.read", projectId)
+  await requirePurchasingPermission(context, "price_book.read")
   const { data, error } = await context.serviceSupabase.from("commitment_change_orders").select(`
     id,project_id,commitment_id,title,description,status,total_cents,reason_code_id,origin,requested_by,photo_file_ids,created_at,updated_at,
     commitment:commitments(title),company:companies(name),reason:variance_reason_codes(code,label,is_backcharge)
@@ -36,9 +36,44 @@ export async function listMobileVarianceOrders(context: MobileOrgContext, projec
   return data ?? []
 }
 
+/**
+ * The purchase orders a field variance can be charged against.
+ *
+ * A VPO revises a specific PO, so the superintendent has to be able to pick one
+ * — and the variance list only shows POs that already carry a variance, which
+ * makes the first variance on a house impossible to file from the field.
+ */
+export async function listMobileProjectPurchaseOrders(context: MobileOrgContext, projectId: string) {
+  await requireProject(context, projectId)
+  await requirePurchasingPermission(context, "price_book.read")
+  const { data, error } = await context.serviceSupabase
+    .from("commitments")
+    .select("id,title,contract_number,status,total_cents,company_id,company:companies(name)")
+    .eq("org_id", context.orgId)
+    .eq("project_id", projectId)
+    .eq("commitment_type", "purchase_order")
+    // A draft PO has not been issued to the trade, so nothing can vary against
+    // it yet. Both spellings of cancelled are excluded because the Zod enum
+    // (`complete`/`canceled`) and the live data (`completed`/`active`) do not
+    // agree — a drift worth resolving, but not by guessing here.
+    .not("status", "in", "(draft,canceled,cancelled,void)")
+    .order("contract_number", { ascending: true, nullsFirst: false })
+    .limit(300)
+  if (error) throw new MobileAPIError(500, "purchase_orders_unavailable", "Purchase orders could not be loaded.")
+  return (data ?? []).map((row) => ({
+    id: row.id,
+    title: row.title,
+    contract_number: row.contract_number,
+    status: row.status,
+    total_cents: Number(row.total_cents ?? 0),
+    company_id: row.company_id,
+    company_name: (Array.isArray(row.company) ? row.company[0]?.name : (row.company as { name?: string } | null)?.name) ?? null,
+  }))
+}
+
 export async function createMobileVarianceOrder(context: MobileOrgContext, projectId: string, input: unknown) {
   await requireProject(context, projectId)
-  await requirePurchasingPermission(context, "vpo.request", projectId)
+  await requirePurchasingPermission(context, "vpo.request")
   const parsed = mobileVpoSchema.safeParse(input)
   if (!parsed.success) throw new MobileAPIError(422, "invalid_vpo", "Some variance purchase-order information is invalid.", { fields: parsed.error.issues.map((issue) => issue.path.join(".")).join(", ") })
   const [{ data: commitment }, { data: reason }] = await Promise.all([
@@ -73,7 +108,7 @@ export async function createMobileVarianceOrder(context: MobileOrgContext, proje
 
 export async function listMobileVarianceReasonCodes(context: MobileOrgContext, organizationId: string) {
   if (organizationId !== context.orgId) throw new MobileAPIError(403, "organization_forbidden", "The selected organization does not match this request.")
-  const { data, error } = await context.serviceSupabase.from("variance_reason_codes").select("id,code,label,description,is_backcharge,requires_photo,sort_order").eq("org_id", context.orgId).eq("is_active", true).order("sort_order").order("label")
+  const { data, error } = await context.serviceSupabase.from("variance_reason_codes").select("id,code,label,description,is_backcharge,sort_order").eq("org_id", context.orgId).eq("is_active", true).order("sort_order").order("label")
   if (error) throw new MobileAPIError(500, "reason_codes_unavailable", "Variance reason codes could not be loaded.")
   return data ?? []
 }

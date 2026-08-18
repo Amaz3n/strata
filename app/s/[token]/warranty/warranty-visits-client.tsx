@@ -5,6 +5,8 @@ import { CalendarClock } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { useToast } from "@/hooks/use-toast"
 import type { WarrantyServiceVisitDTO } from "@/lib/services/warranty"
@@ -12,10 +14,18 @@ import { confirmSubPortalWarrantyVisitAction, completeSubPortalWarrantyVisitActi
 
 type PortalVisit = WarrantyServiceVisitDTO & { request?: Record<string, unknown> | null; project?: Record<string, unknown> | null }
 
+/** What a crew can report. Coverage calls stay with the builder. */
+const TRADE_OUTCOMES: Array<{ value: string; label: string }> = [
+  { value: "resolved", label: "Fixed — work complete" },
+  { value: "needs_parts", label: "Waiting on parts" },
+  { value: "needs_followup", label: "Needs another visit" },
+]
+
 export function WarrantyVisitsClient({ token, initialVisits }: { token: string; initialVisits: PortalVisit[] }) {
   const [visits, setVisits] = useState(initialVisits)
   const [selected, setSelected] = useState<string | null>(null)
   const [note, setNote] = useState("")
+  const [outcome, setOutcome] = useState("resolved")
   const [photo, setPhoto] = useState<File | null>(null)
   const [pending, startTransition] = useTransition()
   const { toast } = useToast()
@@ -48,7 +58,37 @@ export function WarrantyVisitsClient({ token, initialVisits }: { token: string; 
               {visit.status === "scheduled" ? <Button size="sm" variant="outline" disabled={pending} onClick={() => startTransition(async () => { try { update(await confirmSubPortalWarrantyVisitAction(token, visit.id)); toast({ title: "Appointment confirmed" }) } catch (error) { toast({ title: "Unable to confirm", description: error instanceof Error ? error.message : "Try again" }) } })}>Confirm</Button> : null}
               {!["completed","canceled"].includes(visit.status) ? <Button size="sm" onClick={() => setSelected(visit.id)}>Complete</Button> : null}
             </div>
-            {selected === visit.id ? <div className="space-y-2 border-t pt-3 md:col-span-2"><Textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Describe completed work"/><Input type="file" accept="image/*" onChange={(event) => setPhoto(event.target.files?.[0] ?? null)}/><div className="flex justify-end gap-2"><Button size="sm" variant="ghost" onClick={() => setSelected(null)}>Cancel</Button><Button size="sm" disabled={pending || !note.trim()} onClick={() => startTransition(async () => { try { const formData = new FormData(); formData.append("visit_id", visit.id); formData.append("note", note); if (photo) formData.append("photo", photo); update(await completeSubPortalWarrantyVisitAction(token, formData)); setSelected(null); setNote(""); setPhoto(null); toast({ title: "Completion sent for verification" }) } catch (error) { toast({ title: "Unable to complete", description: error instanceof Error ? error.message : "Try again" }) } })}>Send completion</Button></div></div> : null}
+            {selected === visit.id ? (
+              <div className="space-y-3 border-t border-border pt-3 md:col-span-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor={`outcome-${visit.id}`}>Outcome</Label>
+                  <Select value={outcome} onValueChange={setOutcome}>
+                    <SelectTrigger id={`outcome-${visit.id}`}><SelectValue /></SelectTrigger>
+                    <SelectContent>{TRADE_OUTCOMES.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <Textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Describe completed work" />
+                <Input type="file" accept="image/*" onChange={(event) => setPhoto(event.target.files?.[0] ?? null)} />
+                <p className="text-xs text-muted-foreground">The builder reviews every completion before the homeowner&apos;s request is closed.</p>
+                <div className="flex justify-end gap-2">
+                  <Button size="sm" variant="ghost" onClick={() => { setSelected(null); setNote(""); setOutcome("resolved") }}>Cancel</Button>
+                  <Button size="sm" disabled={pending || !note.trim()} onClick={() => startTransition(async () => {
+                    try {
+                      const formData = new FormData()
+                      formData.append("visit_id", visit.id)
+                      formData.append("note", note)
+                      formData.append("outcome", outcome)
+                      if (photo) formData.append("photo", photo)
+                      update(await completeSubPortalWarrantyVisitAction(token, formData))
+                      setSelected(null); setNote(""); setOutcome("resolved"); setPhoto(null)
+                      toast({ title: "Completion sent for verification" })
+                    } catch (error) {
+                      toast({ title: "Unable to complete", description: error instanceof Error ? error.message : "Try again" })
+                    }
+                  })}>Send completion</Button>
+                </div>
+              </div>
+            ) : null}
           </div>
         ))}
       </div>

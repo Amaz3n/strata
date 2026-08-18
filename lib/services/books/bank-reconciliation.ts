@@ -68,6 +68,99 @@ export async function createBankReconciliation(input: {
   return z.object({ id: z.string().uuid() }).parse(data).id;
 }
 
+export type BankReconciliationDetail = {
+  id: string;
+  bankAccountId: string;
+  statementStart: string;
+  statementEnd: string;
+  beginningBalanceCents: number;
+  endingBalanceCents: number;
+  clearedBalanceCents: number;
+  differenceCents: number;
+  status: string;
+  truncated: boolean;
+  items: Array<{
+    transactionId: string;
+    transactionDate: string;
+    description: string;
+    counterparty: string | null;
+    direction: "inflow" | "outflow";
+    amountCents: number;
+    matchedCents: number;
+    status: "cleared" | "excluded" | "outstanding";
+  }>;
+};
+
+/** The item-level statement proof shown before a reconciliation can close. */
+export async function getBankReconciliationDetail(
+  reconciliationId: string,
+  orgId?: string,
+): Promise<BankReconciliationDetail> {
+  const context = await requireReconciliationContext(orgId);
+  const service = createServiceSupabaseClient();
+  const { data: reconciliation, error: reconciliationError } = await service
+    .from("bank_reconciliations")
+    .select("id, bank_account_id, statement_start, statement_end, beginning_balance_cents, ending_balance_cents, cleared_balance_cents, difference_cents, status")
+    .eq("org_id", context.orgId)
+    .eq("id", reconciliationId)
+    .single();
+  if (reconciliationError || !reconciliation)
+    throw new Error("Bank reconciliation not found");
+
+  const { data, error } = await service
+    .from("bank_transactions")
+    .select("id, transaction_date, description, merchant_name, direction, amount_cents, excluded, matches:bank_transaction_matches(matched_amount_cents,status)")
+    .eq("org_id", context.orgId)
+    .eq("bank_account_id", reconciliation.bank_account_id)
+    .eq("lifecycle_status", "posted")
+    .gte("transaction_date", reconciliation.statement_start)
+    .lte("transaction_date", reconciliation.statement_end)
+    .order("transaction_date", { ascending: true })
+    .order("id", { ascending: true })
+    .limit(5001);
+  if (error) throw new Error(`Failed to load statement transactions: ${error.message}`);
+
+  const rows = (data ?? []).slice(0, 5000).map((transaction) => {
+    const confirmed = (transaction.matches ?? []).filter((match) => match.status === "confirmed");
+    const matchedCents = confirmed.reduce((sum, match) => sum + Number(match.matched_amount_cents ?? 0), 0);
+    const status = transaction.excluded
+      ? "excluded" as const
+      : matchedCents === Number(transaction.amount_cents)
+        ? "cleared" as const
+        : "outstanding" as const;
+    return {
+      transactionId: transaction.id,
+      transactionDate: transaction.transaction_date,
+      description: transaction.description,
+      counterparty: transaction.merchant_name ?? null,
+      direction: transaction.direction as "inflow" | "outflow",
+      amountCents: Number(transaction.amount_cents),
+      matchedCents,
+      status,
+    };
+  });
+  const clearedBalanceCents = rows.reduce(
+    (balance, row) => row.status !== "cleared"
+      ? balance
+      : balance + (row.direction === "inflow" ? row.amountCents : -row.amountCents),
+    Number(reconciliation.beginning_balance_cents),
+  );
+
+  return {
+    id: reconciliation.id,
+    bankAccountId: reconciliation.bank_account_id,
+    statementStart: reconciliation.statement_start,
+    statementEnd: reconciliation.statement_end,
+    beginningBalanceCents: Number(reconciliation.beginning_balance_cents),
+    endingBalanceCents: Number(reconciliation.ending_balance_cents),
+    clearedBalanceCents,
+    differenceCents: Number(reconciliation.ending_balance_cents) - clearedBalanceCents,
+    status: reconciliation.status,
+    truncated: (data ?? []).length > 5000,
+    items: rows,
+  };
+}
+
 const REVIEW_TRAY_CAP = 100;
 const REVIEW_TRAY_SCAN_CAP = 5_000;
 const REVIEW_TRAY_PAGE_SIZE = 250;

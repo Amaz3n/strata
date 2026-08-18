@@ -8,6 +8,10 @@ import { mapWithConcurrency } from "@/lib/payments/concurrency"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
+import {
+  openPaymentOperationsIncident,
+  resolvePaymentOperationsIncident,
+} from "@/lib/services/ops-watchdog"
 import { requirePermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
@@ -42,6 +46,27 @@ const RECONCILIATION_PAGE_SIZE = 500
 const RECONCILIATION_ORG_SWEEP_LIMIT = 500
 /** Leaves headroom under the route's 300s maxDuration for the final writes. */
 const DEFAULT_RECONCILIATION_BUDGET_MS = 240_000
+/** One incident per org for "money that stopped moving", regardless of how many rows. */
+const STALE_PAYMENT_STATE_INCIDENT_CODE = "stale_payment_state"
+/** Postgres unique violation. A losing race, not a failure. */
+const UNIQUE_VIOLATION = "23505"
+
+/**
+ * The closed UTC day a reconciliation covers.
+ *
+ * One convention, used by the cron and by the "Reconcile last 24 hours" button
+ * alike. They used to disagree — the button took a rolling window ending *now*,
+ * the cron a midnight-aligned closed period — so the same table held two kinds
+ * of period that could not be compared to each other, and a manual click could
+ * never collide with (or supersede) the cron's run for the same day. A closed
+ * period is also the only kind that can be idempotent: "the last 24 hours" is a
+ * different window every second.
+ */
+export function dailyReconciliationPeriod(now = new Date()) {
+  const periodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+  const periodStart = new Date(periodEnd.getTime() - 24 * 60 * 60 * 1000)
+  return { period_start: periodStart.toISOString(), period_end: periodEnd.toISOString() }
+}
 
 const reconciliationInputSchema = z.object({
   period_start: z.string().datetime(),
@@ -95,6 +120,25 @@ async function loadAllDisbursementsForPeriod(orgId: string, provider: string, pe
     if ((data ?? []).length < pageSize) break
   }
   return rows
+}
+
+/**
+ * The provider customers Arc opened for this org's bank accounts.
+ *
+ * This is the discovery key for debits: every AP payment intent and every Arc
+ * fee debit is drawn on one of these customers, and the customer id is the
+ * provider's own record of whose bank was touched — not something Arc wrote onto
+ * its own object and could therefore fail to write.
+ */
+async function loadFundingProviderCustomerIds(orgId: string, provider: string) {
+  const supabase = createServiceSupabaseClient()
+  const { data, error } = await supabase.from("org_funding_sources")
+    .select("provider_customer_id")
+    .eq("org_id", orgId)
+    .eq("provider", provider)
+    .not("provider_customer_id", "is", null)
+  if (error) throw new Error(`Unable to load funding customers for reconciliation: ${error.message}`)
+  return [...new Set((data ?? []).map((row) => String(row.provider_customer_id)).filter(Boolean))]
 }
 
 async function loadRecipientProviderAccountIds(orgId: string, provider: string) {
@@ -205,6 +249,7 @@ async function flagStalePaymentStates(reconciliationRunId: string, orgId: string
     if ((data ?? []).length < RECONCILIATION_PAGE_SIZE) break
   }
 
+  const orgHasStaleState = staleDisbursements.length > 0 || staleRuns.length > 0
   const rows = [
     ...staleDisbursements.map((disbursement) => ({
       disbursement_id: disbursement.id as string | null,
@@ -244,7 +289,10 @@ async function flagStalePaymentStates(reconciliationRunId: string, orgId: string
       if (error) throw new Error(`Unable to close recovered stale payment exceptions: ${error.message}`)
     }
   }
-  if (rows.length === 0) return 0
+  if (!orgHasStaleState) {
+    await resolvePaymentOperationsIncident({ orgId, code: STALE_PAYMENT_STATE_INCIDENT_CODE })
+    return 0
+  }
 
   const references = rows.map((row) => row.provider_reference)
   const existingReferences = new Set<string>()
@@ -274,21 +322,32 @@ async function flagStalePaymentStates(reconciliationRunId: string, orgId: string
     if (error) throw new Error(`Unable to record stale payment exceptions: ${error.message}`)
   }
 
-  // Loud, not logged. A payment that stopped moving is the worst intermediate
-  // state on this rail, and the reconciliation summary alone does not page
-  // anyone — this event does.
-  await recordEvent({
+  // Loud, not logged — but loud once. The exception ROWS were already deduped by
+  // provider reference; the EVENT was not, so a disbursement stuck for a week
+  // emailed every reconciler seven times and the fix for exactly this (the
+  // incident table) was never wired to this path. It is now: one alert when the
+  // org first goes stale, one more each day it stays that way, and silence in
+  // between.
+  const detail = `${rows.length} vendor payment(s) have been in a non-terminal state for more than ${STALE_PAYMENT_STATE_HOURS} hours.`
+  const shouldNotify = await openPaymentOperationsIncident({
     orgId,
-    eventType: "payment_operations_alert",
-    entityType: "payment_reconciliation_run",
-    entityId: reconciliationRunId,
-    payload: {
-      reason: "stale_payment_state",
-      stale_disbursements: staleDisbursements.length,
-      stale_runs: staleRuns.length,
-      threshold_hours: STALE_PAYMENT_STATE_HOURS,
-    },
+    code: STALE_PAYMENT_STATE_INCIDENT_CODE,
+    detail,
   })
+  if (shouldNotify) {
+    await recordEvent({
+      orgId,
+      eventType: "payment_operations_alert",
+      entityType: "payment_reconciliation_run",
+      entityId: reconciliationRunId,
+      payload: {
+        reason: "stale_payment_state",
+        stale_disbursements: staleDisbursements.length,
+        stale_runs: staleRuns.length,
+        threshold_hours: STALE_PAYMENT_STATE_HOURS,
+      },
+    })
+  }
   return rows.length
 }
 
@@ -339,6 +398,68 @@ async function resolveOrgPaymentProvider(orgId: string) {
   return String(latest?.provider ?? "stripe")
 }
 
+/**
+ * Take (or re-take) the run for this org and period.
+ *
+ * A re-invoked cron, or a manual "Reconcile last 24 hours" click racing it,
+ * inserted a second run for the same closed period and then produced a second
+ * full set of exception items — the same defect the accounting spine fixed with
+ * a daily uniqueness index in `20260807190000_reconciliation_run_daily_idempotency`,
+ * whose comment already explains why reading before writing is not enough. The
+ * matching index for payments is pending; this code is written so the conflict
+ * is a normal outcome rather than a crash, before and after it lands.
+ */
+async function claimReconciliationRun(
+  orgId: string,
+  providerKey: string,
+  period: { period_start: string; period_end: string },
+): Promise<{ id: string }> {
+  const supabase = createServiceSupabaseClient()
+  const { data, error } = await supabase.from("payment_reconciliation_runs").insert({
+    org_id: orgId,
+    provider: providerKey,
+    period_start: period.period_start,
+    period_end: period.period_end,
+    status: "running",
+    started_at: new Date().toISOString(),
+  }).select("id").maybeSingle()
+  if (!error && data) return { id: String(data.id) }
+  if (error && (error as { code?: string }).code !== UNIQUE_VIOLATION) {
+    throw new Error(`Unable to start payment reconciliation: ${error.message}`)
+  }
+  const { data: existing, error: existingError } = await supabase.from("payment_reconciliation_runs")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("period_start", period.period_start)
+    .eq("period_end", period.period_end)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle()
+  if (existingError || !existing) {
+    throw new Error(`Unable to start payment reconciliation: ${existingError?.message ?? "the conflicting run vanished"}`)
+  }
+  const { error: restartError } = await supabase.from("payment_reconciliation_runs")
+    .update({ status: "running", started_at: new Date().toISOString(), failure_reason: null, completed_at: null })
+    .eq("id", existing.id).eq("org_id", orgId)
+  if (restartError) throw new Error(`Unable to restart payment reconciliation: ${restartError.message}`)
+  return { id: String(existing.id) }
+}
+
+/**
+ * Insert an exception item, treating a duplicate as done rather than as an error.
+ *
+ * Re-running a period re-derives the same findings. With the pending unique key
+ * on (reconciliation_run_id, provider_reference) that is a no-op; without it the
+ * conflict never fires and this behaves exactly as before.
+ */
+async function insertReconciliationItem(row: Record<string, unknown>) {
+  const supabase = createServiceSupabaseClient()
+  const { error } = await supabase.from("payment_reconciliation_items").insert(row)
+  if (error && (error as { code?: string }).code !== UNIQUE_VIOLATION) {
+    throw new Error(`Unable to record reconciliation item: ${error.message}`)
+  }
+}
+
 async function performPaymentReconciliation(input: { period_start: string; period_end: string }, orgId: string, actorId?: string) {
   const parsed = reconciliationInputSchema.parse(input)
   const supabase = createServiceSupabaseClient()
@@ -349,29 +470,37 @@ async function performPaymentReconciliation(input: { period_start: string; perio
   if (attemptError) throw new Error(`Unable to record reconciliation attempt: ${attemptError.message}`)
   const providerKey = await resolveOrgPaymentProvider(orgId)
   const provider = getPaymentRailProvider(providerKey)
-  const { data: run, error: runError } = await supabase.from("payment_reconciliation_runs").insert({
-    org_id: orgId,
-    provider: providerKey,
-    period_start: parsed.period_start,
-    period_end: parsed.period_end,
-    status: "running",
-    started_at: new Date().toISOString(),
-  }).select("id").single()
-  if (runError || !run) throw new Error(`Unable to start payment reconciliation: ${runError?.message}`)
+  const run = await claimReconciliationRun(orgId, providerKey, parsed)
 
   try {
     // Pull the provider's ledger independently before looking up Arc rows. A
     // reconciliation that starts from Arc's own IDs can only prove that known
     // rows still exist; it cannot discover an unrecorded debit or transfer.
-    const recipientProviderAccountIds = await loadRecipientProviderAccountIds(orgId, providerKey)
-    const allProviderActivity = await provider.listActivity({
+    //
+    // What that independence is worth depends entirely on how the provider's
+    // side is enumerated. It used to be enumerated by Arc's own
+    // `arc_product` metadata and then narrowed again by Arc's own `org_id`
+    // metadata, which meant the control could only ever rediscover movements Arc
+    // had already labelled — the unlabelled debit was invisible by construction.
+    // Discovery is now the provider's own identities: the funding customers Arc
+    // opened for this org, and the connected accounts its vendors are paid into.
+    // Metadata still runs, but only to hand a movement to the right tenant.
+    //
+    // Residual gap, stated plainly: money moved on the platform balance against a
+    // customer Arc does not know, or with no customer at all, belongs to no
+    // organization and cannot appear in an org-scoped queue. Catching that needs a
+    // platform-level control over the whole Stripe account, which does not exist yet.
+    const [recipientProviderAccountIds, fundingProviderCustomerIds] = await Promise.all([
+      loadRecipientProviderAccountIds(orgId, providerKey),
+      loadFundingProviderCustomerIds(orgId, providerKey),
+    ])
+    const directlyOwnedActivity = await provider.listActivity({
+      orgId,
       periodStart: parsed.period_start,
       periodEnd: parsed.period_end,
       recipientProviderAccountIds,
+      fundingProviderCustomerIds,
     })
-    const directlyOwnedActivity = allProviderActivity.filter((row) =>
-      row.kind === "payout" || row.metadata.org_id === orgId,
-    )
     const [periodDisbursements, referencedDisbursements] = await Promise.all([
       loadAllDisbursementsForPeriod(orgId, providerKey, parsed.period_start, parsed.period_end),
       loadDisbursementsByProviderActivity(orgId, providerKey, directlyOwnedActivity),
@@ -382,9 +511,11 @@ async function performPaymentReconciliation(input: { period_start: string; perio
     const localPaymentIds = new Set(disbursements.map((row) => row.provider_payment_id).filter(Boolean).map(String))
     const localTransferIds = new Set(disbursements.map((row) => row.provider_transfer_id).filter(Boolean).map(String))
     const localPayoutIds = new Set(disbursements.map((row) => row.provider_payout_id).filter(Boolean).map(String))
-    const providerActivity = directlyOwnedActivity.filter((row) => row.kind !== "payout"
-      || localPayoutIds.has(row.providerReference)
-      || row.linkedReferences.some((reference) => localTransferIds.has(reference)))
+    // Payouts used to be dropped here unless they already matched an Arc row,
+    // which made "a payout Arc does not recognise" the one category of
+    // provider-only money that could never become an exception. They stay, and
+    // the classification below decides which of them Arc has to answer for.
+    const providerActivity = directlyOwnedActivity
 
     // Settlement retrieval is one provider round-trip per disbursement and was
     // serial, so a busy day's reconciliation took as long as the sum of every
@@ -409,10 +540,13 @@ async function performPaymentReconciliation(input: { period_start: string; perio
       const settlement = settlements[index]
       if (!settlement) {
         exceptionCount += 1
-        await supabase.from("payment_reconciliation_items").insert({
+        await insertReconciliationItem({
           reconciliation_run_id: run.id,
           org_id: orgId,
           disbursement_id: disbursement.id,
+          // Always a reference, even when the disbursement never reached the
+          // provider: it is what makes an item identifiable across re-runs.
+          provider_reference: `disbursement:${disbursement.id}:unsubmitted`,
           expected_cents: expectedDebit,
           provider_cents: 0,
           difference_cents: -expectedDebit,
@@ -430,17 +564,16 @@ async function performPaymentReconciliation(input: { period_start: string; perio
             ? "timing_difference"
             : "matched"
       if (status !== "matched") exceptionCount += 1
-      const { error: itemError } = await supabase.from("payment_reconciliation_items").insert({
+      await insertReconciliationItem({
         reconciliation_run_id: run.id,
         org_id: orgId,
         disbursement_id: disbursement.id,
-        provider_reference: disbursement.provider_payment_id,
+        provider_reference: String(disbursement.provider_payment_id),
         expected_cents: expectedDebit,
         provider_cents: settlement.debitAmountCents,
         difference_cents: differenceCents,
         status,
       })
-      if (itemError) throw new Error(`Unable to record reconciliation item: ${itemError.message}`)
 
       // Arc's own cost check, not the builder's. The processor fee comes out of
       // the platform balance, so a mismatch here is Arc being charged something
@@ -450,7 +583,7 @@ async function performPaymentReconciliation(input: { period_start: string; perio
       if (settlement.processorFeeCents != null && settlement.processorFeeCents !== expectedProcessorFee) {
         exceptionCount += 1
         const processorDifference = settlement.processorFeeCents - expectedProcessorFee
-        const { error: feeError } = await supabase.from("payment_reconciliation_items").insert({
+        await insertReconciliationItem({
           reconciliation_run_id: run.id,
           org_id: orgId,
           disbursement_id: disbursement.id,
@@ -460,7 +593,6 @@ async function performPaymentReconciliation(input: { period_start: string; perio
           difference_cents: processorDifference,
           status: "amount_mismatch",
         })
-        if (feeError) throw new Error(`Unable to record processor-fee reconciliation: ${feeError.message}`)
       }
     }
 
@@ -499,7 +631,7 @@ async function performPaymentReconciliation(input: { period_start: string; perio
           ? settlement.status === "pending" ? "timing_difference" : "amount_mismatch"
           : "matched"
       if (feeStatus !== "matched") exceptionCount += 1
-      const { error: feeItemError } = await supabase.from("payment_reconciliation_items").insert({
+      await insertReconciliationItem({
         reconciliation_run_id: run.id,
         org_id: orgId,
         disbursement_id: null,
@@ -509,7 +641,6 @@ async function performPaymentReconciliation(input: { period_start: string; perio
         difference_cents: providerCollectedCents - expectedFeeCents,
         status: feeStatus,
       })
-      if (feeItemError) throw new Error(`Unable to record fee-charge reconciliation: ${feeItemError.message}`)
     }
 
     // Provider-originated rows with no Arc counterpart are the exception the
@@ -524,21 +655,30 @@ async function performPaymentReconciliation(input: { period_start: string; perio
           ? !localFeePaymentIds.has(activity.providerReference)
           : activity.kind === "transfer"
             ? !localTransferIds.has(activity.providerReference)
-            : false
+            // A payout Arc neither created nor funded: money left a vendor
+            // account this builder pays into, and no Arc transfer or payout id
+            // accounts for it. A payout that bundles another builder's transfers
+            // is not this — it has linked transfers, they simply are not ours.
+            : activity.kind === "payout"
+              ? !localPayoutIds.has(activity.providerReference)
+                && !activity.linkedReferences.some((reference) => localTransferIds.has(reference))
+                && activity.linkedReferences.length === 0
+              // Rail fees, adjustments, reserves and payout reversals: Arc never
+              // records these, so every one of them is by definition unmatched.
+              : true
       if (missingInternal) {
         exceptionCount += 1
         if (activity.kind === "payment") providerCents += activity.amountCents
-        const { error: missingInternalError } = await supabase.from("payment_reconciliation_items").insert({
+        await insertReconciliationItem({
           reconciliation_run_id: run.id,
           org_id: orgId,
           disbursement_id: null,
-          provider_reference: `${activity.kind}:${activity.providerReference}`,
+          provider_reference: `${activity.activityType ?? activity.kind}:${activity.providerReference}`,
           expected_cents: 0,
           provider_cents: activity.amountCents,
           difference_cents: activity.amountCents,
           status: "missing_internal",
         })
-        if (missingInternalError) throw new Error(`Unable to record provider-only activity: ${missingInternalError.message}`)
         continue
       }
 
@@ -553,7 +693,7 @@ async function performPaymentReconciliation(input: { period_start: string; perio
             ? "matched"
             : "timing_difference"
         if (itemStatus !== "matched") exceptionCount += 1
-        const { error: transferError } = await supabase.from("payment_reconciliation_items").insert({
+        await insertReconciliationItem({
           reconciliation_run_id: run.id,
           org_id: orgId,
           disbursement_id: local.id,
@@ -563,7 +703,6 @@ async function performPaymentReconciliation(input: { period_start: string; perio
           difference_cents: difference,
           status: itemStatus,
         })
-        if (transferError) throw new Error(`Unable to reconcile vendor transfer: ${transferError.message}`)
       }
 
       if (activity.kind === "payout") {
@@ -574,7 +713,7 @@ async function performPaymentReconciliation(input: { period_start: string; perio
           const itemStatus = activity.status === "settled" && payoutMatches ? "matched" : "timing_difference"
           if (itemStatus !== "matched") exceptionCount += 1
           const expected = Number(local.amount_cents)
-          const { error: payoutError } = await supabase.from("payment_reconciliation_items").insert({
+          await insertReconciliationItem({
             reconciliation_run_id: run.id,
             org_id: orgId,
             disbursement_id: local.id,
@@ -584,7 +723,6 @@ async function performPaymentReconciliation(input: { period_start: string; perio
             difference_cents: itemStatus === "matched" ? 0 : -expected,
             status: itemStatus,
           })
-          if (payoutError) throw new Error(`Unable to reconcile vendor payout: ${payoutError.message}`)
         }
       }
     }
@@ -594,6 +732,15 @@ async function performPaymentReconciliation(input: { period_start: string; perio
 
     const differenceCents = providerCents - expectedCents
     const status = exceptionCount > 0 || differenceCents !== 0 ? "exceptions" : "balanced"
+    const { data: previousRun } = await supabase.from("payment_reconciliation_runs")
+      .select("status")
+      .eq("org_id", orgId)
+      .neq("id", run.id)
+      .in("status", ["balanced", "exceptions"])
+      .order("period_end", { ascending: false })
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
     const { error: completeError } = await supabase.from("payment_reconciliation_runs").update({
       status,
       expected_cents: expectedCents,
@@ -606,8 +753,18 @@ async function performPaymentReconciliation(input: { period_start: string; perio
       .update({ last_reconciled_at: new Date().toISOString() })
       .eq("org_id", orgId)
     if (watermarkError) throw new Error(`Unable to record successful reconciliation: ${watermarkError.message}`)
+    // A healthy rail is quiet. This fired on every completion, so a builder whose
+    // payments were perfectly balanced got a daily email saying nothing happened
+    // — the fastest way to teach a reconciler to filter the one message that
+    // matters. Exceptions are always worth saying; so is the transition back to
+    // balanced, because "it cleared" is news. Balanced after balanced is not.
+    const worthSaying = status === "exceptions" || previousRun?.status !== status
+    // The audit row is unconditional: it is the evidence the control ran, which
+    // is a different question from whether anyone needs to be told.
     await Promise.all([
-      recordEvent({ orgId, actorId, eventType: "payment_reconciliation_completed", entityType: "payment_reconciliation_run", entityId: run.id, payload: { status, exception_count: exceptionCount, difference_cents: differenceCents } }),
+      ...(worthSaying
+        ? [recordEvent({ orgId, actorId, eventType: "payment_reconciliation_completed", entityType: "payment_reconciliation_run", entityId: run.id, payload: { status, exception_count: exceptionCount, difference_cents: differenceCents } })]
+        : []),
       recordAudit({ orgId, actorId, action: "insert", entityType: "payment_reconciliation_run", entityId: run.id, after: { status, expected_cents: expectedCents, provider_cents: providerCents, difference_cents: differenceCents }, source: actorId ? "app" : "cron" }),
     ])
     return { id: run.id, status, expectedCents, providerCents, differenceCents, exceptionCount }
@@ -629,8 +786,7 @@ export async function runPaymentReconciliation(input: { period_start: string; pe
 
 export async function runScheduledPaymentReconciliations(now = new Date(), options: { deadlineMs?: number } = {}) {
   const supabase = createServiceSupabaseClient()
-  const periodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
-  const periodStart = new Date(periodEnd.getTime() - 24 * 60 * 60 * 1000)
+  const period = dailyReconciliationPeriod(now)
   // Time-budgeted rather than org-capped. A fixed cap of 20 silently turned
   // "daily reconciliation" into every-other-day at 21 enabled customers, and the
   // number nobody would notice changing is exactly the number that breaks the
@@ -652,7 +808,7 @@ export async function runScheduledPaymentReconciliations(now = new Date(), optio
       continue
     }
     try {
-      const result = await performPaymentReconciliation({ period_start: periodStart.toISOString(), period_end: periodEnd.toISOString() }, policy.org_id)
+      const result = await performPaymentReconciliation(period, policy.org_id)
       results.push({ orgId: policy.org_id, status: result.status })
     } catch (caught) {
       results.push({ orgId: policy.org_id, status: "failed", error: caught instanceof Error ? caught.message : String(caught) })

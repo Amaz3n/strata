@@ -173,6 +173,7 @@ struct ProjectSwitcherPanel: View {
 
     let currentProjectID: String
     let onSelectProject: (String) -> Void
+    let onShowMyHouses: () -> Void
 
     @State private var query = ""
     @FocusState private var searchFocused: Bool
@@ -192,6 +193,7 @@ struct ProjectSwitcherPanel: View {
     var body: some View {
         VStack(spacing: 8) {
             grabber
+            myHousesRow
             if showsSearch {
                 searchField
             }
@@ -222,6 +224,33 @@ struct ProjectSwitcherPanel: View {
                 query = ""
             }
         }
+    }
+
+    /// The one way out of a single project on iPhone. A super's day is a
+    /// cross-house day, so leaving the house is a peer of switching to another.
+    private var myHousesRow: some View {
+        Button(action: onShowMyHouses) {
+            HStack(spacing: 12) {
+                Image(systemName: "house.fill")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 28, height: 28)
+                    .background(BrandTheme.midBlue.gradient, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                Text("My Houses")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 8)
+                Image(systemName: "arrow.up.forward")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(.arcPress)
+        .accessibilityIdentifier("switcher-my-houses")
+        .padding(.horizontal, 18)
     }
 
     private var searchField: some View {
@@ -352,13 +381,15 @@ extension View {
     func projectSwitcher(
         model: ProjectSwitcherModel,
         currentProjectID: String,
-        onSelectProject: @escaping (String) -> Void
+        onSelectProject: @escaping (String) -> Void,
+        onShowMyHouses: @escaping () -> Void
     ) -> some View {
         modifier(
             ProjectSwitcherContainer(
                 model: model,
                 currentProjectID: currentProjectID,
-                onSelectProject: onSelectProject
+                onSelectProject: onSelectProject,
+                onShowMyHouses: onShowMyHouses
             )
         )
     }
@@ -371,6 +402,7 @@ private struct ProjectSwitcherContainer: ViewModifier {
     @Bindable var model: ProjectSwitcherModel
     let currentProjectID: String
     let onSelectProject: (String) -> Void
+    let onShowMyHouses: () -> Void
 
     func body(content: Content) -> some View {
         ZStack(alignment: .top) {
@@ -380,7 +412,8 @@ private struct ProjectSwitcherContainer: ViewModifier {
             SwitcherPanelHost(
                 model: model,
                 currentProjectID: currentProjectID,
-                onSelectProject: onSelectProject
+                onSelectProject: onSelectProject,
+                onShowMyHouses: onShowMyHouses
             )
         }
         .environment(model)
@@ -408,6 +441,7 @@ private struct SwitcherPanelHost: View {
     let model: ProjectSwitcherModel
     let currentProjectID: String
     let onSelectProject: (String) -> Void
+    let onShowMyHouses: () -> Void
 
     /// Bumped when a project is chosen, for the selection haptic.
     @State private var selectionTick = 0
@@ -422,6 +456,11 @@ private struct SwitcherPanelHost: View {
                 selectionTick += 1
                 model.close()
                 onSelectProject(id)
+            },
+            onShowMyHouses: {
+                selectionTick += 1
+                model.close()
+                onShowMyHouses()
             }
         )
         .padding(.top, 8)

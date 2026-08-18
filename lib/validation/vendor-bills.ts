@@ -1,7 +1,13 @@
 import { z } from "zod"
 import { paymentMethodInputSchema } from "@/lib/validation/payments"
 
-export const vendorBillStatusEnum = z.enum(["pending", "approved", "partial", "paid", "rejected"]).default("pending")
+/**
+ * Required, deliberately. This enum used to default to `pending`, and the
+ * update service always writes `status`, so any caller that omitted it silently
+ * UNAPPROVED the payable. A missing status is a caller bug; it must fail
+ * validation rather than quietly revoke an approval.
+ */
+export const vendorBillStatusEnum = z.enum(["pending", "approved", "partial", "paid", "rejected"])
 const lienWaiverStatusSchema = z.preprocess((value) => {
   if (value === "pending") return "requested"
   // Legacy vocabulary: older desk/hold code wrote "signed" for a waiver in
@@ -61,6 +67,20 @@ export const vendorBillStatusUpdateSchema = z.object({
   early_pay_discount_percent: z.number().min(0).max(25).nullable().optional(),
   early_pay_discount_days: z.number().int().min(1).max(180).nullable().optional(),
   lien_waiver_status: lienWaiverStatusSchema.optional(),
+  /**
+   * Payment preferences. These were captured once at creation and then frozen,
+   * which made `payment_channel` in particular a trap: the payment-run preparer
+   * refuses an `external` payable and tells the user to "change its payment
+   * method on the payable", and nothing could. They are ordinary editable
+   * fields on a payable that has not been paid yet.
+   */
+  payment_channel: z.enum(["arc", "external"]).optional(),
+  preferred_payment_method: z.enum(["ach", "check", "wire", "card", "other"]).nullable().optional(),
+  payment_memo: z.string().trim().max(140).nullable().optional(),
+  preferred_funding_source_id: z.string().uuid("Invalid funding account").nullable().optional(),
+  payment_schedule: z.enum(["on_approval", "scheduled"]).optional(),
+  scheduled_payment_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid payment date").nullable().optional(),
+  preferred_approver_ids: z.array(z.string().uuid("Invalid approver")).max(20).optional(),
   /**
    * Required to reject. The vendor is shown this verbatim, so it has to say
    * something — "no" with no reason is how an invoice gets resubmitted unchanged.

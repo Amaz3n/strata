@@ -938,7 +938,7 @@ row has a recorded verdict.
 
 ## 14. Test plan
 
-- **Unit (vitest, colocated):** per-importer `parseRow`/`naturalKey`/`validateBatch`
+- **Unit (node:test in `tests/`; this repo has no vitest):** per-importer `parseRow`/`naturalKey`/`validateBatch`
   on fixture CSVs (happy, mangled headers, dirty money/date/status values, dupes,
   cycles); money/date preprocessors; fuzzy vendor matcher thresholds; topo-sort;
   NAHB catalog integrity (unique codes, parents exist, count matches export).

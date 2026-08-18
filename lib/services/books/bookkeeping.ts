@@ -58,6 +58,7 @@ export const JOURNAL_ENTRY_KINDS = [
 export type JournalEntryKind = (typeof JOURNAL_ENTRY_KINDS)[number]
 
 const JOURNAL_PAGE_CAP = 200
+const JOURNAL_SCAN_CAP = 1000
 
 /**
  * Journal entries by where they came from.
@@ -76,6 +77,11 @@ export async function listJournalEntries(input: {
   entryKinds?: JournalEntryKind[];
   startDate?: string;
   endDate?: string;
+  query?: string;
+  accountId?: string;
+  projectId?: string;
+  minAmountCents?: number;
+  maxAmountCents?: number;
   orgId?: string;
 } = {}) {
   const context = await requireBooksRead(input.orgId);
@@ -85,12 +91,12 @@ export async function listJournalEntries(input: {
     .from("journal_entries")
     .select(
       "id, entry_date, entry_kind, status, memo, posting_key, source_type, source_id, posted_at, posted_by, reversal_of_entry_id, " +
-        "lines:journal_lines(id, debit_cents, credit_cents, description, project_id, account:gl_accounts(code, name))",
+        "lines:journal_lines(id, account_id, debit_cents, credit_cents, description, project_id, account:gl_accounts(code, name), project:projects(name), company:companies(name))",
     )
     .eq("org_id", context.orgId)
     .order("entry_date", { ascending: false })
     .order("created_at", { ascending: false })
-    .range(0, JOURNAL_PAGE_CAP);
+    .range(0, JOURNAL_SCAN_CAP);
   if (input.entryKinds?.length) query = query.in("entry_kind", input.entryKinds);
   if (input.startDate) query = query.gte("entry_date", input.startDate);
   if (input.endDate) query = query.lte("entry_date", input.endDate);
@@ -113,10 +119,13 @@ export async function listJournalEntries(input: {
     lines: z.array(
       z.object({
         id: z.string().uuid(),
+        account_id: z.string().uuid(),
         debit_cents: z.number().int(),
         credit_cents: z.number().int(),
         description: z.string().nullable(),
         project_id: z.string().uuid().nullable(),
+        project: z.union([z.object({ name: z.string() }), z.array(z.object({ name: z.string() }))]).nullable(),
+        company: z.union([z.object({ name: z.string() }), z.array(z.object({ name: z.string() }))]).nullable(),
         account: z
           .union([
             z.object({ code: z.string(), name: z.string() }),
@@ -127,8 +136,31 @@ export async function listJournalEntries(input: {
     ),
   });
   const parsed = z.array(entrySchema).parse(data ?? []);
-  const truncated = parsed.length > JOURNAL_PAGE_CAP;
-  const page = truncated ? parsed.slice(0, JOURNAL_PAGE_CAP) : parsed;
+  const scanTruncated = parsed.length > JOURNAL_SCAN_CAP;
+  const scanned = scanTruncated ? parsed.slice(0, JOURNAL_SCAN_CAP) : parsed;
+  const needle = input.query?.trim().toLowerCase() ?? "";
+  const filtered = scanned.filter((entry) => {
+    const totalCents = entry.lines.reduce((sum, line) => sum + line.debit_cents, 0);
+    if (input.accountId && !entry.lines.some((line) => line.account_id === input.accountId)) return false;
+    if (input.projectId && !entry.lines.some((line) => line.project_id === input.projectId)) return false;
+    if (input.minAmountCents != null && totalCents < input.minAmountCents) return false;
+    if (input.maxAmountCents != null && totalCents > input.maxAmountCents) return false;
+    if (!needle) return true;
+    return [
+      entry.memo ?? "",
+      entry.posting_key,
+      entry.source_type ?? "",
+      entry.source_id ?? "",
+      ...entry.lines.flatMap((line) => {
+        const account = Array.isArray(line.account) ? line.account[0] : line.account;
+        const project = Array.isArray(line.project) ? line.project[0] : line.project;
+        const company = Array.isArray(line.company) ? line.company[0] : line.company;
+        return [line.description ?? "", account?.code ?? "", account?.name ?? "", project?.name ?? "", company?.name ?? ""];
+      }),
+    ].some((value) => value.toLowerCase().includes(needle));
+  });
+  const truncated = scanTruncated || filtered.length > JOURNAL_PAGE_CAP;
+  const page = filtered.slice(0, JOURNAL_PAGE_CAP);
 
   // Who posted it is half the audit question, and `posted_by` is only a uuid.
   const posterIds = Array.from(
@@ -147,18 +179,24 @@ export async function listJournalEntries(input: {
 
   return {
     truncated,
+    scanTruncated,
     rowCap: JOURNAL_PAGE_CAP,
     entries: page.map((entry) => {
       const lines = entry.lines.map((line) => {
         const account = Array.isArray(line.account) ? line.account[0] : line.account;
+        const project = Array.isArray(line.project) ? line.project[0] : line.project;
+        const company = Array.isArray(line.company) ? line.company[0] : line.company;
         return {
           id: line.id,
+          accountId: line.account_id,
           accountCode: account?.code ?? "",
           accountName: account?.name ?? "",
           debitCents: line.debit_cents,
           creditCents: line.credit_cents,
           description: line.description,
           projectId: line.project_id,
+          projectName: project?.name ?? null,
+          companyName: company?.name ?? null,
         };
       });
       return {

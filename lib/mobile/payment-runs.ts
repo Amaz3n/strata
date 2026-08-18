@@ -5,7 +5,7 @@ import { z } from "zod"
 import { MobileAPIError } from "@/lib/mobile/api"
 import type { MobileOrgContext } from "@/lib/mobile/auth"
 import { runWithServiceOrgContext } from "@/lib/services/context"
-import { decidePaymentRun, listPaymentRuns } from "@/lib/services/payment-runs"
+import { decidePaymentRun, listPaymentRuns, type PaymentRunRelease } from "@/lib/services/payment-runs"
 import { requireRecentMobilePaymentStepUp } from "@/lib/services/payment-step-up"
 
 /**
@@ -66,7 +66,24 @@ const decisionSchema = z.object({
   reason: z.string().trim().max(1000).optional(),
 })
 
-export async function decideMobilePaymentRun(context: MobileOrgContext, runId: string, body: unknown) {
+export interface MobilePaymentRunDecisionDTO {
+  id: string
+  decision: "approved" | "rejected"
+  /** The run's status after this decision, so the phone can stop showing it. */
+  status: string
+  /**
+   * What happened to the money. An approval that completes the quorum releases
+   * it, schedules it or queues it inside the service — the phone reports which,
+   * it never has to ask for a release of its own.
+   */
+  release: PaymentRunRelease
+}
+
+export async function decideMobilePaymentRun(
+  context: MobileOrgContext,
+  runId: string,
+  body: unknown,
+): Promise<MobilePaymentRunDecisionDTO> {
   const parsed = decisionSchema.safeParse(body)
   if (!parsed.success) {
     throw new MobileAPIError(400, "invalid_decision", "A decision and the content hash you reviewed are required.")
@@ -76,7 +93,7 @@ export async function decideMobilePaymentRun(context: MobileOrgContext, runId: s
   }
 
   try {
-    await runWithServiceOrgContext(context.serviceContext, () =>
+    const decision = await runWithServiceOrgContext(context.serviceContext, () =>
       decidePaymentRun(
         { run_id: runId, decision: parsed.data.decision, content_hash: parsed.data.content_hash, reason: parsed.data.reason },
         context.orgId,
@@ -89,11 +106,11 @@ export async function decideMobilePaymentRun(context: MobileOrgContext, runId: s
         },
       ),
     )
+    return { id: runId, decision: parsed.data.decision, status: decision.status, release: decision.release }
   } catch (error) {
     // The service's messages are written for the person deciding — the run
     // changed, you prepared it, it exceeds your limit — so they are surfaced
     // rather than replaced with a generic failure.
     throw new MobileAPIError(422, "decision_rejected", error instanceof Error ? error.message : "The decision could not be recorded.")
   }
-  return { id: runId, decision: parsed.data.decision }
 }

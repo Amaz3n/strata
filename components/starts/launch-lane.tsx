@@ -26,7 +26,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { unwrapAction } from "@/lib/action-result"
 import type { StartsDesk } from "@/lib/services/starts-desk"
 import type { StartPackageListItemDTO } from "@/lib/services/starts"
-import { mondayOfIsoWeek } from "@/lib/starts/even-flow-math"
+import { mondayOfIsoWeek, releaseSlotVariance } from "@/lib/starts/even-flow-math"
 import { cn } from "@/lib/utils"
 import {
   openStartPackageAction, releaseStartsAction, setReleaseSlotAction, setStartTargetWeekAction,
@@ -310,6 +310,13 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
           <span className="tabular-nums">
             Next 4 weeks: {desk.counters.filledAhead} of {desk.counters.slotsAhead} slots filled
           </span>
+          {/* Falling behind the drumbeat was invisible: the lane only ever
+              reported what WAS released, never the slots that went unfilled. */}
+          {desk.counters.missedStarts > 0 ? (
+            <span className="tabular-nums text-warning">
+              {desk.counters.missedStarts} missed {desk.counters.missedStarts === 1 ? "start" : "starts"} in the last {desk.counters.missedStartsWeeks} weeks
+            </span>
+          ) : null}
           {desk.counters.soldAtRisk > 0 ? (
             <button
               type="button"
@@ -356,6 +363,12 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
                 const cards = byWeek.get(week.weekStart) ?? []
                 const released = cards.filter((pkg) => pkg.status === "released").length
                 const editable = desk.canSetSlots && week.perCommunity.length === 1
+                // A past week is judged on what actually released; a future one
+                // on what is aimed at it. Same number, different question.
+                const variance = releaseSlotVariance({
+                  weekStart: week.weekStart, today: desk.currentWeek,
+                  target: week.targetStarts, released, targeted: cards.length,
+                })
                 return (
                   <WeekColumn key={week.weekStart} week={week} index={index} currentWeek={desk.currentWeek} canDrop={desk.canWrite}>
                     <div className="lane-column-head px-2.5 py-2">
@@ -366,8 +379,20 @@ export function LaunchLane({ desk, communities, communityId, scopeBasePath, init
                         )}>
                           {week.weekStart === desk.currentWeek ? "This week" : formatDay(week.weekStart)}
                         </span>
-                        <span className="text-[11px] tabular-nums text-muted-foreground">
+                        <span
+                          className={cn(
+                            "text-[11px] tabular-nums",
+                            week.targetStarts === 0 ? "text-muted-foreground"
+                              : variance < 0 ? "text-warning"
+                                : variance > 0 ? "text-destructive"
+                                  : "text-muted-foreground",
+                          )}
+                          title={week.weekStart < desk.currentWeek
+                            ? `${released} released against a target of ${week.targetStarts}`
+                            : `${cards.length} targeted against a target of ${week.targetStarts}`}
+                        >
                           {cards.length}/{week.targetStarts}
+                          {variance !== 0 && week.targetStarts > 0 ? ` ${variance > 0 ? "+" : ""}${variance}` : ""}
                         </span>
                       </div>
                       {editable ? (

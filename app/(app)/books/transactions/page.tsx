@@ -1,5 +1,5 @@
-import { BooksSectionPage } from "../_components/books-section-page"
+import { redirect } from "next/navigation"
 
 export default function BooksTransactionsPage() {
-  return <BooksSectionPage section="transactions" />
+  redirect("/books/banking")
 }

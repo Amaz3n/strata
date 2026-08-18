@@ -588,12 +588,16 @@ export async function releasePlanVersion(versionId: string, orgId?: string): Pro
   const context = await requireOrgContext(orgId)
   await requirePermission("plan.release", context)
   const writable = await getVersionForWrite(versionId, context)
-  const version = (await listPlanVersions(writable.house_plan_id, context.orgId)).find((item) => item.id === versionId)
+  // One load of the plan's editions, not three. Every `listPlanVersions` call
+  // re-reads the whole plan and re-counts every version's takeoff lines and
+  // pinned lots, so releasing used to pay for that work three times over.
+  const versions = await listPlanVersions(writable.house_plan_id, context.orgId)
+  const version = versions.find((item) => item.id === versionId)
   if (!version) throw new Error("Plan version not found")
   if (version.takeoff_line_count === 0 && !version.budget_template_id) throw new Error("Add a takeoff or budget template before release")
   if (!version.schedule_template_id) throw new Error("Choose a schedule template before release")
   const snapshot = await captureBundleSnapshot(version, context)
-  const currentReleased = (await listPlanVersions(writable.house_plan_id, context.orgId)).find((item) => item.status === "released")
+  const currentReleased = versions.find((item) => item.status === "released")
   const releasedAt = new Date().toISOString()
   const { error } = await context.supabase.rpc("release_house_plan_version", {
     p_org_id: context.orgId,
@@ -608,49 +612,6 @@ export async function releasePlanVersion(versionId: string, orgId?: string): Pro
   }
   await logPlan(context, { eventType: "house_plan_version.released", entityType: "house_plan_version", entityId: versionId, action: "update", before: writable, after: { ...writable, status: "released", bundle_snapshot: snapshot, released_at: releasedAt, released_by: context.userId }, payload: { house_plan_id: writable.house_plan_id, version_number: writable.version_number } })
   return (await listPlanVersions(writable.house_plan_id, context.orgId)).find((item) => item.id === versionId) ?? (() => { throw new Error("Released plan version not found") })()
-}
-
-/**
- * Publishes a plan into communities: which communities may sell it, from when,
- * and the launch price the first time it lands there. Repricing an already-priced
- * row is deliberately *not* possible here — that is the sales manager's edit and
- * lives on the community Offering tab (`setCommunityPlanPrice`). A caller passing
- * a new price for an existing priced row keeps the price it already had.
- */
-export async function setCommunityAvailability(entries: AvailabilityInput[], orgId?: string): Promise<CommunityPlanAvailabilityDto[]> {
-  const parsed = entries.map((entry) => availabilityInputSchema.parse(entry))
-  const context = await requireOrgContext(orgId)
-  await requirePermission("plan.write", context)
-  if (parsed.length === 0) return []
-  const planIds = Array.from(new Set(parsed.map((entry) => entry.housePlanId)))
-  const { data: existingRows, error: existingError } = await context.supabase
-    .from("community_plan_availability")
-    .select("community_id, house_plan_id, elevation_id, base_price_cents, is_available")
-    .eq("org_id", context.orgId)
-    .in("house_plan_id", planIds)
-  if (existingError) throw new Error(`Failed to load current plan availability: ${existingError.message}`)
-  // Only a live offering's price is protected. Re-publishing a withdrawn plan is a
-  // relaunch, so it takes the new launch price rather than resurrecting a stale one.
-  const pricedAlready = new Map(
-    (existingRows ?? [])
-      .filter((row) => row.is_available && Number(row.base_price_cents) > 0)
-      .map((row) => [`${row.community_id}:${row.house_plan_id}:${row.elevation_id ?? "all"}`, Number(row.base_price_cents)]),
-  )
-  const { data, error } = await context.supabase.from("community_plan_availability").upsert(parsed.map((entry) => ({
-    org_id: context.orgId,
-    community_id: entry.communityId,
-    house_plan_id: entry.housePlanId,
-    elevation_id: entry.elevationId ?? null,
-    is_available: entry.isAvailable,
-    base_price_cents: pricedAlready.get(`${entry.communityId}:${entry.housePlanId}:${entry.elevationId ?? "all"}`) ?? entry.basePriceCents,
-    effective_start: entry.effectiveStart ?? null,
-    effective_end: entry.effectiveEnd ?? null,
-    metadata: entry.metadata ?? {},
-  })), { onConflict: "community_id,house_plan_id,elevation_id" }).select("id, community_id, house_plan_id, elevation_id, is_available, base_price_cents, effective_start, effective_end")
-  if (error) throw new Error(`Failed to save community plan availability: ${error.message}`)
-  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "community_plan_availability.updated", entityType: "house_plan", entityId: parsed[0].housePlanId, payload: { entry_count: parsed.length } })
-  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "house_plan", entityId: parsed[0].housePlanId, after: { availability: data ?? [] } })
-  return (data ?? []).map((row) => ({ ...row, base_price_cents: Number(row.base_price_cents) }))
 }
 
 export async function listCommunityAvailability(filters: { communityId?: string; housePlanId?: string }, orgId?: string): Promise<CommunityPlanAvailabilityDto[]> {

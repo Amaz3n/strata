@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import { useRouter } from "next/navigation";
 
+import { COMPANY_PAYABLE_LIMIT } from "@/lib/financials/vendor-bill-constants";
 import type { VendorBillSummary } from "@/lib/services/vendor-bills";
 import {
   Table,
@@ -54,11 +55,19 @@ export function CompanyPayables({
     return { billed, paid };
   }, [rows]);
 
-  // Bills are edited in the project payables workspace — the single home for
-  // payable mutations. This desk view only lists and deep-links.
+  // Bills are edited in the payables workspace — the single home for payable
+  // mutations. This desk view only lists and deep-links. A payable with no
+  // project (an org-level bill, or one imported before it was assigned) opens
+  // on the org desk rather than a `/projects/null/` URL.
   const openInWorkspace = (bill: VendorBillSummary) => {
-    router.push(`/projects/${bill.project_id}/financials/payables?bill=${bill.id}`);
+    router.push(
+      bill.project_id
+        ? `/projects/${bill.project_id}/financials/payables?bill=${bill.id}`
+        : `/payables?bill=${bill.id}`,
+    );
   };
+
+  const truncated = rows.length >= COMPANY_PAYABLE_LIMIT;
 
   return (
     <Section
@@ -130,6 +139,11 @@ export function CompanyPayables({
       ) : (
         <EmptyState>No vendor invoices yet.</EmptyState>
       )}
+      {truncated ? (
+        <p className="border-t px-3 py-2 text-xs text-muted-foreground">
+          Showing the {COMPANY_PAYABLE_LIMIT} most recent payables for this vendor. Open the payables desk to see the rest.
+        </p>
+      ) : null}
     </Section>
   );
 }

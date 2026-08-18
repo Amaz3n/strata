@@ -6,6 +6,7 @@ import { RELEASE_PRODUCED_GATE_KEYS, canAttestFinalApproval, isGateApplicable, p
 import { mondayOfIsoWeek } from "@/lib/starts/even-flow-math"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
+import { getReleaseSlotTarget } from "@/lib/services/even-flow"
 import { recordEvent } from "@/lib/services/events"
 import { NotificationService } from "@/lib/services/notifications"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
@@ -97,6 +98,9 @@ export interface StartPackageListItemDTO {
   /** Closing date minus target cycle. Null for specs and unscheduled closings. */
   mustStartBy: string | null
   daysToMustStart: number | null
+  /** The cycle `mustStartBy` was derived from, and whether anyone set it. */
+  cycleDays: number
+  cycleDaysConfigured: boolean
   risk: StartRisk
   sale: StartSaleDTO
 }
@@ -148,12 +152,19 @@ function daysBetween(from: string, to: string) {
   return Math.round((Date.parse(`${to}T00:00:00.000Z`) - Date.parse(`${from}T00:00:00.000Z`)) / 86_400_000)
 }
 
-function targetCycleDays(settings: unknown) {
+/**
+ * A community's start-to-close cycle. The fallback is a guess, and every
+ * must-start date derived from it is a guess too — so the source travels with
+ * the number instead of being laundered into a confident date on the card.
+ */
+function targetCycleDays(settings: unknown): { days: number; configured: boolean } {
   if (settings && typeof settings === "object") {
     const value = Reflect.get(settings, "target_cycle_days")
-    if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.trunc(value)
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+      return { days: Math.trunc(value), configured: true }
+    }
   }
-  return DEFAULT_TARGET_CYCLE_DAYS
+  return { days: DEFAULT_TARGET_CYCLE_DAYS, configured: false }
 }
 
 const EMPTY_SALE: StartSaleDTO = { isSold: false, buyerName: null, closingDate: null }
@@ -192,18 +203,19 @@ async function loadSalesByProject(supabase: SupabaseClient, orgId: string, proje
 function deriveSchedulePressure(input: {
   status: StartPackageStatus
   closingDate: string | null
-  cycleDays: number
+  cycle: { days: number; configured: boolean }
   blocker: GateBlocker | null
-}): { mustStartBy: string | null; daysToMustStart: number | null; risk: StartRisk } {
-  const mustStartBy = input.closingDate ? shiftDays(input.closingDate, -input.cycleDays) : null
+}): { mustStartBy: string | null; daysToMustStart: number | null; cycleDays: number; cycleDaysConfigured: boolean; risk: StartRisk } {
+  const mustStartBy = input.closingDate ? shiftDays(input.closingDate, -input.cycle.days) : null
   const daysToMustStart = mustStartBy ? daysBetween(todayIso(), mustStartBy) : null
-  if (input.status === "attention") return { mustStartBy, daysToMustStart, risk: "failed" }
-  if (daysToMustStart !== null && daysToMustStart < 0) return { mustStartBy, daysToMustStart, risk: "late" }
+  const base = { mustStartBy, daysToMustStart, cycleDays: input.cycle.days, cycleDaysConfigured: input.cycle.configured }
+  if (input.status === "attention") return { ...base, risk: "failed" }
+  if (daysToMustStart !== null && daysToMustStart < 0) return { ...base, risk: "late" }
   if (daysToMustStart !== null && input.blocker && daysToMustStart < input.blocker.leadDays) {
-    return { mustStartBy, daysToMustStart, risk: "at_risk" }
+    return { ...base, risk: "at_risk" }
   }
-  if (input.status === "ready") return { mustStartBy, daysToMustStart, risk: "ready" }
-  return { mustStartBy, daysToMustStart, risk: "on_track" }
+  if (input.status === "ready") return { ...base, risk: "ready" }
+  return { ...base, risk: "on_track" }
 }
 
 function mapDefinition(row: Relation): GateDefinitionDTO {
@@ -360,9 +372,20 @@ async function deriveAutoGate(
     return (count ?? 0) > 0
   }
   if (source === "selections_locked") {
-    const { count, error } = await supabase.from("project_selection_groups").select("id", { count: "exact", head: true })
-      .eq("org_id", orgId).eq("project_id", projectId).eq("status", "open")
-    return !error && (count ?? 0) === 0
+    // Absence of evidence is not satisfaction. "No open selection groups" is
+    // vacuously true for a project whose groups were never instantiated, which
+    // made the one gate that exists to stop a house starting on unlocked
+    // structural selections pass on every package, every time. The groups have
+    // to EXIST before "none of them are open" means anything.
+    const [total, open] = await Promise.all([
+      supabase.from("project_selection_groups").select("id", { count: "exact", head: true })
+        .eq("org_id", orgId).eq("project_id", projectId),
+      supabase.from("project_selection_groups").select("id", { count: "exact", head: true })
+        .eq("org_id", orgId).eq("project_id", projectId).eq("status", "open"),
+    ])
+    if (total.error) throw new Error(`Failed to check selection groups: ${total.error.message}`)
+    if (open.error) throw new Error(`Failed to check open selections: ${open.error.message}`)
+    return (total.count ?? 0) > 0 && (open.count ?? 0) === 0
   }
   if (source === "budget_generated") {
     const { count } = await supabase.from("budgets").select("id", { count: "exact", head: true })
@@ -375,11 +398,52 @@ async function deriveAutoGate(
     return (count ?? 0) > 0
   }
   if (source === "po_exceptions_clear") {
-    const { count } = await supabase.from("po_generation_exceptions").select("id", { count: "exact", head: true })
-      .eq("org_id", orgId).eq("project_id", projectId).eq("status", "open")
-    return (count ?? 0) === 0
+    // A price book only "resolves" once it has been exercised against THIS
+    // house. Zero exception rows on a project nobody ever ran generation for
+    // proves nothing, so a finished run is the evidence and clear exceptions
+    // are the verdict — a dry run is enough, and a commit run counts too.
+    const [runs, open] = await Promise.all([
+      supabase.from("po_generation_runs").select("id", { count: "exact", head: true })
+        .eq("org_id", orgId).eq("project_id", projectId).in("status", ["succeeded", "succeeded_with_exceptions"]),
+      supabase.from("po_generation_exceptions").select("id", { count: "exact", head: true })
+        .eq("org_id", orgId).eq("project_id", projectId).eq("status", "open"),
+    ])
+    if (runs.error) throw new Error(`Failed to check price-book runs: ${runs.error.message}`)
+    if (open.error) throw new Error(`Failed to check purchase-order exceptions: ${open.error.message}`)
+    return (runs.count ?? 0) > 0 && (open.count ?? 0) === 0
   }
   return false
+}
+
+/**
+ * The two gates the release itself produces, re-derived from what actually
+ * landed. Finalize used to force both to `passed, passed_via:"auto"` no matter
+ * what — including when the PO step was SKIPPED because the community has no
+ * price book — so the audit trail asserted a PO set that was never generated.
+ */
+export async function syncReleaseProducedGates(
+  supabase: SupabaseClient,
+  orgId: string,
+  packageId: string,
+  pkg: { projectId: string; lotId: string },
+): Promise<Record<string, boolean>> {
+  const rows = await loadGateRows(supabase, orgId, packageId)
+  const produced: Record<string, boolean> = {}
+  await Promise.all(rows.map(async (row) => {
+    const definition = relation(row.definition)
+    const key = String(definition?.key ?? "")
+    if (!definition || !RELEASE_PRODUCED_GATE_KEYS.has(key)) return
+    // A waiver is a human decision about this house; the release does not get
+    // to overwrite it with a machine check.
+    if (row.status === "waived" || row.status === "not_applicable") return
+    const passed = await deriveAutoGate(supabase, orgId, { project_id: pkg.projectId, lot_id: pkg.lotId }, String(definition.auto_source))
+    produced[key] = passed
+    const { error } = await supabase.from("start_package_gates")
+      .update({ status: passed ? "passed" : "pending", passed_via: passed ? "auto" : null })
+      .eq("org_id", orgId).eq("id", row.id)
+    if (error) throw new Error(`Failed to record the ${key} gate: ${error.message}`)
+  }))
+  return produced
 }
 
 export async function refreshAutoGates(packageId: string, orgId?: string): Promise<StartGateDTO[]> {
@@ -421,13 +485,17 @@ export async function openStartPackage(lotId: string, input: { isFinanced?: bool
   if ((activePackages ?? 0) > 0) throw new Error("This lot already has an active start package.")
 
   // A preconstruction project is needed before release so plot-plan files,
-  // selections, and price-book dry runs have a stable project scope.
+  // selections, and price-book dry runs have a stable project scope. It opens
+  // in `precon` and is promoted to `delivery` at release: an unreleased lot is
+  // not a house under construction, and counting it as one inflates every
+  // delivery-phase list, portfolio Gantt and under-construction rollup by the
+  // whole width of the precon pipeline.
   let projectId = lot.project_id
   if (!projectId) {
     const community = relation(lot.community)
     const project = await createProject({ input: {
       name: `${text(community?.code) ?? text(community?.name) ?? "Lot"} ${lot.lot_number}`,
-      status: "active", property_type: "production", address: lot.address ?? undefined,
+      status: "active", phase: "precon", property_type: "production", address: lot.address ?? undefined,
     }, context })
     projectId = project.id
     const [{ error: projectScopeError }, { error: lotLinkError }] = await Promise.all([
@@ -557,14 +625,6 @@ export async function releaseStart(packageId: string, input: { scheduledStartDat
   let pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
   if (pkg.status !== "ready") throw new Error("The start package is not ready to release.")
   const targetWeek = pkg.target_week ?? mondayOfIsoWeek(parsed.scheduledStartDate)
-  const [{ data: slot }, { count: alreadyTargeted }] = await Promise.all([
-    context.supabase.from("community_release_slots").select("target_starts").eq("org_id", context.orgId).eq("community_id", pkg.community_id).eq("week_start", targetWeek).maybeSingle(),
-    context.supabase.from("start_packages").select("id", { count: "exact", head: true }).eq("org_id", context.orgId).eq("community_id", pkg.community_id).eq("target_week", targetWeek).in("status", ["releasing", "released"]),
-  ])
-  const target = Number(slot?.target_starts ?? 0)
-  if ((alreadyTargeted ?? 0) >= target && !parsed.confirmOverSlot) {
-    return { requiresConfirm: true, slot: { targetWeek, target, alreadyTargeted: alreadyTargeted ?? 0 } }
-  }
 
   if (!pkg.project_id) {
     const { data: lot } = await context.supabase.from("lots").select("lot_number,address,division_id,community:communities(name,code)")
@@ -573,7 +633,7 @@ export async function releaseStart(packageId: string, input: { scheduledStartDat
     const community = relation(lot.community)
     const project = await createProject({ input: {
       name: `${text(community?.code) ?? text(community?.name) ?? "Lot"} ${lot.lot_number}`,
-      status: "active", start_date: parsed.scheduledStartDate, property_type: "production",
+      status: "active", phase: "precon", property_type: "production",
       address: lot.address ?? undefined,
     }, context })
     const { error: projectUpdateError } = await context.supabase.from("projects").update({ division_id: lot.division_id })
@@ -588,25 +648,74 @@ export async function releaseStart(packageId: string, input: { scheduledStartDat
     pkg = { ...pkg, project_id: project.id }
   }
 
-  const stepKeys = ["project", "budget", "schedule", "checklists", "drawings", "pos", "notify_trades", "finalize"]
+  const target = await getReleaseSlotTarget(context.orgId, pkg.community_id, targetWeek)
   const now = new Date().toISOString()
-  const { error: stepError } = await context.supabase.from("start_release_steps").upsert(stepKeys.map((stepKey) => ({
-    org_id: context.orgId, start_package_id: packageId, step_key: stepKey,
-    status: stepKey === "project" ? "completed" : "pending", completed_at: stepKey === "project" ? now : null,
-  })), { onConflict: "start_package_id,step_key" })
-  if (stepError) throw new Error(`Failed to initialize release steps: ${stepError.message}`)
-  const { error: updateError } = await context.supabase.from("start_packages").update({
+
+  // Claim the package BEFORE counting the week. The old order read the slot,
+  // counted the week, and only then flipped the status — so two coordinators
+  // releasing at the same moment each measured a week that did not yet contain
+  // the other's house and both sailed past the target. Claiming first makes the
+  // count include this release, and makes a second worker on the same package
+  // fail loudly instead of running the orchestration twice.
+  const { data: claimed, error: claimError } = await context.supabase.from("start_packages").update({
     status: "releasing", scheduled_start_date: parsed.scheduledStartDate, target_week: targetWeek,
-    released_by: context.userId, metadata: { ...(pkg.metadata ?? {}), release_requested_at: now },
-  }).eq("org_id", context.orgId).eq("id", packageId)
-  if (updateError) throw new Error(`Failed to queue start release: ${updateError.message}`)
+    released_by: context.userId,
+    metadata: { ...(pkg.metadata ?? {}), release_requested_at: now, release_lease_token: null, release_lease_at: null },
+  }).eq("org_id", context.orgId).eq("id", packageId).eq("status", "ready").select("id")
+  if (claimError) throw new Error(`Failed to queue start release: ${claimError.message}`)
+  if (!(claimed ?? []).length) throw new Error("This start package is already being released.")
+
+  async function abandonClaim() {
+    await context.supabase.from("start_packages").update({ status: "ready" })
+      .eq("org_id", context.orgId).eq("id", packageId).eq("status", "releasing")
+  }
+
+  const { count: weekTotal, error: countError } = await context.supabase.from("start_packages")
+    .select("id", { count: "exact", head: true }).eq("org_id", context.orgId)
+    .eq("community_id", pkg.community_id).eq("target_week", targetWeek).in("status", ["releasing", "released"])
+  if (countError) {
+    await abandonClaim()
+    throw new Error(`Failed to check the week's start target: ${countError.message}`)
+  }
+  const alreadyTargeted = Math.max(0, (weekTotal ?? 1) - 1)
+  const overSlot = (weekTotal ?? 0) > target
+  if (overSlot && !parsed.confirmOverSlot) {
+    await abandonClaim()
+    return { requiresConfirm: true, slot: { targetWeek, target, alreadyTargeted } }
+  }
+
+  const stepKeys = ["project", "budget", "schedule", "checklists", "drawings", "pos", "notify_trades", "finalize"]
+  const { data: existingSteps, error: existingStepsError } = await context.supabase.from("start_release_steps")
+    .select("step_key,status").eq("org_id", context.orgId).eq("start_package_id", packageId)
+  if (existingStepsError) {
+    await abandonClaim()
+    throw new Error(`Failed to load release steps: ${existingStepsError.message}`)
+  }
+  // A cancelled release keeps whatever it already committed, so re-releasing
+  // resumes from there rather than re-running instantiation over work that is
+  // already on the house.
+  const settled = new Set((existingSteps ?? []).filter((step) => ["completed", "skipped"].includes(step.status)).map((step) => step.step_key))
+  const { error: stepError } = await context.supabase.from("start_release_steps").upsert(stepKeys
+    .filter((stepKey) => !settled.has(stepKey))
+    .map((stepKey) => ({
+      org_id: context.orgId, start_package_id: packageId, step_key: stepKey,
+      status: stepKey === "project" ? "completed" : "pending",
+      completed_at: stepKey === "project" ? now : null, started_at: null, error: null,
+    })), { onConflict: "start_package_id,step_key" })
+  if (stepError) {
+    await abandonClaim()
+    throw new Error(`Failed to initialize release steps: ${stepError.message}`)
+  }
   const queued = await enqueueOutboxJob({
     orgId: context.orgId, jobType: "start_release",
     payload: { start_package_id: packageId, actor_id: context.userId },
     dedupeByPayloadKeys: ["start_package_id"], runAt: now,
   })
-  if (!queued.enqueued && queued.reason === "error") throw new Error("Failed to enqueue start release.")
-  if ((alreadyTargeted ?? 0) >= target) await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "start.released_over_slot", entityType: "start_package", entityId: packageId, payload: { target_week: targetWeek, target, already_targeted: alreadyTargeted } })
+  if (!queued.enqueued && queued.reason === "error") {
+    await abandonClaim()
+    throw new Error("Failed to enqueue start release.")
+  }
+  if (overSlot) await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "start.released_over_slot", entityType: "start_package", entityId: packageId, payload: { target_week: targetWeek, target, already_targeted: alreadyTargeted } })
   void triggerStartsPipeline()
   return { released: true }
 }
@@ -647,7 +756,13 @@ export async function retryRelease(packageId: string, orgId?: string) {
   await requirePermission("start.release", context)
   const pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
   if (pkg.status !== "attention") throw new Error("Only releases needing attention can be retried.")
-  await context.supabase.from("start_packages").update({ status: "releasing", released_by: context.userId }).eq("org_id", context.orgId).eq("id", packageId)
+  // A worker that died mid-release still holds the lease on the row; a retry is
+  // an explicit human decision that the previous attempt is over.
+  const { error: retryError } = await context.supabase.from("start_packages").update({
+    status: "releasing", released_by: context.userId,
+    metadata: { ...(pkg.metadata ?? {}), release_lease_token: null, release_lease_at: null },
+  }).eq("org_id", context.orgId).eq("id", packageId)
+  if (retryError) throw new Error(`Failed to requeue the release: ${retryError.message}`)
   const dedupeKey = `start_release:start_package_id:${packageId}`
   const { data: job } = await context.supabase.from("outbox").select("id").eq("org_id", context.orgId).eq("dedupe_key", dedupeKey).maybeSingle()
   if (job) await context.supabase.from("outbox").update({ status: "pending", retry_count: 0, last_error: null, run_at: new Date().toISOString(), payload: { start_package_id: packageId, actor_id: context.userId } }).eq("id", job.id)
@@ -656,17 +771,51 @@ export async function retryRelease(packageId: string, orgId?: string) {
   void triggerStartsPipeline()
 }
 
-export async function cancelRelease(packageId: string, orgId?: string) {
+export interface CancelReleaseResult {
+  /** Steps whose work is already on the house. Cancelling did not undo them. */
+  preserved: string[]
+  /** Steps that had not finished, returned to pending for the next release. */
+  reset: string[]
+}
+
+/**
+ * Stops an in-flight release. It does NOT reverse what already landed — a
+ * budget, a schedule, draft inspections and a committed PO set stay on the
+ * house — so it says so instead of resetting every step and calling the package
+ * "returned to ready". Resetting settled steps was also how a cancel wedged a
+ * package: the instantiation ledger still recorded them, so the next release
+ * failed permanently on the first step it tried to re-run.
+ */
+export async function cancelRelease(packageId: string, orgId?: string): Promise<CancelReleaseResult> {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.release", context)
   const pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
   if (!["releasing", "attention"].includes(pkg.status)) throw new Error("This release is not cancellable.")
-  await Promise.all([
-    context.supabase.from("start_packages").update({ status: "ready" }).eq("org_id", context.orgId).eq("id", packageId),
-    context.supabase.from("start_release_steps").update({ status: "pending", error: null, started_at: null, completed_at: null }).eq("org_id", context.orgId).eq("start_package_id", packageId).neq("step_key", "project"),
-    context.supabase.from("outbox").update({ status: "failed", last_error: "Release cancelled by coordinator" }).eq("org_id", context.orgId).eq("dedupe_key", `start_release:start_package_id:${packageId}`).in("status", ["pending", "processing"]),
+  const { data: steps, error: stepsError } = await context.supabase.from("start_release_steps")
+    .select("step_key,status").eq("org_id", context.orgId).eq("start_package_id", packageId)
+  if (stepsError) throw new Error(`Failed to load release steps: ${stepsError.message}`)
+  const preserved = (steps ?? []).filter((step) => ["completed", "skipped"].includes(step.status)).map((step) => step.step_key)
+  const reset = (steps ?? []).filter((step) => !["completed", "skipped"].includes(step.status)).map((step) => step.step_key)
+  const [packageResult, stepResult, outboxResult] = await Promise.all([
+    context.supabase.from("start_packages").update({
+      status: "ready",
+      metadata: { ...(pkg.metadata ?? {}), release_lease_token: null, release_lease_at: null },
+    }).eq("org_id", context.orgId).eq("id", packageId),
+    reset.length
+      ? context.supabase.from("start_release_steps").update({ status: "pending", error: null, started_at: null, completed_at: null })
+        .eq("org_id", context.orgId).eq("start_package_id", packageId).in("step_key", reset)
+      : Promise.resolve({ error: null }),
+    context.supabase.from("outbox").update({ status: "failed", last_error: "Release cancelled by coordinator" })
+      .eq("org_id", context.orgId).eq("dedupe_key", `start_release:start_package_id:${packageId}`).in("status", ["pending", "processing"]),
   ])
-  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "start_package", entityId: packageId, before: pkg, after: { status: "ready", release_cancelled: true } })
+  if (packageResult.error) throw new Error(`Failed to cancel the release: ${packageResult.error.message}`)
+  if (stepResult.error) throw new Error(`Failed to reset release steps: ${stepResult.error.message}`)
+  if (outboxResult.error) throw new Error(`Failed to stop the queued release: ${outboxResult.error.message}`)
+  await Promise.all([
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "start.release_cancelled", entityType: "start_package", entityId: packageId, payload: { preserved, reset } }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "start_package", entityId: packageId, before: pkg, after: { status: "ready", release_cancelled: true, preserved_steps: preserved } }),
+  ])
+  return { preserved, reset }
 }
 
 export async function cancelStartPackage(id: string, { reason }: { reason: string }, orgId?: string) {
@@ -782,7 +931,7 @@ export async function listStartPackages(
     const pressure = deriveSchedulePressure({
       status: row.status as StartPackageStatus,
       closingDate: sale.closingDate,
-      cycleDays: targetCycleDays(community?.settings),
+      cycle: targetCycleDays(community?.settings),
       blocker,
     })
     return {
@@ -816,19 +965,68 @@ export async function getStartPackage(id: string, orgId?: string): Promise<Start
   }
 }
 
-export async function listSuperintendentCandidates(orgId?: string): Promise<Array<{ id: string; name: string }>> {
+export interface SuperintendentCandidateDTO {
+  id: string
+  name: string
+  /** Delivery-phase production houses this person already runs. */
+  activeHouses: number
+}
+
+/**
+ * The permission that separates people who run a jobsite from people who do
+ * not. Every field role carries it; accountants, estimators, sales agents and
+ * the starts coordinator themselves do not.
+ */
+const FIELD_ROLE_PERMISSION = "daily_log.write"
+
+/**
+ * Who can actually be handed a house, and how many they already carry. An
+ * unfiltered membership list offered 300 names with no capacity signal, which
+ * is how a super quietly ends up with fifteen houses.
+ *
+ * `includeUserIds` keeps whoever is currently assigned in the list even if
+ * their role has since changed, so the picker never renders a blank selection.
+ */
+export async function listSuperintendentCandidates(
+  opts: { includeUserIds?: Array<string | null> } = {},
+  orgId?: string,
+): Promise<SuperintendentCandidateDTO[]> {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.read", context)
+  const pinned = new Set((opts.includeUserIds ?? []).filter((id): id is string => Boolean(id)))
   const { data, error } = await context.supabase.from("memberships")
-    .select("user_id,user:app_users!memberships_user_id_fkey(id,full_name,email)")
-    .eq("org_id", context.orgId).eq("status", "active").limit(300)
+    .select("user_id,role_id,user:app_users!memberships_user_id_fkey(id,full_name,email)")
+    .eq("org_id", context.orgId).eq("status", "active").limit(500)
   if (error) throw new Error(`Failed to load superintendent candidates: ${error.message}`)
+  const roleIds = Array.from(new Set((data ?? []).map((row) => row.role_id)))
+  const [grants, houses] = await Promise.all([
+    roleIds.length
+      ? context.supabase.from("role_permissions").select("role_id").in("role_id", roleIds).eq("permission_key", FIELD_ROLE_PERMISSION)
+      : Promise.resolve({ data: [], error: null }),
+    context.supabase.from("projects").select("superintendent_id")
+      .eq("org_id", context.orgId).eq("property_type", "production").eq("phase", "delivery")
+      .eq("status", "active").not("superintendent_id", "is", null).limit(5000),
+  ])
+  if (grants.error) throw new Error(`Failed to load field roles: ${grants.error.message}`)
+  if (houses.error) throw new Error(`Failed to count assigned houses: ${houses.error.message}`)
+  const fieldRoles = new Set((grants.data ?? []).map((row) => row.role_id))
+  const load = new Map<string, number>()
+  for (const row of houses.data ?? []) {
+    if (!row.superintendent_id) continue
+    load.set(row.superintendent_id, (load.get(row.superintendent_id) ?? 0) + 1)
+  }
   return (data ?? [])
     .flatMap((row) => {
       const user = relation(row.user)
-      return user ? [{ id: String(row.user_id), name: text(user.full_name) ?? text(user.email) ?? "Member" }] : []
+      const userId = String(row.user_id)
+      if (!user || !(fieldRoles.has(row.role_id) || pinned.has(userId))) return []
+      return [{
+        id: userId,
+        name: text(user.full_name) ?? text(user.email) ?? "Member",
+        activeHouses: load.get(userId) ?? 0,
+      }]
     })
-    .sort((a, b) => a.name.localeCompare(b.name))
+    .sort((a, b) => a.activeHouses - b.activeHouses || a.name.localeCompare(b.name))
 }
 
 export async function listStartPackageCandidates(
@@ -870,7 +1068,7 @@ export async function listStartPackageCandidates(
     const elevation = relation(lot.elevation)
     const sale = { ...(salesByProject.get(lot.project_id) ?? EMPTY_SALE), buyerName: text(relation(relation(lot.project)?.client)?.full_name) }
     const pressure = deriveSchedulePressure({
-      status: "open", closingDate: sale.closingDate, cycleDays: targetCycleDays(community?.settings), blocker: null,
+      status: "open", closingDate: sale.closingDate, cycle: targetCycleDays(community?.settings), blocker: null,
     })
     return {
       lotId: lot.id,
@@ -881,6 +1079,8 @@ export async function listStartPackageCandidates(
       sale,
       mustStartBy: pressure.mustStartBy,
       daysToMustStart: pressure.daysToMustStart,
+      cycleDays: pressure.cycleDays,
+      cycleDaysConfigured: pressure.cycleDaysConfigured,
     }
   }).sort((a, b) => {
     // A sold home with no start package is the most expensive thing on this

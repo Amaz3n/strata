@@ -7,6 +7,14 @@ import { useState, useTransition } from "react";
 import { toast } from "sonner";
 
 import { BankReviewTray } from "@/components/books/bank-review-tray";
+import { BankTransactionRegister } from "@/components/books/bank-transaction-register";
+import { BankReconciliationDetail } from "@/components/books/bank-reconciliation-detail";
+import { DepositBatches } from "@/components/books/deposit-batches";
+import { OverheadBudget } from "@/components/books/overhead-budget";
+import {
+  AccountActivitySheet,
+  type ActivityTarget,
+} from "@/components/books/account-activity-sheet";
 import { BooksJournals } from "@/components/books/books-journals";
 import { ManualBankImport } from "@/components/books/manual-bank-import";
 import { OpeningBalancesWizard } from "@/components/books/opening-balances-wizard";
@@ -42,7 +50,6 @@ import {
   approveOpeningBalancesAction,
   buildSalesTaxSummaryAction,
   cancelCutoverAction,
-  closeBankReconciliationAction,
   closeAccountingPeriodAction,
   closeFiscalYearAction,
   completeCutoverAction,
@@ -81,8 +88,8 @@ type Workspace = Awaited<
 export type BooksSection =
   | "overview"
   | "statements"
-  | "transactions"
   | "banking"
+  | "overhead"
   | "chart"
   | "ledger"
   | "close"
@@ -379,8 +386,12 @@ function BankReconciliationDesk({
   workspace: Extract<Workspace, { initialized: true }>;
 }) {
   const router = useRouter();
+  const [selectedReconciliationId, setSelectedReconciliationId] = useState<string | null>(
+    workspace.bankReconciliations.find((item) => item.status !== "closed")?.id ?? null,
+  );
   return (
-    <section className="grid gap-5 lg:grid-cols-[.8fr_1.2fr]">
+    <section className="space-y-5">
+      <div className="grid gap-5 lg:grid-cols-[.8fr_1.2fr]">
       <div className="border bg-background p-5">
         <p className="text-sm font-semibold">Start statement reconciliation</p>
         <p className="mt-1 text-xs text-muted-foreground">
@@ -461,10 +472,9 @@ function BankReconciliationDesk({
                 </Badge>
                 {item.status !== "closed" &&
                   workspace.capabilities.reconcile && (
-                    <ResultButton
-                      label="Close at zero"
-                      run={() => closeBankReconciliationAction(item.id)}
-                    />
+                    <Button size="sm" variant="outline" onClick={() => setSelectedReconciliationId(item.id)}>
+                      Review checklist
+                    </Button>
                   )}
               </div>
             </div>
@@ -476,6 +486,10 @@ function BankReconciliationDesk({
           )}
         </div>
       </div>
+      </div>
+      {selectedReconciliationId ? (
+        <BankReconciliationDetail reconciliationId={selectedReconciliationId} onClosed={() => router.refresh()} />
+      ) : null}
     </section>
   );
 }
@@ -659,6 +673,7 @@ export function BooksClient({
   const [newAccountType, setNewAccountType] = useState<GlAccountType>("asset");
   const [newAccountSubtype, setNewAccountSubtype] = useState<GlAccountSubtype>("cash");
   const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
+  const [accountActivityTarget, setAccountActivityTarget] = useState<ActivityTarget | null>(null);
   const [connecting, startPlaid] = useTransition();
   const [mappingAccountId, setMappingAccountId] = useState<string | null>(null);
   const [mapping, startMapping] = useTransition();
@@ -685,13 +700,8 @@ export function BooksClient({
   }> = [
     { key: "overview", label: "Overview", href: "/books" },
     { key: "statements", label: "Statements", href: "/books/statements" },
-    {
-      key: "transactions",
-      label: "Transactions",
-      href: "/books/transactions",
-      count: workspace.unmatchedTransactions.length,
-    },
-    { key: "banking", label: "Banking", href: "/books/banking" },
+    { key: "banking", label: "Banking", href: "/books/banking", count: workspace.unmatchedTransactions.length },
+    { key: "overhead", label: "Overhead", href: "/books/overhead" },
     { key: "chart", label: "Chart", href: "/books/chart" },
     { key: "ledger", label: "Ledger", href: "/books/ledger" },
     {
@@ -743,8 +753,7 @@ export function BooksClient({
 
   return (
     <div className="min-h-full bg-muted/20">
-      {workspace.capabilities.reconcile &&
-      (section === "banking" || section === "transactions") ? (
+      {workspace.capabilities.reconcile && section === "banking" ? (
         <Script
           src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"
           strategy="afterInteractive"
@@ -1040,9 +1049,8 @@ export function BooksClient({
           </div>
         )}
 
-        {(section === "banking" || section === "transactions") && (
+        {section === "banking" && (
           <div className="space-y-5 py-5">
-            {section === "banking" ? (
               <>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
@@ -1190,6 +1198,20 @@ export function BooksClient({
                   )}
                 </div>
                 <BankReconciliationDesk workspace={workspace} />
+                {workspace.capabilities.reconcile ? <DepositBatches /> : null}
+                {workspace.capabilities.reconcile ? (
+                  <BankReviewTray accounts={workspace.accounts} />
+                ) : (
+                  <p className="border border-dashed bg-background p-5 text-sm text-muted-foreground">
+                    Your role can inspect the bank register, but cannot match or categorize transactions.
+                  </p>
+                )}
+                <BankTransactionRegister
+                  transactions={workspace.bankTransactions}
+                  unmatchedIds={workspace.unmatchedTransactions.map((transaction) => transaction.id)}
+                  accounts={workspace.bankAccounts}
+                  sourceTruncated={workspace.bankTransactionsTruncated}
+                />
                 {workspace.capabilities.reconcile ? (
                   <ManualBankImport
                     accounts={workspace.accounts}
@@ -1198,79 +1220,6 @@ export function BooksClient({
                   />
                 ) : null}
               </>
-            ) : null}
-            {section === "transactions" ? (
-              <>
-                {workspace.capabilities.reconcile ? (
-                  <BankReviewTray accounts={workspace.accounts} />
-                ) : (
-                  <p className="border border-dashed bg-background p-5 text-sm text-muted-foreground">
-                    Your role can inspect the bank register, but cannot match or
-                    categorize transactions.
-                  </p>
-                )}
-                <section className="border bg-background">
-                  <div className="flex items-center justify-between border-b px-5 py-4">
-                    <div>
-                      <p className="text-sm font-semibold">
-                        Bank transaction register
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        The full normalized Plaid feed. Anything still needing a
-                        decision is in the review tray above.
-                      </p>
-                    </div>
-                    <Badge>{workspace.bankTransactions.length}</Badge>
-                  </div>
-                  <div className="divide-y">
-                    {workspace.bankTransactions
-                      .slice(0, 100)
-                      .map((transaction) => (
-                        <div
-                          key={transaction.id}
-                          className="grid grid-cols-[100px_1fr_auto_auto] items-center gap-4 px-5 py-3 text-sm"
-                        >
-                          <span className="font-mono text-xs text-muted-foreground">
-                            {transaction.transaction_date}
-                          </span>
-                          <div>
-                            <p>
-                              {transaction.merchant_name ||
-                                transaction.description}
-                            </p>
-                            <p className="text-xs text-muted-foreground">
-                              {transaction.direction}
-                            </p>
-                          </div>
-                          <span className="font-mono tabular-nums">
-                            {transaction.direction === "outflow" ? "−" : "+"}
-                            {formatMoney(transaction.amount_cents)}
-                          </span>
-                          <Badge variant="outline">
-                            {workspace.unmatchedTransactions.some(
-                              (item) => item.id === transaction.id,
-                            )
-                              ? "Needs match"
-                              : "Matched"}
-                          </Badge>
-                        </div>
-                      ))}
-                    {workspace.bankTransactions.length === 0 && (
-                      <p className="px-5 py-12 text-center text-sm text-muted-foreground">
-                        Bank activity will appear here after the first Plaid
-                        sync.
-                      </p>
-                    )}
-                  </div>
-                  {workspace.bankTransactionsTruncated ? (
-                    <p className="border-t px-5 py-3 text-xs text-muted-foreground">
-                      Showing the 250 most recent posted transactions. Use
-                      bank-account and statement views for older activity.
-                    </p>
-                  ) : null}
-                </section>
-              </>
-            ) : null}
           </div>
         )}
 
@@ -1281,6 +1230,10 @@ export function BooksClient({
               asOf={workspace.asOf}
             />
           </div>
+        )}
+
+        {section === "overhead" && (
+          <div className="py-5"><OverheadBudget canEdit={workspace.capabilities.adjust} /></div>
         )}
 
         {section === "chart" && (
@@ -1321,7 +1274,13 @@ export function BooksClient({
                             {account.code}
                           </span>
                           <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm">{account.name}</p>
+                            <button
+                              type="button"
+                              onClick={() => setAccountActivityTarget({ accountId: account.id, code: account.code, name: account.name })}
+                              className="truncate text-left text-sm underline-offset-4 hover:underline"
+                            >
+                              {account.name}
+                            </button>
                             <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
                               {account.account_type} ·{" "}
                               {account.subtype.replaceAll("_", " ")}
@@ -1490,6 +1449,12 @@ export function BooksClient({
                 </>
               ) : null}
             </div>
+            <AccountActivitySheet
+              target={accountActivityTarget}
+              startDate={`${workspace.asOf.slice(0, 4)}-01-01`}
+              endDate={workspace.asOf}
+              onOpenChange={(open) => { if (!open) setAccountActivityTarget(null); }}
+            />
           </div>
         )}
 

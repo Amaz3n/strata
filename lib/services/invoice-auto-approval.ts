@@ -12,6 +12,7 @@ import { getComplianceRulesWithClient } from "@/lib/services/compliance"
 import { propagateApprovalToLedger } from "@/lib/services/cost-plus"
 import { enqueueVendorBillSync } from "@/lib/services/accounting-sync"
 import { recordEvent } from "@/lib/services/events"
+import { assertPayableApprovalPeriodOpen } from "@/lib/services/payable-approval-gate"
 import { sendVendorBillDecisionNotice } from "@/lib/services/vendor-bill-notices"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
@@ -32,7 +33,7 @@ export async function evaluateAndAutoApproveVendorBill(input: { orgId: string; b
   const client = createServiceSupabaseClient()
   const { data: bill } = await client
     .from("vendor_bills")
-    .select("id,org_id,project_id,company_id,bill_number,total_cents,status,metadata,lien_waiver_status,company:companies(metadata)")
+    .select("id,org_id,project_id,company_id,bill_number,bill_date,total_cents,status,metadata,lien_waiver_status,company:companies(metadata)")
     .eq("org_id", input.orgId)
     .eq("id", input.billId)
     .maybeSingle()
@@ -96,6 +97,16 @@ export async function evaluateAndAutoApproveVendorBill(input: { orgId: string; b
       const gates = await loadApprovalGateSettings({ supabase: client, orgId: input.orgId, projectId: bill.project_id })
       if (gates.cost_codes_enabled && codedLines.some((line) => !line.cost_code_id)) continue
     }
+
+    // A rule is not a way around a closed period. The human paths refuse to
+    // post cost into one; an unattended approval must refuse too, or the lock
+    // only holds while somebody is watching.
+    await assertPayableApprovalPeriodOpen({
+      supabase: client,
+      orgId: input.orgId,
+      projectId: bill.project_id,
+      billDate: bill.bill_date,
+    })
 
     const complianceRules = await getComplianceRulesWithClient(client, input.orgId)
     const now = new Date().toISOString()

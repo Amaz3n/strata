@@ -210,13 +210,8 @@ export async function approveInboxVendorBillAction(projectId: string, billId: st
       if (billError) throw new Error(`Failed to validate billing period: ${billError.message}`)
       const settings = await getProjectFinancialSettings({ supabase, orgId, projectId })
       const costCodesEnabled = settings?.cost_codes_enabled ?? (await getOrgCostCodesEnabled(supabase, orgId))
-      await assertProjectBillingDateEditable({
-        supabase,
-        orgId,
-        projectId,
-        date: bill?.bill_date ?? bill?.due_date ?? null,
-        actionLabel: "This vendor bill",
-      })
+      // The closed-period check moved into `updateVendorBillStatus`, which every
+      // approval path now goes through — this used to be the only place it ran.
 
       const { data: billLines, error: billLinesError } = await supabase
         .from("bill_lines")

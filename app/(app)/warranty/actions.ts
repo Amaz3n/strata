@@ -3,12 +3,17 @@
 import { revalidatePath } from "next/cache"
 import { actionError, type ActionResult } from "@/lib/action-result"
 import {
+  acknowledgeWarrantyRequest,
   cancelWarrantyVisit,
   completeWarrantyVisit,
   createWarrantyBackcharge,
   createWarrantyRequest,
   disputeWarrantyBackcharge,
   enrollProjectWarrantyCoverage,
+  findOriginatingCommitments,
+  findWarrantyVisitConflicts,
+  generateWarrantyCourtesyInspections,
+  getWarrantyRequestCostBasis,
   issueWarrantyBackcharge,
   listWarrantyRequests,
   rescheduleWarrantyVisit,
@@ -22,7 +27,10 @@ import {
   type WarrantyBackchargeDTO,
   type WarrantyProgramDTO,
   type WarrantyServiceVisitDTO,
+  type WarrantyVisitConflict,
 } from "@/lib/services/warranty"
+import type { RankedOriginatingCommitment, WarrantyCostBasisItem } from "@/lib/services/warranty/domain"
+import { warrantyVisitCompleteWithCostSchema } from "@/lib/services/warranty/validation"
 import {
   warrantyBackchargeDisputeSchema,
   warrantyBackchargeInputSchema,
@@ -32,7 +40,6 @@ import {
   warrantyRequestInputSchema,
   warrantyRequestUpdateSchema,
   warrantySlaTargetsSchema,
-  warrantyVisitCompleteSchema,
   warrantyVisitRescheduleSchema,
   warrantyVisitScheduleSchema,
 } from "@/lib/validation/warranty"
@@ -90,12 +97,47 @@ export async function enrollWarrantyCoverageAction(input: unknown): Promise<Acti
   } catch (error) { return actionError(error) }
 }
 
-export async function scheduleWarrantyVisitAction(input: unknown): Promise<ActionResult<WarrantyServiceVisitDTO>> {
+export async function acknowledgeWarrantyRequestAction(input: unknown): Promise<ActionResult<WarrantyRequest>> {
+  try {
+    const request = await acknowledgeWarrantyRequest(input)
+    revalidateWarranty(request.project_id)
+    return { success: true, data: request }
+  } catch (error) { return actionError(error) }
+}
+
+export async function scheduleWarrantyVisitAction(input: unknown, allowConflict = false): Promise<ActionResult<WarrantyServiceVisitDTO>> {
   try {
     const parsed = warrantyVisitScheduleSchema.parse(input)
-    const visit = await scheduleWarrantyVisit(parsed)
+    const visit = await scheduleWarrantyVisit({ ...parsed, allow_conflict: allowConflict })
     revalidateWarranty(visit.project_id)
     return { success: true, data: visit }
+  } catch (error) { return actionError(error) }
+}
+
+export async function findWarrantyVisitConflictsAction(input: unknown): Promise<ActionResult<WarrantyVisitConflict[]>> {
+  try {
+    const parsed = warrantyVisitScheduleSchema.parse(input)
+    return { success: true, data: await findWarrantyVisitConflicts(parsed) }
+  } catch (error) { return actionError(error) }
+}
+
+export async function findOriginatingCommitmentsAction(input: { projectId: string; costCodeId?: string | null; companyId?: string | null }): Promise<ActionResult<RankedOriginatingCommitment[]>> {
+  try {
+    return { success: true, data: await findOriginatingCommitments(input) }
+  } catch (error) { return actionError(error) }
+}
+
+export async function getWarrantyRequestCostBasisAction(requestId: string): Promise<ActionResult<WarrantyCostBasisItem[]>> {
+  try {
+    return { success: true, data: await getWarrantyRequestCostBasis(requestId) }
+  } catch (error) { return actionError(error) }
+}
+
+export async function generateWarrantyCourtesyInspectionsAction(): Promise<ActionResult<{ created: number }>> {
+  try {
+    const result = await generateWarrantyCourtesyInspections()
+    revalidateWarranty()
+    return { success: true, data: result }
   } catch (error) { return actionError(error) }
 }
 
@@ -117,7 +159,7 @@ export async function cancelWarrantyVisitAction(visitId: string, note?: string):
 
 export async function completeWarrantyVisitAction(input: unknown): Promise<ActionResult<WarrantyServiceVisitDTO>> {
   try {
-    const visit = await completeWarrantyVisit(warrantyVisitCompleteSchema.parse(input))
+    const visit = await completeWarrantyVisit(warrantyVisitCompleteWithCostSchema.parse(input))
     revalidateWarranty(visit.project_id)
     return { success: true, data: visit }
   } catch (error) { return actionError(error) }

@@ -179,6 +179,9 @@ export function ContactDetailSheet({ contactId, open, onOpenChange, onEditContac
               </Card>
 
               <Separator />
+              <Button asChild className="w-full">
+                <Link href={`/contacts/${contact.id}`}>Open full account</Link>
+              </Button>
               <div className="flex justify-between gap-2">
                 <Button
                   variant="outline"
@@ -225,5 +228,4 @@ export function ContactDetailSheet({ contactId, open, onOpenChange, onEditContac
     </Sheet>
   )
 }
-
 

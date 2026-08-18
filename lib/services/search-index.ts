@@ -9,7 +9,6 @@ import {
   type SearchEntityType,
 } from "@/lib/services/search-config"
 import {
-  EMBEDDING_MODEL,
   embeddingsConfigured,
   generateEmbeddingVector,
   toPgVectorLiteral,
@@ -219,6 +218,10 @@ export async function reindexEntity(
         ? `${baseSelectClause},reason:variance_reason_codes(label,code)`
       : entityType === "start_package"
         ? `${baseSelectClause},lot:lots(lot_number,block),community:communities(name)`
+      : entityType === "payment"
+        // A payment is customer money in or a recorded vendor payment; bill_id
+        // is what tells the two apart for href routing (see below).
+        ? `${baseSelectClause},bill_id`
       : baseSelectClause
 
   const { data: row, error } = await client
@@ -285,6 +288,16 @@ export async function reindexEntity(
   if (entityType === "bid_package") {
     href = projectId ? `/projects/${projectId}/bids/${entityId}` : "/bids"
   }
+  if (entityType === "payment") {
+    // A payment recorded against a vendor bill belongs on the payable, not on
+    // the AR desk. Everything else lands on its project's receivables tab, and
+    // the org AR desk is the fallback for a payment with no project.
+    href = typeof row.bill_id === "string" && row.bill_id
+      ? `/payables?bill=${row.bill_id}`
+      : projectId
+        ? `/projects/${projectId}/financials/receivables`
+        : "/invoices"
+  }
 
   const { data: upserted, error: upsertError } = await client
     .from("search_documents")
@@ -321,14 +334,14 @@ export async function reindexEntity(
   if (documentId && embeddingsConfigured()) {
     try {
       const content = [title, subtitle, description, projectName].filter(Boolean).join("\n")
-      const vector = await generateEmbeddingVector(content)
-      if (vector && vector.length > 0) {
+      const embedding = await generateEmbeddingVector(content, { orgId })
+      if (embedding) {
         await client.from("search_embeddings").upsert(
           {
             document_id: documentId,
             org_id: orgId,
-            model: EMBEDDING_MODEL,
-            embedding: toPgVectorLiteral(vector),
+            model: embedding.model,
+            embedding: toPgVectorLiteral(embedding.vector),
           },
           { onConflict: "document_id,model" },
         )

@@ -2,12 +2,19 @@
 
 import { revalidatePath } from "next/cache"
 
-import { resolvePaymentReconciliationItem, runPaymentReconciliation } from "@/lib/services/payment-reconciliation"
+import {
+  dailyReconciliationPeriod,
+  resolvePaymentReconciliationItem,
+  runPaymentReconciliation,
+} from "@/lib/services/payment-reconciliation"
 
+/**
+ * The same closed UTC day the cron reconciles, not a rolling window ending now.
+ * Two period conventions in one table meant a manual run and the scheduled run
+ * could never be compared — or deduplicated — against each other.
+ */
 export async function reconcileVendorPaymentsAction() {
-  const periodEnd = new Date()
-  const periodStart = new Date(periodEnd.getTime() - 24 * 60 * 60 * 1000)
-  await runPaymentReconciliation({ period_start: periodStart.toISOString(), period_end: periodEnd.toISOString() })
+  await runPaymentReconciliation(dailyReconciliationPeriod())
   revalidatePath("/payables/reconciliation")
 }
 

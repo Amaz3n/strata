@@ -18,13 +18,25 @@ const RUNWAY_HORIZON_MONTHS = 24
  */
 export default async function CommunityLandPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
+
+  /** Optional panel, logged failure. A blank runway with no trace is not a state. */
+  function optional<T>(panel: string, fallback: T) {
+    return (error: unknown): T => {
+      console.error(`[communities/${id}/land] ${panel} failed to load`, error)
+      return fallback
+    }
+  }
+
   const [community, permissions, lane, lotsByPhase] = await Promise.all([
-    getCommunity(id).catch(() => null),
+    getCommunity(id).catch((error: unknown) => {
+      if (error instanceof Error && error.message === "Community not found") return null
+      throw error
+    }),
     getCurrentUserPermissions(),
     // The lane, not the whole portfolio: taking lanes[0] off a portfolio read
     // ran the runway projection for the community twice on one page load.
-    getCommunityLane(id).catch(() => null),
-    countLotsByPhase(id).catch(() => ({})),
+    getCommunityLane(id).catch(optional("runway", null)),
+    countLotsByPhase(id).catch(optional("phase counts", { byPhase: {}, truncated: false })),
   ])
   if (!community) notFound()
 
@@ -35,7 +47,12 @@ export default async function CommunityLandPage({ params }: { params: Promise<{ 
   return (
     <div className="space-y-8 p-4">
       {lane ? <CommunityRunwayPanel lane={lane} horizonMonths={RUNWAY_HORIZON_MONTHS} /> : null}
-      <CommunityStructure community={community} lotsByPhase={lotsByPhase} canWrite={canWrite} />
+      <CommunityStructure
+        community={community}
+        lotsByPhase={lotsByPhase.byPhase}
+        lotsByPhaseTruncated={lotsByPhase.truncated}
+        canWrite={canWrite}
+      />
     </div>
   )
 }

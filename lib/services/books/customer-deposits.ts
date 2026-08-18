@@ -92,19 +92,30 @@ export async function getCustomerDepositWorkspace(orgId?: string) {
   return { deposits, targetInvoices }
 }
 
-export async function applyCustomerDeposit(input: {
-  depositPaymentId: string
-  targetInvoiceId: string
-  amountCents: number
-  appliedAt?: string
-}, orgId?: string) {
-  const context = await requireDepositManager(orgId)
-  const parsed = z.object({
-    depositPaymentId: z.string().uuid(),
-    targetInvoiceId: z.string().uuid(),
-    amountCents: z.number().int().positive(),
-    appliedAt: z.string().datetime({ offset: true }).optional(),
-  }).parse(input)
+const applyCustomerDepositSchema = z.object({
+  depositPaymentId: z.string().uuid(),
+  targetInvoiceId: z.string().uuid(),
+  amountCents: z.number().int().positive(),
+  appliedAt: z.string().datetime({ offset: true }).optional(),
+})
+
+export type ApplyCustomerDepositInput = z.input<typeof applyCustomerDepositSchema>
+
+/**
+ * Applies a collected earnest deposit against an open invoice, relieving the
+ * customer-deposit liability the receipt created.
+ *
+ * Takes an already-authorized context: settlement applies buyer deposits to the
+ * closing invoice under `closing.manage` + `payment.release`, and must not also
+ * demand `books.adjust` from a closing coordinator. Callers are responsible for
+ * having checked a permission that covers moving customer money, and for
+ * calling `projectJournal` once after a batch rather than once per deposit.
+ */
+export async function applyCustomerDepositWithContext(
+  context: { orgId: string; userId: string },
+  input: ApplyCustomerDepositInput,
+) {
+  const parsed = applyCustomerDepositSchema.parse(input)
   const service = createServiceSupabaseClient()
   const { data, error } = await service.rpc("apply_customer_deposit_atomic", {
     p_org_id: context.orgId,
@@ -133,6 +144,12 @@ export async function applyCustomerDeposit(input: {
     entityId: paymentId || parsed.depositPaymentId,
     payload: { deposit_payment_id: parsed.depositPaymentId, invoice_id: parsed.targetInvoiceId, amount_cents: parsed.amountCents },
   })
-  await projectJournal(context.orgId, { full: false })
   return { paymentId }
+}
+
+export async function applyCustomerDeposit(input: ApplyCustomerDepositInput, orgId?: string) {
+  const context = await requireDepositManager(orgId)
+  const result = await applyCustomerDepositWithContext(context, input)
+  await projectJournal(context.orgId, { full: false })
+  return result
 }

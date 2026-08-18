@@ -1,5 +1,6 @@
 "use server"
 import {
+  dailyReconciliationPeriod,
   resolvePaymentReconciliationItem,
   runPaymentReconciliation,
 } from "@/lib/services/payment-reconciliation"
@@ -62,15 +63,16 @@ export async function resolveReconciliationExceptionAction(
   }
 }
 
-/** Run reconciliation over the last 24 hours now, rather than waiting for the cron. */
+/**
+ * Run today's reconciliation now, rather than waiting for the cron.
+ *
+ * Uses the same UTC-midnight-aligned period the cron does. A rolling 24-hour
+ * window would write a second, differently-bounded run into the same table for
+ * the same day, which is how one control ends up with two answers.
+ */
 export async function reconcilePaymentsNowAction(): Promise<ActionResult<{ status: string; exceptionCount: number }>> {
   try {
-    const end = new Date()
-    const start = new Date(end.getTime() - 24 * 60 * 60 * 1000)
-    const result = await runPaymentReconciliation({
-      period_start: start.toISOString(),
-      period_end: end.toISOString(),
-    })
+    const result = await runPaymentReconciliation(dailyReconciliationPeriod())
     revalidatePath("/admin/ops")
     return { success: true, data: { status: result.status, exceptionCount: result.exceptionCount } }
   } catch (error) {

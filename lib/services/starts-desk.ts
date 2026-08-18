@@ -1,6 +1,6 @@
 import "server-only"
 
-import { getCommunityReleaseSlots } from "@/lib/services/even-flow"
+import { getCommunityReleaseSlots, getMissedStarts } from "@/lib/services/even-flow"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import {
   listStartPackageCandidates,
@@ -16,6 +16,8 @@ const WEEKS_BACK = 1
 const WEEKS_AHEAD = 11
 /** The horizon the ribbon reports slot coverage over. */
 const COVERAGE_WEEKS = 4
+/** How far back the ribbon looks for slots that never got a house. */
+const MISSED_WEEKS = 4
 const PACKAGE_PAGE_SIZE = 200
 
 export interface DeskWeek {
@@ -34,6 +36,9 @@ export interface DeskCounters {
   filledAhead: number
   soldAtRisk: number
   unpackagedSold: number
+  /** Slots the last few weeks were paced for and never filled. */
+  missedStarts: number
+  missedStartsWeeks: number
 }
 
 export interface StartsDesk {
@@ -65,11 +70,12 @@ export async function getStartsDesk(
   const canWrite = isAdmin || grants.includes("start.write")
   const canRelease = isAdmin || grants.includes("start.release")
 
-  const [slots, active, released, candidates] = await Promise.all([
+  const [slots, active, released, candidates, missed] = await Promise.all([
     getCommunityReleaseSlots({ ...scope, weeksBack: WEEKS_BACK, weeksAhead: WEEKS_AHEAD }),
     listStartPackages({ ...scope, status: ["open", "ready", "releasing", "attention"], pageSize: PACKAGE_PAGE_SIZE }),
     listStartPackages({ ...scope, status: ["released"], targetWeekFrom: windowStart, pageSize: PACKAGE_PAGE_SIZE }),
     canWrite ? listStartPackageCandidates(scope) : Promise.resolve([]),
+    getMissedStarts({ ...scope, weeksBack: MISSED_WEEKS }),
   ])
 
   // No active community means no drumbeat to draw — the lane renders its
@@ -105,6 +111,8 @@ export async function getStartsDesk(
     filledAhead: packages.filter((pkg) => pkg.targetWeek && coverageWeeks.has(pkg.targetWeek)).length,
     soldAtRisk: active.packages.filter((pkg) => pkg.sale.isSold && (pkg.risk === "at_risk" || pkg.risk === "late")).length,
     unpackagedSold: candidates.filter((candidate) => candidate.sale.isSold).length,
+    missedStarts: missed.missed,
+    missedStartsWeeks: missed.weeks,
   }
 
   return {

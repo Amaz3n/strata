@@ -9,13 +9,11 @@ import {
   createPlanVersion,
   releasePlanVersion,
   replaceTakeoffLines,
-  setCommunityAvailability,
   updateHousePlan,
   updatePlanVersion,
   upsertElevation,
 } from "@/lib/services/house-plans"
 import {
-  availabilityInputSchema,
   elevationInputSchema,
   housePlanInputSchema,
   housePlanUpdateSchema,
@@ -63,7 +61,3 @@ export async function releasePlanVersionAction(planId: string, versionId: string
   return run(() => releasePlanVersion(z.string().uuid().parse(versionId)), ["/plans", `/plans/${planId}`])
 }
 
-export async function setCommunityAvailabilityAction(planId: string, input: unknown) {
-  const entries = z.array(availabilityInputSchema).max(2000).parse(input)
-  return run(() => setCommunityAvailability(entries), ["/plans", `/plans/${planId}`])
-}

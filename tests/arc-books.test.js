@@ -2491,9 +2491,13 @@ test("Books exposes focused accounting workspaces instead of one tab-only page",
     path.join(__dirname, "../app/(app)/books/books-client.tsx"),
     "utf8",
   );
+  const transactionsRedirect = fs.readFileSync(
+    path.join(__dirname, "../app/(app)/books/transactions/page.tsx"),
+    "utf8",
+  );
   for (const route of [
-    "/books/transactions",
     "/books/banking",
+    "/books/overhead",
     "/books/chart",
     "/books/ledger",
     "/books/close",
@@ -2502,6 +2506,7 @@ test("Books exposes focused accounting workspaces instead of one tab-only page",
     "/books/cutover",
   ])
     assert.match(client, new RegExp(route.replaceAll("/", "\\/")));
+  assert.match(transactionsRedirect, /redirect\("\/books\/banking"\)/);
   assert.match(client, /\/books\/banking\/\$\{account\.id\}\/reconcile/);
   assert.match(client, /\/books\/close\/\$\{period\.id\}/);
 });

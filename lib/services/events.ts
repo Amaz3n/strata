@@ -58,6 +58,72 @@ const BID_NOTIFICATION_EVENTS = new Set<string>([
 ])
 const RESTRICTED_PROJECT_ROLE_KEYS = new Set(["client", "project_client", "portal_client", "sub", "portal_sub"])
 
+// A provider account is not a vendor a builder recognises. These events name one,
+// so the builder-facing facts — which of their companies it is, and who on their
+// team invited it — are hydrated onto the payload before anything reads it.
+const VENDOR_RECIPIENT_EVENTS = new Set<string>([
+  "vendor_recipient_onboarding_started",
+  "vendor_recipient_status_updated",
+])
+
+// A reversal is money moving backwards after Arc already reported it as settled.
+// QBO-originated reversals reach Arc through the accounting webhook rather than
+// the payment provider, but the money question is identical, so they share one
+// audience policy.
+const PAYMENT_REVERSAL_EVENTS = new Set<string>([
+  "payment_reversed",
+  "payment_reversed_from_qbo",
+  "vendor_bill_payment_reversed",
+])
+
+/**
+ * Payment-domain events that deliberately produce no notification.
+ *
+ * Every other payment/AP event is expected to have a `NotificationType`, a
+ * recipient set, and a title — `tests/payment-notification-coverage.test.js`
+ * fails the build otherwise. This list is the only escape hatch, and each entry
+ * has to say why silence is the right answer. "Nobody asked for it yet" is not
+ * a reason; add the notification instead.
+ */
+export const OPERATIONAL_ONLY_PAYMENT_EVENTS = new Set<string>([
+  // Ledger mirroring from the accounting system. The import summary and the
+  // reconciliation drift alert already cover anything that did not tie out.
+  "bill_imported_from_qbo",
+  "bill_payment_imported_from_qbo",
+  "payment_imported_from_qbo",
+  "vendor_credit_imported_from_qbo",
+  // Lifecycle bookends of a run whose notifiable moments are submitted /
+  // approved / paid / failed. Notifying the middle would train people to skip
+  // the ends.
+  "payment_run_created",
+  "payment_run_canceled",
+  "payment_run_execution_started",
+  // The vendor-facing email IS the notification; a second one to the sender
+  // would just restate what they clicked.
+  "vendor_payment_invitation_sent",
+  "vendor_remittance_sent",
+  "vendor_bill_waiver_chased",
+  // The bill's own hold state and approval history already show these; they
+  // exist so the audit trail is complete, not so somebody is paged.
+  "vendor_bill_auto_approved",
+  "vendor_bill_decision_notified",
+  "vendor_bill_deleted",
+  "vendor_bill_updated",
+  "vendor_bill_waiver_signed",
+  "vendor_credit_created",
+  // Marking a bill paid by hand is done by the person who is looking at it, and
+  // the rail's own settlement notifies as `vendor_payment_paid`.
+  "vendor_bill_paid",
+  // A cost-coding correction. It shows on the project's cost view and in the
+  // audit trail; it moves no money.
+  "vendor_bill_reassigned",
+  "vendor_credit_reassigned",
+  // Recorded by a reviewer who is looking at the blocked-run queue when they
+  // record it, and the release outcome notifies on its own.
+  "payment_risk_override_granted",
+  "payment_risk_block_confirmed",
+])
+
 export async function recordEvent(input: EventInput) {
   let resolvedOrgId = input.orgId
   let actorId = input.actorId ?? null
@@ -234,6 +300,14 @@ async function createNotificationsFromEvent(event: EventRecord, orgId: string) {
     await enrichBidEvent(event, orgId)
   }
 
+  if (VENDOR_RECIPIENT_EVENTS.has(event.event_type)) {
+    await enrichVendorRecipientEvent(event, orgId)
+  }
+
+  if (PAYMENT_REVERSAL_EVENTS.has(event.event_type)) {
+    await enrichReversalEvent(event, orgId)
+  }
+
   // Define who should be notified based on event type
   const recipients = await getNotificationRecipients(event, orgId)
 
@@ -323,28 +397,49 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     return uniqUserIds([...(memberships ?? []).map((row) => row.user_id), ...(actorId ? [actorId] : [])])
   }
 
-  // A reversal changes the project's receivable/payable truth after a payment
-  // had previously been presented as settled. Route it to the finance audience
-  // for that project, including AR readers, rather than only to AP operators.
-  if (event.event_type === "payment_reversed" && projectId) {
-    return getProjectFinancialNotificationRecipients({
-      supabase,
-      orgId,
-      projectId,
-      actorId,
-      policyVersion: "payment-reversal-v1",
-    })
+  // A vendor becoming payable is the moment the rail starts existing for that
+  // vendor, and losing that status is the moment a scheduled run will fail. Both
+  // go to the people who own the rail AND to whoever invited the vendor — the
+  // inviter is routinely a PM or purchasing agent holding neither payment
+  // permission, and they are the one person waiting on the answer.
+  if (VENDOR_RECIPIENT_EVENTS.has(event.event_type)) {
+    const inviterIds = Array.isArray(event.payload?.inviter_ids)
+      ? uniqUserIds(event.payload.inviter_ids.filter((value): value is string => typeof value === "string"))
+      : []
+    const railOwners = await usersWithAnyPermission(supabase, orgId, ["payment.release", "payment.manage_rail"])
+    return uniqUserIds([...railOwners, ...inviterIds]).filter((id) => id !== actorId)
+  }
+
+  // A reversal has two real audiences and used to reach only one of them: a
+  // payload carrying a projectId went to project finance and nobody on the rail,
+  // and a payload without one went to the rail and nobody on the project. The
+  // union is deliberate. Over-notifying a reversal costs an email; missing one
+  // leaves a bank balance nobody can explain.
+  if (PAYMENT_REVERSAL_EVENTS.has(event.event_type)) {
+    const [operators, projectFinance] = await Promise.all([
+      usersWithAnyPermission(supabase, orgId, ["payment.release", "payment.reconcile"]),
+      projectId
+        ? getProjectFinancialNotificationRecipients({
+            supabase,
+            orgId,
+            projectId,
+            actorId,
+            policyVersion: "payment-reversal-v1",
+          })
+        : Promise.resolve<string[]>([]),
+    ])
+    return uniqUserIds([...operators, ...projectFinance]).filter((id) => id !== actorId)
   }
 
   const paymentOperationalEvents = new Set([
     "payment_run_execution_failed",
+    "payment_recovery_unattributed",
     "payment_operations_alert",
     "payment_run_fee_charge_failed",
     "vendor_transfer_needs_attention",
     "vendor_payment_returned",
     "payment_reconciliation_completed",
     "vendor_payout_destination_changed",
-    "payment_reversed",
   ])
   if (paymentOperationalEvents.has(event.event_type)) {
     const permissionKeys = event.event_type === "payment_reconciliation_completed"
@@ -960,6 +1055,218 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
       }
     }
 
+    /**
+     * The provider sent the money back. The vendor was not paid, whatever the
+     * payable said a minute ago, so the copy leads with that rather than with
+     * the word "returned".
+     */
+    case "vendor_payment_returned": {
+      const reason = typeof safePayload.reason === "string" ? safePayload.reason : null
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "vendor_payment_returned" as NotificationType,
+        title: "Vendor payment returned",
+        message: `This payment was sent back by the receiving bank${reason ? ` (${reason})` : ""}, so the vendor has not been paid and the payable is open again. Fix the payout destination before it goes on another run — a second attempt to the same account returns the same way.`,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+        metadata: typeof safePayload.bill_id === "string" ? { bill_id: safePayload.bill_id } : undefined,
+      }
+    }
+
+    /**
+     * The run was approved and the provider refused it. Nobody was paid, which
+     * is the reassuring half; the run still needs a human before it can move.
+     */
+    case "payment_run_execution_failed": {
+      const providerStatus = typeof safePayload.provider_status === "string" ? safePayload.provider_status : null
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "payment_run_execution_failed" as NotificationType,
+        title: "Payment run failed during release",
+        message: `An approved payment run could not be submitted to the payment provider${providerStatus ? ` (${providerStatus})` : ""}. No vendor in this run has been paid. Check the funding source and the run's limits before retrying.`,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
+    /**
+     * A run whose preparer no longer has an account. Automatic recovery cannot
+     * run it as anybody, so it sits there — and this is one of the two states
+     * where Arc cannot say whether the builder's bank was already debited.
+     */
+    case "payment_recovery_unattributed": {
+      const reason = typeof safePayload.reason === "string" ? safePayload.reason : null
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "payment_recovery_unattributed" as NotificationType,
+        title: "Payment run stranded — needs a person",
+        message: `A payment run could not be recovered automatically${reason ? ` (${reason})` : ""}. Arc cannot tell whether the funding bank was already debited, so check the provider record before anyone rebuilds this run.`,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
+    /**
+     * The daily tie-out. Sent on success too, on purpose: a reconciliation you
+     * only hear about when it fails is one you cannot tell apart from a
+     * reconciliation that stopped running.
+     */
+    case "payment_reconciliation_completed": {
+      const exceptions = typeof safePayload.exception_count === "number" ? safePayload.exception_count : 0
+      const difference = typeof safePayload.difference_cents === "number" && safePayload.difference_cents !== 0
+        ? formatCentsForNotification(safePayload.difference_cents)
+        : null
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "payment_reconciliation_completed" as NotificationType,
+        title: exceptions > 0
+          ? `Payment reconciliation: ${exceptions} exception${exceptions === 1 ? "" : "s"}`
+          : "Payment reconciliation clean",
+        message: exceptions > 0
+          ? `Today's vendor-payment reconciliation finished with ${exceptions} exception${exceptions === 1 ? "" : "s"}${difference ? ` and ${difference} unaccounted for` : ""}. Work the stuck and unconfirmed items first — those can still get worse.`
+          : "Today's vendor-payment reconciliation tied out. Every debit and payout is accounted for.",
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
+    /**
+     * The funding bank is the account Arc debits, so every change to it is a
+     * four-eyes event. The copy never names anything beyond the masked digits
+     * the settings screen already shows.
+     */
+    case "funding_source_review_requested":
+    case "funding_source_change_approved":
+    case "funding_source_change_rejected":
+    case "funding_source_activated":
+    case "funding_source_activation_failed": {
+      const failure = typeof safePayload.error === "string" ? safePayload.error : null
+      const message =
+        event_type === "funding_source_review_requested"
+          ? "A funding bank change is waiting on an independent approval. Nothing can be debited from it until someone other than the requester approves it."
+          : event_type === "funding_source_change_approved"
+            ? "A funding bank change was approved. It becomes usable after its cooling period, not immediately."
+            : event_type === "funding_source_change_rejected"
+              ? "A funding bank change was rejected. The account stays unusable and no payment run can draw on it."
+              : event_type === "funding_source_activated"
+                ? "An approved funding bank finished its cooling period and can now fund payment runs."
+                : `An approved funding bank could not be activated after its cooling period${failure ? ` (${failure})` : ""}. Payment runs cannot draw on it until this is resolved.`
+      return {
+        orgId: event.org_id,
+        userId,
+        type: event_type as NotificationType,
+        title: titleForEventType(event_type),
+        message,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+        metadata: typeof safePayload.funding_source_id === "string"
+          ? { funding_source_id: safePayload.funding_source_id }
+          : undefined,
+      }
+    }
+
+    /**
+     * A vendor payment somebody recorded by hand was undone. The bill is open
+     * again for that amount, which is the fact that matters — a payable that
+     * silently reopens is a payable that gets paid twice.
+     */
+    case "vendor_bill_payment_reversed": {
+      const amount = typeof safePayload.amount_cents === "number"
+        ? formatCentsForNotification(safePayload.amount_cents)
+        : null
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "vendor_bill_payment_reversed" as NotificationType,
+        title: `Vendor payment reversed${amount ? `: ${amount}` : ""}`,
+        message: `A recorded vendor payment was reversed${typeof safePayload.reason === "string" ? ` (${safePayload.reason})` : ""}. The payable is open again for that amount — check it before it goes on another run.`,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
+    /**
+     * QuickBooks, not Arc, decided this payment no longer exists. The copy has
+     * to say that plainly: Arc reopened the balance to stay consistent with the
+     * ledger, and it cannot tell whether money actually went back to the
+     * customer. Re-billing before someone confirms is how a customer gets
+     * invoiced twice.
+     */
+    case "payment_reversed_from_qbo": {
+      const amount = typeof safePayload.amount_cents === "number"
+        ? formatCentsForNotification(safePayload.amount_cents)
+        : null
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "payment_reversed_from_qbo" as NotificationType,
+        title: `Customer payment reversed in QuickBooks${amount ? `: ${amount}` : ""}`,
+        message:
+          "A customer payment was deleted in QuickBooks, so Arc reopened the invoice balance to match. Arc did not initiate this and cannot tell whether the money was returned — confirm the deletion was intentional before re-billing.",
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
+    /**
+     * The moment the rail starts existing for one vendor. Everything upstream of
+     * this — the invite, the claim, the Stripe flow — is preparation; this is the
+     * notification that changes what somebody can do today.
+     */
+    case "vendor_recipient_status_updated": {
+      const vendor = typeof safePayload.company_name === "string" && safePayload.company_name
+        ? safePayload.company_name
+        : "A vendor"
+      const payable = safePayload.payouts_enabled === true && safePayload.status === "ready"
+      const companyId = typeof safePayload.company_id === "string" ? safePayload.company_id : null
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "vendor_recipient_status_updated" as NotificationType,
+        title: payable
+          ? `${vendor} can now be paid through Arc Pay`
+          : `${vendor} is no longer payable through Arc Pay`,
+        message: payable
+          ? `${vendor} finished business and bank verification. Their approved bills can go on the next Arc Pay run. Your team only ever sees the masked destination; the full bank details stay with the payment provider.`
+          : `${vendor} no longer has a verified payout account, so Arc Pay runs holding their bills will not release. They have to finish verification again before you can pay them electronically.`,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+        metadata: { href: companyId ? `/companies/${companyId}` : "/payables", company_id: companyId },
+      }
+    }
+
+    case "vendor_recipient_onboarding_started": {
+      const vendor = typeof safePayload.company_name === "string" && safePayload.company_name
+        ? safePayload.company_name
+        : "A vendor"
+      const companyId = typeof safePayload.company_id === "string" ? safePayload.company_id : null
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "vendor_recipient_onboarding_started" as NotificationType,
+        title: `${vendor} started Arc Pay setup`,
+        message: `${vendor} opened business and bank verification with the payment provider. Nothing to do until they finish — you will hear again when their bills can be paid through Arc Pay.`,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+        metadata: { href: companyId ? `/companies/${companyId}` : "/payables", company_id: companyId },
+      }
+    }
+
     case "payment_rail_policy_updated":
     case "payment_run_approvers_updated":
     case "payment_hold_overridden":
@@ -1309,6 +1616,86 @@ async function enrichBidEvent(event: EventRecord, orgId: string) {
   }
 }
 
+/** Active members of the org holding at least one of `permissionKeys`. */
+async function usersWithAnyPermission(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  orgId: string,
+  permissionKeys: string[],
+): Promise<string[]> {
+  const { data: roleRows } = await supabase
+    .from("role_permissions")
+    .select("role_id")
+    .in("permission_key", permissionKeys)
+  const roleIds = [...new Set((roleRows ?? []).map((row) => row.role_id).filter(Boolean))]
+  if (roleIds.length === 0) return []
+  const { data: memberships } = await supabase
+    .from("memberships")
+    .select("user_id")
+    .eq("org_id", orgId)
+    .eq("status", "active")
+    .in("role_id", roleIds)
+  return uniqUserIds((memberships ?? []).map((row) => row.user_id))
+}
+
+/**
+ * A reversal that arrived from the accounting system carries the invoice but not
+ * the project, so the project's finance readers would never hear that their
+ * receivable reopened — and the notification would have no button, because the
+ * href router needs a project to route a payment. The payment row knows; ask it.
+ */
+async function enrichReversalEvent(event: EventRecord, orgId: string) {
+  const payload = (event.payload ?? {}) as Record<string, unknown>
+  if (typeof payload.project_id === "string") return
+  if (event.entity_type !== "payment" || !event.entity_id) return
+
+  const supabase = createServiceSupabaseClient()
+  const { data } = await supabase
+    .from("payments")
+    .select("project_id")
+    .eq("org_id", orgId)
+    .eq("id", event.entity_id)
+    .maybeSingle()
+  if (typeof data?.project_id !== "string") return
+
+  event.payload = { ...payload, project_id: data.project_id }
+}
+
+/**
+ * Hydrate a vendor recipient event with the builder-facing facts.
+ *
+ * The event names a provider account shared across every builder that vendor
+ * works with; what this org needs is their own company record, the teammate who
+ * invited it, and a link that lands somewhere they recognise.
+ */
+async function enrichVendorRecipientEvent(event: EventRecord, orgId: string) {
+  const payload = (event.payload ?? {}) as Record<string, unknown>
+  if (!event.entity_id) return
+
+  const supabase = createServiceSupabaseClient()
+  const { data: relationships } = await supabase
+    .from("vendor_payment_relationships")
+    .select("company_id, invited_by, status")
+    .eq("org_id", orgId)
+    .eq("recipient_account_id", event.entity_id)
+    .limit(50)
+
+  const rows = relationships ?? []
+  if (rows.length === 0) return
+
+  const companyId = typeof rows[0].company_id === "string" ? rows[0].company_id : null
+  const { data: company } = companyId
+    ? await supabase.from("companies").select("name").eq("org_id", orgId).eq("id", companyId).maybeSingle()
+    : { data: null }
+
+  event.payload = {
+    ...payload,
+    company_id: companyId,
+    company_name: typeof company?.name === "string" ? company.name : null,
+    relationship_status: typeof rows[0].status === "string" ? rows[0].status : null,
+    inviter_ids: uniqUserIds(rows.map((row) => (typeof row.invited_by === "string" ? row.invited_by : null))),
+  }
+}
+
 function formatCentsForNotification(cents: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100)
 }
@@ -1423,15 +1810,40 @@ function titleForEventType(eventType: string): string {
       return "Payment hold overridden"
     case "payment_reversed":
       return "Customer payment reversed"
+    case "payment_reversed_from_qbo":
+      return "Customer payment reversed in QuickBooks"
+    case "vendor_bill_payment_reversed":
+      return "Vendor payment reversed"
     case "vendor_credit_applied":
       return "Vendor credit applied"
     case "vendor_payment_relationship_active":
+      return "Vendor Arc Pay access restored"
     case "vendor_payment_relationship_onboarding":
-      return "Vendor payment access restored"
+      return "Vendor Arc Pay access moved back to setup"
     case "vendor_payment_relationship_suspended":
-      return "Vendor payment access suspended"
+      return "Vendor Arc Pay access suspended"
     case "vendor_payment_relationship_revoked":
-      return "Vendor payment access revoked"
+      return "Vendor Arc Pay access revoked"
+    case "vendor_recipient_onboarding_started":
+      return "Vendor started Arc Pay setup"
+    case "vendor_recipient_status_updated":
+      return "Vendor Arc Pay status changed"
+    case "vendor_payment_returned":
+      return "Vendor payment returned"
+    case "payment_run_execution_failed":
+      return "Payment run failed during release"
+    case "payment_reconciliation_completed":
+      return "Payment reconciliation complete"
+    case "funding_source_review_requested":
+      return "Funding bank needs approval"
+    case "funding_source_change_approved":
+      return "Funding bank change approved"
+    case "funding_source_change_rejected":
+      return "Funding bank change rejected"
+    case "funding_source_activated":
+      return "Funding bank activated"
+    case "funding_source_activation_failed":
+      return "Funding bank activation failed"
     default:
       return eventType.replace(/_/g, " ")
   }

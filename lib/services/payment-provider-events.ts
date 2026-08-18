@@ -1,7 +1,10 @@
 import "server-only"
 
 import { getPaymentRailProvider } from "@/lib/integrations/payments/payment-rail-registry"
-import type { NormalizedPaymentRailEvent } from "@/lib/integrations/payments/payment-rail-provider"
+import type {
+  NormalizedPaymentRailEvent,
+  PaymentRailProvider,
+} from "@/lib/integrations/payments/payment-rail-provider"
 import {
   addBusinessHours,
   assertDisbursementTransition,
@@ -22,10 +25,36 @@ import {
   postDisbursementReturnLedger,
   postDisbursementSubmissionReversalLedger,
 } from "@/lib/services/payment-ledger"
+import {
+  openPaymentOperationsIncident,
+  resolvePaymentOperationsIncident,
+} from "@/lib/services/ops-watchdog"
 import { syncVendorRecipient } from "@/lib/services/payment-rail-setup"
 import { sendVendorRemittanceAdvice } from "@/lib/services/vendor-remittance"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
+/** Page size for the return-loss ledger sum. */
+const RETURN_LOSS_PAGE_SIZE = 1_000
+/**
+ * Hard ceiling on that walk. One entry per unrecovered return, so an org past
+ * this has been far beyond any plausible loss ceiling for a long time — the
+ * number exists to bound a webhook, not to be reached.
+ */
+const MAX_RETURN_LOSS_LEDGER_ENTRIES = 20_000
+
+/**
+ * ## Insert-first webhook idempotency — the canonical explanation
+ *
+ * The unique index on (provider, provider_event_id) decides, not a prior SELECT.
+ * Two deliveries of the same Stripe event arriving together both saw "no row"
+ * and both inserted; one won and the other threw a 23505 that read as a
+ * processing failure, so Stripe retried an event that had in fact been stored.
+ * Insert first, and treat the conflict as what it is — a duplicate.
+ *
+ * The AR half of the webhook (`app/api/webhooks/stripe/route.ts`, on
+ * `webhook_events`) follows the same discipline against its own table and points
+ * back here rather than restating it.
+ */
 async function recordProviderEvent(input: {
   provider: string
   providerEventId: string
@@ -37,11 +66,6 @@ async function recordProviderEvent(input: {
   payload: Record<string, unknown>
 }) {
   const supabase = createServiceSupabaseClient()
-  // The unique index on (provider, provider_event_id) decides, not a prior
-  // SELECT. Two deliveries of the same Stripe event arriving together both saw
-  // "no row" and both inserted; one won and the other threw a 23505 that read as
-  // a processing failure, so Stripe retried an event that had in fact been
-  // stored. Insert first, and treat the conflict as what it is — a duplicate.
   const { data, error } = await supabase.from("payment_provider_events").insert({
     provider: input.provider,
     provider_event_id: input.providerEventId,
@@ -52,18 +76,23 @@ async function recordProviderEvent(input: {
     event_created_at: input.eventCreatedAt ?? null,
     payload: input.payload,
   }).select("id").maybeSingle()
-  if (!error && data) return { id: data.id, duplicate: false }
+  if (!error && data) return { id: String(data.id), duplicate: false, completed: false }
   if (error && (error as { code?: string }).code !== "23505") {
     throw new Error(`Unable to store provider event: ${error.message}`)
   }
+  // The attempts come back with the row. Asking separately meant a second
+  // round trip on the duplicate path, which is the hot path — a provider that
+  // retries aggressively hits it far more often than the first delivery.
   const { data: existing, error: existingError } = await supabase
     .from("payment_provider_events")
-    .select("id")
+    .select("id,attempts:payment_provider_event_attempts(outcome)")
     .eq("provider", input.provider)
     .eq("provider_event_id", input.providerEventId)
     .maybeSingle()
   if (existingError || !existing) throw new Error(`Unable to store provider event: ${existingError?.message ?? "conflicting event vanished"}`)
-  return { id: existing.id, duplicate: true }
+  const completed = (existing.attempts ?? []).some((attempt: { outcome: string }) =>
+    attempt.outcome === "processed" || attempt.outcome === "ignored")
+  return { id: String(existing.id), duplicate: true, completed }
 }
 
 async function recordProcessingAttempt(input: { providerEventId: string; outcome: "processed" | "ignored" | "failed"; error?: string | null; startedAt: string }) {
@@ -76,15 +105,6 @@ async function recordProcessingAttempt(input: { providerEventId: string; outcome
     p_completed_at: new Date().toISOString(),
   })
   if (error) throw new Error(`Unable to record provider event attempt: ${error.message}`)
-}
-
-async function providerEventCompleted(providerEventId: string) {
-  const supabase = createServiceSupabaseClient()
-  const { count } = await supabase.from("payment_provider_event_attempts")
-    .select("id", { count: "exact", head: true })
-    .eq("provider_event_id", providerEventId)
-    .in("outcome", ["processed", "ignored"])
-  return (count ?? 0) > 0
 }
 
 /**
@@ -282,8 +302,7 @@ async function enforceReturnLossCeiling(orgId: string, providerKey: string) {
   // figure that already accounts for whatever was recovered.
   const entries: Array<{ amount_cents: number; direction: string }> = []
   let ledgerReadError: { message: string } | null = null
-  const pageSize = 1_000
-  for (let from = 0; ; from += pageSize) {
+  for (let from = 0; from < MAX_RETURN_LOSS_LEDGER_ENTRIES; from += RETURN_LOSS_PAGE_SIZE) {
     const { data, error } = await supabase
       .from("payment_ledger_entries")
       .select("amount_cents,direction,transaction:payment_ledger_transactions!inner(org_id)")
@@ -291,13 +310,20 @@ async function enforceReturnLossCeiling(orgId: string, providerKey: string) {
       .eq("payment_ledger_transactions.org_id", orgId)
       .order("created_at", { ascending: true })
       .order("id", { ascending: true })
-      .range(from, from + pageSize - 1)
+      .range(from, from + RETURN_LOSS_PAGE_SIZE - 1)
     if (error) {
       ledgerReadError = error
       break
     }
     entries.push(...((data ?? []) as Array<{ amount_cents: number; direction: string }>))
-    if ((data ?? []).length < pageSize) break
+    if ((data ?? []).length < RETURN_LOSS_PAGE_SIZE) break
+  }
+  // An unbounded walk inside a webhook is a way to hang the handler, not a way
+  // to be thorough. Past the ceiling on entries the total cannot be computed
+  // honestly, which is the same situation as a failed read and takes the same
+  // fail-closed path.
+  if (!ledgerReadError && entries.length >= MAX_RETURN_LOSS_LEDGER_ENTRIES) {
+    ledgerReadError = { message: `More than ${MAX_RETURN_LOSS_LEDGER_ENTRIES} return-loss ledger entries; the total cannot be summed inside a webhook` }
   }
   if (ledgerReadError) {
     // The ceiling fails closed. A ledger read that cannot be trusted must not
@@ -305,12 +331,9 @@ async function enforceReturnLossCeiling(orgId: string, providerKey: string) {
     // records a failed attempt and the provider redelivers. Every mutation on
     // this path is idempotent, so the retry is safe.
     const detail = "The ACH return-loss ledger could not be read, so the loss ceiling could not be enforced for this return. The webhook will retry."
-    const { data: shouldNotify, error: incidentError } = await supabase.rpc("open_payment_operations_incident", {
-      p_org_id: orgId,
-      p_finding_code: "return_loss_ceiling_check_failed",
-      p_detail: detail,
-    })
-    if (incidentError) throw new Error(`Unable to open the return-loss control incident: ${incidentError.message}`)
+    // A single-org open, not the batch synchronizer: that one would let this
+    // org's failure resolve every other org's still-failing ceiling check.
+    const shouldNotify = await openPaymentOperationsIncident({ orgId, code: "return_loss_ceiling_check_failed", detail })
     if (shouldNotify) {
       await recordEvent({
         orgId,
@@ -326,16 +349,8 @@ async function enforceReturnLossCeiling(orgId: string, providerKey: string) {
     }
     throw new Error(`Unable to read return-loss ledger for ceiling enforcement: ${ledgerReadError.message}`)
   }
-  // A successful check closes only this organization's incident. Using the
-  // batch watchdog synchronizer here would let one healthy org accidentally
-  // resolve another org's still-failing ceiling check.
-  const { error: resolveIncidentError } = await supabase.rpc("resolve_payment_operations_incident", {
-    p_org_id: orgId,
-    p_finding_code: "return_loss_ceiling_check_failed",
-  })
-  if (resolveIncidentError) {
-    throw new Error(`Unable to resolve the return-loss control incident: ${resolveIncidentError.message}`)
-  }
+  // A successful check closes only this organization's incident.
+  await resolvePaymentOperationsIncident({ orgId, code: "return_loss_ceiling_check_failed" })
   const lossCents = (entries ?? []).reduce(
     (sum, entry) => sum + (entry.direction === "debit" ? Number(entry.amount_cents) : -Number(entry.amount_cents)),
     0,
@@ -348,12 +363,7 @@ async function enforceReturnLossCeiling(orgId: string, providerKey: string) {
   )
   if (disableError) throw new Error(`Unable to trip the payment return-loss circuit breaker: ${disableError.message}`)
   const ceilingDetail = "Unrecovered ACH return losses reached the configured ceiling. Electronic payments are disabled for this organization pending review."
-  const { data: shouldNotify, error: incidentError } = await supabase.rpc("open_payment_operations_incident", {
-    p_org_id: orgId,
-    p_finding_code: "return_loss_ceiling_reached",
-    p_detail: ceilingDetail,
-  })
-  if (incidentError) throw new Error(`Unable to open the return-loss ceiling incident: ${incidentError.message}`)
+  const shouldNotify = await openPaymentOperationsIncident({ orgId, code: "return_loss_ceiling_reached", detail: ceilingDetail })
   if (shouldNotify) {
     await Promise.all([
       recordEvent({
@@ -423,7 +433,7 @@ async function processFeeChargeEvent(input: {
     eventCreatedAt: input.event.occurredAt,
     payload: input.event.payload,
   })
-  if (providerEvent.duplicate && await providerEventCompleted(providerEvent.id)) return { handled: true, duplicate: true }
+  if (providerEvent.duplicate && providerEvent.completed) return { handled: true, duplicate: true }
 
   try {
     // Terminal states are final; a late `processing` after `succeeded` is a
@@ -463,13 +473,41 @@ async function processFeeChargeEvent(input: {
   }
 }
 
+export interface PaymentRailEventResult {
+  handled: boolean
+  duplicate?: boolean
+  /**
+   * Which rail this event belongs to, decided here and nowhere else.
+   *
+   * `ap` covers both "Arc processed it" and "the provider object carries Arc's
+   * AP marker but no Arc row matched". The second case is the important one: an
+   * AP intent whose disbursement lookup misses used to report the same
+   * `handled: false` as an event from another product, and the caller then ran
+   * it through the receivables mapper — where it landed on `recordPayment`
+   * keyed on an `invoice_id` an AP intent has never carried. Nothing structural
+   * stopped that; this does.
+   */
+  domain: "ap" | "unrelated"
+}
+
 export async function processPaymentRailEvent(
   providerKey: string,
   rawEvent: unknown,
-): Promise<{ handled: boolean; duplicate?: boolean }> {
+): Promise<PaymentRailEventResult> {
   const provider = getPaymentRailProvider(providerKey)
   const event = await provider.normalizeWebhookEvent(rawEvent)
-  if (!event) return { handled: false }
+  if (!event) return { handled: false, domain: "unrelated" }
+  const result = await processNormalizedRailEvent(provider, event)
+  return {
+    ...result,
+    domain: result.handled || event.attribution === "provider_tagged" ? "ap" : "unrelated",
+  }
+}
+
+async function processNormalizedRailEvent(
+  provider: PaymentRailProvider,
+  event: NormalizedPaymentRailEvent,
+): Promise<{ handled: boolean; duplicate?: boolean }> {
   const startedAt = new Date().toISOString()
 
   if (event.kind === "recipient.updated") {
@@ -487,7 +525,7 @@ export async function processPaymentRailEvent(
       eventCreatedAt: event.occurredAt,
       payload: event.payload,
     })
-    if (providerEvent.duplicate && await providerEventCompleted(providerEvent.id)) return { handled: true, duplicate: true }
+    if (providerEvent.duplicate && providerEvent.completed) return { handled: true, duplicate: true }
     await recordProcessingAttempt({ providerEventId: providerEvent.id, outcome: "processed", startedAt })
     return { handled: true }
   }
@@ -510,7 +548,7 @@ export async function processPaymentRailEvent(
       eventCreatedAt: event.occurredAt,
       payload: event.payload,
     })
-    if (providerEvent.duplicate && await providerEventCompleted(providerEvent.id)) return { handled: true, duplicate: true }
+    if (providerEvent.duplicate && providerEvent.completed) return { handled: true, duplicate: true }
     try {
       if (event.blocked) {
         const { error: fundingError } = await supabase.from("org_funding_sources").update({
@@ -562,25 +600,16 @@ export async function processPaymentRailEvent(
       eventCreatedAt: event.occurredAt,
       payload: event.payload,
     })
-    if (providerEvent.duplicate && await providerEventCompleted(providerEvent.id)) return { handled: true, duplicate: true }
+    if (providerEvent.duplicate && providerEvent.completed) return { handled: true, duplicate: true }
     try {
-      const supabase = createServiceSupabaseClient()
       const detail = `Stripe requested ACH authorization evidence (${event.status}): ${event.reason}`
+      const incidentCode = `ach_authorization_inquiry:${disbursementId}`
       if (event.status === "warning_closed") {
-        const { error: resolveError } = await supabase.rpc("resolve_payment_operations_incident", {
-          p_org_id: orgId,
-          p_finding_code: `ach_authorization_inquiry:${disbursementId}`,
-        })
-        if (resolveError) throw new Error(`Unable to resolve ACH authorization inquiry: ${resolveError.message}`)
+        await resolvePaymentOperationsIncident({ orgId, code: incidentCode })
         await recordProcessingAttempt({ providerEventId: providerEvent.id, outcome: "processed", startedAt })
         return { handled: true }
       }
-      const { data: shouldNotify, error: incidentError } = await supabase.rpc("open_payment_operations_incident", {
-        p_org_id: orgId,
-        p_finding_code: `ach_authorization_inquiry:${disbursementId}`,
-        p_detail: detail,
-      })
-      if (incidentError) throw new Error(`Unable to open ACH authorization inquiry incident: ${incidentError.message}`)
+      const shouldNotify = await openPaymentOperationsIncident({ orgId, code: incidentCode, detail })
       if (shouldNotify) {
         await recordEvent({ orgId, eventType: "payment_operations_alert", entityType: "disbursement", entityId: disbursementId, payload: { findings: [{ code: "ach_authorization_inquiry", detail }], provider_inquiry_id: event.providerInquiryId } })
       }
@@ -604,9 +633,11 @@ export async function processPaymentRailEvent(
   let transferReleaseAfter: string | null = null
   let returnReason = "ACH payment returned"
 
+  const supabase = createServiceSupabaseClient()
+
   if (event.kind === "disbursement.status") {
     const disbursement = event.disbursementId
-      ? await createServiceSupabaseClient().from("disbursements").select("*").eq("provider", event.provider).eq("id", event.disbursementId).maybeSingle().then((result) => result.data)
+      ? await supabase.from("disbursements").select("*").eq("provider", event.provider).eq("id", event.disbursementId).maybeSingle().then((result) => result.data)
       : await resolveDisbursementByPaymentId(event.provider, event.providerPaymentId)
     if (!disbursement) return { handled: false }
     disbursements = [disbursement]
@@ -620,22 +651,34 @@ export async function processPaymentRailEvent(
     }
   } else if (event.kind === "disbursement.paid") {
     if (!event.providerAccountId) return { handled: false }
-    const supabase = createServiceSupabaseClient()
     const { data: recipient } = await supabase.from("payment_recipient_accounts").select("id").eq("provider", event.provider).eq("provider_account_id", event.providerAccountId).maybeSingle()
+    // The expensive part comes after this check, deliberately. Resolving a
+    // payout's transfers is an unbounded balance-transaction walk plus a charge
+    // retrieval per source; doing it during normalization spent all of that on
+    // every payout Stripe reports, including every one on an account Arc has
+    // never heard of, and a large payout ran the webhook out of time before Arc
+    // had asked a single question of its own database.
     if (!recipient) return { handled: false }
-    if (event.providerTransferIds.length > 0) {
-      const { data } = await supabase.from("disbursements").select("*").eq("provider", event.provider).eq("recipient_account_id", recipient.id).in("provider_transfer_id", event.providerTransferIds)
+    const providerTransferIds = await provider.resolvePayoutTransferIds({
+      providerAccountId: event.providerAccountId,
+      providerPayoutId: event.providerPayoutId,
+    })
+    if (providerTransferIds.length > 0) {
+      const { data } = await supabase.from("disbursements").select("*").eq("provider", event.provider).eq("recipient_account_id", recipient.id).in("provider_transfer_id", providerTransferIds)
       disbursements = data ?? []
     }
     providerPayoutId = event.providerPayoutId
     targetStatus = "paid"
   } else if (event.kind === "disbursement.payout_attention") {
     if (!event.providerAccountId) return { handled: false }
-    const supabase = createServiceSupabaseClient()
     const { data: recipient } = await supabase.from("payment_recipient_accounts").select("id").eq("provider", event.provider).eq("provider_account_id", event.providerAccountId).maybeSingle()
     if (!recipient) return { handled: false }
-    if (event.providerTransferIds.length > 0) {
-      const { data } = await supabase.from("disbursements").select("*").eq("provider", event.provider).eq("recipient_account_id", recipient.id).in("provider_transfer_id", event.providerTransferIds)
+    const providerTransferIds = await provider.resolvePayoutTransferIds({
+      providerAccountId: event.providerAccountId,
+      providerPayoutId: event.providerPayoutId,
+    })
+    if (providerTransferIds.length > 0) {
+      const { data } = await supabase.from("disbursements").select("*").eq("provider", event.provider).eq("recipient_account_id", recipient.id).in("provider_transfer_id", providerTransferIds)
       disbursements = data ?? []
     }
     const first = disbursements[0]
@@ -649,7 +692,7 @@ export async function processPaymentRailEvent(
       eventCreatedAt: event.occurredAt,
       payload: event.payload,
     })
-    if (providerEvent.duplicate && await providerEventCompleted(providerEvent.id)) return { handled: true, duplicate: true }
+    if (providerEvent.duplicate && providerEvent.completed) return { handled: true, duplicate: true }
     try {
       if (disbursements.length === 0) throw new Error("Failed provider payout could not be matched to an Arc transfer")
       for (const disbursement of disbursements) {
@@ -664,12 +707,7 @@ export async function processPaymentRailEvent(
         }).eq("org_id", orgId).eq("id", disbursementId)
         if (failureError) throw new Error(`Unable to record provider payout failure: ${failureError.message}`)
         const detail = `Vendor bank payout ${event.status}: ${event.reason}. Do not create a replacement payment; the transferred funds remain associated with this vendor while payout details are repaired.`
-        const { data: shouldNotify, error: incidentError } = await supabase.rpc("open_payment_operations_incident", {
-          p_org_id: orgId,
-          p_finding_code: `vendor_payout_failed:${disbursementId}`,
-          p_detail: detail,
-        })
-        if (incidentError) throw new Error(`Unable to open vendor payout incident: ${incidentError.message}`)
+        const shouldNotify = await openPaymentOperationsIncident({ orgId, code: `vendor_payout_failed:${disbursementId}`, detail })
         if (shouldNotify) await recordEvent({ orgId, eventType: "payment_operations_alert", entityType: "disbursement", entityId: disbursementId, payload: { findings: [{ code: "vendor_payout_failed", detail }], provider_payout_id: event.providerPayoutId } })
       }
       await syncVendorRecipient(event.providerAccountId, event.provider, `${event.provider}_payout_failure`)
@@ -694,9 +732,8 @@ export async function processPaymentRailEvent(
     // apart from the actual below because they answer different questions.
     const quotedProcessorFeeCents = Number(disbursement.processor_fee_cents ?? 0)
     const providerEvent = await recordProviderEvent({ provider: event.provider, providerEventId: event.providerEventId, providerAccountId: event.providerAccountId, orgId: String(disbursement.org_id), disbursementId: String(disbursement.id), eventType: event.providerEventType, eventCreatedAt: event.occurredAt, payload: event.payload })
-    if (providerEvent.duplicate && await providerEventCompleted(providerEvent.id)) return { handled: true, duplicate: true }
+    if (providerEvent.duplicate && providerEvent.completed) return { handled: true, duplicate: true }
     try {
-      const supabase = createServiceSupabaseClient()
       // Record what the provider actually charged Arc, alongside — not over —
       // what the builder was quoted. The quote is what the approver signed for
       // and what the fee debit collected; the actual is Arc's own cost, and the
@@ -754,7 +791,7 @@ export async function processPaymentRailEvent(
     eventCreatedAt: event.occurredAt,
     payload: event.payload,
   })
-  if (providerEvent.duplicate && await providerEventCompleted(providerEvent.id)) return { handled: true, duplicate: true }
+  if (providerEvent.duplicate && providerEvent.completed) return { handled: true, duplicate: true }
 
   try {
     if (disbursements.length === 0) {
@@ -769,8 +806,8 @@ export async function processPaymentRailEvent(
         if (providerTransferId) await advanceDisbursement(disbursementId, orgId, "transfer_pending", { provider_transfer_id: providerTransferId })
         await advanceDisbursement(disbursementId, orgId, "payout_pending", { provider_payout_id: providerPayoutId })
         await processDisbursementPaid({ disbursement: { ...disbursement, provider_payout_id: providerPayoutId }, providerEventId: providerEvent.id, providerPayoutId, paidAt: event.occurredAt })
-        await createServiceSupabaseClient().from("disbursements").update({ failure_reason: null }).eq("org_id", orgId).eq("id", disbursementId)
-        await createServiceSupabaseClient().rpc("resolve_payment_operations_incident", { p_org_id: orgId, p_finding_code: `vendor_payout_failed:${disbursementId}` })
+        await supabase.from("disbursements").update({ failure_reason: null }).eq("org_id", orgId).eq("id", disbursementId)
+        await resolvePaymentOperationsIncident({ orgId, code: `vendor_payout_failed:${disbursementId}` })
       } else if (targetStatus === "returned" && providerReversalId) {
         await processDisbursementReturn({ disbursement, providerEventId: providerEvent.id, providerReversalId, reason: returnReason, occurredAt: event.occurredAt })
         if (disbursement.status !== "paid") await rollUpTerminalDisbursement(disbursement, "returned", returnReason)

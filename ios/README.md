@@ -130,8 +130,35 @@ Commands currently used for the local release gate:
 npm run test:mobile
 npx tsc --noEmit --pretty false
 npm run build
-xcodebuild test -project ios/Arc/Arc.xcodeproj -scheme Arc -configuration Debug -destination 'platform=iOS Simulator,id=612EA5F3-0E0A-4D13-8EC2-F85E7B99E965'
-xcodebuild build -project ios/Arc/Arc.xcodeproj -scheme Arc -configuration Release -destination 'platform=iOS Simulator,id=612EA5F3-0E0A-4D13-8EC2-F85E7B99E965'
+xcodebuild test -project ios/Arc/Arc.xcodeproj -scheme Arc -configuration Debug -destination 'platform=iOS Simulator,name=iPhone 17,OS=27.0'
+xcodebuild build -project ios/Arc/Arc.xcodeproj -scheme Arc -configuration Release -destination 'platform=iOS Simulator,name=iPhone 17,OS=27.0'
+```
+
+The destination is matched by name and OS rather than UDID on purpose: simulator
+UDIDs are per-machine, so a pinned id fails for everyone but the person who wrote
+it. The `OS=` half matters too — with several runtimes installed, a bare device
+name is ambiguous and `xcodebuild` refuses with a wall of candidate destinations.
+List what this machine actually has and substitute from that output:
+
+```sh
+xcrun simctl list devices available
+```
+
+If `xcodebuild` hangs and never creates its DerivedData directory, check for a
+stuck first-launch install — it needs an admin prompt and holds a lock every
+other Xcode tool blocks on:
+
+```sh
+ps aux | grep '[r]unFirstLaunch'
+sudo xcodebuild -runFirstLaunch
+```
+
+A machine with no installed runtimes (`~/Library/Developer/CoreSimulator/Profiles/Runtimes/`
+missing) can still type-check against the SDK, which is a useful fallback gate
+but is **not** a build and runs no tests:
+
+```sh
+xcrun --sdk iphonesimulator swiftc -typecheck -target arm64-apple-ios17.0-simulator $(find ios/Arc/Arc -name '*.swift')
 ```
 
 For TestFlight, switch the destination to a generic iOS device or archive from Xcode after confirming signing and provisioning.

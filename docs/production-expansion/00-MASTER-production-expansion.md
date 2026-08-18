@@ -305,10 +305,12 @@ accounting_connections           (provider-agnostic, MANY per org, entity-mapped
   coverage. Security advisors report no warranty findings; relevant performance
   notices are only expected unused indexes on the new tables.
 - [ ] Workstream 07 QA-org portal/email/mobile/visual walkthrough, seeded
-  analytics and 500-row scale acceptance remain pending. Outbound vendor-credit
-  sync also remains an explicit Workstream 08 prerequisite because the current
-  QBO adapter intentionally blocks outbound credits; Arc-native backcharge and
-  recovery behavior is complete.
+  analytics and 500-row scale acceptance remain pending. Arc-native backcharge
+  and recovery behavior is complete. Outbound vendor-credit sync is **no longer
+  a blocker** — the QBO adapter declares `supportsVendorCredits: true` and
+  implements `pushVendorCredit` (`lib/integrations/accounting/qbo/adapter.ts`);
+  earlier revisions of this file said the adapter blocked outbound credits and
+  that statement was stale.
 - [x] Workstream 08 Phases A–C and D1 are implemented: provider interface and QBO
   adapter extraction, neutral orchestration/connection/sync-ledger services,
   multi-connection entity mapping and admin UI, connection-aware import and sync,
@@ -324,9 +326,12 @@ accounting_connections           (provider-agnostic, MANY per org, entity-mapped
 - [ ] Workstream 08 application deployment and Production Gates A/B/C remain,
   including the mandatory 48-hour baseline and 14-day zero-divergence soak. The
   remaining business-table `qbo_*` source census and destructive D2 application
-  intentionally remain blocked behind Gate C. B3 and D2 are held outside the
-  active migration directory under `supabase/pending-migrations/`, so a blanket
-  migration command cannot apply either gated cleanup prematurely.
+  intentionally remain blocked behind Gate C. B3 has since been promoted and is
+  live as `supabase/migrations/20260724015507_accounting_drop_compat_views.sql`;
+  only D2 (`20260719001624_drop_qbo_columns.sql`) is still held under
+  `supabase/pending-migrations/`, alongside three unrelated AP cleanups
+  (`20260806120000`, `20260812124033`, `20260812131000`) that have accumulated
+  there without a documented gate and need one or need applying.
 - [x] Workstream 09 repository implementation is complete: code-catalog onboarding
   stages and 15-row readiness evidence; seven idempotent staged CSV importers with
   mapping profiles, dry-run correction grid, AI suggest-only headers, and domain
@@ -342,6 +347,73 @@ accounting_connections           (provider-agnostic, MANY per org, entity-mapped
   live-model walkthroughs, 5k-row timing, the synthetic 250-project/400-lot audit,
   a full simulated onboarding through the first Arc-native start, and visual/dark-
   mode review. No customer or production org was seeded for acceptance testing.
+
+### Hardening pass — 2026-08-17
+
+A cross-workstream review of the production tier found defects concentrated in
+the layer nothing tested: money paths, gate evidence, and scale. All of the
+below are fixed in the repository; the migrations listed at the end are
+**written but NOT applied** and gate the deploy.
+
+Money correctness (workstream 06):
+
+- **Closing and earnest-deposit invoices were 100× too large.** `createInvoice`
+  takes dollar-denominated `unit_cost`; a heuristic passed raw cents through for
+  any amount over $1,000, so every real home price was inflated a hundredfold.
+  The heuristic is deleted, and `settleClosing` now refuses to issue an invoice
+  whose lines do not total the settlement's final price.
+- **Deposits are relieved, not netted.** The closing invoice bills the full sale
+  price and each collected deposit is applied against it, so revenue posts whole
+  and the customer-deposit liability clears. Previously deposits were subtracted
+  from the invoice lines, understating revenue and stranding one liability per
+  closing. Settlement is now retry-safe (invoice reuse, no double-applied
+  deposits or duplicate balance payment).
+- Deposit **forfeiture** posts a forfeiture invoice and applies the deposit to
+  it, instead of recording a metadata label and leaving the liability forever.
+- **Settlement adjustments** (seller credits, closing costs, prorations) are
+  recorded on the closing and flow into both the settlement and the invoice —
+  no real closing settles at the contract number.
+- Incentive `effective_start` / `effective_end` / `max_uses` / `requires_approval`
+  are enforced instead of being decorative columns.
+- Punch-status filter fixed: `closings.ts` excluded a `completed` status that
+  does not exist while counting real `resolved` items as open, blocking
+  closings that should clear.
+
+Enforcement that did not enforce (workstreams 03–05):
+
+- **`selections_locked` and `price_book` start gates were vacuously true.** Both
+  passed on absence of evidence, and the selection groups they check were only
+  created *during* the release they were meant to gate. Groups are now
+  instantiated at purchase-agreement execution, and both gates require positive
+  evidence.
+- **Post-cutoff selection changes now reach purchasing.** The buyer's fee-bearing
+  change order fans out to a trade VPO (`design_studio_co` +
+  `selection_after_cutoff`), idempotent on the originating change order.
+  Previously the buyer was billed and the trade PO was never revised.
+- VPO approval gained segregation of duties (requester ≠ approver) and can no
+  longer resurrect a rejected order.
+- Field VPO capture on mobile was querying a column that does not exist and
+  returned 500 for every request.
+
+Scale, at the stated 400-lot / 250-project design case:
+
+- Silent truncation removed from price-agreement resolution, lot status counts,
+  community portfolio, division project scoping, and the weekly variance digest;
+  reads either page to completion or say plainly that they stopped.
+- Overlapping partial PO completions can no longer double-bill; PO numbers are
+  unique across communities.
+- Release orchestration is resumable, leased against concurrent workers, and
+  honest about what a cancel did and did not undo.
+
+Ownership:
+
+- `community_plan_availability` had two writers. The offering decision moved to
+  the community (`sales.manage`); the plan library is read-only for it, and the
+  rule that silently discarded one caller's price is gone.
+
+Still open after this pass: the iOS superintendent experience, escrow/title and
+settlement-statement documents, an agreement template/addenda library, and every
+QA-org acceptance scenario below — none of which this pass touched.
 
 **Execution order:** 08 and 01 start in parallel (08 is platform work everything
 financial rides on; do the interface extraction + multi-connection before 04/06 post

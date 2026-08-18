@@ -1,6 +1,6 @@
 import "server-only"
 
-import { stepCountIs, streamText } from "ai"
+import { stepCountIs, streamText, type LanguageModelUsage } from "ai"
 
 import type { AiSearchTraceEvent, AskAiSearchResponse } from "@/lib/services/ai-search/types"
 import { getOrgAiSearchConfigFromContext, type AiConfigSource, type AiProvider } from "@/lib/services/ai-config"
@@ -23,8 +23,10 @@ import {
 } from "@/lib/services/ai-search/sessions"
 import { recordAiSearchEvent } from "@/lib/services/ai-search/telemetry"
 import { getAiSearchRuntimeFlags } from "@/lib/services/ai-search-flags"
-import { getApiKeyForProvider, resolveLanguageModel } from "@/lib/services/ai-search/llm"
+import { getApiKeyForProvider, resolveLanguageModel } from "@/lib/services/ai/provider"
+import { recordAiUsage } from "@/lib/services/ai/usage"
 import { requireOrgContext } from "@/lib/services/context"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import type { SearchResult } from "@/lib/services/search"
 
 const MAX_QUERY_CHARS = 1_200
@@ -358,6 +360,24 @@ export async function streamAiAssistant({
       label: "Answered from cache",
       detail: "The records behind this answer have not changed since it was last asked.",
     })
+    // Zero tokens, zero cost, and that is the point: without a row here the
+    // cache looks like reduced usage rather than avoided spend, and nobody can
+    // tell a working cache from a quiet week.
+    void recordAiUsage(createServiceSupabaseClient(), {
+      orgId: context.orgId,
+      feature: "search",
+      tier: "standard",
+      provider: aiConfig.provider,
+      model: aiConfig.model,
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+      latencyMs: Date.now() - startedAt,
+      attempt: 1,
+      escalatedFrom: null,
+      status: "cache_hit",
+      errorKind: null,
+      entityType: "ai_search_session",
+      entityId: sessionId,
+    })
     await emit("result", { ...cache.hit, sessionId })
     return
   }
@@ -467,6 +487,7 @@ export async function streamAiAssistant({
 
   let text = ""
   let streamFailed = false
+  let usage: LanguageModelUsage | null = null
 
   try {
     const result = streamText({
@@ -548,6 +569,10 @@ export async function streamAiAssistant({
         })
       }
     }
+
+    // Safe only because the stream above is fully drained by here; this covers
+    // every step of the tool loop, not just the final one.
+    usage = await result.totalUsage
   } catch (error) {
     streamFailed = true
     await emitTrace(emit, {
@@ -557,6 +582,33 @@ export async function streamAiAssistant({
       detail: error instanceof Error ? error.message : "The assistant stream failed.",
     })
   }
+
+  // The assistant is the highest-volume model call in the product and was the
+  // one nobody was billing: the gateway logs every extraction attempt, while
+  // this loop — six tool steps of it — reported nothing. Fire-and-forget, like
+  // every other usage row, because analytics must not fail an answer.
+  void recordAiUsage(createServiceSupabaseClient(), {
+    orgId: context.orgId,
+    feature: "search",
+    // The assistant resolves its model through the legacy per-org search config,
+    // which has no tier. Recording the feature's base tier keeps the row
+    // groupable next to gateway rows rather than inventing a tier it never used.
+    tier: "standard",
+    provider: aiConfig.provider,
+    model: aiConfig.model,
+    usage: {
+      inputTokens: usage?.inputTokens ?? null,
+      outputTokens: usage?.outputTokens ?? null,
+      totalTokens: usage?.totalTokens ?? null,
+    },
+    latencyMs: Date.now() - startedAt,
+    attempt: 1,
+    escalatedFrom: null,
+    status: streamFailed ? "error" : "ok",
+    errorKind: streamFailed ? "stream_failed" : null,
+    entityType: "ai_search_session",
+    entityId: sessionId,
+  })
 
   const toolContext = buildToolContext(state)
   if (!text.trim() && toolContext) {

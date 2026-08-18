@@ -1,6 +1,14 @@
 import "server-only"
 
 import { LOT_STATUSES, UNPHASED_KEY, type LotStatus } from "@/lib/land/lot-lifecycle"
+import {
+  inventoryFilterClauses,
+  inventoryWindow,
+  isTruncated,
+  orderColumns,
+  type InventoryFilters,
+} from "@/lib/land/inventory-query"
+import { readAllRows } from "@/lib/land/paging"
 import { getCommunity } from "@/lib/services/communities"
 import { requireOrgContext } from "@/lib/services/context"
 import { mapDimensions, type LotDimensions } from "@/lib/services/lots"
@@ -54,26 +62,16 @@ export interface InventoryLotDTO {
 }
 
 /**
- * Columns Postgres can order by. Margin is deliberately absent: it is computed
- * from the P&L rather than stored on the lot, so it is ordered by the page that
- * already holds both halves.
+ * Filter, sort, and page composition lives in `lib/land/inventory-query.ts` so
+ * the three reads of this inventory cannot drift apart, and so the arithmetic
+ * behind them is testable without a database. Margin is deliberately not a
+ * sortable column: it is computed from the P&L rather than stored on the lot, so
+ * it is ordered by the page that already holds both halves.
  */
-export const INVENTORY_SORTS = ["lot", "address", "status", "price", "premium"] as const
-export type InventorySort = (typeof INVENTORY_SORTS)[number]
+export { INVENTORY_SORTS, isInventorySort, type InventorySort } from "@/lib/land/inventory-query"
 
-export function isInventorySort(value: string | undefined | null): value is InventorySort {
-  return value != null && (INVENTORY_SORTS as readonly string[]).includes(value)
-}
-
-export interface CommunityInventoryFilters {
+export interface CommunityInventoryFilters extends InventoryFilters {
   status?: LotStatus
-  phaseId?: string
-  /** Matches lot number, block, or address — the lot's own columns. */
-  search?: string
-  sort?: InventorySort
-  direction?: "asc" | "desc"
-  page?: number
-  pageSize?: number
 }
 
 export interface CommunityInventoryPage {
@@ -92,6 +90,13 @@ export interface CommunityInventoryPage {
 export const INVENTORY_MAP_PAGE_SIZE = 600
 export const INVENTORY_TABLE_PAGE_SIZE = 100
 
+/**
+ * A ceiling on the phase cross-tab read, not a page size. Ten times the largest
+ * community anyone has platted, so it exists to stop a runaway rather than to
+ * trim a real community — and when it does stop one, the tab says so.
+ */
+const PHASE_COUNT_SCAN_CAP = 20_000
+
 /** One literal: PostgREST derives the row type from the select string itself. */
 const LOT_SELECT =
   "id, lot_number, block, address, status, community_phase_id, takedown_id, dimensions, swing, premium_cents, cost_basis_cents, asking_price_override_cents, acquired_date, notes, house_plan_id, house_plan_elevation_id, project_id, plat_x, plat_y, phase:community_phases(name), takedown:lot_takedowns(name), project:projects(name), plan:house_plans(name, code), elevation:house_plan_elevations(name)"
@@ -104,49 +109,19 @@ function relation<T>(value: T | T[] | null | undefined): T | null {
   return Array.isArray(value) ? value[0] ?? null : value
 }
 
-/** PostgREST puts `or` patterns in the URL, so the term is bounded and escaped. */
-function searchPattern(term: string) {
-  return term.replace(/[(),*]/g, " ").trim().slice(0, 60)
-}
-
-type LotFilterClause = { kind: "eq"; column: string; value: string } | { kind: "or"; filter: string }
-
-/**
- * One definition of "which lots the current filters mean", shared by the page
- * read, the status counts behind the filter chips, and the id list a select-all
- * bulk edit acts on. Three readings of the same filter set that could drift are
- * three chances to update lots the user never saw.
- *
- * Returned as clauses rather than applied to a builder: the three call sites
- * select different columns, and threading their builder types through a generic
- * helper blows the inference budget.
- */
-function inventoryFilterClauses(filters: CommunityInventoryFilters): LotFilterClause[] {
-  const clauses: LotFilterClause[] = []
-  if (filters.status) clauses.push({ kind: "eq", column: "status", value: filters.status })
-  if (filters.phaseId) clauses.push({ kind: "eq", column: "community_phase_id", value: filters.phaseId })
-  const term = filters.search ? searchPattern(filters.search) : ""
-  if (term) clauses.push({ kind: "or", filter: `lot_number.ilike.%${term}%,block.ilike.%${term}%,address.ilike.%${term}%` })
-  return clauses
-}
-
-const SORT_COLUMNS: Record<InventorySort, string[]> = {
-  lot: ["block", "lot_number"],
-  address: ["address"],
-  status: ["status", "block", "lot_number"],
-  price: ["asking_price_override_cents"],
-  premium: ["premium_cents"],
-}
-
-function orderColumns(filters: CommunityInventoryFilters) {
-  const ascending = filters.direction !== "desc"
-  return SORT_COLUMNS[filters.sort ?? "lot"].map((name) => ({ name, ascending }))
+function emptyStatusCounts(): Record<LotStatus, number> {
+  return Object.fromEntries(LOT_STATUSES.map((status) => [status, 0])) as Record<LotStatus, number>
 }
 
 /**
  * The status mix behind the filter chips. Counted with every filter *except*
  * status applied, so the chips keep showing what else is there once one is
  * picked rather than collapsing to the one you chose.
+ *
+ * One exact `COUNT` per status rather than a capped row read tallied here: the
+ * old shape read up to 5,000 lot rows and added them up in JS, so past the cap
+ * the chips reported numbers that were not merely low but wrong, on exactly the
+ * communities big enough to need them.
  */
 export async function countCommunityLotsByStatus(
   communityId: string,
@@ -155,51 +130,67 @@ export async function countCommunityLotsByStatus(
 ): Promise<Record<LotStatus, number>> {
   const context = await requireOrgContext(orgId)
   await requirePermission("community.read", context)
-  let query = context.supabase
-    .from("lots")
-    .select("status")
-    .eq("org_id", context.orgId)
-    .eq("community_id", communityId)
-    .limit(5_000)
-  for (const clause of inventoryFilterClauses(filters)) {
-    query = clause.kind === "eq" ? query.eq(clause.column, clause.value) : query.or(clause.filter)
-  }
-  const { data, error } = await query
-  if (error) throw new Error(`Failed to count the inventory: ${error.message}`)
-  const counts = Object.fromEntries(LOT_STATUSES.map((status) => [status, 0])) as Record<LotStatus, number>
-  for (const row of data ?? []) {
-    const status = row.status as LotStatus
-    if (status in counts) counts[status] += 1
-  }
+  const clauses = inventoryFilterClauses(filters)
+  const results = await Promise.all(
+    LOT_STATUSES.map((status) => {
+      let query = context.supabase
+        .from("lots")
+        .select("id", { count: "exact", head: true })
+        .eq("org_id", context.orgId)
+        .eq("community_id", communityId)
+        .eq("status", status)
+      for (const clause of clauses) {
+        query = clause.kind === "eq" ? query.eq(clause.column, clause.value) : query.or(clause.filter)
+      }
+      return query
+    }),
+  )
+  const counts = emptyStatusCounts()
+  results.forEach((result, index) => {
+    if (result.error) throw new Error(`Failed to count the inventory: ${result.error.message}`)
+    counts[LOT_STATUSES[index]] = result.count ?? 0
+  })
   return counts
+}
+
+export interface PhaseLotCounts {
+  byPhase: Record<string, Record<LotStatus, number>>
+  /** True when the read stopped before the community ran out of lots. */
+  truncated: boolean
 }
 
 /**
  * The status mix inside each phase. A phase list of names and target dates
  * answers none of the land manager's questions — "how much is left in Phase 2
  * and when does it dry up" needs the lots that are in it.
+ *
+ * This is the one count here that still reads rows: it is a phase-by-status
+ * cross-tab, which PostgREST cannot aggregate, and the alternative is a `COUNT`
+ * per cell — six per phase. So it reads two narrow columns and pages to the end
+ * of the community rather than stopping at an arbitrary row cap, and says so if
+ * a ceiling ever stops it first.
  */
-export async function countLotsByPhase(
-  communityId: string,
-  orgId?: string,
-): Promise<Record<string, Record<LotStatus, number>>> {
+export async function countLotsByPhase(communityId: string, orgId?: string): Promise<PhaseLotCounts> {
   const context = await requireOrgContext(orgId)
   await requirePermission("community.read", context)
-  const { data, error } = await context.supabase
-    .from("lots")
-    .select("community_phase_id, status")
-    .eq("org_id", context.orgId)
-    .eq("community_id", communityId)
-    .limit(5_000)
-  if (error) throw new Error(`Failed to count the phases: ${error.message}`)
+  const { rows, truncated } = await readAllRows<{ community_phase_id: string | null; status: LotStatus }>(
+    (from, to) =>
+      context.supabase
+        .from("lots")
+        .select("community_phase_id, status")
+        .eq("org_id", context.orgId)
+        .eq("community_id", communityId)
+        .order("id")
+        .range(from, to),
+    { cap: PHASE_COUNT_SCAN_CAP, label: "Failed to count the phases" },
+  )
   const byPhase: Record<string, Record<LotStatus, number>> = {}
-  for (const row of data ?? []) {
-    const key = (row.community_phase_id as string | null) ?? UNPHASED_KEY
-    const counts = (byPhase[key] ??= Object.fromEntries(LOT_STATUSES.map((status) => [status, 0])) as Record<LotStatus, number>)
-    const status = row.status as LotStatus
-    if (status in counts) counts[status] += 1
+  for (const row of rows) {
+    const key = row.community_phase_id ?? UNPHASED_KEY
+    const counts = (byPhase[key] ??= emptyStatusCounts())
+    if (row.status in counts) counts[row.status] += 1
   }
-  return byPhase
+  return { byPhase, truncated }
 }
 
 /** A bulk patch carries its ids in the request, so a select-all is capped where the patch is. */
@@ -253,16 +244,17 @@ export async function listCommunityInventory(
   await requirePermission("community.read", context)
   await getCommunity(communityId, context.orgId)
 
-  const pageSize = Math.min(Math.max(filters.pageSize ?? INVENTORY_TABLE_PAGE_SIZE, 1), INVENTORY_MAP_PAGE_SIZE)
-  const page = Math.max(filters.page ?? 1, 1)
-  const from = (page - 1) * pageSize
+  const { page, pageSize, from, to } = inventoryWindow(filters, {
+    defaultPageSize: INVENTORY_TABLE_PAGE_SIZE,
+    maxPageSize: INVENTORY_MAP_PAGE_SIZE,
+  })
 
   let query = context.supabase
     .from("lots")
     .select(LOT_SELECT, { count: "exact" })
     .eq("org_id", context.orgId)
     .eq("community_id", communityId)
-    .range(from, from + pageSize - 1)
+    .range(from, to)
 
   for (const clause of inventoryFilterClauses(filters)) {
     query = clause.kind === "eq" ? query.eq(clause.column, clause.value) : query.or(clause.filter)
@@ -359,5 +351,5 @@ export async function listCommunityInventory(
   })
 
   const total = count ?? lots.length
-  return { lots, total, page, pageSize, truncated: total > from + lots.length }
+  return { lots, total, page, pageSize, truncated: isTruncated({ total, from, returned: lots.length }) }
 }

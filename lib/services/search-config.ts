@@ -335,11 +335,17 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     joins: ['LEFT JOIN projects p ON i.project_id = p.id'],
   },
   payment: {
+    // `/payments/{id}` was never a route: `/payments` is a redirect to billing
+    // and has no `[id]` segment, so every payment hit 404'd. A payment row is
+    // either customer money in or a recorded vendor payment, and `project_id`
+    // is nullable, so the template has to be a destination that always exists —
+    // the org AR desk. reindexEntity narrows it to the payable or the project's
+    // receivables tab when the row says which.
     table: 'payments',
     titleField: 'reference',
     subtitleFields: ['amount_cents', 'method', 'status'],
     searchableFields: ['reference', 'method'],
-    hrefTemplate: '/payments/{id}',
+    hrefTemplate: '/invoices',
     joins: ['LEFT JOIN projects p ON pay.project_id = p.id'],
   },
   payment_run: {

@@ -3,7 +3,9 @@ import { cache } from "react"
 
 
 import { LOT_STATUSES, type LotStatus } from "@/lib/land/lot-lifecycle"
+import { readAllRows } from "@/lib/land/paging"
 import { buildRunway, runwayVerdict, type RunwayPoint, type RunwayVerdict } from "@/lib/land/runway"
+import { compareSupplyUrgency, dryDateFrom, lotShortfallByYear, type YearShortfall } from "@/lib/land/supply"
 import { listCommunities, type CommunityListItemDTO } from "@/lib/services/communities"
 import { requireOrgContext } from "@/lib/services/context"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
@@ -26,6 +28,12 @@ const DAYS_PER_MONTH = 30.4375
 const MS_PER_DAY = 86_400_000
 /** PostgREST puts `in()` filters in the URL, so long id lists go out in batches. */
 const PROJECT_FILTER_BATCH = 400
+/**
+ * A ceiling on the homes read, not a page size. Only lots that carry a live home
+ * are read — closed houses answer none of the questions below — so this bounds a
+ * runaway rather than a real portfolio.
+ */
+const HOMED_LOT_SCAN_CAP = 20_000
 
 export type PaceState = "ahead" | "on" | "behind" | "unknown"
 
@@ -89,6 +97,12 @@ export interface CommunityLane {
 export interface CommunityPortfolio {
   horizonMonths: number
   lanes: CommunityLane[]
+  /**
+   * True when a read ceiling stopped this board short of the whole portfolio, so
+   * the aging and cutoff counts below it are floors rather than totals. The board
+   * says so on screen; it must never quietly report a partial number as a total.
+   */
+  truncated: boolean
   totals: {
     communities: number
     totalLots: number
@@ -139,6 +153,7 @@ export async function getCommunityPortfolio(
     return {
       horizonMonths: RUNWAY_HORIZON_MONTHS,
       lanes: [],
+      truncated: false,
       totals: {
         communities: 0,
         totalLots: 0,
@@ -233,12 +248,23 @@ export async function getCommunityPortfolio(
       .in("community_id", ids)
       .eq("status", "attention")
       .limit(1_000),
-    context.supabase
-      .from("lots")
-      .select("id, community_id, status, project_id, project:projects(start_date)")
-      .eq("org_id", context.orgId)
-      .in("community_id", ids)
-      .limit(5_000),
+    // Only lots that carry a live home, read to exhaustion. Lot *counts* come
+    // from the status aggregate on each community, so this read exists purely to
+    // find the houses behind the aging and cutoff alerts — and a flat 5,000-row
+    // cap across every community under-reported both on the biggest ones.
+    readAllRows<{ id: string; community_id: string; status: LotStatus; project_id: string | null; project: { start_date?: string | null } | Array<{ start_date?: string | null }> | null }>(
+      (from, to) =>
+        context.supabase
+          .from("lots")
+          .select("id, community_id, status, project_id, project:projects(start_date)")
+          .eq("org_id", context.orgId)
+          .in("community_id", ids)
+          .not("project_id", "is", null)
+          .neq("status", "closed")
+          .order("id")
+          .range(from, to),
+      { cap: HOMED_LOT_SCAN_CAP, label: "Failed to load community portfolio" },
+    ),
     canReadMargin
       ? getProductionPortfolioReport({ divisionId }, context.orgId).catch(() => null)
       : Promise.resolve(null),
@@ -252,23 +278,23 @@ export async function getCommunityPortfolio(
     closings,
     takedowns,
     blockedStarts,
-    lots,
   ]) {
     if (result.error) throw new Error(`Failed to load community portfolio: ${result.error.message}`)
   }
 
   const reservedLotIds = new Set((liveReservations.data ?? []).map((row) => row.lot_id as string))
   const startedProjectIds = new Set(
-    (lots.data ?? [])
-      .filter((row) => row.project_id && row.status === "started" && !reservedLotIds.has(row.id as string))
-      .map((row) => row.project_id as string),
+    lots.rows
+      .filter((row) => row.project_id && row.status === "started" && !reservedLotIds.has(row.id))
+      .map((row) => row.project_id)
+      .filter((projectId): projectId is string => Boolean(projectId)),
   )
 
   // Selections are keyed by project; the lot rows above are the only bridge
   // back to a community, so the cutoff lookup rides that same project set.
   const projectCommunity = new Map<string, string>()
-  for (const row of lots.data ?? []) {
-    if (row.project_id) projectCommunity.set(row.project_id as string, row.community_id as string)
+  for (const row of lots.rows) {
+    if (row.project_id) projectCommunity.set(row.project_id, row.community_id)
   }
   // Chunked rather than truncated: a silently dropped tail would under-report
   // cutoffs on exactly the largest communities.
@@ -328,15 +354,14 @@ export async function getCommunityPortfolio(
   }
 
   const agingByCommunity = new Map<string, number>()
-  for (const row of lots.data ?? []) {
-    if (!row.project_id || !startedProjectIds.has(row.project_id as string)) continue
-    const relation = row.project as { start_date?: string | null } | Array<{ start_date?: string | null }> | null
+  for (const row of lots.rows) {
+    if (!row.project_id || !startedProjectIds.has(row.project_id)) continue
+    const relation = row.project
     const startDate = (Array.isArray(relation) ? relation[0]?.start_date : relation?.start_date) ?? null
     if (!startDate) continue
     const agingDays = Math.floor((today.getTime() - Date.parse(startDate)) / MS_PER_DAY)
     if (agingDays < SPEC_AGING_ALERT_DAYS) continue
-    const communityId = row.community_id as string
-    agingByCommunity.set(communityId, (agingByCommunity.get(communityId) ?? 0) + 1)
+    agingByCommunity.set(row.community_id, (agingByCommunity.get(row.community_id) ?? 0) + 1)
   }
 
   const takedownsByCommunity = new Map<string, CommunityTakedown[]>()
@@ -465,6 +490,7 @@ export async function getCommunityPortfolio(
   return {
     horizonMonths: RUNWAY_HORIZON_MONTHS,
     lanes,
+    truncated: lots.truncated,
     totals: {
       communities: lanes.length,
       totalLots: lanes.reduce((sum, lane) => sum + lane.totalLots, 0),
@@ -480,6 +506,111 @@ export async function getCommunityPortfolio(
         0,
       ),
     },
+  }
+}
+
+export interface LandSupplyRow {
+  communityId: string
+  communityName: string
+  divisionName: string | null
+  market: string | null
+  status: CommunityListItemDTO["status"]
+  sellableLots: number
+  consumptionPerMonth: number | null
+  monthsOfSupply: number | null
+  dryAtMonth: number | null
+  /** First of the month the community runs out, or null if it never does. */
+  dryDate: string | null
+  verdict: RunwayVerdict
+  /** Lots already under contract inside the horizon, and what they cost. */
+  scheduledLots: number
+  scheduledCashCents: number
+  /** Lots wanted and not owned, by calendar year — the buy list. */
+  shortfallByYear: YearShortfall[]
+  shortfallLots: number
+}
+
+export interface LandSupplyReport {
+  asOf: string
+  horizonMonths: number
+  rows: LandSupplyRow[]
+  totals: {
+    communities: number
+    sellableLots: number
+    scheduledLots: number
+    scheduledCashCents: number
+    dryWithinHorizon: number
+    shortfallLots: number
+  }
+  /** True when the portfolio read stopped short; the counts above are floors. */
+  truncated: boolean
+}
+
+/**
+ * Where a builder needs to buy dirt, and by when — every community on one page.
+ *
+ * The land runway has always existed per community; nothing aggregated it, so
+ * answering "which markets am I short in for 2027" meant opening twelve
+ * workbenches and adding up in your head. This runs the same projection the
+ * board runs and turns each lane's curve into a year-by-year buy list.
+ *
+ * Read-only and derived: it mutates nothing and owns no fact of its own, so the
+ * report can never disagree with the community it came from.
+ */
+export async function getLandSupplyReport(
+  { divisionId, communityId }: { divisionId?: string; communityId?: string } = {},
+  orgId?: string,
+): Promise<LandSupplyReport> {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("community.read", context)
+  const portfolio = await getCommunityPortfolio({ divisionId, communityId }, context.orgId)
+  const today = new Date()
+
+  const rows: LandSupplyRow[] = portfolio.lanes.map((lane) => {
+    const shortfallByYear = lotShortfallByYear({
+      sellableLots: lane.sellableLots,
+      consumptionPerMonth: lane.consumptionPerMonth,
+      deliveries: lane.takedowns.map((takedown) => ({
+        monthOffset: takedown.monthOffset,
+        lotCount: takedown.lotCount,
+      })),
+      horizonMonths: portfolio.horizonMonths,
+      startYear: today.getFullYear(),
+      startMonth: today.getMonth(),
+    })
+    return {
+      communityId: lane.id,
+      communityName: lane.name,
+      divisionName: lane.divisionName,
+      market: lane.market,
+      status: lane.status,
+      sellableLots: lane.sellableLots,
+      consumptionPerMonth: lane.consumptionPerMonth,
+      monthsOfSupply: lane.monthsOfSupply,
+      dryAtMonth: lane.dryAtMonth,
+      dryDate: dryDateFrom(today, lane.dryAtMonth),
+      verdict: lane.verdict,
+      scheduledLots: lane.takedowns.reduce((sum, takedown) => sum + takedown.lotCount, 0),
+      scheduledCashCents: lane.takedowns.reduce((sum, takedown) => sum + takedown.cashCents, 0),
+      shortfallByYear,
+      shortfallLots: shortfallByYear.reduce((sum, entry) => sum + entry.lotsNeeded, 0),
+    }
+  })
+  rows.sort(compareSupplyUrgency)
+
+  return {
+    asOf: isoDay(today),
+    horizonMonths: portfolio.horizonMonths,
+    rows,
+    totals: {
+      communities: rows.length,
+      sellableLots: rows.reduce((sum, row) => sum + row.sellableLots, 0),
+      scheduledLots: rows.reduce((sum, row) => sum + row.scheduledLots, 0),
+      scheduledCashCents: rows.reduce((sum, row) => sum + row.scheduledCashCents, 0),
+      dryWithinHorizon: rows.filter((row) => row.dryAtMonth != null).length,
+      shortfallLots: rows.reduce((sum, row) => sum + row.shortfallLots, 0),
+    },
+    truncated: portfolio.truncated,
   }
 }
 

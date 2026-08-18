@@ -524,6 +524,18 @@ export async function signVendorBillWaiverFromPortal({
     throw new Error(`Waiver signed but payable could not be updated: ${billUpdateError.message}`)
   }
 
+  // Same verification the emailed-token signing path runs. Skipping it here
+  // meant `metadata.waiver_verification` was almost never written — most
+  // waivers are signed in the portal — so the `waiver_verified` payment hold
+  // had nothing to read and never fired. Best effort, as on the other path: a
+  // failed check must not undo a signature the sub already gave.
+  try {
+    const { verifyBillWaiver } = await import("@/lib/services/ap-document-verification")
+    await verifyBillWaiver(billId, orgId)
+  } catch {
+    // Verification is advisory; the waiver stands either way.
+  }
+
   await recordEvent({
     orgId,
     eventType: "vendor_bill_waiver_signed",

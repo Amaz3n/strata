@@ -15,6 +15,8 @@ final class AppDependencies {
     let drawings: DrawingsStore
     let schedule: ScheduleStore
     let field: FieldStore
+    let myHouses: MyHousesStore
+    let varianceOrders: VarianceOrderStore
     let expenses: ExpenseStore
     let documents: DocumentsStore
     let notifications: NotificationsStore
@@ -60,6 +62,13 @@ final class AppDependencies {
             syncEngine: resolvedSyncEngine,
             networkMonitor: self.networkMonitor
         )
+        self.myHouses = MyHousesStore(
+            api: mobileAPI,
+            offlineStore: resolvedOfflineStore,
+            syncEngine: resolvedSyncEngine,
+            networkMonitor: self.networkMonitor
+        )
+        self.varianceOrders = VarianceOrderStore(api: mobileAPI, networkMonitor: self.networkMonitor)
         self.expenses = ExpenseStore(api: mobileAPI)
         self.documents = DocumentsStore(api: mobileAPI)
         self.notifications = NotificationsStore(api: mobileAPI)

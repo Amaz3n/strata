@@ -14,7 +14,7 @@ const COPY: Record<
   { label: string; detail: string; action: string | null }
 > = {
   ready: {
-    label: "Set up for direct deposit",
+    label: "Set up for Arc Pay",
     detail: "You can pay this vendor electronically from a payment run.",
     action: null,
   },
@@ -25,23 +25,25 @@ const COPY: Record<
   },
   invited: {
     label: "Invited",
-    detail: "They have been asked to set up direct deposit and have not finished yet.",
+    detail: "They have been asked to set up Arc Pay and have not finished yet.",
     action: "Send it again",
   },
   not_started: {
     label: "Paid by check",
     detail:
-      "Invite them to set up direct deposit. If they already did this for another Arc builder, it takes them one click.",
-    action: "Invite to direct deposit",
+      "Invite them to set up Arc Pay. If they already did this for another Arc builder, it takes them one click.",
+    action: "Invite to Arc Pay",
   },
   suspended: {
     label: "Direct deposit suspended",
-    detail: "Electronic payment to this vendor is paused. Restore their payment access before re-inviting them.",
+    detail:
+      "Electronic payment to this vendor is paused and their payment page is closed. Restoring re-opens it and needs two-factor verification.",
     action: null,
   },
   revoked: {
     label: "Direct deposit revoked",
-    detail: "Electronic payment to this vendor was withdrawn. Restore their payment access before re-inviting them.",
+    detail:
+      "Electronic payment to this vendor was withdrawn along with their payout claim. Restoring re-opens it and needs two-factor verification.",
     action: null,
   },
 };
@@ -83,13 +85,24 @@ export function VendorPaymentCard({
   const changeAccess = (nextStatus: "active" | "suspended" | "revoked") =>
     startTransition(async () => {
       try {
-        const result = unwrapAction(await setCompanyPaymentAccessStatusAction(companyId, nextStatus));
+        unwrapAction(await setCompanyPaymentAccessStatusAction(companyId, nextStatus));
         toast({
-          title: nextStatus === "active" ? "Payment access restored" : nextStatus === "suspended" ? "Payment access suspended" : "Payment access revoked",
-          description: nextStatus === "active" ? "Future payment runs may use this vendor once their destination is ready." : "Existing in-flight payments are unchanged; future runs are blocked.",
+          title:
+            nextStatus === "active"
+              ? "Payment access restored"
+              : nextStatus === "suspended"
+                ? "Payment access suspended"
+                : "Payment access revoked",
+          description:
+            nextStatus === "active"
+              // Restoring re-enters the new-vendor hold window, so the next run
+              // is held rather than paying a destination nobody re-checked.
+              ? "The next payment to this vendor is held for your new-vendor hold period before it can be released."
+              : nextStatus === "suspended"
+                ? "Existing in-flight payments are unchanged; future runs are blocked and the vendor's payment page is closed."
+                : "Their payment claim is withdrawn with their access. Existing in-flight payments are unchanged.",
         });
         router.refresh();
-        void result;
       } catch (error) {
         toast({ title: "Unable to change payment access", description: (error as Error).message });
       }

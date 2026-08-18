@@ -108,14 +108,36 @@ export interface ProviderSettlementSnapshot {
 }
 
 export interface ProviderActivity {
-  kind: "payment" | "fee_payment" | "transfer" | "payout"
+  /**
+   * `fee_adjustment` is the rail's own money movement — processing fees,
+   * adjustments, reserves, and failed-payout reversals — which is neither a
+   * payment Arc submitted nor a payout it expected, and was therefore invisible
+   * to a reconciliation that only ever looked at the three it knew about.
+   */
+  kind: "payment" | "fee_payment" | "transfer" | "payout" | "fee_adjustment"
   providerReference: string
   providerAccountId: string | null
   amountCents: number
   status: "pending" | "settled" | "failed" | "canceled" | "returned"
   linkedReferences: string[]
   metadata: Record<string, string>
+  /** Provider's own label for a `fee_adjustment` (its balance-transaction type). */
+  activityType?: string
 }
+
+/**
+ * How the adapter knows this event is Arc's AP money.
+ *
+ * `provider_tagged` means the provider object itself carries Arc's AP marker, so
+ * the event is AP whether or not a local row is found — and must never be
+ * reinterpreted by another domain when the lookup misses. `requires_lookup`
+ * means the object is shape-compatible with AP but only an Arc-side lookup can
+ * settle it: a card dispute and an ACH return arrive as the same Stripe event,
+ * and which one it is depends entirely on what Arc has recorded. Making the
+ * distinction explicit is what stops an AP intent with no disbursement row from
+ * falling through into the receivables ledger path.
+ */
+export type ProviderEventAttribution = "provider_tagged" | "requires_lookup"
 
 export type NormalizedPaymentRailEvent = {
   provider: string
@@ -123,6 +145,7 @@ export type NormalizedPaymentRailEvent = {
   providerEventType: string
   providerAccountId: string | null
   occurredAt: string
+  attribution: ProviderEventAttribution
   payload: Record<string, unknown>
 } & (
   | { kind: "recipient.updated"; recipientProviderAccountId: string }
@@ -134,11 +157,17 @@ export type NormalizedPaymentRailEvent = {
       status: "debit_pending" | "funds_available" | "failed" | "canceled" | "transfer_pending"
       providerTransferId: string | null
     }
-  | { kind: "disbursement.paid"; providerPayoutId: string; providerTransferIds: string[] }
+  /**
+   * The transfers a payout settled are deliberately NOT resolved here. Doing so
+   * cost an unbounded balance-transaction walk plus one charge retrieval per
+   * source before Arc had even asked whether the payout was its own, which is
+   * how a large payout timed out a webhook mid-flight. The domain layer resolves
+   * them once the recipient account is known to be Arc's.
+   */
+  | { kind: "disbursement.paid"; providerPayoutId: string }
   | {
       kind: "disbursement.payout_attention"
       providerPayoutId: string
-      providerTransferIds: string[]
       status: "failed" | "canceled"
       reason: string
     }
@@ -195,12 +224,26 @@ export interface PaymentRailProvider {
    */
   createVendorTransfer(input: ProviderVendorTransferInput): Promise<ProviderVendorTransferResult>
   retrieveSettlement(input: { providerPaymentId: string }): Promise<ProviderSettlementSnapshot>
-  /** Independently enumerate provider activity so reconciliation can find money
-   * that has no local Arc row, not merely re-fetch rows Arc already knows. */
+  /**
+   * Independently enumerate provider activity so reconciliation can find money
+   * that has no local Arc row, not merely re-fetch rows Arc already knows.
+   *
+   * Discovery is by **provider-side identity** — the funding customers Arc opened
+   * for this org and the connected accounts its vendors are paid into — never by
+   * metadata Arc wrote onto its own objects. Filtering on Arc's own marker made
+   * the control structurally incapable of seeing the one thing it exists to
+   * catch: a movement created outside Arc, or with its metadata stripped.
+   * Metadata is still read, but only to classify and to hand an object to the
+   * right tenant, never to decide whether it is worth looking at.
+   */
   listActivity(input: {
+    orgId: string
     periodStart: string
     periodEnd: string
+    /** Connected accounts this org's vendors are paid into. */
     recipientProviderAccountIds: string[]
+    /** Provider customers Arc created for this org's funding sources. */
+    fundingProviderCustomerIds: string[]
   }): Promise<ProviderActivity[]>
   resolveTransferPaymentId(input: { providerTransferId: string }): Promise<string | null>
   resolvePayoutTransferIds(input: { providerAccountId: string; providerPayoutId: string }): Promise<string[]>

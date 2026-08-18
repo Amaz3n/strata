@@ -419,8 +419,21 @@ test("a Stripe onboarding return path cannot leave the origin", () => {
     startVendorPayoutSetupSchema.safeParse({ portal_token: "t", legal_name: "Acme", return_path: "//evil.com" }).success,
     false,
   )
-  const defaulted = startVendorPayoutSetupSchema.parse({ portal_token: "t", legal_name: "Acme" })
-  assert.equal(defaulted.return_path, "/access")
+  // No default. `/access` is a router that redirects to the most recent thing
+  // the vendor touched, so defaulting to it stranded anybody coming back from
+  // Stripe: the caller has to say where the vendor should land.
+  assert.equal(
+    startVendorPayoutSetupSchema.safeParse({ portal_token: "t", legal_name: "Acme" }).success,
+    false,
+  )
+  assert.equal(
+    startVendorPayoutSetupSchema.safeParse({
+      portal_token: "t",
+      legal_name: "Acme",
+      return_path: "/s/abc/payments",
+    }).success,
+    true,
+  )
 
   // And the resolution itself: proof that the rejected shape really does leave
   // the origin, so the regex is guarding something real.

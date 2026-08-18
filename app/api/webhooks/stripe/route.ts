@@ -70,11 +70,11 @@ export async function POST(request: NextRequest) {
     orgId = connection?.org_id ?? null
   }
 
-  // The unique index on (provider, provider_event_id) is the arbiter, not a
-  // prior SELECT. Two concurrent deliveries of the same event both read "no
-  // row", both inserted, and the loser's 23505 surfaced as a processing failure
-  // that made Stripe retry an event already recorded. Claim the row first, then
-  // read back what is actually there to decide whether it is already handled.
+  // Insert-first idempotency, against `webhook_events` rather than
+  // `payment_provider_events`. The reasoning is written once, over
+  // `recordProviderEvent` in `lib/services/payment-provider-events.ts`; the
+  // discipline is the same here and the unique index is the arbiter, never a
+  // prior SELECT.
   const { error: claimError } = await supabase.from("webhook_events").insert({
     org_id: orgId,
     provider: "stripe",
@@ -114,6 +114,25 @@ export async function POST(request: NextRequest) {
         .eq("provider", "stripe")
         .eq("provider_event_id", event.id)
       return NextResponse.json({ received: true, duplicate: apResult.duplicate ?? false })
+    }
+    // Tagged as vendor-payment money but no Arc row claimed it. The one thing
+    // that must not happen next is the receivables path: an AP object has no
+    // invoice, and letting it fall through was a tenant-ledger boundary held up
+    // by nothing but a lookup that happened to return nothing. Reconciliation's
+    // provider-only sweep is what surfaces the orphan; the webhook stops here.
+    if (apResult.domain === "ap") {
+      logger.warn("stripe.webhook.ap_event_unattributed", {
+        domain: "stripe",
+        integration: "stripe",
+        eventId: event.id,
+        eventType: event.type,
+      })
+      await supabase
+        .from("webhook_events")
+        .update({ status: "ignored", processed_at: new Date().toISOString() })
+        .eq("provider", "stripe")
+        .eq("provider_event_id", event.id)
+      return NextResponse.json({ received: true, unattributed: true })
     }
 
     if (event.type === "account.updated") {

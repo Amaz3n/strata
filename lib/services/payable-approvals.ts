@@ -4,14 +4,14 @@ import { z } from "zod"
 
 import { getPaymentRailProvider } from "@/lib/integrations/payments/payment-rail-registry"
 import { payableOutstandingCents } from "@/lib/financials/payables-rules"
-import { requesterMayApprovePaymentRun } from "@/lib/payments/payment-domain"
 import type { ProviderSettlementWindow } from "@/lib/payments/settlement-estimate"
 import { requireOrgContext } from "@/lib/services/context"
 import { getPaymentApprovalRouting } from "@/lib/services/payment-approvers"
 import {
   createPaymentRun,
   decidePaymentRun,
-  executePaymentRun,
+  evaluateRunApprovability,
+  isReleasableHoldSnapshot,
 } from "@/lib/services/payment-runs"
 import { requirePermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -232,10 +232,13 @@ export async function getPayableApprovalDetail(
     .maybeSingle()
   if (!item) return null
 
-  // The whole run, because that is what the approval binds to.
+  // The whole run, because that is what the approval binds to. The project's
+  // division comes with it: a division-scoped approver covers a run only when
+  // every payable in it sits inside their division, and this screen has to know
+  // that before it offers a button.
   const { data: runItems } = await supabase
     .from("payment_run_items")
-    .select("bill_id,vendor_amount_cents,processor_fee_cents,platform_fee_cents,hold_snapshot,bill:vendor_bills(bill_number,company:companies(name)),project:projects(name)")
+    .select("bill_id,vendor_amount_cents,processor_fee_cents,platform_fee_cents,hold_snapshot,bill:vendor_bills(bill_number,company:companies(name)),project:projects(name,division_id)")
     .eq("org_id", context.orgId)
     .eq("run_id", item.run_id)
     .order("created_at")
@@ -274,20 +277,24 @@ export async function getPayableApprovalDetail(
       .maybeSingle(),
   ])
 
-  const viewerLimitCents =
-    routing.approvers.find((approver) => approver.userId === context.userId)
-      ?.approvalLimitCents ?? null
   const totalDebitCents = Number(run.total_debit_cents)
-  const isPreparer = run.requested_by === context.userId
-  const preparerMayApprove = requesterMayApprovePaymentRun(run.control_snapshot)
-
-  const blockedReason = !routing.viewerMayApprove
-    ? "Your role does not allow approving payments"
-    : isPreparer && !preparerMayApprove
-      ? "You prepared this payment, so someone else has to approve it"
-      : viewerLimitCents != null && totalDebitCents > viewerLimitCents
-        ? "This payment is above your approval limit"
-        : null
+  const runDivisionIds = [
+    ...new Set(
+      (runItems ?? [])
+        .map((row) => (Array.isArray(row.project) ? row.project[0] : row.project)?.division_id)
+        .filter((value): value is string => typeof value === "string"),
+    ),
+  ]
+  // One derivation, shared with the run list and mirroring the server's own
+  // refusal — this screen used to compute its own weaker version.
+  const { mayDecide, blockedReason } = evaluateRunApprovability({
+    viewerId: context.userId,
+    requestedBy: run.requested_by,
+    totalDebitCents,
+    runDivisionIds,
+    controlSnapshot: run.control_snapshot,
+    routing,
+  })
 
   return {
     runId: run.id,
@@ -308,13 +315,12 @@ export async function getPayableApprovalDetail(
       : "Bank account",
     submittedByName: submitter?.full_name ?? submitter?.email ?? "A teammate",
     submittedAt: run.requested_at ?? null,
-    viewerMayDecide: run.status === "pending_approval" && !blockedReason,
+    viewerMayDecide: run.status === "pending_approval" && mayDecide,
     blockedReason,
     items: (runItems ?? []).map((row) => {
       const rowBill = Array.isArray(row.bill) ? row.bill[0] : row.bill
       const rowCompany = rowBill && (Array.isArray(rowBill.company) ? rowBill.company[0] : rowBill.company)
       const rowProject = Array.isArray(row.project) ? row.project[0] : row.project
-      const holds = (row.hold_snapshot ?? {}) as { blockingCount?: number }
       return {
         billId: row.bill_id,
         billNumber: rowBill?.bill_number ?? null,
@@ -323,7 +329,8 @@ export async function getPayableApprovalDetail(
         vendorAmountCents: Number(row.vendor_amount_cents),
         processorFeeCents: Number(row.processor_fee_cents),
         platformFeeCents: Number(row.platform_fee_cents),
-        releasableAtSubmission: Number(holds.blockingCount ?? 0) === 0,
+        // Fails closed on missing evidence: an absent snapshot is not a clearance.
+        releasableAtSubmission: isReleasableHoldSnapshot(row.hold_snapshot),
       }
     }),
   }
@@ -333,17 +340,22 @@ export type PayableApprovalOutcome =
   | { result: "recorded"; status: string }
   | { result: "rejected" }
   | { result: "released" }
+  /** Approved with a release date on it — nothing is pending, it goes out then. */
+  | { result: "scheduled"; scheduledFor: string }
+  /** Approved; the release is a queued work item because this approver cannot release. */
+  | { result: "release_queued"; reason: string }
+  /** Approved, but a gate or a failure stopped the money. The sweep retries it. */
   | { result: "approved_release_pending"; reason: string }
 
 /**
- * Approve (or reject) a payable's payment run, and release it the moment it has
- * every approval it needs. Approval is what the org agreed the control is — once
- * it clears, holding the money back behind another button only invites someone
- * to forget to press it.
+ * Approve (or reject) a payable's payment run.
  *
- * Release is still gated by the platform kill switch and the org's execution
- * flag; when those are closed the run stays approved and this says so plainly
- * rather than reporting money that did not move.
+ * Releasing the money is `decidePaymentRun`'s job, not this one's: reaching
+ * quorum is what owes a release, and putting it in the caller made it a property
+ * of approving from the web app. This translates that one outcome into the copy
+ * the payable screen shows, and keeps the four cases apart — released,
+ * scheduled for a date the approver already saw, queued because releasing money
+ * is not part of this person's role, and genuinely gated or failed.
  */
 export async function decidePayableApproval(
   input: z.infer<typeof decidePaymentRunSchema>,
@@ -353,27 +365,21 @@ export async function decidePayableApproval(
   const decision = await decidePaymentRun(parsed, orgId)
   if (parsed.decision === "rejected") return { result: "rejected" }
 
-  const status =
-    decision && typeof decision === "object"
-      ? Reflect.get(decision, "status")
-      : null
-  if (status !== "approved") {
-    return {
-      result: "recorded",
-      status: typeof status === "string" ? status : "pending_approval",
-    }
-  }
+  const status = decision.status
+  if (status !== "approved") return { result: "recorded", status }
 
-  try {
-    await executePaymentRun(parsed.run_id, orgId)
-    return { result: "released" }
-  } catch (error) {
-    return {
-      result: "approved_release_pending",
-      reason:
-        error instanceof Error
-          ? error.message
-          : "Payment release is not enabled yet",
-    }
+  switch (decision.release.kind) {
+    case "released":
+      return { result: "released" }
+    case "scheduled":
+      return { result: "scheduled", scheduledFor: decision.release.scheduledFor }
+    case "queued":
+      return { result: "release_queued", reason: decision.release.reason }
+    case "blocked":
+      return { result: "approved_release_pending", reason: decision.release.reason }
+    // Quorum without a release is not a state a decision can reach: the service
+    // releases, schedules or queues every approval that completes one.
+    case "none":
+      return { result: "recorded", status }
   }
 }

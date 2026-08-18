@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button"
 import type { Invoice, InvoiceDelivery, InvoiceView, Payment, PaymentReversal, ReceivableAdjustment } from "@/lib/types"
 import { qboTxnUrl } from "@/lib/integrations/accounting/qbo/links"
 import { cn } from "@/lib/utils"
+import type { EntityAuditEntry } from "@/lib/services/audit"
 
 import { ReceivableAdjustmentDialog } from "../receivable-adjustment-dialog"
 import { balanceCentsOf } from "./receivables-filters"
@@ -29,6 +30,7 @@ interface InvoiceContextPaneProps {
   reversals?: PaymentReversal[]
   adjustments?: ReceivableAdjustment[]
   booksEntries?: Array<{ id: string; entry_date: string; status: string; posting_key: string; posted_at?: string | null; reversal_of_entry_id?: string | null }>
+  auditTrail?: EntityAuditEntry[]
   loading?: boolean
   onChanged?: () => void | Promise<void>
 }
@@ -49,7 +51,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   )
 }
 
-export function InvoiceContextPane({ projectId, invoice, link, views, deliveries, syncHistory, payments, reversals, adjustments, booksEntries, loading, onChanged }: InvoiceContextPaneProps) {
+export function InvoiceContextPane({ projectId, invoice, link, views, deliveries, syncHistory, payments, reversals, adjustments, booksEntries, auditTrail, loading, onChanged }: InvoiceContextPaneProps) {
   const [adjusting, setAdjusting] = useState(false)
   const [voidingAdjustmentId, setVoidingAdjustmentId] = useState<string | null>(null)
   if (!invoice) {
@@ -322,6 +324,35 @@ export function InvoiceContextPane({ projectId, invoice, link, views, deliveries
             ))}
           </div>
         </section>
+
+        {(auditTrail ?? []).length > 0 ? (
+          <section className="space-y-2">
+            <h3 className="microlabel">Change history</h3>
+            <div className="divide-y border bg-card">
+              {(auditTrail ?? []).slice(0, 25).map((entry) => {
+                const changedKeys = entry.action === "update"
+                  ? Object.keys(entry.after ?? {}).filter((key) => (entry.before ?? {})[key] !== (entry.after ?? {})[key])
+                  : []
+                return (
+                  <div key={entry.id} className="space-y-0.5 px-3 py-2 text-xs">
+                    <div className="flex items-start justify-between gap-3">
+                      <span className="font-medium capitalize text-foreground">
+                        {entry.action === "insert" ? "Created" : entry.action === "delete" ? "Deleted" : "Updated"}
+                      </span>
+                      <span className="shrink-0 text-[11px] text-muted-foreground">
+                        {format(new Date(entry.createdAt), "MMM d, h:mm a")}
+                      </span>
+                    </div>
+                    <p className="truncate text-[11px] text-muted-foreground">
+                      {entry.actor?.name ?? "System"}
+                      {changedKeys.length > 0 ? ` · ${changedKeys.slice(0, 4).join(", ")}${changedKeys.length > 4 ? "…" : ""}` : entry.source ? ` · ${entry.source}` : ""}
+                    </p>
+                  </div>
+                )
+              })}
+            </div>
+          </section>
+        ) : null}
 
         {link ? (
           <section className="space-y-2">

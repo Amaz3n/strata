@@ -39,6 +39,45 @@ import {
 import { getVendorPayableProfile, type VendorPayableProfile } from "@/lib/services/companies"
 import type { PaymentHoldOverrideInput } from "@/lib/validation/payment-holds"
 import type { BudgetLineOption } from "@/lib/types"
+import { listEntityAuditTrail, type EntityAuditEntry } from "@/lib/services/audit"
+import { applyVendorCreditToBill, getVendorCreditApplicationWorkspace } from "@/lib/services/vendor-bills"
+
+export async function getVendorCreditApplicationWorkspaceAction(creditBillId: string) {
+  try {
+    return { success: true as const, data: await getVendorCreditApplicationWorkspace(creditBillId) }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
+export async function applyVendorCreditAction(input: { creditBillId: string; billId: string; amountCents: number; idempotencyKey: string }) {
+  try {
+    const data = await applyVendorCreditToBill(input)
+    revalidatePath("/payables")
+    return { success: true as const, data }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
+export async function getPayableAuditTrailAction(
+  billId: string,
+  projectId?: string | null,
+): Promise<ActionResult<EntityAuditEntry[]>> {
+  try {
+    return {
+      success: true,
+      data: await listEntityAuditTrail({
+        entityType: "vendor_bill",
+        entityId: billId,
+        permission: "bill.read",
+        projectId,
+      }),
+    }
+  } catch (error) {
+    return actionError(error)
+  }
+}
 
 export interface OrgPayableContext {
   projectId: string

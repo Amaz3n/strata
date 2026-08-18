@@ -36,6 +36,14 @@ export function isLotStatus(value: string | undefined | null): value is LotStatu
   return value != null && (LOT_STATUSES as readonly string[]).includes(value)
 }
 
+/**
+ * Where a lot lands when its home is linked or unlinked. Attaching a home is
+ * what makes a lot a house under construction; taking it away puts the lot back
+ * in inventory.
+ */
+export const ATTACHED_LOT_STATUS: LotStatus = "started"
+export const DETACHED_LOT_STATUS: LotStatus = "assigned"
+
 const STATUS_INDEX = new Map<LotStatus, number>(LOT_STATUSES.map((status, index) => [status, index]))
 
 export function assertLotStatusTransition({
@@ -66,4 +74,22 @@ export function assertLotStatusTransition({
   if (toIndex < fromIndex - 1 && !force) {
     throw new Error("Backward lot status corrections may move only one step unless force is confirmed.")
   }
+}
+
+/**
+ * Linking a home to a lot is a status change like any other, so it answers to
+ * the same machine. Without this, attaching a project to a settled lot silently
+ * reversed the closing — the one move `setLotStatus` has always required an
+ * explicit confirmation for.
+ */
+export function assertLotAttachTransition({ from, force = false }: { from: LotStatus; force?: boolean }) {
+  assertLotStatusTransition({ from, to: ATTACHED_LOT_STATUS, hasProject: true, force })
+}
+
+/**
+ * Unlinking is the backward half. A house that is building or has settled cannot
+ * quietly drop back into inventory; that is what `force` is for.
+ */
+export function assertLotDetachTransition({ from, force = false }: { from: LotStatus; force?: boolean }) {
+  assertLotStatusTransition({ from, to: DETACHED_LOT_STATUS, hasProject: false, force })
 }

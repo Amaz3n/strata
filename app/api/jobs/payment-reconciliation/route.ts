@@ -31,7 +31,19 @@ async function handler(request: NextRequest) {
     return NextResponse.json({ reconciliations: [], reconciliationEnabled: false })
   }
   const reconciliations = await runScheduledPaymentReconciliations()
-  return NextResponse.json({ reconciliations, reconciliationEnabled: true })
+  // A deferred org is one this tick ran out of time for, and a failed one is an
+  // org that did not reconcile at all. Both were returned in the body and then
+  // ignored, so `withCronRun` filed a persistent backlog as a green run — a job
+  // reporting success over work that did not happen, which is the exact shape
+  // this codebase's 207 convention exists to prevent (see `withCronRun`).
+  const failed = reconciliations.results.filter((result) => result.status === "failed")
+  const incomplete = failed.length > 0 || reconciliations.deferred.length > 0
+  return NextResponse.json({
+    reconciliations,
+    reconciliationEnabled: true,
+    deferredCount: reconciliations.deferred.length,
+    failedCount: failed.length,
+  }, { status: incomplete ? 207 : 200 })
 }
 
 export const POST = withCronRun("payment-reconciliation", handler)

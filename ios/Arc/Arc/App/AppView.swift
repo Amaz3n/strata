@@ -2,7 +2,7 @@ import SwiftUI
 
 struct AppView: View {
     private enum ShellMode {
-        case projects
+        case global
         case project
     }
 
@@ -11,10 +11,11 @@ struct AppView: View {
     /// driven by the persisted project selection, so a returning user lands
     /// straight back in their last job instead of the directory.
     @State private var explicitMode: ShellMode?
+    @State private var globalTab: GlobalTab = .myHouses
 
     private var mode: ShellMode {
         if let explicitMode { return explicitMode }
-        return dependencies.workspace.selectedProjectID != nil ? .project : .projects
+        return dependencies.workspace.selectedProjectID != nil ? .project : .global
     }
 
     var body: some View {
@@ -22,16 +23,22 @@ struct AppView: View {
             switch mode {
             case .project:
                 ProjectContextShell(
-                    onShowProjects: { explicitMode = .projects },
+                    onShowProjects: { showGlobal(.projects) },
+                    onShowMyHouses: { showGlobal(.myHouses) },
                     onOpenProject: openProject
                 )
-            case .projects:
-                GlobalProjectsShell(onOpenProject: openProject)
+            case .global:
+                GlobalWorkspaceShell(selectedTab: $globalTab, onOpenProject: openProject)
             }
         }
         .onChange(of: dependencies.workspace.selectedProjectID) { _, newValue in
-            if newValue == nil { explicitMode = .projects }
+            if newValue == nil { explicitMode = .global }
         }
+    }
+
+    private func showGlobal(_ tab: GlobalTab) {
+        globalTab = tab
+        explicitMode = .global
     }
 
     private func openProject(_ projectID: String) {
@@ -46,6 +53,7 @@ struct AppView: View {
 private struct ProjectContextShell: View {
     @Environment(AppDependencies.self) private var dependencies
     let onShowProjects: () -> Void
+    let onShowMyHouses: () -> Void
     let onOpenProject: (String) -> Void
 
     var body: some View {
@@ -53,6 +61,7 @@ private struct ProjectContextShell: View {
             ProjectWorkspaceShell(
                 project: project,
                 onShowProjects: onShowProjects,
+                onShowMyHouses: onShowMyHouses,
                 onSelectProject: onOpenProject
             )
             .id(project.id)
@@ -67,20 +76,34 @@ private struct ProjectContextShell: View {
     }
 }
 
-private struct GlobalProjectsShell: View {
-    @Environment(AppDependencies.self) private var dependencies
+/// The pre-project context. My Houses lives here rather than in the project
+/// workspace precisely because it must not require a project first — that is
+/// the whole point of a cross-house surface.
+private struct GlobalWorkspaceShell: View {
     @State private var presentedSheet: SheetDestination?
+    @Binding var selectedTab: GlobalTab
     let onOpenProject: (String) -> Void
 
     var body: some View {
-        NavigationStack {
-            ProjectsView(onOpenProject: onOpenProject)
-                .toolbar {
-                    ToolbarItemGroup(placement: .topBarTrailing) {
-                        SyncStatusIndicator()
-                        ProfileToolbarButton { presentedSheet = .account }
+        TabView(selection: $selectedTab) {
+            ForEach(GlobalTab.allCases) { tab in
+                NavigationStack {
+                    Group {
+                        switch tab {
+                        case .myHouses: MyHousesView(onOpenProject: onOpenProject)
+                        case .projects: ProjectsView(onOpenProject: onOpenProject)
+                        }
+                    }
+                    .toolbar {
+                        ToolbarItemGroup(placement: .topBarTrailing) {
+                            SyncStatusIndicator()
+                            ProfileToolbarButton { presentedSheet = .account }
+                        }
                     }
                 }
+                .tabItem { Label(tab.title, systemImage: tab.systemImage) }
+                .tag(tab)
+            }
         }
         .sheet(item: $presentedSheet) { destination in
             switch destination {
@@ -99,6 +122,7 @@ private struct ProjectWorkspaceShell: View {
 
     let project: MobileProject
     let onShowProjects: () -> Void
+    let onShowMyHouses: () -> Void
     let onSelectProject: (String) -> Void
 
     var body: some View {
@@ -109,19 +133,20 @@ private struct ProjectWorkspaceShell: View {
                     selectedTab: $selectedTab,
                     tabRouter: tabRouter,
                     onShowProjects: onShowProjects,
+                    onShowMyHouses: onShowMyHouses,
                     onSelectProject: onSelectProject
                 )
             } else {
                 ProjectTabShell(
                     project: project,
                     selectedTab: $selectedTab,
-                    tabRouter: tabRouter,
-                    onShowProjects: onShowProjects
+                    tabRouter: tabRouter
                 )
                 .projectSwitcher(
                     model: switcher,
                     currentProjectID: project.id,
-                    onSelectProject: onSelectProject
+                    onSelectProject: onSelectProject,
+                    onShowMyHouses: onShowMyHouses
                 )
             }
         }
@@ -132,7 +157,6 @@ private struct ProjectTabShell: View {
     let project: MobileProject
     @Binding var selectedTab: AppTab
     let tabRouter: TabRouter
-    let onShowProjects: () -> Void
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -154,6 +178,7 @@ private struct ProjectSidebarShell: View {
     @Binding var selectedTab: AppTab
     let tabRouter: TabRouter
     let onShowProjects: () -> Void
+    let onShowMyHouses: () -> Void
     let onSelectProject: (String) -> Void
 
     var body: some View {
@@ -196,6 +221,9 @@ private struct ProjectSidebarShell: View {
                 }
 
                 Section {
+                    Button(action: onShowMyHouses) {
+                        Label("My Houses", systemImage: "house")
+                    }
                     Button(action: onShowProjects) {
                         Label("All Projects", systemImage: "arrow.left")
                     }

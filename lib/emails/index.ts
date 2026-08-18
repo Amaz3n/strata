@@ -45,3 +45,19 @@ export {
   VendorBillDecisionEmail,
   type VendorBillDecisionEmailProps,
 } from "./vendor-bill-decision-email"
+export {
+  PaymentRunApprovalEmail,
+  type PaymentRunApprovalEmailProps,
+  type PaymentRunEmailKind,
+  type PaymentRunEmailLine,
+} from "./payment-run-approval-email"
+export {
+  PaymentReturnedEmail,
+  type PaymentReturnedEmailProps,
+  type PaymentReturnKind,
+} from "./payment-returned-email"
+export {
+  BankChangeReviewEmail,
+  type BankChangeReviewEmailProps,
+  type BankChangeKind,
+} from "./bank-change-review-email"

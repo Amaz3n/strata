@@ -25,6 +25,8 @@ const PAYOUT_PAGE_SIZE = 100
 const MAX_PAYOUT_BALANCE_TRANSACTIONS = 10_000
 /** Enough parallelism to drain a large payout, low enough to stay under rate limits. */
 const PAYOUT_CHARGE_CONCURRENCY = 8
+/** Rail movements that are not a payment, a transfer, or a payout. */
+const FEE_ADJUSTMENT_BALANCE_TYPES = ["stripe_fee", "adjustment", "reserve_transaction", "payout_failure"] as const
 
 let stripeSingleton: Stripe | null = null
 
@@ -133,6 +135,52 @@ function stripeMetadata(metadata: Stripe.Metadata | null | undefined): Record<st
 const STRIPE_SETTLEMENT_WINDOW: ProviderSettlementWindow = {
   debitBusinessDays: { min: 4, max: 5 },
   payoutBusinessDays: { min: 1, max: 2 },
+}
+
+/**
+ * Rail movements that are neither a payment nor a payout: Stripe's own fees,
+ * manual adjustments, reserve holds, and the reversal that lands when a payout
+ * bounces. None of them are anything Arc submitted, so nothing in the old
+ * three-kind reconciliation could see them — a reserve placed on a vendor
+ * account, or a failed payout that quietly returned funds, left no trace.
+ *
+ * Enumerated on the vendors' connected accounts only. The same balance
+ * transaction types also exist on the platform account, but those are Arc's own
+ * cost of doing business rather than any one builder's money, and posting them
+ * into an org-scoped exception queue would charge every tenant for the same
+ * platform fee. That is a platform-level control, not this one.
+ */
+async function listRecipientFeeAdjustments(
+  providerAccountId: string,
+  created: { gte: number; lt: number },
+): Promise<ProviderActivity[]> {
+  const rows: ProviderActivity[] = []
+  for (const type of FEE_ADJUSTMENT_BALANCE_TYPES) {
+    let cursor: string | undefined
+    do {
+      const page = await stripeClient().balanceTransactions.list(
+        { created, type, limit: 100, ...(cursor ? { starting_after: cursor } : {}) },
+        { stripeAccount: providerAccountId },
+      )
+      for (const transaction of page.data) {
+        const sourceId = typeof transaction.source === "string" ? transaction.source : transaction.source?.id
+        rows.push({
+          kind: "fee_adjustment",
+          providerReference: transaction.id,
+          providerAccountId,
+          // Fees and reversals are negative on the balance; the exception queue
+          // reports the signed movement so a reserve reads as money withheld.
+          amountCents: transaction.amount,
+          status: transaction.status === "available" ? "settled" : "pending",
+          linkedReferences: sourceId ? [sourceId] : [],
+          metadata: {},
+          activityType: transaction.type,
+        })
+      }
+      cursor = page.has_more ? page.data.at(-1)?.id : undefined
+    } while (cursor)
+  }
+  return rows
 }
 
 export const stripeApProvider: PaymentRailProvider = {
@@ -347,12 +395,26 @@ export const stripeApProvider: PaymentRailProvider = {
       lt: Math.floor(new Date(input.periodEnd).getTime() / 1000),
     }
     const activity: ProviderActivity[] = []
+    const fundingCustomerIds = new Set(input.fundingProviderCustomerIds)
+    const recipientAccountIds = [...new Set(input.recipientProviderAccountIds)]
+    const recipientAccountIdSet = new Set(recipientAccountIds)
 
     let paymentCursor: string | undefined
     do {
       const page = await stripeClient().paymentIntents.list({ created, limit: 100, ...(paymentCursor ? { starting_after: paymentCursor } : {}) })
       for (const intent of page.data) {
-        if (intent.metadata.arc_product !== "vendor_payments") continue
+        const customerId = typeof intent.customer === "string" ? intent.customer : intent.customer?.id ?? null
+        // Discovery is the customer, which Stripe owns; the marker below only
+        // decides which bucket a discovered movement lands in. An intent drawn
+        // on this builder's bank that Arc never tagged is precisely the debit
+        // this control exists to surface, so it stays in. Metadata naming this
+        // org is an additional way IN, never a way out — a funding source
+        // removed after the debit must not make the debit disappear.
+        const claimedByOrg = intent.metadata.org_id === input.orgId
+        if (!claimedByOrg && (!customerId || !fundingCustomerIds.has(customerId))) continue
+        // Another tenant's money on the same platform account is that tenant's
+        // exception, not this one's.
+        if (intent.metadata.org_id && !claimedByOrg) continue
         activity.push({
           kind: intent.metadata.charge_type === "platform_fee" ? "fee_payment" : "payment",
           providerReference: intent.id,
@@ -370,12 +432,23 @@ export const stripeApProvider: PaymentRailProvider = {
     do {
       const page = await stripeClient().transfers.list({ created, limit: 100, ...(transferCursor ? { starting_after: transferCursor } : {}) })
       for (const transfer of page.data) {
-        if (transfer.metadata.arc_product !== "vendor_payments") continue
+        const destination = typeof transfer.destination === "string" ? transfer.destination : transfer.destination?.id ?? null
+        // The destination account is Stripe's record of where the money went. A
+        // transfer into a vendor this builder pays, created by something other
+        // than Arc, has to be visible. As above, metadata naming this org only
+        // ever widens the net — a vendor relationship ended after the transfer
+        // must not erase the transfer.
+        const claimedByOrg = transfer.metadata.org_id === input.orgId
+        if (!claimedByOrg && (!destination || !recipientAccountIdSet.has(destination))) continue
+        // A vendor entity is global, so the same connected account receives
+        // transfers from several builders. Metadata is how a tagged transfer is
+        // handed to its owner instead of being everyone's exception.
+        if (transfer.metadata.org_id && !claimedByOrg) continue
         const source = typeof transfer.source_transaction === "string" ? transfer.source_transaction : transfer.source_transaction?.id
         activity.push({
           kind: "transfer",
           providerReference: transfer.id,
-          providerAccountId: typeof transfer.destination === "string" ? transfer.destination : transfer.destination?.id ?? null,
+          providerAccountId: destination,
           amountCents: transfer.amount,
           status: transfer.reversed ? "returned" : "settled",
           linkedReferences: source ? [source] : [],
@@ -385,7 +458,7 @@ export const stripeApProvider: PaymentRailProvider = {
       transferCursor = page.has_more ? page.data.at(-1)?.id : undefined
     } while (transferCursor)
 
-    for (const providerAccountId of [...new Set(input.recipientProviderAccountIds)]) {
+    for (const providerAccountId of recipientAccountIds) {
       let payoutCursor: string | undefined
       do {
         const page = await stripeClient().payouts.list(
@@ -397,7 +470,9 @@ export const stripeApProvider: PaymentRailProvider = {
           transferIds: await stripeApProvider.resolvePayoutTransferIds({ providerAccountId, providerPayoutId: payout.id }),
         }))
         for (const { payout, transferIds } of payoutRows) {
-          if (transferIds.length === 0) continue
+          // A payout with no resolvable source transfer used to be dropped here,
+          // which meant money leaving a vendor account Arc pays into, funded by
+          // something Arc never sent, produced no record at all.
           const status: ProviderActivity["status"] = payout.status === "paid"
             ? "settled"
             : payout.status === "failed"
@@ -417,6 +492,8 @@ export const stripeApProvider: PaymentRailProvider = {
         }
         payoutCursor = page.has_more ? page.data.at(-1)?.id : undefined
       } while (payoutCursor)
+
+      activity.push(...await listRecipientFeeAdjustments(providerAccountId, created))
     }
 
     return activity
@@ -483,8 +560,12 @@ export const stripeApProvider: PaymentRailProvider = {
       providerEventType: event.type,
       providerAccountId: typeof event.account === "string" ? event.account : null,
       occurredAt: new Date(event.created * 1000).toISOString(),
+      // Default: shape-compatible with AP, but only an Arc-side lookup settles
+      // it. Branches that read Arc's own marker off the object upgrade this.
+      attribution: "requires_lookup" as const,
       payload: JSON.parse(JSON.stringify(event)) as Record<string, unknown>,
     }
+    const tagged = { ...base, attribution: "provider_tagged" as const }
     if (event.type === "account.updated") {
       const account = event.data.object as Stripe.Account
       return { ...base, kind: "recipient.updated", recipientProviderAccountId: account.id }
@@ -519,14 +600,14 @@ export const stripeApProvider: PaymentRailProvider = {
       if (!status) return null
       if (intent.metadata.charge_type === "platform_fee") {
         return {
-          ...base,
+          ...tagged,
           kind: "fee_charge.status",
           providerPaymentId: intent.id,
           status: status === "funds_available" ? "succeeded" : status,
         }
       }
       return {
-        ...base,
+        ...tagged,
         kind: "disbursement.status",
         providerPaymentId: intent.id,
         disbursementId: intent.metadata.disbursement_id || null,
@@ -536,10 +617,11 @@ export const stripeApProvider: PaymentRailProvider = {
     }
     if (event.type === "transfer.created") {
       const transfer = event.data.object as Stripe.Transfer
+      if (transfer.metadata.arc_product !== "vendor_payments") return null
       const paymentId = await stripeApProvider.resolveTransferPaymentId({ providerTransferId: transfer.id })
       if (!paymentId) return null
       return {
-        ...base,
+        ...tagged,
         kind: "disbursement.status",
         providerPaymentId: paymentId,
         disbursementId: null,
@@ -550,24 +632,15 @@ export const stripeApProvider: PaymentRailProvider = {
     if (event.type === "payout.paid") {
       if (!base.providerAccountId) return null
       const payout = event.data.object as Stripe.Payout
-      const transferIds = await stripeApProvider.resolvePayoutTransferIds({
-        providerAccountId: base.providerAccountId,
-        providerPayoutId: payout.id,
-      })
-      return { ...base, kind: "disbursement.paid", providerPayoutId: payout.id, providerTransferIds: transferIds }
+      return { ...base, kind: "disbursement.paid", providerPayoutId: payout.id }
     }
     if (event.type === "payout.failed" || event.type === "payout.canceled") {
       if (!base.providerAccountId) return null
       const payout = event.data.object as Stripe.Payout
-      const transferIds = await stripeApProvider.resolvePayoutTransferIds({
-        providerAccountId: base.providerAccountId,
-        providerPayoutId: payout.id,
-      })
       return {
         ...base,
         kind: "disbursement.payout_attention",
         providerPayoutId: payout.id,
-        providerTransferIds: transferIds,
         status: event.type === "payout.failed" ? "failed" : "canceled",
         reason: payout.failure_message ?? payout.failure_code ?? `Stripe payout ${event.type === "payout.failed" ? "failed" : "was canceled"}`,
       }
@@ -576,6 +649,14 @@ export const stripeApProvider: PaymentRailProvider = {
       const dispute = event.data.object as Stripe.Dispute
       const paymentId = typeof dispute.payment_intent === "string" ? dispute.payment_intent : dispute.payment_intent?.id
       if (!paymentId) return null
+      // One Stripe event, two unrelated meanings: on the AP rail a dispute is an
+      // ACH debit coming back off the builder's bank; on the receivables rail it
+      // is a card chargeback against an invoice payment. Which one it is used to
+      // be decided only by whether the disbursement lookup happened to miss.
+      // Stripe names the instrument, so say it out loud: a card dispute is never
+      // an ACH return and this adapter declines it outright.
+      const disputeMethod: { type?: string } | undefined = dispute.payment_method_details
+      if (disputeMethod?.type === "card") return null
       if (String(dispute.status).startsWith("warning_")) {
         return {
           ...base,
@@ -597,6 +678,11 @@ export const stripeApProvider: PaymentRailProvider = {
     }
     if (event.type === "charge.succeeded") {
       const eventCharge = event.data.object as Stripe.Charge
+      // Stripe copies a PaymentIntent's metadata onto the charge it creates, so
+      // the same marker the `payment_intent.*` branch uses is available here —
+      // and without it every receivables charge paid for a second retrieval of a
+      // charge this adapter was always going to hand back to the AR handler.
+      if (eventCharge.metadata.arc_product !== "vendor_payments") return null
       const paymentId = typeof eventCharge.payment_intent === "string" ? eventCharge.payment_intent : eventCharge.payment_intent?.id
       if (!paymentId) return null
       const charge = await stripeClient().charges.retrieve(eventCharge.id, {
@@ -604,7 +690,7 @@ export const stripeApProvider: PaymentRailProvider = {
       }, base.providerAccountId ? { stripeAccount: base.providerAccountId } : undefined)
       const balance = charge.balance_transaction && typeof charge.balance_transaction !== "string" ? charge.balance_transaction : null
       return {
-        ...base,
+        ...tagged,
         kind: "disbursement.charge_settled",
         providerPaymentId: paymentId,
         providerChargeId: charge.id,

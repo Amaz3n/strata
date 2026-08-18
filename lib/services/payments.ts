@@ -16,10 +16,12 @@ import type {
 import {
   createPaymentIntentInputSchema,
   generatePayLinkInputSchema,
+  receivePaymentInputSchema,
   recordPaymentInputSchema,
   type CreatePaymentIntentInput,
   type CreatePublicInvoicePaymentIntentInput,
   type GeneratePayLinkInput,
+  type ReceivePaymentInput,
   type RecordPaymentInput,
 } from "@/lib/validation/payments";
 import { requireOrgContext } from "@/lib/services/context";
@@ -31,7 +33,7 @@ import {
   calculatePaymentFeeQuote,
   type OnlinePaymentMethod,
   loadPaymentFeePolicy,
-} from "@/lib/payments/fees";
+} from "@/lib/payments/fee-engine";
 import { generateConditionalWaiverForPayment } from "@/lib/services/lien-waivers";
 import { releaseInvoiceLienWaiversIfPaid } from "@/lib/services/invoice-lien-waivers";
 import { enqueuePaymentSync } from "@/lib/services/accounting-sync";
@@ -1179,6 +1181,177 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
   return mapPayment({ ...paymentRow, ...payload });
 }
 
+export async function getReceivePaymentWorkspace(input: {
+  partyType?: "contact" | "company";
+  partyId?: string;
+  orgId?: string;
+} = {}) {
+  const context = await requireOrgContext(input.orgId);
+  await requireAuthorization({
+    permission: "payment.read",
+    userId: context.userId,
+    orgId: context.orgId,
+    supabase: context.supabase,
+    resourceType: "receivable_payment",
+    resourceId: input.partyId ?? context.orgId,
+    logDecision: true,
+  });
+  const service = createServiceSupabaseClient();
+  const [{ data: invoiceRows, error: invoiceError }, { data: groups, error: groupError }] = await Promise.all([
+    service
+      .from("invoices")
+      .select(
+        "id, invoice_number, project_id, customer_name, total_cents, balance_due_cents, due_date, status, metadata, " +
+          "project:projects!inner(id, name, client_id)",
+      )
+      .eq("org_id", context.orgId)
+      .in("status", ["sent", "partial", "overdue"])
+      .gt("balance_due_cents", 0)
+      .order("due_date", { ascending: true, nullsFirst: false })
+      .limit(500),
+    service
+      .from("receivable_payment_groups")
+      .select("id, received_at, total_cents, method, reference, party_type, party_id, created_at")
+      .eq("org_id", context.orgId)
+      .order("received_at", { ascending: false })
+      .limit(20),
+  ]);
+  if (invoiceError) throw new Error(`Failed to load open invoices: ${invoiceError.message}`);
+  if (groupError) throw new Error(`Failed to load receipt history: ${groupError.message}`);
+
+  let allowedProjectIds: Set<string> | null = null;
+  if (input.partyType && input.partyId) {
+    const { getFinancialPartyReceivables } = await import("@/lib/services/financial-parties");
+    const party = await getFinancialPartyReceivables({
+      partyType: input.partyType,
+      partyId: input.partyId,
+      orgId: context.orgId,
+    });
+    allowedProjectIds = new Set(party.projects.map((project) => project.project_id));
+  }
+
+  return {
+    partyType: input.partyType ?? null,
+    partyId: input.partyId ?? null,
+    invoices: (invoiceRows ?? [])
+      .map((row: any) => {
+        const project = Array.isArray(row.project) ? row.project[0] : row.project;
+        return {
+          id: String(row.id),
+          invoiceNumber: String(row.invoice_number ?? "Invoice"),
+          projectId: String(row.project_id),
+          projectName: String(project?.name ?? "Project"),
+          clientContactId: project?.client_id ? String(project.client_id) : null,
+          customerName: String(row.customer_name ?? row.metadata?.customer_name ?? "Customer"),
+          totalCents: Number(row.total_cents ?? 0),
+          balanceCents: Number(row.balance_due_cents ?? 0),
+          dueDate: row.due_date ? String(row.due_date) : null,
+          status: String(row.status),
+        };
+      })
+      .filter((invoice) => !allowedProjectIds || allowedProjectIds.has(invoice.projectId)),
+    recentGroups: groups ?? [],
+  };
+}
+
+/**
+ * Records one customer receipt across several invoices while preserving the
+ * projector's one-invoice-per-payment source contract. The database function
+ * locks and applies every allocation in one transaction; this service owns the
+ * permission boundary and the non-economic follow-up records.
+ */
+export async function recordMultiInvoicePayment(input: ReceivePaymentInput, orgId?: string) {
+  const parsed = receivePaymentInputSchema.parse(input);
+  const context = await requireOrgContext(orgId);
+  await requireAuthorization({
+    permission: "payment.release",
+    userId: context.userId,
+    orgId: context.orgId,
+    supabase: context.supabase,
+    resourceType: "receivable_payment",
+    resourceId: parsed.party_id ?? context.orgId,
+    logDecision: true,
+  });
+  const service = createServiceSupabaseClient();
+  const { data, error } = await service.rpc("apply_multi_invoice_payment_atomic", {
+    p_org_id: context.orgId,
+    p_received_at: parsed.received_at,
+    p_method: parsed.method,
+    p_reference: parsed.reference ?? null,
+    p_provider: "manual",
+    p_idempotency_key: parsed.idempotency_key,
+    p_allocations: parsed.allocations,
+    p_party_type: parsed.party_type ?? null,
+    p_party_id: parsed.party_id ?? null,
+    p_metadata: parsed.metadata ?? {},
+    p_created_by: context.userId,
+  });
+  if (error || !data) throw new Error(`Failed to record the receipt: ${error?.message ?? "No result returned"}`);
+
+  const result = z
+    .object({
+      group: z.object({ id: z.string().uuid(), total_cents: z.number().int() }).passthrough(),
+      items: z.array(
+        z.object({
+          payment_id: z.string().uuid(),
+          invoice_id: z.string().uuid(),
+          amount_cents: z.number().int().positive(),
+        }).passthrough(),
+      ),
+      duplicate: z.boolean(),
+    })
+    .parse(data);
+
+  if (!result.duplicate) {
+    for (const item of result.items) {
+      const invoice = await getInvoiceTotals(service, item.invoice_id, context.orgId);
+      await ensureReceiptForPayment({
+        supabase: service,
+        orgId: context.orgId,
+        invoice,
+        paymentId: item.payment_id,
+        amountCents: item.amount_cents,
+        provider: "manual",
+        method: parsed.method,
+        reference: parsed.reference ?? null,
+      });
+      await releaseInvoiceLienWaiversIfPaid({
+        supabase: service,
+        orgId: context.orgId,
+        invoiceId: item.invoice_id,
+        paymentId: item.payment_id,
+      });
+      try {
+        await generateConditionalWaiverForPayment(item.payment_id, context.orgId);
+        await enqueuePaymentSync(item.payment_id, context.orgId);
+      } catch (followupError) {
+        console.error("Receipt follow-up could not be completed", followupError);
+      }
+    }
+
+    await Promise.all([
+      recordAudit({
+        orgId: context.orgId,
+        actorId: context.userId,
+        action: "insert",
+        entityType: "receivable_payment_group",
+        entityId: result.group.id,
+        after: { total_cents: result.group.total_cents, allocations: parsed.allocations },
+        source: "receivables.receive_payment",
+      }),
+      recordEvent({
+        orgId: context.orgId,
+        actorId: context.userId,
+        eventType: "receivable_payment_group_recorded",
+        entityType: "receivable_payment_group",
+        entityId: result.group.id,
+        payload: { total_cents: result.group.total_cents, invoice_count: result.items.length },
+      }),
+    ]);
+  }
+  return result;
+}
+
 export async function recordPaymentReversal(input: {
   paymentId?: string;
   providerPaymentId?: string;
@@ -1505,57 +1678,4 @@ export async function upsertLateFeeRule(input: unknown, orgId?: string) {
   }
 
   return data;
-}
-
-export async function findDueReminders() {
-  const supabase = createServiceSupabaseClient();
-  const { data, error } = await supabase
-    .from("reminders")
-    .select(
-      "id, org_id, invoice:invoices(id, org_id, due_date, status, balance_due_cents, invoice_number, project_id), channel, schedule, offset_days, template_id, metadata",
-    );
-
-  if (error) {
-    throw new Error(`Failed to load reminders: ${error.message}`);
-  }
-
-  const now = new Date();
-  const due = (data ?? []).filter((row) => {
-    const invoice = Array.isArray(row.invoice) ? row.invoice[0] : row.invoice;
-    const dueDate = invoice?.due_date ? new Date(invoice.due_date) : undefined;
-    if (!dueDate) return false;
-    const diffDays = Math.floor(
-      (dueDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24),
-    );
-    const overdueDays = Math.floor(
-      (now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24),
-    );
-
-    if (row.schedule === "before_due") {
-      return diffDays <= row.offset_days && diffDays >= 0;
-    }
-    if (row.schedule === "after_due" || row.schedule === "overdue") {
-      return (
-        overdueDays >= row.offset_days && (invoice?.balance_due_cents ?? 0) > 0
-      );
-    }
-    return false;
-  });
-
-  return due;
-}
-
-export async function findLateFeeCandidates() {
-  const supabase = createServiceSupabaseClient();
-  const { data, error } = await supabase
-    .from("late_fees")
-    .select(
-      "id, org_id, project_id, strategy, amount_cents, percent_rate, grace_days, repeat_days, max_applications, metadata",
-    );
-
-  if (error) {
-    throw new Error(`Failed to load late fee rules: ${error.message}`);
-  }
-
-  return data ?? [];
 }

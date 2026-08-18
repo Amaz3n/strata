@@ -14,6 +14,8 @@ import {
   listSpecInventory,
   priceAgreementDraft,
   releaseReservation,
+  offerPlanInCommunity,
+  withdrawPlanFromCommunity,
   setCommunityPlanPrice,
   upsertIncentive,
   voidPurchaseAgreement,
@@ -107,6 +109,14 @@ export async function voidPurchaseAgreementAction(input: unknown) {
 
 export async function upsertIncentiveAction(input: unknown) { return run(() => upsertIncentive(input as Parameters<typeof upsertIncentive>[0])) }
 export async function endIncentiveAction(id: string) { return run(() => endIncentive(z.string().uuid().parse(id))) }
+export async function offerPlanInCommunityAction(communityId: string, input: unknown) {
+  return run(() => offerPlanInCommunity(input), ["/sales", "/plans", `/communities/${communityId}/offering`])
+}
+
+export async function withdrawPlanFromCommunityAction(communityId: string, input: unknown) {
+  return run(() => withdrawPlanFromCommunity(input), ["/sales", "/plans", `/communities/${communityId}/offering`])
+}
+
 export async function setCommunityPlanPriceAction(communityId: string, input: unknown) {
   return run(() => setCommunityPlanPrice(input), ["/sales", "/plans", `/communities/${communityId}/offering`])
 }

@@ -37,6 +37,7 @@
 		A10000000000000000000018 /* SupabaseAuthClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000019 /* SupabaseAuthClient.swift */; };
 		A10000000000000000000019 /* MobileModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001A /* MobileModels.swift */; };
 		A1000000000000000000001A /* MobileAPIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001B /* MobileAPIService.swift */; };
+		A100000000000000000000FE /* PhotoUploadDownscaler.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000000000000000000FE /* PhotoUploadDownscaler.swift */; };
 		A1000000000000000000001B /* WorkspaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001C /* WorkspaceStore.swift */; };
 		A1000000000000000000001C /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001D /* RootView.swift */; };
 		A1000000000000000000001D /* SignInView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001E /* SignInView.swift */; };
@@ -66,6 +67,13 @@
 		A10000000000000000000061 /* PlatformView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000061 /* PlatformView.swift */; };
 		AF533DFA2FEB7FFB00DED0BC /* Arc-iOS.icon in Resources */ = {isa = PBXBuildFile; fileRef = AF533DF92FEB7FFB00DED0BC /* Arc-iOS.icon */; };
 		AF533DFB2FEB7FFB00DED0BC /* Arc-iOS.icon in Resources */ = {isa = PBXBuildFile; fileRef = AF533DF92FEB7FFB00DED0BC /* Arc-iOS.icon */; };
+		A10000000000000000000080 /* GlobalTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000080 /* GlobalTab.swift */; };
+		A10000000000000000000081 /* MyHousesModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000081 /* MyHousesModels.swift */; };
+		A10000000000000000000082 /* MyHousesStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000082 /* MyHousesStore.swift */; };
+		A10000000000000000000083 /* MyHousesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000083 /* MyHousesView.swift */; };
+		A10000000000000000000084 /* VarianceOrderStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000084 /* VarianceOrderStore.swift */; };
+		A10000000000000000000085 /* VarianceOrderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000085 /* VarianceOrderView.swift */; };
+		A10000000000000000000086 /* MyHousesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000086 /* MyHousesTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -117,6 +125,7 @@
 		B10000000000000000000019 /* SupabaseAuthClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseAuthClient.swift; sourceTree = "<group>"; };
 		B1000000000000000000001A /* MobileModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileModels.swift; sourceTree = "<group>"; };
 		B1000000000000000000001B /* MobileAPIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileAPIService.swift; sourceTree = "<group>"; };
+		B100000000000000000000FE /* PhotoUploadDownscaler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoUploadDownscaler.swift; sourceTree = "<group>"; };
 		B1000000000000000000001C /* WorkspaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceStore.swift; sourceTree = "<group>"; };
 		B1000000000000000000001D /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		B1000000000000000000001E /* SignInView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignInView.swift; sourceTree = "<group>"; };
@@ -144,6 +153,13 @@
 		B1000000000000000000005C /* PushManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushManager.swift; sourceTree = "<group>"; };
 		B10000000000000000000060 /* PlatformStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformStore.swift; sourceTree = "<group>"; };
 		B10000000000000000000061 /* PlatformView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformView.swift; sourceTree = "<group>"; };
+		B10000000000000000000080 /* GlobalTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalTab.swift; sourceTree = "<group>"; };
+		B10000000000000000000081 /* MyHousesModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyHousesModels.swift; sourceTree = "<group>"; };
+		B10000000000000000000082 /* MyHousesStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyHousesStore.swift; sourceTree = "<group>"; };
+		B10000000000000000000083 /* MyHousesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyHousesView.swift; sourceTree = "<group>"; };
+		B10000000000000000000084 /* VarianceOrderStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VarianceOrderStore.swift; sourceTree = "<group>"; };
+		B10000000000000000000085 /* VarianceOrderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VarianceOrderView.swift; sourceTree = "<group>"; };
+		B10000000000000000000086 /* MyHousesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyHousesTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -186,6 +202,7 @@
 		110000000000000000000003 /* App */ = {
 			isa = PBXGroup;
 			children = (
+				B10000000000000000000080 /* GlobalTab.swift */,
 				B10000000000000000000002 /* AppDependencies.swift */,
 				B10000000000000000000012 /* AppEnvironment.swift */,
 				B10000000000000000000003 /* AppRouter.swift */,
@@ -229,6 +246,7 @@
 				B10000000000000000000013 /* APIError.swift */,
 				B1000000000000000000001B /* MobileAPIService.swift */,
 				B10000000000000000000014 /* NetworkMonitor.swift */,
+				B100000000000000000000FE /* PhotoUploadDownscaler.swift */,
 			);
 			path = Networking;
 			sourceTree = "<group>";
@@ -247,6 +265,7 @@
 		110000000000000000000008 /* Features */ = {
 			isa = PBXGroup;
 			children = (
+				110000000000000000000055 /* MyHouses */,
 				110000000000000000000009 /* Account */,
 				110000000000000000000014 /* Authentication */,
 				110000000000000000000015 /* DailyLogs */,
@@ -302,6 +321,7 @@
 		11000000000000000000000D /* ArcTests */ = {
 			isa = PBXGroup;
 			children = (
+				B10000000000000000000086 /* MyHousesTests.swift */,
 				B1000000000000000000000F /* AppRouterTests.swift */,
 				B10000000000000000000018 /* FoundationTests.swift */,
 			);
@@ -384,6 +404,7 @@
 		110000000000000000000013 /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				B10000000000000000000081 /* MyHousesModels.swift */,
 				B1000000000000000000001A /* MobileModels.swift */,
 				B10000000000000000000040 /* DrawingModels.swift */,
 			);
@@ -461,6 +482,17 @@
 				B10000000000000000000023 /* DailyLogsView.swift */,
 			);
 			path = DailyLogs;
+			sourceTree = "<group>";
+		};
+		110000000000000000000055 /* MyHouses */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000082 /* MyHousesStore.swift */,
+				B10000000000000000000083 /* MyHousesView.swift */,
+				B10000000000000000000084 /* VarianceOrderStore.swift */,
+				B10000000000000000000085 /* VarianceOrderView.swift */,
+			);
+			path = MyHouses;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -557,6 +589,12 @@
 		310000000000000000000001 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			files = (
+				A10000000000000000000080 /* GlobalTab.swift in Sources */,
+				A10000000000000000000081 /* MyHousesModels.swift in Sources */,
+				A10000000000000000000082 /* MyHousesStore.swift in Sources */,
+				A10000000000000000000083 /* MyHousesView.swift in Sources */,
+				A10000000000000000000084 /* VarianceOrderStore.swift in Sources */,
+				A10000000000000000000085 /* VarianceOrderView.swift in Sources */,
 				A10000000000000000000001 /* ArcApp.swift in Sources */,
 				A10000000000000000000002 /* AppDependencies.swift in Sources */,
 				A10000000000000000000010 /* AppEnvironment.swift in Sources */,
@@ -574,6 +612,7 @@
 				A10000000000000000000007 /* APIClient.swift in Sources */,
 				A10000000000000000000011 /* APIError.swift in Sources */,
 				A1000000000000000000001A /* MobileAPIService.swift in Sources */,
+				A100000000000000000000FE /* PhotoUploadDownscaler.swift in Sources */,
 				A10000000000000000000012 /* NetworkMonitor.swift in Sources */,
 				A10000000000000000000013 /* AppLogger.swift in Sources */,
 				A10000000000000000000014 /* Observability.swift in Sources */,
@@ -616,6 +655,7 @@
 		310000000000000000000003 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			files = (
+				A10000000000000000000086 /* MyHousesTests.swift in Sources */,
 				A1000000000000000000000F /* AppRouterTests.swift in Sources */,
 				A10000000000000000000016 /* FoundationTests.swift in Sources */,
 			);

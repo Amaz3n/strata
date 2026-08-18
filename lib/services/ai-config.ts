@@ -14,9 +14,11 @@ import type { OrgServiceContext } from "@/lib/services/context"
  * 2. TIERS let a feature ask for the cheap model by default and escalate only
  *    when the work earns it. `fast` handles the common case, `standard` is the
  *    workhorse, `heavy` is what a failed verification escalates to.
- * 3. RESOLUTION is layered: org -> platform -> env -> built-in default. The
- *    platform page writes the platform layer, so an operator can point a feature
- *    at a model this file has never heard of.
+ * 3. RESOLUTION is layered: platform -> env -> built-in default. The platform
+ *    page writes the platform layer, so an operator can point a feature at a
+ *    model this file has never heard of. There is no org layer in this path —
+ *    `getOrgAiSearchConfig` below is a legacy per-org override for the `search`
+ *    feature only, read by the assistant harness and never by the gateway.
  *
  * Model IDs here are seeds, not a closed set. Anything the provider accepts is
  * valid; the catalog exists to make the common choices one click away.
@@ -27,6 +29,7 @@ export type AiProvider = (typeof AI_PROVIDER_VALUES)[number]
 
 export const AI_FEATURE_VALUES = [
   "search",
+  "embedding",
   "document_extraction",
   "drawings_vision",
   "spec_classification",
@@ -57,6 +60,7 @@ export const AI_PROVIDER_LABELS: Record<AiProvider, string> = {
 
 export const AI_FEATURE_LABELS: Record<AiFeature, string> = {
   search: "Search & assistant",
+  embedding: "Search embeddings",
   document_extraction: "Document extraction",
   drawings_vision: "Drawings vision",
   spec_classification: "Spec classification",
@@ -67,6 +71,8 @@ export const AI_FEATURE_LABELS: Record<AiFeature, string> = {
 /** One line on what the feature actually does, for the operator picking its model. */
 export const AI_FEATURE_DESCRIPTIONS: Record<AiFeature, string> = {
   search: "Global search answers and the in-app assistant.",
+  embedding:
+    "Semantic search vectors. The model MUST return 1536 dimensions — the stored column is fixed at that width, and a model of any other size is rejected rather than written.",
   document_extraction: "Invoices, receipts and payables read straight off the page.",
   drawings_vision: "Sheet interpretation, symbol matching and takeoff assistance.",
   spec_classification: "Filing specs and submittals into the right section.",
@@ -77,6 +83,7 @@ export const AI_FEATURE_DESCRIPTIONS: Record<AiFeature, string> = {
 /** Features that send images or PDFs, so a text-only model cannot serve them. */
 export const AI_FEATURE_REQUIRES_VISION: Record<AiFeature, boolean> = {
   search: false,
+  embedding: false,
   document_extraction: true,
   drawings_vision: true,
   spec_classification: false,
@@ -164,7 +171,17 @@ export const AI_MODEL_CATALOG: AiModelCatalogEntry[] = [
   // OpenAI — native provider; owns transcription.
   { provider: "openai", model: "gpt-4.1-mini", label: "GPT-4.1 mini", inputPerMTokUsd: 0.4, outputPerMTokUsd: 1.6, vision: true, tier: "fast" },
   { provider: "openai", model: "gpt-4.1", label: "GPT-4.1", inputPerMTokUsd: 2, outputPerMTokUsd: 8, vision: true, tier: "standard" },
+  // Whisper bills per minute of audio, not per token, so a token-based estimate
+  // would be fiction. Transcription rows carry latency and status; their cost
+  // reads "unpriced" until someone records a rate they actually want summed.
   { provider: "openai", model: "whisper-1", label: "Whisper", inputPerMTokUsd: null, outputPerMTokUsd: null, vision: false, tier: "fast" },
+
+  // Embeddings. Output tokens are always zero, so only the input rate is real.
+  // `text-embedding-3-small` is the only entry at the 1536 dimensions the
+  // `search_embeddings` column is declared with; `-large` returns 3072 and is
+  // listed for price lookups on historical rows, not as a usable choice.
+  { provider: "openai", model: "text-embedding-3-small", label: "Text Embedding 3 Small", inputPerMTokUsd: 0.02, outputPerMTokUsd: 0, vision: false, tier: "fast" },
+  { provider: "openai", model: "text-embedding-3-large", label: "Text Embedding 3 Large (3072-dim)", inputPerMTokUsd: 0.13, outputPerMTokUsd: 0, vision: false, tier: "standard" },
 ]
 
 export function catalogEntry(provider: AiProvider, model: string): AiModelCatalogEntry | null {
@@ -227,6 +244,15 @@ export const AI_FEATURE_TIER_DEFAULTS: Record<AiFeature, Record<AiTier, { provid
     standard: { provider: "google", model: "gemini-3.5-flash" },
     heavy: { provider: "google", model: "gemini-3.6-flash" },
   },
+  // Every tier is the same model on purpose. Embeddings have nothing to
+  // escalate TO: the vector column is fixed at 1536 dimensions, so a "better"
+  // model is not a drop-in, and nothing calls the escalation ladder for this
+  // feature. The three rows exist because the routing matrix is per-tier.
+  embedding: {
+    fast: { provider: "openai", model: "text-embedding-3-small" },
+    standard: { provider: "openai", model: "text-embedding-3-small" },
+    heavy: { provider: "openai", model: "text-embedding-3-small" },
+  },
   document_extraction: {
     fast: { provider: "google", model: "gemini-3.1-flash-lite" },
     standard: { provider: "google", model: "gemini-3.5-flash" },
@@ -257,6 +283,7 @@ export const AI_FEATURE_TIER_DEFAULTS: Record<AiFeature, Record<AiTier, { provid
 /** The tier a feature runs at when the caller does not ask for one. */
 export const AI_FEATURE_BASE_TIER: Record<AiFeature, AiTier> = {
   search: "standard",
+  embedding: "fast",
   document_extraction: "fast",
   drawings_vision: "fast",
   spec_classification: "fast",
@@ -357,6 +384,7 @@ function sanitizeModel(value: unknown) {
 // ---------------------------------------------------------------------------
 
 function envNameForFeature(feature: AiFeature) {
+  if (feature === "embedding") return "EMBEDDING"
   if (feature === "document_extraction") return "DOCUMENT_EXTRACTION"
   if (feature === "drawings_vision") return "DRAWINGS_VISION"
   if (feature === "spec_classification") return "SPEC_CLASSIFICATION"
@@ -377,7 +405,11 @@ function resolveEnvConfig(feature: AiFeature, tier: AiTier) {
     normalizeAiProvider(process.env[`${prefix}_PROVIDER_DEFAULT`])
   const model =
     sanitizeModel(process.env[`${prefix}_MODEL_DEFAULT${tierSuffix}`]) ??
-    sanitizeModel(process.env[`${prefix}_MODEL_DEFAULT`])
+    sanitizeModel(process.env[`${prefix}_MODEL_DEFAULT`]) ??
+    // Embeddings predate the registry and shipped under their own env name.
+    // Honoured so a deployment that set it keeps the model it is already
+    // storing vectors under; `EMBEDDING_MODEL_DEFAULT` is the name going forward.
+    (feature === "embedding" ? sanitizeModel(process.env.AI_SEARCH_EMBEDDING_MODEL) : null)
   if (!provider && !model) return null
   const resolvedProvider = provider ?? defaultConfigForFeatureTier(feature, tier).provider
   return {

@@ -158,6 +158,38 @@ export function calculatePaymentFeeQuote(params: {
   }
 }
 
+/**
+ * The same method, re-quoted for a different amount.
+ *
+ * A payer choosing a partial amount needs the fee recomputed before the server
+ * has been asked. The public invoice page did that with its own hand-written
+ * copy of the gross-up, which is a second implementation of the number a payer
+ * is charged — two places to change a rate, one of which nobody would think to
+ * look at. A quote already carries the rate, the fixed component and the cap, so
+ * it can be turned back into the policy it came from and run through the one
+ * calculation.
+ */
+export function requotePaymentFeeForAmount(quote: PaymentFeeQuote, amountCents: number): PaymentFeeQuote {
+  const isAch = quote.method === "ach"
+  const policy: PaymentFeePolicy = {
+    ...DEFAULT_PAYMENT_FEE_POLICY,
+    ...(isAch
+      ? {
+          achEnabled: quote.enabled,
+          achFeePercent: quote.feePercent,
+          achFeeFixedCents: quote.feeFixedCents,
+          achFeeCapCents: quote.feeCapCents,
+        }
+      : {
+          cardEnabled: quote.enabled,
+          cardFeePercent: quote.feePercent,
+          cardFeeFixedCents: quote.feeFixedCents,
+          cardFeeCapCents: quote.feeCapCents,
+        }),
+  }
+  return calculatePaymentFeeQuote({ invoiceBalanceCents: amountCents, method: quote.method, policy })
+}
+
 export function calculatePaymentFeeQuotes(invoiceBalanceCents: number, policy?: PaymentFeePolicy) {
   return {
     ach: calculatePaymentFeeQuote({ invoiceBalanceCents, method: "ach", policy }),

@@ -17,8 +17,8 @@ const RECONCILIATION_ITEM_CAP = 100;
 export type BooksWorkspaceSection =
   | "overview"
   | "statements"
-  | "transactions"
   | "banking"
+  | "overhead"
   | "chart"
   | "ledger"
   | "close"
@@ -70,12 +70,12 @@ export async function getBooksWorkspace(
   const needsAccounts = new Set([
     "overview",
     "banking",
-    "transactions",
     "chart",
     "ledger",
+    "overhead",
     "opening-balances",
   ]).has(section);
-  const needsBanking = new Set(["overview", "transactions", "banking"]).has(
+  const needsBanking = new Set(["overview", "banking"]).has(
     section,
   );
   const needsClose = section === "close";

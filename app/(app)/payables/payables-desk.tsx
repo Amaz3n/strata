@@ -316,9 +316,9 @@ function ReadinessDot({
       : readiness === "invited"
         ? "Vendor was invited to set up ACH but has not finished"
         : readiness === "suspended"
-          ? "Vendor's electronic payment access is suspended"
+          ? "Vendor's Arc Pay access is suspended"
           : readiness === "revoked"
-            ? "Vendor's electronic payment access was revoked"
+            ? "Vendor's Arc Pay access was revoked"
             : "Vendor cannot be paid by ACH yet — invite them from the payable"
   return (
     <span
@@ -419,6 +419,16 @@ export function PayablesDesk({
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(
     () => new Set(),
   )
+  /**
+   * Concurrency tokens the server moved on its own — opening a payable caches
+   * its advisory approval signals, which is a write. Bulk approval sends the
+   * token from this server-rendered list, so it has to learn the new value or
+   * it would reject an approval as a conflict nobody caused.
+   */
+  const [freshTokens, setFreshTokens] = React.useState<Record<string, string>>({})
+  const noteFreshToken = React.useCallback((billId: string, updatedAt: string) => {
+    setFreshTokens((current) => (current[billId] === updatedAt ? current : { ...current, [billId]: updatedAt }))
+  }, [])
   /** The row the keyboard is on. -1 until j/k or a click moves it. */
   const [cursor, setCursor] = React.useState(-1)
   const searchRef = React.useRef<HTMLInputElement>(null)
@@ -450,7 +460,7 @@ export function PayablesDesk({
 
   // Adding a bill: opened by the toolbar button, or by dropping a file anywhere
   // on the page. `droppedFile` is what the sheet scans on open.
-  const [addOpen, setAddOpen] = React.useState(false)
+  const [addOpen, setAddOpen] = React.useState(() => urlSearchParams.get("new") === "1")
   const [syncSheetOpen, setSyncSheetOpen] = React.useState(false)
   /** The selection being turned into one payment run, or null when idle. */
   const [payBatch, setPayBatch] = React.useState<VendorBillSummary[] | null>(null)
@@ -780,7 +790,9 @@ export function PayablesDesk({
     (bills: VendorBillSummary[]) => {
       if (bills.length === 0) return
       startTransition(async () => {
-        const result = await approveVendorBillsAtomicAction(bills.map((bill) => ({ id: bill.id, expected_updated_at: bill.updated_at })))
+        const result = await approveVendorBillsAtomicAction(
+          bills.map((bill) => ({ id: bill.id, expected_updated_at: freshTokens[bill.id] ?? bill.updated_at })),
+        )
         if (!result.success) {
           toast.error(result.error, { description: "No payables were changed." })
           return
@@ -790,7 +802,7 @@ export function PayablesDesk({
         router.refresh()
       })
     },
-    [router],
+    [freshTokens, router],
   )
 
   /**
@@ -1457,6 +1469,7 @@ export function PayablesDesk({
       <PayableCreateWorkspace
         projects={projects}
         initialFile={droppedFile}
+        initialCompanyId={urlSearchParams.get("vendor")}
         open={addOpen}
         onOpenChange={(next) => {
           setAddOpen(next)
@@ -1487,6 +1500,7 @@ export function PayablesDesk({
         paymentReadinessByCompanyId={data.paymentReadinessByCompanyId}
         runMembershipByBillId={data.runMembershipByBillId}
         viewerMayApproveRuns={viewerMayApproveRuns}
+        onConcurrencyTokenRefresh={noteFreshToken}
         approvalViewer={approvalViewer}
         queueTotals={data.tabs}
       />

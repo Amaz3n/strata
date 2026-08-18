@@ -20,6 +20,7 @@ import {
   type UpdateProspectInput,
 } from "@/lib/validation/prospects"
 import { recordAudit } from "@/lib/services/audit"
+import { recordLeadTraffic } from "@/lib/services/community-traffic"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
@@ -461,6 +462,10 @@ export async function createProspect({
         orgId: resolvedOrgId,
       }),
     ]
+  }
+
+  if (parsed.community_id) {
+    await recordLeadTraffic({ supabase, orgId: resolvedOrgId, userId }, { communityId: parsed.community_id, source: parsed.source ?? null })
   }
 
   await recordEvent({

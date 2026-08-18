@@ -218,6 +218,35 @@ export function PayableTerms({
     )
   }
 
+  // Who moves the money. This is a real gate on both sides — the payment-run
+  // preparer refuses an `external` payable, and recording an outside payment
+  // against an `arc` one is refused too — so it has to be changeable, or a
+  // payable can get stuck between the two paths with no way out.
+  if (!isVendorCredit) {
+    rows.push(
+      <RecordRow key="channel" label="Paid by">
+        {editable ? (
+          <Select
+            value={form.paymentChannel}
+            onValueChange={(value) => onChange({ paymentChannel: value === "arc" ? "arc" : "external" })}
+          >
+            <SelectTrigger className={cn(inlineTrigger, "-ml-2")}>
+              <SelectValue placeholder="Not decided" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="arc">Arc Pay</SelectItem>
+              <SelectItem value="external">Paid outside Arc</SelectItem>
+            </SelectContent>
+          </Select>
+        ) : (
+          <span className={form.paymentChannel ? undefined : "text-muted-foreground"}>
+            {form.paymentChannel === "arc" ? "Arc Pay" : form.paymentChannel === "external" ? "Paid outside Arc" : "Not decided"}
+          </span>
+        )}
+      </RecordRow>,
+    )
+  }
+
   /*
     Early-pay discounts are not builder-entered: early pay is a future Arc
     program, and its terms (and fee) belong to Arc, not to this form. Discounts

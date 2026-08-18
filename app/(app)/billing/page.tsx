@@ -271,14 +271,17 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
             style={{ "--desk-stagger": 1 } as React.CSSProperties}
           >
             <SectionHeader title="Ready to bill" count={readyProjects.length}>
-              <Button asChild variant="outline" size="sm">
+              <div className="flex items-center gap-2">
+                <Button asChild size="sm"><Link href="/billing/receive-payment">Receive payment</Link></Button>
+                <Button asChild variant="outline" size="sm">
                 {/* File download, not navigation — `Link` would prefetch and soft-navigate. */}
                 {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
                 <a href="/api/reports/wip-over-under?format=csv" download>
                   <Download className="mr-1.5 h-3.5 w-3.5" />
                   WIP CSV
                 </a>
-              </Button>
+                </Button>
+              </div>
             </SectionHeader>
             <div className="overflow-x-auto">
               <Table className={TABLE_EDGE}>

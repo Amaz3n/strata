@@ -6,7 +6,7 @@ import { PortalShellSkeleton } from "@/components/portal/shell/portal-skeleton"
 import { buildSubPortalNav } from "@/components/portal/shell/portal-nav-items"
 import { resolvePortalGate } from "@/lib/portal/gate"
 import { loadSubPortalShellContext } from "@/lib/services/portal-access"
-import { isVendorPayoutSetupOpen } from "@/lib/services/payment-rail-setup"
+import { isVendorPaymentSectionOpen } from "@/lib/services/payment-rail-setup"
 import { isPortalPayOnPoEnabled } from "@/lib/services/po-completions"
 import { SubPortalSetupRequired } from "./sub-portal-setup-required"
 
@@ -76,7 +76,9 @@ async function SubPortalLayoutContent({ children, params }: SubPortalLayoutProps
       permissions: access.permissions,
     }),
     isPortalPayOnPoEnabled(access),
-    isVendorPayoutSetupOpen(access.org_id),
+    // Gated on this vendor's own access, not just the org's rail: a vendor
+    // whose payment access was withdrawn should not be shown the tab at all.
+    isVendorPaymentSectionOpen({ orgId: access.org_id, companyId: access.company_id }),
   ])
 
   const nav = buildSubPortalNav({

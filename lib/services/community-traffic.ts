@@ -1,3 +1,5 @@
+import type { SupabaseClient } from "@supabase/supabase-js"
+
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
@@ -16,6 +18,61 @@ export interface CommunityTrafficDayDTO {
 
 function isoDay(date: Date) {
   return date.toISOString().slice(0, 10)
+}
+
+/** Which tally a lead lands in, from the source the consultant or form recorded. */
+export function trafficBucketForSource(source: string | null | undefined): "walkIns" | "appointments" | "webInquiries" {
+  const normalized = (source ?? "").toLowerCase()
+  if (/web|online|internet|form|portal|site|zillow|realtor/.test(normalized)) return "webInquiries"
+  if (/appointment|scheduled|tour|booking/.test(normalized)) return "appointments"
+  return "walkIns"
+}
+
+/**
+ * Counts a new lead against its community's daily traffic.
+ *
+ * Conversion rates are only as honest as their denominator, and a tally that
+ * depends on somebody remembering to open the traffic panel is not a
+ * denominator. Called from lead creation, which has already authorized the
+ * write, so it does not re-check `sales.manage` — a consultant who may create
+ * the lead may count it.
+ *
+ * Deliberately best-effort: a footfall tally must never be the reason a lead
+ * fails to save.
+ */
+export async function recordLeadTraffic(
+  context: { supabase: SupabaseClient; orgId: string; userId: string },
+  input: { communityId: string; source?: string | null; occurredOn?: string },
+) {
+  const loggedDate = input.occurredOn ?? isoDay(new Date())
+  const bucket = trafficBucketForSource(input.source)
+  try {
+    const { data: existing, error: existingError } = await context.supabase
+      .from("community_traffic")
+      .select("walk_ins, appointments, web_inquiries, notes")
+      .eq("org_id", context.orgId)
+      .eq("community_id", input.communityId)
+      .eq("logged_date", loggedDate)
+      .maybeSingle()
+    if (existingError) throw new Error(existingError.message)
+    const next = {
+      walk_ins: Number(existing?.walk_ins ?? 0) + (bucket === "walkIns" ? 1 : 0),
+      appointments: Number(existing?.appointments ?? 0) + (bucket === "appointments" ? 1 : 0),
+      web_inquiries: Number(existing?.web_inquiries ?? 0) + (bucket === "webInquiries" ? 1 : 0),
+    }
+    const { error } = await context.supabase.from("community_traffic").upsert({
+      org_id: context.orgId,
+      community_id: input.communityId,
+      logged_date: loggedDate,
+      ...next,
+      notes: (existing?.notes as string | null) ?? null,
+      recorded_by: context.userId,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "community_id,logged_date" })
+    if (error) throw new Error(error.message)
+  } catch (error) {
+    console.error("Failed to record community traffic for a new lead", { communityId: input.communityId, loggedDate, error })
+  }
 }
 
 export async function listCommunityTraffic(

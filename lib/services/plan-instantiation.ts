@@ -57,6 +57,13 @@ export type InstantiatePlanInput = {
   steps?: PlanInstantiationStep[];
   priceResolver?: PriceResolver;
   dryRun?: boolean;
+  /**
+   * Set by a background worker replaying a release. A step this project already
+   * instantiated is then a SKIP, not a fatal error — the release ledger and this
+   * one are separate writes, so a step can be marked here and still be pending
+   * over there, and treating that as fatal wedged the package permanently.
+   */
+  resume?: boolean;
 };
 
 export type InstantiatePlanResult = {
@@ -70,6 +77,8 @@ export type InstantiatePlanResult = {
   schedule?: { item_ids: string[]; start_date: string; end_date: string };
   checklists?: { inspection_ids: string[] };
   drawings?: { drawing_set_id: string; queued: boolean };
+  /** Steps this project had already instantiated, so nothing was re-generated. */
+  skipped: PlanInstantiationStep[];
   warnings: string[];
   errors: string[];
 };
@@ -167,6 +176,7 @@ const instantiateInputSchema = z.object({
     .array(z.enum(["budget", "schedule", "checklists", "drawings"]))
     .optional(),
   dryRun: z.boolean().optional(),
+  resume: z.boolean().optional(),
 });
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -181,9 +191,31 @@ function isoAddDays(dateValue: string, days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
-function completedSteps(metadata: Record<string, unknown>): Set<string> {
+/**
+ * Everything this project has already had generated for it, regardless of which
+ * plan version generated it.
+ *
+ * `produced` is deliberately never reset. `steps` is scoped to one version, so
+ * instantiating a DIFFERENT version used to clear the slate and cheerfully cut
+ * a second budget, a second schedule and a duplicate set of draft inspections
+ * onto the same house. An artifact exists once; a new version does not un-exist
+ * it.
+ */
+function completedSteps(
+  metadata: Record<string, unknown>,
+  versionId: string,
+): Map<string, string | null> {
   const instantiation = asRecord(metadata.plan_instantiation);
-  return new Set(Object.keys(asRecord(instantiation.steps)));
+  const done = new Map<string, string | null>();
+  if (instantiation.version_id === versionId) {
+    for (const step of Object.keys(asRecord(instantiation.steps)))
+      done.set(step, versionId);
+  }
+  for (const [step, mark] of Object.entries(asRecord(instantiation.produced))) {
+    const from = asRecord(mark).version_id;
+    done.set(step, typeof from === "string" ? from : null);
+  }
+  return done;
 }
 
 export async function listPlanInstantiationOptionsForProject(
@@ -854,41 +886,74 @@ export async function queuePlanDrawings(
   return { drawing_set_id: drawingSetId, queued: true };
 }
 
+const MARK_STEP_ATTEMPTS = 5;
+
+/**
+ * Records a step against the project, as a compare-and-swap rather than a
+ * read-modify-write.
+ *
+ * The naive version read `projects.metadata`, mutated it and wrote it back once
+ * per step. The outbox retry path is exactly the concurrent caller that loses
+ * an update that way, and a dropped mark is not a cosmetic loss: it is how a
+ * release comes to believe a step it already ran is still pending. The `seq`
+ * counter makes a racing write visible, and we re-read and retry instead of
+ * clobbering it.
+ */
 async function markStep(
   context: InstantiationContext,
   step: PlanInstantiationStep,
 ) {
-  const { data, error } = await context.supabase
-    .from("projects")
-    .select("metadata")
-    .eq("org_id", context.orgId)
-    .eq("id", context.project.id)
-    .single();
-  if (error)
-    throw new Error(`Failed to read instantiation state: ${error.message}`);
-  const metadata = asRecord(data.metadata);
-  const state = asRecord(metadata.plan_instantiation);
-  const steps =
-    state.version_id === context.version.id ? asRecord(state.steps) : {};
-  const at = new Date().toISOString();
-  const nextMetadata = {
-    ...metadata,
-    plan_instantiation: {
-      ...state,
-      version_id: context.version.id,
-      steps: { ...steps, [step]: { at } },
-      at,
-    },
-  };
-  const { error: updateError } = await context.supabase
-    .from("projects")
-    .update({ metadata: nextMetadata })
-    .eq("org_id", context.orgId)
-    .eq("id", context.project.id);
-  if (updateError)
-    throw new Error(
-      `Failed to mark ${step} instantiation complete: ${updateError.message}`,
-    );
+  for (let attempt = 0; attempt < MARK_STEP_ATTEMPTS; attempt += 1) {
+    const { data, error } = await context.supabase
+      .from("projects")
+      .select("metadata")
+      .eq("org_id", context.orgId)
+      .eq("id", context.project.id)
+      .single();
+    if (error)
+      throw new Error(`Failed to read instantiation state: ${error.message}`);
+    const metadata = asRecord(data.metadata);
+    const state = asRecord(metadata.plan_instantiation);
+    const seq = typeof state.seq === "number" ? state.seq : null;
+    const steps =
+      state.version_id === context.version.id ? asRecord(state.steps) : {};
+    const at = new Date().toISOString();
+    const nextMetadata = {
+      ...metadata,
+      plan_instantiation: {
+        ...state,
+        version_id: context.version.id,
+        steps: { ...steps, [step]: { at } },
+        produced: {
+          ...asRecord(state.produced),
+          [step]: { at, version_id: context.version.id },
+        },
+        seq: (seq ?? 0) + 1,
+        at,
+      },
+    };
+    let update = context.supabase
+      .from("projects")
+      .update({ metadata: nextMetadata })
+      .eq("org_id", context.orgId)
+      .eq("id", context.project.id);
+    update =
+      seq === null
+        ? update.is("metadata->plan_instantiation->>seq", null)
+        : update.eq("metadata->plan_instantiation->>seq", String(seq));
+    const { data: updated, error: updateError } = await update.select("id");
+    if (updateError)
+      throw new Error(
+        `Failed to mark ${step} instantiation complete: ${updateError.message}`,
+      );
+    if ((updated ?? []).length > 0) {
+      context.project.metadata = nextMetadata;
+      return;
+    }
+  }
+  throw new Error(
+    `Failed to mark ${step} instantiation complete: the project ledger kept changing underneath`,
+  );
 }
 
 export async function instantiatePlanForProject(
@@ -907,15 +972,10 @@ export async function instantiatePlanForProject(
     "drawings",
   ];
   const explicitlyRequested = parsed.steps !== undefined;
-  const instantiationState = asRecord(
-    context.project.metadata.plan_instantiation,
-  );
-  const completed =
-    instantiationState.version_id === context.version.id
-      ? completedSteps(context.project.metadata)
-      : new Set<string>();
+  const completed = completedSteps(context.project.metadata, context.version.id);
   const result: InstantiatePlanResult = {
     success: false,
+    skipped: [],
     warnings: [...context.warnings],
     errors: [],
   };
@@ -953,8 +1013,14 @@ export async function instantiatePlanForProject(
   };
   for (const step of requestedSteps) {
     if (completed.has(step)) {
-      const message = `${step} was already instantiated for this project`;
-      if (explicitlyRequested) result.errors.push(message);
+      const from = completed.get(step);
+      const message =
+        from && from !== context.version.id
+          ? `${step} was already generated for this project from a different plan version; re-running it would duplicate the work`
+          : `${step} was already instantiated for this project`;
+      result.skipped.push(step);
+      // A worker replaying a release must treat this as done, not as fatal.
+      if (explicitlyRequested && !parsed.resume) result.errors.push(message);
       else result.warnings.push(`${message}; skipped.`);
       continue;
     }

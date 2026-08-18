@@ -42,6 +42,9 @@ export const CRON_JOBS: CronJobDefinition[] = [
   { name: "purchasing-maintenance", path: "/api/jobs/purchasing-maintenance", schedule: "50 12 * * *", scheduleLabel: "Daily 12:50 UTC", expectedIntervalMinutes: 1440 },
   { name: "starts-pipeline", path: "/api/jobs/starts-pipeline", schedule: "*/5 * * * *", scheduleLabel: "Every 5 min", expectedIntervalMinutes: 5 },
   { name: "warranty-sla-sweep", path: "/api/jobs/warranty-sla-sweep", schedule: "5 * * * *", scheduleLabel: "Hourly", expectedIntervalMinutes: 60 },
+  { name: "lot-hold-sweep", path: "/api/jobs/lot-hold-sweep", schedule: "10 * * * *", scheduleLabel: "Hourly", expectedIntervalMinutes: 60 },
+  { name: "takedown-reminders", path: "/api/jobs/takedown-reminders", schedule: "55 12 * * *", scheduleLabel: "Daily 12:55 UTC", expectedIntervalMinutes: 1440 },
+  { name: "warranty-courtesy-inspections", path: "/api/jobs/warranty-courtesy-inspections", schedule: "10 12 * * *", scheduleLabel: "Daily 12:10 UTC", expectedIntervalMinutes: 1440 },
   { name: "invoice-schedules", path: "/api/jobs/invoice-schedules", schedule: "40 13 * * *", scheduleLabel: "Daily 13:40 UTC", expectedIntervalMinutes: 1440 },
   { name: "forecast-snapshots", path: "/api/jobs/forecast-snapshots", schedule: "15 4 * * *", scheduleLabel: "Daily 04:15 UTC", expectedIntervalMinutes: 1440 },
   // Standing assistant questions. Hourly so an "hourly" cadence is actually

@@ -2,6 +2,7 @@
 
 import {
   useCallback,
+  useDeferredValue,
   useEffect,
   useMemo,
   useState,
@@ -23,6 +24,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AccountActivitySheet, type ActivityTarget } from "@/components/books/account-activity-sheet";
 import {
   Select,
   SelectContent,
@@ -133,7 +135,7 @@ export function BooksJournals({
         ))}
       </nav>
 
-      {pane === "entries" ? <EntriesPane /> : null}
+      {pane === "entries" ? <EntriesPane accounts={accounts} /> : null}
       {pane === "new" ? <NewEntryPane accounts={accounts} asOf={asOf} /> : null}
       {pane === "recurring" ? <RecurringPane accounts={accounts} /> : null}
     </div>
@@ -141,32 +143,57 @@ export function BooksJournals({
 }
 
 /** The audit view: which entries a person wrote, and which the projector derived. */
-function EntriesPane() {
+function EntriesPane({ accounts }: { accounts: GlAccount[] }) {
   const [filter, setFilter] = useState("all");
+  const [query, setQuery] = useState("");
+  const [accountId, setAccountId] = useState("all");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [minAmount, setMinAmount] = useState("");
+  const [maxAmount, setMaxAmount] = useState("");
+  const deferredQuery = useDeferredValue(query);
   const [data, setData] = useState<JournalListing | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [activityTarget, setActivityTarget] = useState<ActivityTarget | null>(null);
 
   const load = useCallback(() => {
     const kinds = KIND_FILTERS.find((item) => item.key === filter)?.kinds;
     setLoading(true);
     setError(null);
-    listJournalEntriesAction(kinds ? { entryKinds: kinds } : {})
+    listJournalEntriesAction({
+      ...(kinds ? { entryKinds: kinds } : {}),
+      ...(deferredQuery.trim() ? { query: deferredQuery.trim() } : {}),
+      ...(accountId !== "all" ? { accountId } : {}),
+      ...(startDate ? { startDate } : {}),
+      ...(endDate ? { endDate } : {}),
+      ...(minAmount ? { minAmountCents: Math.max(0, cents(minAmount)) } : {}),
+      ...(maxAmount ? { maxAmountCents: Math.max(0, cents(maxAmount)) } : {}),
+    })
       .then((result) => {
         if (result.success) setData(result.data as JournalListing);
         else setError(result.error ?? "The journal could not be loaded.");
       })
       .catch(() => setError("The journal could not be loaded."))
       .finally(() => setLoading(false));
-  }, [filter]);
+  }, [accountId, deferredQuery, endDate, filter, maxAmount, minAmount, startDate]);
 
   useEffect(load, [load]);
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap gap-1">
-        {KIND_FILTERS.map((item) => (
+      <div className="border bg-background p-3">
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-[1.4fr_1fr_135px_135px_120px_120px]">
+          <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Memo, source, account, project, or entity" aria-label="Search general ledger" />
+          <Select value={accountId} onValueChange={setAccountId}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All accounts</SelectItem>{accounts.filter((account) => account.active).map((account) => <SelectItem key={account.id} value={account.id}>{account.code} · {account.name}</SelectItem>)}</SelectContent></Select>
+          <Input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} aria-label="Ledger entries from" />
+          <Input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} aria-label="Ledger entries through" />
+          <Input inputMode="decimal" value={minAmount} onChange={(event) => setMinAmount(event.target.value)} placeholder="Min amount" aria-label="Minimum entry amount" />
+          <Input inputMode="decimal" value={maxAmount} onChange={(event) => setMaxAmount(event.target.value)} placeholder="Max amount" aria-label="Maximum entry amount" />
+        </div>
+        <div className="mt-2 flex flex-wrap gap-1">
+          {KIND_FILTERS.map((item) => (
           <button
             key={item.key}
             type="button"
@@ -180,7 +207,8 @@ function EntriesPane() {
           >
             {item.label}
           </button>
-        ))}
+          ))}
+        </div>
       </div>
 
       {loading ? <ListSkeleton /> : null}
@@ -274,13 +302,14 @@ function EntriesPane() {
                             {entry.lines.map((line) => (
                               <tr key={line.id}>
                                 <td className="py-0.5">
-                                  <span className="font-mono text-muted-foreground">
-                                    {line.accountCode}
-                                  </span>{" "}
-                                  {line.accountName}
+                                  <button type="button" onClick={() => setActivityTarget({ accountId: line.accountId, code: line.accountCode, name: line.accountName })} className="text-left underline-offset-4 hover:underline">
+                                    <span className="font-mono text-muted-foreground">{line.accountCode}</span>{" "}
+                                    {line.accountName}
+                                  </button>
                                 </td>
                                 <td className="py-0.5 text-muted-foreground">
                                   {line.description ?? "—"}
+                                  {line.projectName || line.companyName ? <span className="ml-1 text-[10px]">· {[line.projectName, line.companyName].filter(Boolean).join(" · ")}</span> : null}
                                 </td>
                                 <td className="py-0.5 text-right font-mono tabular-nums">
                                   {line.debitCents
@@ -307,13 +336,18 @@ function EntriesPane() {
             </div>
             {data.truncated ? (
               <p className="border-t bg-muted/30 px-4 py-2.5 text-xs text-muted-foreground">
-                Showing the most recent {data.rowCap} entries. Narrow the filter
-                to see older ones.
+                Showing up to {data.rowCap} matches{data.scanTruncated ? " from the 1,000 most recent entries" : ""}. Narrow the filters to see older activity.
               </p>
             ) : null}
           </section>
         )
       ) : null}
+      <AccountActivitySheet
+        target={activityTarget}
+        startDate={startDate || `${new Date().getFullYear()}-01-01`}
+        endDate={endDate || todayIso()}
+        onOpenChange={(open) => { if (!open) setActivityTarget(null); }}
+      />
     </div>
   );
 }

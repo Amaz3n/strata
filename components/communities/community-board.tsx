@@ -697,6 +697,15 @@ export function CommunityBoard({
         ) : null}
       </p>
 
+      {/* A partial read must never pass for a total: the alerts on each lane are
+          floors until the whole portfolio has been counted. */}
+      {portfolio.truncated ? (
+        <p className="border-b px-4 py-2 text-xs text-warning">
+          This portfolio has more homes than the board reads at once, so the aging and cutoff counts on each lane are a
+          floor rather than a total.
+        </p>
+      ) : null}
+
       {lanes.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 py-20 text-center">
           <p className="text-sm font-medium">No matching communities</p>

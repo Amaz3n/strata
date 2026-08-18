@@ -845,7 +845,7 @@ end-to-end in the QA org.
 
 ## Test plan
 
-- **Unit (vitest, alongside `pnpm test:financials`):** pricing precedence matrix
+- **Unit (node:test, alongside `pnpm test:financials`):** pricing precedence matrix
   (all 4 sources × availability), package price allocation (integer-cents
   exactness, odd totals), cutoff math (offsets, anchor start/end, null anchors,
   slugified-name fallback, multi-match earliest-wins), reopen-on-slip, reminder

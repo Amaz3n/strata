@@ -81,7 +81,12 @@ export function LotPlatGrid({
   const [isPending, startTransition] = useTransition()
   const [lens, setLens] = useState<Lens>("status")
   const [arranging, setArranging] = useState(false)
-  const [draft, setDraft] = useState<Map<string, PlatPosition> | null>(null)
+  /**
+   * Only the lots this session actually dragged. The draft used to be seeded with
+   * the whole computed layout, so saving a 400-lot plat sent 400 positions —
+   * every one of them a separate write — to record three moves.
+   */
+  const [moved, setMoved] = useState<Map<string, PlatPosition>>(() => new Map())
   const [dragging, setDragging] = useState<string | null>(null)
 
   const phaseIndex = useMemo(
@@ -94,7 +99,12 @@ export function LotPlatGrid({
   )
 
   const layout = useMemo(() => resolvePlatLayout(lots), [lots])
-  const positions = draft ?? layout.positions
+  const positions = useMemo(() => {
+    if (moved.size === 0) return layout.positions
+    const next = new Map(layout.positions)
+    for (const [lotId, position] of moved) next.set(lotId, position)
+    return next
+  }, [layout.positions, moved])
 
   const premiumBands = useMemo(() => {
     const values = lots.map((lot) => lot.premiumCents).filter((value) => value > 0).sort((a, b) => a - b)
@@ -195,14 +205,15 @@ export function LotPlatGrid({
     if (!arranging || !dragging) return
     const cell = cellFromPointer(event)
     if (!cell) return
-    setDraft((current) => {
-      const next = new Map(current ?? layout.positions)
-      const occupant = [...next.entries()].find(
-        ([id, position]) => id !== dragging && position.x === cell.x && position.y === cell.y,
-      )
-      const from = next.get(dragging)
+    const occupant = [...positions.entries()].find(
+      ([id, position]) => id !== dragging && position.x === cell.x && position.y === cell.y,
+    )
+    const from = positions.get(dragging)
+    setMoved((current) => {
+      const next = new Map(current)
       // Dropping onto a taken cell swaps the two lots, so an arrangement can be
-      // corrected without first clearing a space.
+      // corrected without first clearing a space. The displaced lot moved too,
+      // so it is recorded alongside the one that was dragged.
       if (occupant && from) next.set(occupant[0], from)
       next.set(dragging, cell)
       return next
@@ -211,24 +222,21 @@ export function LotPlatGrid({
   }
 
   function saveArrangement() {
-    const source = draft ?? layout.positions
+    if (moved.size === 0) {
+      setArranging(false)
+      return
+    }
     startTransition(async () => {
       try {
         unwrapAction(
           await setLotPlatPositionsAction(
             community.id,
-            lots
-              .filter((lot) => source.has(lot.id))
-              .map((lot) => ({
-                lotId: lot.id,
-                platX: (source.get(lot.id) as PlatPosition).x,
-                platY: (source.get(lot.id) as PlatPosition).y,
-              })),
+            [...moved].map(([lotId, position]) => ({ lotId, platX: position.x, platY: position.y })),
           ),
         )
-        toast.success("Plat arrangement saved")
+        toast.success(moved.size === 1 ? "1 lot moved" : `${moved.size} lots moved`)
         setArranging(false)
-        setDraft(null)
+        setMoved(new Map())
         router.refresh()
       } catch (error) {
         toast.error("Unable to save the plat", { description: (error as Error).message })
@@ -273,7 +281,9 @@ export function LotPlatGrid({
             {arranging ? (
               <>
                 <span className="text-[11px] text-muted-foreground">
-                  Drag lots into the recorded shape. Dropping on an occupied square swaps them.
+                  {moved.size === 0
+                    ? "Drag lots into the recorded shape. Dropping on an occupied square swaps them."
+                    : `${moved.size} lot${moved.size === 1 ? "" : "s"} moved.`}
                 </span>
                 <Button
                   variant="ghost"
@@ -281,12 +291,17 @@ export function LotPlatGrid({
                   className="h-7 rounded-none text-xs"
                   onClick={() => {
                     setArranging(false)
-                    setDraft(null)
+                    setMoved(new Map())
                   }}
                 >
                   Cancel
                 </Button>
-                <Button size="sm" className="h-7 rounded-none text-xs" disabled={isPending} onClick={saveArrangement}>
+                <Button
+                  size="sm"
+                  className="h-7 rounded-none text-xs"
+                  disabled={isPending || moved.size === 0}
+                  onClick={saveArrangement}
+                >
                   {isPending ? "Saving…" : "Save arrangement"}
                 </Button>
               </>

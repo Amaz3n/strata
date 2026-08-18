@@ -4,7 +4,7 @@ import { OfferingIncentives } from "@/components/communities/offering-incentives
 import { OfferingPriceSheet, type OfferingPlanRow } from "@/components/communities/offering-price-sheet"
 import { OfferingSummary } from "@/components/communities/offering-summary"
 import { getCommunityLane } from "@/lib/services/community-portfolio"
-import { getCommunityOfferingCosts, getCommunityPriceSheet, listSpecInventory } from "@/lib/services/community-sales"
+import { getCommunityOfferingCosts, getCommunityPriceSheet, listOfferablePlans, listSpecInventory } from "@/lib/services/community-sales"
 import { listCommunityTraffic } from "@/lib/services/community-traffic"
 import { listPlansWithPublishedModels } from "@/lib/services/floorplan-models"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
@@ -38,6 +38,10 @@ export default async function CommunityOfferingPage({ params }: { params: Promis
     getCommunityLane(id).catch(() => null),
     getCommunityOfferingCosts(id).catch(() => null),
   ])
+  const offerablePlans = await listOfferablePlans(id).catch((error) => {
+    console.error("Failed to load offerable plans for the community offering tab", { communityId: id, error })
+    return []
+  })
   const canManage = permissions.permissions.some((permission) =>
     ["sales.manage", "org.admin", "*"].includes(permission),
   )
@@ -155,6 +159,7 @@ export default async function CommunityOfferingPage({ params }: { params: Promis
           buildCostByPlanId={costs?.buildCostByPlanId ?? {}}
           lotsTruncated={sheet.lotsTruncated}
           plansWith3d={plansWith3d}
+          offerablePlans={offerablePlans}
           canManage={canManage}
         />
         <OfferingIncentives

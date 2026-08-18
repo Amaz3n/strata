@@ -357,12 +357,12 @@ async function searchViaSemanticIndex(
   limit: number,
 ): Promise<SearchResult[]> {
   if (!embeddingsConfigured()) return []
-  const vector = await generateEmbeddingVector(query)
-  if (!vector || vector.length === 0) return []
+  const embedding = await generateEmbeddingVector(query, { orgId })
+  if (!embedding) return []
 
   const { data, error } = await supabase.rpc("match_search_embeddings", {
     p_org_id: orgId,
-    p_query_embedding: toPgVectorLiteral(vector),
+    p_query_embedding: toPgVectorLiteral(embedding.vector),
     p_limit: Math.max(limit, 20),
     p_entity_types: entityTypes.length > 0 ? entityTypes : null,
   })

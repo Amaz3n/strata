@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronRight } from "lucide-react";
 import Link from "next/link";
 
@@ -11,6 +11,13 @@ import {
 } from "@/components/books/account-activity-sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { StatementsForPeriod } from "@/lib/services/books/statement-detail";
 import type { StatementAccountRow } from "@/lib/services/books/statements";
 import { cn, formatMoneyCentsExact } from "@/lib/utils";
@@ -112,6 +119,8 @@ export function BooksStatements() {
   const [periodKey, setPeriodKey] = useState<string>("year");
   const [statement, setStatement] = useState<StatementKey>("profit_loss");
   const [byProject, setByProject] = useState(false);
+  const [comparison, setComparison] = useState<"prior_year" | "prior_period" | "none">("prior_year");
+  const [monthly, setMonthly] = useState(false);
   const [data, setData] = useState<StatementsForPeriod | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -126,6 +135,8 @@ export function BooksStatements() {
     loadStatementsAction({
       startDate: period.startDate,
       endDate: period.endDate,
+      comparison,
+      includeMonthly: monthly && statement === "profit_loss",
     })
       .then((result) => {
         if (cancelled) return;
@@ -141,7 +152,7 @@ export function BooksStatements() {
     return () => {
       cancelled = true;
     };
-  }, [period.startDate, period.endDate]);
+  }, [period.startDate, period.endDate, comparison, monthly, statement]);
 
   const openAccount = useCallback(
     (
@@ -208,13 +219,26 @@ export function BooksStatements() {
             : `${period.startDate} → ${period.endDate}`}
           {" · posted entries only"}
         </p>
-        <Button asChild size="sm" variant="outline">
-          <Link
-            href={`/reports/${REPORT_SLUGS[statement]}${statement === "balance_sheet" || statement === "trial_balance" ? `?asOf=${period.endDate}` : ""}`}
-          >
-            Export or print
-          </Link>
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Select value={comparison} onValueChange={(value) => setComparison(value as typeof comparison)}>
+            <SelectTrigger className="h-8 w-36 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="prior_year">Prior year</SelectItem>
+              <SelectItem value="prior_period">Prior period</SelectItem>
+              <SelectItem value="none">No comparison</SelectItem>
+            </SelectContent>
+          </Select>
+          {statement === "profit_loss" ? (
+            <Button type="button" size="sm" variant={monthly ? "default" : "outline"} onClick={() => { setMonthly((value) => !value); setByProject(false); }}>
+              Monthly columns
+            </Button>
+          ) : null}
+          <Button asChild size="sm" variant="outline">
+            <Link href={`/reports/${REPORT_SLUGS[statement]}${statement === "balance_sheet" || statement === "trial_balance" ? `?asOf=${period.endDate}` : ""}`}>
+              Export or print
+            </Link>
+          </Button>
+        </div>
       </div>
 
       {loading ? <StatementSkeleton /> : null}
@@ -238,6 +262,7 @@ export function BooksStatements() {
               byProject={byProject}
               onToggleByProject={setByProject}
               onOpen={openAccount}
+              monthly={monthly}
             />
           ) : null}
           {statement === "balance_sheet" ? (
@@ -273,11 +298,13 @@ function ProfitAndLoss({
   byProject,
   onToggleByProject,
   onOpen,
+  monthly,
 }: {
   data: StatementsForPeriod;
   byProject: boolean;
   onToggleByProject: (next: boolean) => void;
   onOpen: OpenAccount;
+  monthly: boolean;
 }) {
   const pnl = data.profitLoss;
   const prior = data.priorProfitLoss;
@@ -288,6 +315,10 @@ function ProfitAndLoss({
       ),
     [prior],
   );
+
+  if (monthly && data.monthlyProfitLoss.length > 0) {
+    return <MonthlyProfitAndLoss data={data} onOpen={onOpen} />;
+  }
 
   if (pnl.rows.length === 0) {
     return (
@@ -360,7 +391,7 @@ function ProfitAndLoss({
           <tr className="border-b bg-muted/40 text-left">
             <Th>Account</Th>
             <Th className="text-right">Amount</Th>
-            {prior ? <Th className="text-right">Prior year</Th> : null}
+            {prior ? <Th className="text-right">{data.comparisonLabel ?? "Comparison"}</Th> : null}
           </tr>
         </thead>
         <tbody>
@@ -431,6 +462,48 @@ function ProfitAndLoss({
         </tfoot>
       </TableShell>
     </>
+  );
+}
+
+function MonthlyProfitAndLoss({ data, onOpen }: { data: StatementsForPeriod; onOpen: OpenAccount }) {
+  const months = data.monthlyProfitLoss;
+  const monthlyByAccount = months.map((month) => new Map(month.profitLoss.rows.map((row) => [row.accountId, row.balanceCents])));
+  const sections: Array<{ type: StatementAccountRow["accountType"]; label: string }> = [
+    { type: "income", label: "Revenue" },
+    { type: "cogs", label: "Cost of revenue" },
+    { type: "expense", label: "Operating expenses" },
+  ];
+  return (
+    <TableShell minWidth={Math.max(760, 280 + months.length * 112)}>
+      <thead>
+        <tr className="border-b bg-muted/40 text-left">
+          <Th>Account</Th>
+          {months.map((month) => <Th key={month.startDate} className="text-right">{month.label}</Th>)}
+          <Th className="text-right">Total</Th>
+        </tr>
+      </thead>
+      <tbody>
+        {sections.map((section) => (
+          <Fragment key={section.type}>
+            <Group label={section.label} span={months.length + 2} />
+            {data.profitLoss.rows.filter((row) => row.accountType === section.type).map((row) => (
+              <tr key={row.accountId} className="border-b hover:bg-muted/40">
+                <Td><button type="button" onClick={() => onOpen(row)} className="text-left underline-offset-4 hover:underline"><span className="font-mono text-xs text-muted-foreground">{row.code}</span> {row.name}</button></Td>
+                {monthlyByAccount.map((month, index) => <Money key={months[index].startDate} value={month.get(row.accountId) ?? 0} muted />)}
+                <Money value={row.balanceCents} emphasis />
+              </tr>
+            ))}
+          </Fragment>
+        ))}
+      </tbody>
+      <tfoot>
+        <tr className="border-t-2 border-t-foreground/20 bg-muted/30 font-semibold">
+          <Td>Net income</Td>
+          {months.map((month) => <Money key={month.startDate} value={month.profitLoss.netIncomeCents} />)}
+          <Money value={data.profitLoss.netIncomeCents} />
+        </tr>
+      </tfoot>
+    </TableShell>
   );
 }
 

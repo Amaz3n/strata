@@ -101,6 +101,18 @@
       "schedule": "5 * * * *"
     },
     {
+      "path": "/api/jobs/lot-hold-sweep",
+      "schedule": "10 * * * *"
+    },
+    {
+      "path": "/api/jobs/takedown-reminders",
+      "schedule": "55 12 * * *"
+    },
+    {
+      "path": "/api/jobs/warranty-courtesy-inspections",
+      "schedule": "10 12 * * *"
+    },
+    {
       "path": "/api/jobs/forecast-snapshots",
       "schedule": "15 4 * * *"
     },
@@ -191,6 +203,9 @@
     "app/api/jobs/payment-reconciliation/route.ts": {
       "maxDuration": 300
     },
+    "app/api/webhooks/stripe/route.ts": {
+      "maxDuration": 300
+    },
     "app/api/jobs/task-reminders/route.ts": {
       "maxDuration": 120
     },
@@ -205,6 +220,15 @@
     },
     "app/api/jobs/warranty-sla-sweep/route.ts": {
       "maxDuration": 120
+    },
+    "app/api/jobs/lot-hold-sweep/route.ts": {
+      "maxDuration": 120
+    },
+    "app/api/jobs/takedown-reminders/route.ts": {
+      "maxDuration": 120
+    },
+    "app/api/jobs/warranty-courtesy-inspections/route.ts": {
+      "maxDuration": 300
     },
     "app/api/jobs/forecast-snapshots/route.ts": {
       "maxDuration": 300

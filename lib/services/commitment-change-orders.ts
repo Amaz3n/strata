@@ -17,7 +17,7 @@ import {
   type CommitmentChangeOrderLinkInput,
   type CommitmentChangeOrderUpdateInput,
 } from "@/lib/validation/commitment-change-orders"
-import { parseVpoApprovalBands, requiredVpoApprovalPermission } from "@/lib/financials/vpo-approval-thresholds"
+import { parseVpoApprovalBands, requiredVpoApprovalPermission, vpoApprovalBlockReason } from "@/lib/financials/vpo-approval-thresholds"
 
 export type CommitmentChangeOrderStatus = "draft" | "sent" | "approved" | "rejected" | "voided"
 
@@ -647,6 +647,14 @@ export async function approveCommitmentChangeOrder({
   const existing = await loadSingle(supabase, resolvedOrgId, commitmentChangeOrderId)
   if (!existing) throw new Error("Commitment change order not found")
 
+  const blocked = vpoApprovalBlockReason({
+    status: existing.status,
+    isVariance: Boolean(existing.reason_code_id),
+    requestedBy: existing.requested_by,
+    approverId: userId,
+  })
+  if (blocked) throw new Error(blocked)
+
   let approvalPermission = "commitment.write"
   if (existing.reason_code_id) {
     const [{ data: settings }, { data: reason }] = await Promise.all([
@@ -669,10 +677,6 @@ export async function approveCommitmentChangeOrder({
     resourceType: "commitment_change_order",
     resourceId: commitmentChangeOrderId,
   })
-
-  if (existing.status === "voided") {
-    throw new Error("Voided commitment change orders cannot be approved.")
-  }
 
   const nowIso = new Date().toISOString()
   const metadata = {

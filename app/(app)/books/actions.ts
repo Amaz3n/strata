@@ -30,6 +30,7 @@ import {
   closeBankReconciliation,
   confirmBankMatch,
   createBankReconciliation,
+  getBankReconciliationDetail,
   reviewUnmatchedBankTransactions,
 } from "@/lib/services/books/bank-reconciliation";
 import {
@@ -115,6 +116,38 @@ import {
   replaceCompanyTaxIdentity,
   storeCompanyTaxIdentity,
 } from "@/lib/services/books/tax-register";
+import {
+  createDepositBatch,
+  getDepositBatchWorkspace,
+} from "@/lib/services/books/deposit-batches";
+import { getOverheadBudgetWorkspace, saveOverheadBudget } from "@/lib/services/books/overhead-budgets";
+
+export async function loadOverheadBudgetAction(fiscalYear: number) {
+  return read(() => getOverheadBudgetWorkspace({ fiscalYear: z.number().int().min(2000).max(2200).parse(fiscalYear) }));
+}
+
+export async function saveOverheadBudgetAction(input: Parameters<typeof saveOverheadBudget>[0]) {
+  return run(() => saveOverheadBudget(z.object({
+    budgetId: z.string().uuid().nullable().optional(), fiscalYear: z.number().int().min(2000).max(2200), name: z.string().trim().min(2).max(100), status: z.enum(["draft", "active", "archived"]), notes: z.string().trim().max(500).nullable().optional(),
+    lines: z.array(z.object({ accountId: z.string().uuid(), month: z.number().int().min(0).max(11), budgetCents: z.number().int().min(0) })).max(1200),
+  }).parse(input)));
+}
+
+export async function loadDepositBatchWorkspaceAction() {
+  return read(() => getDepositBatchWorkspace());
+}
+
+export async function createDepositBatchAction(input: {
+  bankTransactionId: string;
+  paymentIds: string[];
+  reference?: string | null;
+}) {
+  return run(() => createDepositBatch(z.object({
+    bankTransactionId: z.string().uuid(),
+    paymentIds: z.array(z.string().uuid()).min(1),
+    reference: z.string().trim().max(120).nullable().optional(),
+  }).parse(input)));
+}
 
 async function run<T>(operation: () => Promise<T>): Promise<ActionResult<T>> {
   try {
@@ -233,6 +266,8 @@ export async function loadStatementsAction(input: {
   startDate: string;
   endDate: string;
   comparePriorYear?: boolean;
+  comparison?: "prior_year" | "prior_period" | "none";
+  includeMonthly?: boolean;
 }) {
   return read(() =>
     getStatementsForPeriod(
@@ -241,6 +276,8 @@ export async function loadStatementsAction(input: {
           startDate: isoDate,
           endDate: isoDate,
           comparePriorYear: z.boolean().optional(),
+          comparison: z.enum(["prior_year", "prior_period", "none"]).optional(),
+          includeMonthly: z.boolean().optional(),
         })
         .parse(input),
     ),
@@ -381,6 +418,11 @@ export async function listJournalEntriesAction(input: {
   entryKinds?: string[];
   startDate?: string;
   endDate?: string;
+  query?: string;
+  accountId?: string;
+  projectId?: string;
+  minAmountCents?: number;
+  maxAmountCents?: number;
 }) {
   return read(() =>
     listJournalEntries(
@@ -389,6 +431,11 @@ export async function listJournalEntriesAction(input: {
           entryKinds: z.array(z.enum(JOURNAL_ENTRY_KINDS)).optional(),
           startDate: isoDate.optional(),
           endDate: isoDate.optional(),
+          query: z.string().trim().max(120).optional(),
+          accountId: z.string().uuid().optional(),
+          projectId: z.string().uuid().optional(),
+          minAmountCents: z.number().int().min(0).optional(),
+          maxAmountCents: z.number().int().min(0).optional(),
         })
         .parse(input),
     ),
@@ -572,6 +619,9 @@ export async function createBankReconciliationAction(formData: FormData) {
 }
 export async function closeBankReconciliationAction(id: string) {
   return run(() => closeBankReconciliation(z.string().uuid().parse(id)));
+}
+export async function loadBankReconciliationDetailAction(id: string) {
+  return read(() => getBankReconciliationDetail(z.string().uuid().parse(id)));
 }
 
 export async function createBooksComparisonAction(formData: FormData) {

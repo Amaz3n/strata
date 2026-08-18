@@ -5,12 +5,15 @@ import { revalidatePath } from "next/cache"
 import {
   createPaymentIntent,
   generatePayLink,
+  getReceivePaymentWorkspace,
   listPaymentsForInvoice,
+  recordMultiInvoicePayment,
   recordPayment,
 } from "@/lib/services/payments"
 import {
   createPaymentIntentInputSchema,
   generatePayLinkInputSchema,
+  receivePaymentInputSchema,
   recordPaymentInputSchema,
 } from "@/lib/validation/payments"
 
@@ -56,4 +59,25 @@ export async function recordPaymentAction(input: unknown) {
 
 export async function listPaymentsForInvoiceAction(invoiceId: string) {
   return await listPaymentsForInvoice(invoiceId)
+}
+
+export async function loadReceivePaymentWorkspaceAction(input?: {
+  partyType?: "contact" | "company"
+  partyId?: string
+}) {
+  return run(() => getReceivePaymentWorkspace(input))
+}
+
+export async function recordMultiInvoicePaymentAction(input: unknown) {
+  return run(async () => {
+    const parsed = receivePaymentInputSchema.parse(input)
+    const result = await recordMultiInvoicePayment(parsed)
+    revalidatePath("/billing")
+    revalidatePath("/billing/receive-payment")
+    revalidatePath("/invoices")
+    for (const allocation of parsed.allocations) {
+      revalidatePath(`/invoices/${allocation.invoice_id}`)
+    }
+    return result
+  })
 }

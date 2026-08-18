@@ -28,13 +28,40 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
  * See `docs/plans/arc-books-gameplan.md` C2.1.2.
  */
 
+/**
+ * The transaction a reversal undoes, by the idempotency key that named it.
+ *
+ * `reverses_transaction_id` existed from the first migration and was never once
+ * populated, so a reversal could only be tied back to its original by parsing
+ * the idempotency-key string convention — which is not a foreign key, is not
+ * enforced, and silently stops working the day a key format changes.
+ */
+async function findLedgerTransactionId(orgId: string, idempotencyKey: string): Promise<string | null> {
+  const supabase = createServiceSupabaseClient()
+  const { data, error } = await supabase.from("payment_ledger_transactions")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("idempotency_key", idempotencyKey)
+    .maybeSingle()
+  if (error) throw new Error(`Unable to resolve the ledger transaction being reversed: ${error.message}`)
+  return data?.id ? String(data.id) : null
+}
+
 export async function postPaymentLedgerTransaction(input: {
   orgId: string
   disbursementId?: string | null
   providerEventId?: string | null
   sourceType: "payment_run" | "disbursement" | "provider_event" | "reconciliation" | "manual_adjustment"
   sourceId?: string | null
-  transactionType: "payment_submitted" | "funds_available" | "transfer_created" | "payout_paid" | "processor_fee" | "platform_fee" | "return" | "reversal" | "adjustment"
+  /**
+   * The DB check still allows `funds_available`, `transfer_created` and
+   * `processor_fee`. Nothing has ever emitted them: clearing and the vendor
+   * transfer leg move no money between these accounts on their own, and the
+   * processor fee is recognised as part of the run's fee accrual. They are left
+   * out here so the type describes what this subledger actually posts rather
+   * than what someone once imagined it might.
+   */
+  transactionType: "payment_submitted" | "payout_paid" | "platform_fee" | "return" | "reversal" | "adjustment"
   currency: string
   idempotencyKey: string
   reversesTransactionId?: string | null
@@ -172,7 +199,7 @@ export function postApFeeChargeSubmittedLedger(input: {
 }
 
 /** Reopen the payable when the provider rejects or returns the fee debit. */
-export function postApFeeChargeReversalLedger(input: {
+export async function postApFeeChargeReversalLedger(input: {
   orgId: string
   runId: string
   feeChargeId: string
@@ -187,6 +214,7 @@ export function postApFeeChargeReversalLedger(input: {
     transactionType: "reversal",
     currency: input.currency,
     idempotencyKey: `payment_run_fee_charge:${input.feeChargeId}:reversal`,
+    reversesTransactionId: await findLedgerTransactionId(input.orgId, `payment_run_fee_charge:${input.feeChargeId}:submitted`),
     description: "Reverse unsuccessful Arc fee debit",
     effectiveAt: input.effectiveAt,
     entries: [
@@ -216,7 +244,7 @@ export function postDisbursementPaidLedger(input: { orgId: string; disbursementI
 }
 
 /** Undo a debit the provider never took. Vendor amount only, mirroring the debit. */
-export function postDisbursementSubmissionReversalLedger(input: {
+export async function postDisbursementSubmissionReversalLedger(input: {
   orgId: string
   disbursementId: string
   providerEventId: string
@@ -233,6 +261,7 @@ export function postDisbursementSubmissionReversalLedger(input: {
     transactionType: "reversal",
     currency: input.currency,
     idempotencyKey: `disbursement:${input.disbursementId}:submission-reversal`,
+    reversesTransactionId: await findLedgerTransactionId(input.orgId, `disbursement:${input.disbursementId}:submitted`),
     description: "Reverse unsuccessful builder bank debit",
     effectiveAt: input.effectiveAt,
     entries: [
@@ -254,7 +283,7 @@ export function postDisbursementSubmissionReversalLedger(input: {
  * who paid for something; it is a record of not having asked. The loss is Arc's,
  * not the builder's, and it is posted separately by `postApReturnLossLedger`.
  */
-export function postDisbursementReturnLedger(input: { orgId: string; disbursementId: string; providerEventId: string; amountCents: number; currency: string; effectiveAt: string }) {
+export async function postDisbursementReturnLedger(input: { orgId: string; disbursementId: string; providerEventId: string; amountCents: number; currency: string; effectiveAt: string }) {
   return postPaymentLedgerTransaction({
     orgId: input.orgId,
     disbursementId: input.disbursementId,
@@ -264,6 +293,9 @@ export function postDisbursementReturnLedger(input: { orgId: string; disbursemen
     transactionType: "return",
     currency: input.currency,
     idempotencyKey: `disbursement:${input.disbursementId}:return:${input.providerEventId}`,
+    // The settlement being undone. A return only reaches this helper when the
+    // vendor was already paid, so the paid transaction is what it reverses.
+    reversesTransactionId: await findLedgerTransactionId(input.orgId, `disbursement:${input.disbursementId}:paid`),
     description: "ACH return reversed the builder debit and reopened the payable",
     effectiveAt: input.effectiveAt,
     entries: [
@@ -285,6 +317,22 @@ export function postDisbursementReturnLedger(input: { orgId: string; disbursemen
  * `enforceReturnLossCeiling` needs the per-org total to decide whose rail to disable.
  * It never reaches the builder's own books, because this subledger does not feed the
  * projector — see the module header. That is the whole reason the boundary matters.
+ *
+ * **Why the credit side is `payout_clearing`, and what it means that it never
+ * clears.** A loss is a permanent consumption of value, so its contra has to be
+ * cash — and this subledger's account set has no Arc-cash account, only the
+ * builder's `org_cash`, which would be a lie here: the builder's money came back,
+ * Arc's did not. `payout_clearing` is the closest true statement available; it is
+ * the leg between the platform balance and the vendor's bank, which is exactly the
+ * money that left and is not coming back. The consequence is that this account
+ * carries a standing credit balance equal to cumulative unrecovered outlay,
+ * because nothing debits it: the platform-to-vendor transfer leg is not posted at
+ * all (which is also why `transfer_created` has no emitter). That residual is
+ * intentional and readable — it is the same number `ach_return_loss` carries as a
+ * debit — but it is a modelling gap, not a clearing account doing its job.
+ * Closing it properly means posting the transfer leg and adding an Arc-cash
+ * account to the DB check, which is a schema change and a change to how
+ * `postDisbursementPaidLedger` books settlement.
  */
 export function postApReturnLossLedger(input: {
   orgId: string

@@ -8,9 +8,9 @@ import {
 import type { requireOrgContext } from "@/lib/services/context"
 import { getUserPermissions } from "@/lib/services/permissions"
 import {
-  EMBEDDING_MODEL,
   embeddingsConfigured,
   generateEmbeddingVector,
+  resolveEmbeddingModel,
   toPgVectorLiteral,
 } from "@/lib/services/search-embeddings"
 import { searchEntities, type SearchEntityType, type SearchResult } from "@/lib/services/search"
@@ -102,12 +102,12 @@ async function searchSemanticDocuments({
   entityTypes: SearchEntityType[]
   limit: number
 }): Promise<SearchResult[]> {
-  const vector = await generateEmbeddingVector(query)
-  if (!vector) return []
+  const embedding = await generateEmbeddingVector(query, { orgId: context.orgId })
+  if (!embedding) return []
 
   const { data, error } = await context.supabase.rpc("match_search_embeddings", {
     p_org_id: context.orgId,
-    p_query_embedding: toPgVectorLiteral(vector),
+    p_query_embedding: toPgVectorLiteral(embedding.vector),
     p_limit: Math.max(4, Math.min(limit, SEMANTIC_RETRIEVAL_LIMIT)),
     p_entity_types: entityTypes.length > 0 ? entityTypes : null,
   })
@@ -189,6 +189,11 @@ async function ensureSemanticEmbeddingsForResults(context: ResolvedOrgContext, r
   if (results.length === 0) return
   if (!embeddingsConfigured()) return
 
+  // "Already embedded?" is only meaningful against the model in force right
+  // now — asking it of the wrong model would re-embed the whole corpus.
+  const active = await resolveEmbeddingModel()
+  if (!active) return
+
   const candidates = results.slice(0, MAX_EMBEDDING_BACKFILL_DOCS)
   for (const result of candidates) {
     const { data: doc, error: docError } = await context.supabase
@@ -208,7 +213,7 @@ async function ensureSemanticEmbeddingsForResults(context: ResolvedOrgContext, r
       .select("id")
       .eq("org_id", context.orgId)
       .eq("document_id", doc.id)
-      .eq("model", EMBEDDING_MODEL)
+      .eq("model", active.model)
       .limit(1)
       .maybeSingle()
 
@@ -216,15 +221,15 @@ async function ensureSemanticEmbeddingsForResults(context: ResolvedOrgContext, r
       continue
     }
 
-    const embedding = await generateEmbeddingVector(toEmbeddingContent(result))
-    if (!embedding || embedding.length === 0) continue
+    const embedding = await generateEmbeddingVector(toEmbeddingContent(result), { orgId: context.orgId })
+    if (!embedding) continue
 
     await context.supabase.from("search_embeddings").upsert(
       {
         document_id: doc.id,
         org_id: context.orgId,
-        model: EMBEDDING_MODEL,
-        embedding: toPgVectorLiteral(embedding),
+        model: embedding.model,
+        embedding: toPgVectorLiteral(embedding.vector),
       },
       { onConflict: "document_id,model" },
     )

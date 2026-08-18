@@ -103,6 +103,7 @@ import {
 import { ToastAction } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { PartyFinancialActivity } from "@/components/financial-parties/party-financial-activity";
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -225,11 +226,13 @@ function W9Value({
 
 function ClientReceivables({
   summary,
+  companyId,
   stagger,
   fill = false,
   className,
 }: {
   summary?: ClientCompanyReceivablesSummary | null;
+  companyId: string;
   stagger: number;
   fill?: boolean;
   className?: string;
@@ -243,6 +246,7 @@ function ClientReceivables({
       fill={fill}
       className={className}
       bodyClassName="overflow-x-auto"
+      action={summary?.can_view_invoices ? <Button asChild size="sm" variant="outline"><Link href={`/billing/receive-payment?partyType=company&partyId=${companyId}`}>Receive payment</Link></Button> : null}
     >
       {summary && !summary.can_view_invoices ? (
         <div className="border-b px-4 py-3 text-sm text-muted-foreground">
@@ -260,6 +264,7 @@ function ClientReceivables({
               <TableHead className="text-right">Collected</TableHead>
               <TableHead className="text-right">Outstanding</TableHead>
               <TableHead className="text-right">Last activity</TableHead>
+              <TableHead className="text-right">Action</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -268,7 +273,7 @@ function ClientReceivables({
                 <TableCell>
                   <Link
                     href={`/projects/${row.project_id}`}
-                    className="font-medium underline-offset-4 after:absolute after:inset-0 group-hover:underline"
+                    className="font-medium underline-offset-4 group-hover:underline"
                   >
                     {row.project_name}
                   </Link>
@@ -288,6 +293,9 @@ function ClientReceivables({
                 <TableCell className="text-right text-muted-foreground">
                   {formatDate(row.last_activity)}
                 </TableCell>
+                <TableCell className="text-right">
+                  {summary?.can_view_invoices ? <Button asChild size="sm" variant="ghost"><Link href={`/invoices?invoice=new&project=${row.project_id}`}>New invoice</Link></Button> : null}
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>
@@ -295,6 +303,7 @@ function ClientReceivables({
       ) : (
         <EmptyState>No client projects yet.</EmptyState>
       )}
+      {summary ? <PartyFinancialActivity summary={summary} className="border-x-0 border-b-0" /> : null}
     </Section>
   );
 }
@@ -760,6 +769,14 @@ export function CompanyDetailPage({
             </div>
 
             <div className="flex shrink-0 items-center gap-2">
+              {!isClientCompany ? (
+                <Button asChild variant="outline" size="sm">
+                  <Link href={`/payables?new=1&vendor=${company.id}`}>
+                    <Plus className="mr-2 h-4 w-4" />
+                    Enter bill
+                  </Link>
+                </Button>
+              ) : null}
               {canEdit ? (
                 <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
                   <Edit className="mr-2 h-4 w-4" />
@@ -839,6 +856,7 @@ export function CompanyDetailPage({
           <div className="grid grid-cols-1 gap-5 lg:min-h-0 lg:flex-1 lg:grid-cols-2 lg:grid-rows-2">
             <ClientReceivables
               summary={clientReceivables}
+              companyId={company.id}
               stagger={1}
               fill
               className="lg:col-span-2 lg:row-start-1"

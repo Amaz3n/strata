@@ -48,6 +48,9 @@ const PUBLIC_API_ROUTES = [
   "/api/jobs/purchasing-maintenance",
   "/api/jobs/starts-pipeline",
   "/api/jobs/warranty-sla-sweep",
+  "/api/jobs/lot-hold-sweep",
+  "/api/jobs/takedown-reminders",
+  "/api/jobs/warranty-courtesy-inspections",
   // Recurring invoice generator — cron only, self-authenticates via CRON_SECRET.
   "/api/jobs/invoice-schedules",
   "/api/jobs/forecast-snapshots",

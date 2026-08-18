@@ -34,18 +34,21 @@ Patagonia Development LLC retained the same active connection id and realm,
 zero refresh failures, and a successful OAuth token rotation during rollout.
 
 The backward-compatible database cutover is live. The application code has not
-been deployed. Compatibility views keep the currently deployed QBO code working;
-the destructive B3/D2 files remain outside the active migration directory.
+been deployed. B3 has since been promoted and applied as
+`supabase/migrations/20260724015507_accounting_drop_compat_views.sql`, so the
+compatibility views are gone; only the destructive D2 file remains outside the
+active migration directory.
 
 - [x] **Phase A repository work:** provider contract and registry, QBO adapter and
   file move, provider-neutral orchestration, target resolution rules, unconnected
   silent-no-op behavior, and adapter/resolution regression tests.
 - [x] **Phase B repository + database work:** additive/cutover migration files B1–B3,
   provider-neutral connection and sync-ledger services, id-preserving copy,
-  compatibility views/RPC, and direct consumers moved to the new names. B3 is a
-  destructive follow-up and is held under `supabase/pending-migrations/` so it
-  cannot be applied with B1/B2 accidentally. B1/B2 are live as migrations
-  `20260719011735` and `20260719011822`; both compatibility views remain active.
+  compatibility views/RPC, and direct consumers moved to the new names. B1/B2
+  are live as migrations `20260719011735` and `20260719011822`. B3 was the
+  destructive follow-up held under `supabase/pending-migrations/`; it has since
+  been promoted and applied as `20260724015507_accounting_drop_compat_views.sql`,
+  so the compatibility views are no longer active.
 - [x] **Phase C repository + database work:** multi-connection management UI, scoped entity
   maps and precedence, dimension pickers, stability guard and audited override,
   QBO import connection selection, RBAC/events migration, and connection-aware
@@ -892,7 +895,7 @@ override), `accounting_export`. None join `EMAIL_NOTIFICATION_TYPES`.
 |---|---|---|---|
 | B1 | `…_accounting_connections.sql` | table + indexes + RLS + data copy from `qbo_connections` (id-preserving) + `qbo_connections` dropped-and-viewed + `update_qbo_cdc_cursor` re-point | B |
 | B2 | `…_accounting_sync_records.sql` | rename + `provider` + column renames + compat view + `accounting_claim_sync_create` + delegating wrapper | B |
-| B3 | `supabase/pending-migrations/…_accounting_drop_compat_views.sql` | drop both views + wrapper RPC (promote into `supabase/migrations/` with a fresh timestamp only after B deploy is verified) | B+1 |
+| B3 | APPLIED as `supabase/migrations/20260724015507_accounting_drop_compat_views.sql` | drop both views + wrapper RPC | B+1 |
 | C1 | `…_accounting_entity_map.sql` | table + indexes + RLS + backfill from `projects.qbo_*` + org-default rows + stability trigger | C |
 | C2 | `…_accounting_rbac_and_events.sql` | RBAC catalog seed entries | C |
 | D1 | `…_accounting_coding_backfill.sql` | `accounting_coding` jsonb on `project_expenses`/`vendor_bills` + backfill + companies→sync-records backfill + `metadata.transaction_shape` + invoice `metadata` key rename | D |
@@ -902,9 +905,9 @@ override), `accounting_export`. None join `EMAIL_NOTIFICATION_TYPES`.
 
 Rules: applied via `apply_migration` with repo copies; every backfill idempotent
 (`on conflict do nothing` / `where not exists`); B1/B2 in single transactions;
-destructive files (B3, D2) remain outside the active migrations directory until
-their gates pass, then are promoted with a fresh timestamp as separate later
-migrations. Divisions/communities FKs on the entity map are added by ws-01's own
+destructive files remain outside the active migrations directory until their
+gates pass, then are promoted with a fresh timestamp as separate later
+migrations (B3 has completed that promotion; D2 has not). Divisions/communities FKs on the entity map are added by ws-01's own
 migrations if 01 lands first, else C1 creates the columns FK-less and 01 adds the
 constraints — coordinate via the master's execution order.
 
@@ -914,7 +917,7 @@ QBO sync currently has NO test harness — this workstream builds one; it is the
 regression strategy, not a nicety.
 
 1. **Fixture-backed adapter tests** (`lib/integrations/accounting/qbo/
-   adapter.test.ts`, vitest, joins `pnpm test:financials`): a `FakeQBOTransport`
+   adapter.test.js`, node:test, joins `pnpm test:financials`): a `FakeQBOTransport`
    replacing `fetch` inside `QBOClient`, seeded with recorded sandbox JSON
    fixtures (`fixtures/qbo/*.json`) for: invoice create/update, 5010 stale-token
    (assert exactly-one refetch+retry), missing-SyncToken backfill (imported

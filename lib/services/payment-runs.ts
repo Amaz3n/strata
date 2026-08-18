@@ -5,6 +5,7 @@ import { calculateEarlyPayDiscount, readEarlyPayTerms } from "@/lib/payments/ear
 import { quoteApDisbursementFee, type ApFeePolicy } from "@/lib/payments/fee-engine"
 import {
   assertDisbursementTransition,
+  planDisbursementAdvance,
   requesterMayApprovePaymentRun,
   requiredApprovalCount,
   type PaymentApprovalMode,
@@ -50,6 +51,8 @@ const PAYMENT_RUN_LIST_LIMIT = 100
 const PAYMENT_RUN_ITEM_LIST_LIMIT = 1_000
 /** One cron tick's worth of scheduled releases; the rest wait for the next sweep. */
 const SCHEDULED_RELEASE_SWEEP_LIMIT = 100
+/** One cron tick's worth of ambiguous submissions; the remainder is reported, not dropped. */
+const RECOVERY_CANDIDATE_LIMIT = 50
 
 /** Outbox job type carrying one approved run's scheduled release. */
 const RELEASE_JOB_TYPE = "release_payment_run"
@@ -292,7 +295,7 @@ export async function createPaymentRun(input: CreatePaymentRunInput, orgId?: str
     const relationship = relationshipByCompany.get(bill.company_id)
     const recipient = Array.isArray(relationship?.recipient) ? relationship.recipient[0] : relationship?.recipient
     if (!relationship || relationship.status !== "active" || !recipient || recipient.status !== "ready" || !recipient.payouts_enabled) {
-      throw new Error(`Vendor for bill ${bill.bill_number ?? bill.id} is not ready for electronic payment`)
+      throw new Error(`Vendor for bill ${bill.bill_number ?? bill.id} is not ready for Arc Pay`)
     }
     if (recipient.destination_locked_until && new Date(recipient.destination_locked_until) > new Date()) throw new Error("Vendor payout destination is in a security cooling period")
     const outstandingCents = payableOutstandingCents({ total_cents: Number(bill.total_cents ?? 0), paid_cents: Number(bill.paid_cents ?? 0), retainage_cents: Number(bill.retainage_cents ?? 0) })
@@ -630,6 +633,27 @@ export async function cancelPaymentRun(runId: string, orgId?: string) {
   return { id: parsedRunId, status: "canceled" }
 }
 
+/**
+ * What happened to the money once an approval reached quorum.
+ *
+ * Release is a property of reaching quorum, not of which client the last
+ * approval came from, so every caller gets the same five answers.
+ */
+export type PaymentRunRelease =
+  | { kind: "none" }
+  | { kind: "released" }
+  | { kind: "scheduled"; scheduledFor: string }
+  /** Queued for the release sweep because this approver may not release. */
+  | { kind: "queued"; reason: string }
+  /** A gate or failure stopped it; the run stays approved and the sweep retries. */
+  | { kind: "blocked"; reason: string }
+
+export interface PaymentRunDecision {
+  /** The run's status after this decision — `approved` once quorum is reached. */
+  status: string
+  release: PaymentRunRelease
+}
+
 export async function decidePaymentRun(
   input: DecidePaymentRunInput,
   orgId?: string,
@@ -642,7 +666,7 @@ export async function decidePaymentRun(
      */
     resolveStepUp?: () => Promise<string>
   } = {},
-) {
+): Promise<PaymentRunDecision> {
   const parsed = decidePaymentRunSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("payment.approve_run", context)
@@ -686,15 +710,26 @@ export async function decidePaymentRun(
   })
   if (error || !data) throw new Error(`Unable to decide payment run: ${error?.message}`)
   const decisionStatus = data && typeof data === "object" ? Reflect.get(data, "status") : null
-  // The approval that reaches quorum is what owes a release. Enqueue it here, in
-  // the same request that made it due, so the release survives a cron that never
-  // fires rather than depending on something noticing a column later.
+  // The approval that reaches quorum is what owes a release, whichever client
+  // recorded it. Deciding that here rather than in one caller is the whole point:
+  // the web path used to run the release itself, so a run approved from the phone
+  // reached `approved` and nothing ever moved its money.
+  let release: PaymentRunRelease = { kind: "none" }
   if (decisionStatus === "approved" && typeof material.run.scheduled_for === "string") {
-    await enqueueScheduledRelease({
+    // Enqueued in the same request that made it due, so the release survives a
+    // cron that never fires rather than depending on something noticing a column.
+    await enqueueRunRelease({
       orgId: context.orgId,
       runId: parsed.run_id,
       revision: Number(material.run.revision ?? 0),
       scheduledFor: material.run.scheduled_for,
+    })
+    release = { kind: "scheduled", scheduledFor: material.run.scheduled_for }
+  } else if (decisionStatus === "approved") {
+    release = await releaseApprovedRun({
+      context,
+      runId: parsed.run_id,
+      revision: Number(material.run.revision ?? 0),
     })
   }
   const eventType = parsed.decision === "rejected"
@@ -704,10 +739,49 @@ export async function decidePaymentRun(
       : "payment_run_approval_recorded"
   const summary = await summarizeRunForNotification(parsed.run_id, context.orgId, material.items)
   await Promise.all([
-    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType, entityType: "payment_run", entityId: parsed.run_id, payload: { content_hash: parsed.content_hash, status: decisionStatus, total_debit_cents: Number(material.run.total_debit_cents), reason: parsed.reason ?? null, ...summary } }),
-    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "payment_run_approval", entityId: parsed.run_id, after: { decision: parsed.decision, content_hash: parsed.content_hash } }),
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType, entityType: "payment_run", entityId: parsed.run_id, payload: { content_hash: parsed.content_hash, status: decisionStatus, total_debit_cents: Number(material.run.total_debit_cents), reason: parsed.reason ?? null, release: release.kind, ...summary } }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "payment_run_approval", entityId: parsed.run_id, after: { decision: parsed.decision, content_hash: parsed.content_hash, release: release.kind } }),
   ])
-  return data
+  return { status: typeof decisionStatus === "string" ? decisionStatus : "pending_approval", release }
+}
+
+/**
+ * Carry out the release an unscheduled run earned by reaching quorum.
+ *
+ * There is no Release button anywhere in Arc: an approved run with no date
+ * releases on approval or never releases at all. So the approver runs it inline
+ * when their role lets them, and when it does not — `payment.approve_run`
+ * without `payment.release` is a normal split — the release becomes a queued
+ * work item the sweep carries out as the preparer. A failed attempt is left for
+ * the same sweep: the run stays approved with nothing queued, which is exactly
+ * what `backfillMissingReleaseJobs` looks for.
+ */
+async function releaseApprovedRun(input: {
+  context: Awaited<ReturnType<typeof requireOrgContext>>
+  runId: string
+  revision: number
+}): Promise<PaymentRunRelease> {
+  if (!(await hasPermission("payment.release", input.context))) {
+    await enqueueRunRelease({
+      orgId: input.context.orgId,
+      runId: input.runId,
+      revision: input.revision,
+      scheduledFor: null,
+    })
+    return {
+      kind: "queued",
+      reason: "Your approval completed this payment. Releasing money is not part of your role, so Arc sends it on the next release pass.",
+    }
+  }
+  try {
+    await executePaymentRun(input.runId, input.context.orgId)
+    return { kind: "released" }
+  } catch (cause) {
+    return {
+      kind: "blocked",
+      reason: cause instanceof Error ? cause.message : "Payment release could not be completed",
+    }
+  }
 }
 
 /** Today in UTC as `YYYY-MM-DD` — the same reckoning the database's `current_date` uses. */
@@ -722,20 +796,21 @@ function isScheduledForLater(scheduledFor: unknown): boolean {
 /**
  * Enqueue the durable release for a run that just reached approval.
  *
- * The intent to release on a date used to exist only as a column something had
- * to notice, so a missed cron request meant a payment that nothing anywhere knew
- * was owed. Materializing it as an outbox row makes the release a work item with
- * a lease, a retry count and a dead-letter state.
+ * The intent to release used to exist only as a column something had to notice,
+ * so a missed cron request meant a payment that nothing anywhere knew was owed.
+ * Materializing it as an outbox row makes the release a work item with a lease,
+ * a retry count and a dead-letter state.
  *
- * Only scheduled runs are enqueued: an approved run with no date still waits for
- * a human to press Release, which is the existing contract.
+ * A null `scheduledFor` is not "no release" — it is "release now": the run was
+ * approved without a date, so the approval itself is the trigger and the job
+ * runs on the next sweep.
  */
-async function enqueueScheduledRelease(input: { orgId: string; runId: string; revision: number; scheduledFor: string }) {
+async function enqueueRunRelease(input: { orgId: string; runId: string; revision: number; scheduledFor: string | null }) {
   return enqueueOutboxJob({
     orgId: input.orgId,
     jobType: RELEASE_JOB_TYPE,
     payload: { run_id: input.runId, revision: input.revision },
-    runAt: scheduledReleaseInstant(input.scheduledFor),
+    runAt: input.scheduledFor ? scheduledReleaseInstant(input.scheduledFor) : new Date().toISOString(),
     // Runs are immutable after creation, so `revision` never changes today; a
     // material change means cancel + rebuild, and the content hash rejects
     // stale copies at decide/execute. The revision stays in the dedupe key as
@@ -746,24 +821,38 @@ async function enqueueScheduledRelease(input: { orgId: string; runId: string; re
 }
 
 /**
- * Self-healing sweep for approved runs past their date with nothing queued.
+ * Self-healing sweep for approved runs nothing is going to release.
  *
- * Covers runs approved before releases became queue-driven, and any enqueue that
- * failed after the approval committed. Returning the ids lets the caller alert:
- * a non-empty result means the durable path did not hold and someone should know
- * why, even though the sweep already repaired it.
+ * Two shapes qualify. A scheduled run whose date has arrived, and an unscheduled
+ * run at all: those release on approval, so an approved one with no job behind
+ * it is a payment that already stopped. Between them they cover runs approved
+ * before releases became queue-driven, approvals whose inline release failed,
+ * and any enqueue that failed after the approval committed. Returning the ids
+ * lets the caller alert: a non-empty result means the durable path did not hold
+ * and someone should know why, even though the sweep already repaired it.
  */
 async function backfillMissingReleaseJobs(supabase: ReturnType<typeof createServiceSupabaseClient>): Promise<string[]> {
-  const { data: due, error } = await supabase
-    .from("payment_runs")
-    .select("id,org_id,revision")
-    .eq("status", "approved")
-    .not("scheduled_for", "is", null)
-    .lte("scheduled_for", todayIso())
-    .order("scheduled_for", { ascending: true })
-    .limit(SCHEDULED_RELEASE_SWEEP_LIMIT)
-  if (error) throw new Error(`Unable to load scheduled payment runs: ${error.message}`)
-  if ((due ?? []).length === 0) return []
+  const [scheduled, unscheduled] = await Promise.all([
+    supabase
+      .from("payment_runs")
+      .select("id,org_id,revision")
+      .eq("status", "approved")
+      .not("scheduled_for", "is", null)
+      .lte("scheduled_for", todayIso())
+      .order("scheduled_for", { ascending: true })
+      .limit(SCHEDULED_RELEASE_SWEEP_LIMIT),
+    supabase
+      .from("payment_runs")
+      .select("id,org_id,revision")
+      .eq("status", "approved")
+      .is("scheduled_for", null)
+      .order("approved_at", { ascending: true })
+      .limit(SCHEDULED_RELEASE_SWEEP_LIMIT),
+  ])
+  if (scheduled.error) throw new Error(`Unable to load scheduled payment runs: ${scheduled.error.message}`)
+  if (unscheduled.error) throw new Error(`Unable to load approved payment runs: ${unscheduled.error.message}`)
+  const due = [...(scheduled.data ?? []), ...(unscheduled.data ?? [])]
+  if (due.length === 0) return []
 
   const { data: queued } = await supabase
     .from("outbox")
@@ -778,15 +867,14 @@ async function backfillMissingReleaseJobs(supabase: ReturnType<typeof createServ
   )
 
   const orphaned: string[] = []
-  for (const run of due ?? []) {
+  for (const run of due) {
     if (queuedRunIds.has(run.id)) continue
     // Due already, so it runs on the next tick rather than at its original hour.
-    const result = await enqueueOutboxJob({
+    const result = await enqueueRunRelease({
       orgId: run.org_id,
-      jobType: RELEASE_JOB_TYPE,
-      payload: { run_id: run.id, revision: Number(run.revision ?? 0) },
-      runAt: new Date().toISOString(),
-      dedupeByPayloadKeys: ["run_id", "revision"],
+      runId: run.id,
+      revision: Number(run.revision ?? 0),
+      scheduledFor: null,
     })
     if (result.enqueued) orphaned.push(run.id)
   }
@@ -794,11 +882,13 @@ async function backfillMissingReleaseJobs(supabase: ReturnType<typeof createServ
 }
 
 /**
- * Drain the scheduled-release queue.
+ * Drain the release queue: runs whose date arrived, and approvals whose release
+ * nobody carried out at the time — the approver could not release, or the
+ * attempt failed.
  *
  * Runs from the five-minute payment-release tick. It deliberately re-enters
  * `executePaymentRun`, which re-checks the execution kill switches, the per-org
- * flag, bill releasability, the content hash, and risk controls — a scheduled
+ * flag, bill releasability, the content hash, and risk controls — a queued
  * release is not a privileged path, it is the same release with no human present.
  *
  * One failing run must not strand the rest of the queue, so failures are recorded
@@ -898,8 +988,14 @@ export async function recoverAmbiguousPaymentSubmissions(): Promise<{
   attempted: number
   recovered: string[]
   failed: Array<{ runId: string; error: string }>
+  /** Candidates past this tick's cap; first in line on the next one. */
+  deferred: number
+  /** Runs with no preparer to execute as. Nothing can recover these; a human must. */
+  unattributed: string[]
 }> {
-  if (process.env.FINTECH_PAYMENTS_EXECUTION_ENABLED !== "true") return { attempted: 0, recovered: [], failed: [] }
+  if (process.env.FINTECH_PAYMENTS_EXECUTION_ENABLED !== "true") {
+    return { attempted: 0, recovered: [], failed: [], deferred: 0, unattributed: [] }
+  }
   const supabase = createServiceSupabaseClient()
   const cutoff = new Date(Date.now() - 2 * 60 * 1000).toISOString()
   const [disbursementResult, runResult] = await Promise.all([
@@ -909,7 +1005,7 @@ export async function recoverAmbiguousPaymentSubmissions(): Promise<{
       // A worker can die after inserting the deterministic disbursement but
       // before the provider call. created_at catches that pre-call crash window;
       // the provider idempotency key makes retrying an ambiguous call safe too.
-      .lte("created_at", cutoff).order("created_at", { ascending: true }).limit(50),
+      .lte("created_at", cutoff).order("created_at", { ascending: true }).limit(RECOVERY_CANDIDATE_LIMIT + 1),
     // Also catch the smaller window after the run was claimed but before its
     // first disbursement row existed.
     supabase.from("payment_runs")
@@ -917,7 +1013,7 @@ export async function recoverAmbiguousPaymentSubmissions(): Promise<{
       .eq("status", "processing")
       .lte("processing_started_at", cutoff)
       .order("processing_started_at", { ascending: true })
-      .limit(50),
+      .limit(RECOVERY_CANDIDATE_LIMIT + 1),
   ])
   if (disbursementResult.error) throw new Error(`Unable to load ambiguous payment submissions: ${disbursementResult.error.message}`)
   if (runResult.error) throw new Error(`Unable to load interrupted payment runs: ${runResult.error.message}`)
@@ -929,11 +1025,29 @@ export async function recoverAmbiguousPaymentSubmissions(): Promise<{
   for (const run of runResult.data ?? []) {
     candidateMap.set(`${run.org_id}:${run.id}`, { run_id: run.id, org_id: run.org_id, requested_by: run.requested_by })
   }
-  const candidates = Array.from(candidateMap.values()).slice(0, 50)
+  const allCandidates = Array.from(candidateMap.values())
+  const candidates = allCandidates.slice(0, RECOVERY_CANDIDATE_LIMIT)
   const recovered: string[] = []
   const failed: Array<{ runId: string; error: string }> = []
+  const unattributed: string[] = []
   for (const row of candidates) {
-    if (!row.requested_by) continue
+    if (!row.requested_by) {
+      // A run whose preparer is gone cannot be executed as anyone — there is no
+      // human whose `payment.release` permission would be re-checked. Skipping
+      // it silently left a possibly-debited payment invisible forever, so it is
+      // counted and emitted instead: this is the one state where Arc cannot say
+      // whether the builder's bank was debited.
+      unattributed.push(row.run_id)
+      await recordEvent({
+        orgId: row.org_id,
+        actorId: null,
+        eventType: "payment_recovery_unattributed",
+        entityType: "payment_run",
+        entityId: row.run_id,
+        payload: { reason: "The payment run has no preparer to re-execute it as" },
+      })
+      continue
+    }
     try {
       const { data: org } = await supabase.from("orgs").select("product_tier").eq("id", row.org_id).maybeSingle()
       await runWithServiceOrgContext({ supabase, orgId: row.org_id, userId: row.requested_by, productTier: normalizeProductTier(org?.product_tier) }, () => executePaymentRun(row.run_id, row.org_id))
@@ -942,7 +1056,15 @@ export async function recoverAmbiguousPaymentSubmissions(): Promise<{
       failed.push({ runId: row.run_id, error: cause instanceof Error ? cause.message : "Payment recovery failed" })
     }
   }
-  return { attempted: candidates.length, recovered, failed }
+  return {
+    attempted: candidates.length,
+    recovered,
+    failed,
+    // Reported, never silent — truncation that says nothing reads as "everything
+    // recovered". These are picked up on the next tick.
+    deferred: allCandidates.length - candidates.length,
+    unattributed,
+  }
 }
 
 async function assertRunRiskAllowed(run: Record<string, unknown>, items: Array<Record<string, unknown>>, orgId: string) {
@@ -964,7 +1086,7 @@ async function assertRunRiskAllowed(run: Record<string, unknown>, items: Array<R
       : Promise.resolve({ data: [] }),
     // Read live, not from the run's frozen control snapshot: these are fraud
     // controls, and tightening one has to bind runs that were built before it.
-    supabase.from("payment_rail_policies").select("new_vendor_hold_hours,max_inflight_cents,per_run_limit_cents,daily_limit_cents").eq("org_id", orgId).maybeSingle(),
+    supabase.from("payment_rail_policies").select("new_vendor_hold_hours,max_inflight_cents,per_payment_limit_cents,per_run_limit_cents,daily_limit_cents").eq("org_id", orgId).maybeSingle(),
   ])
 
   // The two spend limits bind live for exactly the reason the two above do:
@@ -979,9 +1101,20 @@ async function assertRunRiskAllowed(run: Record<string, unknown>, items: Array<R
     )
     return values.length === 0 ? null : Math.min(...values)
   }
+  const perPaymentLimitCents = tighterLimit(policy ? Reflect.get(policy, "per_payment_limit_cents") : null, livePolicy?.per_payment_limit_cents)
   const perRunLimitCents = tighterLimit(policy ? Reflect.get(policy, "per_run_limit_cents") : null, livePolicy?.per_run_limit_cents)
   const dailyLimitCents = tighterLimit(policy ? Reflect.get(policy, "daily_limit_cents") : null, livePolicy?.daily_limit_cents)
   if (perRunLimitCents && Number(run.total_debit_cents) > perRunLimitCents) signals.push({ code: "run_limit_exceeded", severity: "block" })
+  // Only `createPaymentRun` used to check this one, so a ceiling tightened after
+  // a run was built did not bind it the way per-run and daily already did — the
+  // one limit that is per vendor payment was also the one a run could outlive.
+  if (perPaymentLimitCents) {
+    for (const item of items) {
+      if (Number(item.vendor_amount_cents) > perPaymentLimitCents) {
+        signals.push({ code: "payment_limit_exceeded", severity: "block", bill_id: item.bill_id, amount_cents: Number(item.vendor_amount_cents), limit_cents: perPaymentLimitCents })
+      }
+    }
+  }
 
   // Fees ride their own debit, so the daily limit measures the vendor money that
   // actually left the bank rather than a total that includes an accrual.
@@ -1167,50 +1300,45 @@ export async function executePaymentRun(runId: string, orgId?: string) {
         await assertRunPayablesStillCurrent(material.run, [item], context.orgId)
       }
     }
+    // The rail is one verified ACH destination per payable — a `primary_vendor`
+    // payee paid by `ach` — enforced by the Zod literal, the create RPC's
+    // single-payee length check, and a DB check plus a unique index on
+    // `run_item_id`. There is no split, so there is nothing to pro-rate: the
+    // item's fees are this payee's fees, and an item that somehow carries a
+    // different shape stops the run rather than being quietly skipped.
     const payees = Array.isArray(item.payees) ? item.payees : []
-    let allocatedProcessorFeeCents = 0
-    let allocatedPlatformFeeCents = 0
-    for (const [payeeIndex, payee] of payees.entries()) {
-      if (payee.method !== "ach") continue
-      const { data: relationship } = await supabase.from("vendor_payment_relationships")
-        .select("recipient_account_id,vendor_entity_id,status")
-        .eq("org_id", context.orgId).eq("id", item.relationship_id).maybeSingle()
-      // The destination the approvers signed for, taken from the frozen run
-      // content the content hash covers — never re-read live. `createPaymentRun`
-      // is still the only thing that decides a primary vendor's destination, so
-      // a client-supplied one is as ignored here as it was there; what changed is
-      // that execution honours the snapshot instead of following the
-      // relationship pointer to wherever it points now. A portal re-claim
-      // rewrites relationship and recipient together, so the live pointer could
-      // send an approved run to a bank no approver ever saw.
-      const trustedRecipientId = payee.recipient_account_id
-      if (typeof trustedRecipientId !== "string") throw new Error(`Payee ${payee.payee_name} has no approved payout destination`)
-      if (payee.payee_kind === "primary_vendor" && relationship?.recipient_account_id !== trustedRecipientId) {
-        throw new Error(`The payout destination for ${payee.payee_name} changed after this run was approved. Cancel it and build a new run so the change is approved.`)
-      }
-      const { data: recipient } = await supabase.from("payment_recipient_accounts").select("id,vendor_entity_id,provider,provider_account_id,status,payouts_enabled,destination_locked_until").eq("id", trustedRecipientId).maybeSingle()
-      if (!relationship || relationship.status !== "active" || recipient?.vendor_entity_id !== relationship.vendor_entity_id) throw new Error(`Payee ${payee.payee_name} is not bound to this vendor relationship`)
-      const { data: vendorEntity } = await supabase.from("vendor_entities").select("status").eq("id", relationship.vendor_entity_id).maybeSingle()
-      if (vendorEntity?.status !== "active") throw new Error(`Payee ${payee.payee_name} is suspended or closed`)
-      if (!recipient || recipient.provider !== funding.provider || recipient.status !== "ready" || !recipient.payouts_enabled) throw new Error(`Payee ${payee.payee_name} is no longer ready for ACH`)
-      if (recipient.destination_locked_until && new Date(recipient.destination_locked_until) > new Date()) throw new Error(`Payee ${payee.payee_name} has a payout destination security hold`)
-      // `revision` is constant today because runs are immutable after creation.
-      // It stays in the key as an invariant: if run editing is ever added, the
-      // edit MUST bump revision so a re-approved run submits fresh debits
-      // instead of replaying the provider's cached responses.
-      const idempotencyKey = `${parsedRunId}:${payee.id}:v${material.run.revision}`
-      const isLastPayee = payeeIndex === payees.length - 1
-      const payeeProcessorFeeCents = isLastPayee
-        ? Number(item.processor_fee_cents) - allocatedProcessorFeeCents
-        : Math.floor((Number(item.processor_fee_cents) * Number(payee.amount_cents)) / Number(item.vendor_amount_cents))
-      const payeePlatformFeeCents = isLastPayee
-        ? Number(item.platform_fee_cents) - allocatedPlatformFeeCents
-        : Math.floor((Number(item.platform_fee_cents) * Number(payee.amount_cents)) / Number(item.vendor_amount_cents))
-      allocatedProcessorFeeCents += payeeProcessorFeeCents
-      allocatedPlatformFeeCents += payeePlatformFeeCents
-      let { data: disbursement } = await supabase.from("disbursements").select("id,status,provider_payment_id").eq("org_id", context.orgId).eq("idempotency_key", idempotencyKey).maybeSingle()
-      if (!disbursement) {
-        const { data: inserted, error: disbursementError } = await supabase.from("disbursements").insert({
+    if (payees.length !== 1) throw new Error("A payable in this run does not have exactly one approved payout destination")
+    const payee = payees[0]
+    const { data: relationship } = await supabase.from("vendor_payment_relationships")
+      .select("recipient_account_id,vendor_entity_id,status")
+      .eq("org_id", context.orgId).eq("id", item.relationship_id).maybeSingle()
+    // The destination the approvers signed for, taken from the frozen run
+    // content the content hash covers — never re-read live. `createPaymentRun`
+    // is still the only thing that decides a primary vendor's destination, so
+    // a client-supplied one is as ignored here as it was there; what changed is
+    // that execution honours the snapshot instead of following the
+    // relationship pointer to wherever it points now. A portal re-claim
+    // rewrites relationship and recipient together, so the live pointer could
+    // send an approved run to a bank no approver ever saw.
+    const trustedRecipientId = payee.recipient_account_id
+    if (typeof trustedRecipientId !== "string") throw new Error(`Payee ${payee.payee_name} has no approved payout destination`)
+    if (relationship?.recipient_account_id !== trustedRecipientId) {
+      throw new Error(`The payout destination for ${payee.payee_name} changed after this run was approved. Cancel it and build a new run so the change is approved.`)
+    }
+    const { data: recipient } = await supabase.from("payment_recipient_accounts").select("id,vendor_entity_id,provider,provider_account_id,status,payouts_enabled,destination_locked_until").eq("id", trustedRecipientId).maybeSingle()
+    if (!relationship || relationship.status !== "active" || recipient?.vendor_entity_id !== relationship.vendor_entity_id) throw new Error(`Payee ${payee.payee_name} is not bound to this vendor relationship`)
+    const { data: vendorEntity } = await supabase.from("vendor_entities").select("status").eq("id", relationship.vendor_entity_id).maybeSingle()
+    if (vendorEntity?.status !== "active") throw new Error(`Payee ${payee.payee_name} is suspended or closed`)
+    if (!recipient || recipient.provider !== funding.provider || recipient.status !== "ready" || !recipient.payouts_enabled) throw new Error(`Payee ${payee.payee_name} is no longer ready for ACH`)
+    if (recipient.destination_locked_until && new Date(recipient.destination_locked_until) > new Date()) throw new Error(`Payee ${payee.payee_name} has a payout destination security hold`)
+    // `revision` is constant today because runs are immutable after creation.
+    // It stays in the key as an invariant: if run editing is ever added, the
+    // edit MUST bump revision so a re-approved run submits fresh debits
+    // instead of replaying the provider's cached responses.
+    const idempotencyKey = `${parsedRunId}:${payee.id}:v${material.run.revision}`
+    let { data: disbursement } = await supabase.from("disbursements").select("id,status,provider_payment_id").eq("org_id", context.orgId).eq("idempotency_key", idempotencyKey).maybeSingle()
+    if (!disbursement) {
+      const { data: inserted, error: disbursementError } = await supabase.from("disbursements").insert({
         org_id: context.orgId,
         project_id: item.project_id,
         run_id: parsedRunId,
@@ -1223,92 +1351,86 @@ export async function executePaymentRun(runId: string, orgId?: string) {
         status: "created",
         submission_attempted_at: now,
         amount_cents: payee.amount_cents,
-        processor_fee_cents: payeeProcessorFeeCents,
-        platform_fee_cents: payeePlatformFeeCents,
+        processor_fee_cents: Number(item.processor_fee_cents),
+        platform_fee_cents: Number(item.platform_fee_cents),
         currency: material.run.currency,
         transfer_group: `payment_run:${parsedRunId}`,
         idempotency_key: idempotencyKey,
-        }).select("id,status,provider_payment_id").single()
-        if (disbursementError || !inserted) throw new Error(`Unable to create disbursement: ${disbursementError?.message}`)
-        disbursement = inserted
-      }
-      let providerRejected = false
-      try {
-        if (disbursement.status !== "created") {
-          await postDisbursementSubmittedLedger({ orgId: context.orgId, disbursementId: disbursement.id, vendorAmountCents: Number(payee.amount_cents), currency: material.run.currency, effectiveAt: now })
-          results.push({ disbursementId: disbursement.id, status: disbursement.status })
-          continue
-        }
-        const { error: attemptError } = await supabase.from("disbursements")
-          .update({ submission_attempted_at: now, failure_reason: null })
-          .eq("org_id", context.orgId)
-          .eq("id", disbursement.id)
-          .eq("status", "created")
-        if (attemptError) throw new Error(`Unable to checkpoint provider submission: ${attemptError.message}`)
-        // Record the pending debit before contacting the provider. The entry is
-        // idempotent and gives an authoritative failure webhook something to
-        // reverse even if it races the HTTP response.
+      }).select("id,status,provider_payment_id").single()
+      if (disbursementError || !inserted) throw new Error(`Unable to create disbursement: ${disbursementError?.message}`)
+      disbursement = inserted
+    }
+    let providerRejected = false
+    try {
+      if (disbursement.status !== "created") {
         await postDisbursementSubmittedLedger({ orgId: context.orgId, disbursementId: disbursement.id, vendorAmountCents: Number(payee.amount_cents), currency: material.run.currency, effectiveAt: now })
-        const providerResult = await provider.submitDisbursement({
-          disbursementId: disbursement.id,
-          orgId: context.orgId,
-          amountCents: Number(payee.amount_cents),
-          currency: material.run.currency,
-          providerCustomerId: funding.provider_customer_id,
-          providerPaymentMethodId: funding.provider_payment_method_id,
-          recipientProviderAccountId: recipient.provider_account_id,
-          transferGroup: `payment_run:${parsedRunId}`,
-          idempotencyKey,
-          metadata: { payment_run_id: parsedRunId, payment_run_item_id: item.id, bill_id: item.bill_id },
-        })
-        if (providerResult.status === "failed") {
-          providerRejected = true
-          await supabase.from("disbursements").update({ status: "failed", failure_reason: "Provider rejected payment submission" }).eq("org_id", context.orgId).eq("id", disbursement.id).eq("status", "created")
-          await rollUpExecutionFailure({ supabase, orgId: context.orgId, runId: parsedRunId, itemId: item.id, payeeId: payee.id, message: "Provider rejected payment submission" })
-          await Promise.all([
-            recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "payment_run_execution_failed", entityType: "payment_run", entityId: parsedRunId, payload: { disbursement_id: disbursement.id, provider_status: providerResult.status } }),
-            recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "disbursement", entityId: disbursement.id, before: { status: "created" }, after: { status: "failed", reason: "provider_rejected" } }),
-          ])
-          throw new Error("Provider rejected payment submission")
-        }
-        assertDisbursementTransition(disbursement.status, "submitted")
-        const { error: submittedError } = await supabase.from("disbursements").update({
-          status: "submitted",
-          provider_payment_id: providerResult.providerPaymentId,
-          submitted_at: now,
-        }).eq("org_id", context.orgId).eq("id", disbursement.id).eq("status", "created")
-        if (submittedError) throw new Error(`Unable to record provider submission: ${submittedError.message}`)
-        if (providerResult.status !== "submitted") {
-          const forwardPath = ["submitted", "debit_pending", "funds_available"]
-          const targetIndex = forwardPath.indexOf(providerResult.status)
-          if (targetIndex < 0) {
-            assertDisbursementTransition("submitted", providerResult.status)
-            await supabase.from("disbursements").update({ status: providerResult.status }).eq("org_id", context.orgId).eq("id", disbursement.id).eq("status", "submitted")
-          } else {
-            let currentStatus = "submitted"
-            for (const nextStatus of forwardPath.slice(1, targetIndex + 1)) {
-              assertDisbursementTransition(currentStatus, nextStatus)
-              const { error: statusError } = await supabase.from("disbursements").update({ status: nextStatus }).eq("org_id", context.orgId).eq("id", disbursement.id).eq("status", currentStatus)
-              if (statusError) throw new Error(`Unable to advance provider submission: ${statusError.message}`)
-              currentStatus = nextStatus
-            }
-          }
-        }
-        await supabase.from("payment_run_item_payees").update({ status: "processing" }).eq("org_id", context.orgId).eq("id", payee.id)
-        results.push({ disbursementId: disbursement.id, status: providerResult.status })
-      } catch (error) {
-        if (providerRejected) throw error
-        const message = error instanceof Error ? error.message : "Provider submission failed"
-        // A network error cannot tell us whether the provider accepted the debit.
-        // Keep the deterministic disbursement resumable; retrying invokes the
-        // provider with the exact same idempotency key and repairs local state.
-        await supabase.from("disbursements").update({ failure_reason: message, submission_attempted_at: now }).eq("org_id", context.orgId).eq("id", disbursement.id).eq("status", "created")
-        await Promise.all([
-          recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "payment_submission_needs_recovery", entityType: "disbursement", entityId: disbursement.id, payload: { payment_run_id: parsedRunId, error: message } }),
-          recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "disbursement", entityId: disbursement.id, after: { status: "created", recovery_required: true, failure_reason: message } }),
-        ])
-        throw error
+        results.push({ disbursementId: disbursement.id, status: disbursement.status })
+        continue
       }
+      const { error: attemptError } = await supabase.from("disbursements")
+        .update({ submission_attempted_at: now, failure_reason: null })
+        .eq("org_id", context.orgId)
+        .eq("id", disbursement.id)
+        .eq("status", "created")
+      if (attemptError) throw new Error(`Unable to checkpoint provider submission: ${attemptError.message}`)
+      // Record the pending debit before contacting the provider. The entry is
+      // idempotent and gives an authoritative failure webhook something to
+      // reverse even if it races the HTTP response.
+      await postDisbursementSubmittedLedger({ orgId: context.orgId, disbursementId: disbursement.id, vendorAmountCents: Number(payee.amount_cents), currency: material.run.currency, effectiveAt: now })
+      const providerResult = await provider.submitDisbursement({
+        disbursementId: disbursement.id,
+        orgId: context.orgId,
+        amountCents: Number(payee.amount_cents),
+        currency: material.run.currency,
+        providerCustomerId: funding.provider_customer_id,
+        providerPaymentMethodId: funding.provider_payment_method_id,
+        recipientProviderAccountId: recipient.provider_account_id,
+        transferGroup: `payment_run:${parsedRunId}`,
+        idempotencyKey,
+        metadata: { payment_run_id: parsedRunId, payment_run_item_id: item.id, bill_id: item.bill_id },
+      })
+      if (providerResult.status === "failed") {
+        providerRejected = true
+        await supabase.from("disbursements").update({ status: "failed", failure_reason: "Provider rejected payment submission" }).eq("org_id", context.orgId).eq("id", disbursement.id).eq("status", "created")
+        await rollUpExecutionFailure({ supabase, orgId: context.orgId, runId: parsedRunId, itemId: item.id, payeeId: payee.id, message: "Provider rejected payment submission" })
+        await Promise.all([
+          recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "payment_run_execution_failed", entityType: "payment_run", entityId: parsedRunId, payload: { disbursement_id: disbursement.id, provider_status: providerResult.status } }),
+          recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "disbursement", entityId: disbursement.id, before: { status: "created" }, after: { status: "failed", reason: "provider_rejected" } }),
+        ])
+        throw new Error("Provider rejected payment submission")
+      }
+      assertDisbursementTransition(disbursement.status, "submitted")
+      const { error: submittedError } = await supabase.from("disbursements").update({
+        status: "submitted",
+        provider_payment_id: providerResult.providerPaymentId,
+        submitted_at: now,
+      }).eq("org_id", context.orgId).eq("id", disbursement.id).eq("status", "created")
+      if (submittedError) throw new Error(`Unable to record provider submission: ${submittedError.message}`)
+      // The provider can answer with a state several hops along the machine.
+      // `planDisbursementAdvance` owns what those hops are — the same function
+      // the webhook path uses — so the two cannot disagree about how a
+      // disbursement moves forward.
+      let currentStatus = "submitted"
+      for (const nextStatus of planDisbursementAdvance(currentStatus, providerResult.status)) {
+        assertDisbursementTransition(currentStatus, nextStatus)
+        const { error: statusError } = await supabase.from("disbursements").update({ status: nextStatus }).eq("org_id", context.orgId).eq("id", disbursement.id).eq("status", currentStatus)
+        if (statusError) throw new Error(`Unable to advance provider submission: ${statusError.message}`)
+        currentStatus = nextStatus
+      }
+      await supabase.from("payment_run_item_payees").update({ status: "processing" }).eq("org_id", context.orgId).eq("id", payee.id)
+      results.push({ disbursementId: disbursement.id, status: providerResult.status })
+    } catch (error) {
+      if (providerRejected) throw error
+      const message = error instanceof Error ? error.message : "Provider submission failed"
+      // A network error cannot tell us whether the provider accepted the debit.
+      // Keep the deterministic disbursement resumable; retrying invokes the
+      // provider with the exact same idempotency key and repairs local state.
+      await supabase.from("disbursements").update({ failure_reason: message, submission_attempted_at: now }).eq("org_id", context.orgId).eq("id", disbursement.id).eq("status", "created")
+      await Promise.all([
+        recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "payment_submission_needs_recovery", entityType: "disbursement", entityId: disbursement.id, payload: { payment_run_id: parsedRunId, error: message } }),
+        recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "disbursement", entityId: disbursement.id, after: { status: "created", recovery_required: true, failure_reason: message } }),
+      ])
+      throw error
     }
   }
   // Fees are collected once, after the vendor payments are away. Deliberately
@@ -1464,6 +1586,84 @@ async function rollUpExecutionFailure(input: { supabase: ReturnType<typeof creat
   })
 }
 
+export interface PaymentRunApprovability {
+  /** Whether this viewer may decide this run right now. */
+  mayDecide: boolean
+  /** Why they may not, written for them to read. Null when they may. */
+  blockedReason: string | null
+}
+
+/**
+ * The one answer to "may this viewer approve this run".
+ *
+ * Every surface that offers or withholds an Approve button reads it here, and
+ * it mirrors `assertUserMayApproveRun`, which is what the server will actually
+ * enforce. The two used to be computed separately: the approver screen took the
+ * FIRST roster entry's ceiling, checked no division and ignored preferred-
+ * approver routing, so divisional and routed-away approvers were shown a live
+ * button the server refused, and anyone holding a low org-wide entry alongside a
+ * higher divisional one was wrongly told they were over their limit.
+ */
+export function evaluateRunApprovability(input: {
+  viewerId: string
+  requestedBy: string
+  totalDebitCents: number
+  /** Divisions the run's projects sit in; empty when none of them are divisioned. */
+  runDivisionIds: string[]
+  controlSnapshot: unknown
+  routing: PaymentApprovalRouting
+}): PaymentRunApprovability {
+  if (!input.routing.viewerMayApprove) {
+    return { mayDecide: false, blockedReason: "Your role does not allow approving payments" }
+  }
+  if (input.requestedBy === input.viewerId && !requesterMayApprovePaymentRun(input.controlSnapshot)) {
+    return { mayDecide: false, blockedReason: "You prepared this payment, so someone else has to approve it" }
+  }
+  const preferredApprovers = selectedApproverIds(input.controlSnapshot)
+  if (preferredApprovers.length > 0 && !preferredApprovers.includes(input.viewerId)) {
+    return { mayDecide: false, blockedReason: "This payment was routed to different approvers" }
+  }
+  // No roster entry at all means the org never named approvers — `viewerMayApprove`
+  // already required membership when it did — so the permission is the whole gate.
+  const entries = input.routing.approvers.filter((approver) => approver.userId === input.viewerId)
+  if (entries.length === 0) return { mayDecide: true, blockedReason: null }
+  // A division-scoped entry covers a run only when every payable in it sits in
+  // that division: approving the part you own is not approving the run.
+  const covering = entries.filter((entry) =>
+    !entry.divisionId || (input.runDivisionIds.length > 0 && input.runDivisionIds.every((division) => division === entry.divisionId)),
+  )
+  if (covering.length === 0) {
+    return {
+      mayDecide: false,
+      blockedReason: "This payment covers work outside the division you approve for; it needs an approver with organization-wide authority",
+    }
+  }
+  // The best ceiling across covering entries, never the first one found: someone
+  // may hold a low org-wide ceiling and a higher one inside their own division.
+  const bestLimitCents = covering.reduce<number | null>((best, entry) => {
+    if (best === null || entry.approvalLimitCents === null) return null
+    return Math.max(best, entry.approvalLimitCents)
+  }, 0)
+  if (bestLimitCents != null && input.totalDebitCents > bestLimitCents) {
+    return { mayDecide: false, blockedReason: "This payment is above your approval limit" }
+  }
+  return { mayDecide: true, blockedReason: null }
+}
+
+/**
+ * Whether a run item's frozen hold evidence says the payable was clear to pay.
+ *
+ * Fails closed, and that is the whole point: `createPaymentRun` writes `{}` when
+ * there was no evaluation to freeze, and an absence of evidence is not a
+ * clearance. The approver's own screen used to derive this as
+ * `blockingCount ?? 0 === 0`, which read an empty snapshot as releasable —
+ * failing open, on the one screen where a human is deciding.
+ */
+export function isReleasableHoldSnapshot(holdSnapshot: unknown): boolean {
+  if (!holdSnapshot || typeof holdSnapshot !== "object" || Array.isArray(holdSnapshot)) return false
+  return Reflect.get(holdSnapshot, "releasable") === true
+}
+
 export interface PaymentRunListRow {
   id: string
   status: string
@@ -1579,9 +1779,6 @@ export async function listPaymentRuns(orgId?: string, scopedProjectIds: string[]
   const listItemsByRunId = new Map<string, PaymentRunListRow["items"]>()
   for (const item of itemRows) {
     const bill = billById.get(item.bill_id)
-    const releasable = item.hold_snapshot && typeof item.hold_snapshot === "object" && !Array.isArray(item.hold_snapshot)
-      ? Reflect.get(item.hold_snapshot, "releasable") === true
-      : false
     const waiverStatus = item.waiver_snapshot && typeof item.waiver_snapshot === "object" && !Array.isArray(item.waiver_snapshot)
       ? Reflect.get(item.waiver_snapshot, "lien_waiver_status")
       : null
@@ -1594,36 +1791,11 @@ export async function listPaymentRuns(orgId?: string, scopedProjectIds: string[]
       vendorAmountCents: Number(item.vendor_amount_cents),
       processorFeeCents: Number(item.processor_fee_cents),
       platformFeeCents: Number(item.platform_fee_cents),
-      releasableAtSubmission: releasable,
+      releasableAtSubmission: isReleasableHoldSnapshot(item.hold_snapshot),
       waiverStatus: typeof waiverStatus === "string" ? waiverStatus : null,
       payees: payeesByItemId.get(item.id) ?? [],
     })
     listItemsByRunId.set(item.run_id, rows)
-  }
-  // A run is approvable by this viewer when they are designated (or the org named
-  // nobody and they hold the permission), the frozen policy permits their role
-  // in the run, and it fits under their personal approval ceiling.
-  const viewerEntries = routing.approvers.filter((approver) => approver.userId === context.userId)
-  // Mirrors assertUserMayApproveRun: the best ceiling across every entry that
-  // covers the run. A UI that offers a button the server will refuse is worse
-  // than no button.
-  const viewerCanApprove = (requestedBy: string, totalDebitCents: number, runDivisions: string[], controlSnapshot: unknown) => {
-    if (
-      !routing.viewerMayApprove ||
-      (requestedBy === context.userId && !requesterMayApprovePaymentRun(controlSnapshot))
-    ) return false
-    const preferredApprovers = selectedApproverIds(controlSnapshot)
-    if (preferredApprovers.length > 0 && !preferredApprovers.includes(context.userId)) return false
-    if (viewerEntries.length === 0) return true
-    const covering = viewerEntries.filter((entry) =>
-      !entry.divisionId || (runDivisions.length > 0 && runDivisions.every((division) => division === entry.divisionId)),
-    )
-    if (covering.length === 0) return false
-    const bestLimit = covering.reduce<number | null>((best, entry) => {
-      if (best === null || entry.approvalLimitCents === null) return null
-      return Math.max(best, entry.approvalLimitCents)
-    }, 0)
-    return bestLimit == null || totalDebitCents <= bestLimit
   }
   return (data ?? []).map((row) => ({
     id: row.id,
@@ -1646,7 +1818,16 @@ export async function listPaymentRuns(orgId?: string, scopedProjectIds: string[]
     scheduled_for: row.scheduled_for ?? null,
     details_truncated: detailsTruncated,
     can_cancel: row.requested_by === context.userId && ["draft", "pending_approval", "approved"].includes(row.status),
-    can_approve: viewerCanApprove(row.requested_by, Number(row.total_debit_cents), divisionsByRunId.get(row.id) ?? [], row.control_snapshot),
+    // The same derivation the approver's own screen and the server's refusal
+    // use, so a button is never offered that the service will turn down.
+    can_approve: evaluateRunApprovability({
+      viewerId: context.userId,
+      requestedBy: row.requested_by,
+      totalDebitCents: Number(row.total_debit_cents),
+      runDivisionIds: divisionsByRunId.get(row.id) ?? [],
+      controlSnapshot: row.control_snapshot,
+      routing,
+    }).mayDecide,
     approvals: approvalsByRunId.get(row.id) ?? [],
     items: listItemsByRunId.get(row.id) ?? [],
   }))
@@ -1681,8 +1862,14 @@ export interface PaymentRunSetupData {
    * the provider adapter for what is and is not confirmed.
    */
   settlementWindow: ProviderSettlementWindow
-  /** The AP fee quote in force, so the preparer sees the cost before building a run. */
-  feePolicy: { platformFeeFlatCents: number; platformFeeBps: number; passThroughProcessorFees: boolean }
+  /**
+   * The whole AP pricing in force, so the preparer's own `quoteApDisbursementFee`
+   * returns the same numbers the server will charge. It used to be a three-field
+   * subset without the processor terms, and the client quoting from that got a
+   * $0 provider cost on pass-through pricing — shown to the preparer as
+   * "Provider processing cost" while a different figure was debited.
+   */
+  feePolicy: ApFeePolicy
 }
 
 export async function getPaymentRunSetupData(orgId?: string, scopedProjectIds: string[] | null = null): Promise<PaymentRunSetupData> {
@@ -1785,10 +1972,6 @@ export async function getPaymentRunSetupData(orgId?: string, scopedProjectIds: s
     // Every active funding source in an org is on the same rail today; the default
     // one decides which adapter's timing the preparer is shown.
     settlementWindow: getPaymentRailProvider((fundingSources ?? [])[0]?.provider ?? undefined).settlementWindow,
-    feePolicy: {
-      platformFeeFlatCents: feePolicy.platformFeeFlatCents,
-      platformFeeBps: feePolicy.platformFeeBps,
-      passThroughProcessorFees: feePolicy.passThroughProcessorFees,
-    },
+    feePolicy,
   }
 }

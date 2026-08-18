@@ -34,6 +34,9 @@ import RfisArticle from "./planning-documents/rfis"
 import SubmittalsArticle from "./planning-documents/submittals"
 import SignaturesArticle from "./planning-documents/signatures"
 import ProjectFinancialsOverviewArticle from "./project-financials/project-financials-overview"
+import ArcPayOverviewArticle from "./project-financials/arc-pay-overview"
+import PaymentRunsApprovalsArticle from "./project-financials/payment-runs-approvals"
+import PaymentReconciliationArticle from "./project-financials/payment-reconciliation"
 import BudgetArticle from "./project-financials/budget"
 import CommitmentsArticle from "./project-financials/commitments"
 import PayablesArticle from "./project-financials/payables"
@@ -305,6 +308,34 @@ export const helpTopics: HelpTopic[] = [
             description: "Progress bill clients, hold retainage, send secure invoice links, and collect payments.",
             updatedAt: "2026-06-16",
             content: ReceivablesInvoicingArticle,
+          },
+        ],
+      },
+      {
+        slug: "vendor-payments",
+        title: "Arc Pay & vendor payments",
+        description: "Pay subcontractors electronically, control who can release money, and work the exception queue.",
+        articles: [
+          {
+            slug: "arc-pay-overview",
+            title: "Arc Pay overview",
+            description: "How electronic vendor payments work and how vendors get set up to receive them.",
+            updatedAt: "2026-08-12",
+            content: ArcPayOverviewArticle,
+          },
+          {
+            slug: "payment-runs-approvals",
+            title: "Payment runs & approvals",
+            description: "Build a run, understand dual approval, and why you cannot approve your own.",
+            updatedAt: "2026-08-12",
+            content: PaymentRunsApprovalsArticle,
+          },
+          {
+            slug: "payment-reconciliation",
+            title: "Payment reconciliation exceptions",
+            description: "Read the daily reconciliation, and what to do about each kind of exception.",
+            updatedAt: "2026-08-12",
+            content: PaymentReconciliationArticle,
           },
         ],
       },

@@ -1,6 +1,6 @@
 "use client"
 
-import { type ReactNode, useEffect, useState, useTransition } from "react"
+import { type ReactNode, useCallback, useEffect, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
@@ -177,13 +177,28 @@ export function ProjectPayablesClient({
     })
   }, [billingModel, projectId])
 
+  /**
+   * Concurrency tokens the server moved without a user edit — opening a payable
+   * caches its advisory approval signals, and that is a write. This list holds
+   * the server-rendered token, so it has to learn the new one or an approval
+   * would be rejected as a conflict nobody caused.
+   */
+  const [freshTokens, setFreshTokens] = useState<Record<string, string>>({})
+  const noteFreshToken = useCallback((billId: string, updatedAt: string) => {
+    setFreshTokens((current) => (current[billId] === updatedAt ? current : { ...current, [billId]: updatedAt }))
+  }, [])
+  const expectedToken = useCallback(
+    (bill: { id: string; updated_at?: string }) => freshTokens[bill.id] ?? bill.updated_at,
+    [freshTokens],
+  )
+
   const approveBill = (bill: VendorBillSummary) => {
     if (isVendorCredit(bill)) return
     startTransition(async () => {
       try {
         const updated = unwrapAction(await updateProjectVendorBillStatusAction(projectId, bill.id, {
           status: "approved",
-          expected_updated_at: bill.updated_at,
+          expected_updated_at: expectedToken(bill),
           cost_code_id: costCodesEnabled ? bill.actual_cost_code_id ?? undefined : undefined,
           qbo_expense_account_id: bill.qbo_expense_account_id ?? qboDefaults.expenseAccountId,
           qbo_expense_account_name: bill.qbo_expense_account_name ?? getExpenseAccountName(qboDefaults.expenseAccountId),
@@ -255,7 +270,7 @@ export function ProjectPayablesClient({
               try {
                 const result = unwrapAction(await updateProjectVendorBillStatusAction(projectId, bill.id, {
                   status: billStatus(bill),
-                  expected_updated_at: bill.updated_at,
+                  expected_updated_at: expectedToken(bill),
                   qbo_expense_account_id: accountId || undefined,
                   qbo_expense_account_name: getExpenseAccountName(accountId),
                 }))
@@ -275,7 +290,7 @@ export function ProjectPayablesClient({
               try {
                 const result = unwrapAction(await updateProjectVendorBillStatusAction(projectId, bill.id, {
                   status: billStatus(bill),
-                  expected_updated_at: bill.updated_at,
+                  expected_updated_at: expectedToken(bill),
                   cost_code_id: costCodeId,
                   qbo_expense_account_id: bill.qbo_expense_account_id ?? qboDefaults.expenseAccountId,
                   qbo_expense_account_name: bill.qbo_expense_account_name ?? getExpenseAccountName(qboDefaults.expenseAccountId),
@@ -296,7 +311,7 @@ export function ProjectPayablesClient({
           mayApprove={mayApproveBill}
           onBulkApprove={(bills) => {
             startTransition(async () => {
-              const result = await approveVendorBillsAtomicAction(bills.map((bill) => ({ id: bill.id, expected_updated_at: bill.updated_at })))
+              const result = await approveVendorBillsAtomicAction(bills.map((bill) => ({ id: bill.id, expected_updated_at: expectedToken(bill) })))
               if (!result.success) {
                 toast.error(result.error, { description: "No payables were changed." })
                 return
@@ -371,6 +386,7 @@ export function ProjectPayablesClient({
         paymentReadinessByCompanyId={paymentReadinessByCompanyId}
         runMembershipByBillId={runMembershipByBillId}
         viewerMayApproveRuns={viewerMayApproveRuns}
+        onConcurrencyTokenRefresh={noteFreshToken}
         approvalViewer={approvalViewer}
       />
 

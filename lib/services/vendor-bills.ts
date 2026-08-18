@@ -1,4 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
+
+import { COMPANY_PAYABLE_LIMIT } from "@/lib/financials/vendor-bill-constants"
 import { randomUUID } from "node:crypto"
 import { findDuplicatePayable } from "@/lib/services/payable-duplicate-check"
 import { z } from "zod"
@@ -13,11 +15,12 @@ import { vendorBillStatusUpdateSchema, vendorBillCreateSchema, type VendorBillSt
 import { getComplianceRules } from "@/lib/services/compliance"
 import { propagateApprovalToLedger, voidBillableCostsForVendorBill } from "@/lib/services/cost-plus"
 import { voidJobCostEntriesForVendorBill } from "@/lib/services/job-cost-actuals"
-import { enqueueBillPaymentSync, enqueueVendorBillSync } from "@/lib/services/accounting-sync"
+import { enqueueBillPaymentSync, enqueueVendorBillSync, voidBillPaymentInAccounting } from "@/lib/services/accounting-sync"
 import { isSyncableVendorBillStatus } from "@/lib/financials/ledger-status"
 import { APPROVAL_GATE_REASONS, loadApprovalGateSettings } from "@/lib/financials/approval-gates"
 import { isCostDrivenBillingModel } from "@/lib/financials/billing-model"
 import { payableOutstandingCents } from "@/lib/financials/payables-rules"
+import { ACTIVE_RUN_ITEM_STATUSES } from "@/lib/services/org-payables"
 import { accountingReference, buildAccountingCoding, readCodingSource, type CodingSource } from "@/lib/services/accounting-coding"
 import { assertBillReleasable, type PaymentReleaseEvidence } from "@/lib/services/payment-holds"
 import { requireRecentPaymentStepUp } from "@/lib/services/payment-step-up"
@@ -27,7 +30,7 @@ import { readLineMatchAssessment, type PayableLineMatchAssessment } from "@/lib/
 import { readEvenFlowAssessment, type EvenFlowPriceAssessment } from "@/lib/financials/even-flow-price-anomaly"
 import { readBillScheduleAssessment, type BillScheduleAssessment } from "@/lib/financials/bill-schedule-crosscheck"
 import { sendManualPaymentRemittanceAdvice } from "@/lib/services/vendor-remittance"
-import { sendVendorBillDecisionNotice } from "@/lib/services/vendor-bill-notices"
+import { assertPayableApprovalPeriodOpen, notifyPayableApprovalDecision } from "@/lib/services/payable-approval-gate"
 
 export type VendorBillStatus = "pending" | "approved" | "partial" | "paid" | "rejected"
 
@@ -161,7 +164,7 @@ export async function approveVendorBillsAtomic(items: BulkVendorBillApprovalItem
   const service = createServiceSupabaseClient()
   const { data: bills, error } = await service
     .from("vendor_bills")
-    .select("id,project_id,metadata")
+    .select("id,project_id,bill_date,metadata")
     .eq("org_id", context.orgId)
     .in(
       "id",
@@ -196,6 +199,17 @@ export async function approveVendorBillsAtomic(items: BulkVendorBillApprovalItem
     throw new Error("One or more payables are waiting for their designated approver")
   }
 
+  // Same closed-period rule the single-bill and cost-inbox paths enforce.
+  // Approving in a batch was the one way to post cost into a locked period.
+  for (const bill of bills ?? []) {
+    await assertPayableApprovalPeriodOpen({
+      supabase: context.supabase,
+      orgId: context.orgId,
+      projectId: bill.project_id,
+      billDate: bill.bill_date,
+    })
+  }
+
   const { data, error: rpcError } = await service.rpc("approve_vendor_bills_atomic", { p_org_id: context.orgId, p_actor_id: context.userId, p_items: parsed })
   if (rpcError) throw new Error(rpcError.message)
 
@@ -205,9 +219,12 @@ export async function approveVendorBillsAtomic(items: BulkVendorBillApprovalItem
     parsed.map(async (item) => {
       await propagateApprovalToLedger({ source: "vendor_bill", sourceId: item.id, orgId: context.orgId })
       await enqueueVendorBillSync(item.id, context.orgId)
+      // The vendor hears the outcome whether their invoice was approved on its
+      // own or as one of fifty. Only the single-bill path used to say anything.
+      await notifyPayableApprovalDecision({ orgId: context.orgId, billId: item.id, kind: "approved" })
     }),
   )
-  return { approvedCount: Number((data as any)?.approved_count ?? parsed.length) }
+  return { approvedCount: Number((data as Record<string, unknown> | null)?.approved_count ?? parsed.length) }
 }
 
 export const vendorBillSelect = `
@@ -701,21 +718,30 @@ export async function listVendorBillsForCompany(companyId: string, orgId?: strin
     throw new Error(`Failed to load commitments: ${commitmentError.message}`)
   }
 
-  const commitmentIds = (commitments ?? []).map((c: any) => c.id).filter(Boolean)
-  if (commitmentIds.length === 0) return []
+  // A payable reaches a company two ways: through a commitment, or by naming
+  // the company directly. Resolving only through commitments hid every bill
+  // created from the desk, the portal or email ingest — which is most of them —
+  // and returned an empty tab for any vendor without a contract.
+  const commitmentIds = (commitments ?? []).map((row) => row.id).filter(Boolean)
+  const orFilter = commitmentIds.length > 0
+    ? `company_id.eq.${companyId},commitment_id.in.(${commitmentIds.join(",")})`
+    : `company_id.eq.${companyId}`
 
   const { data, error } = await supabase
     .from("vendor_bills")
     .select(vendorBillSelect)
     .eq("org_id", resolvedOrgId)
-    .in("commitment_id", commitmentIds)
+    .or(orFilter)
     .order("created_at", { ascending: false })
+    .limit(COMPANY_PAYABLE_LIMIT)
 
   if (error) {
     throw new Error(`Failed to list vendor bills: ${error.message}`)
   }
 
-  return (data ?? []).map((row: any) => mapVendorBill(row))
+  // Hydrated, not raw-mapped: the company tab shows recorded payments, and
+  // `mapVendorBill` alone leaves `payments` permanently empty.
+  return hydrateVendorBills(supabase, resolvedOrgId, data ?? [])
 }
 
 /**
@@ -895,10 +921,31 @@ export async function listVendorBillsPageForProject(
   const soon = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10)
   if (queue === "drafts") query = query.eq("metadata->>creation_state", "draft")
   else {
-    if (queue !== "all") query = query.or("metadata->>creation_state.is.null,metadata->>creation_state.neq.draft")
+    if (queue !== "all") {
+      query = query
+        .or("metadata->>creation_state.is.null,metadata->>creation_state.neq.draft")
+        // Vendor credits are money coming back, not an obligation to pay. The
+        // org desk has always excluded them from its working tabs; this list
+        // did not, so a credit sat in "Ready to pay" with a negative balance.
+        .or("metadata->>source.is.null,metadata->>source.neq.vendor_credit")
+    }
     if (queue === "paid") query = query.eq("status", "paid")
-    else if (queue === "payable") query = query.in("status", ["approved", "partial"])
-    else if (queue === "needs_review") query = query.eq("status", "pending")
+    else if (queue === "payable") {
+      // "Ready to pay" means nobody has claimed it yet. A payable already
+      // inside an active payment run is in flight, and offering it for payment
+      // a second time is how a bill gets paid twice.
+      query = query.in("status", ["approved", "partial"])
+      const { data: claimedRows } = await supabase
+        .from("payment_run_items")
+        .select("bill_id")
+        .eq("org_id", resolvedOrgId)
+        .in("status", ACTIVE_RUN_ITEM_STATUSES)
+        .limit(1_000)
+      const claimedIds = Array.from(
+        new Set((claimedRows ?? []).map((row) => row.bill_id).filter((id): id is string => typeof id === "string")),
+      )
+      if (claimedIds.length > 0) query = query.not("id", "in", `(${claimedIds.join(",")})`)
+    } else if (queue === "needs_review") query = query.eq("status", "pending")
     else if (queue === "overdue") query = query.neq("status", "paid").lt("due_date", today)
     else if (queue === "due_soon") query = query.neq("status", "paid").gte("due_date", today).lte("due_date", soon)
   }
@@ -964,14 +1011,21 @@ async function assertExternalPaymentControls(input: {
   // unique index will reject it anyway — catching it here turns a constraint
   // violation into a sentence that names the other payment.
   if (input.checkNumber) {
-    const { data: existingCheck } = await service
+    // `limit(1)` rather than `maybeSingle()`: two prior payments sharing a
+    // check number made `maybeSingle()` throw a row-count error instead of
+    // reporting the duplicate it was looking for — the worst outcome of the
+    // three. Any match at all is the answer.
+    const { data: existingChecks, error: existingCheckError } = await service
       .from("payments")
       .select("id,bill_id,amount_cents")
       .eq("org_id", input.orgId)
       .eq("check_number", input.checkNumber.trim())
       .neq("status", "canceled")
-      .maybeSingle()
-    if (existingCheck) {
+      .limit(1)
+    if (existingCheckError) {
+      throw new Error(`Unable to check this check number for duplicates: ${existingCheckError.message}`)
+    }
+    if ((existingChecks ?? []).length > 0) {
       throw new Error(`Check number ${input.checkNumber.trim()} is already recorded against another payment. Void that one first if this is a correction.`)
     }
   }
@@ -1043,10 +1097,153 @@ async function assertExternalPaymentControls(input: {
 
   // Step-up on the same amounts that would trigger it electronically. A check is
   // not a lower-assurance instrument just because Arc did not print it.
+  //
+  // Not gated on `policy.enabled`: an org that has written down a per-payment
+  // limit has stated the amount above which one person acting alone is too much
+  // authority, and that judgement does not depend on whether the electronic
+  // rail happens to be switched on. An org with no policy row at all has stated
+  // nothing and is left to the separation-of-duties rule above — imposing a
+  // second factor on a builder who never opted into payments would lock them
+  // out of a workflow they already had.
   const limitCents = policy.per_payment_limit_cents == null ? null : Number(policy.per_payment_limit_cents)
-  if (policy.enabled && limitCents != null && input.amountCents > limitCents) {
+  if (limitCents != null && input.amountCents > limitCents) {
     await requireRecentPaymentStepUp()
   }
+}
+
+const reverseManualPaymentSchema = z.object({
+  paymentId: z.string().uuid("Invalid payment"),
+  /** Omit to reverse whatever is left of the payment. */
+  amountCents: z.number().int().positive().optional(),
+  reason: z.string().trim().min(8, "Say why this payment is being reversed").max(500),
+  idempotencyKey: z.string().trim().min(8).max(200).optional(),
+})
+
+export interface ManualPaymentReversalResult {
+  reversalId: string
+  billId: string
+  billStatus: string
+  paidCents: number
+  amountCents: number
+}
+
+/**
+ * Undo a payment somebody recorded by hand — the wrong amount, the wrong
+ * payable, a check that never went out.
+ *
+ * This is the missing half of the manual payment lifecycle. Until now the only
+ * reversal in AP was `record_ap_payment_reversal_atomic`, reachable solely from
+ * a provider webhook, so a bookkeeper's typo was permanent while an ACH return
+ * was not. `updateVendorBillStatus` even refuses to unapprove a paid payable
+ * with "Reverse the payment first" — an instruction nothing could carry out.
+ *
+ * Rail payments are deliberately excluded: reversing a real ACH debit inside
+ * Arc without the provider agreeing would make the subledger disagree with the
+ * bank. Those still return through the provider.
+ */
+export async function reverseManualBillPayment(
+  input: z.input<typeof reverseManualPaymentSchema>,
+  orgId?: string,
+): Promise<ManualPaymentReversalResult> {
+  const parsed = reverseManualPaymentSchema.parse(input)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const service = createServiceSupabaseClient()
+
+  const { data: payment, error: paymentError } = await service
+    .from("payments")
+    .select("id, bill_id, project_id, amount_cents, provider, status, metadata")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", parsed.paymentId)
+    .maybeSingle()
+  if (paymentError) throw new Error(`Unable to load the payment: ${paymentError.message}`)
+  if (!payment || !payment.bill_id) throw new Error("Payment not found")
+
+  // Reversing a payment releases the payable back to payable state, so it is
+  // governed by the same permission as releasing money in the first place.
+  await requireAuthorization({
+    permission: "payment.release",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: true,
+    resourceType: "vendor_bill",
+    resourceId: payment.bill_id,
+  })
+
+  const { data: bill } = await service
+    .from("vendor_bills")
+    .select("id, status, paid_cents, total_cents, metadata, approved_by")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", payment.bill_id)
+    .maybeSingle()
+
+  // Same control weight as recording the payment: an amount large enough to
+  // need a second factor on the way out needs one on the way back.
+  await assertExternalPaymentControls({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    bill: {
+      id: String(payment.bill_id),
+      approved_by: bill?.approved_by ?? null,
+      total_cents: bill?.total_cents ?? null,
+      metadata: (bill?.metadata as Record<string, unknown> | null) ?? null,
+    },
+    amountCents: parsed.amountCents ?? Number(payment.amount_cents ?? 0),
+    checkNumber: null,
+  })
+
+  const { data: result, error: rpcError } = await service.rpc("reverse_manual_ap_payment_atomic", {
+    p_org_id: resolvedOrgId,
+    p_payment_id: parsed.paymentId,
+    p_actor_id: userId,
+    p_amount_cents: parsed.amountCents ?? null,
+    p_reason: parsed.reason,
+    p_idempotency_key: parsed.idempotencyKey ?? randomUUID(),
+  })
+  if (rpcError || !result || typeof result !== "object") {
+    throw new Error(`Failed to reverse the payment: ${rpcError?.message ?? "No reversal result was returned"}`)
+  }
+
+  const billId = String(Reflect.get(result, "bill_id"))
+  const billStatus = String(Reflect.get(result, "bill_status"))
+  const paidCents = Number(Reflect.get(result, "paid_cents") ?? 0)
+  const reversalId = String(Reflect.get(result, "id"))
+  const amountCents = Number(Reflect.get(result, "amount_cents") ?? 0)
+
+  // Throwing, not swallowed: if the accounting system still shows the payment
+  // Arc has just reversed, the two disagree about cash and a human has to know.
+  await voidBillPaymentInAccounting({ orgId: resolvedOrgId, paymentId: parsed.paymentId, reason: parsed.reason })
+
+  await Promise.all([
+    recordEvent({
+      orgId: resolvedOrgId,
+      actorId: userId,
+      eventType: "vendor_bill_payment_reversed",
+      entityType: "vendor_bill",
+      entityId: billId,
+      payload: {
+        project_id: payment.project_id ?? null,
+        payment_id: parsed.paymentId,
+        reversal_id: reversalId,
+        amount_cents: amountCents,
+        bill_status: billStatus,
+        paid_cents: paidCents,
+        reason: parsed.reason,
+      },
+    }),
+    recordAudit({
+      orgId: resolvedOrgId,
+      actorId: userId,
+      action: "update",
+      entityType: "vendor_bill",
+      entityId: billId,
+      before: { status: bill?.status ?? null, paid_cents: bill?.paid_cents ?? null },
+      after: { status: billStatus, paid_cents: paidCents, reversal_id: reversalId },
+    }),
+  ])
+
+  return { reversalId, billId, billStatus, paidCents, amountCents }
 }
 
 export async function updateVendorBillStatus({
@@ -1089,14 +1286,46 @@ export async function updateVendorBillStatus({
       replayedPayment = replay
     }
   }
-  if (!replayedPayment && parsed.expected_updated_at && existing.updated_at && parsed.expected_updated_at !== existing.updated_at) {
-    throw new Error("This payable changed since you opened it. Refresh and review the latest values before saving.")
+  // Claim the row before doing anything else. Coding edits below replace
+  // `bill_lines`, and `bill_lines_touch_books_parent` bumps the parent's
+  // `updated_at` — so a guard applied to the final update would be comparing
+  // against a token this very call had already invalidated, failing every
+  // coded save after the lines were replaced and the cost ledger voided.
+  // Claiming first makes the check atomic and aborts a genuine conflict while
+  // the payable is still untouched.
+  if (!replayedPayment && parsed.expected_updated_at) {
+    const { data: claimed, error: claimError } = await supabase
+      .from("vendor_bills")
+      .update({ updated_at: new Date().toISOString() })
+      .eq("org_id", resolvedOrgId)
+      .eq("id", billId)
+      .eq("updated_at", parsed.expected_updated_at)
+      .select("updated_at")
+      .maybeSingle()
+    if (claimError) throw new Error(`Unable to open this payable for editing: ${claimError.message}`)
+    if (!claimed) {
+      throw new Error("This payable changed since you opened it. Refresh and review the latest values before saving.")
+    }
   }
   const existingMetadata = (existing.metadata as Record<string, any> | null) ?? {}
   const isVendorCredit = existingMetadata.source === "vendor_credit"
 
   if (parsed.status === "approved" && existingMetadata.creation_state === "draft") {
     throw new Error("Complete the payable draft before approval")
+  }
+
+  // Approving is what posts the payable into the cost ledger, so it is a
+  // posting into the bill date's accounting period. Only the cost inbox used to
+  // check this, which meant the same payable could be approved into a locked
+  // period or not depending on which screen you used.
+  const isEnteringApproval = parsed.status === "approved" && existing.status !== "approved"
+  if (isEnteringApproval) {
+    await assertPayableApprovalPeriodOpen({
+      supabase,
+      orgId: resolvedOrgId,
+      projectId: existing.project_id,
+      billDate: parsed.bill_date ?? existing.bill_date ?? existing.due_date,
+    })
   }
 
   if (isVendorCredit && parsed.status !== existing.status) {
@@ -1215,6 +1444,17 @@ export async function updateVendorBillStatus({
   // control model was pointing the wrong way.
   let externalReleaseEvidence: PaymentReleaseEvidence | null = null
   if (parsed.status === "paid" || parsed.status === "partial") {
+    // `payment_channel` is a gate in both directions or it is not a gate. The
+    // run preparer already refuses an `external` payable; a payable routed to
+    // the rail must likewise not be quietly settled by hand, or the two paths
+    // disagree about which one owns the money. Changing the channel is now an
+    // ordinary edit, so redirecting a payable is a deliberate, audited act.
+    const declaredChannel = parsed.payment_channel ?? existingMetadata.payment_channel
+    if (declaredChannel === "arc") {
+      throw new Error(
+        "This payable is set to be paid through Arc. Change its payment method to “Paid outside Arc” before recording an external payment.",
+      )
+    }
     externalReleaseEvidence = await assertBillReleasable(billId, resolvedOrgId)
     await assertExternalPaymentControls({
       supabase,
@@ -1554,6 +1794,34 @@ export async function updateVendorBillStatus({
     updateData.lien_waiver_received_at = parsed.lien_waiver_status === "received" ? new Date().toISOString() : null
   }
 
+  // Payment preferences live in metadata. Merged onto whatever this update has
+  // already staged there so a channel change and an `over_budget` recompute in
+  // the same save do not overwrite one another.
+  const paymentPreferenceEntries: Array<[string, unknown]> = []
+  if (parsed.payment_channel !== undefined) paymentPreferenceEntries.push(["payment_channel", parsed.payment_channel])
+  if (parsed.preferred_payment_method !== undefined) {
+    paymentPreferenceEntries.push(["preferred_payment_method", parsed.preferred_payment_method])
+  }
+  if (parsed.payment_memo !== undefined) paymentPreferenceEntries.push(["payment_memo", parsed.payment_memo])
+  if (parsed.preferred_funding_source_id !== undefined) {
+    paymentPreferenceEntries.push(["preferred_funding_source_id", parsed.preferred_funding_source_id])
+  }
+  if (parsed.payment_schedule !== undefined) paymentPreferenceEntries.push(["payment_schedule", parsed.payment_schedule])
+  if (parsed.scheduled_payment_date !== undefined) {
+    paymentPreferenceEntries.push(["scheduled_payment_date", parsed.scheduled_payment_date])
+  }
+  if (parsed.preferred_approver_ids !== undefined) {
+    paymentPreferenceEntries.push(["preferred_approver_ids", parsed.preferred_approver_ids])
+  }
+  if (paymentPreferenceEntries.length > 0) {
+    const nextMetadata: Record<string, unknown> = { ...existingMetadata, ...(updateData.metadata ?? {}) }
+    for (const [key, value] of paymentPreferenceEntries) {
+      if (value === null) delete nextMetadata[key]
+      else nextMetadata[key] = value
+    }
+    updateData.metadata = nextMetadata
+  }
+
   // `over_budget` was frozen at creation, which let a payable keep warning (or
   // keep quiet) long after sibling bills or line recoding changed the answer.
   // Recompute on every edit; the helper stays warning-tier metadata as before.
@@ -1569,19 +1837,20 @@ export async function updateVendorBillStatus({
     }
   }
 
-  let updateQuery = supabase.from("vendor_bills").update(updateData).eq("org_id", resolvedOrgId).eq("id", billId)
-  if (parsed.expected_updated_at) {
-    updateQuery = updateQuery.eq("updated_at", parsed.expected_updated_at)
-  }
-  const updateResult = await updateQuery.select(vendorBillSelect).maybeSingle()
+  // No `updated_at` guard here: the claim at the top of this function already
+  // took the row, and the coding write above has since moved the token.
+  const updateResult = await supabase
+    .from("vendor_bills")
+    .update(updateData)
+    .eq("org_id", resolvedOrgId)
+    .eq("id", billId)
+    .select(vendorBillSelect)
+    .maybeSingle()
   let data = updateResult.data
   const error = updateResult.error
 
   if (error || !data) {
-    if (!error && parsed.expected_updated_at) {
-      throw new Error("This payable changed while you were saving. Refresh and try again.")
-    }
-    throw new Error(`Failed to update vendor bill: ${error?.message}`)
+    throw new Error(`Failed to update vendor bill: ${error?.message ?? "the payable could not be saved"}`)
   }
 
   let finalStatus = updateData.status ?? parsed.status
@@ -1719,13 +1988,13 @@ export async function updateVendorBillStatus({
   // the invoice or the builder entered it. Best effort: the decision is already
   // recorded and is not undone by a mail failure.
   if (lifecycleEventType === "vendor_bill_approved" || lifecycleEventType === "vendor_bill_rejected") {
-    await sendVendorBillDecisionNotice({
+    await notifyPayableApprovalDecision({
       orgId: resolvedOrgId,
       billId,
       kind: lifecycleEventType === "vendor_bill_approved" ? "approved" : "rejected",
       reason: parsed.rejection_reason ?? null,
       eventId: lifecycleEvent.id,
-    }).catch((error) => console.warn("Vendor bill decision notice was not sent", error))
+    })
   }
 
   // What this bill teaches the rule engine. A single line teaches its code; a
@@ -2244,6 +2513,39 @@ export async function applyVendorCreditToBill({
   return { paymentId, appliedCents }
 }
 
+export async function getVendorCreditApplicationWorkspace(creditBillId: string, orgId?: string) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const { data: credit } = await supabase
+    .from("vendor_bills")
+    .select("id,project_id,company_id,total_cents,currency,status,approved_by,metadata")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", creditBillId)
+    .maybeSingle()
+  if (!credit || (credit.metadata as Record<string, unknown> | null)?.source !== "vendor_credit") throw new Error("Vendor credit not found")
+  await requireAuthorization({ permission: "bill.read", userId, orgId: resolvedOrgId, projectId: credit.project_id, supabase, resourceType: "vendor_bill", resourceId: creditBillId, logDecision: false })
+  const service = createServiceSupabaseClient()
+  const [applications, bills] = await Promise.all([
+    service.from("payments").select("id,bill_id,amount_cents,received_at,status").eq("org_id", resolvedOrgId).eq("metadata->>vendor_credit_id", creditBillId).eq("metadata->>vendor_credit_applied", "true").not("status", "in", "(canceled,refunded)"),
+    service.from("vendor_bills").select("id,bill_number,description,total_cents,paid_cents,retainage_cents,status,due_date,project:projects(name)").eq("org_id", resolvedOrgId).eq("company_id", credit.company_id).in("status", ["approved", "partial"]).or("metadata->>source.is.null,metadata->>source.neq.vendor_credit").order("due_date", { ascending: true, nullsFirst: false }).limit(250),
+  ])
+  if (applications.error) throw new Error(`Failed to load credit applications: ${applications.error.message}`)
+  if (bills.error) throw new Error(`Failed to load bills for credit: ${bills.error.message}`)
+  const appliedCents = (applications.data ?? []).reduce((sum, payment) => sum + Number(payment.amount_cents), 0)
+  return {
+    creditId: creditBillId,
+    approved: credit.status === "approved" && Boolean(credit.approved_by),
+    totalCents: Math.abs(Number(credit.total_cents ?? 0)),
+    appliedCents,
+    availableCents: Math.max(Math.abs(Number(credit.total_cents ?? 0)) - appliedCents, 0),
+    applications: applications.data ?? [],
+    bills: (bills.data ?? []).map((bill) => {
+      const project = Array.isArray(bill.project) ? bill.project[0] : bill.project
+      const dueCents = Math.max(Number(bill.total_cents ?? 0) - Number(bill.retainage_cents ?? 0), 0)
+      return { id: bill.id, billNumber: bill.bill_number, label: bill.description || bill.bill_number || "Vendor bill", projectName: project?.name ?? "Unassigned project", dueDate: bill.due_date, balanceCents: Math.max(dueCents - Number(bill.paid_cents ?? 0), 0) }
+    }).filter((bill) => bill.balanceCents > 0),
+  }
+}
+
 function normalizeVendorName(value?: string | null) {
   return value?.trim().replace(/\s+/g, " ").toLowerCase() ?? ""
 }
@@ -2330,6 +2632,24 @@ export async function createVendorBillFromPortal({
 
   // Warn if over budget (but still allow submission)
   const isOverBudget = await computeCommitmentOverBudget(supabase, { orgId, commitmentId, totalCents: parsed.total_cents })
+
+  // The same duplicate check every other intake path runs. This one was
+  // missing it, which made the portal — where a subcontractor resubmitting an
+  // invoice they think was lost is the single most likely source of a
+  // duplicate — the one door with no check on it.
+  const duplicate = await findDuplicatePayable({
+    supabase,
+    orgId,
+    billNumber: parsed.bill_number,
+    companyId,
+    totalCents: parsed.total_cents,
+    billDate: parsed.bill_date,
+  })
+  if (duplicate) {
+    throw new Error(
+      "This invoice looks like one you have already submitted. Check your submitted invoices, or contact the builder if you think this is a different one.",
+    )
+  }
 
   // Create the vendor bill
   const { data, error } = await supabase

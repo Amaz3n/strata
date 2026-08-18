@@ -39,6 +39,17 @@ function deadlineLine(pkg: StartPackageListItemDTO) {
   return `must start by ${formatDay(pkg.mustStartBy)}`
 }
 
+/**
+ * A must-start date is only as real as the cycle behind it. When nobody has set
+ * the community's target cycle the date is a house-average guess, and the card
+ * says which it is instead of presenting both the same way.
+ */
+export function cycleBasis(cycleDays: number, configured: boolean) {
+  return configured
+    ? `Based on this community's ${cycleDays}-day target cycle.`
+    : `Estimated from a ${cycleDays}-day default cycle — no target cycle is set for this community.`
+}
+
 interface Props {
   pkg: StartPackageListItemDTO
   selected: boolean
@@ -119,11 +130,14 @@ export function StartCard({ pkg, selected, selectable, draggable, showCommunity,
         {statusLine(pkg)}
       </p>
       {deadline ? (
-        <p className={cn(
-          "truncate text-[11px] leading-tight tabular-nums",
-          pkg.risk === "late" || pkg.risk === "at_risk" ? "font-medium" : "text-muted-foreground",
-        )}>
-          {deadline}
+        <p
+          title={cycleBasis(pkg.cycleDays, pkg.cycleDaysConfigured)}
+          className={cn(
+            "truncate text-[11px] leading-tight tabular-nums",
+            pkg.risk === "late" || pkg.risk === "at_risk" ? "font-medium" : "text-muted-foreground",
+          )}
+        >
+          {pkg.cycleDaysConfigured ? deadline : `~${deadline}`}
         </p>
       ) : null}
     </div>
@@ -182,16 +196,19 @@ export function CandidateCard({ candidate, draggable, showCommunity, onOpen }: {
           <span className="text-muted-foreground">SPEC</span>
         )}
       </p>
-      <p className={cn(
-        "mt-1 truncate text-[11px] leading-tight tabular-nums",
-        candidate.sale.isSold ? "font-medium" : "text-muted-foreground",
-      )}>
+      <p
+        title={candidate.daysToMustStart === null ? undefined : cycleBasis(candidate.cycleDays, candidate.cycleDaysConfigured)}
+        className={cn(
+          "mt-1 truncate text-[11px] leading-tight tabular-nums",
+          candidate.sale.isSold ? "font-medium" : "text-muted-foreground",
+        )}
+      >
         {candidate.sale.isSold
           ? candidate.daysToMustStart === null
             ? "Sold · no start package"
             : late
               ? `${Math.abs(candidate.daysToMustStart)}d past must-start`
-              : `must start by ${formatDay(candidate.mustStartBy)}`
+              : `${candidate.cycleDaysConfigured ? "" : "~"}must start by ${formatDay(candidate.mustStartBy)}`
           : "No start package"}
       </p>
     </div>

@@ -42,3 +42,36 @@ export function requiredVpoApprovalPermission({
   return bands.find((band) => band.up_to_cents === null || absoluteTotal <= band.up_to_cents)?.permission
     ?? "vpo.approve_large"
 }
+
+/**
+ * Approval gates that are about *who* and *when* rather than how much.
+ *
+ * A band tells you which permission an amount needs; it cannot tell you that
+ * the superintendent holding that permission is approving the variance he
+ * raised himself, nor that the order in front of you was already rejected.
+ * Returns the message to fail with, or null when approval may proceed.
+ *
+ * `isVariance` is true only when the change order carries a variance reason
+ * code — subcontract change orders on residential and commercial jobs never
+ * enter the variance discipline and keep their existing approval path.
+ */
+export function vpoApprovalBlockReason({
+  status,
+  isVariance,
+  requestedBy,
+  approverId,
+}: {
+  status: string
+  isVariance: boolean
+  requestedBy: string | null | undefined
+  approverId: string
+}): string | null {
+  if (status === "voided") return "Voided commitment change orders cannot be approved."
+  if (status === "rejected") {
+    return "This change order was rejected and cannot be approved. Raise a new one instead."
+  }
+  if (isVariance && requestedBy && requestedBy === approverId) {
+    return "A variance order must be approved by someone other than the person who requested it."
+  }
+  return null
+}

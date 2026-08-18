@@ -1,10 +1,11 @@
 import "server-only"
 
-import { generateText } from "ai"
+import { experimental_transcribe as transcribe } from "ai"
 import { z } from "zod"
 import { getPlatformAiFeatureDefaultConfig } from "@/lib/services/ai-config"
-import { runAiObject } from "@/lib/services/ai/gateway"
-import { getApiKeyForProvider, resolveLanguageModel } from "@/lib/services/ai-search/llm"
+import { runAiObject, runAiText } from "@/lib/services/ai/gateway"
+import { getApiKeyForProvider, resolveTranscriptionModel } from "@/lib/services/ai/provider"
+import { recordAiUsage } from "@/lib/services/ai/usage"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { addMeetingItem, getMeeting, updateMeetingItem } from "@/lib/services/meetings"
@@ -78,36 +79,120 @@ export async function createAudioMeetingTranscript(input: { meetingId: string; f
   return data as MeetingTranscript
 }
 
-async function transcribeOpenAi(bytes: Buffer, mimeType: string, fileName: string, model: string) {
-  const key = process.env.OPENAI_API_KEY?.trim()
-  if (!key) throw new Error("OPENAI_API_KEY is not configured for transcription")
-  const form = new FormData(); form.set("model", model); form.set("file", new File([new Uint8Array(bytes)], fileName, { type: mimeType || "audio/webm" }))
-  const response = await fetch("https://api.openai.com/v1/audio/transcriptions", { method: "POST", headers: { Authorization: `Bearer ${key}` }, body: form, signal: AbortSignal.timeout(15 * 60_000) })
-  if (!response.ok) throw new Error(`Transcription provider returned ${response.status}: ${(await response.text()).slice(0, 500)}`)
-  const body = await response.json() as { text?: string }
-  if (!body.text?.trim()) throw new Error("Transcription provider returned no text")
-  return body.text.trim()
+/** Audio can be long; the ceiling is the job's patience, not the model's. */
+const TRANSCRIPTION_TIMEOUT_MS = 15 * 60_000
+
+/**
+ * Speech to text, whichever provider the AI console has transcription pointed at.
+ *
+ * The two providers reach the model differently and always will: OpenAI has a
+ * dedicated transcription endpoint, Google transcribes by handing its language
+ * model an audio file part. What they now share is accounting — both land a row
+ * in `ai_usage_events`, so meeting audio stops being spend nobody can see.
+ *
+ * Whisper bills per minute rather than per token, so its row carries no token
+ * counts and reports as unpriced. That is the honest answer: the alternative was
+ * a token estimate that would be wrong in a direction nobody could audit.
+ */
+async function transcribeAudio(input: {
+  bytes: Buffer
+  mimeType: string
+  fileName: string
+  prompt: string
+  orgId?: string | null
+  entityId?: string | null
+}): Promise<string> {
+  const supabase = createServiceSupabaseClient()
+  const config = await getPlatformAiFeatureDefaultConfig({ supabase, feature: "transcription" })
+  const mediaType = input.mimeType || "audio/webm"
+
+  if (config.provider === "google") {
+    // The gateway already owns timeout, usage and the per-org kill switch for
+    // anything that speaks to a language model, and Google transcription is
+    // exactly that.
+    const result = await runAiText({
+      // No tier: the default is the feature's base tier, which is the same tier
+      // `getPlatformAiFeatureDefaultConfig` resolved the provider from above.
+      // Naming one here would let the gateway run a different model than the
+      // branch that chose Google.
+      feature: "transcription",
+      prompt: input.prompt,
+      files: [{ data: input.bytes, mediaType, filename: input.fileName }],
+      orgId: input.orgId ?? null,
+      entityType: "meeting_transcript",
+      entityId: input.entityId ?? undefined,
+      timeoutMs: TRANSCRIPTION_TIMEOUT_MS,
+    })
+    if (!result.ok) throw new Error(`Google transcription failed: ${result.message}`)
+    if (!result.text) throw new Error("Google transcription returned no text")
+    return result.text
+  }
+
+  if (config.provider !== "openai") {
+    throw new Error("This provider does not expose an audio transcription endpoint; choose OpenAI or Google")
+  }
+
+  const apiKey = getApiKeyForProvider("openai")
+  if (!apiKey) throw new Error("OpenAI is not configured for transcription")
+  const model = resolveTranscriptionModel("openai", apiKey, config.model)
+  if (!model) throw new Error("OpenAI is not configured for transcription")
+
+  const startedAt = Date.now()
+  try {
+    const result = await transcribe({
+      model,
+      audio: new Uint8Array(input.bytes),
+      abortSignal: AbortSignal.timeout(TRANSCRIPTION_TIMEOUT_MS),
+    })
+    const text = result.text.trim()
+
+    void recordAiUsage(supabase, {
+      orgId: input.orgId ?? null,
+      feature: "transcription",
+      tier: "fast",
+      provider: "openai",
+      model: config.model,
+      usage: { inputTokens: null, outputTokens: null, totalTokens: null },
+      latencyMs: Date.now() - startedAt,
+      attempt: 1,
+      escalatedFrom: null,
+      status: text ? "ok" : "error",
+      errorKind: text ? null : "invalid_output",
+      errorMessage: text ? null : "Transcription provider returned no text",
+      entityType: "meeting_transcript",
+      entityId: input.entityId ?? null,
+    })
+
+    if (!text) throw new Error("Transcription provider returned no text")
+    return text
+  } catch (error) {
+    void recordAiUsage(supabase, {
+      orgId: input.orgId ?? null,
+      feature: "transcription",
+      tier: "fast",
+      provider: "openai",
+      model: config.model,
+      usage: { inputTokens: null, outputTokens: null, totalTokens: null },
+      latencyMs: Date.now() - startedAt,
+      attempt: 1,
+      escalatedFrom: null,
+      status: "error",
+      errorKind: "provider_error",
+      errorMessage: error instanceof Error ? error.message : String(error),
+      entityType: "meeting_transcript",
+      entityId: input.entityId ?? null,
+    })
+    throw error
+  }
 }
 
 export async function transcribeConstructionAudio(bytes: Buffer, mimeType: string, fileName: string) {
-  const supabase = createServiceSupabaseClient()
-  const config = await getPlatformAiFeatureDefaultConfig({ supabase, feature: "transcription" })
-  if (config.provider === "openai") return transcribeOpenAi(bytes, mimeType, fileName, config.model)
-  if (config.provider === "google") {
-    const key = getApiKeyForProvider("google")
-    if (!key) throw new Error("Google AI is not configured for transcription")
-    const result = await generateText({
-      model: resolveLanguageModel("google", key, config.model),
-      messages: [{ role: "user", content: [
-        { type: "text", text: "Transcribe this construction field note verbatim. Return transcript text only." },
-        { type: "file", data: bytes, mediaType: mimeType || "audio/webm", filename: fileName },
-      ] }],
-      abortSignal: AbortSignal.timeout(15 * 60_000),
-    })
-    if (!result.text.trim()) throw new Error("Google transcription returned no text")
-    return result.text.trim()
-  }
-  throw new Error("This provider does not expose an audio transcription endpoint; choose OpenAI or Google")
+  return transcribeAudio({
+    bytes,
+    mimeType,
+    fileName,
+    prompt: "Transcribe this construction field note verbatim. Return transcript text only.",
+  })
 }
 
 export async function processPendingMeetingTranscripts(limit = 3) {
@@ -120,18 +205,16 @@ export async function processPendingMeetingTranscripts(limit = 3) {
     try {
       const file = Array.isArray(row.files) ? row.files[0] : row.files
       if (!file?.storage_path) throw new Error("Audio file is unavailable")
-      const config = await getPlatformAiFeatureDefaultConfig({ supabase, feature: "transcription" })
       const bytes = await downloadFilesObject({ supabase, orgId: row.org_id, path: file.storage_path })
-      let text: string
-      if (config.provider === "openai") {
-        text = await transcribeOpenAi(bytes, file.mime_type ?? "audio/webm", file.file_name ?? "meeting.webm", config.model)
-      } else if (config.provider === "google") {
-        const key = getApiKeyForProvider("google"); if (!key) throw new Error("Google AI is not configured for transcription")
-        const result = await generateText({ model: resolveLanguageModel("google", key, config.model), messages: [{ role: "user", content: [{ type: "text", text: "Transcribe this construction meeting audio verbatim. Preserve speaker labels when discernible. Return transcript text only." }, { type: "file", data: bytes, mediaType: file.mime_type ?? "audio/webm", filename: file.file_name ?? "meeting.webm" }] }], abortSignal: AbortSignal.timeout(15 * 60_000) })
-        text = result.text.trim(); if (!text) throw new Error("Google transcription returned no text")
-      } else {
-        throw new Error("This provider does not expose an audio transcription endpoint; choose OpenAI or Google")
-      }
+      const text = await transcribeAudio({
+        bytes,
+        mimeType: file.mime_type ?? "audio/webm",
+        fileName: file.file_name ?? "meeting.webm",
+        prompt:
+          "Transcribe this construction meeting audio verbatim. Preserve speaker labels when discernible. Return transcript text only.",
+        orgId: row.org_id,
+        entityId: row.id,
+      })
       await supabase.from("meeting_transcripts").update({ status: "ready", transcript_text: text, transcribed_at: new Date().toISOString() }).eq("id", row.id)
       completed += 1
     } catch (cause) {

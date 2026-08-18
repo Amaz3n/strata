@@ -7,6 +7,7 @@ import { toast } from "sonner"
 
 import type { Contact, CostCode, Invoice, InvoiceDelivery, InvoiceLienWaiver, InvoiceView, Payment, PaymentReversal, Project, ReceivableAdjustment } from "@/lib/types"
 import type { InvoiceInput } from "@/lib/validation/invoices"
+import type { EntityAuditEntry } from "@/lib/services/audit"
 import {
   createInvoiceAction,
   getInvoiceDetailAction,
@@ -56,6 +57,7 @@ type DetailBundle = {
   reversals?: PaymentReversal[]
   adjustments?: ReceivableAdjustment[]
   lienWaivers?: InvoiceLienWaiver[]
+  auditTrail?: EntityAuditEntry[]
 }
 
 interface ReceivablesWorkspaceProps {
@@ -384,6 +386,7 @@ export function ReceivablesWorkspace({
           projects={projects}
           builderInfo={builderInfo}
           contacts={contacts}
+          initialCustomerId={isNewSelection ? searchParams.get("customer") ?? undefined : undefined}
           costCodes={costCodes}
           enableApprovedCostsSource={enableApprovedCostsSource}
           duplicateFrom={isNewSelection && duplicateSeed ? duplicateSeed : null}
@@ -480,6 +483,7 @@ export function ReceivablesWorkspace({
       booksEntries={detail?.booksEntries}
       syncHistory={detail?.syncHistory}
       payments={detail?.payments}
+      auditTrail={detail?.auditTrail}
       loading={detailLoading}
       onChanged={async () => {
         if (!detail?.invoice.id) return

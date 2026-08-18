@@ -36,7 +36,7 @@ type CompletionRow = { id: string; project: string; po: string; status: string; 
 
 interface PurchasingClientProps {
   initialTab?: string
-  health: { active: number; expiring: number; ambiguousOverlaps: number; leadDays: number }
+  health: { active: number; expiring: number; ambiguousOverlaps: number; coverageGapCount: number; coverageGaps: Array<{ communityId: string; communityName: string; costCodeId: string; costCodeCode: string; costCodeName: string }>; leadDays: number }
   agreements: PriceAgreement[]
   agreementCount: number
   bids: BidRow[]
@@ -102,9 +102,10 @@ export function PurchasingClient(props: PurchasingClientProps) {
   }
 
   return <div className="flex min-h-0 flex-1 flex-col">
-    <div className="grid border-b bg-muted/20 sm:grid-cols-5">
+    <div className="grid border-b bg-muted/20 sm:grid-cols-6">
       <Stat label="Active agreements" value={String(props.health.active)} />
-      <Stat label={`Expiring ≤${props.health.leadDays}d`} value={String(props.health.expiring)} />
+      <Stat label={`Expiring ≤${props.health.leadDays}d`} value={String(props.health.expiring)} warning={props.health.expiring > 0} />
+      <Stat label="Uncovered cost codes" value={String(props.health.coverageGapCount)} detail="No active price in a selling community" warning={props.health.coverageGapCount > 0} />
       <Stat label="Open exceptions" value={String(props.exceptionCount)} />
       <Stat label="VPOs pending" value={String(props.vpoCount)} />
       <Stat label="Variance vs budget" value={`${(props.variance.summary.varianceRate * 100).toFixed(2)}%`} detail="Benchmark 1–2%" warning={props.variance.summary.varianceRate > 0.02} />
@@ -118,7 +119,18 @@ export function PurchasingClient(props: PurchasingClientProps) {
       </div>
 
       <TabsContent value="price-book" className="m-0">
-        <SectionHeader title="Vendor price agreements" detail={`${props.agreementCount} agreements · ${props.health.ambiguousOverlaps} ambiguous overlaps`} actions={<Button size="sm" onClick={() => setShowAgreementForm((value) => !value)}><Plus /> New agreement</Button>} />
+        <SectionHeader title="Vendor price agreements" detail={`${props.agreementCount} agreements · ${props.health.ambiguousOverlaps} ambiguous overlaps · ${props.health.coverageGapCount} uncovered cost codes`} actions={<Button size="sm" onClick={() => setShowAgreementForm((value) => !value)}><Plus /> New agreement</Button>} />
+        {props.health.coverageGaps.length > 0 && <div className="border-b bg-warning/5 p-4">
+          <p className="text-sm font-medium">Cost codes with no active price in a selling community</p>
+          <p className="mt-1 text-xs text-muted-foreground">A start released against these produces a price-book exception instead of a purchase order. {props.health.coverageGapCount > props.health.coverageGaps.length ? `Showing ${props.health.coverageGaps.length} of ${props.health.coverageGapCount}.` : null}</p>
+          <ul className="mt-3 grid gap-1 sm:grid-cols-2">
+            {props.health.coverageGaps.map((gap) => <li key={`${gap.communityId}:${gap.costCodeId}`} className="flex items-baseline justify-between gap-3 border-b py-1 text-xs last:border-b-0">
+              <span className="font-medium tabular-nums">{gap.costCodeCode}</span>
+              <span className="flex-1 truncate text-muted-foreground">{gap.costCodeName}</span>
+              <span className="text-muted-foreground">{gap.communityName}</span>
+            </li>)}
+          </ul>
+        </div>}
         {showAgreementForm && <form className="grid gap-3 border-b bg-muted/20 p-4 lg:grid-cols-4" onSubmit={(event) => { event.preventDefault(); createAgreement(event.currentTarget) }}>
           <Field label="Vendor"><NativeSelect name="company_id" required options={props.companies} /></Field>
           <Field label="Cost code"><NativeSelect name="cost_code_id" required options={props.costCodes} code /></Field>

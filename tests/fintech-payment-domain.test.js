@@ -407,7 +407,12 @@ test("the vendor payout surface stays hidden until the builder enables the rail"
   // active funding source, so gating on it would stop vendors from onboarding
   // until after the builder is already armed to pay them.
   assert.match(railSetup, /isVendorPayoutSetupOpen[\s\S]{0,400}?\.select\("id"\)/)
-  assert.match(layout, /isVendorPayoutSetupOpen\(access\.org_id\)/)
+  // The nav is gated on this vendor's own access, not just the org's rail: a
+  // vendor whose payment access was withdrawn must not be shown the tab, and
+  // `isVendorPaymentSectionOpen` is the rail check AND the withdrawal check.
+  assert.match(layout, /isVendorPaymentSectionOpen\(\{ orgId: access\.org_id, companyId: access\.company_id \}\)/)
+  assert.match(railSetup, /export async function isVendorPaymentSectionOpen/)
+  assert.match(railSetup, /railOpen && access\.state !== "withdrawn"/)
   assert.match(page, /if \(!\(await isVendorPayoutSetupOpen\(access\.org_id\)\)\) notFound\(\)/)
   // The claim surface must not swallow load failures into an empty context.
   assert.doesNotMatch(page, /catch \{/)
@@ -527,7 +532,7 @@ test("an unrecovered ACH return is booked as a loss, not parked in suspense", ()
   const events = fs.readFileSync(path.resolve(__dirname, "../lib/services/payment-provider-events.ts"), "utf8")
 
   const returnLedger = ledger.slice(
-    ledger.indexOf("export function postDisbursementReturnLedger"),
+    ledger.indexOf("export async function postDisbursementReturnLedger"),
     ledger.indexOf("export function postApReturnLossLedger"),
   )
   // The builder's side is simply true: their bank reversed the debit and the
@@ -656,9 +661,16 @@ test("a fully approved payable releases immediately, and says so honestly when i
 
   // Release only follows a decision that actually reached quorum.
   assert.match(decide, /if \(status !== "approved"\)/)
-  assert.match(decide, /executePaymentRun\(parsed\.run_id/)
+  // Releasing is the decision service's job, not this caller's, so approving
+  // from a phone cannot leave a run approved and permanently unreleased.
+  assert.match(decide, /decision\.release\.kind/)
+  const runs = fs.readFileSync(path.resolve(__dirname, "../lib/services/payment-runs.ts"), "utf8")
+  assert.match(runs, /export async function decidePaymentRun/)
+  assert.match(runs, /enqueueRunRelease\(/)
   // The execution gates throw; that must surface as "not released", never as success.
   assert.match(decide, /approved_release_pending/)
+  // An approver who cannot release must hand the run to the sweep, not drop it.
+  assert.match(decide, /release_queued/)
   assert.doesNotMatch(decide, /catch[\s\S]{0,120}return \{ result: "released" \}/)
 })
 
@@ -673,7 +685,10 @@ test("approval notifications reach the designated approvers and name the bill", 
   assert.match(events, /Payment needs your approval/)
   assert.match(events, /vendor_name/)
   // And it links to the payable, where the decision is actually made.
-  assert.match(delivery, /entityType === "payment_run"[\s\S]{0,200}?\/payables\?bill=/)
+  assert.match(delivery, /case "payment_run":[\s\S]{0,200}?\/payables\?bill=/)
+  // The approval email itself has to carry the money facts, not just the title.
+  assert.match(delivery, /PaymentRunApprovalEmail\(\{/)
+  assert.match(delivery, /totalDebitLabel: formatMoneyCents/)
 })
 
 test("a submitted payable emails its selected approver immediately with durable retry", () => {
@@ -767,12 +782,13 @@ test("a scheduled release is a durable work item, not a column something must no
 
   // The approval that reaches quorum enqueues the release in the same request,
   // so a cron that never fires cannot lose a payment that was already owed.
-  const decide = service.slice(
-    service.indexOf("export async function decidePaymentRun"),
-    service.indexOf("function todayIso"),
-  )
+  const decideStart = service.indexOf("export async function decidePaymentRun")
+  const decide = service.slice(decideStart, service.indexOf("\nexport ", decideStart + 1))
   assert.match(decide, /decisionStatus === "approved" && typeof material\.run\.scheduled_for === "string"/)
-  assert.match(decide, /enqueueScheduledRelease\(/)
+  assert.match(decide, /enqueueRunRelease\(/)
+  // A run with no scheduled date still gets a release — released inline, or
+  // queued for the sweep — so approving from any client cannot strand it.
+  assert.match(decide, /else if \(decisionStatus === "approved"\)/)
 
   // Cancelling retracts the queued release rather than leaving it to fail three
   // times against a cancelled run and look like an incident.
@@ -1155,7 +1171,7 @@ test("a failed fee collection leaves the liability standing", () => {
   const ledger = fs.readFileSync(path.resolve(__dirname, "../lib/services/payment-ledger.ts"), "utf8")
   // Reversing the cash side re-opens arc_fees_payable. The fee was earned when
   // the vendors were paid, so a failed pull is a receivable, not forgiveness.
-  const reversal = ledger.slice(ledger.indexOf("export function postApFeeChargeReversalLedger"))
+  const reversal = ledger.slice(ledger.indexOf("export async function postApFeeChargeReversalLedger"))
   assert.match(reversal, /accountCode: "arc_fees_payable", direction: "credit"/)
   assert.match(reversal, /accountCode: "org_cash", direction: "debit"/)
   // Arc's fee debit reaches terminal state on its own webhook branch; without
@@ -1968,7 +1984,7 @@ test("the two spend limits bind live, so tightening one reaches runs already bui
   // per_run and daily were read from the frozen control snapshot while
   // new_vendor_hold_hours and max_inflight_cents were deliberately read live —
   // the justification for live reads applies identically to all four.
-  assert.match(runs, /select\("new_vendor_hold_hours,max_inflight_cents,per_run_limit_cents,daily_limit_cents"\)/)
+  assert.match(runs, /select\("new_vendor_hold_hours,max_inflight_cents,per_payment_limit_cents,per_run_limit_cents,daily_limit_cents"\)/)
   assert.match(runs, /const tighterLimit =/)
   assert.match(runs, /tighterLimit\(policy \? Reflect\.get\(policy, "per_run_limit_cents"\) : null, livePolicy\?\.per_run_limit_cents\)/)
   assert.match(runs, /tighterLimit\(policy \? Reflect\.get\(policy, "daily_limit_cents"\) : null, livePolicy\?\.daily_limit_cents\)/)
@@ -2049,4 +2065,134 @@ test("duplicate provider webhooks are settled by the unique index, not by a prio
   assert.match(route, /await recordPayment\([\s\S]*?domainEvent\.org_id,\s*\)/)
   assert.match(route, /const chargeOrgId = orgId \?\?/)
   assert.match(route, /\.eq\("org_id", chargeOrgId\)/)
+})
+
+test("the payable's own coding write cannot invalidate the token guarding it", () => {
+  const bills = paymentSource("lib/services/vendor-bills.ts")
+  const update = bills.slice(bills.indexOf("export async function updateVendorBillStatus"))
+
+  // `bill_lines_touch_books_parent` bumps the parent's `updated_at` whenever
+  // coding changes, so a guard applied to the FINAL update compares against a
+  // token this same call already moved — every coded save failed, after the
+  // lines were replaced and the cost ledger voided. The claim happens first,
+  // while the payable is still untouched.
+  const claimIndex = update.indexOf('.eq("updated_at", parsed.expected_updated_at)')
+  const codingIndex = update.indexOf("replaceBillLineCoding(supabase")
+  assert.ok(claimIndex > 0, "the update must claim the row on its expected token")
+  assert.ok(codingIndex > 0, "the update still replaces coding")
+  assert.ok(claimIndex < codingIndex, "the token must be claimed before any coding write")
+
+  // And exactly one claim: a second guard further down would fail for the same
+  // reason the first one used to.
+  const claims = update.split('.eq("updated_at", parsed.expected_updated_at)').length - 1
+  assert.equal(claims, 1, "there is one atomic claim, not a second stale guard")
+
+  // Mobile maps this exact phrase onto a 409; a differently worded conflict
+  // would surface to a phone as an unretryable 422.
+  assert.match(update, /changed since you opened it/)
+})
+
+test("caching a payable's advisory signals never overwrites a real edit", () => {
+  const signals = paymentSource("lib/services/payable-approval-signals.ts")
+
+  // `metadata` is a whole-object write, so the cache write is guarded on the
+  // token it was computed against and simply loses the race instead of
+  // clobbering coding or approval state written while it was reading.
+  assert.match(signals, /\.eq\("updated_at", billRow\.updated_at\)/)
+  // And it reports the token it moved, so an open workspace re-syncs rather
+  // than failing its next save with a conflict the user never caused.
+  assert.match(signals, /updatedAt: written\.updated_at/)
+})
+
+test("payment channel is a gate in both directions", () => {
+  const bills = paymentSource("lib/services/vendor-bills.ts")
+  const approvals = paymentSource("lib/services/payable-approvals.ts")
+  const validation = paymentSource("lib/validation/vendor-bills.ts")
+
+  // The run preparer already refused an `external` payable. Recording an
+  // outside payment against a payable routed to the rail was ignored, so the
+  // two paths disagreed about which one owned the money.
+  assert.match(approvals, /payment_channel === "external"/)
+  assert.match(bills, /declaredChannel === "arc"/)
+  // The error told users to change the payment method; nothing could, because
+  // the field was write-once at creation.
+  assert.match(validation, /payment_channel: z\.enum\(\["arc", "external"\]\)\.optional\(\)/)
+})
+
+test("approval enforces the same rules whichever door it came through", () => {
+  const bills = paymentSource("lib/services/vendor-bills.ts")
+  const auto = paymentSource("lib/services/invoice-auto-approval.ts")
+  const gate = paymentSource("lib/services/payable-approval-gate.ts")
+
+  // Approval posts cost, so it is a posting into the bill date's period. Only
+  // the cost inbox used to check this: the same payable could be approved into
+  // a locked period or not depending on which screen was used.
+  assert.match(gate, /export async function assertPayableApprovalPeriodOpen/)
+  for (const [name, source] of [["single and bulk", bills], ["auto-approval", auto]]) {
+    assert.match(source, /assertPayableApprovalPeriodOpen\(/, `${name} must check the accounting period`)
+  }
+  // A batch approval is the same answer to the vendor as a single one; only the
+  // single-bill path used to say anything at all.
+  assert.match(gate, /export async function notifyPayableApprovalDecision/)
+  const bulk = bills.slice(bills.indexOf("export async function approveVendorBillsAtomic"))
+  assert.match(bulk.slice(0, 4000), /notifyPayableApprovalDecision\(/)
+})
+
+test("the release gate fails closed when it cannot read the rules", () => {
+  const holds = paymentSource("lib/services/payment-holds.ts")
+  const release = holds.slice(holds.indexOf("export async function assertBillReleasable"))
+
+  // A transient read failure used to default `require_lien_waiver` to false —
+  // the waiver requirement disappeared exactly when the control was unhealthy.
+  assert.match(release, /getComplianceRules\(resolvedOrgId\),/)
+  assert.doesNotMatch(release, /getComplianceRules\(resolvedOrgId\)\.catch/)
+})
+
+test("every intake door checks for a duplicate payable", () => {
+  const bills = paymentSource("lib/services/vendor-bills.ts")
+  const duplicates = paymentSource("lib/services/payable-duplicate-check.ts")
+
+  // The portal is where a sub resubmits an invoice they think was lost — the
+  // single likeliest source of a duplicate — and it was the one door with no
+  // check on it.
+  const portal = bills.slice(bills.indexOf("export async function createVendorBillFromPortal"))
+  assert.match(portal.slice(0, 3000), /findDuplicatePayable\(/)
+  // An unordered `limit` let Postgres return any rows it liked, so on a busy
+  // org the candidate window could exclude the payable being duplicated.
+  assert.match(duplicates, /\.order\("created_at", \{ ascending: false \}\)/)
+})
+
+test("a waiver signed in the portal is verified like one signed by email", () => {
+  const waivers = paymentSource("lib/services/lien-waivers.ts")
+
+  // Verification ran only on the emailed-token path, so the `waiver_verified`
+  // hold had nothing to read for the majority of waivers and never fired.
+  const calls = waivers.split(/await verifyBillWaiver\(/).length - 1
+  assert.equal(calls, 2, "both signing paths must verify the waiver they just took")
+  const portal = waivers.slice(waivers.indexOf("export async function signVendorBillWaiverFromPortal"))
+  assert.match(portal, /verifyBillWaiver\(billId, orgId\)/)
+})
+
+test("a retainage release is born payable", () => {
+  const retainage = paymentSource("lib/services/ap-retainage.ts")
+
+  // A release used to be created with no `bill_lines` at all, which made it
+  // unapprovable by every path: bulk refuses an uncoded payable, and single
+  // approval synthesizes a null-cost-code line the cost-code gate rejects.
+  assert.match(retainage, /from\("bill_lines"\)\s*\.insert\(lineRows\)|\.insert\(lineRows\)/)
+  assert.match(retainage, /bill_number: `\$\{bill\.bill_number \?\? /)
+  // Held proportionally across the original's coding, so released the same way.
+  assert.match(retainage, /weightedTotal/)
+})
+
+test("the project payables list means the same thing as the org desk", () => {
+  const bills = paymentSource("lib/services/vendor-bills.ts")
+  const page = bills.slice(bills.indexOf("export async function listVendorBillsPageForProject"))
+
+  // Vendor credits are money coming back, not an obligation, and a payable
+  // already inside an active run is in flight. The org desk excluded both from
+  // "ready to pay"; this list excluded neither, so a credit sat there with a
+  // negative balance and a claimed bill could be offered for payment twice.
+  assert.match(page, /metadata->>source\.neq\.vendor_credit/)
+  assert.match(page, /ACTIVE_RUN_ITEM_STATUSES/)
 })

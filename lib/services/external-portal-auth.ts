@@ -801,41 +801,99 @@ export async function authenticateExternalPortalAccountWithToken({
   await touchIdentityLogin(identityId)
   await createSession(identityId)
 
-  if (created) {
-    await sendIdentityVerificationEmail({
+  const verificationSent = created
+    ? await sendIdentityVerificationEmail({
       identityId,
       email: lookupEmail,
       orgName: tokenContext.orgName,
+      orgId: tokenContext.orgId,
     })
-  }
+    : true
 
-  return { identityId, created, orgId: tokenContext.orgId, email: lookupEmail }
+  return { identityId, created, orgId: tokenContext.orgId, email: lookupEmail, verificationSent }
 }
 
 /**
- * Confirming is never a gate — the sub works immediately either way — so a
- * failure here must not fail the claim that just succeeded.
+ * Confirming is not a gate on ORDINARY portal work — the sub can answer RFIs and
+ * submit bills either way — so a failure here must not fail the claim that just
+ * succeeded. It IS a gate on payout setup, which is why the failure is recorded
+ * as an event and reported to the caller rather than swallowed into a log line
+ * nobody reads: a vendor blocked from setting up payouts by a bounced
+ * confirmation email is a support ticket that needs evidence, and the portal's
+ * resend control is the way out.
  */
 async function sendIdentityVerificationEmail({
   identityId,
   email,
   orgName,
+  orgId,
 }: {
   identityId: string
   email: string
   orgName?: string | null
-}) {
-  try {
-    const rawToken = await issueExternalIdentityVerification(identityId)
-    if (!rawToken) return
-
-    const verifyUrl = new URL("/auth/verify", portalBaseUrl())
-    verifyUrl.searchParams.set("token", rawToken)
-
-    await sendExternalVerifyEmail({ to: email, verifyLink: verifyUrl.toString(), orgName })
-  } catch (error) {
-    console.error("Failed to send external verification email", error)
+  orgId: string
+}): Promise<boolean> {
+  const failed = async (reason: string) => {
+    await recordEvent({
+      orgId,
+      entityType: "external_identity",
+      entityId: identityId,
+      eventType: "external_identity.verification_email_failed",
+      payload: { email, reason },
+      channel: "integration",
+    })
+    return false
   }
+
+  // Null means the token could not be stored, so any link built from it would
+  // never validate. Callers only reach this for an unconfirmed address.
+  const rawToken = await issueExternalIdentityVerification(identityId)
+  if (!rawToken) return failed("verification token could not be issued")
+
+  const verifyUrl = new URL("/auth/verify", portalBaseUrl())
+  verifyUrl.searchParams.set("token", rawToken)
+
+  try {
+    await sendExternalVerifyEmail({ to: email, verifyLink: verifyUrl.toString(), orgName })
+    return true
+  } catch (error) {
+    return failed(error instanceof Error ? error.message : "unknown")
+  }
+}
+
+/**
+ * Sends the signed-in account a fresh confirmation link.
+ *
+ * The escape hatch for a confirmation email that bounced, was filtered, or
+ * expired. Without one, gating payout setup on a confirmed address would strand
+ * the vendor with no way forward. Rate limited on the same budget as a password
+ * reset — both are "mail me a token", and both are worth throttling.
+ */
+export async function resendExternalIdentityVerification(): Promise<{ sent: boolean; alreadyVerified: boolean }> {
+  const session = await findSession()
+  if (!session) throw new Error("Sign in to confirm your email address")
+  if (session.identity.email_verified_at) return { sent: false, alreadyVerified: true }
+  await enforceAuthRateLimit("external_reset_request", session.identity.email)
+
+  const supabase = createServiceSupabaseClient()
+  const { data: grant } = await supabase
+    .from("external_identity_grants")
+    .select("org_id, org:orgs(name)")
+    .eq("identity_id", session.identity.id)
+    .eq("status", "active")
+    .is("revoked_at", null)
+    .limit(1)
+    .maybeSingle()
+  const org = firstRelation(grant?.org as { name?: string | null } | Array<{ name?: string | null }> | null)
+  if (!grant?.org_id) throw new Error("This account has no active builder access")
+
+  const sent = await sendIdentityVerificationEmail({
+    identityId: session.identity.id,
+    email: session.identity.email,
+    orgName: org?.name ?? null,
+    orgId: grant.org_id,
+  })
+  return { sent, alreadyVerified: false }
 }
 
 export async function signOutExternalPortalAccount() {
@@ -1124,6 +1182,11 @@ export async function completeExternalIdentityPasswordReset({
       reset_token_expires_at: null,
       password_attempts: 0,
       password_locked_until: null,
+      // A completed reset IS proof of mailbox control — the token only ever
+      // arrived by email — so it confirms the address as deliberately as
+      // clicking the confirmation link does. Keep this: it is the difference
+      // between a vendor who has already proved the mailbox once and a vendor
+      // sent back through confirmation before they can set up payouts.
       email_verified_at: nowIso,
       updated_at: nowIso,
     })

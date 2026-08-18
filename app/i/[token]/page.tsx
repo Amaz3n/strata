@@ -3,7 +3,7 @@ import { notFound } from "next/navigation"
 import { headers } from "next/headers"
 
 import { getInvoiceByToken, recordInvoiceViewed } from "@/lib/services/invoices"
-import { calculatePaymentFeeQuotes, loadPaymentFeePolicy } from "@/lib/payments/fees"
+import { calculatePaymentFeeQuotes, loadPaymentFeePolicy } from "@/lib/payments/fee-engine"
 import { listReceiptsForInvoice } from "@/lib/services/receipts"
 import { listPublicInvoiceLienWaivers } from "@/lib/services/invoice-lien-waivers"
 import { InvoicePublicWithPay } from "@/components/invoices/invoice-public-with-pay"

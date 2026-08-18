@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { createPortalInvoicePaymentIntentAction } from "./actions"
-import type { PaymentFeeQuote } from "@/lib/payments/fees"
+import type { PaymentFeeQuote } from "@/lib/payments/fee-engine"
 
 interface Props {
   token: string

@@ -98,6 +98,7 @@ and the desks drift apart.
 | Phases, takedowns | Communities → Land | Board |
 | Community team | Communities → Settings | — |
 | Plan product (elevations, specs) | Plans | Communities → Offering |
+| Which plans a community offers | Communities → Offering | Plans → Markets |
 | Base price per community, incentives | Communities → Offering | Sales |
 | Hold, reservation, buyer, agreement | Sales | Communities → Inventory |
 | Selections, cutoffs, appointments | Design Studio | Communities, Sales |
@@ -107,10 +108,15 @@ and the desks drift apart.
 | Community P&L | nowhere — derived | Communities (header), Reports |
 | Cross-community land supply | nowhere — derived | Reports |
 
-**Known exception, unresolved:** releasing a plan to a community
-(`community_plan_availability`) is mutated in the plan library, but by test 1 it
-is the sales manager's offering decision and should move to the community
-Offering tab. The plan library owns the *product*, not its release.
+**Resolved:** releasing a plan to a community (`community_plan_availability`)
+used to be mutated in the plan library, while its price was mutated on the
+community Offering tab — two writers of one row, kept from fighting by a rule
+that silently discarded the price the plan-side caller passed. By test 1 the
+release is the sales manager's offering decision, so it now lives on the
+community: `offerPlanInCommunity` / `withdrawPlanFromCommunity`
+(`sales.manage`), with the plan library's Markets section read-only and
+deep-linking to each community's Offering tab. The plan library owns the
+*product*, not its release, and the price rule is gone.
 
 ## The community lens
 
@@ -379,23 +385,32 @@ projected closing — all in one callback.
 
 Honest gaps, most blocking first.
 
-1. **There is no production demo data.** The `Acme Production` org has 0 prospects,
-   0 reservations, 0 purchase agreements, 0 closings. Every production surface is
-   an empty state today. A demo needs a seeded community with lots, plans with
-   elevations and pricing, buyers spread across all seven deal stages, several
-   weeks of `community_traffic`, and a `target_absorption_per_month` on each
-   community — without the last two the community board shows pace but cannot
-   show pace *against* anything.
+1. **No production demo data has been seeded yet.** The `Acme Production` org has
+   0 prospects, 0 reservations, 0 purchase agreements, 0 closings, so every
+   production surface is an empty state today. There *is* a one-click seeder —
+   `seedSampleCommunity` (`lib/services/demo-community-seed.ts`) builds the
+   Cypress Landing sample community, exposed as a switch on the platform
+   provisioning sheet and as a resettable action on the customer onboarding
+   page — it simply has not been run for this org. Note its CSV rows are
+   dollar-denominated on purpose: the importers' `parseCents` multiplies by 100,
+   so keys named `*_cents` carry dollars until parsed.
+   Still genuinely missing for a convincing demo: buyers spread across all seven
+   deal stages, and a `target_absorption_per_month` on each community — without
+   it the community board shows pace but cannot show pace *against* anything.
+   Community traffic now accrues automatically from lead creation
+   (`recordLeadTraffic`), so it no longer depends on someone remembering.
 
 2. **Holds must be placed from the community desk.** `Find a home` shows what is
    sellable and links to the community Sales tab to place the hold. Wiring the
    hold flow directly into the picker would tighten the core demo moment
    ("buyer standing in the model home").
 
-4. **No role presets.** Permissions exist (`sales.read`, `sales.manage`,
-   `start.write`, `warranty.manage`, …) but there is no one-click "New Home Sales
-   Consultant" role. For a demo, log in as an admin or pre-build the roles.
-
-5. **Division scoping is untested at scale.** Multi-division exists in the schema
+3. **Division scoping is untested at scale.** Multi-division exists in the schema
    and in `getDivisionAccessForUser`, but a local production builder usually has
    one division. Demo single-division unless asked.
+
+**Resolved since this list was written:** every production persona now ships as
+an assignable role preset in the RBAC catalog — `org_sales_agent`,
+`org_starts_coordinator`, `org_purchasing_manager`,
+`org_design_studio_coordinator`, `org_warranty_manager`, `org_land_manager`,
+and `org_superintendent`. The earlier "no role presets" entry was stale.

@@ -7,8 +7,8 @@ import { BooksClient, type BooksSection } from "../books-client";
 const TITLES: Record<BooksSection, string> = {
   overview: "Books",
   statements: "Books · Statements",
-  transactions: "Books · Transactions",
   banking: "Books · Banking",
+  overhead: "Books · Overhead budget",
   chart: "Books · Chart of accounts",
   ledger: "Books · General ledger",
   close: "Books · Period close",

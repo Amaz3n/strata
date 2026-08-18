@@ -1,5 +1,22 @@
 export const RECONCILIATION_STALE_HOURS = 48
 
+/**
+ * How long a still-open payment-operations incident stays quiet before it says
+ * so again.
+ *
+ * Incidents exist so an hourly watchdog does not send an hourly email, but the
+ * first version never re-read `last_notified_at`: an incident open for thirty
+ * days alerted exactly once, on day one, and then went silent while the money
+ * stayed stuck. Daily is the cadence that matches how the queue is worked —
+ * someone looks at payables once a business day — and it is the longest a
+ * payment can be stuck without anybody being told again.
+ */
+export const INCIDENT_RENOTIFY_HOURS = 24
+
+export function incidentRenotifyCutoff(now = new Date()): string {
+  return new Date(now.getTime() - INCIDENT_RENOTIFY_HOURS * 60 * 60 * 1000).toISOString()
+}
+
 export interface ReconciliationMonitoringPolicy {
   last_reconciled_at: string | null
   reconciliation_monitoring_started_at: string | null

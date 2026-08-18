@@ -105,7 +105,7 @@ export async function releaseMaturedVendorTransfers(): Promise<{
         throw new Error("This organization's AP payment feature is disabled; the cleared funds are held until it is re-enabled")
       }
       if (!railEnabledByOrg.get(row.org_id)) {
-        throw new Error("This organization's electronic payments are disabled; the cleared funds are held until it is re-enabled")
+        throw new Error("This organization's Arc Pay is disabled; the cleared funds are held until it is re-enabled")
       }
       // Re-read the destination rather than trusting the claim: a payout account
       // put under a security hold between clearing and release must not be paid.

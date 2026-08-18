@@ -1,6 +1,6 @@
 begin;
 
-select plan(38);
+select plan(51);
 
 -- Real-schema behavioral coverage for the money RPCs. These fixtures are
 -- intentionally complete enough to exercise FKs and table constraints rather
@@ -69,7 +69,8 @@ insert into public.vendor_bills (
   ('b0000000-0000-0000-0000-000000000002', '20000000-0000-0000-0000-000000000001', '30000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000001', 'MANUAL-1', 'approved', current_date, current_date + 30, 10000, 0, 'usd', '{"creation_state":"ready"}', now(), '10000000-0000-0000-0000-000000000001'),
   ('b0000000-0000-0000-0000-000000000003', '20000000-0000-0000-0000-000000000001', '30000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000001', 'CREDIT-TARGET', 'approved', current_date, current_date + 30, 9000, 0, 'usd', '{"creation_state":"ready"}', now(), '10000000-0000-0000-0000-000000000001'),
   ('b0000000-0000-0000-0000-000000000004', '20000000-0000-0000-0000-000000000001', '30000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000001', 'CREDIT-1', 'approved', current_date, current_date + 30, -9000, 0, 'usd', '{"creation_state":"ready","source":"vendor_credit"}', now(), '10000000-0000-0000-0000-000000000001'),
-  ('b0000000-0000-0000-0000-000000000005', '20000000-0000-0000-0000-000000000001', '30000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000001', 'DRAFT-1', 'pending', current_date, current_date + 30, 5000, 0, 'usd', '{"creation_state":"draft"}', null, null);
+  ('b0000000-0000-0000-0000-000000000005', '20000000-0000-0000-0000-000000000001', '30000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000001', 'DRAFT-1', 'pending', current_date, current_date + 30, 5000, 0, 'usd', '{"creation_state":"draft"}', null, null),
+  ('b0000000-0000-0000-0000-000000000007', '20000000-0000-0000-0000-000000000001', '30000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000001', 'REVERSE-1', 'approved', current_date, current_date + 30, 8000, 0, 'usd', '{"creation_state":"ready"}', now(), '10000000-0000-0000-0000-000000000001');
 update public.vendor_bills set retainage_cents = 1000 where id = 'b0000000-0000-0000-0000-000000000002';
 
 select has_function('public', 'create_payment_run_atomic', array['uuid','uuid','uuid','text','text','smallint','bigint','bigint','bigint','bigint','jsonb','text','jsonb']);
@@ -77,6 +78,7 @@ select has_function('public', 'record_ap_payment_atomic', array['uuid','uuid','t
 select has_function('public', 'record_ap_payment_reversal_atomic', array['uuid','uuid','bigint','text','text','text','jsonb']);
 select has_function('public', 'record_manual_ap_payment_atomic', array['uuid','uuid','uuid','bigint','text','text','text','text','timestamp with time zone','jsonb','text']);
 select has_function('public', 'apply_vendor_credit_atomic', array['uuid','uuid','uuid','uuid','bigint','text','jsonb']);
+select has_function('public', 'reverse_manual_ap_payment_atomic', array['uuid','uuid','uuid','bigint','text','text']);
 select hasnt_column('public', 'vendor_portal_identities', 'password_hash', 'vendor profiles do not retain a stale password hash');
 select hasnt_column('public', 'vendor_portal_identities', 'last_authenticated_at', 'vendor profiles do not retain a stale authentication timestamp');
 select hasnt_column('public', 'payment_run_items', 'allocation_snapshot', 'payment runs do not carry an always-empty speculative allocation snapshot');
@@ -236,6 +238,65 @@ select throws_ok(
   'P0001', 'Complete the payable draft before approval',
   'database trigger rejects draft approval regardless of caller'
 );
+
+-- Reversing a payment somebody recorded by hand. Until this existed, a
+-- bookkeeper's typo was permanent while an ACH return was not.
+select lives_ok($rpc$
+  select public.record_manual_ap_payment_atomic(
+    '20000000-0000-0000-0000-000000000001', 'b0000000-0000-0000-0000-000000000007',
+    '10000000-0000-0000-0000-000000000001', 8000, 'usd', 'check', 'Check 900',
+    '900', now(), '{"holds":[]}', 'rpc-reverse-seed'
+  )
+$rpc$, 'a manual payment is recorded so it can be reversed');
+select is((select status from public.vendor_bills where id = 'b0000000-0000-0000-0000-000000000007'), 'paid', 'the seeded manual payment closes the payable');
+
+select throws_ok($rpc$
+  select public.reverse_manual_ap_payment_atomic(
+    '20000000-0000-0000-0000-000000000001',
+    (select id from public.payments where idempotency_key = 'rpc-reverse-seed'),
+    '10000000-0000-0000-0000-000000000001', 8000, '   ', 'rpc-reversal-noreason'
+  )
+$rpc$, 'P0001', 'A reason is required to reverse a recorded payment',
+  'a reversal must say why');
+
+select throws_ok($rpc$
+  select public.reverse_manual_ap_payment_atomic(
+    '20000000-0000-0000-0000-000000000001',
+    (select id from public.payments where idempotency_key = 'rpc-reverse-seed'),
+    '10000000-0000-0000-0000-000000000001', 9999, 'over-reversal attempt', 'rpc-reversal-over'
+  )
+$rpc$, 'P0001', 'Reversal exceeds the recorded payment',
+  'a reversal cannot exceed what was paid');
+
+-- Rail money returns through the provider. Letting Arc reverse a real ACH debit
+-- by hand would make the subledger disagree with the bank.
+select throws_ok($rpc$
+  select public.reverse_manual_ap_payment_atomic(
+    '20000000-0000-0000-0000-000000000001',
+    (select id from public.payments where org_id = '20000000-0000-0000-0000-000000000001'
+       and bill_id = 'b0000000-0000-0000-0000-000000000001' limit 1),
+    '10000000-0000-0000-0000-000000000001', null, 'should not be allowed', 'rpc-reversal-rail'
+  )
+$rpc$, 'P0001', 'This payment was made on the payment rail. Reverse it through the rail, not by hand.',
+  'a rail payment cannot be reversed by hand');
+
+select lives_ok($rpc$
+  select public.reverse_manual_ap_payment_atomic(
+    '20000000-0000-0000-0000-000000000001',
+    (select id from public.payments where idempotency_key = 'rpc-reverse-seed'),
+    '10000000-0000-0000-0000-000000000001', null, 'recorded against the wrong payable', 'rpc-reversal-1'
+  )
+$rpc$, 'a manual payment can be reversed in full');
+select is((select paid_cents from public.vendor_bills where id = 'b0000000-0000-0000-0000-000000000007'), 0::bigint, 'reversal returns the payable balance');
+select is((select status from public.vendor_bills where id = 'b0000000-0000-0000-0000-000000000007'), 'approved', 'a fully reversed payable is payable again');
+select is((select paid_at from public.vendor_bills where id = 'b0000000-0000-0000-0000-000000000007'), null, 'a reversed payable is no longer stamped paid');
+select is((select status from public.payments where idempotency_key = 'rpc-reverse-seed'), 'refunded', 'the reversed payment is marked refunded');
+select ok((public.reverse_manual_ap_payment_atomic(
+  '20000000-0000-0000-0000-000000000001',
+  (select id from public.payments where idempotency_key = 'rpc-reverse-seed'),
+  '10000000-0000-0000-0000-000000000001', null, 'recorded against the wrong payable', 'rpc-reversal-1'
+)->>'duplicate')::boolean, 'reversal replay returns the committed result');
+select is((select count(*)::integer from public.payment_reversals where provider_reversal_id = 'manual-reversal:rpc-reversal-1'), 1, 'reversal replay cannot double-reverse');
 
 select * from finish();
 rollback;

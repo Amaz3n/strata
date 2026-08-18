@@ -4,8 +4,14 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { allocatePackageTotal, resolveOptionPricing } from "@/lib/services/option-catalog"
 import { requirePermission } from "@/lib/services/permissions"
+import { createVarianceOrdersForSelectionChange } from "@/lib/services/selection-change-orders"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { getProjectPosture, isProductionProjectPosture, normalizeProductTier } from "@/lib/product-tier"
+import {
+  agreementLocksStructuralOptions,
+  planPackageSelection,
+  type SelectionCostDelta,
+} from "@/lib/selections/selection-variance"
 import type { Selection, SelectionCategory, SelectionOption } from "@/lib/types"
 import type { SelectionInput } from "@/lib/validation/selections"
 
@@ -162,17 +168,18 @@ export async function assertSelectionMutable(
 ) {
   const structural = mutation.options.some((option) => option.option_scope === "structural")
   if (structural && mutation.production) {
-    const { data: agreement, error } = await mutation.supabase
+    // The lock belongs to a *binding* agreement, not to the signature date. A
+    // voided agreement leaves `signed_at` behind, so keying on it alone froze
+    // the structural options of a released spec home for its next buyer.
+    const { data: agreements, error } = await mutation.supabase
       .from("contracts")
-      .select("id")
+      .select("id, status, signed_at")
       .eq("org_id", mutation.selection.org_id)
       .eq("project_id", mutation.selection.project_id)
       .eq("contract_type", "purchase_agreement")
-      .not("signed_at", "is", null)
-      .limit(1)
-      .maybeSingle()
+      .limit(20)
     if (error) throw new Error(`Failed to validate purchase agreement lock: ${error.message}`)
-    if (agreement) {
+    if ((agreements ?? []).some((agreement) => agreementLocksStructuralOptions(agreement))) {
       throw new SelectionLockError(
         opts.portal
           ? "Structural options are locked once the purchase agreement is signed. Changes require a change order — contact your builder."
@@ -287,46 +294,60 @@ export async function selectProjectPackage(input: {
     .eq("org_id", input.orgId)
     .eq("package_id", input.packageId)
   if (error || !members?.length) throw new Error("Package has no available options")
+  const packageMembers = members.map((member) => {
+    const option = Array.isArray(member.option) ? member.option[0] : member.option
+    return { option_id: member.option_id as string, category_id: (option?.category_id as string | null) ?? null }
+  })
   const { data: selections, error: selectionError } = await supabase
     .from("project_selections")
-    .select("id, category_id")
+    .select("id, category_id, group_id")
     .eq("org_id", input.orgId)
     .eq("project_id", input.projectId)
-    .in("category_id", members.map((member) => {
-      const option = Array.isArray(member.option) ? member.option[0] : member.option
-      return option?.category_id
-    }).filter((value): value is string => Boolean(value)))
-  if (selectionError || (selections ?? []).length !== members.length) throw new Error("Package does not match this lot's selection groups")
+    .in("category_id", packageMembers.map((member) => member.category_id).filter((value): value is string => Boolean(value)))
+  if (selectionError) throw new Error(`Failed to load package selections: ${selectionError.message}`)
+  // Matching on category alone spans the whole project, so a package sold into
+  // one group could silently rewrite another group's identical category.
+  const plan = planPackageSelection({
+    members: packageMembers,
+    selections: (selections ?? []).map((selection) => ({
+      id: selection.id as string,
+      category_id: selection.category_id as string,
+      group_id: (selection.group_id as string | null) ?? null,
+    })),
+  })
   const { data: lot } = await supabase.from("lots").select("community_id, house_plan_version_id").eq("org_id", input.orgId).eq("project_id", input.projectId).maybeSingle()
   const [pricing] = await resolveOptionPricing({ orgId: input.orgId, items: [{ packageId: input.packageId }], housePlanVersionId: lot?.house_plan_version_id ?? undefined, communityId: lot?.community_id ?? undefined })
   if (!pricing.available) throw new Error("This package is not available for the lot's plan")
-  const nowIso = new Date().toISOString()
-  const priceAllocations = allocatePackageTotal(pricing.priceCents, members.length)
-  const costAllocations = pricing.costCents == null ? null : allocatePackageTotal(pricing.costCents, members.length)
-  for (let index = 0; index < members.length; index += 1) {
-    const member = members[index]
-    const option = Array.isArray(member.option) ? member.option[0] : member.option
-    const selection = (selections ?? []).find((candidate) => candidate.category_id === option?.category_id)
-    if (!selection) continue
-    const mutation = await loadSelectionMutationContext({ orgId: input.orgId, projectId: input.projectId, selectionId: selection.id, optionId: member.option_id })
+
+  // Every member is gated before any member is written. A cutoff lock hit
+  // halfway through used to leave the home carrying half a package with no
+  // way back.
+  for (const member of plan.members) {
+    const mutation = await loadSelectionMutationContext({ orgId: input.orgId, projectId: input.projectId, selectionId: member.selectionId, optionId: member.optionId })
     await assertSelectionMutable(mutation, { portal: Boolean(input.portalAccess) })
+  }
+
+  const nowIso = new Date().toISOString()
+  const priceAllocations = allocatePackageTotal(pricing.priceCents, plan.members.length)
+  const costAllocations = pricing.costCents == null ? null : allocatePackageTotal(pricing.costCents, plan.members.length)
+  for (const member of plan.members) {
     const { error: updateError } = await supabase
       .from("project_selections")
       .update({
-        selected_option_id: member.option_id,
+        selected_option_id: member.optionId,
         package_id: input.packageId,
         status: "selected",
         selected_at: nowIso,
         selected_by_contact_id: input.selectedByContactId ?? null,
-        price_cents_snapshot: priceAllocations[index],
-        cost_cents_snapshot: costAllocations?.[index] ?? null,
-        metadata: { package_allocated: true, package_member_index: index },
+        price_cents_snapshot: priceAllocations[member.index],
+        cost_cents_snapshot: costAllocations?.[member.index] ?? null,
+        metadata: { package_allocated: true, package_member_index: member.index },
       })
       .eq("org_id", input.orgId)
-      .eq("id", selection.id)
+      .eq("id", member.selectionId)
     if (updateError) throw new Error(`Failed to apply package: ${updateError.message}`)
   }
-  await recordEvent({ orgId: input.orgId, eventType: "selection_updated", entityType: "selection_package", entityId: input.packageId, payload: { project_id: input.projectId } })
+  await recordEvent({ orgId: input.orgId, eventType: "selection_updated", entityType: "selection_package", entityId: input.packageId, payload: { project_id: input.projectId, group_id: plan.groupId } })
   return { success: true }
 }
 
@@ -394,7 +415,9 @@ export async function applySelectionChangeFromChangeOrder(changeOrderId: string,
   const { data: changeOrder, error } = await query.maybeSingle()
   if (error || !changeOrder) throw new Error("Selection change order was not found")
   const selectionChange = changeOrder.metadata?.selection_change
-  if (!selectionChange || typeof selectionChange !== "object" || !Array.isArray(selectionChange.changes)) return { applied: 0 }
+  if (!selectionChange || typeof selectionChange !== "object" || !Array.isArray(selectionChange.changes)) {
+    return { applied: 0, varianceOrders: 0, unroutedDeltas: 0 }
+  }
   let applied = 0
   for (const change of selectionChange.changes) {
     if (!change || typeof change !== "object" || typeof change.selection_id !== "string" || typeof change.new_option_id !== "string") continue
@@ -427,7 +450,33 @@ export async function applySelectionChangeFromChangeOrder(changeOrderId: string,
     })
     applied += 1
   }
-  return { applied }
+  // The buyer half is now flipped; the trade half has to follow or the granite
+  // upgrade is billed and the countertop purchase order is never revised.
+  const variance = await createVarianceOrdersForSelectionChange({
+    orgId: changeOrder.org_id,
+    projectId: changeOrder.project_id,
+    changeOrderId: changeOrder.id,
+    changes: toSelectionCostDeltas(selectionChange.changes),
+  })
+  return { applied, varianceOrders: variance.created, unroutedDeltas: variance.unrouted }
+}
+
+/** `change_orders.metadata` is untyped JSON, so every field is re-checked here. */
+function toSelectionCostDeltas(changes: unknown[]): SelectionCostDelta[] {
+  return changes.flatMap((change): SelectionCostDelta[] => {
+    if (!change || typeof change !== "object") return []
+    const row = change as Record<string, unknown>
+    if (typeof row.selection_id !== "string") return []
+    const delta = Number(row.cost_delta_cents ?? 0)
+    if (!Number.isFinite(delta)) return []
+    return [{
+      selection_id: row.selection_id,
+      cost_code_id: typeof row.cost_code_id === "string" ? row.cost_code_id : null,
+      cost_delta_cents: Math.round(delta),
+      category_name: typeof row.category_name === "string" ? row.category_name : "Selection",
+      option_name: typeof row.option_name === "string" ? row.option_name : "New option",
+    }]
+  })
 }
 
 export async function confirmSelectionFromEnvelopeExecution(input: {

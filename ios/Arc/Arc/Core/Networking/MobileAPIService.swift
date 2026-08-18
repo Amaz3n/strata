@@ -212,6 +212,103 @@ final class MobileAPIService {
         return envelope.data
     }
 
+    // MARK: - My Houses
+
+    /// The superintendent's assigned houses across every community. Org-scoped
+    /// on purpose — a super running a dozen lots must not have to pick one.
+    func loadMyHouses(organizationID: String) async throws -> [MobileMyHouse] {
+        let token = try await session.validAccessToken()
+        let request = try client.request(
+            path: "my-houses",
+            accessToken: token,
+            organizationID: organizationID
+        )
+        let envelope: APIEnvelope<[MobileMyHouse]> = try await client.send(request)
+        return envelope.data
+    }
+
+    /// The cross-house work feed for a window, already grouped by activity.
+    func loadMyHouseWork(
+        window: MyHouseWorkWindow,
+        organizationID: String
+    ) async throws -> [MobileMyHouseWorkGroup] {
+        let token = try await session.validAccessToken()
+        let request = try client.request(
+            path: "my-houses/work",
+            accessToken: token,
+            organizationID: organizationID,
+            queryItems: [URLQueryItem(name: "window", value: window.rawValue)]
+        )
+        let envelope: APIEnvelope<[MobileMyHouseWorkGroup]> = try await client.send(request)
+        return envelope.data
+    }
+
+    func completeMyHouseScheduleItem(
+        scheduleItemID: String,
+        progress: Int = 100,
+        organizationID: String
+    ) async throws -> MobileMyHouseCompletion {
+        let token = try await session.validAccessToken()
+        var request = try client.request(
+            path: Self.myHouseCompletePath(scheduleItemID: scheduleItemID),
+            method: "POST",
+            accessToken: token,
+            organizationID: organizationID
+        )
+        request.httpBody = try JSONEncoder.arc.encode(CompleteScheduleItemRequest(progress: progress))
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let envelope: APIEnvelope<MobileMyHouseCompletion> = try await client.send(request)
+        return envelope.data
+    }
+
+    /// Shared with the offline queue so a replayed completion hits the same route.
+    nonisolated static func myHouseCompletePath(scheduleItemID: String) -> String {
+        "my-houses/schedule-items/\(scheduleItemID)/complete"
+    }
+
+    // MARK: - Variance purchase orders
+
+    func loadVarianceReasonCodes(organizationID: String) async throws -> [MobileVarianceReasonCode] {
+        let token = try await session.validAccessToken()
+        let request = try client.request(
+            path: "organizations/\(organizationID)/reason-codes",
+            accessToken: token,
+            organizationID: organizationID
+        )
+        let envelope: APIEnvelope<[MobileVarianceReasonCode]> = try await client.send(request)
+        return envelope.data
+    }
+
+    func loadVarianceOrders(projectID: String, organizationID: String) async throws -> [MobileVarianceOrder] {
+        let token = try await session.validAccessToken()
+        let request = try client.request(
+            path: "projects/\(projectID)/vpos",
+            accessToken: token,
+            organizationID: organizationID
+        )
+        let envelope: APIEnvelope<[MobileVarianceOrder]> = try await client.send(request)
+        return envelope.data
+    }
+
+    func createVarianceOrder(
+        _ input: CreateVarianceOrderRequest,
+        projectID: String,
+        organizationID: String
+    ) async throws -> MobileVarianceOrder {
+        let token = try await session.validAccessToken()
+        var request = try client.request(
+            path: "projects/\(projectID)/vpos",
+            method: "POST",
+            accessToken: token,
+            organizationID: organizationID
+        )
+        request.httpBody = try JSONEncoder.arc.encode(input)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(input.clientId, forHTTPHeaderField: "Idempotency-Key")
+        let envelope: APIEnvelope<MobileVarianceOrder> = try await client.send(request)
+        return envelope.data
+    }
+
     // MARK: - Schedule
 
     func loadSchedule(projectID: String, organizationID: String) async throws -> [MobileScheduleItem] {
@@ -381,6 +478,10 @@ final class MobileAPIService {
         return envelope.data
     }
 
+    /// `clientID` becomes the `files.id` server-side, so a caller that needs a
+    /// file id before the bytes land (variance-order photo evidence) can mint
+    /// one itself. `downscalesImages` is opt-in: documents upload untouched
+    /// because their pixels are the payload, but field photos never should.
     func uploadFile(
         fileURL: URL,
         fileName: String,
@@ -389,7 +490,8 @@ final class MobileAPIService {
         folder: String,
         category: String?,
         projectID: String,
-        organizationID: String
+        organizationID: String,
+        downscalesImages: Bool = false
     ) async throws -> MobileFile {
         let token = try await session.validAccessToken()
         let boundary = "ArcBoundary\(UUID().uuidString)"
@@ -401,15 +503,18 @@ final class MobileAPIService {
         )
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.setValue(clientID, forHTTPHeaderField: "Idempotency-Key")
-        let fileData = try Data(contentsOf: fileURL, options: .mappedIfSafe)
+        let downscaled = downscalesImages
+            ? PhotoUploadDownscaler.downscale(fileURL: fileURL, fileName: fileName)
+            : nil
+        let fileData = try downscaled?.data ?? Data(contentsOf: fileURL, options: .mappedIfSafe)
         var body = Data()
         body.appendMultipartField(name: "client_id", value: clientID, boundary: boundary)
         body.appendMultipartField(name: "folder", value: folder, boundary: boundary)
         if let category { body.appendMultipartField(name: "category", value: category, boundary: boundary) }
         body.appendMultipartFile(
             name: "file",
-            fileName: fileName,
-            mimeType: mimeType,
+            fileName: downscaled?.fileName ?? fileName,
+            mimeType: downscaled?.mimeType ?? mimeType,
             data: fileData,
             boundary: boundary
         )

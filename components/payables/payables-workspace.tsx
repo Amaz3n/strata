@@ -75,6 +75,11 @@ import { WorkspaceListPanel } from "@/components/financials/workspace/workspace-
 import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
 import { getCompanyAction } from "@/app/(app)/companies/actions"
 import { assessPayableApprovalSignalsAction } from "@/app/(app)/payables/approval-signals-actions"
+import {
+  applyVendorCreditAction,
+  getPayableAuditTrailAction,
+  getVendorCreditApplicationWorkspaceAction,
+} from "@/app/(app)/payables/actions"
 import type { EvenFlowPriceAssessment } from "@/lib/financials/even-flow-price-anomaly"
 import type { BillScheduleAssessment } from "@/lib/financials/bill-schedule-crosscheck"
 import {
@@ -87,6 +92,7 @@ import {
   ensureProjectVendorCompanyForPayableAction,
   reassignProjectPayableAction,
   releaseRetainageAction,
+  reverseManualBillPaymentAction,
   syncProjectVendorBillToAccountingAction,
   updateProjectVendorBillStatusAction,
 } from "@/app/(app)/projects/[id]/payables/actions"
@@ -104,6 +110,9 @@ import {
   payableOutstandingCents,
 } from "@/lib/financials/payables-rules"
 import type { BudgetLineOption, Company, CostCode } from "@/lib/types"
+import type { EntityAuditEntry } from "@/lib/services/audit"
+
+type VendorCreditWorkspace = Awaited<ReturnType<typeof import("@/lib/services/vendor-bills").getVendorCreditApplicationWorkspace>>
 import {
   filterPayables,
   payableQueueCounts,
@@ -175,12 +184,19 @@ interface PayablesWorkspaceProps {
   onChanged: () => void
   /** Server hold evaluations by bill id — the release gate's own verdict. */
   holdEvaluations?: Record<string, PaymentHoldEvaluation>
-  /** Whether this org has the electronic payment rail configured. */
+  /** Whether this org has the Arc Pay rail configured. */
   railOpen?: boolean
   paymentReadinessByCompanyId?: Record<string, CompanyPaymentReadinessStatus>
   runMembershipByBillId?: Record<string, PayableRunMembership>
   /** Whether the viewer is designated to approve payment runs in this org. */
   viewerMayApproveRuns?: boolean
+  /**
+   * Reports a payable's `updated_at` when the server moved it without the user
+   * editing anything — caching the advisory approval signals does exactly that.
+   * The list outside this workspace holds the same token for bulk approval, so
+   * it has to hear about the new one or it will send a stale one.
+   */
+  onConcurrencyTokenRefresh?: (billId: string, updatedAt: string) => void
   /** Identity and labels used to enforce the selected route in the bill UI. */
   approvalViewer?: {
     userId: string
@@ -226,6 +242,7 @@ export function PayablesWorkspace({
   paymentReadinessByCompanyId = {},
   runMembershipByBillId = {},
   viewerMayApproveRuns = false,
+  onConcurrencyTokenRefresh,
   approvalViewer = null,
   queueTotals,
   onChanged,
@@ -241,6 +258,10 @@ export function PayablesWorkspace({
 
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [attachmentsLoading, setAttachmentsLoading] = useState(false)
+  const [auditTrail, setAuditTrail] = useState<EntityAuditEntry[]>([])
+  const [creditWorkspace, setCreditWorkspace] = useState<VendorCreditWorkspace | null>(null)
+  const [creditTargetBillId, setCreditTargetBillId] = useState("")
+  const [creditAmount, setCreditAmount] = useState("")
   const [vendorEditorOpen, setVendorEditorOpen] = useState(false)
   const [vendorEditorCompanyId, setVendorEditorCompanyId] = useState<
     string | null
@@ -304,6 +325,15 @@ export function PayablesWorkspace({
   )
   const [approvalSignals, setApprovalSignals] =
     useState<{ evenFlow: EvenFlowPriceAssessment | null; schedule: BillScheduleAssessment | null } | null>(null)
+  // Caching the advisory signals is a write, so simply opening a payable moves
+  // its `updated_at` — the same value every save sends as its concurrency
+  // token. Without re-syncing, the first save after opening would be rejected
+  // as a conflict the user never caused.
+  const [freshTokenByBillId, setFreshTokenByBillId] = useState<Record<string, string>>({})
+  const expectedUpdatedAt = useCallback(
+    (bill: { id: string; updated_at?: string }) => freshTokenByBillId[bill.id] ?? bill.updated_at,
+    [freshTokenByBillId],
+  )
   // Until the fresh check lands, paint whatever was cached on the payable the
   // last time it was opened — the assessment is stored on the bill, so there is
   // no reason to show nothing while the server confirms it is still current.
@@ -484,6 +514,40 @@ export function PayablesWorkspace({
     }
   }, [selectedBill])
 
+  useEffect(() => {
+    if (!selectedBill || !isVendorCredit(selectedBill)) {
+      setCreditWorkspace(null)
+      setCreditTargetBillId("")
+      setCreditAmount("")
+      return
+    }
+    let cancelled = false
+    getVendorCreditApplicationWorkspaceAction(selectedBill.id).then((result) => {
+      if (cancelled || !result.success) return
+      setCreditWorkspace(result.data)
+    }).catch(() => { if (!cancelled) setCreditWorkspace(null) })
+    return () => { cancelled = true }
+  }, [selectedBill])
+
+  useEffect(() => {
+    if (!selectedBill) {
+      setAuditTrail([])
+      return
+    }
+    let cancelled = false
+    setAuditTrail([])
+    getPayableAuditTrailAction(selectedBill.id, selectedBill.project_id)
+      .then((result) => {
+        if (!cancelled && result.success) setAuditTrail(result.data)
+      })
+      .catch(() => {
+        if (!cancelled) setAuditTrail([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [selectedBill])
+
   // Approval-time signals for the payable that is actually open: how its trade
   // costs compare with every other lot of the same house plan, and whether the
   // work is on the calendar yet. Computed for one bill on demand rather than
@@ -500,14 +564,19 @@ export function PayablesWorkspace({
       .then((result) => {
         if (cancelled || !result.success) return
         setApprovalSignals({ evenFlow: result.data.evenFlow, schedule: result.data.schedule })
+        const refreshed = result.data.updatedAt
+        if (refreshed) {
+          setFreshTokenByBillId((current) =>
+            current[selectedBillId] === refreshed ? current : { ...current, [selectedBillId]: refreshed },
+          )
+          onConcurrencyTokenRefresh?.(selectedBillId, refreshed)
+        }
       })
-      .catch((error) =>
-        console.error("Failed to check the payable against the plan and schedule", error),
-      )
+      .catch(() => setApprovalSignals(null))
     return () => {
       cancelled = true
     }
-  }, [selectedBillId])
+  }, [selectedBillId, onConcurrencyTokenRefresh])
 
   useEffect(() => {
     const companyId = selectedBill?.company_id ?? vendorEditorCompanyId
@@ -576,6 +645,7 @@ export function PayablesWorkspace({
   const billTotalCents = selectedBill.total_cents ?? 0
   const balanceCents = payableOutstandingCents(selectedBill)
   const heldRetainageCents = payableHeldRetainageCents(selectedBill)
+  const creditTargetBill = creditWorkspace?.bills.find((bill) => bill.id === creditTargetBillId) ?? null
   const distinctSplitProjects = Array.from(
     new Set(form.splitLines.map((line) => line.projectId).filter(Boolean)),
   )
@@ -594,7 +664,7 @@ export function PayablesWorkspace({
             selectedBill.id,
             {
               status: currentStatus,
-              expected_updated_at: selectedBill.updated_at,
+              expected_updated_at: expectedUpdatedAt(selectedBill),
               company_id: company.id,
             },
           ),
@@ -628,7 +698,7 @@ export function PayablesWorkspace({
             selectedBill.id,
             {
               status,
-              expected_updated_at: selectedBill.updated_at,
+              expected_updated_at: expectedUpdatedAt(selectedBill),
               qbo_expense_account_id:
                 form.qboExpenseAccountId || qboDefaults.expenseAccountId,
               qbo_expense_account_name: getExpenseAccountName(
@@ -744,7 +814,7 @@ export function PayablesWorkspace({
             selectedBill.id,
             {
               status: currentStatus,
-              expected_updated_at: selectedBill.updated_at,
+              expected_updated_at: expectedUpdatedAt(selectedBill),
               bill_number: form.billNumber.trim() || undefined,
               bill_date: form.billDate || undefined,
               due_date: form.dueDate || null,
@@ -754,6 +824,10 @@ export function PayablesWorkspace({
               })),
               retainage_percent: retainagePercent,
               lien_waiver_status: normalizeLienWaiverStatus(form.lienWaiver),
+              // Only when a channel was actually chosen: writing the
+              // default would route every saved payable and take the other
+              // path away from it.
+              payment_channel: form.paymentChannel || undefined,
               qbo_expense_account_id: form.qboExpenseAccountId || undefined,
               qbo_expense_account_name: getExpenseAccountName(
                 form.qboExpenseAccountId,
@@ -814,7 +888,7 @@ export function PayablesWorkspace({
           selectedBill.id,
           {
             status: "rejected",
-            expected_updated_at: selectedBill.updated_at,
+            expected_updated_at: expectedUpdatedAt(selectedBill),
             rejection_reason: reason,
           },
         ),
@@ -828,6 +902,29 @@ export function PayablesWorkspace({
     })
   }
 
+  /**
+   * Undo a payment somebody recorded by hand. The server refuses this for rail
+   * payments and for anyone without `payment.release`; the band only offers it
+   * for manual payments so the common case does not present an action that
+   * always fails.
+   */
+  const reverseManualPayment = (paymentId: string, reason: string) => {
+    clearOptimisticSync(selectedBill.id)
+    startTransition(async () => {
+      const result = unwrapAction(
+        await reverseManualBillPaymentAction(contextProjectId, { paymentId, reason }),
+      )
+      if (!result.success) {
+        toast.error(result.error)
+        return
+      }
+      toast.success("Payment reversed", {
+        description: `${formatMoneyFromCents(result.data.amountCents)} reopened on this payable.`,
+      })
+      onChanged()
+    })
+  }
+
   /** Put a rejected payable back in the queue; the reason is cleared with it. */
   const reopenPayable = () => {
     clearOptimisticSync(selectedBill.id)
@@ -836,7 +933,7 @@ export function PayablesWorkspace({
         await updateProjectVendorBillStatusAction(
           contextProjectId,
           selectedBill.id,
-          { status: "pending", expected_updated_at: selectedBill.updated_at },
+          { status: "pending", expected_updated_at: expectedUpdatedAt(selectedBill) },
         ),
       )
       if (result.success) {
@@ -1170,6 +1267,7 @@ export function PayablesWorkspace({
                 recordPaymentOpen={paymentFormOpen}
                 onToggleRecordPayment={() => setPaymentFormOpen((open) => !open)}
                 runMembership={runMembership}
+                onReverseManualPayment={reverseManualPayment}
                 awaitingViewerApproval={awaitingViewerApproval}
                 onReviewRun={() => setSidePane("review")}
                 onVendorInvited={onChanged}
@@ -1362,11 +1460,52 @@ export function PayablesWorkspace({
                   isPending={isPending}
                 />
 
+                {selectedIsVendorCredit ? (
+                  <RecordSection label="Apply credit">
+                    {creditWorkspace ? (
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-muted-foreground">Available</span>
+                          <span className="font-mono font-medium tabular-nums">{formatMoneyFromCents(creditWorkspace.availableCents)}</span>
+                        </div>
+                        {!creditWorkspace.approved ? <p className="border border-warning/30 bg-warning/10 p-3 text-xs text-muted-foreground">Approve this vendor credit before applying it.</p> : null}
+                        {creditWorkspace.approved && creditWorkspace.availableCents > 0 ? (
+                          <>
+                            <Select value={creditTargetBillId} onValueChange={(value) => { const bill = creditWorkspace.bills.find((item) => item.id === value); setCreditTargetBillId(value); setCreditAmount(bill ? (Math.min(bill.balanceCents, creditWorkspace.availableCents) / 100).toFixed(2) : ""); }}>
+                              <SelectTrigger><SelectValue placeholder="Choose an open bill" /></SelectTrigger>
+                              <SelectContent>{creditWorkspace.bills.map((bill) => <SelectItem key={bill.id} value={bill.id}>{bill.projectName} · {bill.billNumber || bill.label} · {formatMoneyFromCents(bill.balanceCents)}</SelectItem>)}</SelectContent>
+                            </Select>
+                            <div className="flex gap-2">
+                              <Input value={creditAmount} onChange={(event) => setCreditAmount(event.target.value)} inputMode="decimal" placeholder="Amount" />
+                              <Button disabled={isPending || !creditTargetBill} onClick={() => {
+                                if (!creditTargetBill) return
+                                const amountCents = Math.round(Number(creditAmount) * 100)
+                                if (!Number.isInteger(amountCents) || amountCents <= 0 || amountCents > creditTargetBill.balanceCents || amountCents > creditWorkspace.availableCents) { toast.error("Enter an amount within the available credit and bill balance"); return }
+                                startTransition(async () => {
+                                  const result = await applyVendorCreditAction({ creditBillId: selectedBill.id, billId: creditTargetBill.id, amountCents, idempotencyKey: crypto.randomUUID() })
+                                  if (!result.success) { toast.error(result.error); return }
+                                  toast.success("Vendor credit applied")
+                                  setCreditTargetBillId(""); setCreditAmount("")
+                                  const refreshed = await getVendorCreditApplicationWorkspaceAction(selectedBill.id)
+                                  if (refreshed.success) setCreditWorkspace(refreshed.data)
+                                  onChanged()
+                                })
+                              }}>Apply</Button>
+                            </div>
+                          </>
+                        ) : creditWorkspace.bills.length === 0 && creditWorkspace.availableCents > 0 ? <p className="text-xs text-muted-foreground">No approved open bills for this vendor.</p> : null}
+                        {creditWorkspace.applications.length > 0 ? <p className="text-xs text-muted-foreground">Applied {formatMoneyFromCents(creditWorkspace.appliedCents)} across {creditWorkspace.applications.length} bill{creditWorkspace.applications.length === 1 ? "" : "s"}.</p> : null}
+                      </div>
+                    ) : <p className="text-xs text-muted-foreground">Loading available bills…</p>}
+                  </RecordSection>
+                ) : null}
+
                 <RecordSection label="Activity">
                   <PayableTimeline
                     bill={selectedBill}
                     runMembership={runMembership}
                     accountingEnabled={accountingSyncEnabled}
+                    auditTrail={auditTrail}
                   />
                 </RecordSection>
 

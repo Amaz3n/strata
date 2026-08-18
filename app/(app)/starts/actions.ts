@@ -34,10 +34,13 @@ async function run<T>(operation: () => Promise<T>, paths: string[]): Promise<Act
 
 /** Loads a package on demand so the lane's sheet never ships every detail up front. */
 export async function getStartPackageAction(id: string) {
-  return await run(async () => ({
-    pkg: await getStartPackage(uuid.parse(id)),
-    superintendents: await listSuperintendentCandidates().catch(() => []),
-  }), [])
+  return await run(async () => {
+    const pkg = await getStartPackage(uuid.parse(id))
+    // Whoever holds the house stays in the picker even if their role has moved
+    // on, so the assignment never renders as an empty selection.
+    const superintendents = await listSuperintendentCandidates({ includeUserIds: [pkg.superintendentId] }).catch(() => [])
+    return { pkg, superintendents }
+  }, [])
 }
 
 export async function openStartPackageAction(lotId: string, input: unknown) {

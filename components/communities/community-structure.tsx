@@ -68,11 +68,14 @@ const EMPTY_TAKEDOWN = {
 export function CommunityStructure({
   community,
   lotsByPhase,
+  lotsByPhaseTruncated,
   canWrite,
 }: {
   community: CommunityDetailDTO
   /** Status mix per phase id, plus `unphased`. Empty when the count failed. */
   lotsByPhase: Record<string, Record<LotStatus, number>>
+  /** True when the count stopped short of the community. Said out loud below. */
+  lotsByPhaseTruncated: boolean
   canWrite: boolean
 }) {
   const router = useRouter()
@@ -219,6 +222,12 @@ export function CommunityStructure({
           <div>
             <h2 className="microlabel">Phases</h2>
             <p className="text-xs text-muted-foreground">Lot releases and buildout tranches.</p>
+            {lotsByPhaseTruncated ? (
+              <p className="mt-1 text-xs text-warning">
+                This community has more lots than the phase count reads at once, so the mix below is a floor, not a
+                total.
+              </p>
+            ) : null}
           </div>
           {canWrite ? <Button variant="outline" size="sm" className="rounded-none" onClick={openPhaseCreate}><Plus className="mr-1.5 h-4 w-4" />Phase</Button> : null}
         </div>

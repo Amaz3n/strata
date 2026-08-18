@@ -2,6 +2,7 @@ import { formatMoneyCents, formatPercent } from "@/lib/reports/format"
 import { periodRange, todayIso } from "@/lib/reports/params"
 import type { ReportDefinition } from "@/lib/reports/types"
 import { getBacklogReport } from "@/lib/services/closings"
+import { getLandSupplyReport } from "@/lib/services/community-portfolio"
 import { getCycleTimeReport, getEvenFlowAdherence } from "@/lib/services/even-flow"
 import { getProductionPortfolioReport } from "@/lib/services/production-reporting"
 import { getVarianceAnalysis, type VarianceDimension } from "@/lib/services/reports/variance-analysis"
@@ -431,19 +432,24 @@ const cycleTime: ReportDefinition = {
           columns: [
             { key: "group", header: groupBy === "community" ? "Community" : groupBy === "plan" ? "Plan" : "Superintendent" },
             { key: "count", header: "Completed", type: "number" },
+            { key: "in_progress", header: "In progress", type: "number" },
             { key: "median", header: "Median days", type: "number" },
             { key: "p80", header: "P80 days", type: "number" },
+            { key: "trend", header: "Trend (days)", type: "number" },
           ],
           rows: rows.map((row) => ({
             key: row.groupKey,
             cells: {
               group: row.groupLabel,
               count: row.count,
+              in_progress: row.inProgress,
               median: row.medianDays,
               p80: { value: row.p80Days, tone: weightedMedian !== null && row.p80Days > weightedMedian * 1.3 ? "warning" : undefined },
+              // Negative is faster than the earlier half — that is the good direction.
+              trend: { value: row.trendDelta, tone: row.trendDelta == null ? undefined : row.trendDelta > 0 ? "warning" : "positive" },
             },
           })),
-          totals: { group: `${rows.length} group${rows.length === 1 ? "" : "s"}`, count: completed, median: weightedMedian },
+          totals: { group: `${rows.length} group${rows.length === 1 ? "" : "s"}`, count: completed, in_progress: rows.reduce((sum, row) => sum + row.inProgress, 0), median: weightedMedian },
           emptyMessage: "No completed homes in this window.",
         },
       ],
@@ -476,11 +482,14 @@ const evenFlow: ReportDefinition = {
       to: to ?? defaultTo.toISOString().slice(0, 10),
     })
 
-    const byWeek = new Map<string, { planned: number; actual: number }>()
+    const byWeek = new Map<string, { planned: number; actual: number; missed: number; plannedClosings: number; actualClosings: number }>()
     for (const row of rows) {
-      const bucket = byWeek.get(row.weekStart) ?? { planned: 0, actual: 0 }
+      const bucket = byWeek.get(row.weekStart) ?? { planned: 0, actual: 0, missed: 0, plannedClosings: 0, actualClosings: 0 }
       bucket.planned += row.plannedStarts
       bucket.actual += row.actualStarts
+      bucket.missed += row.missedStarts
+      bucket.plannedClosings += row.plannedClosings
+      bucket.actualClosings += row.actualClosings
       byWeek.set(row.weekStart, bucket)
     }
     const weeks = Array.from(byWeek, ([weekStart, bucket]) => ({ weekStart, ...bucket })).sort((a, b) =>
@@ -488,6 +497,9 @@ const evenFlow: ReportDefinition = {
     )
     const planned = weeks.reduce((sum, week) => sum + week.planned, 0)
     const actual = weeks.reduce((sum, week) => sum + week.actual, 0)
+    const missed = weeks.reduce((sum, week) => sum + week.missed, 0)
+    const plannedClosings = weeks.reduce((sum, week) => sum + week.plannedClosings, 0)
+    const actualClosings = weeks.reduce((sum, week) => sum + week.actualClosings, 0)
 
     return {
       subtitle: `${weeks.length} release week${weeks.length === 1 ? "" : "s"} · as of ${todayIso()}`,
@@ -500,6 +512,10 @@ const evenFlow: ReportDefinition = {
           value: planned > 0 ? formatPercent((actual / planned) * 100) : "—",
           tone: planned > 0 && actual / planned < 0.9 ? "warning" : "positive",
         },
+        // A slot that came and went unfilled is the loss even-flow exists to
+        // prevent, and it never shows up in a start count.
+        { key: "missed", label: "Missed starts", value: String(missed), tone: missed > 0 ? "warning" : undefined },
+        { key: "closings", label: "Closings (actual / planned)", value: `${actualClosings} / ${plannedClosings}` },
       ],
       tables: [
         {
@@ -509,6 +525,9 @@ const evenFlow: ReportDefinition = {
             { key: "planned", header: "Planned", type: "number" },
             { key: "actual", header: "Actual", type: "number" },
             { key: "delta", header: "Delta", type: "number" },
+            { key: "missed", header: "Missed", type: "number" },
+            { key: "planned_closings", header: "Closings planned", type: "number" },
+            { key: "actual_closings", header: "Closings actual", type: "number" },
           ],
           rows: weeks.map((week) => {
             const delta = week.actual - week.planned
@@ -523,10 +542,13 @@ const evenFlow: ReportDefinition = {
                   label: delta > 0 ? `+${delta}` : String(delta),
                   tone: delta < 0 ? "warning" : delta > 0 ? "positive" : "muted",
                 },
+                missed: { value: week.missed, tone: week.missed > 0 ? "warning" : "muted" },
+                planned_closings: week.plannedClosings,
+                actual_closings: week.actualClosings,
               },
             }
           }),
-          totals: { week: `${weeks.length} week${weeks.length === 1 ? "" : "s"}`, planned, actual, delta: actual - planned },
+          totals: { week: `${weeks.length} week${weeks.length === 1 ? "" : "s"}`, planned, actual, delta: actual - planned, missed, planned_closings: plannedClosings, actual_closings: actualClosings },
           emptyMessage: "No release slots scheduled in this window.",
         },
       ],
@@ -622,6 +644,73 @@ const varianceAnalysis: ReportDefinition = {
   },
 }
 
+const landSupply: ReportDefinition = {
+  slug: "land-supply",
+  title: "Land Supply",
+  summary: "Where lot supply runs out, and how many lots each community is short by calendar year.",
+  group: "production",
+  scopes: ["org"],
+  permissions: ["community.read"],
+  available: needsCommunities,
+  ambientScope: "full",
+  run: async (ctx) => {
+    const report = await getLandSupplyReport({ divisionId: ctx.divisionId, communityId: ctx.communityId })
+    return {
+      stats: [
+        { key: "communities", label: "Communities", value: String(report.totals.communities) },
+        { key: "sellable", label: "Sellable lots", value: String(report.totals.sellableLots) },
+        { key: "scheduled", label: "Lots under contract", value: String(report.totals.scheduledLots), detail: formatMoneyCents(report.totals.scheduledCashCents) },
+        { key: "dry", label: `Dry within ${report.horizonMonths}mo`, value: String(report.totals.dryWithinHorizon), tone: report.totals.dryWithinHorizon > 0 ? "warning" : undefined },
+        { key: "shortfall", label: "Lots short", value: String(report.totals.shortfallLots), tone: report.totals.shortfallLots > 0 ? "negative" : undefined },
+      ],
+      notice: report.truncated
+        ? { tone: "warning", message: "The portfolio read stopped short, so these counts are a floor, not a total." }
+        : undefined,
+      tables: [
+        {
+          key: "communities",
+          columns: [
+            { key: "community", header: "Community" },
+            { key: "community_id", header: "community_id", exportOnly: true },
+            { key: "division", header: "Division" },
+            { key: "market", header: "Market" },
+            { key: "sellable", header: "Sellable", type: "number" },
+            { key: "months_of_supply", header: "Months of supply", type: "number" },
+            { key: "dry_date", header: "Dry date", type: "date" },
+            { key: "scheduled_lots", header: "Under contract", type: "number" },
+            { key: "scheduled_cash_cents", header: "Takedown cash", type: "money" },
+            { key: "shortfall_lots", header: "Short", type: "number" },
+          ],
+          rows: report.rows.map((row) => ({
+            key: row.communityId,
+            href: `/communities/${row.communityId}/land`,
+            cells: {
+              community: row.communityName,
+              community_id: row.communityId,
+              division: row.divisionName ?? "—",
+              market: row.market ?? "—",
+              sellable: row.sellableLots,
+              months_of_supply: row.monthsOfSupply,
+              dry_date: row.dryDate,
+              scheduled_lots: row.scheduledLots,
+              scheduled_cash_cents: row.scheduledCashCents,
+              shortfall_lots: row.shortfallLots,
+            },
+          })),
+          totals: {
+            community: `${report.totals.communities} communit${report.totals.communities === 1 ? "y" : "ies"}`,
+            sellable: report.totals.sellableLots,
+            scheduled_lots: report.totals.scheduledLots,
+            scheduled_cash_cents: report.totals.scheduledCashCents,
+            shortfall_lots: report.totals.shortfallLots,
+          },
+          emptyMessage: "No communities in this scope.",
+        },
+      ],
+    }
+  },
+}
+
 export const PRODUCTION_REPORTS: ReportDefinition[] = [
   communityPnl,
   marginByPlan,
@@ -631,4 +720,5 @@ export const PRODUCTION_REPORTS: ReportDefinition[] = [
   evenFlow,
   vpoLeakage,
   varianceAnalysis,
+  landSupply,
 ]

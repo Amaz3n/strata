@@ -19,6 +19,8 @@ const DEFAULT_REASON_CODES = [
   ["other", "Other"],
 ] as const
 
+export const DEFAULT_EXPIRING_AGREEMENT_LEAD_DAYS = 30
+
 export type PurchasingSettings = {
   org_id: string
   pay_on_po_enabled: boolean
@@ -70,8 +72,20 @@ export async function getPurchasingSettings(orgId?: string): Promise<PurchasingS
     po_completion_requires_verification: data.po_completion_requires_verification ?? true,
     vpo_reason_code_required: data.vpo_reason_code_required ?? true,
     vpo_approval_thresholds: parseVpoApprovalBands(data.vpo_approval_thresholds),
-    expiring_agreement_lead_days: data.expiring_agreement_lead_days ?? 30,
+    expiring_agreement_lead_days: data.expiring_agreement_lead_days ?? DEFAULT_EXPIRING_AGREEMENT_LEAD_DAYS,
   }
+}
+
+/**
+ * The lead-day setting on its own, read with a client the caller has already
+ * authorized. PO generation needs it to warn about agreements about to lapse and
+ * must not inherit `price_book.read` from the full settings reader to get it.
+ */
+export async function getExpiringAgreementLeadDays(supabase: SupabaseClient, orgId: string): Promise<number> {
+  const { data, error } = await supabase.from("purchasing_settings")
+    .select("expiring_agreement_lead_days").eq("org_id", orgId).maybeSingle()
+  if (error) throw new Error(`Failed to load purchasing settings: ${error.message}`)
+  return data?.expiring_agreement_lead_days ?? DEFAULT_EXPIRING_AGREEMENT_LEAD_DAYS
 }
 
 export async function listVarianceReasonCodes({

@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils"
 import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import type { PayableRunMembership } from "@/lib/services/org-payables"
+import type { EntityAuditEntry } from "@/lib/services/audit"
 import { billStatus } from "./payable-form"
 
 interface TimelineEvent {
@@ -43,10 +44,12 @@ export function PayableTimeline({
   bill,
   runMembership,
   accountingEnabled,
+  auditTrail = [],
 }: {
   bill: VendorBillSummary
   runMembership?: PayableRunMembership
   accountingEnabled: boolean
+  auditTrail?: EntityAuditEntry[]
 }) {
   const status = billStatus(bill)
   const events: TimelineEvent[] = []
@@ -88,6 +91,20 @@ export function PayableTimeline({
   if (accountingEnabled && bill.qbo_synced_at) {
     events.push({ key: "synced", label: "Synced to QuickBooks", date: bill.qbo_synced_at })
   }
+
+  for (const entry of auditTrail) {
+    const changedKeys = entry.action === "update"
+      ? Object.keys(entry.after ?? {}).filter((key) => (entry.before ?? {})[key] !== (entry.after ?? {})[key])
+      : []
+    events.push({
+      key: `audit-${entry.id}`,
+      label: entry.action === "insert" ? "Record created" : entry.action === "delete" ? "Record deleted" : "Record updated",
+      detail: `${entry.actor?.name ?? "System"}${changedKeys.length > 0 ? ` · ${changedKeys.slice(0, 3).join(", ")}${changedKeys.length > 3 ? "…" : ""}` : ""}`,
+      date: entry.createdAt,
+    })
+  }
+
+  events.sort((left, right) => String(left.date ?? "").localeCompare(String(right.date ?? "")))
 
   return (
     <ol>

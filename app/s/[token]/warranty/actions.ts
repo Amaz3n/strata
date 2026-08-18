@@ -15,6 +15,7 @@ export async function completeSubPortalWarrantyVisitAction(token: string, formDa
   if (!access.company_id) throw new Error("Trade company is required")
   const visitId = String(formData.get("visit_id") || "")
   const note = String(formData.get("note") || "").trim()
+  const outcome = String(formData.get("outcome") || "")
   if (!visitId || !note) throw new Error("Visit and completion note are required")
   const photo = formData.get("photo") as File | null
   const fileId = photo && photo.size > 0 ? await uploadPortalFile({
@@ -23,7 +24,7 @@ export async function completeSubPortalWarrantyVisitAction(token: string, formDa
     metadata: { warranty_visit_id: visitId, company_id: access.company_id },
   }) : null
   return completeWarrantyVisitFromPortal({
-    orgId: access.org_id, companyId: access.company_id, visitId,
+    orgId: access.org_id, companyId: access.company_id, visitId, outcome,
     outcomeNote: note, photoFileIds: fileId ? [fileId] : [], portalTokenId: access.id,
   })
 }

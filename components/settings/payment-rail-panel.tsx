@@ -577,7 +577,7 @@ export function PaymentRailPanel({
 
       <SettingsGroup
         title="Controls"
-        description="These apply to every electronic payment run. Caps are checked when a run is built and again when it is submitted."
+        description="These apply to every Arc Pay run. Caps are checked when a run is built and again when it is submitted."
       >
         <SettingsField
           label="Bank-change cooling period"

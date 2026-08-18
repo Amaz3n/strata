@@ -68,7 +68,27 @@ export default async function CommunityInventoryPage({ params, searchParams }: I
   const direction = query.dir === "desc" ? "desc" : "asc"
   const page = Number(query.page) > 0 ? Number(query.page) : 1
 
-  const [community, permissions] = await Promise.all([getCommunity(id).catch(() => null), getCurrentUserPermissions()])
+  /**
+   * A panel's data is optional; the failure that produced it is not. Without the
+   * log an org-scoping bug or a permission regression rendered as an ordinary
+   * empty table and left nothing behind to find it by.
+   */
+  function optional<T>(panel: string, fallback: T) {
+    return (error: unknown): T => {
+      console.error(`[communities/${id}] ${panel} failed to load`, error)
+      return fallback
+    }
+  }
+
+  // The community is the page: not found is a 404, anything else is a real
+  // failure and belongs in the error boundary rather than behind a blank table.
+  const [community, permissions] = await Promise.all([
+    getCommunity(id).catch((error: unknown) => {
+      if (error instanceof Error && error.message === "Community not found") return null
+      throw error
+    }),
+    getCurrentUserPermissions(),
+  ])
   if (!community) notFound()
 
   const canWrite = permissions.permissions.some((permission) => ["lot.write", "org.admin", "*"].includes(permission))
@@ -90,9 +110,11 @@ export default async function CommunityInventoryPage({ params, searchParams }: I
       page: view === "map" || byMargin ? 1 : page,
       pageSize: view === "map" || byMargin ? INVENTORY_MAP_PAGE_SIZE : INVENTORY_TABLE_PAGE_SIZE,
     }),
-    canReadMoney ? getCommunityPnl(id).catch(() => null) : Promise.resolve(null),
-    canWrite ? listAttachableProjects(id).catch(() => []) : Promise.resolve([]),
-    countCommunityLotsByStatus(id, { phaseId: query.phase, search: query.q }).catch(() => null),
+    canReadMoney ? getCommunityPnl(id).catch(optional("community P&L", null)) : Promise.resolve(null),
+    canWrite
+      ? listAttachableProjects(id).catch(optional("attachable homes", { projects: [], truncated: false }))
+      : Promise.resolve({ projects: [], truncated: false }),
+    countCommunityLotsByStatus(id, { phaseId: query.phase, search: query.q }).catch(optional("status counts", null)),
   ])
 
   const money: Record<string, LotMoney> = {}
@@ -115,7 +137,8 @@ export default async function CommunityInventoryPage({ params, searchParams }: I
       marginSortCap={byMargin && inventory.total > INVENTORY_MAP_PAGE_SIZE ? INVENTORY_MAP_PAGE_SIZE : null}
       money={money}
       marginTargetPercent={pnl?.targetMarginPercent ?? null}
-      projects={projects}
+      projects={projects.projects}
+      projectsTruncated={projects.truncated}
       canWrite={canWrite}
       canReadMoney={canReadMoney}
       view={view}

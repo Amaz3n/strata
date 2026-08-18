@@ -214,6 +214,112 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { description: Task not found }
         "422": { description: Invalid status }
+  /my-houses:
+    get:
+      summary: The superintendent's assigned houses, across every project
+      description: >
+        Org-scoped, not project-scoped. A superintendent runs 10-15 houses at
+        once, so the field surface is the whole roster rather than one job.
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+      responses:
+        "200": { description: Assigned houses }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /my-houses/work:
+    get:
+      summary: This window's scheduled work, grouped by activity across houses
+      description: >
+        Grouped by activity ("Frame inspection - 6") because the job is one
+        activity across many lots, not one house at a time.
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - { name: window, in: query, required: false, schema: { type: string, enum: [today, week, twoweek] } }
+      responses:
+        "200": { description: Work grouped by activity }
+        "400": { description: Unsupported window }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /my-houses/schedule-items/{scheduleItemId}/complete:
+    post:
+      summary: Complete a scheduled item without leaving the cross-house feed
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - { name: scheduleItemId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                progress: { type: integer, minimum: 0, maximum: 100 }
+      responses:
+        "200": { description: Completion result }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Schedule item not found }
+  /organizations/{organizationId}/reason-codes:
+    get:
+      summary: Variance reason codes for field VPO capture
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - { name: organizationId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Reason codes }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /projects/{projectId}/purchase-orders:
+    get:
+      summary: Purchase orders a field variance can be charged against
+      description: >
+        Excludes drafts and cancelled commitments. A VPO revises a specific PO,
+        so the field needs the list before the house has any variance history.
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200": { description: Purchase orders }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Project not found }
+  /projects/{projectId}/vpos:
+    get:
+      summary: List a project's variance purchase orders
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200": { description: Variance purchase orders }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      summary: File a variance purchase order from the field
+      description: >
+        Charges a purchase order, not a cost code. Backcharge reason codes must
+        post a negative amount.
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [commitment_id, reason_code_id, amount_cents, note]
+              properties:
+                commitment_id: { type: string, format: uuid }
+                reason_code_id: { type: string, format: uuid }
+                amount_cents: { type: integer }
+                note: { type: string }
+                photo_file_ids: { type: array, items: { type: string, format: uuid } }
+                client_id: { type: string, format: uuid }
+      responses:
+        "201": { description: Variance purchase order created }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { description: Invalid variance purchase order }
   /projects/{projectId}/punch-items:
     get:
       summary: List a project's punch-list items

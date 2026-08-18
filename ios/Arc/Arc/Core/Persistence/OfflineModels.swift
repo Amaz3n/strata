@@ -40,6 +40,36 @@ final class CachedDailyLogPageRecord {
     }
 }
 
+/// The superintendent's assigned houses, cached per organization so a cold
+/// launch in a dead zone still opens on a real roster.
+@Model
+final class CachedMyHousesRecord {
+    @Attribute(.unique) var organizationID: String
+    var housesData: Data
+    var cachedAt: Date
+
+    init(organizationID: String, housesData: Data, cachedAt: Date = .now) {
+        self.organizationID = organizationID
+        self.housesData = housesData
+        self.cachedAt = cachedAt
+    }
+}
+
+/// The cross-house work feed. Keyed by organization *and* window, because the
+/// three windows are three different answers.
+@Model
+final class CachedMyHouseWorkRecord {
+    @Attribute(.unique) var scopeKey: String
+    var groupsData: Data
+    var cachedAt: Date
+
+    init(scopeKey: String, groupsData: Data, cachedAt: Date = .now) {
+        self.scopeKey = scopeKey
+        self.groupsData = groupsData
+        self.cachedAt = cachedAt
+    }
+}
+
 @Model
 final class OfflineDraftRecord {
     @Attribute(.unique) var id: UUID

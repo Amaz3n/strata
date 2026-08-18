@@ -9,35 +9,19 @@ import { requireAnyPermission } from "@/lib/services/permissions"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { getDefaultComplianceRequirements } from "@/lib/services/compliance"
 import { setCompanyRequirements } from "@/lib/services/compliance-documents"
-import { listInvoices } from "@/lib/services/invoices"
-import { listProjects } from "@/lib/services/projects"
+import {
+  getFinancialPartyReceivables,
+  type PartyReceivableProject,
+  type PartyReceivablesSummary,
+} from "@/lib/services/financial-parties"
 import {
   listCompanyPaymentReadiness,
   type CompanyPaymentReadinessStatus,
 } from "@/lib/services/vendor-payment-invitations"
-import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
 import { payableOutstandingCents } from "@/lib/financials/payables-rules"
 
-export interface ClientCompanyReceivableProject {
-  project_id: string
-  project_name: string
-  contract_value_cents: number
-  invoiced_cents: number
-  collected_cents: number
-  outstanding_cents: number
-  invoice_count: number
-  last_activity?: string
-}
-
-export interface ClientCompanyReceivablesSummary {
-  contract_value_cents: number
-  invoiced_cents: number
-  collected_cents: number
-  outstanding_cents: number
-  invoice_count: number
-  can_view_invoices: boolean
-  projects: ClientCompanyReceivableProject[]
-}
+export type ClientCompanyReceivableProject = PartyReceivableProject
+export type ClientCompanyReceivablesSummary = PartyReceivablesSummary
 
 export interface VendorFinancialSummary {
   committed_cents: number
@@ -48,16 +32,6 @@ export interface VendorFinancialSummary {
   trailing_days: number
   can_view_commitments: boolean
   can_view_bills: boolean
-}
-
-const emptyClientCompanyReceivablesSummary: ClientCompanyReceivablesSummary = {
-  contract_value_cents: 0,
-  invoiced_cents: 0,
-  collected_cents: 0,
-  outstanding_cents: 0,
-  invoice_count: 0,
-  can_view_invoices: true,
-  projects: [],
 }
 
 const emptyVendorFinancialSummary = (trailingDays: number): VendorFinancialSummary => ({
@@ -204,19 +178,6 @@ function mapContact(row: any): Contact {
     created_at: row.created_at,
     updated_at: row.updated_at ?? undefined,
   }
-}
-
-function moneyValueToCents(value?: number | null): number {
-  if (value == null || !Number.isFinite(value)) return 0
-  if (Math.abs(value) > 100000) return Math.round(value)
-  return Math.round(value * 100)
-}
-
-function latestIsoValue(values: Array<string | null | undefined>) {
-  return values
-    .filter((value): value is string => typeof value === "string" && value.length > 0)
-    .sort()
-    .at(-1)
 }
 
 function normalizeDirectoryName(value?: string | null) {
@@ -406,89 +367,11 @@ export async function getClientCompanyReceivables(
   companyId: string,
   orgId?: string,
 ): Promise<ClientCompanyReceivablesSummary> {
-  const { supabase, orgId: resolvedOrgId, userId, productTier } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read", "directory.read", "directory.write"], {
-    supabase,
-    orgId: resolvedOrgId,
-    userId,
+  return getFinancialPartyReceivables({
+    partyType: "company",
+    partyId: companyId,
+    orgId,
   })
-
-  const contacts = await getCompanyContacts(companyId, resolvedOrgId)
-  const contactIds = new Set(contacts.map((contact) => contact.id).filter(Boolean))
-  if (contactIds.size === 0) {
-    return { ...emptyClientCompanyReceivablesSummary }
-  }
-
-  const visibleProjects = (await listProjects(resolvedOrgId, { supabase, orgId: resolvedOrgId, userId, productTier })).filter(
-    (project) => project.client_id && contactIds.has(project.client_id),
-  )
-
-  if (visibleProjects.length === 0) {
-    return { ...emptyClientCompanyReceivablesSummary }
-  }
-
-  const invoiceResults = await Promise.all(
-    visibleProjects.map(async (project) => {
-      try {
-        const invoices = await listInvoices({ orgId: resolvedOrgId, projectId: project.id })
-        return { projectId: project.id, invoices, canViewInvoices: true }
-      } catch {
-        return { projectId: project.id, invoices: [], canViewInvoices: false }
-      }
-    }),
-  )
-
-  const invoiceResultsByProject = new Map(invoiceResults.map((result) => [result.projectId, result]))
-  const projects = visibleProjects.map((project) => {
-    const invoiceResult = invoiceResultsByProject.get(project.id)
-    // What this client has been billed, on the same set the AR aging report for
-    // the same client uses. Excluding only `void` counted the client's unsent
-    // `draft` and `saved` invoices as money they owe.
-    const billedStatuses: ReadonlySet<string> = new Set<string>(BILLED_INVOICE_STATUSES)
-    const invoices = (invoiceResult?.invoices ?? []).filter((invoice) =>
-      billedStatuses.has(String(invoice.status)),
-    )
-    const contractValue =
-      project.billing_contract?.total_cents ??
-      project.total_contract_value_cents ??
-      moneyValueToCents(project.total_value)
-    const invoiced = invoices.reduce((sum, invoice) => sum + (invoice.total_cents ?? 0), 0)
-    const outstanding = invoices.reduce(
-      (sum, invoice) =>
-        sum +
-        (invoice.balance_due_cents ??
-          (invoice.status === "paid" ? 0 : (invoice.total_cents ?? 0))),
-      0,
-    )
-    const collected = Math.max(0, invoiced - outstanding)
-
-    return {
-      project_id: project.id,
-      project_name: project.name,
-      contract_value_cents: contractValue,
-      invoiced_cents: invoiced,
-      collected_cents: collected,
-      outstanding_cents: Math.max(0, outstanding),
-      invoice_count: invoices.length,
-      last_activity: latestIsoValue([
-        project.updated_at,
-        project.created_at,
-        ...invoices.flatMap((invoice) => [invoice.updated_at, invoice.sent_at, invoice.issue_date, invoice.created_at]),
-      ]),
-    } satisfies ClientCompanyReceivableProject
-  })
-
-  projects.sort((a, b) => (b.last_activity ?? "").localeCompare(a.last_activity ?? ""))
-
-  return {
-    contract_value_cents: projects.reduce((sum, project) => sum + project.contract_value_cents, 0),
-    invoiced_cents: projects.reduce((sum, project) => sum + project.invoiced_cents, 0),
-    collected_cents: projects.reduce((sum, project) => sum + project.collected_cents, 0),
-    outstanding_cents: projects.reduce((sum, project) => sum + project.outstanding_cents, 0),
-    invoice_count: projects.reduce((sum, project) => sum + project.invoice_count, 0),
-    can_view_invoices: invoiceResults.every((result) => result.canViewInvoices),
-    projects,
-  }
 }
 
 export async function getCompaniesVendorFinancialSummary(

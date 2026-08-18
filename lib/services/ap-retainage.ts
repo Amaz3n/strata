@@ -32,72 +32,6 @@ const releaseRetainageSchema = z.object({
 
 export type ReleaseRetainageInput = z.infer<typeof releaseRetainageSchema>
 
-export interface RetainageHolding {
-  billId: string
-  billNumber: string | null
-  companyId: string | null
-  companyName: string | null
-  projectId: string
-  retainageHeldCents: number
-  retainageReleasedCents: number
-  releasableCents: number
-  /** Final unconditional waiver on file, which policy may require before release. */
-  finalWaiverOnFile: boolean
-}
-
-/** Everything still holding retainage, so it can be released rather than forgotten. */
-export async function listRetainageHoldings(projectId?: string, orgId?: string): Promise<RetainageHolding[]> {
-  const context = await requireOrgContext(orgId)
-  const supabase = createServiceSupabaseClient()
-  let query = supabase
-    .from("vendor_bills")
-    .select("id,bill_number,company_id,project_id,retainage_cents,retainage_released_cents,company:companies(name)")
-    .eq("org_id", context.orgId)
-    .gt("retainage_cents", 0)
-    .neq("status", "rejected")
-    .limit(500)
-  if (projectId) query = query.eq("project_id", projectId)
-  const { data, error } = await query
-  if (error) throw new Error(`Unable to load retainage holdings: ${error.message}`)
-
-  const rows = data ?? []
-  for (const scopedProjectId of new Set(rows.map((row) => row.project_id))) {
-    await requireAuthorization({
-      permission: "bill.read",
-      userId: context.userId,
-      orgId: context.orgId,
-      projectId: scopedProjectId,
-      supabase: context.supabase,
-      resourceType: "project",
-      resourceId: scopedProjectId,
-    })
-  }
-  const billIds = rows.map((row) => row.id)
-  const { data: waivers } = billIds.length > 0
-    ? await supabase.from("lien_waivers").select("bill_id").eq("org_id", context.orgId).eq("waiver_type", "final").eq("status", "signed").in("bill_id", billIds)
-    : { data: [] }
-  const finalWaiverBillIds = new Set((waivers ?? []).map((row) => row.bill_id))
-
-  return rows.flatMap((row) => {
-    const held = Number(row.retainage_cents ?? 0)
-    const released = Number(row.retainage_released_cents ?? 0)
-    const releasable = held - released
-    if (releasable <= 0) return []
-    const company = Array.isArray(row.company) ? row.company[0] : row.company
-    return [{
-      billId: row.id,
-      billNumber: row.bill_number,
-      companyId: row.company_id,
-      companyName: company?.name ?? null,
-      projectId: row.project_id,
-      retainageHeldCents: held,
-      retainageReleasedCents: released,
-      releasableCents: releasable,
-      finalWaiverOnFile: finalWaiverBillIds.has(row.id),
-    }]
-  })
-}
-
 /**
  * Create the payable that releases held retainage.
  *
@@ -112,7 +46,7 @@ export async function releaseRetainage(input: ReleaseRetainageInput, orgId?: str
 
   const { data: bill, error } = await supabase
     .from("vendor_bills")
-    .select("id,org_id,project_id,company_id,commitment_id,bill_number,currency,retainage_cents,retainage_released_cents,status")
+    .select("id,org_id,project_id,company_id,commitment_id,bill_number,currency,retainage_cents,retainage_released_cents,status,qbo_expense_account_id,qbo_expense_account_name,qbo_ap_account_id,qbo_ap_account_name,qbo_vendor_id,qbo_vendor_name")
     .eq("org_id", context.orgId)
     .eq("id", parsed.bill_id)
     .maybeSingle()
@@ -161,12 +95,23 @@ export async function releaseRetainage(input: ReleaseRetainageInput, orgId?: str
       project_id: bill.project_id,
       company_id: bill.company_id,
       commitment_id: bill.commitment_id,
-      bill_number: bill.bill_number ? `${bill.bill_number}-RET` : null,
+      // Never null: the bulk approver rejects a payable with no number, and a
+      // release with no identifier is unfindable in the vendor's own records.
+      bill_number: `${bill.bill_number ?? `RET-${bill.id.slice(0, 8)}`}-RET`,
       status: "pending",
       bill_date: new Date().toISOString().slice(0, 10),
       total_cents: amountCents,
       currency: bill.currency ?? "usd",
       retainage_cents: 0,
+      // Carried from the original so the release syncs to the same vendor and
+      // accounts. Without these the release reached the accounting integration
+      // as an unlinked, uncoded bill.
+      qbo_expense_account_id: bill.qbo_expense_account_id,
+      qbo_expense_account_name: bill.qbo_expense_account_name,
+      qbo_ap_account_id: bill.qbo_ap_account_id,
+      qbo_ap_account_name: bill.qbo_ap_account_name,
+      qbo_vendor_id: bill.qbo_vendor_id,
+      qbo_vendor_name: bill.qbo_vendor_name,
       metadata: {
         source: "retainage_release",
         parent_bill_id: bill.id,
@@ -176,6 +121,90 @@ export async function releaseRetainage(input: ReleaseRetainageInput, orgId?: str
     .select("id")
     .single()
   if (insertError || !releaseBill) throw new Error(`Unable to create the retainage release payable: ${insertError?.message}`)
+
+  // Coding, inherited from what the retainage was withheld against.
+  //
+  // A release used to be created with no `bill_lines` at all, which made it
+  // unapprovable by every path that exists: bulk approval refuses a payable
+  // with no coding lines, and single approval synthesizes one line with a null
+  // cost code that the project's cost-code gate then rejects. The money could
+  // be released and never paid. Retainage is held proportionally across the
+  // original's coding, so it is released the same way, with the rounding
+  // remainder on the largest line so the lines still sum to the total.
+  const { data: parentLines, error: parentLinesError } = await supabase
+    .from("bill_lines")
+    .select("cost_code_id,budget_line_id,description,quantity,unit_cost_cents,project_id")
+    .eq("org_id", context.orgId)
+    .eq("bill_id", bill.id)
+  if (parentLinesError) {
+    await supabase.from("vendor_bills").delete().eq("org_id", context.orgId).eq("id", releaseBill.id)
+    throw new Error(`Unable to read the original payable's coding: ${parentLinesError.message}`)
+  }
+
+  const weighted = (parentLines ?? [])
+    .map((line) => ({
+      cost_code_id: line.cost_code_id,
+      budget_line_id: line.budget_line_id,
+      description: line.description,
+      project_id: line.project_id ?? bill.project_id,
+      amount_cents: Math.round(Number(line.quantity ?? 1) * Number(line.unit_cost_cents ?? 0)),
+    }))
+    .filter((line) => line.amount_cents > 0)
+  const weightedTotal = weighted.reduce((sum, line) => sum + line.amount_cents, 0)
+
+  const releaseLines =
+    weightedTotal > 0
+      ? (() => {
+          const shares = weighted.map((line) => ({
+            ...line,
+            share: Math.floor((amountCents * line.amount_cents) / weightedTotal),
+          }))
+          const assigned = shares.reduce((sum, line) => sum + line.share, 0)
+          let remainder = amountCents - assigned
+          const largest = shares.reduce((best, line) => (line.amount_cents > best.amount_cents ? line : best), shares[0])
+          return shares
+            .map((line) => {
+              const extra = line === largest ? remainder : 0
+              remainder -= extra
+              return { ...line, share: line.share + extra }
+            })
+            .filter((line) => line.share > 0)
+        })()
+      : []
+
+  const lineRows = (releaseLines.length > 0
+    ? releaseLines.map((line) => ({
+        cost_code_id: line.cost_code_id,
+        budget_line_id: line.budget_line_id,
+        description: `Retainage release${line.description ? ` · ${line.description}` : ""}`,
+        project_id: line.project_id,
+        amount_cents: line.share,
+      }))
+    : [
+        {
+          cost_code_id: null,
+          budget_line_id: null,
+          description: "Retainage release",
+          project_id: bill.project_id,
+          amount_cents: amountCents,
+        },
+      ]
+  ).map((line) => ({
+    org_id: context.orgId,
+    bill_id: releaseBill.id,
+    project_id: line.project_id,
+    cost_code_id: line.cost_code_id,
+    budget_line_id: line.budget_line_id,
+    description: line.description,
+    quantity: 1,
+    unit_cost_cents: line.amount_cents,
+  }))
+
+  const { error: lineError } = await supabase.from("bill_lines").insert(lineRows)
+  if (lineError) {
+    await supabase.from("vendor_bills").delete().eq("org_id", context.orgId).eq("id", releaseBill.id)
+    throw new Error(`Unable to code the retainage release payable: ${lineError.message}`)
+  }
 
   // Guarded rather than recomputed: the original's retainage_cents is evidence
   // and never moves, so this counter is what stops the same held amount being
@@ -210,11 +239,6 @@ export async function releaseRetainage(input: ReleaseRetainageInput, orgId?: str
     }),
   ])
   return { releaseBillId: releaseBill.id, amountCents, remainingHeldCents: releasableCents - amountCents }
-}
-
-/** Outstanding on a bill, ignoring retainage that has already been released out. */
-export function releasableRetainageCents(bill: { retainage_cents?: number | null; retainage_released_cents?: number | null }) {
-  return Math.max(0, Number(bill.retainage_cents ?? 0) - Number(bill.retainage_released_cents ?? 0))
 }
 
 export { payableOutstandingCents }

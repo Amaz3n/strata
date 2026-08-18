@@ -5,7 +5,7 @@ import { getInvoiceForPortal } from "@/lib/services/invoices"
 import { listReceiptsForInvoice } from "@/lib/services/receipts"
 import { listOpenBookCostDetailsForInvoice } from "@/lib/services/cost-plus"
 import { listSharedInvoiceBackupPackagesForPortal } from "@/lib/services/owner-billing-packages"
-import { calculatePaymentFeeQuotes, loadPaymentFeePolicy } from "@/lib/payments/fees"
+import { calculatePaymentFeeQuotes, loadPaymentFeePolicy } from "@/lib/payments/fee-engine"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { InvoicePortalClient } from "./portal-invoice-client"
 

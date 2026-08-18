@@ -326,7 +326,24 @@ export function constructWebhookEvent(payload: string, signature: string) {
   throw lastError
 }
 
+/**
+ * Vendor-payment objects are not receivables, ever.
+ *
+ * The AP adapter tags every object it creates. The receivables mapper had no
+ * matching guard, so an AP intent whose disbursement lookup missed came back
+ * through here as `payment_succeeded` and reached `recordPayment` keyed on an
+ * `invoice_id` an AP intent does not carry. That it happened to no-op is luck,
+ * not design — and luck is not a boundary between two ledgers.
+ */
+function isVendorPaymentObject(object: unknown): boolean {
+  if (!object || typeof object !== "object") return false
+  const metadata = Reflect.get(object, "metadata")
+  if (!metadata || typeof metadata !== "object") return false
+  return Reflect.get(metadata, "arc_product") === "vendor_payments"
+}
+
 export function mapStripeEventToDomain(event: Stripe.Event) {
+  if (isVendorPaymentObject(event.data.object)) return null
   switch (event.type) {
     case "payment_intent.processing":
     case "payment_intent.succeeded": {

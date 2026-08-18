@@ -5,6 +5,8 @@ import { z } from "zod";
 import {
   createProjectVendorBill,
   updateVendorBillStatus,
+  reverseManualBillPayment,
+  type ManualPaymentReversalResult,
   listVendorBillsForProject,
   deleteVendorBill,
   reassignImportedPayable,
@@ -85,10 +87,13 @@ function toPayableActionError(error: unknown): string {
 }
 
 function revalidatePayablesPages(projectId: string) {
-  revalidatePath(`/projects/${projectId}/payables`);
+  // Not `/projects/[id]/payables` — that route is a redirect stub, so
+  // revalidating it refreshed nothing anybody looks at. The org desk lists the
+  // same payables and has to move with the project one.
   revalidatePath(`/projects/${projectId}/financials`);
   revalidatePath(`/projects/${projectId}/financials/payables`);
   revalidatePath(`/projects/${projectId}`);
+  revalidatePath("/payables");
 }
 
 export async function updateProjectVendorBillStatusAction(
@@ -104,6 +109,28 @@ export async function updateProjectVendorBillStatusAction(
       });
       revalidatePayablesPages(projectId);
       return { success: true, data: updated };
+    } catch (error) {
+      return { success: false, error: toPayableActionError(error) };
+    }
+  });
+}
+
+/**
+ * Reverse a payment somebody recorded by hand.
+ *
+ * The counterpart to recording one. A rail payment is not reversible here —
+ * money that actually moved comes back through the provider, not by editing
+ * Arc's copy of the story.
+ */
+export async function reverseManualBillPaymentAction(
+  projectId: string,
+  input: { paymentId: string; amountCents?: number; reason: string; idempotencyKey?: string },
+): Promise<ActionResult<PayableMutationResult<ManualPaymentReversalResult>>> {
+  return run(async () => {
+    try {
+      const reversed = await reverseManualBillPayment(input);
+      revalidatePayablesPages(projectId);
+      return { success: true, data: reversed };
     } catch (error) {
       return { success: false, error: toPayableActionError(error) };
     }

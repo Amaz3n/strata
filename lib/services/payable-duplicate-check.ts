@@ -23,7 +23,7 @@ import {
  */
 
 /** Candidate window. Wide enough to catch separator drift, bounded for cost. */
-const CANDIDATE_LIMIT = 50
+const CANDIDATE_LIMIT = 200
 const RECENT_WINDOW_DAYS = 400
 
 export interface DuplicateMatch {
@@ -72,6 +72,11 @@ export async function findDuplicatePayable({
     .select("id,bill_number,company_id,total_cents,bill_date,qbo_vendor_id,qbo_vendor_name,metadata")
     .eq("org_id", orgId)
     .neq("status", "rejected")
+    // Ordered, deliberately. An unordered `limit` let Postgres return whichever
+    // rows it liked, so on a busy org the candidate window could exclude the
+    // very payable being duplicated — a duplicate-payment control that quietly
+    // stops working as the org gets bigger is worse than none.
+    .order("created_at", { ascending: false })
     .limit(CANDIDATE_LIMIT)
 
   if (excludeBillId) query = query.neq("id", excludeBillId)

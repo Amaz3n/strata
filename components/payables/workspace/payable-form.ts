@@ -51,6 +51,13 @@ export interface PayableFormState {
   dueDate: string
   retainage: string
   lienWaiver: string
+  /**
+   * Who moves the money. `""` is a real third state, not a missing value: a
+   * payable that has never been routed is eligible for both paths, and
+   * collapsing that onto either one would silently take the other away the
+   * first time anybody saved the record.
+   */
+  paymentChannel: "" | "arc" | "external"
   qboExpenseAccountId: string
   qboApAccountId: string
   splitLines: SplitLine[]
@@ -110,6 +117,7 @@ export function toFormState(bill: VendorBillSummary, { costCodesEnabled, qboDefa
     dueDate: bill.due_date ?? "",
     retainage: bill.retainage_percent != null ? String(bill.retainage_percent) : "",
     lienWaiver: normalizeLienWaiverStatus(bill.lien_waiver_status),
+    paymentChannel: bill.payment_channel === "arc" ? "arc" : bill.payment_channel === "external" ? "external" : "",
     qboExpenseAccountId: bill.qbo_expense_account_id ?? qboDefaults.expenseAccountId ?? "",
     qboApAccountId: bill.qbo_ap_account_id ?? qboDefaults.apAccountId ?? "",
     splitLines,
@@ -123,6 +131,7 @@ export function formIsDirty(state: PayableFormState, baseline: PayableFormState)
     state.dueDate !== baseline.dueDate ||
     state.retainage !== baseline.retainage ||
     state.lienWaiver !== baseline.lienWaiver ||
+    state.paymentChannel !== baseline.paymentChannel ||
     state.qboExpenseAccountId !== baseline.qboExpenseAccountId ||
     state.qboApAccountId !== baseline.qboApAccountId ||
     state.splitLines.length !== baseline.splitLines.length

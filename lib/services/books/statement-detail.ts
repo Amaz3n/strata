@@ -132,6 +132,8 @@ export async function getStatementsForPeriod(input: {
   startDate: string
   endDate: string
   comparePriorYear?: boolean
+  comparison?: "prior_year" | "prior_period" | "none"
+  includeMonthly?: boolean
   orgId?: string
 }) {
   const context = await requireStatementsAccess(input.orgId)
@@ -141,15 +143,49 @@ export async function getStatementsForPeriod(input: {
     return [String(Number(year) - 1), ...rest].join("-")
   }
 
-  const [profitLoss, balanceSheet, trialBalance, cashFlow, cashBasis, priorProfitLoss] = await Promise.all([
+  const comparison = input.comparison ?? (input.comparePriorYear === false ? "none" : "prior_year")
+  const dayBefore = (date: string) => {
+    const value = new Date(`${date}T00:00:00Z`)
+    value.setUTCDate(value.getUTCDate() - 1)
+    return value.toISOString().slice(0, 10)
+  }
+  const daysBetween = Math.round((new Date(`${input.endDate}T00:00:00Z`).getTime() - new Date(`${input.startDate}T00:00:00Z`).getTime()) / 86_400_000) + 1
+  const priorPeriodEnd = dayBefore(input.startDate)
+  const priorPeriodStartDate = new Date(`${priorPeriodEnd}T00:00:00Z`)
+  priorPeriodStartDate.setUTCDate(priorPeriodStartDate.getUTCDate() - daysBetween + 1)
+  const comparisonRange = comparison === "prior_year"
+    ? { start: priorYear(input.startDate), end: priorYear(input.endDate), label: "Prior year" }
+    : comparison === "prior_period"
+      ? { start: priorPeriodStartDate.toISOString().slice(0, 10), end: priorPeriodEnd, label: "Prior period" }
+      : null
+
+  const monthRanges: Array<{ startDate: string; endDate: string; label: string }> = []
+  if (input.includeMonthly) {
+    const cursor = new Date(`${input.startDate.slice(0, 7)}-01T00:00:00Z`)
+    while (monthRanges.length < 24) {
+      const monthStart = cursor.toISOString().slice(0, 10)
+      if (monthStart > input.endDate) break
+      const endOfMonth = new Date(cursor)
+      endOfMonth.setUTCMonth(endOfMonth.getUTCMonth() + 1)
+      endOfMonth.setUTCDate(0)
+      const monthEnd = endOfMonth.toISOString().slice(0, 10)
+      monthRanges.push({
+        startDate: monthStart < input.startDate ? input.startDate : monthStart,
+        endDate: monthEnd > input.endDate ? input.endDate : monthEnd,
+        label: cursor.toLocaleDateString("en-US", { month: "short", year: "2-digit", timeZone: "UTC" }),
+      })
+      cursor.setUTCMonth(cursor.getUTCMonth() + 1)
+    }
+  }
+
+  const [profitLoss, balanceSheet, trialBalance, cashFlow, cashBasis, priorProfitLoss, monthlyProfitLoss] = await Promise.all([
     buildProfitAndLoss(orgId, input.startDate, input.endDate),
     buildBalanceSheet(orgId, input.endDate),
     buildTrialBalance(orgId, input.endDate),
     buildCashFlowStatement(orgId, input.startDate, input.endDate),
     buildCashBasisStatement(orgId, input.startDate, input.endDate),
-    input.comparePriorYear === false
-      ? Promise.resolve(null)
-      : buildProfitAndLoss(orgId, priorYear(input.startDate), priorYear(input.endDate)),
+    comparisonRange ? buildProfitAndLoss(orgId, comparisonRange.start, comparisonRange.end) : Promise.resolve(null),
+    Promise.all(monthRanges.map(async (range) => ({ ...range, profitLoss: await buildProfitAndLoss(orgId, range.startDate, range.endDate) }))),
   ])
 
   return {
@@ -161,6 +197,8 @@ export async function getStatementsForPeriod(input: {
     cashFlow,
     cashBasis,
     priorProfitLoss,
+    comparisonLabel: comparisonRange?.label ?? null,
+    monthlyProfitLoss,
   }
 }
 

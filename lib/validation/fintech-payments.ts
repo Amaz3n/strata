@@ -23,14 +23,33 @@ export const updatePaymentRailPolicySchema = z.object({
       message: "Self-approval is only available when one approval is required",
     })
   }
-  if (value.per_payment_limit_cents && value.per_run_limit_cents && value.per_run_limit_cents < value.per_payment_limit_cents) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ["per_run_limit_cents"], message: "Run limit must be at least the per-payment limit" })
-  }
-  if (value.per_run_limit_cents && value.daily_limit_cents && value.daily_limit_cents < value.per_run_limit_cents) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ["daily_limit_cents"], message: "Daily limit must be at least the run limit" })
-  }
-  if (value.daily_limit_cents && value.max_inflight_cents && value.max_inflight_cents < value.daily_limit_cents) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ["max_inflight_cents"], message: "In-flight exposure limit must be at least the daily limit" })
+  // Every present pair, not just adjacent ones. The chain only ever compared
+  // neighbours, so a patch carrying per-payment and daily but not per-run — the
+  // shape a partial edit produces — was checked against nothing at all. Presence
+  // is `!= null`, never truthiness: an explicit null clears a limit and has
+  // nothing to compare, which is not the same question as "is it set".
+  //
+  // A patch cannot see the limits it is not changing, so a value that inverts an
+  // existing stored limit still gets past this. Merging the patch onto the row
+  // and re-checking the whole chain is the service's job — `updatePaymentRailPolicy`
+  // is the only place that holds both halves.
+  const ascendingLimits = [
+    { path: "per_payment_limit_cents", label: "Per-payment limit", value: value.per_payment_limit_cents },
+    { path: "per_run_limit_cents", label: "Run limit", value: value.per_run_limit_cents },
+    { path: "daily_limit_cents", label: "Daily limit", value: value.daily_limit_cents },
+    { path: "max_inflight_cents", label: "In-flight exposure limit", value: value.max_inflight_cents },
+  ] as const
+  for (let lower = 0; lower < ascendingLimits.length; lower += 1) {
+    for (let upper = lower + 1; upper < ascendingLimits.length; upper += 1) {
+      const floor = ascendingLimits[lower]
+      const ceiling = ascendingLimits[upper]
+      if (floor.value == null || ceiling.value == null || ceiling.value >= floor.value) continue
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [ceiling.path],
+        message: `${ceiling.label} must be at least the ${floor.label.toLowerCase()}`,
+      })
+    }
   }
 })
 
@@ -60,19 +79,22 @@ export type SetPaymentRunApproversInput = z.infer<typeof setPaymentRunApproversS
 export const paymentRunItemSchema = z.object({
   bill_id: z.string().uuid(),
   amount_cents: z.number().int().positive(),
+  // Exactly one verified ACH destination per payable is the rail, and this is
+  // the outermost of the three layers that say so: the create RPC rejects any
+  // other length, and the table carries a `method = 'ach'` check, a
+  // `payee_kind = 'primary_vendor'` check and a unique index on `run_item_id`.
+  // Joint and external checks belong to the manual-payment workflow until they
+  // have their own verification and execution path, so nothing here splits a
+  // payment and the sum-across-payees arithmetic that implied otherwise is gone.
   payees: z.array(z.object({
-    // Arc Pay supports one verified ACH destination today. Joint/external
-    // checks belong to the manual-payment workflow and are not advertised here
-    // until they have their own verification and execution path.
     payee_kind: z.literal("primary_vendor"),
     method: z.literal("ach"),
     payee_name: z.string().trim().min(1).max(200),
     amount_cents: z.number().int().positive(),
-  })).min(1),
+  })).length(1),
 }).superRefine((item, context) => {
-  const payeeTotal = item.payees.reduce((sum, payee) => sum + payee.amount_cents, 0)
-  if (payeeTotal !== item.amount_cents) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ["payees"], message: "Payee amounts must equal the vendor payment amount" })
+  if (item.payees[0] && item.payees[0].amount_cents !== item.amount_cents) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["payees"], message: "The payee amount must equal the vendor payment amount" })
   }
 })
 
@@ -143,9 +165,18 @@ export const portalReturnPathSchema = z
   .max(500)
   .regex(/^\/(?!\/)[^\\\s]*$/, "Return path must be a same-origin path beginning with a single /")
 
+/**
+ * `return_path` is required, deliberately without a default.
+ *
+ * It defaulted to `/access`, and Stripe sends the vendor back to it when the
+ * onboarding link expires — `/access` is a workspace router that reads neither
+ * of the parameters the return carries, so the default dead-ended the vendor on
+ * a list of builders with no way back into verification. The caller knows the
+ * page that started the flow; nothing here can guess it.
+ */
 export const startVendorPayoutSetupSchema = z.object({
   ...vendorClaimFields,
-  return_path: portalReturnPathSchema.default("/access"),
+  return_path: portalReturnPathSchema,
 }).superRefine(requireEntityOrLegalName)
 
 export type UpdatePaymentRailPolicyInput = z.infer<typeof updatePaymentRailPolicySchema>

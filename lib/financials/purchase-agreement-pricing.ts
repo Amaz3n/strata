@@ -36,6 +36,25 @@ export type SettlementDeposit = {
   receivedAt?: string | null
 }
 
+export const SETTLEMENT_ADJUSTMENT_KINDS = ["seller_credit", "closing_cost", "proration", "other"] as const
+export type SettlementAdjustmentKind = (typeof SETTLEMENT_ADJUSTMENT_KINDS)[number]
+
+/**
+ * A line the settlement table adds that the agreement never priced: seller-paid
+ * closing costs, a lender or repair credit, a tax/HOA proration.
+ *
+ * Sign convention is the buyer's: positive adds to what the buyer owes,
+ * negative is a credit in the buyer's favour. Credits are price concessions —
+ * the same economics as an incentive — so they reduce the final price rather
+ * than being netted out of cash, which keeps revenue and AR agreeing.
+ */
+export type SettlementAdjustment = {
+  id: string
+  label: string
+  kind: SettlementAdjustmentKind
+  amountCents: number
+}
+
 export type PurchaseAgreementSettlement = {
   builtAt: string
   finalPriceCents: number
@@ -43,10 +62,59 @@ export type PurchaseAgreementSettlement = {
     agreementTotalCents: number
     approvedChangeOrdersCents: number
     changeOrderIds: string[]
+    adjustmentsCents: number
   }
+  adjustments: SettlementAdjustment[]
   depositsApplied: SettlementDeposit[]
   depositsAppliedCents: number
   balanceDueCents: number
+}
+
+export type IncentiveEligibilityReason =
+  | "not_active"
+  | "not_yet_effective"
+  | "expired"
+  | "exhausted"
+  | "awaiting_approval"
+
+export type IncentiveEligibility = { eligible: boolean; reason: IncentiveEligibilityReason | null }
+
+/**
+ * Decides whether a concession may be priced onto an agreement. `effective_*`,
+ * `max_uses` and `requires_approval` are governance the sales manager sets; an
+ * expired or exhausted incentive that still prices is margin leaking silently.
+ * Dates are ISO `YYYY-MM-DD` and compare correctly as strings.
+ */
+export function evaluateIncentiveEligibility(
+  incentive: {
+    status: string
+    effectiveStart?: string | null
+    effectiveEnd?: string | null
+    maxUses?: number | null
+    requiresApproval?: boolean | null
+    approvedAt?: string | null
+  },
+  onDate: string,
+  usedCount = 0,
+): IncentiveEligibility {
+  if (incentive.status !== "active") return { eligible: false, reason: "not_active" }
+  if (incentive.effectiveStart && onDate < incentive.effectiveStart) return { eligible: false, reason: "not_yet_effective" }
+  if (incentive.effectiveEnd && onDate > incentive.effectiveEnd) return { eligible: false, reason: "expired" }
+  if (typeof incentive.maxUses === "number" && incentive.maxUses > 0 && usedCount >= incentive.maxUses) {
+    return { eligible: false, reason: "exhausted" }
+  }
+  if (incentive.requiresApproval && !incentive.approvedAt) return { eligible: false, reason: "awaiting_approval" }
+  return { eligible: true, reason: null }
+}
+
+export function describeIncentiveIneligibility(reason: IncentiveEligibilityReason) {
+  switch (reason) {
+    case "not_active": return "is not active"
+    case "not_yet_effective": return "has not started yet"
+    case "expired": return "has expired"
+    case "exhausted": return "has reached its usage limit"
+    case "awaiting_approval": return "requires sales-manager approval before it can be applied"
+  }
 }
 
 export function calculateIncentiveValue(
@@ -98,14 +166,17 @@ export function buildPurchaseAgreementSettlement(input: {
   agreementTotalCents: number
   approvedChangeOrders: Array<{ id: string; totalCents: number }>
   deposits: SettlementDeposit[]
+  adjustments?: SettlementAdjustment[]
   builtAt?: string
 }): PurchaseAgreementSettlement {
   const approvedChangeOrdersCents = input.approvedChangeOrders.reduce(
     (sum, changeOrder) => sum + changeOrder.totalCents,
     0,
   )
+  const adjustments = input.adjustments ?? []
+  const adjustmentsCents = adjustments.reduce((sum, adjustment) => sum + adjustment.amountCents, 0)
   const depositsAppliedCents = input.deposits.reduce((sum, deposit) => sum + deposit.amountCents, 0)
-  const finalPriceCents = input.agreementTotalCents + approvedChangeOrdersCents
+  const finalPriceCents = input.agreementTotalCents + approvedChangeOrdersCents + adjustmentsCents
   return {
     builtAt: input.builtAt ?? new Date().toISOString(),
     finalPriceCents,
@@ -113,19 +184,42 @@ export function buildPurchaseAgreementSettlement(input: {
       agreementTotalCents: input.agreementTotalCents,
       approvedChangeOrdersCents,
       changeOrderIds: input.approvedChangeOrders.map((changeOrder) => changeOrder.id),
+      adjustmentsCents,
     },
+    adjustments,
     depositsApplied: input.deposits,
     depositsAppliedCents,
     balanceDueCents: finalPriceCents - depositsAppliedCents,
   }
 }
 
+export function parseSettlementAdjustments(value: unknown): SettlementAdjustment[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((row) => {
+    if (!row || typeof row !== "object") return []
+    const record = row as Record<string, unknown>
+    const amountCents = Number(record.amountCents)
+    const kind = String(record.kind)
+    if (!Number.isInteger(amountCents) || amountCents === 0) return []
+    if (!(SETTLEMENT_ADJUSTMENT_KINDS as readonly string[]).includes(kind)) return []
+    if (typeof record.id !== "string" || typeof record.label !== "string") return []
+    return [{ id: record.id, label: record.label, kind: kind as SettlementAdjustmentKind, amountCents }]
+  })
+}
+
+/**
+ * The closing invoice bills the full sale price. Deposits are NOT netted into
+ * the lines: an earnest deposit is a customer-deposit liability, and it is
+ * relieved by applying the deposit payment against this invoice, not by
+ * shrinking the invoice. Netting them here would understate revenue by the
+ * deposit and strand the liability on the balance sheet forever.
+ */
 export function buildClosingInvoiceLines(input: {
   pricing: PurchaseAgreementPricing
   lotLabel: string
   planLabel: string
   approvedChangeOrders: Array<{ id: string; number?: number | null; title: string; totalCents: number }>
-  deposits: SettlementDeposit[]
+  adjustments?: SettlementAdjustment[]
 }) {
   const lines = [
     { description: `Base price — ${input.planLabel}, Lot ${input.lotLabel}`, amountCents: input.pricing.basePriceCents },
@@ -139,10 +233,49 @@ export function buildClosingInvoiceLines(input: {
       description: `Change order${changeOrder.number ? ` ${changeOrder.number}` : ""} — ${changeOrder.title}`,
       amountCents: changeOrder.totalCents,
     })),
-    ...input.deposits.map((deposit) => ({
-      description: `Less: ${deposit.label}${deposit.receivedAt ? ` received ${deposit.receivedAt.slice(0, 10)}` : ""}`,
-      amountCents: -deposit.amountCents,
+    ...(input.adjustments ?? []).map((adjustment) => ({
+      description: `${SETTLEMENT_ADJUSTMENT_LABELS[adjustment.kind]} — ${adjustment.label}`,
+      amountCents: adjustment.amountCents,
     })),
   ]
   return lines.filter((line) => line.amountCents !== 0)
+}
+
+const SETTLEMENT_ADJUSTMENT_LABELS: Record<SettlementAdjustmentKind, string> = {
+  seller_credit: "Seller credit",
+  closing_cost: "Closing cost",
+  proration: "Proration",
+  other: "Settlement adjustment",
+}
+
+export function closingInvoiceLinesTotalCents(lines: Array<{ amountCents: number }>) {
+  return lines.reduce((sum, line) => sum + line.amountCents, 0)
+}
+
+/**
+ * What a settlement attempt still has to write.
+ *
+ * Settling touches several rows in sequence and can die partway — a deposit
+ * applied, the cash not recorded, the closing not flipped. A retry therefore
+ * has to be able to tell what already happened from the payments sitting on the
+ * closing invoice, because applying the same deposit twice is rejected by the
+ * ledger and recording the balance twice would overpay the home.
+ */
+export function pendingSettlementWrites(input: {
+  deposits: SettlementDeposit[]
+  balanceDueCents: number
+  balanceProviderPaymentId: string
+  existingPayments: Array<{ provider_payment_id?: string | null; metadata?: Record<string, unknown> | null }>
+}) {
+  const appliedDepositPaymentIds = new Set(
+    input.existingPayments
+      .map((payment) => payment.metadata?.deposit_payment_id)
+      .filter((value): value is string => typeof value === "string" && value.length > 0),
+  )
+  return {
+    depositsToApply: input.deposits.filter((deposit) => !appliedDepositPaymentIds.has(deposit.paymentId)),
+    recordBalance:
+      input.balanceDueCents > 0 &&
+      !input.existingPayments.some((payment) => payment.provider_payment_id === input.balanceProviderPaymentId),
+  }
 }

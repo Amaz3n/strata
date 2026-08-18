@@ -723,9 +723,13 @@ export interface VendorPaymentInviteEmailPayload {
 }
 
 /**
- * Asks a vendor to set up electronic payment. Deliberately does not promise a
- * short flow: a vendor who already verified with another Arc builder only has
- * to confirm the company, but one starting fresh goes through Stripe.
+ * Asks a vendor to set up Arc Pay. Deliberately does not promise a short flow:
+ * a vendor who already verified with another Arc builder only has to confirm
+ * the company, but one starting fresh goes through Stripe.
+ *
+ * One of the two genuinely external vendor emails on this rail, so it bypasses
+ * builder notification preferences on purpose — the recipient is not a member
+ * of the org whose settings would suppress it.
  */
 export async function sendVendorPaymentInviteEmail(payload: VendorPaymentInviteEmailPayload): Promise<boolean> {
   if (payload.to.length === 0) return false
@@ -735,14 +739,14 @@ export async function sendVendorPaymentInviteEmail(payload: VendorPaymentInviteE
     : ""
 
   const html = renderStandardEmailLayout({
-    title: `Get paid electronically by ${payload.orgName}`,
+    title: `Get paid by ${payload.orgName} through Arc Pay`,
     messageHtml: `
       ${greeting}
-      <p style="margin:0 0 14px 0;">${orgName} pays subcontractors through Arc and would like to pay ${escapeMessage(payload.companyName)} by direct deposit instead of by check.</p>
+      <p style="margin:0 0 14px 0;">${orgName} pays subcontractors through Arc Pay and would like to pay ${escapeMessage(payload.companyName)} by bank transfer instead of by check.</p>
       <p style="margin:0 0 14px 0;">You verify your business and payout bank once. The same account then works with every Arc builder you work with, so if you have already done this for another builder there is nothing to set up again — just confirm your company.</p>
       <p style="margin:0;">${orgName} never sees or enters your bank details.</p>
     `,
-    buttonText: "Set up direct deposit",
+    buttonText: "Set up Arc Pay",
     buttonUrl: payload.setupUrl,
     orgName: payload.orgName,
     orgLogoUrl: payload.orgLogoUrl,
@@ -750,42 +754,7 @@ export async function sendVendorPaymentInviteEmail(payload: VendorPaymentInviteE
 
   return sendEmail({
     to: payload.to,
-    subject: `${payload.orgName} would like to pay you by direct deposit`,
-    html,
-    from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
-  })
-}
-
-export interface VendorArcPayReadyEmailPayload {
-  to: string
-  recipientName?: string | null
-  companyName: string
-  orgName: string
-  orgSlug?: string | null
-  orgLogoUrl?: string | null
-}
-
-/** Confirms to the teammate who sent the invite that the vendor is payable. */
-export async function sendVendorArcPayReadyEmail(payload: VendorArcPayReadyEmailPayload): Promise<boolean> {
-  const greeting = payload.recipientName
-    ? `<p style="margin:0 0 14px 0;">Hi ${escapeMessage(payload.recipientName)},</p>`
-    : ""
-  const payablesUrl = `${(process.env.NEXT_PUBLIC_APP_URL ?? "https://arcnaples.com").replace(/\/$/, "")}/payables`
-  const html = renderStandardEmailLayout({
-    title: `${payload.companyName} is ready for Arc Pay`,
-    messageHtml: `
-      ${greeting}
-      <p style="margin:0 0 14px 0;">${escapeMessage(payload.companyName)} completed business and payout setup. Bills for this vendor can now be paid through Arc Pay.</p>
-      <p style="margin:0;">Arc only shows masked destination details to your team; the vendor&apos;s full bank information remains with the payment provider.</p>
-    `,
-    buttonText: "Review payables",
-    buttonUrl: payablesUrl,
-    orgName: payload.orgName,
-    orgLogoUrl: payload.orgLogoUrl,
-  })
-  return sendEmail({
-    to: [payload.to],
-    subject: `${payload.companyName} is ready for Arc Pay`,
+    subject: `${payload.orgName} would like to pay you through Arc Pay`,
     html,
     from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
   })

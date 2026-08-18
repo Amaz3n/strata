@@ -35,6 +35,7 @@ import { attachFile } from "@/lib/services/file-links"
 import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 import { getProvider } from "@/lib/integrations/accounting/registry"
 import { recordEvent } from "@/lib/services/events"
+import { listEntityAuditTrail } from "@/lib/services/audit"
 import { getInvoicePaymentActivity } from "@/lib/services/payments"
 import {
   createReceivableAdjustment,
@@ -317,6 +318,16 @@ async function loadInvoiceDetail(invoiceId: string) {
     console.error("Failed to load invoice lien waivers", error)
     return []
   })
+  const auditTrail = await listEntityAuditTrail({
+    entityType: "invoice",
+    entityId: invoiceId,
+    permission: "invoice.read",
+    orgId: invoice.org_id,
+    projectId: invoice.project_id,
+  }).catch((error) => {
+    console.error("Failed to load invoice change history", error)
+    return []
+  })
 
   return {
     invoice: { ...invoice, token },
@@ -329,6 +340,7 @@ async function loadInvoiceDetail(invoiceId: string) {
     reversals: paymentActivity.reversals,
     adjustments,
     lienWaivers,
+    auditTrail,
   }
 }
 

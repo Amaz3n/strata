@@ -13,6 +13,8 @@ final class OfflineStore {
             CachedWorkspaceRecord.self,
             CachedProjectPageRecord.self,
             CachedDailyLogPageRecord.self,
+            CachedMyHousesRecord.self,
+            CachedMyHouseWorkRecord.self,
             OfflineDraftRecord.self,
             PendingMutationRecord.self,
             PendingUploadRecord.self,
@@ -78,6 +80,55 @@ final class OfflineStore {
             return []
         }
         return try decoder.decode([MobileDailyLog].self, from: data)
+    }
+
+    func cache(myHouses: [MobileMyHouse], organizationID: String) throws {
+        let data = try encoder.encode(myHouses)
+        if let record = try myHousesPages().first(where: { $0.organizationID == organizationID }) {
+            record.housesData = data
+            record.cachedAt = .now
+        } else {
+            context.insert(CachedMyHousesRecord(organizationID: organizationID, housesData: data))
+        }
+        try context.save()
+    }
+
+    func cachedMyHouses(organizationID: String) throws -> [MobileMyHouse] {
+        guard let data = try myHousesPages().first(where: { $0.organizationID == organizationID })?.housesData else {
+            return []
+        }
+        return try decoder.decode([MobileMyHouse].self, from: data)
+    }
+
+    func cache(
+        myHouseWork groups: [MobileMyHouseWorkGroup],
+        organizationID: String,
+        window: MyHouseWorkWindow
+    ) throws {
+        let key = Self.workScopeKey(organizationID: organizationID, window: window)
+        let data = try encoder.encode(groups)
+        if let record = try myHouseWorkPages().first(where: { $0.scopeKey == key }) {
+            record.groupsData = data
+            record.cachedAt = .now
+        } else {
+            context.insert(CachedMyHouseWorkRecord(scopeKey: key, groupsData: data))
+        }
+        try context.save()
+    }
+
+    func cachedMyHouseWork(
+        organizationID: String,
+        window: MyHouseWorkWindow
+    ) throws -> [MobileMyHouseWorkGroup] {
+        let key = Self.workScopeKey(organizationID: organizationID, window: window)
+        guard let data = try myHouseWorkPages().first(where: { $0.scopeKey == key })?.groupsData else {
+            return []
+        }
+        return try decoder.decode([MobileMyHouseWorkGroup].self, from: data)
+    }
+
+    private static func workScopeKey(organizationID: String, window: MyHouseWorkWindow) -> String {
+        "\(organizationID)|\(window.rawValue)"
     }
 
     @discardableResult
@@ -227,6 +278,14 @@ final class OfflineStore {
 
     private func dailyLogPages() throws -> [CachedDailyLogPageRecord] {
         try context.fetch(FetchDescriptor<CachedDailyLogPageRecord>())
+    }
+
+    private func myHousesPages() throws -> [CachedMyHousesRecord] {
+        try context.fetch(FetchDescriptor<CachedMyHousesRecord>())
+    }
+
+    private func myHouseWorkPages() throws -> [CachedMyHouseWorkRecord] {
+        try context.fetch(FetchDescriptor<CachedMyHouseWorkRecord>())
     }
 
     private func drafts() throws -> [OfflineDraftRecord] {

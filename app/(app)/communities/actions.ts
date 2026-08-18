@@ -160,12 +160,17 @@ export async function setLotStatusAction(id: string, communityId: string, input:
   return run(() => { const parsed = lotStatusSchema.parse(input); return setLotStatus(z.string().uuid().parse(id), parsed.status, { force: parsed.force }) }, [`/communities/${communityId}`])
 }
 
-export async function attachProjectToLotAction(lotId: string, communityId: string, projectId: string) {
-  return run(() => attachProjectToLot(z.string().uuid().parse(lotId), z.string().uuid().parse(projectId)), [`/communities/${communityId}`, `/projects/${projectId}`])
+/**
+ * `force` is the lot lifecycle's own confirmation, not a second permission model:
+ * attaching a home to a settled lot, or pulling one off a house that is building,
+ * are backward moves the state machine refuses without it.
+ */
+export async function attachProjectToLotAction(lotId: string, communityId: string, projectId: string, force = false) {
+  return run(() => attachProjectToLot(z.string().uuid().parse(lotId), z.string().uuid().parse(projectId), { force: z.boolean().parse(force) }), [`/communities/${communityId}`, `/projects/${projectId}`])
 }
 
-export async function detachProjectFromLotAction(lotId: string, communityId: string) {
-  return run(() => detachProjectFromLot(z.string().uuid().parse(lotId)), [`/communities/${communityId}`])
+export async function detachProjectFromLotAction(lotId: string, communityId: string, force = false) {
+  return run(() => detachProjectFromLot(z.string().uuid().parse(lotId), { force: z.boolean().parse(force) }), [`/communities/${communityId}`])
 }
 
 export async function deleteLotAction(lotId: string, communityId: string) {

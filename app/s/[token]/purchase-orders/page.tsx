@@ -29,7 +29,7 @@ export default async function PortalPurchaseOrdersPage({ params }: { params: Pro
       />
       <PurchaseOrdersClient
         token={token}
-        orders={orders as never}
+        orders={orders}
         canReport={access.permissions.can_report_po_completion === true}
       />
     </>

@@ -166,7 +166,6 @@ async function notifyOrgMembers(args: { orgId: string; title: string; message: s
     const userId = member.user_id as string
     if (!userId || seen.has(userId)) continue
     seen.add(userId)
-    // In-app only: "payable_email_ingest" is not an email-eligible type.
     await notificationService
       .createAndQueue({
         orgId: args.orgId,

@@ -678,7 +678,7 @@ test("change-order content edits cannot perform lifecycle transitions", () => {
 });
 
 test("financial jobs and public payment links keep their authorization boundaries", () => {
-  for (const route of ["reminders", "late-fees", "payments"]) {
+  for (const route of ["reminders", "late-fees"]) {
     const source = fs.readFileSync(
       path.join(__dirname, `../app/api/jobs/${route}/route.ts`),
       "utf8",

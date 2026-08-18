@@ -7,8 +7,18 @@ import { SuccessCheck } from "@/components/portal/success-check"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import type { VendorPaymentSetupContext } from "@/lib/services/vendor-payment-identities"
-import { startVendorPayoutSetupAction } from "./actions"
+import type {
+  VendorEntityMember,
+  VendorPaymentSetupContext,
+} from "@/lib/services/vendor-payment-identities"
+import {
+  decideVendorEntityJoinRequestAction,
+  inviteVendorEntityAdministratorAction,
+  removeVendorEntityMemberAction,
+  resendVendorEmailVerificationAction,
+  respondToVendorEntityInvitationAction,
+  startVendorPayoutSetupAction,
+} from "./actions"
 
 const NEW_ENTITY = "new"
 
@@ -27,6 +37,12 @@ const METHOD_LABELS: Record<string, string> = {
   card: "Card",
   cash: "Cash",
   other: "Other",
+}
+
+const ROLE_LABELS: Record<VendorEntityMember["role"], string> = {
+  owner: "Owner",
+  administrator: "Administrator",
+  member: "Member",
 }
 
 export function VendorPaymentSetup({
@@ -57,10 +73,12 @@ export function VendorPaymentSetup({
    */
   const verifiedEntity =
     context.entities.find((candidate) => candidate.recipient?.status === "ready" && candidate.recipient.payoutsEnabled) ?? null
+  const administeredEntities = context.entities.filter((candidate) => candidate.role !== "member")
 
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const [selectedEntity, setSelectedEntity] = useState(context.entities[0]?.id ?? NEW_ENTITY)
   const [editingName, setEditingName] = useState(false)
   const [choosingEntity, setChoosingEntity] = useState(false)
@@ -68,10 +86,25 @@ export function VendorPaymentSetup({
   const [dbaName, setDbaName] = useState("")
 
   const namingNewEntity = context.entities.length === 0 || selectedEntity === NEW_ENTITY
-  const canSubmit = !pending && (!namingNewEntity || legalName.trim().length > 0)
+  const canSubmit = !pending && context.emailVerified && (!namingNewEntity || legalName.trim().length > 0)
+
+  /** One place every mutation on this page reports through. */
+  const run = <T,>(action: () => Promise<{ success: true; data: T } | { success: false; error: string }>, onDone: (data: T) => void) => {
+    setError(null)
+    setNotice(null)
+    startTransition(async () => {
+      const result = await action()
+      if (!result.success) {
+        setError(result.error)
+        return
+      }
+      onDone(result.data)
+    })
+  }
 
   const start = (vendorEntityId?: string) => {
     setError(null)
+    setNotice(null)
     startTransition(async () => {
       const result = await startVendorPayoutSetupAction({
         portal_token: token,
@@ -94,12 +127,101 @@ export function VendorPaymentSetup({
     })
   }
 
+  const resendVerification = () =>
+    run(resendVendorEmailVerificationAction, (data) => {
+      setNotice(
+        data.alreadyVerified
+          ? "Your email is already confirmed. Reload this page to continue."
+          : data.sent
+            ? `We sent a new confirmation link to ${context.identity?.email ?? "your email"}.`
+            : "We could not send the confirmation email just now. Try again in a few minutes.",
+      )
+      if (data.alreadyVerified) router.refresh()
+    })
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 desk-rise">
       {error ? (
         <div role="alert" className="border border-destructive bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {error}
         </div>
+      ) : null}
+
+      {notice ? (
+        <div role="status" className="border border-border bg-muted/40 px-4 py-3 text-sm">
+          {notice}
+        </div>
+      ) : null}
+
+      {context.invitations.length > 0 ? (
+        <section className="border border-border bg-card p-5">
+          <h2 className="text-base font-semibold">You were invited to administer a company</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Accepting lets you set up and manage payouts for it. Only accept if you work there.
+          </p>
+          <ul className="mt-4 divide-y border border-border">
+            {context.invitations.map((invitation) => (
+              <li key={invitation.membershipId} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+                <span className="text-sm font-medium">{invitation.entityLegalName}</span>
+                <span className="flex gap-2">
+                  <Button
+                    size="sm"
+                    disabled={pending}
+                    onClick={() =>
+                      run(
+                        () => respondToVendorEntityInvitationAction({ membership_id: invitation.membershipId, accept: true }),
+                        () => router.refresh(),
+                      )
+                    }
+                  >
+                    Accept
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={pending}
+                    onClick={() =>
+                      run(
+                        () => respondToVendorEntityInvitationAction({ membership_id: invitation.membershipId, accept: false }),
+                        () => router.refresh(),
+                      )
+                    }
+                  >
+                    Decline
+                  </Button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {context.pendingJoinRequests.length > 0 ? (
+        <section className="border border-border bg-card p-5" role="status">
+          <h2 className="text-base font-semibold">Waiting on an administrator</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {context.pendingJoinRequests.map((request) => request.entityLegalName).join(", ")} is already set up on Arc.
+            We asked its administrators to add you. Once one of them approves, come back here and finish payout setup —
+            do not create a second company for the same business.
+          </p>
+        </section>
+      ) : null}
+
+      {!context.emailVerified ? (
+        <section className="border border-warning/40 bg-warning/5 p-5">
+          <h2 className="text-base font-semibold text-warning">Confirm your email first</h2>
+          <p className="mt-1 max-w-prose text-sm text-muted-foreground">
+            Payout setup decides where {builder.orgName}&rsquo;s money lands, so Arc confirms your address before it
+            starts. Open the confirmation link we emailed to{" "}
+            <span className="font-medium text-foreground">{context.identity?.email ?? "your address"}</span>, then
+            reload this page. The rest of your portal keeps working either way.
+          </p>
+          <div className="mt-4">
+            <Button variant="outline" size="sm" onClick={resendVerification} disabled={pending}>
+              {pending ? "Sending…" : "Send it again"}
+            </Button>
+          </div>
+        </section>
       ) : null}
 
       {linkExpired && !isReady ? (
@@ -139,7 +261,7 @@ export function VendorPaymentSetup({
               electronically right away — there is nothing to verify again.
             </p>
             <div className="mt-5 flex flex-wrap items-center gap-4">
-              <Button onClick={() => start(verifiedEntity.id)} disabled={pending}>
+              <Button onClick={() => start(verifiedEntity.id)} disabled={pending || !context.emailVerified}>
                 {pending ? "Connecting…" : `Connect to ${builder.orgName}`}
               </Button>
               <button
@@ -159,7 +281,7 @@ export function VendorPaymentSetup({
               back — your progress is saved.
             </p>
             <div className="mt-5">
-              <Button onClick={() => start(linkedEntity.id)} disabled={pending}>
+              <Button onClick={() => start(linkedEntity.id)} disabled={pending || !context.emailVerified}>
                 {pending ? "Opening Stripe…" : "Continue verification"}
               </Button>
             </div>
@@ -250,6 +372,19 @@ export function VendorPaymentSetup({
         )}
       </section>
 
+      {administeredEntities.map((entity) => (
+        <EntityAdministrators
+          key={entity.id}
+          entityId={entity.id}
+          legalName={entity.legalName}
+          members={entity.members}
+          pending={pending}
+          run={run}
+          onChanged={() => router.refresh()}
+          onNotice={setNotice}
+        />
+      ))}
+
       {!context.builder.w9OnFile ? (
         <section className="border border-border bg-card p-5">
           <h2 className="text-base font-semibold">Add your W-9</h2>
@@ -288,91 +423,267 @@ export function VendorPaymentSetup({
         </section>
       ) : null}
 
-      {context.inFlightPayments.length > 0 ? (
-        <section className="border border-border bg-card p-5">
-          <h2 className="text-base font-semibold">On the way</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Payments a builder has already released. Arrival dates are estimates from the
-            bank&apos;s normal processing window, not guarantees.
-          </p>
-          <div className="mt-4 overflow-x-auto border border-border">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border bg-muted/40 text-left text-xs text-muted-foreground">
-                  <th className="px-3 py-2 font-medium">Sent</th>
-                  <th className="px-3 py-2 font-medium">Builder</th>
-                  <th className="px-3 py-2 font-medium">Invoice</th>
-                  <th className="px-3 py-2 font-medium">Expected</th>
-                  <th className="px-3 py-2 text-right font-medium">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {context.inFlightPayments.map((payment) => (
-                  <tr key={payment.id} className="border-b border-border last:border-0">
-                    <td className="whitespace-nowrap px-3 py-3 tabular-nums">{paymentDate(payment.initiatedOn)}</td>
-                    <td className="px-3 py-3">{payment.orgName}</td>
-                    <td className="px-3 py-3">{payment.billNumber}</td>
-                    <td className="whitespace-nowrap px-3 py-3 tabular-nums text-muted-foreground">
-                      {payment.expectedEarliest === payment.expectedLatest
-                        ? paymentDate(payment.expectedEarliest)
-                        : `${paymentDate(payment.expectedEarliest)} – ${paymentDate(payment.expectedLatest)}`}
-                    </td>
-                    <td className="px-3 py-3 text-right tabular-nums">{money(payment.amountCents, payment.currency)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      <section className="border border-border bg-card p-5">
+        <h2 className="text-base font-semibold">On the way</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Payments a builder has already released. Arrival dates are estimates from the
+          bank&apos;s normal processing window, not guarantees.
+        </p>
+        {context.inFlightPayments.length === 0 ? (
+          <div className="mt-4 border border-border px-4 py-8 text-center text-sm text-muted-foreground">
+            Nothing on the way right now.
           </div>
-        </section>
-      ) : null}
+        ) : (
+          <>
+            <div className="mt-4 overflow-x-auto border border-border">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border bg-muted/40 text-left text-xs text-muted-foreground">
+                    <th className="px-3 py-2 font-medium">Sent</th>
+                    <th className="px-3 py-2 font-medium">Builder</th>
+                    <th className="px-3 py-2 font-medium">Invoice</th>
+                    <th className="px-3 py-2 font-medium">Expected</th>
+                    <th className="px-3 py-2 text-right font-medium">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {context.inFlightPayments.map((payment) => (
+                    <tr key={payment.id} className="border-b border-border last:border-0">
+                      <td className="whitespace-nowrap px-3 py-3 tabular-nums">{paymentDate(payment.initiatedOn)}</td>
+                      <td className="px-3 py-3">{payment.orgName}</td>
+                      <td className="px-3 py-3">{payment.billNumber}</td>
+                      <td className="whitespace-nowrap px-3 py-3 tabular-nums text-muted-foreground">
+                        {payment.expectedEarliest === payment.expectedLatest
+                          ? paymentDate(payment.expectedEarliest)
+                          : `${paymentDate(payment.expectedEarliest)} – ${paymentDate(payment.expectedLatest)}`}
+                      </td>
+                      <td className="px-3 py-3 text-right tabular-nums">{money(payment.amountCents, payment.currency)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {context.inFlightPaymentsTruncated ? (
+              <TruncationNotice count={context.inFlightPayments.length} noun="in-flight payments" />
+            ) : null}
+          </>
+        )}
+      </section>
 
       <section className="border border-border bg-card p-5">
         <h2 className="text-base font-semibold">Recent payments</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Up to 100 recent payments across every builder you are connected to, however they were sent.
+          Payments from every builder you are connected to, however they were sent.
         </p>
         {context.recentPayments.length === 0 ? (
           <div className="mt-4 border border-border px-4 py-8 text-center text-sm text-muted-foreground">
             No payments recorded yet.
           </div>
         ) : (
-          <div className="mt-4 overflow-x-auto border border-border">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border bg-muted/40 text-left text-xs text-muted-foreground">
-                  <th className="px-3 py-2 font-medium">Date</th>
-                  <th className="px-3 py-2 font-medium">Builder</th>
-                  <th className="px-3 py-2 font-medium">Invoice</th>
-                  <th className="px-3 py-2 font-medium">Method</th>
-                  <th className="px-3 py-2 text-right font-medium">Retainage held</th>
-                  <th className="px-3 py-2 text-right font-medium">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {context.recentPayments.map((payment) => (
-                  <tr key={payment.id} className="border-b border-border last:border-0">
-                    <td className="whitespace-nowrap px-3 py-3 tabular-nums">{paymentDate(payment.paidAt)}</td>
-                    <td className="px-3 py-3">{payment.orgName}</td>
-                    <td className="px-3 py-3">{payment.billNumber}</td>
-                    <td className="px-3 py-3 text-muted-foreground">
-                      {METHOD_LABELS[payment.method] ?? payment.method}
-                      {payment.reference ? (
-                        <span className="mt-0.5 block text-xs">{payment.reference}</span>
-                      ) : null}
-                    </td>
-                    <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
-                      {payment.retainageHeldCents > 0 ? money(payment.retainageHeldCents, payment.currency) : "—"}
-                    </td>
-                    <td className="px-3 py-3 text-right tabular-nums">
-                      {money(payment.amountCents, payment.currency)}
-                    </td>
+          <>
+            <div className="mt-4 overflow-x-auto border border-border">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border bg-muted/40 text-left text-xs text-muted-foreground">
+                    <th className="px-3 py-2 font-medium">Date</th>
+                    <th className="px-3 py-2 font-medium">Builder</th>
+                    <th className="px-3 py-2 font-medium">Invoice</th>
+                    <th className="px-3 py-2 font-medium">Method</th>
+                    <th className="px-3 py-2 text-right font-medium">Retainage held</th>
+                    <th className="px-3 py-2 text-right font-medium">Amount</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {context.recentPayments.map((payment) => (
+                    <tr key={payment.id} className="border-b border-border last:border-0">
+                      <td className="whitespace-nowrap px-3 py-3 tabular-nums">{paymentDate(payment.paidAt)}</td>
+                      <td className="px-3 py-3">{payment.orgName}</td>
+                      <td className="px-3 py-3">{payment.billNumber}</td>
+                      <td className="px-3 py-3 text-muted-foreground">
+                        {METHOD_LABELS[payment.method] ?? payment.method}
+                        {payment.reference ? (
+                          <span className="mt-0.5 block text-xs">{payment.reference}</span>
+                        ) : null}
+                      </td>
+                      <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
+                        {payment.retainageHeldCents > 0 ? money(payment.retainageHeldCents, payment.currency) : "—"}
+                      </td>
+                      <td className="px-3 py-3 text-right tabular-nums">
+                        {money(payment.amountCents, payment.currency)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {context.recentPaymentsTruncated ? (
+              <TruncationNotice count={context.recentPayments.length} noun="most recent payments" />
+            ) : null}
+          </>
         )}
       </section>
     </div>
+  )
+}
+
+/**
+ * Says out loud that the list stopped. A busy vendor silently losing their older
+ * payments off the bottom of a capped table is how "you never paid me" arguments
+ * start.
+ */
+function TruncationNotice({ count, noun }: { count: number; noun: string }) {
+  return (
+    <p className="mt-3 text-xs text-muted-foreground">
+      Showing the {count} {noun}. There are more than this — ask the builder for a full statement if you need one.
+    </p>
+  )
+}
+
+/**
+ * Who may administer this vendor entity.
+ *
+ * This exists because the alternative is worse: without a way to add a second
+ * person, the second administrator at a vendor ends up creating a duplicate Arc
+ * company for the same legal business, with its own payout account. Membership
+ * is the only route onto an existing company — Arc never merges two vendors
+ * because their name, email domain or tax ID look alike.
+ */
+function EntityAdministrators({
+  entityId,
+  legalName,
+  members,
+  pending,
+  run,
+  onChanged,
+  onNotice,
+}: {
+  entityId: string
+  legalName: string
+  members: VendorEntityMember[]
+  pending: boolean
+  run: <T>(
+    action: () => Promise<{ success: true; data: T } | { success: false; error: string }>,
+    onDone: (data: T) => void,
+  ) => void
+  onChanged: () => void
+  onNotice: (message: string) => void
+}) {
+  const [email, setEmail] = useState("")
+  const active = members.filter((member) => member.status === "active")
+  const requests = members.filter((member) => member.status === "invited" && member.invitedByIdentityId === null)
+  const invited = members.filter((member) => member.status === "invited" && member.invitedByIdentityId !== null)
+
+  const invite = () =>
+    run(
+      () => inviteVendorEntityAdministratorAction({ vendor_entity_id: entityId, email: email.trim() }),
+      (data) => {
+        setEmail("")
+        onNotice(data.message)
+        onChanged()
+      },
+    )
+
+  return (
+    <section className="border border-border bg-card p-5">
+      <h2 className="text-base font-semibold">Who can manage payouts for {legalName}</h2>
+      <p className="mt-1 max-w-prose text-sm text-muted-foreground">
+        Administrators can connect this company to a builder and finish payout verification. Add your colleagues here
+        rather than letting them set up a second Arc company for the same business.
+      </p>
+
+      {requests.length > 0 ? (
+        <div className="mt-4 border border-warning/40 bg-warning/5">
+          <p className="border-b border-warning/40 px-4 py-2 text-xs font-medium text-warning">
+            Waiting for your decision
+          </p>
+          <ul className="divide-y divide-border">
+            {requests.map((member) => (
+              <li key={member.membershipId} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-medium">{member.fullName ?? member.email}</span>
+                  <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                    {member.email} · asked to join
+                  </span>
+                </span>
+                <span className="flex gap-2">
+                  <Button
+                    size="sm"
+                    disabled={pending}
+                    onClick={() =>
+                      run(
+                        () => decideVendorEntityJoinRequestAction({ membership_id: member.membershipId, approve: true }),
+                        onChanged,
+                      )
+                    }
+                  >
+                    Approve
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={pending}
+                    onClick={() =>
+                      run(
+                        () => decideVendorEntityJoinRequestAction({ membership_id: member.membershipId, approve: false }),
+                        onChanged,
+                      )
+                    }
+                  >
+                    Decline
+                  </Button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <ul className="mt-4 divide-y border border-border">
+        {[...active, ...invited].map((member) => (
+          <li key={member.membershipId} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-medium">
+                {member.fullName ?? member.email}
+                {member.isSelf ? <span className="ml-2 text-xs font-normal text-muted-foreground">You</span> : null}
+              </span>
+              <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                {member.email} · {ROLE_LABELS[member.role]}
+                {member.status === "invited" ? " · invitation sent" : ""}
+              </span>
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={pending}
+              onClick={() =>
+                run(() => removeVendorEntityMemberAction({ membership_id: member.membershipId }), onChanged)
+              }
+            >
+              {member.isSelf ? "Leave" : member.status === "invited" ? "Cancel" : "Remove"}
+            </Button>
+          </li>
+        ))}
+      </ul>
+
+      <div className="mt-4 flex flex-wrap items-end gap-3">
+        <div className="min-w-56 flex-1 space-y-1.5">
+          <Label htmlFor={`invite-${entityId}`}>Invite a colleague</Label>
+          <Input
+            id={`invite-${entityId}`}
+            type="email"
+            placeholder="name@company.com"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+          />
+        </div>
+        <Button variant="outline" onClick={invite} disabled={pending || email.trim().length === 0}>
+          {pending ? "Sending…" : "Send invitation"}
+        </Button>
+      </div>
+      <p className="mt-2 text-xs text-muted-foreground">
+        They need their own Arc login first. If they do not have one, ask your builder to send them a payment
+        invitation, then invite them here.
+      </p>
+    </section>
   )
 }

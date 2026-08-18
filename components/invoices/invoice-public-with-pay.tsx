@@ -8,6 +8,7 @@ import { Ban, Building2, CheckCircle2, CreditCard, Download, FileText, Link2, Lo
 import type { Invoice, InvoiceLienWaiver } from "@/lib/types"
 import type { Receipt } from "@/lib/types"
 import { INVOICE_WAIVER_TYPE_LABELS } from "@/lib/types"
+import { requotePaymentFeeForAmount, type PaymentFeeQuote } from "@/lib/payments/fee-engine"
 import {
   ArcInvoiceDocument,
   toArcInvoiceData,
@@ -29,19 +30,6 @@ type PaymentProps = {
   }
 }
 
-type PaymentFeeQuote = {
-  method: "ach" | "card"
-  enabled: boolean
-  invoiceBalanceCents: number
-  feeCents: number
-  totalCents: number
-  feePercent: number
-  feeFixedCents: number
-  feeCapCents: number | null
-  label: string
-  disclosure: string
-}
-
 interface Props {
   invoice: Invoice
   payment?: PaymentProps | null
@@ -53,27 +41,6 @@ interface Props {
 function formatMoney(cents?: number | null, currency = "USD") {
   const value = (cents ?? 0) / 100
   return value.toLocaleString("en-US", { style: "currency", currency })
-}
-
-/**
- * Client-side fee preview for a custom (partial) amount. Mirrors calculatePaymentFeeQuote
- * in lib/payments/fees.ts; the server recomputes the authoritative amounts when the
- * payment intent is created.
- */
-function quoteForAmount(base: PaymentFeeQuote, amountCents: number): PaymentFeeQuote {
-  const feeRate = base.feePercent / 100
-  const grossedUpTotal =
-    feeRate > 0 && feeRate < 1
-      ? Math.ceil((amountCents + base.feeFixedCents) / (1 - feeRate))
-      : amountCents + base.feeFixedCents
-  const uncappedFee = Math.max(0, grossedUpTotal - amountCents)
-  const feeCents = base.enabled ? (base.feeCapCents == null ? uncappedFee : Math.min(uncappedFee, base.feeCapCents)) : 0
-  return {
-    ...base,
-    invoiceBalanceCents: amountCents,
-    feeCents,
-    totalCents: amountCents + feeCents,
-  }
 }
 
 // Stripe appearance customization to match app design
@@ -346,7 +313,7 @@ function PaymentSection({
   async function handleMethodSelect(quote: PaymentFeeQuote) {
     if (!quote.enabled || isPaid || isCreatingIntent || unavailableMethods.includes(quote.method)) return
     if (!amountValid || payAmountCents == null) return
-    setSelectedQuote(quoteForAmount(quote, payAmountCents))
+    setSelectedQuote(requotePaymentFeeForAmount(quote, payAmountCents))
     setClientSecret(null)
     setStripeAccountId(null)
     setIntentError(null)
@@ -375,7 +342,7 @@ function PaymentSection({
   }
 
   function renderMethodButton(baseQuote: PaymentFeeQuote) {
-    const quote = amountValid && payAmountCents != null ? quoteForAmount(baseQuote, payAmountCents) : baseQuote
+    const quote = amountValid && payAmountCents != null ? requotePaymentFeeForAmount(baseQuote, payAmountCents) : baseQuote
     const isSelected = selectedQuote?.method === quote.method
     const unavailable = unavailableMethods.includes(quote.method)
     const disabled = !quote.enabled || unavailable || isPaid || isCreatingIntent || !amountValid

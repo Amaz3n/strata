@@ -18,6 +18,7 @@ export default async function PaymentReconciliationPage() {
     listPaymentReconciliations(),
     listOpenPaymentReconciliationExceptions(),
   ])
+  const recentRuns = runs.slice(0, 20)
   return (
     <PageLayout title="Vendor payment reconciliation" breadcrumbs={[{ label: "Payables", href: "/payables" }, { label: "Reconciliation" }]}>
       <div className="mx-auto max-w-6xl space-y-6 p-4">
@@ -58,14 +59,25 @@ export default async function PaymentReconciliationPage() {
 
         <section>
           <h2 className="mb-3 text-sm font-semibold">Recent reconciliations</h2>
-          <div className="divide-y border">
-            {runs.slice(0, 20).map((run) => (
-              <div key={run.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm">
-                <span>{run.provider} · {new Date(run.createdAt).toLocaleString()}</span>
-                <span className="text-muted-foreground">{run.status} · {run.exceptionCount} exception{run.exceptionCount === 1 ? "" : "s"} · {money(run.differenceCents)} difference</span>
-              </div>
-            ))}
-          </div>
+          {recentRuns.length === 0 ? (
+            <p className="border p-6 text-sm text-muted-foreground">
+              No reconciliation has run yet. The daily sweep compares each closed 24-hour period against the payment provider; use “Reconcile last 24 hours” to run one now.
+            </p>
+          ) : (
+            <div className="divide-y border">
+              {recentRuns.map((run) => (
+                <div key={run.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm">
+                  <span>{run.provider} · {new Date(run.createdAt).toLocaleString()}</span>
+                  <span className={run.status === "exceptions" ? "text-warning" : run.status === "failed" ? "text-destructive" : "text-muted-foreground"}>
+                    {run.status} · {run.exceptionCount} exception{run.exceptionCount === 1 ? "" : "s"} · <span className="tabular-nums">{money(run.differenceCents)}</span> difference
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {runs.length > recentRuns.length ? (
+            <p className="mt-2 text-xs text-muted-foreground">Showing the {recentRuns.length} most recent of {runs.length} runs.</p>
+          ) : null}
         </section>
       </div>
     </PageLayout>

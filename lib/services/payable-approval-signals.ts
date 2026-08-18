@@ -74,6 +74,13 @@ export interface PayableApprovalSignals {
 export interface PayableApprovalSignalsResult extends PayableApprovalSignals {
   /** False when both fingerprints matched and the stored assessments were reused. */
   recomputed: boolean
+  /**
+   * The payable's `updated_at` after this assessment. Caching the signals is a
+   * write, so it moves the optimistic-concurrency token an open workspace is
+   * holding; returning it lets the client re-sync instead of failing the next
+   * save with a conflict it did not cause.
+   */
+  updatedAt: string | null
 }
 
 interface SubjectCost {
@@ -314,7 +321,7 @@ export async function assessPayableApprovalSignals(
 
   const { data: billRow, error: billError } = await supabase
     .from("vendor_bills")
-    .select("id, project_id, bill_date, metadata, project:projects(property_type)")
+    .select("id, project_id, bill_date, metadata, updated_at, project:projects(property_type)")
     .eq("org_id", context.orgId)
     .eq("id", billId)
     .maybeSingle()
@@ -322,7 +329,7 @@ export async function assessPayableApprovalSignals(
   if (!billRow) throw new Error("Payable not found")
 
   const projectId = typeof billRow.project_id === "string" ? billRow.project_id : null
-  if (!projectId) return { evenFlow: null, schedule: null, recomputed: false }
+  if (!projectId) return { evenFlow: null, schedule: null, recomputed: false, updatedAt: billRow.updated_at }
 
   await requireAuthorization({
     permission: "bill.read",
@@ -348,7 +355,7 @@ export async function assessPayableApprovalSignals(
 
   const subjectCosts = subjectCostsByCostCode((lineRows ?? []) as unknown as BillLineRow[], projectId)
   // An uncoded bill has nothing to compare and nothing to place on a calendar.
-  if (subjectCosts.length === 0) return { evenFlow: null, schedule: null, recomputed: false }
+  if (subjectCosts.length === 0) return { evenFlow: null, schedule: null, recomputed: false, updatedAt: billRow.updated_at }
 
   const costCodeIds = subjectCosts.map((cost) => cost.costCodeId)
   const posture = getProjectPosture(
@@ -406,7 +413,7 @@ export async function assessPayableApprovalSignals(
   }
 
   const unchanged = evenFlow === storedEvenFlow && schedule === storedSchedule
-  if (unchanged) return { evenFlow, schedule, recomputed: false }
+  if (unchanged) return { evenFlow, schedule, recomputed: false, updatedAt: billRow.updated_at }
 
   // Rebuild the metadata explicitly so an assessment that no longer applies —
   // a project retyped away from production, a schedule that lost its coding —
@@ -417,12 +424,21 @@ export async function assessPayableApprovalSignals(
   if (schedule) nextMetadata.bill_schedule = schedule
   else delete nextMetadata.bill_schedule
 
-  const { error: updateError } = await supabase
+  // Guarded on the token this assessment was computed against. `metadata` is a
+  // whole-object write, so an unguarded update would clobber a coding or
+  // approval edit that landed while these comparables were being read — and
+  // this is a cache, not a decision, so losing the race means recomputing on
+  // the next open rather than overwriting somebody's work.
+  const { data: written, error: updateError } = await supabase
     .from("vendor_bills")
     .update({ metadata: nextMetadata })
     .eq("org_id", context.orgId)
     .eq("id", billId)
+    .eq("updated_at", billRow.updated_at)
+    .select("updated_at")
+    .maybeSingle()
   if (updateError) throw new Error(`Unable to record the approval signals: ${updateError.message}`)
+  if (!written) return { evenFlow, schedule, recomputed: true, updatedAt: null }
 
   await recordEvent({
     orgId: context.orgId,
@@ -440,5 +456,5 @@ export async function assessPayableApprovalSignals(
     },
   })
 
-  return { evenFlow, schedule, recomputed: true }
+  return { evenFlow, schedule, recomputed: true, updatedAt: written.updated_at }
 }

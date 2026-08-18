@@ -108,6 +108,7 @@ interface PayableCreateWorkspaceProps {
   projectId?: string
   projects?: ProjectOption[]
   initialFile?: File | null
+  initialCompanyId?: string | null
   open: boolean
   onOpenChange: (open: boolean) => void
   onSuccess?: () => void
@@ -155,6 +156,7 @@ export function PayableCreateWorkspace({
   projectId,
   projects = [],
   initialFile = null,
+  initialCompanyId = null,
   open,
   onOpenChange,
   onSuccess,
@@ -171,7 +173,7 @@ export function PayableCreateWorkspace({
   const [loadingCompanies, setLoadingCompanies] = useState(false)
 
   const [commitmentId, setCommitmentId] = useState(NO_COMMITMENT)
-  const [companyId, setCompanyId] = useState("")
+  const [companyId, setCompanyId] = useState(initialCompanyId ?? "")
   const [vendorName, setVendorName] = useState("")
   const [taxJurisdictionId, setTaxJurisdictionId] = useState("none")
   const [taxIncludedDollars, setTaxIncludedDollars] = useState("")
@@ -194,7 +196,12 @@ export function PayableCreateWorkspace({
   // Who moves the money. Arc's rail prices a fee and routes for approval; paying
   // it yourself does neither, so the choice has to be made here rather than
   // assumed — most builders pay some vendors by check forever.
-  const [paymentChannel, setPaymentChannel] = useState<"arc" | "external">("arc")
+  // Starts on the path that always works. Arc Pay is only offered once the org
+  // actually has a funding account behind it — defaulting to a rail that is not
+  // switched on would mark every new payable as rail-bound and then refuse to
+  // let anyone pay it by check.
+  const [paymentChannel, setPaymentChannel] = useState<"arc" | "external">("external")
+  const [paymentChannelTouched, setPaymentChannelTouched] = useState(false)
   const [externalMethod, setExternalMethod] = useState<ExternalPaymentMethod>("check")
   const [apFeePolicy, setApFeePolicy] = useState<ApFeePolicy | null>(null)
   const [approvalRouting, setApprovalRouting] = useState<PaymentApprovalRouting | null>(null)
@@ -208,6 +215,10 @@ export function PayableCreateWorkspace({
   const [preferredApproverIds, setPreferredApproverIds] = useState<string[]>([])
   const [requiredPaymentApprovals, setRequiredPaymentApprovals] = useState(1)
   const [requesterMayApprove, setRequesterMayApprove] = useState(false)
+
+  useEffect(() => {
+    if (open && initialCompanyId) setCompanyId(initialCompanyId)
+  }, [initialCompanyId, open])
 
   const [file, setFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
@@ -254,6 +265,8 @@ export function PayableCreateWorkspace({
   const plannedPaymentDate = paymentSchedule === "scheduled" && scheduledPaymentDate
     ? scheduledPaymentDate
     : format(new Date(), "yyyy-MM-dd")
+  /** Whether this org can actually pay on the rail right now. */
+  const arcPayAvailable = fundingSources.length > 0
   const settlementEstimate = paymentChannel === "arc" && settlementWindow
     ? estimateSettlement({ initiatedOn: plannedPaymentDate, window: settlementWindow })
     : null
@@ -305,6 +318,11 @@ export function PayableCreateWorkspace({
       setRequesterMayApprove(result.data.requesterMayApprove)
       setSettlementWindow(result.data.settlementWindow)
       setFundingSources(result.data.fundingSources)
+      // Arc Pay becomes the default only when it is genuinely available, and
+      // never over a choice the user has already made.
+      if (result.data.fundingSources.length > 0) {
+        setPaymentChannel((current) => (paymentChannelTouched ? current : "arc"))
+      }
       setFundingSourceId((current) => current || (
         result.data.fundingSources.find((source) => source.isDefault) ?? result.data.fundingSources[0]
       )?.id || "")
@@ -477,7 +495,7 @@ export function PayableCreateWorkspace({
 
   function applyCompanyPaymentDefaults(company: Company) {
     if (company.default_payment_method === "arc_pay") {
-      setPaymentChannel("arc")
+      if (arcPayAvailable) setPaymentChannel("arc")
       return
     }
     if (company.default_payment_method) {
@@ -701,7 +719,8 @@ export function PayableCreateWorkspace({
     setDescription("")
     setRetainage("")
     setLienWaiver("not_required")
-    setPaymentChannel("arc")
+    setPaymentChannel("external")
+    setPaymentChannelTouched(false)
     setExternalMethod("check")
     setFundingSourceId("")
     setPaymentSchedule("on_approval")
@@ -1110,12 +1129,12 @@ export function PayableCreateWorkspace({
                       <div className="sm:col-span-2">
                         <FieldLabel>Payment method</FieldLabel>
                         <div className="grid border sm:grid-cols-2">
-                          <button type="button" aria-pressed={paymentChannel === "arc"} onClick={() => setPaymentChannel("arc")} className={cn("flex items-start gap-3 px-4 py-3 text-left transition-colors sm:border-r", paymentChannel === "arc" ? "bg-primary/10" : "hover:bg-muted/30")}>
+                          <button type="button" aria-pressed={paymentChannel === "arc"} disabled={!arcPayAvailable} onClick={() => { setPaymentChannelTouched(true); setPaymentChannel("arc") }} className={cn("flex items-start gap-3 px-4 py-3 text-left transition-colors sm:border-r", paymentChannel === "arc" ? "bg-primary/10" : "hover:bg-muted/30", !arcPayAvailable && "cursor-not-allowed opacity-50")}>
                             <Landmark className={cn("mt-0.5 size-4 shrink-0", paymentChannel === "arc" ? "text-primary" : "text-muted-foreground")} />
-                            <span className="min-w-0"><span className="block text-sm font-medium">Pay with Arc Pay</span><span className="mt-0.5 block text-xs text-muted-foreground">Secure bank transfer with approval controls</span></span>
+                            <span className="min-w-0"><span className="block text-sm font-medium">Pay with Arc Pay</span><span className="mt-0.5 block text-xs text-muted-foreground">{arcPayAvailable ? "Secure bank transfer with approval controls" : "Connect a funding account in Settings to turn this on"}</span></span>
                             <Check className={cn("ml-auto size-4 shrink-0 text-primary", paymentChannel === "arc" ? "opacity-100" : "opacity-0")} />
                           </button>
-                          <button type="button" aria-pressed={paymentChannel === "external"} onClick={() => setPaymentChannel("external")} className={cn("flex items-start gap-3 border-t px-4 py-3 text-left transition-colors sm:border-t-0", paymentChannel === "external" ? "bg-primary/10" : "hover:bg-muted/30")}>
+                          <button type="button" aria-pressed={paymentChannel === "external"} onClick={() => { setPaymentChannelTouched(true); setPaymentChannel("external") }} className={cn("flex items-start gap-3 border-t px-4 py-3 text-left transition-colors sm:border-t-0", paymentChannel === "external" ? "bg-primary/10" : "hover:bg-muted/30")}>
                             <CreditCard className={cn("mt-0.5 size-4 shrink-0", paymentChannel === "external" ? "text-primary" : "text-muted-foreground")} />
                             <span className="min-w-0"><span className="block text-sm font-medium">Builder-managed payment</span><span className="mt-0.5 block text-xs text-muted-foreground">Record a check, wire, card, or bank payment</span></span>
                             <Check className={cn("ml-auto size-4 shrink-0 text-primary", paymentChannel === "external" ? "opacity-100" : "opacity-0")} />

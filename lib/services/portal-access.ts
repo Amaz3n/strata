@@ -37,6 +37,7 @@ import {
   cascadeGrantStatusForPortalToken,
   hasExternalPortalGrantForToken,
 } from "@/lib/services/external-portal-auth"
+import { cascadeVendorPaymentAccessForPortalToken } from "@/lib/services/vendor-payment-invitations"
 import {
   clearPinVerification,
   decryptPortalToken,
@@ -297,9 +298,16 @@ export async function validatePortalToken(token: string) {
 }
 
 /**
- * Revoke/pause/resume act on the access record as a whole: the delivery token AND
- * any account grants hanging off it. Killing only the token left a claimed sub
- * signed in; killing only the grant left the link working. One status, both layers.
+ * Revoke/pause/resume act on the access record as a whole: the delivery token,
+ * any account grants hanging off it, AND any vendor payment authority it
+ * established. Killing only the token left a claimed sub signed in; killing only
+ * the grant left the link working; killing both still left a payment
+ * relationship the revoked link is the entire provenance for. One status, every
+ * layer.
+ *
+ * Restoring is asymmetric on purpose: resuming brings the link and the grant
+ * back, but re-opening money movement is a separate, step-up-guarded decision in
+ * `setCompanyPaymentAccessStatus`.
  */
 export async function revokePortalToken(tokenId: string, orgId?: string) {
   const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
@@ -316,6 +324,7 @@ export async function revokePortalToken(tokenId: string, orgId?: string) {
   }
 
   await cascadeGrantStatusForPortalToken({ orgId: resolvedOrgId, tokenId, status: "revoked" })
+  await cascadeVendorPaymentAccessForPortalToken({ orgId: resolvedOrgId, tokenId, status: "revoked" })
 }
 
 export async function pausePortalToken(tokenId: string, orgId?: string) {
@@ -334,6 +343,7 @@ export async function pausePortalToken(tokenId: string, orgId?: string) {
   }
 
   await cascadeGrantStatusForPortalToken({ orgId: resolvedOrgId, tokenId, status: "paused" })
+  await cascadeVendorPaymentAccessForPortalToken({ orgId: resolvedOrgId, tokenId, status: "paused" })
 }
 
 export async function resumePortalToken(tokenId: string, orgId?: string) {
@@ -351,6 +361,10 @@ export async function resumePortalToken(tokenId: string, orgId?: string) {
     throw new Error(`Failed to resume portal token: ${error.message}`)
   }
 
+  // Link and account access come back together. Vendor payment access does not:
+  // starting money movement again is a separate decision that costs a second
+  // factor and re-enters the new-vendor hold, and it lives on the company's
+  // payment card rather than being a side effect of restoring a project link.
   await cascadeGrantStatusForPortalToken({ orgId: resolvedOrgId, tokenId, status: "active" })
 }
 

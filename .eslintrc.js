@@ -105,7 +105,6 @@ const GRANDFATHERED = [
   "components/layout/nav-user.tsx",
   "components/layout/platform-session-control.tsx",
   "components/notifications/notification-item.tsx",
-  "components/payments/pay-link-client.tsx",
   "components/pipeline/lead-status-badge.tsx",
   "components/pipeline/pipeline-attention-strip.tsx",
   "components/pipeline/pipeline-card.tsx",

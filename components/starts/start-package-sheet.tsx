@@ -18,8 +18,9 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Skeleton } from "@/components/ui/skeleton"
 import { Textarea } from "@/components/ui/textarea"
 import { unwrapAction } from "@/lib/action-result"
-import type { StartGateDTO, StartPackageDetailDTO } from "@/lib/services/starts"
+import type { StartGateDTO, StartPackageDetailDTO, SuperintendentCandidateDTO } from "@/lib/services/starts"
 import { mondayOfIsoWeek } from "@/lib/starts/even-flow-math"
+import { superintendentLoad } from "@/lib/starts/superintendent-load"
 import { cn } from "@/lib/utils"
 import {
   attestGateAction, cancelReleaseAction, cancelStartPackageAction, getStartPackageAction,
@@ -35,12 +36,15 @@ const STEP_LABELS: Record<string, string> = {
 /** What an unmet automatic check is actually waiting for, and where to go fix it. */
 const AUTO_GATE_HINTS: Record<string, { hint: string; tab?: string; cta?: string }> = {
   plot_plan: { hint: "No plot plan on file for this house", tab: "documents", cta: "Upload" },
-  selections_locked: { hint: "Selection groups are still open", tab: "selections", cta: "Open selections" },
+  selections_locked: { hint: "This house has no locked selection groups yet — every structural group must exist and be closed", tab: "selections", cta: "Open selections" },
   plan_pinned: { hint: "The lot needs a released plan version and elevation pinned" },
-  price_book: { hint: "Open purchase-order exceptions on this house", tab: "commitments", cta: "Review" },
+  price_book: { hint: "The price book has not been run clean against this house yet — dry-run generation and clear any exceptions", tab: "commitments", cta: "Run generation" },
   budget: { hint: "Generated when the house is released" },
   po_set: { hint: "Generated when the house is released" },
 }
+
+/** Steps whose failure is deliberately non-fatal — the release goes on without them. */
+const NON_FATAL_STEPS = new Set(["notify_trades"])
 
 function gateEvidence(gate: StartGateDTO) {
   if (gate.status === "waived") return `Waived by ${gate.attestedByName ?? "coordinator"}${gate.waivedReason ? ` — ${gate.waivedReason}` : ""}`
@@ -61,7 +65,7 @@ interface Props {
 
 export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, canRelease, onOpenChange, onChanged }: Props) {
   const [pkg, setPkg] = useState<StartPackageDetailDTO | null>(null)
-  const [superintendents, setSuperintendents] = useState<Array<{ id: string; name: string }>>([])
+  const [superintendents, setSuperintendents] = useState<SuperintendentCandidateDTO[]>([])
   const [loading, setLoading] = useState(false)
   const [pending, startTransition] = useTransition()
 
@@ -74,6 +78,7 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
   const [waiveReason, setWaiveReason] = useState("")
   const [cancelOpen, setCancelOpen] = useState(false)
   const [cancelReason, setCancelReason] = useState("")
+  const [dismissedWarning, setDismissedWarning] = useState(false)
 
   async function load(id: string) {
     setLoading(true)
@@ -90,6 +95,7 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
   }
 
   useEffect(() => {
+    setDismissedWarning(false)
     if (!packageId) {
       setPkg(null)
       return
@@ -142,7 +148,21 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
 
   const editable = pkg ? ["open", "ready"].includes(pkg.status) : false
   const gatesLocked = pkg ? ["releasing", "released", "cancelled"].includes(pkg.status) : true
-  const failedStep = pkg?.steps.find((step) => step.status === "failed") ?? null
+  // Only a package that is actually parked in `attention` has a failed release.
+  // A `notify_trades` failure is deliberately non-fatal and leaves a failed row
+  // behind, so keying the banner off "any failed step" put a red "release
+  // failed" banner — with Retry and Cancel buttons that both throw — on houses
+  // that released perfectly.
+  const failedStep = pkg?.status === "attention"
+    ? pkg.steps.find((step) => step.status === "failed" && !NON_FATAL_STEPS.has(step.stepKey))
+      ?? pkg.steps.find((step) => step.status === "failed")
+      ?? null
+    : null
+  const nonFatalFailures = pkg && pkg.status !== "attention"
+    ? pkg.steps.filter((step) => step.status === "failed")
+    : []
+  const assignedSuper = superintendents.find((candidate) => candidate.id === pkg?.superintendentId) ?? null
+  const overloadedSuper = assignedSuper && superintendentLoad(assignedSuper.activeHouses) !== "clear" ? assignedSuper : null
 
   return (
     <>
@@ -174,7 +194,35 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
                       : `Must start by ${formatDay(pkg.mustStartBy)} to hold a ${formatDay(pkg.sale.closingDate)} close · ${pkg.daysToMustStart} days left`}
                   </p>
                 ) : null}
+                {/* A must-start date is only as good as the cycle behind it.
+                    Saying so beats presenting a house-average guess as fact. */}
+                {pkg.mustStartBy && !pkg.cycleDaysConfigured ? (
+                  <p className="text-[11px] text-muted-foreground">
+                    Estimated from a {pkg.cycleDays}-day default cycle — no target cycle is set for {pkg.communityName}.
+                  </p>
+                ) : null}
               </SheetHeader>
+
+              {nonFatalFailures.length && !dismissedWarning ? (
+                <div className="border-b p-5 pb-0">
+                  <div className="flex items-start gap-2 border border-warning/50 bg-warning/5 p-3">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 flex-none text-warning" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-warning">
+                        {nonFatalFailures.length === 1
+                          ? `${STEP_LABELS[nonFatalFailures[0].stepKey] ?? nonFatalFailures[0].stepKey} did not finish`
+                          : `${nonFatalFailures.length} release steps did not finish`}
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        The release completed without them. {nonFatalFailures[0].error ?? "No detail was recorded."}
+                      </p>
+                    </div>
+                    <Button size="sm" variant="ghost" className="h-7 flex-none rounded-none px-2 text-[11px]" onClick={() => setDismissedWarning(true)}>
+                      Dismiss
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
 
               {/* The blocker is the loudest thing in the sheet, because it is the
                   only thing anyone opens this sheet to find out. */}
@@ -191,7 +239,29 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
                         <Button size="sm" className="rounded-none" disabled={pending} onClick={() => runAction(async () => { unwrapAction(await retryReleaseAction(pkg.id)) }, "Release retry queued", "Unable to retry release")}>
                           Retry release
                         </Button>
-                        <Button size="sm" variant="outline" className="rounded-none" disabled={pending} onClick={() => runAction(async () => { unwrapAction(await cancelReleaseAction(pkg.id)) }, "Release cancelled — package returned to ready", "Unable to cancel release")}>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="rounded-none"
+                          disabled={pending}
+                          onClick={() => startTransition(async () => {
+                            try {
+                              const result = unwrapAction(await cancelReleaseAction(pkg.id))
+                              // Cancelling does not un-generate a budget, a
+                              // schedule or a PO set, so the toast says what is
+                              // still on the house rather than "returned to ready".
+                              toast.success("Release cancelled", {
+                                description: result.preserved.length
+                                  ? `${result.preserved.map((step) => STEP_LABELS[step] ?? step).join(", ")} already completed and stay on the house. Re-releasing resumes from there.`
+                                  : "Nothing had been generated yet, so nothing was left behind.",
+                              })
+                              await load(pkg.id)
+                              onChanged()
+                            } catch (error) {
+                              toast.error("Unable to cancel release", { description: error instanceof Error ? error.message : undefined })
+                            }
+                          })}
+                        >
                           Cancel release
                         </Button>
                       </div>
@@ -287,11 +357,35 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
                     <SelectTrigger id="sheet-super" className="h-8 rounded-none text-xs"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="unassigned">Unassigned</SelectItem>
+                      {/* Span of control is the whole decision here — a name
+                          with no house count is not enough to make it. */}
                       {superintendents.map((candidate) => (
-                        <SelectItem key={candidate.id} value={candidate.id}>{candidate.name}</SelectItem>
+                        <SelectItem key={candidate.id} value={candidate.id}>
+                          <span className="flex w-full items-baseline justify-between gap-3">
+                            <span className="truncate">{candidate.name}</span>
+                            <span className={cn(
+                              "flex-none tabular-nums",
+                              superintendentLoad(candidate.activeHouses) === "over" ? "text-destructive"
+                                : superintendentLoad(candidate.activeHouses) === "stretched" ? "text-warning"
+                                  : "text-muted-foreground",
+                            )}>
+                              {candidate.activeHouses} {candidate.activeHouses === 1 ? "house" : "houses"}
+                            </span>
+                          </span>
+                        </SelectItem>
                       ))}
+                      {superintendents.length === 0 ? (
+                        <div className="px-2 py-3 text-center text-[11px] text-muted-foreground">
+                          Nobody in this org holds a field role yet.
+                        </div>
+                      ) : null}
                     </SelectContent>
                   </Select>
+                  {overloadedSuper ? (
+                    <p className="text-[11px] text-warning">
+                      {overloadedSuper.name} already runs {overloadedSuper.activeHouses} houses.
+                    </p>
+                  ) : null}
                 </div>
               </div>
 

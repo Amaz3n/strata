@@ -80,6 +80,7 @@ export function LotInspector({
   community,
   money: lotMoney,
   projects,
+  projectsTruncated,
   canWrite,
   onOpenChange,
 }: {
@@ -88,6 +89,8 @@ export function LotInspector({
   money: LotMoney | null
   /** Homes in this community with no lot yet — the linkage repair path. */
   projects: Array<{ id: string; name: string }>
+  /** True when more free homes exist than this list shows. Said out loud below. */
+  projectsTruncated: boolean
   canWrite: boolean
   onOpenChange: (open: boolean) => void
 }) {
@@ -135,6 +138,11 @@ export function LotInspector({
   // settlement. Offering those values here would let the workbench and the
   // desks that own them drift apart.
   const statusIsOwnedElsewhere = lot != null && !LAND_SETTABLE_LOT_STATUSES.some((value) => value === lot.status)
+
+  // Backward moves in the lot lifecycle. The service refuses them without an
+  // explicit confirmation, so the button says what it is about to undo.
+  const reversingDetach = lot != null && (lot.status === "started" || lot.status === "closed")
+  const reversingAttach = lot != null && lot.status === "closed"
 
   return (
     <Sheet open={Boolean(lot)} onOpenChange={onOpenChange}>
@@ -460,21 +468,32 @@ export function LotInspector({
                       {lot.projectName ?? "Open the home"}
                     </Link>
                     {canWrite ? (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-7 w-full rounded-none text-xs"
-                        disabled={isPending}
-                        onClick={() =>
-                          apply(
-                            () => detachProjectFromLotAction(lot.id, community.id),
-                            "Home detached",
-                            "Unable to detach the home",
-                          )
-                        }
-                      >
-                        Detach home
-                      </Button>
+                      <div className="space-y-1.5">
+                        {/* Pulling a home off a lot that is building or settled is a
+                            backward move in the lot lifecycle, so it takes the same
+                            explicit confirmation `setLotStatus` asks for. */}
+                        {reversingDetach ? (
+                          <p className="text-xs text-warning">
+                            Lot {lotLabel(lot)} is {LOT_STATUS_META[lot.status].label.toLowerCase()}. Detaching reverses
+                            that and returns the lot to inventory.
+                          </p>
+                        ) : null}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 w-full rounded-none text-xs"
+                          disabled={isPending}
+                          onClick={() =>
+                            apply(
+                              () => detachProjectFromLotAction(lot.id, community.id, reversingDetach),
+                              "Home detached",
+                              "Unable to detach the home",
+                            )
+                          }
+                        >
+                          {reversingDetach ? "Detach home anyway" : "Detach home"}
+                        </Button>
+                      </div>
                     ) : null}
                   </div>
                 ) : (
@@ -501,19 +520,30 @@ export function LotInspector({
                             ))}
                           </SelectContent>
                         </Select>
+                        {projectsTruncated ? (
+                          <p className="text-xs text-muted-foreground">
+                            Showing the first {projects.length} unlinked homes. More exist — open the home and link it
+                            from there.
+                          </p>
+                        ) : null}
+                        {reversingAttach ? (
+                          <p className="text-xs text-warning">
+                            Lot {lotLabel(lot)} has closed. Attaching a home reopens it as a house under construction.
+                          </p>
+                        ) : null}
                         <Button
                           size="sm"
                           className="h-7 w-full rounded-none text-xs"
                           disabled={attachTo === NONE || isPending}
                           onClick={() =>
                             apply(
-                              () => attachProjectToLotAction(lot.id, community.id, attachTo),
+                              () => attachProjectToLotAction(lot.id, community.id, attachTo, reversingAttach),
                               "Home attached",
                               "Unable to attach the home",
                             )
                           }
                         >
-                          Attach home
+                          {reversingAttach ? "Attach home anyway" : "Attach home"}
                         </Button>
                       </div>
                     ) : null}

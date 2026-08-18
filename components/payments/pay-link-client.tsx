@@ -102,8 +102,8 @@ function PaymentForm({ invoice, token }: { invoice: Invoice; token: string }) {
           </CardHeader>
           <CardContent className="space-y-4">
             <PaymentElement />
-            {message && <p className="text-sm text-green-700">{message}</p>}
-            {error && <p className="text-sm text-red-600">{error}</p>}
+            {message && <p className="text-sm text-success">{message}</p>}
+            {error && <p className="text-sm text-destructive">{error}</p>}
             <Button className="w-full" disabled={isSubmitting || isPaid || !stripe} onClick={handleSubmit}>
               {isPaid ? "Already paid" : isSubmitting ? "Processing..." : "Pay now"}
             </Button>
@@ -168,7 +168,7 @@ function PayLinkStart({
             <CardTitle className="text-base">Pay securely</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            {error && <p className="text-sm text-red-600">{error}</p>}
+            {error && <p className="text-sm text-destructive">{error}</p>}
             <Button className="w-full" disabled={isPending || isPaid} onClick={onStart}>
               {isPaid ? "Already paid" : isPending ? "Preparing checkout..." : "Continue to secure payment"}
             </Button>

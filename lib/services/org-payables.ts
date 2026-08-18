@@ -42,7 +42,7 @@ const MAX_PAGE_SIZE = 100
 const CLOSED_STATUSES = ["rejected"]
 
 /** Payment-run item statuses that mean the bill is spoken for by the rail. */
-const ACTIVE_RUN_ITEM_STATUSES = [
+export const ACTIVE_RUN_ITEM_STATUSES = [
   "draft",
   "pending_approval",
   "approved",
