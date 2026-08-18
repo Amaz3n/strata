@@ -119,6 +119,36 @@ test("accounting hardening preserves old-code compatibility through deployment",
   assert.match(coding, /typed\?\.counterparty \?\? typed\?\.vendor/)
 })
 
+test("D2 has a Patagonia-specific, read-only, fail-closed preflight", () => {
+  const fs = require("node:fs")
+  const path = require("node:path")
+  const preflight = fs.readFileSync(path.join(__dirname, "../docs/production-expansion/08-accounting-d2-preflight.sql"), "utf8")
+
+  assert.match(preflight, /Patagonia Development LLC/)
+  assert.match(preflight, /9341456671106880/)
+  assert.match(preflight, /blocking_expense_coding/)
+  assert.match(preflight, /blocking_bill_coding/)
+  assert.match(preflight, /pg_get_functiondef/)
+  assert.doesNotMatch(preflight, /\b(?:update|insert|delete|alter|drop|truncate)\s+(?:table\s+)?public\./i)
+  assert.doesNotMatch(preflight, /\bcascade\b/i)
+})
+
+test("the pending D2 finalizer archives legacy values and never overwrites neutral coding", () => {
+  const fs = require("node:fs")
+  const path = require("node:path")
+  const finalizer = fs.readFileSync(path.join(__dirname, "../supabase/pending-migrations/accounting_d2_lossless_finalizer.sql"), "utf8")
+
+  assert.match(finalizer, /accounting_d2_legacy_archive/)
+  assert.match(finalizer, /enable row level security/)
+  assert.match(finalizer, /revoke all .* from public, anon, authenticated/)
+  assert.match(finalizer, /coalesce\(e\.accounting_coding->'expense_account'/)
+  assert.match(finalizer, /coalesce\(b\.accounting_coding->'expense_account'/)
+  assert.match(finalizer, /Patagonia active QBO realm identity changed/)
+  assert.match(finalizer, /non-null legacy\/neutral expense-account conflicts require disposition/)
+  assert.doesNotMatch(finalizer, /drop\s+(?:table|column|view)/i)
+  assert.doesNotMatch(finalizer, /\bcascade\b/i)
+})
+
 test("routing guards, settings, and CDC scheduling are provider-aware", () => {
   const fs = require("node:fs")
   const path = require("node:path")
@@ -168,6 +198,46 @@ test("application accounting workflows depend on the provider seam", () => {
     const source = fs.readFileSync(path.join(__dirname, file), "utf8")
     assert.doesNotMatch(source, /QBOClient/, `${file} bypasses the accounting provider seam`)
   }
+})
+
+test("expense recoding writes only neutral coding and pending ledger state", () => {
+  const fs = require("node:fs")
+  const path = require("node:path")
+  const actions = fs.readFileSync(path.join(__dirname, "../app/(app)/projects/[id]/expenses/actions.ts"), "utf8")
+  const sync = fs.readFileSync(path.join(__dirname, "../lib/services/accounting-sync.ts"), "utf8")
+  const workspace = actions.slice(
+    actions.indexOf("export async function updateProjectExpenseWorkspaceAction"),
+    actions.indexOf("export async function updateProjectExpenseAccountingAction"),
+  )
+  const accounting = actions.slice(
+    actions.indexOf("export async function updateProjectExpenseAccountingAction"),
+    actions.indexOf("export async function syncProjectExpenseToQBOAction"),
+  )
+
+  for (const body of [workspace, accounting]) {
+    assert.match(body, /accounting_coding/)
+    assert.match(body, /markAccountingEntityPending/)
+    assert.doesNotMatch(body, /qbo_sync_(?:status|error)/)
+    assert.doesNotMatch(body, /updateData\.qbo_/)
+  }
+  assert.match(sync, /export async function markAccountingEntityPending/)
+  assert.match(sync, /update\(\{ status: "pending", error_message: null \}\)/)
+})
+
+test("vendor-bill recoding writes neutral coding and resolves linked state from the ledger", () => {
+  const fs = require("node:fs")
+  const path = require("node:path")
+  const bills = fs.readFileSync(path.join(__dirname, "../lib/services/vendor-bills.ts"), "utf8")
+  const update = bills.slice(
+    bills.indexOf("export async function updateVendorBillStatus"),
+    bills.indexOf("export async function", bills.indexOf("export async function updateVendorBillStatus") + 1),
+  )
+
+  assert.match(update, /accounting_coding = buildAccountingCoding/)
+  assert.match(update, /getAccountingSyncState/)
+  assert.match(update, /billSyncState\?\.externalId/)
+  assert.doesNotMatch(update, /updateData\.qbo_(?:expense|ap)_account/)
+  assert.doesNotMatch(update, /updateData\.qbo_(?:sync_status|sync_error|vendor)/)
 })
 
 // ---------------------------------------------------------------------------

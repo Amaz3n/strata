@@ -21,7 +21,8 @@ import { APPROVAL_GATE_REASONS, loadApprovalGateSettings } from "@/lib/financial
 import { isCostDrivenBillingModel } from "@/lib/financials/billing-model"
 import { payableOutstandingCents } from "@/lib/financials/payables-rules"
 import { ACTIVE_RUN_ITEM_STATUSES } from "@/lib/services/org-payables"
-import { accountingReference, buildAccountingCoding, readCodingSource, type CodingSource } from "@/lib/services/accounting-coding"
+import { accountingDimension, accountingReference, buildAccountingCoding, readCodingSource, type CodingSource } from "@/lib/services/accounting-coding"
+import { getAccountingSyncState } from "@/lib/services/accounting-sync-state"
 import { assertBillReleasable, type PaymentReleaseEvidence } from "@/lib/services/payment-holds"
 import { requireRecentPaymentStepUp } from "@/lib/services/payment-step-up"
 import { evaluateAndAutoApproveVendorBill } from "@/lib/services/invoice-auto-approval"
@@ -258,10 +259,6 @@ export interface VendorBillActualLine {
   qbo_vendor_id?: string
   qbo_vendor_name?: string
   accounting_dimensions?: Record<string, { id: string; name: string }>
-}
-
-function linesHaveQboExpenseCoding(lines: Array<{ qbo_expense_account_id?: string | null }>) {
-  return lines.length > 0 && lines.every((line) => Boolean(line.qbo_expense_account_id))
 }
 
 // Returns the single value shared by every line, or undefined when the lines disagree
@@ -1504,71 +1501,59 @@ export async function updateVendorBillStatus({
     updateData.payment_method = parsed.payment_method
   }
 
-  // Tracks whether any field that QuickBooks cares about (expense/AP account, vendor) changed.
+  // Tracks whether any field the accounting provider cares about (expense/AP
+  // account, counterparty) changed.
   // Used below to re-push the recode to an already-linked QBO bill even when the bill isn't
   // transitioning into an approved/paid status (e.g. recoding a still-pending imported bill).
-  let qboCodingChanged = false
-
-  if (parsed.qbo_expense_account_id !== undefined) {
-    updateData.qbo_expense_account_id = parsed.qbo_expense_account_id || null
-    updateData.qbo_expense_account_name = parsed.qbo_expense_account_name || null
-    if (!isVendorCredit && existing.qbo_expense_account_id !== parsed.qbo_expense_account_id) {
-      updateData.qbo_sync_status = "pending"
-      updateData.qbo_sync_error = null
-      qboCodingChanged = true
-    }
-  }
-
-  if (parsed.qbo_ap_account_id !== undefined) {
-    updateData.qbo_ap_account_id = parsed.qbo_ap_account_id || null
-    updateData.qbo_ap_account_name = parsed.qbo_ap_account_name || null
-    if (!isVendorCredit && existing.qbo_ap_account_id !== parsed.qbo_ap_account_id) {
-      updateData.qbo_sync_status = "pending"
-      updateData.qbo_sync_error = null
-      qboCodingChanged = true
-    }
-  }
+  const existingExpenseAccount = accountingReference(existing.accounting_coding, "expense_account")
+  const existingApAccount = accountingReference(existing.accounting_coding, "ap_account")
+  const existingCounterparty = accountingReference(existing.accounting_coding, "counterparty")
+  const existingClass = accountingDimension(existing.accounting_coding, "class")
+  const nextExpenseAccountId = parsed.qbo_expense_account_id !== undefined
+    ? parsed.qbo_expense_account_id || null
+    : existingExpenseAccount?.id ?? existing.qbo_expense_account_id ?? null
+  const nextExpenseAccountName = parsed.qbo_expense_account_id !== undefined
+    ? parsed.qbo_expense_account_name || null
+    : existingExpenseAccount?.name ?? existing.qbo_expense_account_name ?? null
+  const nextApAccountId = parsed.qbo_ap_account_id !== undefined
+    ? parsed.qbo_ap_account_id || null
+    : existingApAccount?.id ?? existing.qbo_ap_account_id ?? null
+  const nextApAccountName = parsed.qbo_ap_account_id !== undefined
+    ? parsed.qbo_ap_account_name || null
+    : existingApAccount?.name ?? existing.qbo_ap_account_name ?? null
+  let nextCounterpartyId = existingCounterparty?.id ?? existing.qbo_vendor_id ?? null
+  let nextCounterpartyName = existingCounterparty?.name ?? existing.qbo_vendor_name ?? null
 
   if (parsed.company_id !== undefined) {
     updateData.company_id = parsed.company_id
+    // A selected company resolves through accounting_counterparty_links. Clear
+    // a stale direct override rather than cloning a provider id onto the bill.
     if (parsed.company_id) {
-      const { data: comp } = await supabase.from("companies").select("qbo_vendor_id, qbo_vendor_name, name").eq("id", parsed.company_id).maybeSingle()
-      if (comp) {
-        updateData.qbo_vendor_id = comp.qbo_vendor_id ?? null
-        updateData.qbo_vendor_name = comp.qbo_vendor_name ?? comp.name ?? null
-      }
-    } else {
-      updateData.qbo_vendor_id = null
-      updateData.qbo_vendor_name = null
-    }
-    if (!isVendorCredit && existing.company_id !== parsed.company_id) {
-      updateData.qbo_sync_status = "pending"
-      updateData.qbo_sync_error = null
-      qboCodingChanged = true
+      nextCounterpartyId = null
+      nextCounterpartyName = null
     }
   }
 
   if (parsed.qbo_vendor_id !== undefined) {
-    updateData.qbo_vendor_id = parsed.qbo_vendor_id || null
-    updateData.qbo_vendor_name = parsed.qbo_vendor_name || null
-    if (!isVendorCredit && existing.qbo_vendor_id !== parsed.qbo_vendor_id) {
-      updateData.qbo_sync_status = "pending"
-      updateData.qbo_sync_error = null
-      qboCodingChanged = true
-    }
+    nextCounterpartyId = parsed.qbo_vendor_id || null
+    nextCounterpartyName = parsed.qbo_vendor_name || null
   }
 
-  const existingExpenseAccount = accountingReference(existing.accounting_coding, "expense_account")
-  const existingApAccount = accountingReference(existing.accounting_coding, "ap_account")
-  const existingCounterparty = accountingReference(existing.accounting_coding, "counterparty")
   updateData.accounting_coding = buildAccountingCoding({
-    expenseAccountId: updateData.qbo_expense_account_id ?? existingExpenseAccount?.id ?? existing.qbo_expense_account_id,
-    expenseAccountName: updateData.qbo_expense_account_name ?? existingExpenseAccount?.name ?? existing.qbo_expense_account_name,
-    apAccountId: updateData.qbo_ap_account_id ?? existingApAccount?.id ?? existing.qbo_ap_account_id,
-    apAccountName: updateData.qbo_ap_account_name ?? existingApAccount?.name ?? existing.qbo_ap_account_name,
-    counterpartyId: updateData.qbo_vendor_id ?? existingCounterparty?.id ?? existing.qbo_vendor_id,
-    counterpartyName: updateData.qbo_vendor_name ?? existingCounterparty?.name ?? existing.qbo_vendor_name,
+    expenseAccountId: nextExpenseAccountId,
+    expenseAccountName: nextExpenseAccountName,
+    apAccountId: nextApAccountId,
+    apAccountName: nextApAccountName,
+    counterpartyId: nextCounterpartyId,
+    counterpartyName: nextCounterpartyName,
+    classId: existingClass?.id,
+    className: existingClass?.name,
   })
+  const accountingCodingChanged =
+    existingExpenseAccount?.id !== (nextExpenseAccountId ?? undefined) ||
+    existingApAccount?.id !== (nextApAccountId ?? undefined) ||
+    existingCounterparty?.id !== (nextCounterpartyId ?? undefined) ||
+    existing.company_id !== (parsed.company_id ?? existing.company_id)
 
   if (parsed.status === "approved" && !existing.approved_at) {
     updateData.approved_at = new Date().toISOString()
@@ -1616,12 +1601,12 @@ export async function updateVendorBillStatus({
         amount_cents: line.amount_cents,
         project_id: line.project_id ?? existing.project_id ?? null,
         billable_to_customer: line.billable_to_customer,
-        qbo_expense_account_id: line.qbo_expense_account_id ?? parsed.qbo_expense_account_id ?? existing.qbo_expense_account_id ?? undefined,
-        qbo_expense_account_name: line.qbo_expense_account_name ?? parsed.qbo_expense_account_name ?? existing.qbo_expense_account_name ?? undefined,
-        qbo_ap_account_id: line.qbo_ap_account_id ?? parsed.qbo_ap_account_id ?? existing.qbo_ap_account_id ?? undefined,
-        qbo_ap_account_name: line.qbo_ap_account_name ?? parsed.qbo_ap_account_name ?? existing.qbo_ap_account_name ?? undefined,
-        qbo_vendor_id: line.qbo_vendor_id ?? parsed.qbo_vendor_id ?? existing.qbo_vendor_id ?? undefined,
-        qbo_vendor_name: line.qbo_vendor_name ?? parsed.qbo_vendor_name ?? existing.qbo_vendor_name ?? undefined,
+        qbo_expense_account_id: line.qbo_expense_account_id ?? nextExpenseAccountId ?? undefined,
+        qbo_expense_account_name: line.qbo_expense_account_name ?? nextExpenseAccountName ?? undefined,
+        qbo_ap_account_id: line.qbo_ap_account_id ?? nextApAccountId ?? undefined,
+        qbo_ap_account_name: line.qbo_ap_account_name ?? nextApAccountName ?? undefined,
+        qbo_vendor_id: line.qbo_vendor_id ?? nextCounterpartyId ?? undefined,
+        qbo_vendor_name: line.qbo_vendor_name ?? nextCounterpartyName ?? undefined,
         accounting_dimensions: line.accounting_dimensions,
       }))
     : []
@@ -1634,7 +1619,7 @@ export async function updateVendorBillStatus({
   // from "the person saved this bill", and the rule engine cannot tell whether
   // it was confirmed or contradicted — the two defects that made the zero-touch
   // metric unreadable and retired rules on sight.
-  const codingMayChange = Boolean(explicitLines) || Boolean(parsed.cost_code_id) || isApprovedOrReleased || qboCodingChanged
+  const codingMayChange = Boolean(explicitLines) || Boolean(parsed.cost_code_id) || isApprovedOrReleased || accountingCodingChanged
   let priorCoding: CodingLesson = { costCodeId: null, budgetLineId: null, lineSplits: null }
   if (codingMayChange) {
     const { data: priorLines, error: priorLinesError } = await supabase
@@ -1690,12 +1675,12 @@ export async function updateVendorBillStatus({
                 amount_cents: totalCents,
                 project_id: existing.project_id ?? null,
                 billable_to_customer: undefined,
-                qbo_expense_account_id: parsed.qbo_expense_account_id ?? existing.qbo_expense_account_id ?? undefined,
-                qbo_expense_account_name: parsed.qbo_expense_account_name ?? existing.qbo_expense_account_name ?? undefined,
-                qbo_ap_account_id: parsed.qbo_ap_account_id ?? existing.qbo_ap_account_id ?? undefined,
-                qbo_ap_account_name: parsed.qbo_ap_account_name ?? existing.qbo_ap_account_name ?? undefined,
-                qbo_vendor_id: parsed.qbo_vendor_id ?? existing.qbo_vendor_id ?? undefined,
-                qbo_vendor_name: parsed.qbo_vendor_name ?? existing.qbo_vendor_name ?? undefined,
+                qbo_expense_account_id: nextExpenseAccountId ?? undefined,
+                qbo_expense_account_name: nextExpenseAccountName ?? undefined,
+                qbo_ap_account_id: nextApAccountId ?? undefined,
+                qbo_ap_account_name: nextApAccountName ?? undefined,
+                qbo_vendor_id: nextCounterpartyId ?? undefined,
+                qbo_vendor_name: nextCounterpartyName ?? undefined,
                 // Dimensions live on the line, not the bill header, so a line Arc
                 // synthesizes for an uncoded bill has none to inherit.
                 accounting_dimensions: undefined,
@@ -1712,11 +1697,6 @@ export async function updateVendorBillStatus({
     const actualTotal = actualLines.reduce((sum, line) => sum + line.amount_cents, 0)
     if (actualTotal !== totalCents) {
       throw new Error("Bill coding must equal the bill amount")
-    }
-
-    if (!isVendorCredit && isApprovedOrReleased && !updateData.qbo_expense_account_id && linesHaveQboExpenseCoding(actualLines)) {
-      updateData.qbo_sync_status = "pending"
-      updateData.qbo_sync_error = null
     }
 
     if (["approved", "partial", "paid"].includes(String(existing.status))) {
@@ -1873,8 +1853,6 @@ export async function updateVendorBillStatus({
         approved_by: existing.approved_by ?? null,
         paid_at: existing.paid_at ?? null,
         paid_cents: existing.paid_cents ?? null,
-        qbo_sync_status: existing.qbo_sync_status ?? null,
-        qbo_sync_error: existing.qbo_sync_error ?? null,
       })
       .eq("org_id", resolvedOrgId)
       .eq("id", billId)
@@ -1926,9 +1904,14 @@ export async function updateVendorBillStatus({
   // different question from `PAYABLE_VENDOR_BILL_STATUSES`, so read the note there before editing.
   // enqueueVendorBillSync is the durable, deduped path: it respects auto-sync, skips inbound-only
   // imports (isSyncPushBlocked), and is drained with retries by the process-outbox cron.
-  const billLinkedToQbo = Boolean(data.qbo_id)
+  const billSyncState = await getAccountingSyncState(supabase, {
+    orgId: resolvedOrgId,
+    entityType: isVendorCredit ? "vendor_credit" : "bill",
+    entityId: billId,
+  })
+  const billLinkedToQbo = Boolean(billSyncState?.externalId)
   const shouldEnqueueForStatus = isSyncableVendorBillStatus(finalStatus)
-  const shouldEnqueueForRecode = billLinkedToQbo && qboCodingChanged
+  const shouldEnqueueForRecode = billLinkedToQbo && accountingCodingChanged
   if (shouldEnqueueForStatus || shouldEnqueueForRecode) {
     await enqueueVendorBillSync(billId, resolvedOrgId)
   }
@@ -2004,7 +1987,7 @@ export async function updateVendorBillStatus({
   // predictable vendor there is, so the split itself is the lesson.
   const learnedLine = actualLines.length === 1 ? actualLines[0] : null
   const codingLesson = buildCodingLesson(actualLines)
-  const codingWasTouched = Boolean(learnedLine?.cost_code_id || codingLesson.costCodeId || codingLesson.lineSplits || parsed.cost_code_id || qboCodingChanged)
+  const codingWasTouched = Boolean(learnedLine?.cost_code_id || codingLesson.costCodeId || codingLesson.lineSplits || parsed.cost_code_id || accountingCodingChanged)
   if (codingWasTouched) {
     const nextCostCodeId = learnedLine?.cost_code_id ?? codingLesson.costCodeId ?? parsed.cost_code_id ?? null
     const nextBudgetLineId = learnedLine?.budget_line_id ?? codingLesson.budgetLineId ?? null

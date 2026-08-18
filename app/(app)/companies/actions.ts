@@ -6,6 +6,7 @@ import { archiveCompany, createCompany, getCompany, getCompanyProjects, listComp
 import { requireOrgContext } from "@/lib/services/context"
 import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 import { getProvider } from "@/lib/integrations/accounting/registry"
+import { ACCOUNTING_PROVIDERS } from "@/lib/integrations/accounting/catalog"
 import {
   getCompanyComplianceStatus,
   getCompanyRequirements,
@@ -130,20 +131,24 @@ export async function getCompanyAction(companyId: string) {
       return { company, projects }
 }
 
-export async function getCompanyQboVendorContextAction() {
+export async function getCompanyAccountingVendorContextAction() {
       const { orgId } = await requireOrgContext()
       const target = await resolveAccountingTarget({ orgId })
       const provider = target ? getProvider(target.connection.provider) : null
       if (!target || !provider?.searchCounterparties) {
-        return { enabled: false, vendors: [] }
+        return { enabled: false, providerName: null, canCreate: false, vendors: [] }
       }
       return {
         enabled: true,
+        // The connected provider names itself; nothing downstream may assume QuickBooks.
+        providerName:
+          ACCOUNTING_PROVIDERS[target.connection.provider]?.name ?? target.connection.label,
+        canCreate: Boolean(provider.createCounterparty),
         vendors: await provider.searchCounterparties({ connectionId: target.connection.id, role: "vendor", term: "" }).catch(() => []),
       }
 }
 
-export async function linkCompanyQboVendorAction(companyId: string, vendor: { id: string; name: string }) {
+export async function linkCompanyAccountingVendorAction(companyId: string, vendor: { id: string; name: string }) {
   return run(async () => {
       const { supabase, orgId } = await requireOrgContext()
       const target = await resolveAccountingTarget({ orgId })
@@ -157,7 +162,7 @@ export async function linkCompanyQboVendorAction(companyId: string, vendor: { id
   })
 }
 
-export async function createQboVendorForCompanyAction(companyId: string) {
+export async function createAccountingVendorForCompanyAction(companyId: string) {
   return run(async () => {
       const { supabase, orgId } = await requireOrgContext()
       const [company, target] = await Promise.all([getCompany(companyId), resolveAccountingTarget({ orgId })])

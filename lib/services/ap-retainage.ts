@@ -46,7 +46,7 @@ export async function releaseRetainage(input: ReleaseRetainageInput, orgId?: str
 
   const { data: bill, error } = await supabase
     .from("vendor_bills")
-    .select("id,org_id,project_id,company_id,commitment_id,bill_number,currency,retainage_cents,retainage_released_cents,status,qbo_expense_account_id,qbo_expense_account_name,qbo_ap_account_id,qbo_ap_account_name,qbo_vendor_id,qbo_vendor_name")
+    .select("id,org_id,project_id,company_id,commitment_id,bill_number,currency,retainage_cents,retainage_released_cents,status,accounting_coding")
     .eq("org_id", context.orgId)
     .eq("id", parsed.bill_id)
     .maybeSingle()
@@ -103,15 +103,11 @@ export async function releaseRetainage(input: ReleaseRetainageInput, orgId?: str
       total_cents: amountCents,
       currency: bill.currency ?? "usd",
       retainage_cents: 0,
-      // Carried from the original so the release syncs to the same vendor and
-      // accounts. Without these the release reached the accounting integration
-      // as an unlinked, uncoded bill.
-      qbo_expense_account_id: bill.qbo_expense_account_id,
-      qbo_expense_account_name: bill.qbo_expense_account_name,
-      qbo_ap_account_id: bill.qbo_ap_account_id,
-      qbo_ap_account_name: bill.qbo_ap_account_name,
-      qbo_vendor_id: bill.qbo_vendor_id,
-      qbo_vendor_name: bill.qbo_vendor_name,
+      // Neutral coding is the canonical account/dimension payload. The retained
+      // company_id resolves the connection-scoped vendor through
+      // accounting_counterparty_links; copying legacy QBO columns here would
+      // create new rows that cannot survive D2.
+      accounting_coding: bill.accounting_coding ?? {},
       metadata: {
         source: "retainage_release",
         parent_bill_id: bill.id,

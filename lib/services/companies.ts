@@ -19,6 +19,7 @@ import {
   type CompanyPaymentReadinessStatus,
 } from "@/lib/services/vendor-payment-invitations"
 import { payableOutstandingCents } from "@/lib/financials/payables-rules"
+import { PAYABLE_VENDOR_BILL_STATUSES } from "@/lib/financials/ledger-status"
 
 export type ClientCompanyReceivableProject = PartyReceivableProject
 export type ClientCompanyReceivablesSummary = PartyReceivablesSummary
@@ -569,7 +570,7 @@ export async function getVendorPayableProfile(
           .select("total_cents,paid_cents,retainage_cents")
           .eq("org_id", resolvedOrgId)
           .eq("company_id", companyId)
-          .in("status", ["pending", "approved", "partial"])
+          .in("status", [...PAYABLE_VENDOR_BILL_STATUSES])
           .or(excludeCredits)
           .limit(500)
       : Promise.resolve({ data: [] }),

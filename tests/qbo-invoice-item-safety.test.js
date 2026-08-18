@@ -41,6 +41,23 @@ test("QBO invoice sync honors the invoice-only switch and inbound ownership", ()
   assert.match(adapter, /connectionSettings\.sync_invoices === false/)
   assert.match(adapter, /imported_from_qbo === true/)
   assert.match(adapter, /accounting_push_adopted !== true/)
+
+  const invoiceSync = adapter.slice(
+    adapter.indexOf("export async function syncInvoiceToQBO"),
+    adapter.indexOf("export async function forceSyncInvoiceToQBO"),
+  )
+  assert.doesNotMatch(invoiceSync, /qbo_sync_status/)
+  assert.doesNotMatch(invoiceSync, /qbo_synced_at/)
+  assert.match(invoiceSync, /select\("external_id, external_version"\)/)
+})
+
+test("retainage releases preserve neutral accounting coding without legacy QBO columns", () => {
+  const retainage = read("lib/services/ap-retainage.ts")
+
+  assert.match(retainage, /status,accounting_coding/)
+  assert.match(retainage, /accounting_coding: bill\.accounting_coding \?\? \{\}/)
+  assert.doesNotMatch(retainage, /qbo_(?:expense|ap)_account_(?:id|name)/)
+  assert.doesNotMatch(retainage, /qbo_vendor_(?:id|name)/)
 })
 
 test("provider invoice-line links keep item identity separate from account coding", () => {

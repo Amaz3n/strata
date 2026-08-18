@@ -42,8 +42,9 @@ test("invoice void sync treats a missing QBO invoice as success and preserves it
   )
 
   assert.match(voidBranch, /if \(!latestInvoice\)/)
+  assert.match(voidBranch, /await upsertSyncRecord\(/)
   assert.match(voidBranch, /qbo_id: existingQboId/)
-  assert.match(voidBranch, /qbo_sync_status: "synced"/)
+  assert.doesNotMatch(voidBranch, /qbo_sync_status/)
   assert.match(voidBranch, /invoice_void_sync_already_deleted/)
   assert.match(voidBranch, /already_deleted: true/)
 })

@@ -18,9 +18,9 @@ import {
 } from "@/lib/services/cost-plus"
 import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 import { getProvider } from "@/lib/integrations/accounting/registry"
-import { processAccountingPush } from "@/lib/services/accounting-sync"
+import { markAccountingEntityPending, processAccountingPush } from "@/lib/services/accounting-sync"
 import { requireAuthorization } from "@/lib/services/authorization"
-import { buildAccountingCoding } from "@/lib/services/accounting-coding"
+import { accountingReference, buildAccountingCoding } from "@/lib/services/accounting-coding"
 import { recordCodingTouch } from "@/lib/services/books/coding-rules"
 
 import { unwrapAction, actionError, type ActionResult  } from "@/lib/action-result"
@@ -757,7 +757,7 @@ export async function updateProjectExpenseWorkspaceAction(
 
       const { data: existing, error: existingError } = await supabase
         .from("project_expenses")
-        .select("id, cost_code_id, budget_line_id, qbo_transaction_type, qbo_expense_account_id, qbo_payment_account_id, qbo_ap_account_id, qbo_vendor_id, qbo_sync_status")
+        .select("id, cost_code_id, budget_line_id, accounting_coding")
         .eq("org_id", orgId)
         .eq("project_id", projectId)
         .eq("id", expenseId)
@@ -765,27 +765,19 @@ export async function updateProjectExpenseWorkspaceAction(
       if (existingError || !existing) throw new Error("Expense not found")
 
       const { details, accounting } = input
+      const nextAccountingCoding = buildAccountingCoding({
+        transactionType: accounting.qboTransactionType,
+        expenseAccountId: accounting.qboExpenseAccountId,
+        expenseAccountName: accounting.qboExpenseAccountName,
+        paymentAccountId: accounting.qboPaymentAccountId,
+        paymentAccountName: accounting.qboPaymentAccountName,
+        apAccountId: accounting.qboApAccountId,
+        apAccountName: accounting.qboApAccountName,
+        counterpartyId: accounting.qboVendorId,
+        counterpartyName: accounting.qboVendorName,
+      })
       const updateData: Record<string, any> = {
-        accounting_coding: buildAccountingCoding({
-          transactionType: accounting.qboTransactionType,
-          expenseAccountId: accounting.qboExpenseAccountId,
-          expenseAccountName: accounting.qboExpenseAccountName,
-          paymentAccountId: accounting.qboPaymentAccountId,
-          paymentAccountName: accounting.qboPaymentAccountName,
-          apAccountId: accounting.qboApAccountId,
-          apAccountName: accounting.qboApAccountName,
-          counterpartyId: accounting.qboVendorId,
-          counterpartyName: accounting.qboVendorName,
-        }),
-        qbo_transaction_type: accounting.qboTransactionType ?? null,
-        qbo_expense_account_id: accounting.qboExpenseAccountId || null,
-        qbo_expense_account_name: accounting.qboExpenseAccountName || null,
-        qbo_payment_account_id: accounting.qboPaymentAccountId || null,
-        qbo_payment_account_name: accounting.qboPaymentAccountName || null,
-        qbo_ap_account_id: accounting.qboApAccountId || null,
-        qbo_ap_account_name: accounting.qboApAccountName || null,
-        qbo_vendor_id: accounting.qboVendorId || null,
-        qbo_vendor_name: accounting.qboVendorName || null,
+        accounting_coding: nextAccountingCoding,
       }
       if ("description" in details) updateData.description = details.description?.trim() || null
       if ("costCodeId" in details) updateData.cost_code_id = details.costCodeId || null
@@ -793,16 +785,13 @@ export async function updateProjectExpenseWorkspaceAction(
       if ("expenseDate" in details && details.expenseDate) updateData.expense_date = details.expenseDate
       if ("paymentMethod" in details) updateData.payment_method = details.paymentMethod || null
 
+      const existingCoding = (existing.accounting_coding as Record<string, unknown> | null) ?? {}
       const codingChanged =
-        updateData.qbo_transaction_type !== existing.qbo_transaction_type ||
-        updateData.qbo_expense_account_id !== existing.qbo_expense_account_id ||
-        updateData.qbo_payment_account_id !== existing.qbo_payment_account_id ||
-        updateData.qbo_ap_account_id !== existing.qbo_ap_account_id ||
-        updateData.qbo_vendor_id !== existing.qbo_vendor_id
-      if (codingChanged) {
-        updateData.qbo_sync_error = null
-        if (existing.qbo_sync_status === "synced") updateData.qbo_sync_status = "pending"
-      }
+        (existingCoding.transaction_type ?? null) !== (nextAccountingCoding.transaction_type ?? null) ||
+        accountingReference(existingCoding, "expense_account")?.id !== nextAccountingCoding.expense_account?.id ||
+        accountingReference(existingCoding, "payment_account")?.id !== nextAccountingCoding.payment_account?.id ||
+        accountingReference(existingCoding, "ap_account")?.id !== nextAccountingCoding.ap_account?.id ||
+        accountingReference(existingCoding, "counterparty")?.id !== nextAccountingCoding.counterparty?.id
 
       const { error } = await supabase
         .from("project_expenses")
@@ -821,6 +810,10 @@ export async function updateProjectExpenseWorkspaceAction(
       })
 
       await replaceProjectExpenseLines({ expenseId, lines: input.lines })
+
+      if (codingChanged) {
+        await markAccountingEntityPending({ orgId, entityType: "project_expense", entityId: expenseId, projectId })
+      }
 
       revalidate(projectId)
       return await listProjectExpensesAction(projectId)
@@ -847,7 +840,7 @@ export async function updateProjectExpenseAccountingAction(
 
       const { data: existing, error: existingError } = await supabase
         .from("project_expenses")
-        .select("id, project_id, qbo_transaction_type, qbo_expense_account_id, qbo_payment_account_id, qbo_ap_account_id, qbo_vendor_id, qbo_sync_status")
+        .select("id, project_id, accounting_coding")
         .eq("org_id", orgId)
         .eq("project_id", projectId)
         .eq("id", expenseId)
@@ -857,27 +850,7 @@ export async function updateProjectExpenseAccountingAction(
         throw new Error("Expense not found")
       }
 
-      const normalized = {
-        qbo_transaction_type: input.qboTransactionType ?? null,
-        qbo_expense_account_id: input.qboExpenseAccountId || null,
-        qbo_expense_account_name: input.qboExpenseAccountName || null,
-        qbo_payment_account_id: input.qboPaymentAccountId || null,
-        qbo_payment_account_name: input.qboPaymentAccountName || null,
-        qbo_ap_account_id: input.qboApAccountId || null,
-        qbo_ap_account_name: input.qboApAccountName || null,
-        qbo_vendor_id: input.qboVendorId || null,
-        qbo_vendor_name: input.qboVendorName || null,
-      }
-
-      const changed =
-        normalized.qbo_transaction_type !== existing.qbo_transaction_type ||
-        normalized.qbo_expense_account_id !== existing.qbo_expense_account_id ||
-        normalized.qbo_payment_account_id !== existing.qbo_payment_account_id ||
-        normalized.qbo_ap_account_id !== existing.qbo_ap_account_id ||
-        normalized.qbo_vendor_id !== existing.qbo_vendor_id
-
-      const updateData: Record<string, any> = { ...normalized }
-      updateData.accounting_coding = buildAccountingCoding({
+      const accountingCoding = buildAccountingCoding({
         transactionType: input.qboTransactionType,
         expenseAccountId: input.qboExpenseAccountId,
         expenseAccountName: input.qboExpenseAccountName,
@@ -888,22 +861,27 @@ export async function updateProjectExpenseAccountingAction(
         counterpartyId: input.qboVendorId,
         counterpartyName: input.qboVendorName,
       })
-      if (changed && existing.qbo_sync_status === "synced") {
-        updateData.qbo_sync_status = "pending"
-      }
-      if (changed) {
-        updateData.qbo_sync_error = null
-      }
+      const existingCoding = (existing.accounting_coding as Record<string, unknown> | null) ?? {}
+      const changed =
+        (existingCoding.transaction_type ?? null) !== (accountingCoding.transaction_type ?? null) ||
+        accountingReference(existingCoding, "expense_account")?.id !== accountingCoding.expense_account?.id ||
+        accountingReference(existingCoding, "payment_account")?.id !== accountingCoding.payment_account?.id ||
+        accountingReference(existingCoding, "ap_account")?.id !== accountingCoding.ap_account?.id ||
+        accountingReference(existingCoding, "counterparty")?.id !== accountingCoding.counterparty?.id
 
       const { error } = await supabase
         .from("project_expenses")
-        .update(updateData)
+        .update({ accounting_coding: accountingCoding })
         .eq("org_id", orgId)
         .eq("project_id", projectId)
         .eq("id", expenseId)
 
       if (error) {
         throw new Error(`Failed to update QuickBooks coding: ${error.message}`)
+      }
+
+      if (changed) {
+        await markAccountingEntityPending({ orgId, entityType: "project_expense", entityId: expenseId, projectId })
       }
 
       revalidate(projectId)

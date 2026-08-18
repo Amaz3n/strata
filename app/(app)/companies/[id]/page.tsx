@@ -1,97 +1,16 @@
-import { notFound } from "next/navigation";
-import { PageLayout } from "@/components/layout/page-layout";
-import { unwrapAction } from "@/lib/action-result"
+import { redirect } from "next/navigation";
 
-
-import { z } from "zod";
-import { getCurrentUserPermissions } from "@/lib/services/permissions";
-import {
-  getClientCompanyReceivables,
-  getCompany,
-  getCompanyProjects,
-} from "@/lib/services/companies";
-import { listCompanyCommitments } from "@/lib/services/commitments";
-import { listVendorBillsForCompany } from "@/lib/services/vendor-bills";
-import { getDirectoryIntelligenceForCompanies } from "@/lib/services/directory-intelligence";
-import { listProjectsAction } from "@/app/(app)/projects/actions";
-import { CompanyDetailPage } from "@/components/companies/company-detail-page";
-import { getLatestPrequalification } from "@/lib/services/prequalification";
-import { listCompanyPaymentReadiness } from "@/lib/services/vendor-payment-invitations";
-
-interface CompanyDetailPageProps {
+interface LegacyCompanyPageProps {
   params: Promise<{ id: string }>;
+  searchParams?: Promise<{ tab?: string }>;
 }
 
-export default async function CompanyDetailPageRoute({
+/** The company account moved under the directory; old links keep working. */
+export default async function LegacyCompanyDetailPage({
   params,
-}: CompanyDetailPageProps) {
-  const { id: companyId } = await params;
-  if (!z.string().uuid().safeParse(companyId).success) {
-    notFound();
-  }
-
-  const [company, projectHistory, projects, permissionResult, prequalification] = await Promise.all([
-    getCompany(companyId),
-    getCompanyProjects(companyId),
-    listProjectsAction(),
-    getCurrentUserPermissions(),
-    getLatestPrequalification(companyId),
-  ]);
-
-  const isClientCompany = company.company_type === "client";
-  const isVendorCompany =
-    company.company_type === "subcontractor" ||
-    company.company_type === "supplier";
-  const emptyIntelligence: Awaited<
-    ReturnType<typeof getDirectoryIntelligenceForCompanies>
-  > = { scorecardsByCompanyId: {}, taxReadinessByCompanyId: {} };
-  const [commitments, vendorBills, clientReceivables, intelligence, readinessByCompany] =
-    await Promise.all([
-      isClientCompany ? Promise.resolve([]) : listCompanyCommitments(companyId),
-      isClientCompany ? Promise.resolve([]) : listVendorBillsForCompany(companyId),
-      isClientCompany
-        ? getClientCompanyReceivables(companyId)
-        : Promise.resolve(null),
-      isVendorCompany
-        ? getDirectoryIntelligenceForCompanies([companyId]).catch(() => emptyIntelligence)
-        : Promise.resolve(emptyIntelligence),
-      isVendorCompany
-        ? listCompanyPaymentReadiness([companyId]).catch(() => null)
-        : Promise.resolve(null),
-    ]);
-
-  const vendorScorecard = intelligence.scorecardsByCompanyId[companyId] ?? null;
-  const vendorTaxReadiness =
-    intelligence.taxReadinessByCompanyId[companyId] ?? null;
-
-  const permissions = permissionResult?.permissions ?? [];
-  const canEdit =
-    permissions.includes("org.member") ||
-    permissions.includes("directory.write");
-  const canArchive = canEdit;
-
-  const breadcrumbs = [
-    { label: "Directory", href: "/directory" },
-    { label: "Companies", href: "/directory?view=companies" },
-    { label: company.name },
-  ];
-
-  return (
-    <PageLayout title={company.name} breadcrumbs={breadcrumbs} fullBleed>
-      <CompanyDetailPage
-        company={company}
-        projectHistory={projectHistory}
-        commitments={commitments}
-        vendorBills={vendorBills}
-        clientReceivables={clientReceivables}
-        vendorScorecard={vendorScorecard}
-        vendorTaxReadiness={vendorTaxReadiness}
-        projects={projects}
-        canEdit={canEdit}
-        canArchive={canArchive}
-        prequalification={prequalification}
-        paymentReadiness={readinessByCompany?.get(companyId) ?? null}
-      />
-    </PageLayout>
-  );
+  searchParams,
+}: LegacyCompanyPageProps) {
+  const { id } = await params;
+  const { tab } = (await searchParams) ?? {};
+  redirect(tab === "compliance" ? `/directory/${id}/compliance` : `/directory/${id}`);
 }

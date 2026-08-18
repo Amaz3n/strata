@@ -238,7 +238,7 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     subtitleFields: ['expires_at'],
     descriptionFields: ['review_notes'],
     searchableFields: ['status', 'review_notes', 'trades'],
-    hrefTemplate: '/companies/{company_id}',
+    hrefTemplate: '/directory/{company_id}',
   },
   meeting: {
     table: 'meetings',
@@ -316,7 +316,7 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     titleField: 'name',
     subtitleFields: ['company_type', 'email'],
     searchableFields: ['name', 'email', 'phone', 'website'],
-    hrefTemplate: '/companies/{id}',
+    hrefTemplate: '/directory/{id}',
   },
   pay_application: {
     table: 'pay_applications',

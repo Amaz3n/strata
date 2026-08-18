@@ -1550,7 +1550,7 @@ export function EnvelopeWizard({
                         ) : null}
                         {signatureCompliance.companyId ? (
                           <a
-                            href={`/companies/${signatureCompliance.companyId}?tab=compliance`}
+                            href={`/directory/${signatureCompliance.companyId}/compliance`}
                             className="inline-flex text-xs font-medium underline underline-offset-4"
                           >
                             Open compliance

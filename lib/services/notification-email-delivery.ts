@@ -115,7 +115,7 @@ function buildNotificationHref(payload: Record<string, unknown>): string | null 
     case "vendor_payment_relationship":
       // The vendor's own record is where readiness, holds, and payout status
       // live for the builder.
-      return companyId ? `/companies/${companyId}` : "/payables"
+      return companyId ? `/directory/${companyId}` : "/payables"
     case "org_funding_source":
     case "payment_control_change":
     case "payment_rail_policy":

@@ -91,11 +91,11 @@ const AI_CLAIM_HOLD_KINDS = new Set<PaymentHoldKind>(["waiver_verified", "insura
 export function evaluatePaymentHoldFacts(facts: PaymentHoldFacts): PaymentHoldEvaluation {
   const waiverVerification = facts.waiverVerification ?? null
   const active: Array<{ kind: PaymentHoldKind; failed: boolean; cureHref: string | null; detail: string | null }> = [
-    { kind: "insurance_current", failed: !facts.insuranceCurrent, cureHref: facts.companyId ? `/companies/${facts.companyId}?tab=compliance` : null, detail: facts.insuranceContradiction ?? null },
+    { kind: "insurance_current", failed: !facts.insuranceCurrent, cureHref: facts.companyId ? `/directory/${facts.companyId}/compliance` : null, detail: facts.insuranceContradiction ?? null },
     {
       kind: "insurance_verified",
       failed: Boolean(facts.insuranceContradiction),
-      cureHref: facts.companyId ? `/companies/${facts.companyId}?tab=compliance` : null,
+      cureHref: facts.companyId ? `/directory/${facts.companyId}/compliance` : null,
       detail: facts.insuranceContradiction ?? null,
     },
     { kind: "waiver_signed", failed: facts.waiverRequired && !facts.waiverSigned, cureHref: `/projects/${facts.projectId}/financials/payables`, detail: null },
@@ -105,7 +105,7 @@ export function evaluatePaymentHoldFacts(facts: PaymentHoldFacts): PaymentHoldEv
       cureHref: waiverVerification?.documentHref ?? `/projects/${facts.projectId}/financials/payables`,
       detail: waiverVerification?.mismatchSummary ?? null,
     },
-    { kind: "compliance_docs_approved", failed: !facts.complianceCurrent, cureHref: facts.companyId ? `/companies/${facts.companyId}?tab=compliance` : null, detail: null },
+    { kind: "compliance_docs_approved", failed: !facts.complianceCurrent, cureHref: facts.companyId ? `/directory/${facts.companyId}/compliance` : null, detail: null },
     { kind: "retainage_rules_met", failed: !facts.retainageRulesMet, cureHref: `/projects/${facts.projectId}/financials/payables`, detail: null },
     { kind: "funding_received", failed: facts.fundingRequired && !facts.fundingReceived, cureHref: `/projects/${facts.projectId}/financials/receivables`, detail: null },
   ]

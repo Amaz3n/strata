@@ -105,7 +105,7 @@ export function ComplianceAlert({
 
   const openCompany = (companyId: string) => {
     setOpen(false);
-    router.push(`/companies/${companyId}?tab=compliance`);
+    router.push(`/directory/${companyId}/compliance`);
   };
 
   return (

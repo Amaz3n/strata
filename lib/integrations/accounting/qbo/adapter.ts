@@ -86,7 +86,6 @@ interface InvoiceForSync {
   balance_due_cents?: number | null
   title?: string | null
   status?: string | null
-  qbo_id?: string | null
   metadata?: Record<string, any> | null
   accounting_coding?: AccountingCoding | null
   lines: InvoiceLineRow[]
@@ -268,7 +267,6 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
   const client = options?.connectionId ? await QBOClient.forConnection(options.connectionId) : await QBOClient.forOrg(orgId)
 
   if (!client) {
-    await supabase.from("invoices").update({ qbo_sync_status: "skipped" }).eq("id", invoiceId)
     await markConnectionError(orgId, "No active QBO connection", options?.connectionId)
     return { success: false, error: "No active QBO connection" }
   }
@@ -279,7 +277,6 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
   }
 
   if (await isSyncPushBlocked(supabase, orgId, "invoice", invoiceId, resolvedConnectionId)) {
-    await supabase.from("invoices").update({ qbo_sync_status: "skipped" }).eq("id", invoiceId).eq("org_id", orgId)
     return { success: true, skipped: true }
   }
 
@@ -309,7 +306,6 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
   const connectionSettings = ((connection?.settings as Record<string, unknown> | null) ?? {})
 
   if (connectionSettings.sync_invoices === false) {
-    await supabase.from("invoices").update({ qbo_sync_status: "skipped" }).eq("id", invoiceId).eq("org_id", orgId)
     return { success: true, skipped: true }
   }
 
@@ -320,7 +316,6 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
     (typedInvoice.metadata as Record<string, unknown> | null)?.imported_from_qbo === true &&
     (typedInvoice.metadata as Record<string, unknown> | null)?.accounting_push_adopted !== true
   ) {
-    await supabase.from("invoices").update({ qbo_sync_status: "skipped" }).eq("id", invoiceId).eq("org_id", orgId)
     return { success: true, skipped: true }
   }
 
@@ -337,21 +332,16 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
   try {
     existingSync = await supabase
       .from("accounting_sync_records")
-      .select("qbo_id:external_id, qbo_sync_token:external_version")
+      .select("external_id, external_version")
       .eq("org_id", orgId)
       .eq("connection_id", resolvedConnectionId)
       .eq("entity_type", "invoice")
       .eq("entity_id", invoiceId)
       .maybeSingle()
 
-    const existingQboId = existingSync.data?.qbo_id || typedInvoice.qbo_id || null
+    const existingQboId = existingSync.data?.external_id || null
     if (typedInvoice.status === "void") {
       if (!existingQboId) {
-        await supabase
-          .from("invoices")
-          .update({ qbo_sync_status: "skipped" })
-          .eq("org_id", orgId)
-          .eq("id", invoiceId)
         return { success: true, skipped: true }
       }
 
@@ -367,15 +357,6 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
           qboId: existingQboId,
           entityType: "invoice",
         })
-        await supabase
-          .from("invoices")
-          .update({
-            qbo_id: existingQboId,
-            qbo_synced_at: new Date().toISOString(),
-            qbo_sync_status: "synced",
-          })
-          .eq("org_id", orgId)
-          .eq("id", invoiceId)
         await markConnectionHealthy(orgId, options?.connectionId)
         logQBO("info", "invoice_void_sync_already_deleted", { orgId, invoiceId, qboId: existingQboId })
         return { success: true, qbo_id: existingQboId, already_deleted: true }
@@ -395,15 +376,6 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
         syncToken: voided.SyncToken,
         entityType: "invoice",
       })
-      await supabase
-        .from("invoices")
-        .update({
-          qbo_id: existingQboId,
-          qbo_synced_at: new Date().toISOString(),
-          qbo_sync_status: "synced",
-        })
-        .eq("org_id", orgId)
-        .eq("id", invoiceId)
       await markConnectionHealthy(orgId, options?.connectionId)
       logQBO("info", "invoice_void_sync_success", { orgId, invoiceId, qboId: existingQboId })
       return { success: true, qbo_id: existingQboId }
@@ -527,8 +499,8 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
     const invoiceTarget = await resolveQBOSyncTarget({
       client,
       entityType: "invoice",
-      qboId: existingSync.data?.qbo_id,
-      cachedSyncToken: existingSync.data?.qbo_sync_token,
+      qboId: existingSync.data?.external_id,
+      cachedSyncToken: existingSync.data?.external_version,
       logContext: { orgId, invoiceId },
       allowRecreateDeleted: options?.allowRecreateDeleted === true,
     })
@@ -595,15 +567,6 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
     })
     await persistResolvedLineLinks(result)
 
-    await supabase
-      .from("invoices")
-      .update({
-        qbo_id: result.Id,
-        qbo_synced_at: new Date().toISOString(),
-        qbo_sync_status: "synced",
-      })
-      .eq("id", invoiceId)
-
     await rememberAccountingInvoiceNumberCursor(options?.connectionId ?? "", orgId, result.DocNumber ?? typedInvoice.invoice_number)
     await syncInvoicePdfAttachmentToQBO({
       client,
@@ -617,9 +580,9 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
 
     return { success: true, qbo_id: result.Id }
   } catch (err: any) {
-    if (err instanceof QBOError && isStaleObjectError(err) && existingSync.data?.qbo_id) {
+    if (err instanceof QBOError && isStaleObjectError(err) && existingSync.data?.external_id) {
       try {
-        const latestInvoice = await client.getInvoiceById(existingSync.data.qbo_id)
+        const latestInvoice = await client.getInvoiceById(existingSync.data.external_id)
         if (!latestInvoice?.SyncToken) {
           throw new Error("Unable to refresh QuickBooks invoice sync token")
         }
@@ -640,15 +603,6 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
         })
         if (persistResolvedLineLinks) await persistResolvedLineLinks(retryResult)
 
-        await supabase
-          .from("invoices")
-          .update({
-            qbo_id: retryResult.Id,
-            qbo_synced_at: new Date().toISOString(),
-            qbo_sync_status: "synced",
-          })
-          .eq("id", invoiceId)
-
         await rememberAccountingInvoiceNumberCursor(options?.connectionId ?? "", orgId, retryResult.DocNumber ?? typedInvoice.invoice_number)
         await syncInvoicePdfAttachmentToQBO({
           client,
@@ -667,7 +621,6 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
         return { success: true, qbo_id: retryResult.Id }
       } catch (retryError: any) {
         const retryErrorMessage = retryError instanceof QBOError ? retryError.message : retryError?.message ?? "Stale sync token retry failed"
-        await supabase.from("invoices").update({ qbo_sync_status: "error" }).eq("id", invoiceId)
         await markSyncRecordError(orgId, "invoice", invoiceId, retryErrorMessage, options?.connectionId)
         await markConnectionErrorIfConnectionLevel(orgId, retryError, retryErrorMessage, options?.connectionId)
         logQBO("error", "invoice_sync_stale_token_retry_failed", {
@@ -698,7 +651,6 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
               invoice_number_changed: true,
               invoice_number_previous: typedInvoice.invoice_number,
             },
-            qbo_sync_status: "pending",
           })
           .eq("id", invoiceId)
 
@@ -719,15 +671,6 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
           syncToken: retryResult.SyncToken,
           entityType: "invoice",
         })
-
-        await supabase
-          .from("invoices")
-          .update({
-            qbo_id: retryResult.Id,
-            qbo_synced_at: new Date().toISOString(),
-            qbo_sync_status: "synced",
-          })
-          .eq("id", invoiceId)
 
         await rememberAccountingInvoiceNumberCursor(options?.connectionId ?? "", orgId, retryResult.DocNumber ?? nextNumber)
         await syncInvoicePdfAttachmentToQBO({
@@ -762,7 +705,6 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
         return { success: true, qbo_id: retryResult.Id }
       } catch (retryError: any) {
         const retryErrorMessage = retryError instanceof QBOError ? retryError.message : retryError?.message ?? "DocNumber conflict"
-        await supabase.from("invoices").update({ qbo_sync_status: "error" }).eq("id", invoiceId)
         await markSyncRecordError(orgId, "invoice", invoiceId, retryErrorMessage, options?.connectionId)
         await markConnectionErrorIfConnectionLevel(orgId, retryError, retryErrorMessage, options?.connectionId)
         logQBO("error", "invoice_sync_docnumber_retry_failed", {
@@ -781,15 +723,9 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
 
     const errorMessage = err instanceof QBOError ? err.message : String(err)
     if (errorMessage === QBO_DELETED_REVIEW_MESSAGE) {
-      await supabase
-        .from("invoices")
-        .update({ qbo_sync_status: "needs_review" })
-        .eq("id", invoiceId)
-        .eq("org_id", orgId)
       await markSyncRecordNeedsReview(orgId, "invoice", invoiceId, errorMessage, options?.connectionId)
       return { success: false, error: errorMessage }
     }
-    await supabase.from("invoices").update({ qbo_sync_status: "error" }).eq("id", invoiceId)
     await markSyncRecordError(orgId, "invoice", invoiceId, errorMessage, options?.connectionId)
     await markConnectionErrorIfConnectionLevel(orgId, err, errorMessage, options?.connectionId)
     logQBO("error", "invoice_sync_failed", {
@@ -807,8 +743,6 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
 }
 
 export async function forceSyncInvoiceToQBO(invoiceId: string, orgId: string) {
-  const supabase = createServiceSupabaseClient()
-  await supabase.from("invoices").update({ qbo_sync_status: "pending" }).eq("id", invoiceId).eq("org_id", orgId)
   return syncInvoiceToQBO(invoiceId, orgId, { allowRecreateDeleted: true })
 }
 

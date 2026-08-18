@@ -27,7 +27,18 @@ import type {
 } from "@/lib/types"
 import type { ProjectBillingModel } from "@/lib/financials/billing-model"
 
-export type ReviewOverlayTarget = { kind: "expense" | "vendor_bill" | "invoice"; id: string }
+export type ReviewOverlayTarget = {
+  kind: "expense" | "vendor_bill" | "invoice"
+  id: string
+  /**
+   * The project that owns this record. Org-wide registers (a vendor account,
+   * for instance) list rows from many projects, so the target carries its own
+   * project rather than inheriting one fixed project from the consumer.
+   */
+  projectId?: string
+  /** Per-project cost-code setting, when the consumer already resolved it. */
+  costCodesEnabled?: boolean
+}
 
 type ExpenseAccountingContext = Awaited<ReturnType<typeof getExpenseAccountingContextAction>>
 type PayablesBundle = Awaited<ReturnType<typeof fetchPayablesTabDataAction>>
@@ -56,11 +67,15 @@ export function ReviewDetailOverlays({
   target,
   onClose,
 }: {
-  projectId: string
+  /** Default project for consumers scoped to exactly one. */
+  projectId?: string
   costCodesEnabled: boolean
   target: ReviewOverlayTarget | null
   onClose: () => void
 }) {
+  // The row being opened wins; the prop is the single-project fallback.
+  const activeProjectId = target?.projectId ?? projectId ?? null
+  const activeCostCodesEnabled = target?.costCodesEnabled ?? costCodesEnabled
   const router = useRouter()
   const [activeKind, setActiveKind] = useState<ReviewOverlayTarget["kind"] | null>(null)
   const [loading, setLoading] = useState(false)
@@ -87,14 +102,14 @@ export function ReviewDetailOverlays({
   }, [onClose])
 
   const openExpense = useCallback(
-    async (id: string) => {
+    async (id: string, forProjectId: string) => {
       setActiveKind("expense")
       setExpenseId(id)
       setLoading(true)
       try {
         const [list, ctx] = await Promise.all([
-          listProjectExpensesAction(projectId),
-          getExpenseAccountingContextAction(projectId),
+          listProjectExpensesAction(forProjectId),
+          getExpenseAccountingContextAction(forProjectId),
         ])
         setExpenses(list as ProjectExpense[])
         setExpenseCtx(ctx)
@@ -105,18 +120,18 @@ export function ReviewDetailOverlays({
         setLoading(false)
       }
     },
-    [projectId, closeAll],
+    [closeAll],
   )
 
   const openBill = useCallback(
-    async (id: string) => {
+    async (id: string, forProjectId: string) => {
       setActiveKind("vendor_bill")
       setBillId(id)
       setLoading(true)
       try {
         const [bundle, accounting, projectRows] = await Promise.all([
-          fetchPayablesTabDataAction(projectId),
-          getPayablesAccountingContextAction(projectId),
+          fetchPayablesTabDataAction(forProjectId),
+          getPayablesAccountingContextAction(forProjectId),
           listProjectsAction(),
         ])
         setPayables(bundle)
@@ -134,7 +149,7 @@ export function ReviewDetailOverlays({
         setLoading(false)
       }
     },
-    [projectId, closeAll],
+    [closeAll],
   )
 
   const openInvoice = useCallback(
@@ -168,10 +183,19 @@ export function ReviewDetailOverlays({
   // A fresh target object arrives on every row click; open the matching overlay.
   useEffect(() => {
     if (!target) return
-    if (target.kind === "expense") void openExpense(target.id)
-    else if (target.kind === "vendor_bill") void openBill(target.id)
-    else void openInvoice(target.id)
-  }, [target, openExpense, openBill, openInvoice])
+    if (target.kind === "invoice") {
+      void openInvoice(target.id)
+      return
+    }
+    const forProjectId = target.projectId ?? projectId
+    if (!forProjectId) {
+      toast.error("Could not open this record", { description: "It is not linked to a project." })
+      closeAll()
+      return
+    }
+    if (target.kind === "expense") void openExpense(target.id, forProjectId)
+    else void openBill(target.id, forProjectId)
+  }, [target, projectId, openExpense, openBill, openInvoice, closeAll])
 
   const handleChanged = useCallback(() => {
     router.refresh()
@@ -206,7 +230,7 @@ export function ReviewDetailOverlays({
 
       {showExpense ? (
         <ExpenseWorkspace
-          projectId={projectId}
+          projectId={activeProjectId ?? ""}
           expenses={expenses ?? []}
           selectedExpenseId={expenseId}
           onSelect={(id) => {
@@ -214,14 +238,14 @@ export function ReviewDetailOverlays({
             else closeAll()
           }}
           accountingContext={expenseCtx}
-          costCodesEnabled={expenseCtx?.costCodesEnabled ?? costCodesEnabled}
+          costCodesEnabled={expenseCtx?.costCodesEnabled ?? activeCostCodesEnabled}
           onChanged={handleChanged}
         />
       ) : null}
 
       {showBill && payables && payablesAccounting ? (
         <PayablesWorkspace
-          projectId={projectId}
+          projectId={activeProjectId ?? ""}
           bills={payables.vendorBills}
           selectedBillId={billId}
           onSelectBill={(id) => {
@@ -230,7 +254,7 @@ export function ReviewDetailOverlays({
           }}
           costCodes={payables.costCodes}
           budgetLines={payables.budgetLines}
-          costCodesEnabled={costCodesEnabled}
+          costCodesEnabled={activeCostCodesEnabled}
           projects={projects}
           accountingEnabled={Boolean(payablesAccounting.enabled)}
           qboExpenseAccounts={payablesAccounting.expenseAccounts ?? []}

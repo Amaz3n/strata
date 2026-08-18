@@ -49,9 +49,11 @@ test("the accounting product remains Books", () => {
   assert.doesNotMatch(client, /Mainframe|Arc Ledger|Basis/)
 })
 
-test("company detail keeps vendor-bill runtime values out of the client graph", () => {
-  const payables = read("components/companies/company-payables.tsx")
-  assert.match(payables, /import \{ COMPANY_PAYABLE_LIMIT \} from "@\/lib\/financials\/vendor-bill-constants"/)
-  assert.match(payables, /import type \{ VendorBillSummary \} from "@\/lib\/services\/vendor-bills"/)
-  assert.doesNotMatch(payables, /import \{ COMPANY_PAYABLE_LIMIT,[^\n]+vendor-bills/)
+test("company account keeps vendor-ledger runtime values out of the client graph", () => {
+  const ledgerTable = read("components/companies/account/vendor-ledger-table.tsx")
+  assert.match(
+    ledgerTable,
+    /import type \{ VendorLedgerEntry, VendorLedgerEntryKind \} from "@\/lib\/services\/vendor-account"/,
+  )
+  assert.doesNotMatch(ledgerTable, /import \{[^\n]*\} from "@\/lib\/services\/vendor-account"/)
 })

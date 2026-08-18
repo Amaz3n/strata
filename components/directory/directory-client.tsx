@@ -292,7 +292,7 @@ export function DirectoryClient({
   };
 
   const openCompanyDetail = (id: string) => {
-    router.push(`/companies/${id}`);
+    router.push(`/directory/${id}`);
   };
 
   const openContactDetail = (id: string) => {

@@ -108,7 +108,7 @@ export function ContactAccountPage({
             <div className="border-b px-4 py-3"><h2 className="text-sm font-semibold">Companies</h2></div>
             <div className="divide-y">
               {(contact.company_details ?? []).map((company) => (
-                <Link key={company.id} href={`/companies/${company.id}`} className="flex items-center justify-between gap-3 px-4 py-3 text-sm hover:bg-muted/30"><span className="inline-flex min-w-0 items-center gap-2"><Building2 className="h-4 w-4 text-muted-foreground" /><span className="truncate">{company.name}</span></span><ArrowUpRight className="h-3.5 w-3.5 text-muted-foreground" /></Link>
+                <Link key={company.id} href={`/directory/${company.id}`} className="flex items-center justify-between gap-3 px-4 py-3 text-sm hover:bg-muted/30"><span className="inline-flex min-w-0 items-center gap-2"><Building2 className="h-4 w-4 text-muted-foreground" /><span className="truncate">{company.name}</span></span><ArrowUpRight className="h-3.5 w-3.5 text-muted-foreground" /></Link>
               ))}
               {!contact.company_details?.length ? <p className="px-4 py-8 text-center text-sm text-muted-foreground">No linked companies.</p> : null}
             </div>

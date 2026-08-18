@@ -1245,7 +1245,7 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
         entityType: entity_type,
         entityId: entity_id,
         eventId: event.id,
-        metadata: { href: companyId ? `/companies/${companyId}` : "/payables", company_id: companyId },
+        metadata: { href: companyId ? `/directory/${companyId}` : "/payables", company_id: companyId },
       }
     }
 
@@ -1263,7 +1263,7 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
         entityType: entity_type,
         entityId: entity_id,
         eventId: event.id,
-        metadata: { href: companyId ? `/companies/${companyId}` : "/payables", company_id: companyId },
+        metadata: { href: companyId ? `/directory/${companyId}` : "/payables", company_id: companyId },
       }
     }
 

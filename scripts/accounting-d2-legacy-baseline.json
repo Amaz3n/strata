@@ -1,0 +1,24 @@
+{
+  "description": "Reviewed application statements that still touch columns in the pending accounting D2 drop set. Never increase this baseline; reduce it as consumers move to neutral tables.",
+  "total": 73,
+  "allowedFiles": [
+    "app/(app)/integrations/accounting-sync-actions.ts",
+    "app/(app)/projects/[id]/expenses/actions.ts",
+    "app/(app)/projects/[id]/payables/actions.ts",
+    "lib/integrations/accounting/qbo/adapter.ts",
+    "lib/integrations/accounting/qbo/import.ts",
+    "lib/integrations/accounting/qbo/reconcile.ts",
+    "lib/mobile/expenses.ts",
+    "lib/services/cost-plus.ts",
+    "lib/services/fee-billing.ts",
+    "lib/services/gmp-control.ts",
+    "lib/services/payable-duplicate-check.ts",
+    "lib/services/payables-email-ingest.ts",
+    "lib/services/project-close-readiness.ts",
+    "lib/services/reports/pay-application-g702.ts",
+    "lib/services/reports/pay-application.ts",
+    "lib/services/reports/project-profitability.ts",
+    "lib/services/reports/vendor-1099.ts",
+    "lib/services/vendor-bills.ts"
+  ]
+}

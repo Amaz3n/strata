@@ -216,6 +216,30 @@ export async function markAccountingSyncError(orgId: string, entityType: string,
   if (error) throw new Error(`Unable to record accounting sync failure: ${error.message}`)
 }
 
+/**
+ * Mark an already-linked transaction for a fresh push after local accounting
+ * coding changes. An entity with no ledger row stays unlinked; its first push
+ * will create the row through the normal claim path.
+ */
+export async function markAccountingEntityPending(input: {
+  orgId: string
+  entityType: "invoice" | "project_expense" | "bill" | "vendor_credit"
+  entityId: string
+  projectId: string | null
+}) {
+  const target = await resolveAccountingTarget({ orgId: input.orgId, projectId: input.projectId })
+  if (!target) return
+  const supabase = createServiceSupabaseClient()
+  const { error } = await supabase
+    .from("accounting_sync_records")
+    .update({ status: "pending", error_message: null })
+    .eq("org_id", input.orgId)
+    .eq("connection_id", target.connection.id)
+    .eq("entity_type", input.entityType)
+    .eq("entity_id", input.entityId)
+  if (error) throw new Error(`Unable to mark accounting sync pending: ${error.message}`)
+}
+
 /** PushResult, plus why nothing was pushed when the skip is an org-wide policy rather than a per-entity condition. */
 export type AccountingPushOutcome = PushResult & { skippedReason?: "books_authoritative" }
 
