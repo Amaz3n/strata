@@ -156,6 +156,9 @@ interface QBOInvoice {
 interface QBOItem {
   Id?: string
   Name?: string
+  Active?: boolean
+  Type?: string
+  IncomeAccountRef?: { value?: string; name?: string }
 }
 
 interface QBOVendor {
@@ -172,6 +175,7 @@ interface QBOVendor {
 }
 
 interface QBOInvoiceLineSnapshot {
+  Id?: string
   DetailType?: "SalesItemLineDetail" | "DescriptionOnly" | string
   Amount?: number
   Description?: string
@@ -526,73 +530,60 @@ export class QBOClient {
       }))
   }
 
-  private async getDefaultIncomeAccountId(): Promise<string | null> {
-    const query = `SELECT Id, Name FROM Account WHERE AccountType = 'Income' AND Active = true MAXRESULTS 1`
-    const result = await this.request<QueryAccountResponse>("GET", `query?query=${encodeURIComponent(query)}`)
-    return result.QueryResponse.Account?.[0]?.Id ?? null
-  }
-
-  async getDefaultServiceItem(defaultIncomeAccountId?: string): Promise<{ value: string; name: string }> {
-    if (defaultIncomeAccountId) {
-      const itemName = `Arc Services ${defaultIncomeAccountId}`
-      const existingForAccount = await this.findServiceItemByName(itemName)
-      if (existingForAccount?.Id && existingForAccount?.Name) {
-        return { value: existingForAccount.Id, name: existingForAccount.Name }
-      }
-
-      try {
-        const createdForAccount = await this.request<{ Item: QBOItem }>("POST", "item", {
-          Name: itemName,
-          Type: "Service",
-          IncomeAccountRef: { value: defaultIncomeAccountId },
-        })
-
-        if (createdForAccount.Item?.Id && createdForAccount.Item?.Name) {
-          return { value: createdForAccount.Item.Id, name: createdForAccount.Item.Name }
-        }
-      } catch (error) {
-        const duplicate = await this.findServiceItemByName(itemName)
-        if (duplicate?.Id && duplicate?.Name) {
-          return { value: duplicate.Id, name: duplicate.Name }
-        }
-        throw error
-      }
-    }
-
-    const query = `SELECT * FROM Item WHERE Type = 'Service' MAXRESULTS 1`
-    const result = await this.request<{ QueryResponse: { Item?: any[] } }>(
-      "GET",
-      `query?query=${encodeURIComponent(query)}`,
-    )
-
-    if (result.QueryResponse.Item?.[0]) {
+  /**
+   * Resolve an existing QBO Product/Service. Invoice sync must never create an
+   * Item as a side effect: item creation changes the client's books and must be
+   * an explicit setup action in QuickBooks.
+   */
+  async getInvoiceItemById(itemId: string): Promise<{
+    id: string
+    name: string
+    active: boolean
+    type: string | null
+    incomeAccountId: string | null
+    incomeAccountName: string | null
+  } | null> {
+    try {
+      const result = await this.request<{ Item?: QBOItem }>("GET", `item/${encodeURIComponent(itemId)}`)
+      const item = result.Item
+      if (!item?.Id || !item.Name) return null
       return {
-        value: result.QueryResponse.Item[0].Id,
-        name: result.QueryResponse.Item[0].Name,
+        id: String(item.Id),
+        name: String(item.Name),
+        active: item.Active !== false,
+        type: item.Type ? String(item.Type) : null,
+        incomeAccountId: item.IncomeAccountRef?.value ? String(item.IncomeAccountRef.value) : null,
+        incomeAccountName: item.IncomeAccountRef?.name ? String(item.IncomeAccountRef.name) : null,
       }
+    } catch (error) {
+      if (error instanceof QBOError && error.status === 404) return null
+      throw error
     }
-
-    const incomeAccountId = defaultIncomeAccountId ?? (await this.getDefaultIncomeAccountId())
-    if (!incomeAccountId) {
-      throw new Error("Unable to create QBO service item: no active Income account found")
-    }
-
-    const newItem = await this.request<{ Item: any }>("POST", "item", {
-      Name: "Construction Services",
-      Type: "Service",
-      IncomeAccountRef: { value: incomeAccountId },
-    })
-
-    return { value: newItem.Item.Id, name: newItem.Item.Name }
   }
 
-  private async findServiceItemByName(name: string): Promise<QBOItem | null> {
-    const query = `SELECT Id, Name FROM Item WHERE Type = 'Service' AND Name = '${this.toQboStringLiteral(name)}' MAXRESULTS 1`
+  async listInvoiceItems(limit = 1000): Promise<Array<{
+    id: string
+    name: string
+    active: boolean
+    type: string | null
+    incomeAccountId: string | null
+    incomeAccountName: string | null
+  }>> {
+    const query = `SELECT * FROM Item WHERE Active = true ORDERBY Name MAXRESULTS ${Math.min(Math.max(limit, 1), 1000)}`
     const result = await this.request<{ QueryResponse: { Item?: QBOItem[] } }>(
       "GET",
       `query?query=${encodeURIComponent(query)}`,
     )
-    return result.QueryResponse.Item?.[0] ?? null
+    return (result.QueryResponse.Item ?? [])
+      .filter((item): item is QBOItem & { Id: string; Name: string } => Boolean(item.Id && item.Name))
+      .map((item) => ({
+        id: String(item.Id),
+        name: String(item.Name),
+        active: item.Active !== false,
+        type: item.Type ? String(item.Type) : null,
+        incomeAccountId: item.IncomeAccountRef?.value ? String(item.IncomeAccountRef.value) : null,
+        incomeAccountName: item.IncomeAccountRef?.name ? String(item.IncomeAccountRef.name) : null,
+      }))
   }
 
   async listIncomeAccounts(): Promise<QBOIncomeAccount[]> {

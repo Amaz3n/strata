@@ -21,6 +21,7 @@ import { logQBO } from "@/lib/services/accounting-logger"
 import { requireAccountingConnectionForOrg } from "@/lib/services/accounting-connections"
 import { suggestCodingForService } from "@/lib/services/books/coding-rules"
 import { postJobCostActualsForVendorBill, postJobCostEntriesForProjectExpense, voidJobCostEntriesForVendorBill } from "@/lib/services/job-cost-actuals"
+import { persistAccountingInvoiceLineLinks } from "@/lib/services/accounting-invoice-line-links"
 
 /**
  * QBO → Arc historical / drift import.
@@ -1299,6 +1300,7 @@ async function importInvoice(ctx: ResolvedContext, client: QBOClient, connection
       const unitPrice = Number.isFinite(rawUnit) ? rawUnit : 0
       const taxCode = String(line.SalesItemLineDetail?.TaxCodeRef?.value ?? "").toUpperCase()
       return {
+        qbo_line_id: line.Id ? String(line.Id) : null,
         description: String(line.Description ?? ""),
         quantity: normalizedQty,
         unit: "ea",
@@ -1339,8 +1341,9 @@ async function importInvoice(ctx: ResolvedContext, client: QBOClient, connection
 
   if (invoiceError || !invoiceRow) throw new Error(invoiceError?.message ?? "Failed to create invoice")
 
+  let insertedLines: Array<{ id: string }> = []
   if (lines.length > 0) {
-    const { error: linesError } = await supabase.from("invoice_lines").insert(
+    const { data, error: linesError } = await supabase.from("invoice_lines").insert(
       lines.map((line) => ({
         org_id: orgId,
         invoice_id: invoiceRow.id,
@@ -1351,13 +1354,14 @@ async function importInvoice(ctx: ResolvedContext, client: QBOClient, connection
         unit_price_cents: line.unit_price_cents,
         metadata: {
           taxable: line.taxable,
-          qbo_income_account_id: line.qbo_item_id,
-          qbo_income_account_name: line.qbo_item_name,
+          qbo_item_id: line.qbo_item_id,
+          qbo_item_name: line.qbo_item_name,
           qbo_class_id: line.qbo_class_id,
           qbo_class_name: line.qbo_class_name,
         },
       })),
-    )
+    ).select("id")
+    insertedLines = (data ?? []) as Array<{ id: string }>
     if (linesError) {
       await supabase.from("invoices").delete().eq("org_id", orgId).eq("id", invoiceRow.id)
       throw new Error(`Failed to create invoice lines: ${linesError.message}`)
@@ -1371,6 +1375,27 @@ async function importInvoice(ctx: ResolvedContext, client: QBOClient, connection
     entityType: "invoice",
     entityId: invoiceRow.id,
     qboId,
+    pushable: false,
+    metadata: { origin: "qbo_import", ownership: "inbound" },
+  })
+  const linkedLines = lines.flatMap((line, index) => {
+    const localLine = insertedLines?.[index]
+    if (!localLine?.id || !line.qbo_item_id) return []
+    return [{
+      invoiceLineId: String(localLine.id),
+      externalLineId: line.qbo_line_id,
+      externalItemId: line.qbo_item_id,
+      externalItemName: line.qbo_item_name,
+    }]
+  })
+  await persistAccountingInvoiceLineLinks({
+    supabase,
+    orgId,
+    connectionId,
+    provider: "qbo",
+    invoiceId: invoiceRow.id,
+    externalInvoiceId: qboId,
+    lines: linkedLines,
   })
   await markEventsResolved(supabase, qboId, ctx.externalAccountId)
   await recordEvent({
@@ -3322,6 +3347,8 @@ export async function linkExistingQboImportRecord({
         entityType: "invoice",
         entityId: data.id,
         qboId,
+        pushable: false,
+        metadata: { origin: "qbo_import_link", ownership: "inbound" },
       })
       await markEventsResolved(supabase, qboId, connection.external_account_id)
       await recordEvent({

@@ -24,9 +24,13 @@ export type QBOConnectionStatus =
 
 export interface QBOConnectionSettings {
   auto_sync: boolean;
+  /** Independent invoice circuit breaker; defaults on for existing connections. */
+  sync_invoices?: boolean;
   sync_payments: boolean;
   customer_sync_mode: "create_new" | "match_existing";
   default_income_account_id?: string | null;
+  default_invoice_item?: { id: string; name?: string | null } | null;
+  invoice_item_mappings?: Record<string, { id: string; name?: string | null }>;
   default_expense_account_id?: string | null;
   default_payment_account_id?: string | null;
   default_credit_card_account_id?: string | null;
@@ -72,9 +76,12 @@ export type AccountingConnectionSettingsUpdate = Partial<
   Pick<
     QBOConnectionSettings,
     | "auto_sync"
+    | "sync_invoices"
     | "sync_payments"
     | "customer_sync_mode"
     | "default_income_account_id"
+    | "default_invoice_item"
+    | "invoice_item_mappings"
     | "default_expense_account_id"
     | "default_payment_account_id"
     | "default_credit_card_account_id"

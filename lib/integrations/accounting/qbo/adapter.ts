@@ -21,6 +21,7 @@ import { drainQboInboundEvents, ingestQboCdcChanges, receiveQboWebhook } from "@
 import { accountingDimension, accountingReference, type AccountingCoding } from "@/lib/services/accounting-coding"
 import { stampLocalFingerprint } from "@/lib/integrations/accounting/local-change"
 import { resolveAccountingExternalId } from "@/lib/services/accounting-sync-state"
+import { persistAccountingInvoiceLineLinks } from "@/lib/services/accounting-invoice-line-links"
 
 export { createOrUpdateQBOEntity, resolveQBOSyncTarget } from "@/lib/integrations/accounting/qbo/sync-safety"
 
@@ -46,12 +47,32 @@ async function disconnectQboProviderConnection(input: { orgId: string; connectio
 }
 
 interface InvoiceLineRow {
+  id: string
   description: string
   quantity: number
   unit?: string | null
   unit_price_cents: number
   metadata?: Record<string, any> | null
   accounting_coding?: AccountingCoding | null
+}
+
+type ConfiguredInvoiceItem = { id: string; name?: string | null }
+
+export class QBOInvoiceItemResolutionError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "QBOInvoiceItemResolutionError"
+  }
+}
+
+function configuredInvoiceItem(value: unknown): ConfiguredInvoiceItem | null {
+  if (!value || typeof value !== "object") return null
+  const candidate = value as { id?: unknown; name?: unknown }
+  if (typeof candidate.id !== "string" || candidate.id.trim().length === 0) return null
+  return {
+    id: candidate.id.trim(),
+    name: typeof candidate.name === "string" ? candidate.name : null,
+  }
 }
 
 interface InvoiceForSync {
@@ -265,7 +286,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
   const { data: invoice, error } = await supabase
     .from("invoices")
     .select(
-      "id, org_id, project_id, invoice_number, issue_date, due_date, total_cents, balance_due_cents, title, status, metadata, invoice_lines (description, quantity, unit, unit_price_cents, metadata)",
+      "id, org_id, project_id, invoice_number, issue_date, due_date, total_cents, balance_due_cents, title, status, metadata, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
     )
     .eq("id", invoiceId)
     .eq("org_id", orgId)
@@ -285,15 +306,33 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
     : null
 
   const connection = await getQBOConnectionSettings(orgId, resolvedConnectionId)
+  const connectionSettings = ((connection?.settings as Record<string, unknown> | null) ?? {})
+
+  if (connectionSettings.sync_invoices === false) {
+    await supabase.from("invoices").update({ qbo_sync_status: "skipped" }).eq("id", invoiceId).eq("org_id", orgId)
+    return { success: true, skipped: true }
+  }
+
+  // QBO-originated invoices remain inbound-owned unless a deliberate adoption
+  // flow marks them as outbound. This prevents an Arc edit from overwriting the
+  // accountant's source transaction.
+  if (
+    (typedInvoice.metadata as Record<string, unknown> | null)?.imported_from_qbo === true &&
+    (typedInvoice.metadata as Record<string, unknown> | null)?.accounting_push_adopted !== true
+  ) {
+    await supabase.from("invoices").update({ qbo_sync_status: "skipped" }).eq("id", invoiceId).eq("org_id", orgId)
+    return { success: true, skipped: true }
+  }
 
   const invoiceIncomeAccountId = (typedInvoice.metadata as any)?.qbo_income_account_id
   const defaultIncomeAccountId =
     typeof invoiceIncomeAccountId === "string" && invoiceIncomeAccountId.trim().length > 0
       ? invoiceIncomeAccountId.trim()
-      : ((connection?.settings as any)?.default_income_account_id as string | undefined)
+      : (connectionSettings.default_income_account_id as string | undefined)
   let existingSync: any = null
   let qboInvoice: any = null
   let invoiceIsUpdate = false
+  let persistResolvedLineLinks: ((remoteInvoice: any) => Promise<void>) | null = null
 
   try {
     existingSync = await supabase
@@ -380,35 +419,86 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
         : mappedCustomer?.id
           ? { Id: mappedCustomer.id, DisplayName: mappedCustomer.name ?? resolveCustomerName(typedInvoice) }
         : await client.getOrCreateCustomer(resolveCustomerName(typedInvoice))
-    const serviceItemCache = new Map<string, { value: string; name: string }>()
-    const resolveServiceItem = async (lineIncomeAccountId?: string | null) => {
+    const { data: savedLineLinks, error: savedLineLinksError } = await supabase
+      .from("accounting_invoice_line_links")
+      .select("invoice_line_id,external_item_id,external_item_name")
+      .eq("org_id", orgId)
+      .eq("connection_id", resolvedConnectionId)
+      .eq("invoice_id", invoiceId)
+    if (savedLineLinksError) throw new Error(`Unable to load accounting invoice-line links: ${savedLineLinksError.message}`)
+    const savedItemByLineId = new Map(
+      (savedLineLinks ?? []).map((link) => [
+        link.invoice_line_id,
+        { id: String(link.external_item_id), name: link.external_item_name ? String(link.external_item_name) : null },
+      ]),
+    )
+    const configuredMappings =
+      connectionSettings.invoice_item_mappings && typeof connectionSettings.invoice_item_mappings === "object"
+        ? (connectionSettings.invoice_item_mappings as Record<string, unknown>)
+        : {}
+    const defaultInvoiceItem = configuredInvoiceItem(connectionSettings.default_invoice_item)
+    const itemCache = new Map<string, Awaited<ReturnType<QBOClient["getInvoiceItemById"]>>>()
+    let activeInvoiceItemsPromise: ReturnType<QBOClient["listInvoiceItems"]> | null = null
+    const resolveInvoiceItem = async (line: InvoiceLineRow) => {
       const normalizedLineAccount =
-        typeof lineIncomeAccountId === "string" && lineIncomeAccountId.trim().length > 0
-          ? lineIncomeAccountId.trim()
+        typeof (line.metadata as any)?.qbo_income_account_id === "string" && (line.metadata as any).qbo_income_account_id.trim().length > 0
+          ? (line.metadata as any).qbo_income_account_id.trim()
           : defaultIncomeAccountId
-      const cacheKey = normalizedLineAccount ?? "__fallback__"
-      const cached = serviceItemCache.get(cacheKey)
-      if (cached) return cached
-      const next = await client.getDefaultServiceItem(normalizedLineAccount)
-      serviceItemCache.set(cacheKey, next)
-      return next
+      const metadataItem = configuredInvoiceItem({
+        id: (line.metadata as any)?.qbo_item_id,
+        name: (line.metadata as any)?.qbo_item_name,
+      })
+      const savedItem = savedItemByLineId.get(line.id) ?? null
+      const mappedItem = normalizedLineAccount ? configuredInvoiceItem(configuredMappings[normalizedLineAccount]) : null
+      let candidate = metadataItem ?? savedItem ?? mappedItem ?? defaultInvoiceItem
+      // A unique existing item already wired to this income account is safe to
+      // adopt automatically. Ambiguous or missing matches still require setup.
+      if (!candidate && normalizedLineAccount) {
+        activeInvoiceItemsPromise ??= client.listInvoiceItems()
+        const accountMatches = (await activeInvoiceItemsPromise).filter(
+          (item) => item.incomeAccountId === normalizedLineAccount,
+        )
+        if (accountMatches.length === 1) {
+          candidate = { id: accountMatches[0]!.id, name: accountMatches[0]!.name }
+        }
+      }
+      if (!candidate) {
+        throw new QBOInvoiceItemResolutionError(
+          `Invoice line “${line.description || line.id}” has no QuickBooks Product/Service. Map income account ${normalizedLineAccount ?? "(none)"} to an existing item, or choose a default invoice item in Accounting settings.`,
+        )
+      }
+      let item = itemCache.get(candidate.id)
+      if (item === undefined) {
+        item = await client.getInvoiceItemById(candidate.id)
+        itemCache.set(candidate.id, item)
+      }
+      if (!item) {
+        throw new QBOInvoiceItemResolutionError(
+          `QuickBooks Product/Service ${candidate.name ?? candidate.id} no longer exists. Choose a replacement in Accounting settings.`,
+        )
+      }
+      if (!item.active) {
+        throw new QBOInvoiceItemResolutionError(
+          `QuickBooks Product/Service ${item.name} is inactive. Choose an active replacement in Accounting settings.`,
+        )
+      }
+      return item
     }
 
     // Note: we intentionally do NOT write this invoice's customer to the project's customer map. The
     // project default is owned by project settings (and the client-contact fallback in
     // getOrCreateProjectCustomer) so a one-off invoice can't silently re-point every future payable.
 
-    const qboLines = await Promise.all(
-      (typedInvoice.lines ?? []).map(async (line) => {
-        const lineIncomeAccountId = (line.metadata as any)?.qbo_income_account_id
-        const itemRef = await resolveServiceItem(lineIncomeAccountId)
+    const resolvedLineItems = await Promise.all((typedInvoice.lines ?? []).map(resolveInvoiceItem))
+    const qboLines = (typedInvoice.lines ?? []).map((line, index) => {
+        const item = resolvedLineItems[index]!
         const classRef = resolveQBOClassRef(line.metadata, projectClass)
         return {
           DetailType: "SalesItemLineDetail" as const,
           Amount: (line.quantity * line.unit_price_cents) / 100,
           Description: line.description,
           SalesItemLineDetail: {
-            ItemRef: itemRef,
+            ItemRef: { value: item.id, name: item.name },
             Qty: line.quantity,
             UnitPrice: line.unit_price_cents / 100,
             TaxCodeRef: {
@@ -417,8 +507,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
             ClassRef: classRef,
           },
         }
-      }),
-    )
+      })
 
     // Invoice-level discount syncs as a QBO discount line so QBO's computed total matches Arc's.
     const invoiceDiscountCents = Number(
@@ -466,6 +555,32 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
       PrivateNote: typedInvoice.title ?? undefined,
     }
 
+    persistResolvedLineLinks = async (remoteInvoice: any) => {
+      const remoteSalesLines = (remoteInvoice?.Line ?? []).filter(
+        (line: any) => line?.DetailType === "SalesItemLineDetail",
+      )
+      await persistAccountingInvoiceLineLinks({
+        supabase,
+        orgId,
+        connectionId: resolvedConnectionId,
+        provider: "qbo",
+        invoiceId,
+        externalInvoiceId: String(remoteInvoice.Id),
+        lines: (typedInvoice.lines ?? []).map((line, index) => {
+          const item = resolvedLineItems[index]!
+          const remoteLine = remoteSalesLines[index]
+          return {
+            invoiceLineId: line.id,
+            externalLineId: remoteLine?.Id ? String(remoteLine.Id) : null,
+            externalItemId: item.id,
+            externalItemName: item.name,
+            externalIncomeAccountId: item.incomeAccountId,
+            externalIncomeAccountName: item.incomeAccountName,
+          }
+        }),
+      })
+    }
+
     const result = invoiceIsUpdate
       ? await client.updateInvoice(qboInvoice as any)
       : await client.createInvoice(qboInvoice as any)
@@ -478,6 +593,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
       syncToken: result.SyncToken,
       entityType: "invoice",
     })
+    await persistResolvedLineLinks(result)
 
     await supabase
       .from("invoices")
@@ -522,6 +638,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
           syncToken: retryResult.SyncToken,
           entityType: "invoice",
         })
+        if (persistResolvedLineLinks) await persistResolvedLineLinks(retryResult)
 
         await supabase
           .from("invoices")
