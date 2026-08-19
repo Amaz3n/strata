@@ -4,9 +4,9 @@ export const instant = false;
 import { notFound, redirect } from "next/navigation";
 import { z } from "zod";
 
-import { Section } from "@/components/companies/company-detail-ui";
-import { PrequalificationCard } from "@/components/companies/prequalification-card";
-import { getLatestPrequalification } from "@/lib/services/prequalification";
+import { PrequalificationWorkspace } from "@/components/companies/account/prequalification-workspace";
+import { listComplianceDocumentTypes } from "@/lib/services/compliance-documents";
+import { getPrequalificationPackage } from "@/lib/services/prequalification";
 import { loadCompanyAccount } from "../page-data";
 
 interface PageProps {
@@ -20,19 +20,21 @@ export default async function CompanyPrequalificationPage({ params }: PageProps)
   if (!account) notFound();
   if (account.posture !== "vendor") redirect(`/directory/${id}`);
 
-  const prequalification = await getLatestPrequalification(id).catch(() => null);
+  // Document types feed the program editor and name the document rows; losing
+  // them should not take the tab down with them.
+  const [data, documentTypes] = await Promise.all([
+    getPrequalificationPackage(id),
+    listComplianceDocumentTypes().catch(() => []),
+  ]);
 
   return (
-    <div className="px-4 py-6 sm:px-6">
-      <Section title="Prequalification" stagger={1}>
-        <div className="p-4">
-          <PrequalificationCard
-            companyId={id}
-            prequalification={prequalification}
-            canEdit={account.canEdit}
-          />
-        </div>
-      </Section>
-    </div>
+    <PrequalificationWorkspace
+      companyId={id}
+      companyName={account.company.name}
+      data={data}
+      documentTypes={documentTypes}
+      canEdit={account.canEdit}
+      canReview={account.canReviewPrequal}
+    />
   );
 }

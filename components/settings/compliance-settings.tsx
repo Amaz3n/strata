@@ -29,8 +29,10 @@ import {
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { PrequalificationProgramSettings } from "@/components/settings/prequalification-program-settings"
 import { unwrapAction } from "@/lib/action-result"
 import type { ComplianceDocumentType, ComplianceRequirementTemplateItem, ComplianceRules } from "@/lib/types"
+import type { PrequalificationTemplate } from "@/lib/validation/prequalification"
 
 const CONTAINER = "mx-auto w-full max-w-3xl space-y-8 px-5 py-6 lg:px-8 lg:py-8"
 
@@ -91,11 +93,13 @@ function requirementSummary(item: ComplianceRequirementTemplateItem | undefined,
 export function ComplianceSettings({
   initialRules,
   initialRequirementDefaults,
+  initialPrequalificationTemplate,
   documentTypes,
   canManage,
 }: {
   initialRules: ComplianceRules
   initialRequirementDefaults: ComplianceRequirementTemplateItem[]
+  initialPrequalificationTemplate: PrequalificationTemplate
   documentTypes: ComplianceDocumentType[]
   canManage: boolean
 }) {
@@ -341,6 +345,12 @@ export function ComplianceSettings({
           </div>
         </SettingsField>
       </SettingsGroup>
+
+      <PrequalificationProgramSettings
+        initialTemplate={initialPrequalificationTemplate}
+        documentTypes={documentTypes}
+        canManage={canManage}
+      />
 
       {canManage ? (
         <p className="text-xs text-muted-foreground">

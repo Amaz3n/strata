@@ -37,7 +37,25 @@ export const commitmentLineInputSchema = z.object({
 
 export const commitmentLineUpdateSchema = commitmentLineInputSchema.partial()
 
+/**
+ * Recording an agreement executed outside Arc. The signed document is required —
+ * a date alone leaves nothing to produce when the contract is questioned.
+ */
+export const commitmentExecutionSchema = z.object({
+  executed_file_id: z.string().uuid("Attach the signed agreement."),
+  executed_at: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "Enter the date the agreement was signed.")
+    .refine((value) => !Number.isNaN(Date.parse(value)), "Enter a valid date.")
+    .refine(
+      (value) => value <= new Date().toISOString().slice(0, 10),
+      "An agreement cannot be executed in the future.",
+    ),
+  note: z.string().trim().max(1000).optional(),
+})
+
 export type CommitmentInput = z.infer<typeof commitmentInputSchema>
 export type CommitmentUpdateInput = z.infer<typeof commitmentUpdateSchema>
 export type CommitmentLineInput = z.infer<typeof commitmentLineInputSchema>
 export type CommitmentLineUpdateInput = z.infer<typeof commitmentLineUpdateSchema>
+export type CommitmentExecutionInput = z.infer<typeof commitmentExecutionSchema>

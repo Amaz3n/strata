@@ -12,6 +12,8 @@ import {
 } from "@/lib/emails"
 import { ComplianceDocumentReviewedEmail } from "@/lib/emails/compliance-document-reviewed-email"
 import { ComplianceDocumentUploadedEmail } from "@/lib/emails/compliance-document-uploaded-email"
+import { PrequalificationRequestEmail } from "@/lib/emails/prequalification-request-email"
+import { PrequalificationDecisionEmail } from "@/lib/emails/prequalification-decision-email"
 import { renderEmailTemplate } from "@/lib/services/mailer"
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>
@@ -24,6 +26,8 @@ type TemplateId =
   | "password-reset"
   | "compliance-uploaded"
   | "compliance-reviewed"
+  | "prequalification-request"
+  | "prequalification-decision"
   | "weekly-executive-snapshot"
   | "accounting-reconciliation"
 
@@ -36,6 +40,16 @@ const TEMPLATE_OPTIONS: Array<{ id: TemplateId; label: string; description: stri
   { id: "password-reset", label: "Password Reset", description: "Password recovery email via Arc." },
   { id: "compliance-uploaded", label: "Compliance Uploaded", description: "Internal alert for upload review." },
   { id: "compliance-reviewed", label: "Compliance Reviewed", description: "Approved or rejected result." },
+  {
+    id: "prequalification-request",
+    label: "Prequalification Request",
+    description: "Asks a vendor to complete the program.",
+  },
+  {
+    id: "prequalification-decision",
+    label: "Prequalification Decision",
+    description: "Approval, limits, or decline sent to the vendor.",
+  },
   {
     id: "weekly-executive-snapshot",
     label: "Weekly Executive Snapshot",
@@ -253,6 +267,34 @@ export default async function EmailPreviewPage({ searchParams }: { searchParams:
             decision: complianceDecision,
             reviewNotes: sample.reviewNotes,
             rejectionReason: complianceDecision === "rejected" ? sample.rejectionReason : null,
+          })
+        case "prequalification-request":
+          return PrequalificationRequestEmail({
+            orgName: sample.orgName,
+            orgLogoUrl: sample.orgLogoUrl,
+            recipientName: sample.recipientName,
+            companyName: sample.companyName,
+            portalLink: "https://app.arcnaples.com/s/sample-token/prequalification",
+            askedFor: [
+              "Company details: Years in business, EMR, Trades / CSI divisions",
+              "3 questions (Safety, Financial)",
+              "2 project references",
+              "Certificate of Insurance",
+              "W-9",
+            ],
+            message: "We are adding trade partners for the spring starts.",
+          })
+        case "prequalification-decision":
+          return PrequalificationDecisionEmail({
+            orgName: sample.orgName,
+            orgLogoUrl: sample.orgLogoUrl,
+            recipientName: sample.recipientName,
+            companyName: sample.companyName,
+            decision: "approved_with_limits",
+            expiresAt: "December 31, 2026",
+            singleProjectLimit: "$250,000",
+            aggregateLimit: "$1,000,000",
+            reviewNotes: "Approved for interior finishes scopes.",
           })
         case "weekly-executive-snapshot":
           return WeeklyExecutiveSnapshotEmail({

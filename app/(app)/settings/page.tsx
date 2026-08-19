@@ -8,6 +8,8 @@ import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { getOrgAccessState } from "@/lib/services/access"
 import { getComplianceRules, getDefaultComplianceRequirements } from "@/lib/services/compliance"
 import { listComplianceDocumentTypes } from "@/lib/services/compliance-documents"
+import { getPrequalificationTemplate } from "@/lib/services/prequalification"
+import { DEFAULT_PREQUAL_TEMPLATE } from "@/lib/validation/prequalification"
 import { getCurrentUserAction } from "@/app/actions/user"
 import { listDivisions } from "@/lib/services/divisions"
 import { getDocumentNumbering } from "@/lib/services/document-numbering"
@@ -62,12 +64,13 @@ async function SettingsData({ searchParams }: SettingsPageProps) {
     permissions.includes("org.admin") ||
     permissions.includes("*")
 
-  const [complianceRules, complianceRequirementDefaults, complianceDocumentTypes, documentNumbering, paymentRailSettings, booksSettings] = isLocked
-    ? [DEFAULT_COMPLIANCE_RULES, [], [], null, null, { enabled: false, settings: null, canDisable: true, connections: [] }]
+  const [complianceRules, complianceRequirementDefaults, complianceDocumentTypes, prequalificationTemplate, documentNumbering, paymentRailSettings, booksSettings] = isLocked
+    ? [DEFAULT_COMPLIANCE_RULES, [], [], DEFAULT_PREQUAL_TEMPLATE, null, null, { enabled: false, settings: null, canDisable: true, connections: [] }]
     : await Promise.all([
         getComplianceRules().catch(() => DEFAULT_COMPLIANCE_RULES),
         getDefaultComplianceRequirements().catch(() => []),
         listComplianceDocumentTypes().catch(() => []),
+        getPrequalificationTemplate().catch(() => DEFAULT_PREQUAL_TEMPLATE),
         getDocumentNumbering().catch(() => null),
         getPaymentRailSettings().catch(() => null),
         getBooksModuleSettings({ includeConnections: canManageAccounting }),
@@ -91,6 +94,7 @@ async function SettingsData({ searchParams }: SettingsPageProps) {
       canManageCompliance={canManageCompliance}
       initialComplianceRequirementDefaults={complianceRequirementDefaults}
       complianceDocumentTypes={complianceDocumentTypes}
+      initialPrequalificationTemplate={prequalificationTemplate}
       initialPaymentRailSettings={paymentRailSettings}
       stripePublishableKey={process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? null}
       initialBooksSettings={booksSettings}

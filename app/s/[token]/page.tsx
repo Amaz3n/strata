@@ -19,6 +19,7 @@ import { listWarrantyVisitsForCompanyPortal } from "@/lib/services/warranty-oper
 import { subRfiBucket } from "@/lib/portal/rfi-buckets"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { formatLocalDate, formatMoneyCents, parseLocalDate } from "@/lib/utils"
+import { VendorAccountHome } from "./vendor-account-home"
 
 interface SubPortalHomeProps {
   params: Promise<{ token: string }>
@@ -45,6 +46,14 @@ export default async function SubPortalHome({ params }: SubPortalHomeProps) {
     await recordPortalAccess(access.id)
   } catch {
     notFound()
+  }
+
+  // A company-scoped link has no job behind it, so none of the project loads
+  // below apply — onboarding is the whole surface.
+  if (!access.project_id) {
+    return (
+      <VendorAccountHome token={token} orgId={access.org_id} companyId={access.company_id} />
+    )
   }
 
   const supabase = createServiceSupabaseClient()

@@ -3,6 +3,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { PageLayout } from "@/components/layout/page-layout";
 import { getCurrentUserPermissions } from "@/lib/services/permissions";
 import { getCompaniesComplianceStatus } from "@/lib/services/compliance-documents";
+import { getCompaniesPrequalificationSummary } from "@/lib/services/prequalification";
 import { listCompanies } from "@/lib/services/companies";
 import { listProjects } from "@/lib/services/projects";
 import { DirectoryClient } from "@/components/directory/directory-client";
@@ -114,9 +115,10 @@ async function DirectoryData({ searchParams }: DirectoryPageProps) {
         .map((entry) => entry.id),
     ]),
   );
-  const complianceStatusByCompanyId = await getCompaniesComplianceStatus(
-    complianceCompanyIds,
-  ).catch(() => ({}));
+  const [complianceStatusByCompanyId, prequalificationByCompanyId] = await Promise.all([
+    getCompaniesComplianceStatus(complianceCompanyIds).catch(() => ({})),
+    getCompaniesPrequalificationSummary(complianceCompanyIds).catch(() => ({})),
+  ]);
 
   return (
     <DirectoryClient
@@ -125,6 +127,7 @@ async function DirectoryData({ searchParams }: DirectoryPageProps) {
       contacts={directoryPage.contacts}
       entries={directoryPage.entries}
       complianceStatusByCompanyId={complianceStatusByCompanyId}
+      prequalificationByCompanyId={prequalificationByCompanyId}
       complianceWatchCompanies={watchCompanies}
       projects={projects}
       canCreate={canEdit}

@@ -9,6 +9,8 @@ import { InviteTeamMemberEmail } from "@/lib/emails/invite-team-member-email"
 import { PasswordResetEmail } from "@/lib/emails/password-reset-email"
 import { ExternalPasswordResetEmail } from "@/lib/emails/external-password-reset-email"
 import { ExternalVerifyEmail } from "@/lib/emails/external-verify-email"
+import { PrequalificationRequestEmail } from "@/lib/emails/prequalification-request-email"
+import { PrequalificationDecisionEmail } from "@/lib/emails/prequalification-decision-email"
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY
 const RESEND_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev"
@@ -392,6 +394,8 @@ export interface ComplianceAutopilotEmailPayload {
   orgName?: string | null
   orgLogoUrl?: string | null
   orgSlug?: string | null
+  /** Where the vendor uploads. Absent when they have no portal link yet. */
+  portalUrl?: string | null
 }
 
 function escapeMessage(value: string): string {
@@ -485,8 +489,14 @@ export async function sendComplianceAutopilotEmail(
       <table border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; margin:0 0 18px 0;">
         ${rows}
       </table>
-      <p style="margin:0;">Please upload updated documents or send them to the project team so work and payments do not get held up.</p>
+      <p style="margin:0;">${
+        payload.portalUrl
+          ? "Upload the updated documents from your portal so work and payments do not get held up."
+          : "Please upload updated documents or send them to the project team so work and payments do not get held up."
+      }</p>
     `,
+    buttonText: payload.portalUrl ? "Upload documents" : undefined,
+    buttonUrl: payload.portalUrl ?? undefined,
     orgName: payload.orgName,
     orgLogoUrl: payload.orgLogoUrl,
   })
@@ -755,6 +765,83 @@ export async function sendVendorPaymentInviteEmail(payload: VendorPaymentInviteE
   return sendEmail({
     to: payload.to,
     subject: `${payload.orgName} would like to pay you through Arc Pay`,
+    html,
+    from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
+  })
+}
+
+export interface PrequalificationRequestEmailPayload {
+  to: string
+  recipientName?: string | null
+  companyName: string
+  orgName?: string | null
+  orgLogoUrl?: string | null
+  orgSlug?: string | null
+  portalLink: string
+  askedFor: string[]
+  message?: string | null
+}
+
+export async function sendPrequalificationRequestEmail(
+  payload: PrequalificationRequestEmailPayload,
+): Promise<boolean> {
+  const html = await renderEmailTemplate(
+    PrequalificationRequestEmail({
+      recipientName: payload.recipientName,
+      companyName: payload.companyName,
+      orgName: payload.orgName,
+      orgLogoUrl: payload.orgLogoUrl,
+      portalLink: payload.portalLink,
+      askedFor: payload.askedFor,
+      message: payload.message,
+    }),
+  )
+
+  return sendEmail({
+    to: [payload.to],
+    subject: `${payload.orgName ?? "Arc"} would like to prequalify ${payload.companyName}`,
+    html,
+    from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
+  })
+}
+
+export interface PrequalificationDecisionEmailPayload {
+  to: string
+  recipientName?: string | null
+  companyName: string
+  orgName?: string | null
+  orgLogoUrl?: string | null
+  orgSlug?: string | null
+  decision: "approved" | "approved_with_limits" | "declined"
+  expiresAt?: string | null
+  singleProjectLimit?: string | null
+  aggregateLimit?: string | null
+  reviewNotes?: string | null
+}
+
+export async function sendPrequalificationDecisionEmail(
+  payload: PrequalificationDecisionEmailPayload,
+): Promise<boolean> {
+  const html = await renderEmailTemplate(
+    PrequalificationDecisionEmail({
+      recipientName: payload.recipientName,
+      companyName: payload.companyName,
+      orgName: payload.orgName,
+      orgLogoUrl: payload.orgLogoUrl,
+      decision: payload.decision,
+      expiresAt: payload.expiresAt,
+      singleProjectLimit: payload.singleProjectLimit,
+      aggregateLimit: payload.aggregateLimit,
+      reviewNotes: payload.reviewNotes,
+    }),
+  )
+
+  return sendEmail({
+    to: [payload.to],
+    subject:
+      payload.decision === "declined"
+        ? `${payload.orgName ?? "Arc"}: prequalification decision for ${payload.companyName}`
+        : `${payload.companyName} is prequalified with ${payload.orgName ?? "Arc"}`,
     html,
     from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
   })

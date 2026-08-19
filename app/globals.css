@@ -452,6 +452,29 @@ html[data-ui-size="comfortable"] {
     }
   }
 
+  /* Advancing a step in a portal wizard. Short and one-directional so the panel
+     reads as "the next thing" rather than a page load. Expressive zone only. */
+  @keyframes prequal-step-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .prequal-step-in {
+    animation: prequal-step-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .prequal-step-in {
+      animation: none;
+    }
+  }
+
   /* Live-progress indicators — the only permitted infinite animations. */
   .skeleton-shimmer {
     position: relative;

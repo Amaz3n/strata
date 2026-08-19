@@ -8,6 +8,10 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { NotificationPreferences } from "@/components/settings/notification-preferences"
 import { ComplianceSettings } from "@/components/settings/compliance-settings"
+import {
+  DEFAULT_PREQUAL_TEMPLATE,
+  type PrequalificationTemplate,
+} from "@/lib/validation/prequalification"
 import { OrganizationPanel } from "@/components/settings/organization-panel"
 import { IntegrationsPanel } from "@/components/integrations/integrations-panel"
 import { Bell, Building2, CreditCard, FileSpreadsheet, KeyRound, Link2, Receipt, ShieldCheck, User as UserIcon, Users, Wallet } from "@/components/icons"
@@ -121,6 +125,7 @@ interface SettingsWindowProps {
   initialComplianceRules?: ComplianceRules
   canManageCompliance?: boolean
   initialComplianceRequirementDefaults?: ComplianceRequirementTemplateItem[]
+  initialPrequalificationTemplate?: PrequalificationTemplate
   complianceDocumentTypes?: ComplianceDocumentType[]
   initialPaymentRailSettings?: PaymentRailSettings | null
   stripePublishableKey?: string | null
@@ -159,6 +164,7 @@ export function SettingsWindow({
     block_subcontract_execution_on_missing_docs: false,
   },
   initialComplianceRequirementDefaults = [],
+  initialPrequalificationTemplate = DEFAULT_PREQUAL_TEMPLATE,
   complianceDocumentTypes = [],
   canManageCompliance = false,
   initialPaymentRailSettings = null,
@@ -362,6 +368,7 @@ export function SettingsWindow({
                 <ComplianceSettings
                   initialRules={initialComplianceRules}
                   initialRequirementDefaults={initialComplianceRequirementDefaults}
+                  initialPrequalificationTemplate={initialPrequalificationTemplate}
                   documentTypes={complianceDocumentTypes}
                   canManage={canManageCompliance}
                 />

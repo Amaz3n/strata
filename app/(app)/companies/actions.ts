@@ -29,7 +29,6 @@ import {
 } from "@/lib/validation/compliance-documents"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
-import { requestPrequalification, reviewPrequalification } from "@/lib/services/prequalification"
 import { inviteCompanyToPaymentSetup, setCompanyPaymentAccessStatus } from "@/lib/services/vendor-payment-invitations"
 
 async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
@@ -49,7 +48,6 @@ export async function createCompanyAction(input: unknown) {
   return run(async () => {
       const parsed = companyInputSchema.parse(input)
       const company = await createCompany({ input: parsed })
-      revalidatePath("/companies")
       revalidatePath("/directory")
       return company
   })
@@ -59,9 +57,8 @@ export async function updateCompanyAction(companyId: string, input: unknown) {
   return run(async () => {
       const parsed = companyUpdateSchema.parse(input)
       const company = await updateCompany({ companyId, input: parsed })
-      revalidatePath("/companies")
-      revalidatePath(`/companies/${companyId}`)
       revalidatePath("/directory")
+      revalidatePath(`/directory/${companyId}`)
       return company
   })
 }
@@ -69,9 +66,8 @@ export async function updateCompanyAction(companyId: string, input: unknown) {
 export async function archiveCompanyAction(companyId: string) {
   return run(async () => {
       await archiveCompany(companyId)
-      revalidatePath("/companies")
-      revalidatePath(`/companies/${companyId}`)
       revalidatePath("/directory")
+      revalidatePath(`/directory/${companyId}`)
       return true
   })
 }
@@ -79,9 +75,8 @@ export async function archiveCompanyAction(companyId: string) {
 export async function restoreCompanyAction(companyId: string) {
   return run(async () => {
       await restoreCompany(companyId)
-      revalidatePath("/companies")
-      revalidatePath(`/companies/${companyId}`)
       revalidatePath("/directory")
+      revalidatePath(`/directory/${companyId}`)
       return true
   })
 }
@@ -89,7 +84,7 @@ export async function restoreCompanyAction(companyId: string) {
 export async function inviteCompanyToPaymentSetupAction(companyId: string) {
   return run(async () => {
     const result = await inviteCompanyToPaymentSetup({ companyId })
-    revalidatePath(`/companies/${companyId}`)
+    revalidatePath(`/directory/${companyId}`)
     revalidatePath("/payables")
     return result
   })
@@ -101,26 +96,9 @@ export async function setCompanyPaymentAccessStatusAction(
 ) {
   return run(async () => {
     const result = await setCompanyPaymentAccessStatus({ companyId, status })
-    revalidatePath(`/companies/${companyId}`)
+    revalidatePath(`/directory/${companyId}`)
     revalidatePath("/payables")
     revalidatePath("/payables/payment-runs")
-    return result
-  })
-}
-
-export async function requestPrequalificationAction(companyId: string) {
-  return run(async () => {
-    const result = await requestPrequalification(companyId)
-    revalidatePath(`/companies/${companyId}`)
-    return result
-  })
-}
-
-export async function reviewPrequalificationAction(companyId: string, prequalificationId: string, input: unknown) {
-  return run(async () => {
-    const result = await reviewPrequalification(prequalificationId, input)
-    revalidatePath(`/companies/${companyId}`)
-    revalidatePath("/directory")
     return result
   })
 }
@@ -155,9 +133,8 @@ export async function linkCompanyAccountingVendorAction(companyId: string, vendo
       if (!target) throw new Error("No organization accounting connection is mapped")
       await saveCompanyAccountingVendorLink({ supabase, orgId, companyId, connectionId: target.connection.id, externalId: vendor.id, displayName: vendor.name })
       const company = await getCompany(companyId)
-      revalidatePath("/companies")
-      revalidatePath(`/companies/${companyId}`)
       revalidatePath("/directory")
+      revalidatePath(`/directory/${companyId}`)
       return company
   })
 }
@@ -179,9 +156,8 @@ export async function createAccountingVendorForCompanyAction(companyId: string) 
       } })
       await saveCompanyAccountingVendorLink({ supabase, orgId, companyId, connectionId: target.connection.id, externalId: vendor.id, displayName: vendor.name ?? company.name })
       const updated = await getCompany(companyId)
-      revalidatePath("/companies")
-      revalidatePath(`/companies/${companyId}`)
       revalidatePath("/directory")
+      revalidatePath(`/directory/${companyId}`)
       return updated
   })
 }
@@ -206,7 +182,7 @@ export async function setCompanyRequirementsAction(
 ) {
   return run(async () => {
       const result = await setCompanyRequirements({ companyId, requirements })
-      revalidatePath(`/companies/${companyId}`)
+      revalidatePath(`/directory/${companyId}/compliance`)
       return result
   })
 }
@@ -218,8 +194,8 @@ export async function waiveCompanyRequirementAction(
   return run(async () => {
       const parsed = complianceRequirementWaiverInputSchema.parse(input)
       const result = await waiveCompanyRequirement({ companyId, input: parsed })
-      revalidatePath(`/companies/${companyId}`)
-      revalidatePath("/companies")
+      revalidatePath(`/directory/${companyId}/compliance`)
+      revalidatePath("/directory")
       return result
   })
 }
@@ -231,8 +207,8 @@ export async function revokeCompanyRequirementWaiverAction(
   return run(async () => {
       const parsed = complianceRequirementWaiverRevokeSchema.parse(input ?? {})
       const result = await revokeCompanyRequirementWaiver({ waiverId, input: parsed })
-      revalidatePath(`/companies/${result.company_id}`)
-      revalidatePath("/companies")
+      revalidatePath(`/directory/${result.company_id}/compliance`)
+      revalidatePath("/directory")
       return result
   })
 }
@@ -253,7 +229,7 @@ export async function uploadComplianceDocumentAction({
 }) {
   return run(async () => {
       const result = await uploadComplianceDocument({ companyId, input, fileId })
-      revalidatePath(`/companies/${companyId}`)
+      revalidatePath(`/directory/${companyId}/compliance`)
       return result
   })
 }
@@ -265,7 +241,7 @@ export async function reviewComplianceDocumentAction(
   return run(async () => {
       const parsed = complianceReviewDecisionSchema.parse(decision)
       const result = await reviewComplianceDocument({ documentId, decision: parsed })
-      revalidatePath(`/companies`)
+      revalidatePath("/directory")
       return result
   })
 }

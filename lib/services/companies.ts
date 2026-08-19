@@ -71,6 +71,7 @@ function mapCompany(row: any, accountingLink?: CompanyAccountingLink | null): Co
     website: row.website ?? undefined,
     address: row.address ?? metadata.address ?? undefined,
     license_number: row.license_number ?? metadata.license_number ?? undefined,
+    // Written only by the prequalification workflow (lib/services/prequalification.ts).
     prequalified: row.prequalified ?? metadata.prequalified ?? undefined,
     prequalified_at: row.prequalified_at ?? metadata.prequalified_at ?? undefined,
     rating: row.rating ?? metadata.rating ?? undefined,
@@ -639,8 +640,6 @@ function buildCompanyInsert(input: CompanyInput, orgId: string) {
     website: input.website ?? null,
     address: input.address ?? null,
     license_number: input.license_number ?? null,
-    prequalified: input.prequalified ?? false,
-    prequalified_at: input.prequalified_at ?? null,
     rating: input.rating ?? null,
     default_payment_terms: input.default_payment_terms ?? null,
     internal_notes: input.internal_notes ?? null,
@@ -651,8 +650,6 @@ function buildCompanyInsert(input: CompanyInput, orgId: string) {
     metadata: {
       trade: input.trade,
       license_number: input.license_number,
-      prequalified: input.prequalified,
-      prequalified_at: input.prequalified_at,
       rating: input.rating,
       default_payment_terms: input.default_payment_terms,
       default_payment_method: input.default_payment_method,
@@ -766,17 +763,11 @@ export async function updateCompany({
     ...(existing.metadata ?? {}),
     trade: parsed.trade ?? existing.metadata?.trade,
     license_number: parsed.license_number ?? existing.metadata?.license_number,
-    prequalified: typeof parsed.prequalified === "boolean" ? parsed.prequalified : existing.metadata?.prequalified,
-    prequalified_at: parsed.prequalified_at ?? existing.metadata?.prequalified_at,
     rating: parsed.rating ?? existing.metadata?.rating,
     default_payment_terms: parsed.default_payment_terms ?? existing.metadata?.default_payment_terms,
     default_payment_method: parsed.default_payment_method ?? existing.metadata?.default_payment_method,
     internal_notes: parsed.internal_notes ?? existing.metadata?.internal_notes,
     notes: parsed.notes ?? existing.metadata?.notes,
-  }
-
-  if (typeof parsed.prequalified === "boolean" && parsed.prequalified && !existing.metadata?.prequalified && !parsed.prequalified_at) {
-    metadata.prequalified_at = new Date().toISOString()
   }
 
   const nextCompanyType = parsed.company_type ?? existing.company_type
@@ -800,8 +791,6 @@ export async function updateCompany({
       website: parsed.website ?? existing.website,
       address: parsed.address ?? existing.address,
       license_number: parsed.license_number ?? existing.license_number,
-      prequalified: typeof parsed.prequalified === "boolean" ? parsed.prequalified : existing.prequalified,
-      prequalified_at: parsed.prequalified_at ?? existing.prequalified_at,
       rating: parsed.rating ?? existing.rating,
       default_payment_terms: parsed.default_payment_terms ?? existing.default_payment_terms,
       internal_notes: parsed.internal_notes ?? existing.internal_notes,

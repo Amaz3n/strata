@@ -835,8 +835,11 @@ export function PayableCreateWorkspace({
     : selectedProjectId
       ? [{ id: selectedProjectId, name: "Current project", billingModel: "fixed_price" as const }]
       : []
+  // Approved change orders are part of the contract, so the ceiling this bill is
+  // measured against is the revised total, not what was originally signed.
+  const commitmentCeilingCents = selectedCommitment?.revised_total_cents ?? selectedCommitment?.total_cents
   const commitmentAfterBill = (selectedCommitment?.billed_cents ?? 0) + amountCents
-  const commitmentOver = Boolean(selectedCommitment?.total_cents && commitmentAfterBill > selectedCommitment.total_cents)
+  const commitmentOver = Boolean(commitmentCeilingCents && commitmentAfterBill > commitmentCeilingCents)
 
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!next) close() }}>
@@ -1034,7 +1037,7 @@ export function PayableCreateWorkspace({
 
                       {selectedCommitment ? (
                         <div className={cn("sm:col-span-2 flex items-center justify-between border px-3 py-2 text-xs", commitmentOver ? "border-destructive/30 bg-destructive/10 text-destructive" : "border-border bg-muted/20 text-muted-foreground")}>
-                          <span>{formatMoneyFromCents(selectedCommitment.billed_cents ?? 0)} billed of {formatMoneyFromCents(selectedCommitment.total_cents ?? 0)}</span>
+                          <span>{formatMoneyFromCents(selectedCommitment.billed_cents ?? 0)} billed of {formatMoneyFromCents(commitmentCeilingCents ?? 0)}</span>
                           <span className="font-medium tabular-nums">After invoice {formatMoneyFromCents(commitmentAfterBill)}</span>
                         </div>
                       ) : null}

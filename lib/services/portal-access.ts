@@ -1,4 +1,5 @@
 import { compare, hash } from "bcryptjs"
+import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -32,7 +33,7 @@ import type {
 import { listProjectScheduleItemsWithClient } from "@/lib/services/schedule"
 import { listDecisionsForPortal } from "@/lib/services/decisions"
 import { requireOrgContext } from "@/lib/services/context"
-import { requirePermission } from "@/lib/services/permissions"
+import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 import {
   cascadeGrantStatusForPortalToken,
   hasExternalPortalGrantForToken,
@@ -131,7 +132,8 @@ export async function createPortalAccessToken({
   requireAccount,
   orgId,
 }: {
-  projectId: string
+  /** Null only for a bid-scoped or company-scoped record. */
+  projectId: string | null
   portalType: PortalType
   contactId?: string
   companyId?: string
@@ -227,7 +229,7 @@ export async function findReusablePortalAccessToken({
   companyId,
   orgId,
 }: {
-  projectId: string
+  projectId: string | null
   portalType: PortalType
   contactId?: string
   companyId?: string
@@ -241,12 +243,12 @@ export async function findReusablePortalAccessToken({
     .from("portal_access_tokens")
     .select("*")
     .eq("org_id", resolvedOrgId)
-    .eq("project_id", projectId)
     .eq("portal_type", portalType)
     .is("revoked_at", null)
     .is("paused_at", null)
     .order("created_at", { ascending: false })
 
+  query = projectId ? query.eq("project_id", projectId) : query.is("project_id", null)
   query = contactId ? query.eq("contact_id", contactId) : query.is("contact_id", null)
   query = companyId ? query.eq("company_id", companyId) : query.is("company_id", null)
 
@@ -264,6 +266,152 @@ export async function findReusablePortalAccessToken({
   })
 
   return reusable ? mapAccessToken(reusable) : null
+}
+
+/**
+ * Least privilege for a link that exists only so a vendor can onboard: the
+ * compliance and prequalification sections and nothing else. Every other sub
+ * portal route checks its own permission and will refuse this record, which is
+ * what keeps a company-scoped link from reaching project work.
+ */
+const VENDOR_ACCOUNT_PERMISSIONS: Partial<PortalPermissions> = {
+  can_view_schedule: false,
+  can_view_photos: false,
+  can_view_documents: false,
+  can_download_files: false,
+  can_view_daily_logs: false,
+  can_view_budget: false,
+  can_approve_change_orders: false,
+  can_submit_selections: false,
+  can_create_punch_items: false,
+  can_view_warranty: false,
+  can_view_invoices: false,
+  can_pay_invoices: false,
+  can_view_rfis: false,
+  can_view_submittals: false,
+  can_respond_rfis: false,
+  can_submit_submittals: false,
+  can_view_commitments: false,
+  can_view_bills: false,
+  can_submit_invoices: false,
+  can_submit_time: false,
+  can_submit_expenses: false,
+  can_submit_daily_logs: false,
+  can_upload_compliance_docs: true,
+  can_upload_subtier_waivers: false,
+  can_view_punch_items: false,
+  can_view_purchase_orders: false,
+  can_report_po_completion: false,
+  can_review_submittals: false,
+}
+
+/**
+ * The vendor's own link to the builder, independent of any job.
+ *
+ * Prequalification happens before a vendor is on a project — often that is the
+ * whole point of it — so the access record it needs cannot be project-scoped.
+ * Reuses the company's existing account link rather than minting a second one.
+ */
+export async function ensureVendorAccountPortalToken({
+  companyId,
+  contactId,
+  orgId,
+}: {
+  companyId: string
+  contactId?: string | null
+  orgId?: string
+}): Promise<PortalAccessToken> {
+  const { orgId: resolvedOrgId, userId, supabase } = await requireOrgContext(orgId)
+  await requireAnyPermission(["directory.write", "prequal.review", "project.manage"], {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  })
+  const serviceClient = createServiceSupabaseClient()
+
+  const { data: existingRows, error: existingError } = await serviceClient
+    .from("portal_access_tokens")
+    .select("*")
+    .eq("org_id", resolvedOrgId)
+    .eq("company_id", companyId)
+    .eq("portal_type", "sub")
+    .is("project_id", null)
+    .is("revoked_at", null)
+    .is("paused_at", null)
+    .order("created_at", { ascending: false })
+  if (existingError) {
+    throw new Error(`Failed to look up vendor account access: ${existingError.message}`)
+  }
+
+  const now = new Date()
+  const reusable = (existingRows ?? []).find((row) => {
+    if (row.expires_at && new Date(row.expires_at) <= now) return false
+    if (row.max_access_count && row.access_count >= row.max_access_count) return false
+    if (contactId && row.contact_id && row.contact_id !== contactId) return false
+    return true
+  })
+  if (reusable) return mapAccessToken(reusable)
+
+  const plaintextToken = generatePortalToken()
+  const { data, error } = await serviceClient
+    .from("portal_access_tokens")
+    .insert({
+      token_hash: hashPortalToken(plaintextToken),
+      token_encrypted: encryptPortalToken(plaintextToken),
+      org_id: resolvedOrgId,
+      project_id: null,
+      portal_type: "sub",
+      contact_id: contactId ?? null,
+      company_id: companyId,
+      created_by: userId,
+      ...permissionsToColumns(VENDOR_ACCOUNT_PERMISSIONS),
+    })
+    .select("*")
+    .single()
+
+  if (error || !data) {
+    throw new Error(`Failed to create vendor account access: ${error?.message}`)
+  }
+
+  return mapAccessToken(data)
+}
+
+/**
+ * An existing usable sub-portal link for a company, for callers with no user to
+ * authorize against — the nightly compliance chase, which needs to point the
+ * vendor somewhere. Never mints one: an unattended job should not create access.
+ */
+export async function findExistingCompanyPortalToken({
+  supabase,
+  orgId,
+  companyId,
+}: {
+  supabase: SupabaseClient
+  orgId: string
+  companyId: string
+}): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("portal_access_tokens")
+    .select("token_encrypted, expires_at, access_count, max_access_count, project_id")
+    .eq("org_id", orgId)
+    .eq("company_id", companyId)
+    .eq("portal_type", "sub")
+    .is("revoked_at", null)
+    .is("paused_at", null)
+    // A company-scoped account link outlives any single job, so prefer it.
+    .order("project_id", { ascending: true, nullsFirst: true })
+    .order("created_at", { ascending: false })
+  if (error || !data?.length) return null
+
+  const now = new Date()
+  const usable = data.find((row: { expires_at: string | null; access_count: number | null; max_access_count: number | null }) => {
+    if (row.expires_at && new Date(row.expires_at) <= now) return false
+    if (row.max_access_count && (row.access_count ?? 0) >= row.max_access_count) return false
+    return true
+  })
+  if (!usable) return null
+
+  return decryptPortalToken(usable.token_encrypted) || null
 }
 
 export async function validatePortalToken(token: string) {
@@ -1557,7 +1705,8 @@ export async function loadSubPortalData({
 
 export interface SubPortalShellContext {
   org: { id: string; name: string; logo_url?: string | null }
-  project: { id: string; name: string; address?: string | null }
+  /** Null on a company-scoped vendor account link, which belongs to no job. */
+  project: { id: string; name: string; address?: string | null } | null
   company: { id: string; name: string; trade?: string | null }
   /**
    * Reimbursable time and expense capture only exists on cost-driven billing
@@ -1595,12 +1744,15 @@ export async function loadSubPortalShellContext({
   permissions,
 }: {
   orgId: string
-  projectId: string
+  /** Null on a company-scoped vendor account link. */
+  projectId: string | null
   companyId: string
   permissions: PortalPermissions
 }): Promise<SubPortalShellContext> {
   const supabase = createServiceSupabaseClient()
 
+  // Without a project there is no project work to count, and the project-scoped
+  // sections are already switched off on a company-scoped record.
   const zero = Promise.resolve({ count: 0 })
 
   const [
@@ -1613,17 +1765,19 @@ export async function loadSubPortalShellContext({
     warrantyCount,
   ] = await Promise.all([
     supabase.from("orgs").select("id, name, logo_url").eq("id", orgId).single(),
-    supabase
-      .from("projects")
-      .select("id, name, address, property_type, financial_settings")
-      .eq("id", projectId)
-      .single(),
+    projectId
+      ? supabase
+          .from("projects")
+          .select("id, name, address, property_type, financial_settings")
+          .eq("id", projectId)
+          .maybeSingle()
+      : Promise.resolve({ data: null }),
     supabase.from("companies").select("id, name, metadata").eq("id", companyId).single(),
 
     // The nav badge counts what the sub owes an answer on. RFIs the sub raised
     // are assigned back to their own company so they can read them, so they
     // have to be excluded or the badge counts the sub's own questions.
-    permissions.can_view_rfis
+    projectId && permissions.can_view_rfis
       ? supabase
           .from("rfis")
           .select("id", { count: "exact", head: true })
@@ -1634,7 +1788,7 @@ export async function loadSubPortalShellContext({
           .or(`submitted_by_company_id.is.null,submitted_by_company_id.neq.${companyId}`)
       : zero,
 
-    permissions.can_view_submittals
+    projectId && permissions.can_view_submittals
       ? supabase
           .from("submittals")
           .select("id", { count: "exact", head: true })
@@ -1644,7 +1798,7 @@ export async function loadSubPortalShellContext({
           .in("status", ["pending", "in_review"])
       : zero,
 
-    permissions.can_view_punch_items
+    projectId && permissions.can_view_punch_items
       ? supabase
           .from("punch_items")
           .select("id", { count: "exact", head: true })
@@ -1654,26 +1808,30 @@ export async function loadSubPortalShellContext({
           .not("status", "in", "(closed,ready_for_review)")
       : zero,
 
-    supabase
-      .from("warranty_service_visits")
-      .select("id", { count: "exact", head: true })
-      .eq("org_id", orgId)
-      .eq("project_id", projectId)
-      .eq("assigned_company_id", companyId)
-      .in("status", ["scheduled", "confirmed"]),
+    projectId
+      ? supabase
+          .from("warranty_service_visits")
+          .select("id", { count: "exact", head: true })
+          .eq("org_id", orgId)
+          .eq("project_id", projectId)
+          .eq("assigned_company_id", companyId)
+          .in("status", ["scheduled", "confirmed"])
+      : zero,
   ])
 
   const [complianceStatus, prequalification, complianceRules, contractResult] = await Promise.all([
     getCompanyComplianceStatusWithClient(supabase, orgId, companyId),
     getLatestPrequalificationWithClient(supabase, orgId, companyId),
     getComplianceRulesWithClient(supabase, orgId),
-    supabase
-      .from("contracts")
-      .select("*")
-      .eq("org_id", orgId)
-      .eq("project_id", projectId)
-      .eq("status", "active")
-      .maybeSingle(),
+    projectId
+      ? supabase
+          .from("contracts")
+          .select("*")
+          .eq("org_id", orgId)
+          .eq("project_id", projectId)
+          .eq("status", "active")
+          .maybeSingle()
+      : Promise.resolve({ data: null }),
   ])
 
   const features = getProjectFinancialFeatureConfig(
@@ -1690,11 +1848,13 @@ export async function loadSubPortalShellContext({
       name: orgResult.data?.name ?? "",
       logo_url: orgResult.data?.logo_url,
     },
-    project: {
-      id: projectResult.data?.id ?? projectId,
-      name: projectResult.data?.name ?? "",
-      address: projectResult.data?.address ?? null,
-    },
+    project: projectId
+      ? {
+          id: projectResult.data?.id ?? projectId,
+          name: projectResult.data?.name ?? "",
+          address: projectResult.data?.address ?? null,
+        }
+      : null,
     company: {
       id: companyResult.data?.id ?? companyId,
       name: companyResult.data?.name ?? "",

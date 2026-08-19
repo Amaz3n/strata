@@ -46,6 +46,8 @@ export type NotificationType =
   | "compliance_item_created"
   | "compliance_item_due"
   | "compliance_item_overdue"
+  | "prequalification_submitted"
+  | "prequalification_expiring"
   | "punch_item_created"
   | "decision_created"
   | "decision_updated"
@@ -180,6 +182,11 @@ export const NOTIFICATION_EMAIL_CATEGORIES = [
     description: "Daily logs, schedule risk, and incidents on site.",
   },
   {
+    key: "compliance",
+    label: "Vendor compliance & prequalification",
+    description: "Prequalification packages and the documents that keep a vendor eligible.",
+  },
+  {
     key: "starts",
     label: "Starts & production",
     description: "Lot start packages, release failures, and land takedowns coming due.",
@@ -239,6 +246,12 @@ export const EMAIL_NOTIFICATION_TYPES = [
     category: "accounting",
     label: "Accounting reconciliation drift",
     description: "Email me when Arc detects a new accounting connection or ledger discrepancy.",
+  },
+  {
+    key: "prequalification_submitted",
+    category: "compliance",
+    label: "Prequalification submitted",
+    description: "Email me when a vendor returns a prequalification package I asked for.",
   },
   {
     key: "vendor_payment_relationship_claimed",

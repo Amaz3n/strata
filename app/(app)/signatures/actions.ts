@@ -28,8 +28,12 @@ import { createFileRecord } from "@/lib/services/files"
 import { createInitialVersion } from "@/lib/services/file-versions"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
-import { getCompanyComplianceStatusWithClient } from "@/lib/services/compliance-documents"
-import { getComplianceRules } from "@/lib/services/compliance"
+import {
+  assertCommitmentExecutable,
+  assertSubcontractExecutionCompliance,
+  evaluateSubcontractExecutionCompliance,
+  type SubcontractExecutionComplianceGate,
+} from "@/lib/services/subcontract-execution"
 import { getOrgSenderEmail, renderEmailTemplate, sendEmail } from "@/lib/services/mailer"
 import { SignatureEmail } from "@/lib/emails/signature-email"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
@@ -149,66 +153,8 @@ function getSourceEntityCompletionEvent(sourceEntityType: UnifiedSignableEntityT
   return null
 }
 
-async function getSubcontractExecutionCompanyId({
-  supabase,
-  orgId,
-  sourceEntityType,
-  sourceEntityId,
-}: {
-  supabase: any
-  orgId: string
-  sourceEntityType?: UnifiedSignableEntityType
-  sourceEntityId?: string | null
-}) {
-  if (
-    !sourceEntityId ||
-    (sourceEntityType !== "subcontract" && sourceEntityType !== "subcontract_change_order")
-  ) {
-    return null
-  }
-
-  if (sourceEntityType === "subcontract") {
-    const { data, error } = await supabase
-      .from("commitments")
-      .select("company_id")
-      .eq("org_id", orgId)
-      .eq("id", sourceEntityId)
-      .maybeSingle()
-    if (error) throw new Error(`Failed to validate subcontract compliance: ${error.message}`)
-    return data?.company_id ?? null
-  }
-
-  const { data, error } = await supabase
-    .from("commitment_change_orders")
-    .select("company_id, commitment:commitments(company_id)")
-    .eq("org_id", orgId)
-    .eq("id", sourceEntityId)
-    .maybeSingle()
-  if (error) throw new Error(`Failed to validate subcontract change order compliance: ${error.message}`)
-  const commitment = Array.isArray(data?.commitment) ? data?.commitment[0] : data?.commitment
-  return data?.company_id ?? commitment?.company_id ?? null
-}
-
-async function getSafeComplianceRules(orgId: string) {
-  return getComplianceRules(orgId).catch(() => ({
-    require_lien_waiver: false,
-    block_payment_on_missing_docs: true,
-    warn_subcontract_execution_on_missing_docs: true,
-    block_subcontract_execution_on_missing_docs: false,
-  }))
-}
-
-export type SignatureSourceComplianceGate = {
-  applies: boolean
-  companyId: string | null
-  warn: boolean
-  block: boolean
-  isCompliant: boolean
-  missingDocumentNames: string[]
-  expiredDocumentNames: string[]
-  deficiencyMessages: string[]
-  pendingReviewCount: number
-}
+/** Re-exported for the envelope wizard, which renders this gate. */
+export type SignatureSourceComplianceGate = SubcontractExecutionComplianceGate
 
 export async function getSignatureSourceComplianceAction(input: {
   source_entity_type?: UnifiedSignableEntityType | null
@@ -217,132 +163,12 @@ export async function getSignatureSourceComplianceAction(input: {
       const { supabase, orgId, userId } = await requireOrgContext()
       await requirePermission("project.manage", { supabase, orgId, userId })
 
-      const sourceEntityType = input.source_entity_type ?? undefined
-      const sourceEntityId = input.source_entity_id ?? null
-      const applies =
-        !!sourceEntityId &&
-        (sourceEntityType === "subcontract" || sourceEntityType === "subcontract_change_order")
-      const rules = await getSafeComplianceRules(orgId)
-
-      if (!applies) {
-        return {
-          applies: false,
-          companyId: null,
-          warn: false,
-          block: false,
-          isCompliant: true,
-          missingDocumentNames: [],
-          expiredDocumentNames: [],
-          deficiencyMessages: [],
-          pendingReviewCount: 0,
-        }
-      }
-
-      const companyId = await getSubcontractExecutionCompanyId({
+      return evaluateSubcontractExecutionCompliance({
         supabase,
         orgId,
-        sourceEntityType,
-        sourceEntityId,
+        sourceEntityType: input.source_entity_type ?? undefined,
+        sourceEntityId: input.source_entity_id ?? null,
       })
-
-      if (!companyId) {
-        return {
-          applies: true,
-          companyId: null,
-          warn: Boolean(rules.warn_subcontract_execution_on_missing_docs),
-          block: Boolean(rules.block_subcontract_execution_on_missing_docs),
-          isCompliant: true,
-          missingDocumentNames: [],
-          expiredDocumentNames: [],
-          deficiencyMessages: [],
-          pendingReviewCount: 0,
-        }
-      }
-
-      const status = await getCompanyComplianceStatusWithClient(supabase, orgId, companyId)
-      return {
-        applies: true,
-        companyId,
-        warn: Boolean(rules.warn_subcontract_execution_on_missing_docs),
-        block: Boolean(rules.block_subcontract_execution_on_missing_docs),
-        isCompliant: status.is_compliant,
-        missingDocumentNames: status.missing.map((type) => type.name),
-        expiredDocumentNames: status.expired.map((document) => document.document_type?.name ?? "Expired document"),
-        deficiencyMessages: status.deficiencies.map((deficiency) => deficiency.message),
-        pendingReviewCount: status.pending_review.length,
-      }
-}
-
-async function assertSubcontractExecutionCompliance({
-  supabase,
-  orgId,
-  sourceEntityType,
-  sourceEntityId,
-}: {
-  supabase: any
-  orgId: string
-  sourceEntityType?: UnifiedSignableEntityType
-  sourceEntityId?: string | null
-}) {
-  if (
-    !sourceEntityId ||
-    (sourceEntityType !== "subcontract" && sourceEntityType !== "subcontract_change_order")
-  ) {
-    return
-  }
-
-  const rules = await getSafeComplianceRules(orgId)
-  if (!rules.block_subcontract_execution_on_missing_docs) return
-
-  const companyId = await getSubcontractExecutionCompanyId({
-    supabase,
-    orgId,
-    sourceEntityType,
-    sourceEntityId,
-  })
-
-  if (!companyId) return
-
-  const status = await getCompanyComplianceStatusWithClient(supabase, orgId, companyId)
-  if (!status.is_compliant) {
-    throw new Error("Vendor compliance documents are required before sending this subcontract for signature.")
-  }
-}
-
-/**
- * A subcontract goes out for execution only after the commitment has been
- * approved internally — otherwise the counterparty's signature would turn an
- * unreviewed draft into a committed cost.
- */
-async function assertSubcontractReadyToSend({
-  supabase,
-  orgId,
-  sourceEntityType,
-  sourceEntityId,
-}: {
-  supabase: any
-  orgId: string
-  sourceEntityType?: UnifiedSignableEntityType
-  sourceEntityId?: string | null
-}) {
-  if (sourceEntityType !== "subcontract" || !sourceEntityId) return
-
-  const { data: commitment, error } = await supabase
-    .from("commitments")
-    .select("id, status")
-    .eq("org_id", orgId)
-    .eq("id", sourceEntityId)
-    .maybeSingle()
-
-  if (error || !commitment) {
-    throw new Error(`Failed to validate commitment before sending: ${error?.message ?? "not found"}`)
-  }
-  if (commitment.status === "draft") {
-    throw new Error("Approve this commitment before sending the subcontract for signature.")
-  }
-  if (commitment.status === "canceled") {
-    throw new Error("This commitment is canceled and cannot be sent for signature.")
-  }
 }
 
 function getNextRequiredSequence(requests: SigningRequestRoutingRow[]) {
@@ -1150,14 +976,17 @@ export async function sendDocumentEnvelopeAction(input: {
         orgId,
         sourceEntityType,
         sourceEntityId,
+        action: "sending this subcontract for signature",
       })
 
-      await assertSubcontractReadyToSend({
-        supabase,
-        orgId,
-        sourceEntityType,
-        sourceEntityId,
-      })
+      if (sourceEntityType === "subcontract" && sourceEntityId) {
+        await assertCommitmentExecutable({
+          supabase,
+          orgId,
+          commitmentId: sourceEntityId,
+          action: "sending the subcontract for signature",
+        })
+      }
 
       if (sourceEntityType === "proposal" && sourceEntityId) {
         const [{ data: proposal, error: proposalError }, { data: executedEnvelope, error: executedEnvelopeError }] =

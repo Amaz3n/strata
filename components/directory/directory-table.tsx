@@ -20,6 +20,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { Company, ComplianceStatusSummary, Contact } from "@/lib/types";
+import type { PrequalificationGlance } from "@/lib/services/prequalification";
+import { cn } from "@/lib/utils";
 import {
   Archive,
   ArrowDown,
@@ -47,6 +49,7 @@ interface DirectoryTableProps {
   contacts: Contact[];
   entries?: DirectoryItem[];
   complianceStatusByCompanyId?: Record<string, ComplianceStatusSummary>;
+  prequalificationByCompanyId?: Record<string, PrequalificationGlance>;
   view: DirectoryView;
   sort: DirectorySortKey;
   direction: DirectorySortDirection;
@@ -143,6 +146,34 @@ function ComplianceFlag({ status }: { status?: ComplianceStatusSummary }) {
   );
 }
 
+/**
+ * Exception reporting, like the compliance flag beside it: a vendor who is
+ * currently prequalified says nothing, because that is the expected state.
+ */
+function PrequalFlag({ glance }: { glance?: PrequalificationGlance }) {
+  if (!glance) return null;
+  if (glance.status === "approved" || glance.status === "approved_with_limits") return null;
+  const label =
+    glance.status === "requested"
+      ? "Prequal requested"
+      : glance.status === "submitted" || glance.status === "under_review"
+        ? "Prequal in review"
+        : glance.status === "declined"
+          ? "Prequal declined"
+          : glance.status === "waived"
+            ? "Prequal waived"
+            : "Prequal expired";
+  const tone =
+    glance.status === "declined" || glance.status === "expired"
+      ? "text-destructive"
+      : "text-muted-foreground";
+  return (
+    <span className={cn("inline-flex items-center gap-1 text-[11px] font-medium", tone)}>
+      {label}
+    </span>
+  );
+}
+
 function SortHead({
   label,
   sortKey,
@@ -223,6 +254,7 @@ export function DirectoryTable({
   contacts,
   entries,
   complianceStatusByCompanyId = {},
+  prequalificationByCompanyId = {},
   view,
   sort,
   direction,
@@ -294,6 +326,7 @@ export function DirectoryTable({
                     complianceStatus={
                       complianceStatusByCompanyId[item.company.id]
                     }
+                    prequalification={prequalificationByCompanyId[item.company.id]}
                     onSelectCompany={onSelectCompany}
                     onEditCompany={onEditCompany}
                     onArchiveCompany={onArchiveCompany}
@@ -435,6 +468,7 @@ export function DirectoryTable({
                   view={view}
                   contacts={contactsByCompany.get(item.id) ?? []}
                   complianceStatus={complianceStatusByCompanyId[item.company.id]}
+                  prequalification={prequalificationByCompanyId[item.company.id]}
                   onSelectCompany={onSelectCompany}
                   onEditCompany={onEditCompany}
                   onArchiveCompany={onArchiveCompany}
@@ -524,6 +558,7 @@ function CompanyMobileRow({
   company,
   contacts,
   complianceStatus,
+  prequalification,
   onSelectCompany,
   onEditCompany,
   onArchiveCompany,
@@ -531,6 +566,7 @@ function CompanyMobileRow({
   company: Company;
   contacts: Contact[];
   complianceStatus?: ComplianceStatusSummary;
+  prequalification?: PrequalificationGlance;
   onSelectCompany?: (id: string) => void;
   onEditCompany?: (company: Company) => void;
   onArchiveCompany?: (companyId: string) => void;
@@ -577,9 +613,10 @@ function CompanyMobileRow({
               ) : null}
             </div>
           ) : null}
-          {complianceStatus && !complianceStatus.is_compliant ? (
-            <div className="mt-1.5">
+          {(complianceStatus && !complianceStatus.is_compliant) || prequalification ? (
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-3">
               <ComplianceFlag status={complianceStatus} />
+              <PrequalFlag glance={prequalification} />
             </div>
           ) : null}
         </div>
@@ -727,6 +764,7 @@ function CompanyRow({
   contacts,
   view,
   complianceStatus,
+  prequalification,
   onSelectCompany,
   onEditCompany,
   onArchiveCompany,
@@ -735,6 +773,7 @@ function CompanyRow({
   contacts: Contact[];
   view: DirectoryView;
   complianceStatus?: ComplianceStatusSummary;
+  prequalification?: PrequalificationGlance;
   onSelectCompany?: (id: string) => void;
   onEditCompany?: (company: Company) => void;
   onArchiveCompany?: (companyId: string) => void;
@@ -767,6 +806,12 @@ function CompanyRow({
                 <>
                   <span>·</span>
                   <ComplianceFlag status={complianceStatus} />
+                </>
+              ) : null}
+              {prequalification ? (
+                <>
+                  <span>·</span>
+                  <PrequalFlag glance={prequalification} />
                 </>
               ) : null}
             </div>

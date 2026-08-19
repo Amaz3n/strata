@@ -1,4 +1,5 @@
 import { recordEvent } from "@/lib/services/events"
+import { findExistingCompanyPortalToken } from "@/lib/services/portal-access"
 import {
   buildComplianceAutopilotSubject,
   sendComplianceAutopilotEmail,
@@ -6,6 +7,10 @@ import {
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { expireProjectOwnComplianceDocuments } from "@/lib/services/project-own-compliance"
 import { expirePrequalificationsWithClient } from "@/lib/services/prequalification"
+
+const appBaseUrl =
+  process.env.NEXT_PUBLIC_APP_URL ||
+  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "")
 
 const EXPIRY_REMINDER_DAYS = new Set([30, 14, 3])
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -445,11 +450,21 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
       }
 
       // One email per vendor covering everything outstanding, not one per document.
-      for (const group of pendingByCompany.values()) {
+      for (const [companyId, group] of pendingByCompany.entries()) {
         const deliveryIds = group.items.map((item) => item.deliveryId)
         const subject = buildComplianceAutopilotSubject(group.items)
 
         try {
+          // Chasing a document without saying where to put it is what made this
+          // email easy to ignore. Only an existing link is used; an unattended
+          // job must not hand out new access.
+          const portalToken = await findExistingCompanyPortalToken({
+            supabase,
+            orgId: org.id,
+            companyId,
+          }).catch(() => null)
+          const portalUrl = portalToken && appBaseUrl ? `${appBaseUrl}/s/${portalToken}/compliance` : null
+
           const sent = await sendComplianceAutopilotEmail({
             to: group.recipientEmail,
             recipientName: group.recipientName,
@@ -458,6 +473,7 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
             orgName: org.name,
             orgLogoUrl: org.logo_url,
             orgSlug: org.slug,
+            portalUrl,
           })
 
           await supabase

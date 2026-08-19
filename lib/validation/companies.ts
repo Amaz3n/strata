@@ -35,8 +35,6 @@ export const companyInputSchema = z.object({
   website: websiteSchema,
   address: addressSchema,
   license_number: z.string().optional(),
-  prequalified: z.boolean().optional(),
-  prequalified_at: z.string().optional(),
   rating: z.number().int().min(1).max(5).optional(),
   default_payment_terms: z.string().max(200).optional(),
   default_payment_method: z.enum(["arc_pay", "check", "wire", "card", "other"]).optional(),

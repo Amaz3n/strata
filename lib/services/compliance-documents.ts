@@ -515,11 +515,14 @@ export async function uploadComplianceDocument({
   companyId,
   input,
   fileId,
+  prequalificationId,
   orgId,
 }: {
   companyId: string
   input: ComplianceDocumentUploadInput
   fileId: string
+  /** Set when the document arrived as part of a prequalification package. */
+  prequalificationId?: string | null
   orgId?: string
 }): Promise<ComplianceDocument> {
   const parsed = complianceDocumentUploadSchema.parse(input)
@@ -542,6 +545,7 @@ export async function uploadComplianceDocument({
       company_id: companyId,
       document_type_id: parsed.document_type_id,
       requirement_id: requirement?.id ?? null,
+      prequalification_id: prequalificationId ?? null,
       file_id: fileId,
       status: "pending_review",
       effective_date: parsed.effective_date ?? null,
@@ -601,6 +605,7 @@ export async function uploadComplianceDocumentFromPortal({
   input,
   fileId,
   portalTokenId,
+  prequalificationId,
 }: {
   supabase: SupabaseClient
   orgId: string
@@ -608,6 +613,8 @@ export async function uploadComplianceDocumentFromPortal({
   input: ComplianceDocumentUploadInput
   fileId: string
   portalTokenId: string
+  /** Set when the document arrived as part of a prequalification package. */
+  prequalificationId?: string | null
 }): Promise<ComplianceDocument> {
   const parsed = complianceDocumentUploadSchema.parse(input)
 
@@ -639,6 +646,7 @@ export async function uploadComplianceDocumentFromPortal({
       waiver_of_subrogation: parsed.waiver_of_subrogation ?? false,
       submitted_via_portal: true,
       portal_token_id: portalTokenId,
+      prequalification_id: prequalificationId ?? null,
     })
     .select(
       `

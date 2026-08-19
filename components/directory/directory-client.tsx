@@ -53,6 +53,7 @@ import {
 } from "@/components/ui/sheet";
 import { ToastAction } from "@/components/ui/toast";
 import { ComplianceAlert } from "@/components/directory/compliance-alert";
+import type { PrequalificationGlance } from "@/lib/services/prequalification";
 import { CompanyForm } from "@/components/companies/company-form";
 import { ContactForm } from "@/components/contacts/contact-form";
 import { ContactDetailSheet } from "@/components/contacts/contact-detail-sheet";
@@ -83,6 +84,7 @@ interface DirectoryClientProps {
   contacts: Contact[];
   entries: DirectoryEntry[];
   complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>;
+  prequalificationByCompanyId?: Record<string, PrequalificationGlance>;
   complianceWatchCompanies: Company[];
   projects: Project[];
   canCreate: boolean;
@@ -104,6 +106,7 @@ export function DirectoryClient({
   contacts: initialContacts,
   entries: initialEntries,
   complianceStatusByCompanyId,
+  prequalificationByCompanyId = {},
   complianceWatchCompanies,
   projects,
   canCreate,
@@ -697,6 +700,7 @@ export function DirectoryClient({
         contacts={contacts}
         entries={entries}
         complianceStatusByCompanyId={complianceStatusByCompanyId}
+        prequalificationByCompanyId={prequalificationByCompanyId}
         view={view}
         sort={sort}
         direction={direction}

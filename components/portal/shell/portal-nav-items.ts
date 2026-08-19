@@ -132,22 +132,28 @@ export function buildSubPortalNav({
     items.push({ segment: "daily-logs", label: "Daily logs", shortLabel: "Logs", icon: "daily-logs" })
   }
 
-  items.push({
-    segment: "compliance",
-    label: "Compliance",
-    icon: "compliance",
-    count: counts.compliance,
-  })
+  // Both sections are gated by the same permission the routes themselves check,
+  // so a link that cannot upload never advertises a page that would refuse it.
+  if (permissions.can_upload_compliance_docs !== false) {
+    items.push({
+      segment: "compliance",
+      label: "Compliance",
+      icon: "compliance",
+      count: counts.compliance,
+    })
 
-  items.push({
-    segment: "prequalification",
-    label: "Prequalification",
-    shortLabel: "Prequal",
-    icon: "prequalification",
-    count: counts.prequalification,
-  })
+    items.push({
+      segment: "prequalification",
+      label: "Prequalification",
+      shortLabel: "Prequal",
+      icon: "prequalification",
+      count: counts.prequalification,
+    })
+  }
 
-  items.push({ segment: "documents", label: "Documents", shortLabel: "Docs", icon: "documents" })
+  if (permissions.can_view_documents !== false) {
+    items.push({ segment: "documents", label: "Documents", shortLabel: "Docs", icon: "documents" })
+  }
 
   if (showPayments) {
     items.push({ segment: "payments", label: "Get paid", shortLabel: "Payouts", icon: "payments" })

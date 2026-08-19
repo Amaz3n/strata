@@ -95,8 +95,10 @@ async function SubPortalLayoutContent({ children, params }: SubPortalLayoutProps
       identity={{
         orgName: context.org.name,
         logoUrl: context.org.logo_url,
-        contextLabel: context.project.name,
-        contextDetail: context.company.name,
+        // A vendor account link belongs to the relationship, not a job, so the
+        // company is the context rather than a detail under it.
+        contextLabel: context.project?.name ?? context.company.name,
+        contextDetail: context.project ? context.company.name : "Vendor account",
       }}
       workspace={workspace}
       token={token}

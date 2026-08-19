@@ -29,6 +29,14 @@ export {
   ComplianceDocumentUploadedEmail,
   type ComplianceDocumentUploadedEmailProps,
 } from "./compliance-document-uploaded-email"
+export {
+  PrequalificationRequestEmail,
+  type PrequalificationRequestEmailProps,
+} from "./prequalification-request-email"
+export {
+  PrequalificationDecisionEmail,
+  type PrequalificationDecisionEmailProps,
+} from "./prequalification-decision-email"
 export { DecisionRequestEmail, type DecisionRequestEmailProps } from "./decision-request-email"
 export { EstimateEmail, type EstimateEmailProps } from "./estimate-email"
 export { EstimateExpiryEmail, type EstimateExpiryEmailProps } from "./estimate-expiry-email"

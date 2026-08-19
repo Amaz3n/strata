@@ -33,16 +33,30 @@ export function CompanyAccountHeaderSkeleton() {
  * Table-shaped placeholder matching the account tab layout, so the page shape
  * does not jump when data lands. `flush` matches the full-bleed register, which
  * owns its own gutters instead of sitting inside a bordered card.
+ * `summaryFigures` reserves the rollup strip above a register that leads with
+ * its totals.
  */
 export function CompanyTabSkeleton({
   rows = 8,
   flush = false,
+  summaryFigures = 0,
 }: {
   rows?: number;
   flush?: boolean;
+  summaryFigures?: number;
 }) {
   return (
     <div className={cn(flush ? "flex min-h-0 flex-1 flex-col" : "px-4 py-6 sm:px-6")}>
+      {summaryFigures > 0 ? (
+        <div className="flex flex-wrap gap-x-8 gap-y-3 border-b px-4 py-3 sm:px-6">
+          {Array.from({ length: summaryFigures }).map((_, index) => (
+            <div key={index} className="space-y-1.5">
+              <Skeleton className="h-2.5 w-16" />
+              <Skeleton className="h-4 w-20" />
+            </div>
+          ))}
+        </div>
+      ) : null}
       <div className={cn(!flush && "border bg-background")}>
         <div
           className={cn(

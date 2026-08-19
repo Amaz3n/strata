@@ -225,7 +225,7 @@ export const ENTITY_HREF_FALLBACKS: Record<SearchEntityType, string> = {
   safety_incident: "/projects/{project_id}/safety",
   observation: "/projects/{project_id}/safety?tab=observations",
   budget_transfer: "/projects/{project_id}/financials/budget",
-  prequalification: "/directory/{company_id}",
+  prequalification: "/directory/{company_id}/prequalification",
   spec_section: "/projects/{project_id}/specs?section={id}",
   certified_payroll_report: "/projects/{project_id}/time/certified-payroll?report={id}",
   project_location: "/projects/{project_id}",

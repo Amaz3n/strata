@@ -83,6 +83,10 @@ export async function POST(
       input: parsed.data,
       fileId: body.file_id,
       portalTokenId: portalToken.id,
+      // Present when the upload came from the prequalification form, so the
+      // reviewer sees it against the package they asked for.
+      prequalificationId:
+        typeof body.prequalification_id === "string" ? body.prequalification_id : null,
     })
 
     return NextResponse.json(document)

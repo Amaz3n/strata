@@ -6,7 +6,9 @@ import {
   updateComplianceRules,
   updateDefaultComplianceRequirements,
 } from "@/lib/services/compliance"
+import { updatePrequalificationTemplate } from "@/lib/services/prequalification"
 import type { ComplianceRequirementTemplateItem, ComplianceRules } from "@/lib/types"
+import type { PrequalificationTemplate } from "@/lib/validation/prequalification"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 
@@ -35,5 +37,11 @@ export async function getDefaultComplianceRequirementsAction() {
 export async function updateDefaultComplianceRequirementsAction(requirements: ComplianceRequirementTemplateItem[]) {
   return run(async () => {
       return updateDefaultComplianceRequirements({ requirements })
+  })
+}
+
+export async function updatePrequalificationTemplateAction(template: PrequalificationTemplate) {
+  return run(async () => {
+      return updatePrequalificationTemplate({ template })
   })
 }

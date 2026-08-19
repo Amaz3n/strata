@@ -11,6 +11,7 @@ import {
   loadCompanyAccount,
   loadComplianceStatus,
   loadPaymentReadiness,
+  loadPrequalificationGlance,
   loadVendorIntelligence,
   loadVendorLedger,
 } from "./page-data";
@@ -43,14 +44,16 @@ async function CompanyAccountHeaderData({
   if (!account) notFound();
   const { company, posture, canEdit, canArchive } = account;
 
-  const [ledger, complianceStatus, intelligence, paymentReadiness] = await Promise.all([
-    posture === "vendor" ? loadVendorLedger(id).catch(() => null) : Promise.resolve(null),
-    posture === "vendor" ? loadComplianceStatus(id) : Promise.resolve(null),
-    posture === "vendor"
-      ? loadVendorIntelligence(id)
-      : Promise.resolve({ scorecard: null, taxReadiness: null }),
-    posture === "vendor" ? loadPaymentReadiness(id) : Promise.resolve(null),
-  ]);
+  const [ledger, complianceStatus, intelligence, paymentReadiness, prequalification] =
+    await Promise.all([
+      posture === "vendor" ? loadVendorLedger(id).catch(() => null) : Promise.resolve(null),
+      posture === "vendor" ? loadComplianceStatus(id) : Promise.resolve(null),
+      posture === "vendor"
+        ? loadVendorIntelligence(id)
+        : Promise.resolve({ scorecard: null, taxReadiness: null }),
+      posture === "vendor" ? loadPaymentReadiness(id) : Promise.resolve(null),
+      posture === "vendor" ? loadPrequalificationGlance(id) : Promise.resolve(null),
+    ]);
 
   const base = `/directory/${id}`;
   const summary = ledger?.summary.can_view_bills ? ledger.summary : null;
@@ -62,6 +65,8 @@ async function CompanyAccountHeaderData({
     taxReadiness?.requires_1099 === true &&
     (taxReadiness.w9_status === "missing" || taxReadiness.w9_status === "rejected");
   const complianceNeedsAction = complianceStatus ? !complianceStatus.is_compliant : false;
+  const prequalificationNeedsReview =
+    prequalification?.status === "submitted" || prequalification?.status === "under_review";
   const complianceSevere =
     (complianceStatus?.missing.length ?? 0) > 0 || (complianceStatus?.expired.length ?? 0) > 0;
 
@@ -96,7 +101,22 @@ async function CompanyAccountHeaderData({
             : undefined,
       },
       { label: "Commitments", href: `${base}/commitments` },
-      { label: "Prequalification", href: `${base}/prequalification` },
+      {
+        label: "Prequalification",
+        href: `${base}/prequalification`,
+        // A returned package is sitting on the builder, which is the one state
+        // here they are the blocker for.
+        attention: prequalificationNeedsReview
+          ? "destructive"
+          : prequalification?.status === "expired"
+            ? "warning"
+            : undefined,
+        attentionLabel: prequalificationNeedsReview
+          ? "Awaiting your review"
+          : prequalification?.status === "expired"
+            ? "Expired"
+            : undefined,
+      },
       {
         label: "Compliance",
         href: `${base}/compliance`,
