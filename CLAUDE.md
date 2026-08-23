@@ -284,6 +284,24 @@ Then the suites your change touches:
   from a notification email — never add a client-side tab switcher. Only the
   portal **root** calls `recordPortalAccess()`; `max_access_count` limits link
   uses, so counting on each page would let one visit burn several.
+- **Directory: party · role · identity.** A **party** is a `companies` row or a
+  `contacts` row. What it IS to the org is a **set of roles** (`party_roles` →
+  `directory_relationship_types`), never a type column. A company can be a
+  subcontractor *and* a client; a person moves prospect → buyer → homeowner by
+  changing a role's status, not by changing tables. Ask
+  `resolvePartyCapabilities()` (`lib/directory/roles.ts`, pure) — `isVendor`,
+  `isClient`, `requiresCompliance` — never `company_type === 'subcontractor'`.
+  `companies.company_type` / `contacts.contact_type` are still written for
+  readers that have not moved and are dropped in a later gated migration; they
+  are **not** the source of truth. Money creates roles: `ensureVendorRoleWithClient`
+  on the commitment path is why the read model can be pure role math instead of
+  inferring "vendor" from the absence of architect/engineer. The list reads the
+  `directory_entries` view so paging, sorting and counting happen in the
+  database — never merge the two tables in application code again.
+  `contact_company_links` (with `is_primary`) is the ONLY person↔company
+  linkage. `/directory/[id]` resolves **either** kind of party. The list's only
+  navigation axis is **Companies | Contacts** — role and trade are filters, never
+  a second tab bar beside it.
 - **External access: the person is the unit, the link is a field.** A
   `portal_access_tokens` row IS one person's access to one project — the token
   string is a delivery mechanism on that row, not a separate thing. **One status

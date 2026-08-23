@@ -11,7 +11,7 @@ import {
   type AccountingPushEntityType,
 } from "@/lib/services/accounting-sync"
 import { classifyQboPermanentFailure } from "@/lib/integrations/accounting/qbo/error-rules"
-import { keepAliveAccountingConnections } from "@/lib/services/accounting-connection-maintenance"
+import { keepAliveAccountingConnections } from "@/lib/services/accounting-connections"
 import { logAccounting } from "@/lib/services/accounting-logger"
 import { withCronRun } from "@/lib/services/job-runs"
 
@@ -87,7 +87,33 @@ async function processAccountingOutbox(request: NextRequest) {
       const payloadKey = entityType === "invoice" ? "invoice_id" : entityType === "project_expense" ? "expense_id" : entityType === "vendor_bill" ? "bill_id" : "payment_id"
       const entityId = payload[payloadKey]
       if (typeof entityId !== "string") throw new Error(`Missing ${payloadKey}`)
-      await processAccountingPush({ orgId: job.org_id, entityType, entityId })
+      const result = await processAccountingPush({ orgId: job.org_id, entityType, entityId })
+      if (result.deferred) {
+        // Another attempt holds the create claim (15-minute lease). Completed
+        // would lose the push forever; re-schedule past the lease instead, and
+        // let the normal retry budget stop a claim that never frees.
+        const deferRetry = (job.retry_count ?? 0) + 1
+        const giveUp = deferRetry >= MAX_RETRIES
+        await supabase
+          .from("outbox")
+          .update({
+            status: giveUp ? "failed" : "pending",
+            retry_count: deferRetry,
+            last_error: "Create claim held by a concurrent sync attempt",
+            run_at: new Date(Date.now() + 20 * 60 * 1000).toISOString(),
+          })
+          .eq("id", jobId)
+        if (giveUp) {
+          await markAccountingPushExhausted({
+            orgId: job.org_id,
+            entityType,
+            entityId,
+            message: "Create claim was still held by another sync attempt after repeated tries",
+          }).catch((markError) => logAccounting("error", "process_outbox_mark_exhausted_failed", { error: String(markError) }))
+          failed++
+        }
+        continue
+      }
       await supabase.from("outbox").update({ status: "completed" }).eq("id", jobId)
       processed++
     } catch (err: any) {

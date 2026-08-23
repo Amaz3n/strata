@@ -3,6 +3,7 @@
 import { format } from "date-fns"
 import Link from "next/link"
 
+import { accountingProviderLabel, isAccountingProviderKey } from "@/components/accounting/provider-label"
 import { cn } from "@/lib/utils"
 import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
@@ -44,13 +45,20 @@ export function PayableTimeline({
   bill,
   runMembership,
   accountingEnabled,
+  accountingProvider,
+  accountingProviderName,
   auditTrail = [],
 }: {
   bill: VendorBillSummary
   runMembership?: PayableRunMembership
   accountingEnabled: boolean
+  /** Provider key of the org's accounting connection, when it is known. */
+  accountingProvider?: string | null
+  /** Connection label, for providers the catalog does not name. */
+  accountingProviderName?: string | null
   auditTrail?: EntityAuditEntry[]
 }) {
+  const providerName = accountingProviderLabel(accountingProvider, accountingProviderName)
   const status = billStatus(bill)
   const events: TimelineEvent[] = []
 
@@ -77,7 +85,11 @@ export function PayableTimeline({
   for (const payment of bill.payments) {
     events.push({
       key: `payment-${payment.id}`,
-      label: payment.vendor_credit_applied ? "Vendor credit applied" : payment.provider === "qbo" ? "Payment recorded in QuickBooks" : "Payment recorded",
+      label: payment.vendor_credit_applied
+        ? "Vendor credit applied"
+        : isAccountingProviderKey(payment.provider)
+          ? `Payment recorded in ${accountingProviderLabel(payment.provider)}`
+          : "Payment recorded",
       detail: payment.reference ?? undefined,
       amountCents: payment.amount_cents,
       date: payment.received_at,
@@ -89,7 +101,7 @@ export function PayableTimeline({
   }
 
   if (accountingEnabled && bill.qbo_synced_at) {
-    events.push({ key: "synced", label: "Synced to QuickBooks", date: bill.qbo_synced_at })
+    events.push({ key: "synced", label: `Synced to ${providerName}`, date: bill.qbo_synced_at })
   }
 
   for (const entry of auditTrail) {

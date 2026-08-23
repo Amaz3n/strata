@@ -6,6 +6,8 @@ import { ExternalLink, MinusCircle } from "lucide-react"
 import { toast } from "sonner"
 
 import { voidReceivableAdjustmentAction } from "@/app/(app)/invoices/actions"
+import { AccountingSyncBadge } from "@/components/accounting/accounting-sync-badge"
+import { DEFAULT_ACCOUNTING_PROVIDER_LABEL } from "@/components/accounting/provider-label"
 import { unwrapAction } from "@/lib/action-result"
 import { Button } from "@/components/ui/button"
 import type { Invoice, InvoiceDelivery, InvoiceView, Payment, PaymentReversal, ReceivableAdjustment } from "@/lib/types"
@@ -61,7 +63,7 @@ export function InvoiceContextPane({ projectId, invoice, link, views, deliveries
           <span className="text-sm font-semibold">Details</span>
         </div>
         <div className="flex flex-1 items-center justify-center px-6 text-center text-xs text-muted-foreground">
-          {loading ? "Loading…" : "Provenance, QuickBooks status, and client activity appear here once the draft is saved."}
+          {loading ? "Loading…" : "Provenance, accounting sync status, and client activity appear here once the draft is saved."}
         </div>
       </div>
     )
@@ -234,23 +236,27 @@ export function InvoiceContextPane({ projectId, invoice, link, views, deliveries
           </div>
         </section>
 
-        {/* QuickBooks */}
+        {/* Accounting sync */}
         {invoice.qbo_sync_status ? (
           <section className="space-y-2">
-            <h3 className="microlabel">QuickBooks</h3>
+            <h3 className="microlabel">Accounting sync</h3>
             <div className="space-y-2 border bg-card p-3">
               <div className="flex items-center justify-between gap-2 text-sm">
-                <span className="capitalize">{invoice.qbo_sync_status}</span>
+                <AccountingSyncBadge
+                  status={invoice.qbo_sync_status}
+                  externalId={invoice.qbo_id ?? undefined}
+                  syncedAt={invoice.qbo_synced_at ?? undefined}
+                />
                 {qboUrl ? (
                   <a href={qboUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">
-                    Open in QuickBooks <ExternalLink className="h-3 w-3" />
+                    Open in {DEFAULT_ACCOUNTING_PROVIDER_LABEL} <ExternalLink className="h-3 w-3" />
                   </a>
                 ) : null}
               </div>
               {(syncHistory ?? []).slice(0, 4).map((log) => (
                 <div key={log.id} className="border-t pt-2 text-xs text-muted-foreground">
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium capitalize text-foreground">{log.status}</span>
+                  <div className="flex items-center justify-between gap-2">
+                    <AccountingSyncBadge status={log.status} error={log.error_message} />
                     <span>{log.last_synced_at ? new Date(log.last_synced_at).toLocaleDateString() : "—"}</span>
                   </div>
                   {log.error_message ? <p className="mt-0.5 text-destructive">{log.error_message}</p> : null}

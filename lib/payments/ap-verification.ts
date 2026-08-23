@@ -25,6 +25,12 @@ export const coiExtractionSchema = z.object({
   effective_date: isoDateSchema.nullable(),
   expiry_date: isoDateSchema.nullable(),
   additional_insured: z.boolean().nullable(),
+  // The other two endorsements a requirement can demand. Defaulted rather than
+  // required so readings persisted before they were extracted still parse —
+  // an older reading is simply silent about them, which is not the same as
+  // stating the endorsement is absent.
+  primary_noncontributory: z.boolean().nullable().default(null),
+  waiver_of_subrogation: z.boolean().nullable().default(null),
   certificate_holder: z.string().nullable(),
   confidence: z.enum(["high", "medium", "low"]),
   notes: z.array(z.string()),

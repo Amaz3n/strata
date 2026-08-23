@@ -122,6 +122,7 @@ import {
 } from "./payables-filters"
 import { PayableDocumentPane } from "./payable-document-pane"
 import { AccountingSyncBadge } from "@/components/accounting/accounting-sync-badge"
+import { accountingProviderLabel } from "@/components/accounting/provider-label"
 import { dueDisplay, vendorLabel } from "./payables-ui"
 import {
   billStatus,
@@ -252,6 +253,7 @@ export function PayablesWorkspace({
   // Arc Books is Arc's ledger, not an external file waiting for a push. It uses
   // the same coding fields but must never present vendor-link or manual-sync UI.
   const accountingSyncEnabled = accountingEnabled && accountingProvider !== "arc_books"
+  const providerName = accountingProviderLabel(accountingProvider, accountingProviderName)
 
   const [search, setSearch] = useState("")
   const [queueFilter, setQueueFilter] = useState<PayableQueue>("all")
@@ -345,7 +347,7 @@ export function PayablesWorkspace({
   const selectedIsVendorCredit = selectedBill
     ? isVendorCredit(selectedBill)
     : false
-  // Payables imported from QuickBooks (credits or regular bills) can be split
+  // Payables imported from the accounting provider (credits or regular bills) can be split
   // across projects at the line level, while Reassign moves the whole payable.
   const selectedIsReassignablePayable = selectedBill
     ? selectedIsVendorCredit || selectedBill.imported_from_qbo === true
@@ -1001,7 +1003,7 @@ export function PayablesWorkspace({
         ),
       )
       setOptimisticSyncedBillIds((prev) => new Set(prev).add(selectedBill.id))
-      toast.success(`Synced to ${accountingProviderName ?? "accounting"}`)
+      toast.success(`Synced to ${providerName}`)
       onChanged()
     })
   }
@@ -1211,7 +1213,7 @@ export function PayablesWorkspace({
                             disabled={isPending || effectiveSyncStatus === "synced"}
                             onClick={syncToAccounting}
                           >
-                            Sync to {accountingProviderName ?? "accounting"}
+                            Sync to {providerName}
                           </DropdownMenuItem>
                         ) : null}
                         {selectedIsReassignablePayable ? (
@@ -1505,18 +1507,22 @@ export function PayablesWorkspace({
                     bill={selectedBill}
                     runMembership={runMembership}
                     accountingEnabled={accountingSyncEnabled}
+                    accountingProvider={accountingProvider}
+                    accountingProviderName={accountingProviderName}
                     auditTrail={auditTrail}
                   />
                 </RecordSection>
 
                 {accountingSyncEnabled ? (
-                  <RecordSection label={accountingProviderName ?? "Accounting"}>
+                  <RecordSection label={providerName}>
                     <div className="space-y-2">
                       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
                         <AccountingSyncBadge
                           status={effectiveSyncStatus ?? "not_synced"}
                           error={effectiveSyncError}
                           externalId={effectiveExternalId}
+                          provider={accountingProvider}
+                          providerLabel={accountingProviderName}
                         />
                         <div className="flex items-center gap-4">
                           {effectiveExternalId && accountingProvider === "qbo" ? (
@@ -1531,7 +1537,7 @@ export function PayablesWorkspace({
                               rel="noreferrer"
                               className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
                             >
-                              Open in {accountingProviderName ?? "accounting"}
+                              Open in {providerName}
                               <ExternalLink className="h-3 w-3" />
                             </a>
                           ) : null}
@@ -1553,7 +1559,7 @@ export function PayablesWorkspace({
                       ) : null}
                       {!selectedBill.qbo_vendor_id ? (
                         <p className="text-xs text-muted-foreground">
-                          No {accountingProviderName ?? "accounting"} vendor is linked to{" "}
+                          No {providerName} vendor is linked to{" "}
                           {vendorLabel(selectedBill)} yet. Link or create one from the vendor record
                           before syncing.
                         </p>

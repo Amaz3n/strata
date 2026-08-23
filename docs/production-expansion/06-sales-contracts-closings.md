@@ -90,10 +90,9 @@ status tracking.
   backlink), `prospect_contacts` join rows (`full_name/email/phone/is_primary/
   promoted_contact_id`), estimate rollups (`estimate_count`,
   `estimate_value_cents`). CRUD + follow-ups + activity feed.
-- `lib/services/crm.ts` (750 lines) is a LEGACY overlapping surface: its
-  `Prospect extends Contact` reads the `contacts` table, not `prospects`. Do not
-  build on it; do not extend it. (Its eventual deletion is not this workstream's
-  job — just stay off it.)
+  `lib/services/prospects.ts` is now the ONLY prospect model — the legacy
+  `lib/services/crm.ts` overlay (which stored pipeline state in
+  `contacts.metadata`) was deleted along with `/crm` and `components/crm/`.
 - `lib/services/conversions.ts`: `conversion_runs` + step rows give resumable,
   audited multi-entity conversions. `convertExecutedProspectToProject` (L520)
   turns prospect + **executed estimate** into project + `contracts` row (status

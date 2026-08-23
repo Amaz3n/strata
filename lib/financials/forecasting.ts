@@ -7,6 +7,8 @@ export interface ForecastSnapshotLine {
   committed_cents?: number | null
   actual_cents?: number | null
   estimate_at_completion_cents?: number | null
+  /** Budget-snapshot breakdowns store EAC under this name. */
+  eac_cents?: number | null
   cost_to_complete_cents?: number | null
 }
 
@@ -23,7 +25,7 @@ function lineKey(line: ForecastSnapshotLine, index: number) {
 }
 
 function forecastValue(line: ForecastSnapshotLine) {
-  return Number(line.estimate_at_completion_cents ?? line.adjusted_budget_cents ?? 0)
+  return Number(line.estimate_at_completion_cents ?? line.eac_cents ?? line.adjusted_budget_cents ?? 0)
 }
 
 export function compareForecastSnapshotLines(from: ForecastSnapshotLine[], to: ForecastSnapshotLine[]): SnapshotVarianceLine[] {

@@ -72,7 +72,11 @@ export default async function SubPortalHome({ params }: SubPortalHomeProps) {
       scopedRfiId: access.scoped_rfi_id ?? null,
       portalToken: token,
     }),
-    getCompanyComplianceStatusWithClient(supabase, access.org_id, access.company_id),
+    // Scoped to the job this link is for, so the home page and the compliance
+    // section state the same terms — the ones the payment gate reads.
+    getCompanyComplianceStatusWithClient(supabase, access.org_id, access.company_id, {
+      projectIds: access.project_id ? [access.project_id] : [],
+    }),
     getLatestPrequalificationWithClient(supabase, access.org_id, access.company_id),
     listWarrantyVisitsForCompanyPortal({
       orgId: access.org_id,

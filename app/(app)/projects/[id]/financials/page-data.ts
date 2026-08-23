@@ -18,6 +18,9 @@ import { getOrgBilling } from "@/lib/services/orgs"
 import { getProjectFinancialSetupStatusForProject } from "@/lib/services/project-financial-setup"
 import { listPrimeSovLines, type PrimeSovState } from "@/lib/services/prime-sov"
 import { listPayApplications, type PayApplication } from "@/lib/services/pay-applications"
+import { getProjectPosture } from "@/lib/product-tier"
+import { getReceivablesPosturePolicy } from "@/lib/receivables/policy"
+import { requireOrgContext } from "@/lib/services/context"
 import type { Address } from "@/lib/types"
 
 import { unwrapAction } from "@/lib/action-result"
@@ -59,10 +62,14 @@ export async function loadFinancialsOverviewData(projectId: string) {
 }
 
 export async function loadFinancialsReceivablesData(projectId: string, selectedBillingPeriodId?: string | null) {
-  const [closeData, orgBilling] = await Promise.all([
+  const [closeData, orgBilling, orgContext] = await Promise.all([
     loadFinancialsCloseData(projectId, selectedBillingPeriodId),
     getOrgBilling().catch(() => null),
+    requireOrgContext(),
   ])
+  const receivablesPolicy = getReceivablesPosturePolicy(
+    getProjectPosture(closeData.project.property_type, orgContext.productTier),
+  )
 
   const progressBilling = closeData.featureConfig.ownerBillingBasis === "progress"
   let sovState: PrimeSovState | null = null
@@ -90,10 +97,13 @@ export async function loadFinancialsReceivablesData(projectId: string, selectedB
     sovState,
     payApplications,
     loadErrors: [...closeData.loadErrors, ...progressErrors],
+    // The posture policy is the gate (production doesn't retain); the data
+    // conditions only decide whether a retainage-bearing posture shows the tab.
     showRetainage:
-      Number(closeData.contract?.retainage_percent ?? 0) > 0 ||
-      closeData.retainage.length > 0 ||
-      progressBilling,
+      receivablesPolicy.supportsRetainage &&
+      (Number(closeData.contract?.retainage_percent ?? 0) > 0 ||
+        closeData.retainage.length > 0 ||
+        progressBilling),
     builderInfo: {
       name: orgBilling?.org?.name,
       email: orgBilling?.org?.billing_email,

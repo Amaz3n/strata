@@ -19,7 +19,6 @@ import {
   updateProspectContactInputSchema,
   prospectFiltersSchema,
 } from "@/lib/validation/prospects"
-import { trackInCrm } from "@/lib/services/crm"
 import { createProspectLotHoldSchema } from "@/lib/validation/community-sales"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
@@ -123,14 +122,6 @@ export async function createProspectLotHoldAction(input: unknown) {
     revalidatePath("/sales")
     revalidatePath(`/communities/${reservation.communityId}`)
     return reservation
-  })
-}
-
-export async function trackInCrmAction(contactId: string) {
-  return run(async () => {
-      const prospect = await trackInCrm({ contactId })
-      revalidatePipelinePaths(contactId)
-      return prospect
   })
 }
 

@@ -48,6 +48,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
   try {
     const access = await assertPortalActionAccess(token, {
       portalType: "client",
+      requireProject: true,
       permission: "can_approve_change_orders",
     })
 

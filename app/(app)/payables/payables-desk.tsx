@@ -15,6 +15,7 @@ import {
 import { AlertTriangle, MoreHorizontal, Plus, Receipt, Search, Upload, X } from "@/components/icons"
 import { PayableCreateWorkspace } from "@/components/payables/payable-create-workspace"
 import { AccountingSyncSheet } from "@/components/integrations/accounting-sync-sheet"
+import { accountingProviderLabel, isAccountingProviderKey } from "@/components/accounting/provider-label"
 import { PayBatchDialog } from "@/components/payables/pay-batch-dialog"
 import { BlockedPaymentsStrip } from "@/components/payables/blocked-payments-strip"
 import type { BlockedPaymentRun } from "@/lib/services/payment-risk"
@@ -140,7 +141,7 @@ function compactMoney(cents: number) {
 const DAY_MS = 86_400_000
 
 /**
- * `payment_method` predates the payments table and QuickBooks imports write their
+ * `payment_method` predates the payments table and accounting imports write their
  * own vocabulary, so the label map is deliberately wider than the Zod enum.
  */
 const METHOD_LABELS: Record<string, string> = {
@@ -164,13 +165,13 @@ function MethodCell({ bill }: { bill: VendorBillSummary }) {
     bill.payment_method ??
     bill.payments?.find((payment) => payment.method)?.method
   if (!recorded) return <span className="text-muted-foreground">—</span>
-  const viaAccounting = bill.payments?.some(
-    (payment) => payment.provider === "qbo",
-  )
+  const accountingPayment = bill.payments?.find((payment) => isAccountingProviderKey(payment.provider))
   return (
     <span
       className="text-sm text-muted-foreground"
-      title={viaAccounting ? "Recorded in QuickBooks" : undefined}
+      title={
+        accountingPayment ? `Recorded in ${accountingProviderLabel(accountingPayment.provider)}` : undefined
+      }
     >
       {METHOD_LABELS[recorded] ?? recorded}
     </span>

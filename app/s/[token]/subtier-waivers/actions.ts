@@ -8,6 +8,7 @@ import { uploadSubtierWaiverFromPortal } from "@/lib/services/lien-waivers"
 export async function uploadSubtierWaiverAction(token: string, formData: FormData) {
   const access = await assertPortalActionAccess(token, {
     portalType: "sub",
+    requireProject: true,
     requireCompany: true,
     permission: "can_upload_subtier_waivers",
   })

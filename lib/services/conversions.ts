@@ -442,6 +442,38 @@ export async function runBidAwardConversion(input: {
       project_vendor_id?: string | null
     }
 
+    // The person who bid the job survives the award.
+    //
+    // `commitments` had no contact at all, so the individual named on the bid
+    // invite was dropped the moment the invite became a subcontract — and every
+    // notice, waiver chase and portal invite after that addressed a company
+    // with nobody at it. Decoration, not money: a failure here must not undo an
+    // award the RPC already committed.
+    const { data: submission } = await supabase
+      .from("bid_submissions")
+      .select("bid_invite_id")
+      .eq("org_id", input.orgId)
+      .eq("id", input.bidSubmissionId)
+      .maybeSingle()
+
+    const { data: invite } = submission?.bid_invite_id
+      ? await supabase
+          .from("bid_invites")
+          .select("contact_id")
+          .eq("org_id", input.orgId)
+          .eq("id", submission.bid_invite_id)
+          .maybeSingle()
+      : { data: null }
+
+    if (invite?.contact_id) {
+      await supabase
+        .from("commitments")
+        .update({ contact_id: invite.contact_id })
+        .eq("org_id", input.orgId)
+        .eq("id", result.commitment_id)
+        .is("contact_id", null)
+    }
+
     await upsertConversionStep({
       runId,
       orgId: input.orgId,

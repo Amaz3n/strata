@@ -42,6 +42,7 @@ async function ClientPortalLayoutContent({ children, params }: ClientPortalLayou
   const gate = await resolvePortalGate({
     token,
     portalType: "client",
+    requireProject: true,
     fallbackLabel: "this project",
   })
 

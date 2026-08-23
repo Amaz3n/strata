@@ -1,4 +1,5 @@
 import { COOP_AGENT_ROLE } from "@/lib/sales/activity"
+import { promotePersonToDirectoryWithClient } from "@/lib/services/party-promotion"
 import { serializeLostReason } from "@/lib/sales/lost-reasons"
 import {
   createProspectInputSchema,
@@ -928,11 +929,26 @@ export async function createProspectContact({
     isPrimary: parsed.is_primary,
   })
 
+  // The directory learns about this person now, not at hold time. Everyone on
+  // a prospect gets promoted — co-buyers and co-op agents included — so an
+  // active prospect is findable in the directory instead of existing only as
+  // denormalized text on a sales row.
+  const promoted = await promotePersonToDirectoryWithClient(supabase, resolvedOrgId, userId, {
+    fullName: parsed.full_name,
+    email: parsed.email ?? null,
+    phone: parsed.phone ?? null,
+    roleKey: parsed.role === COOP_AGENT_ROLE ? "agent" : "prospect",
+    roleStatus: parsed.role === COOP_AGENT_ROLE ? "active" : "inquiry",
+    companyName: parsed.company_name ?? null,
+    title: parsed.role ?? null,
+  }).catch(() => null)
+
   const { data, error } = await supabase
     .from("prospect_contacts")
     .insert({
       org_id: resolvedOrgId,
       prospect_id: prospectId,
+      contact_id: promoted?.contactId ?? null,
       full_name: parsed.full_name,
       email: parsed.email ?? null,
       phone: parsed.phone ?? null,

@@ -25,7 +25,7 @@ import {
   buildProfitAndLoss,
   buildTrialBalance,
 } from "@/lib/services/books/statements"
-import { getPocJournalReview } from "@/lib/services/accounting-export"
+import { getPocJournalReview } from "@/lib/services/financial-exports"
 import { getOrgWipOverUnderReport, getProjectWipOverUnderReport, type WipOverUnderRow } from "@/lib/services/reports/wip-over-under"
 
 const BUCKET_LABELS: Record<AgingBucket, string> = {

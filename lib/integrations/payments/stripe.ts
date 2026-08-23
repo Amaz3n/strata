@@ -145,6 +145,19 @@ export async function retrieveStripePaymentIntent(intentId: string) {
   return getStripe().paymentIntents.retrieve(intentId)
 }
 
+/**
+ * Cancel an intent that is no longer payable (invoice balance dropped). Only
+ * intents still awaiting a payment method/confirmation can be canceled — a
+ * processing intent is already money in flight and must be left alone.
+ */
+export async function cancelStripePaymentIntent(intentId: string, connectedAccountId?: string | null) {
+  return getStripe().paymentIntents.cancel(
+    intentId,
+    { cancellation_reason: "abandoned" },
+    connectedAccountId ? { stripeAccount: connectedAccountId } : undefined,
+  )
+}
+
 export async function createStripeCustomer(params: { email: string; name: string; metadata?: Record<string, string> }) {
   return getStripe().customers.create({
     email: params.email,

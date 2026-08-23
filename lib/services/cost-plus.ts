@@ -2716,6 +2716,7 @@ export async function createTimeEntryFromPortal({
   const portalToken = await assertPortalActionAccess(token, {
     portalType: "sub",
     requireCompany: true,
+    requireProject: true,
     permission: "can_submit_time",
   });
   const parsed = timeEntryInputSchema.parse({
@@ -2770,6 +2771,7 @@ export async function createProjectExpenseFromPortal({
   const portalToken = await assertPortalActionAccess(token, {
     portalType: "sub",
     requireCompany: true,
+    requireProject: true,
     permission: "can_submit_expenses",
   });
   const parsed = projectExpenseInputSchema.parse({

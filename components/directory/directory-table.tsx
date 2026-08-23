@@ -19,16 +19,23 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { Company, ComplianceStatusSummary, Contact } from "@/lib/types";
+import type { ComplianceStatusSummary } from "@/lib/types";
+import type {
+  DirectoryEntry,
+  DirectoryRoleState,
+  DirectorySortDirection,
+  DirectorySortKey,
+} from "@/lib/services/directory";
+import { roleStatusLabel } from "@/lib/directory/roles";
 import type { PrequalificationGlance } from "@/lib/services/prequalification";
 import { cn } from "@/lib/utils";
+import { initialsFor } from "@/lib/directory/initials";
 import {
   Archive,
   ArrowDown,
   ArrowUp,
   AlertTriangle,
   Building2,
-  Edit,
   Loader2,
   Mail,
   MoreHorizontal,
@@ -36,87 +43,73 @@ import {
   Send,
 } from "@/components/icons";
 
-export type DirectoryView = "all" | "companies" | "people";
-export type DirectorySortKey = "name" | "type" | "detail";
-export type DirectorySortDirection = "asc" | "desc";
-
-type DirectoryItem =
-  | { type: "company"; id: string; name: string; company: Company }
-  | { type: "contact"; id: string; name: string; contact: Contact };
-
 interface DirectoryTableProps {
-  companies: Company[];
-  contacts: Contact[];
-  entries?: DirectoryItem[];
+  entries: DirectoryEntry[];
   complianceStatusByCompanyId?: Record<string, ComplianceStatusSummary>;
+  /** Status could not be read; rows show "unknown" rather than staying blank,
+   *  because a blank row here reads as a vendor in good standing. */
+  statusUnavailable?: boolean;
+  /** Tier vocabulary for the secondary column: Trade, or Division commercially. */
+  tradeLabel?: string;
+  /** Commercial orgs show the CSI divisions a prequalification actually covers. */
+  showPrequalTrades?: boolean;
+  /** Drives the empty state's copy and its way out of a filtered-to-nothing list. */
+  hasActiveFilters?: boolean;
+  onClearFilters?: () => void;
   prequalificationByCompanyId?: Record<string, PrequalificationGlance>;
-  view: DirectoryView;
+  /** Which party kind is listed; decides the secondary column and its label. */
+  kind: "company" | "contact";
   sort: DirectorySortKey;
   direction: DirectorySortDirection;
   total: number;
-  loadedCount: number;
   hasMore: boolean;
   isLoadingMore: boolean;
   onLoadMore: () => void;
   onSortChange: (sort: DirectorySortKey) => void;
-  onSelectCompany?: (id: string) => void;
-  onSelectContact?: (id: string) => void;
-  onEditCompany?: (company: Company) => void;
-  onEditContact?: (contact: Contact) => void;
-  onInviteContact?: (contact: Contact) => void;
-  onArchiveCompany?: (companyId: string) => void;
-  onArchiveContact?: (contactId: string) => void;
+  /** Opens the party's account, which is where editing lives. */
+  onSelect: (entry: DirectoryEntry) => void;
+  onInvite?: (entry: DirectoryEntry) => void;
+  onArchive?: (entry: DirectoryEntry) => void;
 }
 
-function formatType(value?: string) {
-  if (!value) return "Other";
-  return value
-    .split("_")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
-
-function initialsFor(value: string) {
-  const parts = value
-    .replace(/[^a-zA-Z0-9\s]/g, " ")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-
-  if (parts.length === 0) return "??";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return `${parts[0][0] ?? ""}${parts[1][0] ?? ""}`.toUpperCase();
-}
-
-function contactCompanyIds(contact: Contact) {
-  return new Set(
-    [
-      contact.primary_company_id,
-      ...(contact.companies?.map((link) => link.company_id) ?? []),
-    ].filter(Boolean) as string[],
+/**
+ * A party's roles, with lifecycle state shown only where it carries meaning.
+ * "Subcontractor · Active" is noise — active is the expected state; "Prospect ·
+ * Under contract" is the whole point of the row.
+ */
+function RoleChips({ roles }: { roles: DirectoryRoleState[] }) {
+  if (roles.length === 0) {
+    return <span className="text-sm text-muted-foreground">No role</span>;
+  }
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {roles.map((role) => {
+        const showStatus = role.status !== "active";
+        return (
+          <Badge key={role.key} variant="outline" className="font-normal">
+            {role.label}
+            {showStatus ? (
+              <span className="ml-1.5 text-muted-foreground">
+                {roleStatusLabel(role.status)}
+              </span>
+            ) : null}
+          </Badge>
+        );
+      })}
+    </div>
   );
-}
-
-function contactCompanyLabel(
-  contact: Contact,
-  companyById: Map<string, Company>,
-) {
-  if (contact.primary_company?.name) return contact.primary_company.name;
-  if (contact.primary_company_id)
-    return companyById.get(contact.primary_company_id)?.name;
-  const linked = contact.companies?.[0]?.company_id;
-  return linked ? companyById.get(linked)?.name : undefined;
 }
 
 function ContactMethods({ email, phone }: { email?: string; phone?: string }) {
   if (!email && !phone)
-    return <span className="text-muted-foreground">No contact info</span>;
+    return <span className="text-sm text-muted-foreground">No contact info</span>;
   return (
     <div className="flex min-w-0 flex-col gap-1 text-sm">
       {email ? (
         <a
           className="flex min-w-0 items-center gap-2 text-muted-foreground hover:text-foreground"
           href={`mailto:${email}`}
+          onClick={(event) => event.stopPropagation()}
         >
           <Mail className="h-3.5 w-3.5 shrink-0" />
           <span className="truncate">{email}</span>
@@ -126,6 +119,7 @@ function ContactMethods({ email, phone }: { email?: string; phone?: string }) {
         <a
           className="flex min-w-0 items-center gap-2 text-muted-foreground hover:text-foreground"
           href={`tel:${phone}`}
+          onClick={(event) => event.stopPropagation()}
         >
           <Phone className="h-3.5 w-3.5 shrink-0" />
           <span className="truncate">{phone}</span>
@@ -135,7 +129,7 @@ function ContactMethods({ email, phone }: { email?: string; phone?: string }) {
   );
 }
 
-// Lowkey inline flag — only shown when a vendor actually needs attention.
+/** Exception reporting: a compliant vendor says nothing, because that is expected. */
 function ComplianceFlag({ status }: { status?: ComplianceStatusSummary }) {
   if (!status || status.is_compliant) return null;
   return (
@@ -146,13 +140,29 @@ function ComplianceFlag({ status }: { status?: ComplianceStatusSummary }) {
   );
 }
 
-/**
- * Exception reporting, like the compliance flag beside it: a vendor who is
- * currently prequalified says nothing, because that is the expected state.
- */
-function PrequalFlag({ glance }: { glance?: PrequalificationGlance }) {
+function PrequalFlag({
+  glance,
+  showTrades = false,
+}: {
+  glance?: PrequalificationGlance;
+  showTrades?: boolean;
+}) {
   if (!glance) return null;
-  if (glance.status === "approved" || glance.status === "approved_with_limits") return null;
+  if (glance.status === "approved" || glance.status === "approved_with_limits") {
+    // Commercial prequalification is scoped by CSI division: approved for
+    // concrete says nothing about approved for electrical. On a commercial org
+    // an unqualified "approved" overstates what was actually granted, so the
+    // divisions ride along; residential orgs stay quiet as before.
+    if (!showTrades || glance.trades.length === 0) return null;
+    const shown = glance.trades.slice(0, 3);
+    const rest = glance.trades.length - shown.length;
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+        Prequalified: {shown.join(", ")}
+        {rest > 0 ? ` +${rest}` : null}
+      </span>
+    );
+  }
   const label =
     glance.status === "requested"
       ? "Prequal requested"
@@ -194,7 +204,7 @@ function SortHead({
     <TableHead className={className}>
       <button
         type="button"
-        className="flex items-center gap-1.5 text-left hover:text-foreground"
+        className="flex items-center gap-1.5 text-left hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         onClick={() => onSortChange(sortKey)}
       >
         {label}
@@ -232,8 +242,8 @@ function InfiniteScrollSentinel({
     const sentinel = sentinelRef.current;
     if (!sentinel || !hasMore || isLoading) return;
     const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
+      (observed) => {
+        for (const entry of observed) {
           if (entry.isIntersecting) {
             onLoadMoreRef.current();
             break;
@@ -247,278 +257,6 @@ function InfiniteScrollSentinel({
   }, [hasMore, isLoading, rootRef]);
 
   return <div ref={sentinelRef} aria-hidden className="h-px w-full" />;
-}
-
-export function DirectoryTable({
-  companies,
-  contacts,
-  entries,
-  complianceStatusByCompanyId = {},
-  prequalificationByCompanyId = {},
-  view,
-  sort,
-  direction,
-  total,
-  loadedCount,
-  hasMore,
-  isLoadingMore,
-  onLoadMore,
-  onSortChange,
-  onSelectCompany,
-  onSelectContact,
-  onEditCompany,
-  onEditContact,
-  onInviteContact,
-  onArchiveCompany,
-  onArchiveContact,
-}: DirectoryTableProps) {
-  const mobileScrollRef = useRef<HTMLDivElement>(null);
-  const desktopScrollRef = useRef<HTMLDivElement>(null);
-  const companyById = new Map(
-    companies.map((company) => [company.id, company]),
-  );
-  const contactsByCompany = new Map<string, Contact[]>();
-  for (const contact of contacts) {
-    for (const companyId of contactCompanyIds(contact)) {
-      const current = contactsByCompany.get(companyId) ?? [];
-      current.push(contact);
-      contactsByCompany.set(companyId, current);
-    }
-  }
-
-  const items: DirectoryItem[] =
-    entries ??
-    [
-      ...companies.map((company) => ({
-        type: "company" as const,
-        id: company.id,
-        name: company.name,
-        company,
-      })),
-      ...contacts.map((contact) => ({
-        type: "contact" as const,
-        id: contact.id,
-        name: contact.full_name,
-        contact,
-      })),
-    ];
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      {/* Mobile list */}
-      <div
-        ref={mobileScrollRef}
-        className="min-h-0 flex-1 overflow-auto md:hidden"
-      >
-        {items.length === 0 ? (
-          <div className="flex h-56 items-center justify-center px-6 text-center text-sm text-muted-foreground">
-            No directory entries match this view.
-          </div>
-        ) : (
-          <>
-            <ul className="divide-y">
-              {items.map((item) =>
-                item.type === "company" ? (
-                  <CompanyMobileRow
-                    key={`m-company-${item.id}`}
-                    company={item.company}
-                    contacts={contactsByCompany.get(item.id) ?? []}
-                    complianceStatus={
-                      complianceStatusByCompanyId[item.company.id]
-                    }
-                    prequalification={prequalificationByCompanyId[item.company.id]}
-                    onSelectCompany={onSelectCompany}
-                    onEditCompany={onEditCompany}
-                    onArchiveCompany={onArchiveCompany}
-                  />
-                ) : (
-                  <ContactMobileRow
-                    key={`m-contact-${item.id}`}
-                    contact={item.contact}
-                    companyLabel={contactCompanyLabel(item.contact, companyById)}
-                    onSelectContact={onSelectContact}
-                    onEditContact={onEditContact}
-                    onInviteContact={onInviteContact}
-                    onArchiveContact={onArchiveContact}
-                  />
-                ),
-              )}
-            </ul>
-            {hasMore ? (
-              <InfiniteScrollSentinel
-                hasMore={hasMore}
-                isLoading={isLoadingMore}
-                onLoadMore={onLoadMore}
-                rootRef={mobileScrollRef}
-              />
-            ) : null}
-            <InfiniteScrollStatus
-              hasMore={hasMore}
-              isLoading={isLoadingMore}
-              loadedCount={loadedCount}
-              total={total}
-              compact
-            />
-          </>
-        )}
-      </div>
-
-      {/* Desktop table */}
-      <div
-        ref={desktopScrollRef}
-        className="hidden min-h-0 flex-1 overflow-auto md:block"
-      >
-        <Table className="min-w-[960px]">
-          <TableHeader className="sticky top-0 z-10 bg-background">
-            {view === "companies" ? (
-              <TableRow className="bg-muted/40 hover:bg-muted/40">
-                <SortHead
-                  label="Company"
-                  sortKey="name"
-                  activeSort={sort}
-                  direction={direction}
-                  onSortChange={onSortChange}
-                  className="w-[34%] pl-4"
-                />
-                <SortHead
-                  label="Type"
-                  sortKey="type"
-                  activeSort={sort}
-                  direction={direction}
-                  onSortChange={onSortChange}
-                  className="w-[16%]"
-                />
-                <SortHead
-                  label="Trade"
-                  sortKey="detail"
-                  activeSort={sort}
-                  direction={direction}
-                  onSortChange={onSortChange}
-                  className="w-[24%]"
-                />
-                <TableHead className="w-[22%]">Contact info</TableHead>
-                <TableHead className="w-12 pr-4" />
-              </TableRow>
-            ) : view === "people" ? (
-              <TableRow className="bg-muted/40 hover:bg-muted/40">
-                <SortHead
-                  label="Person"
-                  sortKey="name"
-                  activeSort={sort}
-                  direction={direction}
-                  onSortChange={onSortChange}
-                  className="w-[34%] pl-4"
-                />
-                <SortHead
-                  label="Company"
-                  sortKey="type"
-                  activeSort={sort}
-                  direction={direction}
-                  onSortChange={onSortChange}
-                  className="w-[24%]"
-                />
-                <SortHead
-                  label="Role"
-                  sortKey="detail"
-                  activeSort={sort}
-                  direction={direction}
-                  onSortChange={onSortChange}
-                  className="w-[18%]"
-                />
-                <TableHead className="w-[20%]">Contact info</TableHead>
-                <TableHead className="w-12 pr-4" />
-              </TableRow>
-            ) : (
-              <TableRow className="bg-muted/40 hover:bg-muted/40">
-                <SortHead
-                  label="Directory entry"
-                  sortKey="name"
-                  activeSort={sort}
-                  direction={direction}
-                  onSortChange={onSortChange}
-                  className="w-[36%] pl-4"
-                />
-                <SortHead
-                  label="Kind"
-                  sortKey="type"
-                  activeSort={sort}
-                  direction={direction}
-                  onSortChange={onSortChange}
-                  className="w-[14%]"
-                />
-                <SortHead
-                  label="Trade / role"
-                  sortKey="detail"
-                  activeSort={sort}
-                  direction={direction}
-                  onSortChange={onSortChange}
-                  className="w-[22%]"
-                />
-                <TableHead className="w-[24%]">Contact</TableHead>
-                <TableHead className="w-12 pr-4" />
-              </TableRow>
-            )}
-          </TableHeader>
-          <TableBody>
-            {items.map((item) =>
-              item.type === "company" ? (
-                <CompanyRow
-                  key={`company-${item.id}`}
-                  item={item}
-                  view={view}
-                  contacts={contactsByCompany.get(item.id) ?? []}
-                  complianceStatus={complianceStatusByCompanyId[item.company.id]}
-                  prequalification={prequalificationByCompanyId[item.company.id]}
-                  onSelectCompany={onSelectCompany}
-                  onEditCompany={onEditCompany}
-                  onArchiveCompany={onArchiveCompany}
-                />
-              ) : (
-                <ContactRow
-                  key={`contact-${item.id}`}
-                  item={item}
-                  companyLabel={contactCompanyLabel(item.contact, companyById)}
-                  view={view}
-                  onSelectContact={onSelectContact}
-                  onEditContact={onEditContact}
-                  onInviteContact={onInviteContact}
-                  onArchiveContact={onArchiveContact}
-                />
-              ),
-            )}
-            {items.length === 0 && (
-              <TableRow>
-                <TableCell
-                  colSpan={5}
-                  className="h-56 text-center text-muted-foreground"
-                >
-                  No directory entries match this view.
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-        {items.length > 0 ? (
-          <>
-            {hasMore ? (
-              <InfiniteScrollSentinel
-                hasMore={hasMore}
-                isLoading={isLoadingMore}
-                onLoadMore={onLoadMore}
-                rootRef={desktopScrollRef}
-              />
-            ) : null}
-            <InfiniteScrollStatus
-              hasMore={hasMore}
-              isLoading={isLoadingMore}
-              loadedCount={loadedCount}
-              total={total}
-            />
-          </>
-        ) : null}
-      </div>
-    </div>
-  );
 }
 
 function InfiniteScrollStatus({
@@ -554,444 +292,309 @@ function InfiniteScrollStatus({
   );
 }
 
-function CompanyMobileRow({
-  company,
-  contacts,
-  complianceStatus,
-  prequalification,
-  onSelectCompany,
-  onEditCompany,
-  onArchiveCompany,
-}: {
-  company: Company;
-  contacts: Contact[];
-  complianceStatus?: ComplianceStatusSummary;
-  prequalification?: PrequalificationGlance;
-  onSelectCompany?: (id: string) => void;
-  onEditCompany?: (company: Company) => void;
-  onArchiveCompany?: (companyId: string) => void;
-}) {
-  const contactCount = company.contact_count ?? contacts.length;
-  const metaParts = [
-    formatType(company.company_type),
-    company.trade,
-    `${contactCount} ${contactCount === 1 ? "contact" : "contacts"}`,
-  ].filter(Boolean) as string[];
-
-  const hasActions = Boolean(onEditCompany || onArchiveCompany);
-
+function EntryAvatar({ entry }: { entry: DirectoryEntry }) {
+  if (entry.kind === "company") {
+    return (
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center border bg-muted/40">
+        <Building2 className="h-4 w-4 text-muted-foreground" />
+      </div>
+    );
+  }
   return (
-    <li className="flex items-stretch">
-      <button
-        type="button"
-        onClick={() => onSelectCompany?.(company.id)}
-        className="flex min-w-0 flex-1 items-center gap-3 px-3 py-3 text-left active:bg-muted/60"
-      >
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center border bg-muted/40">
-          <Building2 className="h-4 w-4 text-muted-foreground" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-foreground">
-            {company.name}
-          </p>
-          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
-            {metaParts.join(" · ")}
-          </p>
-          {company.email || company.phone ? (
-            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5">
-              {company.phone ? (
-                <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
-                  <Phone className="h-2.5 w-2.5" />
-                  <span className="truncate">{company.phone}</span>
-                </span>
-              ) : null}
-              {company.email ? (
-                <span className="flex min-w-0 items-center gap-1 text-[11px] text-muted-foreground">
-                  <Mail className="h-2.5 w-2.5 shrink-0" />
-                  <span className="truncate">{company.email}</span>
-                </span>
-              ) : null}
-            </div>
-          ) : null}
-          {(complianceStatus && !complianceStatus.is_compliant) || prequalification ? (
-            <div className="mt-1.5 flex flex-wrap items-center gap-x-3">
-              <ComplianceFlag status={complianceStatus} />
-              <PrequalFlag glance={prequalification} />
-            </div>
-          ) : null}
-        </div>
-      </button>
-      {hasActions ? (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-auto w-12 shrink-0 text-muted-foreground active:bg-muted/60"
-              aria-label={`Actions for ${company.name}`}
-            >
-              <MoreHorizontal className="h-5 w-5" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            {onEditCompany ? (
-              <DropdownMenuItem onSelect={() => onEditCompany(company)}>
-                <Edit className="mr-2 h-4 w-4" />
-                Edit
-              </DropdownMenuItem>
-            ) : null}
-            {onArchiveCompany ? (
-              <DropdownMenuItem
-                className="text-destructive focus:text-destructive"
-                onSelect={() => onArchiveCompany(company.id)}
-              >
-                <Archive className="mr-2 h-4 w-4" />
-                Archive
-              </DropdownMenuItem>
-            ) : null}
-          </DropdownMenuContent>
-        </DropdownMenu>
+    <Avatar className="h-9 w-9 rounded-none border">
+      <AvatarFallback className="rounded-none text-xs font-semibold text-muted-foreground">
+        {initialsFor(entry.name)}
+      </AvatarFallback>
+    </Avatar>
+  );
+}
+
+function EntryActions({
+  entry,
+  onInvite,
+  onArchive,
+}: {
+  entry: DirectoryEntry;
+  onInvite?: (entry: DirectoryEntry) => void;
+  onArchive?: (entry: DirectoryEntry) => void;
+}) {
+  if (!onInvite && !onArchive) return null;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" className="h-8 w-8">
+          <MoreHorizontal className="h-4 w-4" />
+          <span className="sr-only">Actions for {entry.name}</span>
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {onInvite && entry.kind === "contact" ? (
+          <DropdownMenuItem disabled={!entry.email} onSelect={() => onInvite(entry)}>
+            <Send className="mr-2 h-4 w-4" />
+            Portal invite
+          </DropdownMenuItem>
+        ) : null}
+        {onArchive ? (
+          <DropdownMenuItem
+            className="text-destructive focus:text-destructive"
+            onSelect={() => onArchive(entry)}
+          >
+            <Archive className="mr-2 h-4 w-4" />
+            Archive
+          </DropdownMenuItem>
+        ) : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+export function DirectoryTable({
+  entries,
+  complianceStatusByCompanyId = {},
+  statusUnavailable = false,
+  tradeLabel = "Trade",
+  showPrequalTrades = false,
+  prequalificationByCompanyId = {},
+  kind,
+  sort,
+  direction,
+  total,
+  hasMore,
+  isLoadingMore,
+  onLoadMore,
+  onSortChange,
+  onSelect,
+  onInvite,
+  onArchive,
+  hasActiveFilters = false,
+  onClearFilters,
+}: DirectoryTableProps) {
+  const mobileScrollRef = useRef<HTMLDivElement>(null);
+  const desktopScrollRef = useRef<HTMLDivElement>(null);
+  const loadedCount = entries.length;
+
+  // `detail` is a company's trade and a person's title.
+  const isCompanyList = kind === "company";
+  const secondaryLabel = isCompanyList ? tradeLabel : "Title";
+
+  const empty = (
+    <div className="flex h-56 flex-col items-center justify-center gap-2 px-6 text-center">
+      <p className="text-sm font-medium text-foreground">Nothing here yet</p>
+      <p className="text-sm text-muted-foreground">
+        {hasActiveFilters
+          ? `${isCompanyList ? "No companies" : "No contacts"} match these filters.`
+          : `No ${isCompanyList ? "companies" : "contacts"} in the directory yet.`}
+      </p>
+      {/* An empty list caused by a filter needs the way back out of it; without
+          this the reader has to remember which menu they set it in. */}
+      {hasActiveFilters && onClearFilters ? (
+        <Button variant="outline" size="sm" onClick={onClearFilters}>
+          Clear filters
+        </Button>
       ) : null}
-    </li>
+    </div>
   );
-}
-
-function ContactMobileRow({
-  contact,
-  companyLabel,
-  onSelectContact,
-  onEditContact,
-  onInviteContact,
-  onArchiveContact,
-}: {
-  contact: Contact;
-  companyLabel?: string;
-  onSelectContact?: (id: string) => void;
-  onEditContact?: (contact: Contact) => void;
-  onInviteContact?: (contact: Contact) => void;
-  onArchiveContact?: (contactId: string) => void;
-}) {
-  const metaParts = [
-    contact.role,
-    companyLabel,
-    formatType(contact.contact_type),
-  ].filter(Boolean) as string[];
-  const hasActions = Boolean(onEditContact || onInviteContact || onArchiveContact);
 
   return (
-    <li className="flex items-stretch">
-      <button
-        type="button"
-        onClick={() => onSelectContact?.(contact.id)}
-        className="flex min-w-0 flex-1 items-center gap-3 px-3 py-3 text-left active:bg-muted/60"
-      >
-        <Avatar className="h-10 w-10 rounded-none border">
-          <AvatarFallback className="rounded-none text-xs font-semibold text-muted-foreground">
-            {initialsFor(contact.full_name)}
-          </AvatarFallback>
-        </Avatar>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-foreground">
-            {contact.full_name}
-          </p>
-          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
-            {metaParts.length > 0 ? metaParts.join(" · ") : "No details"}
-          </p>
-          {contact.email || contact.phone ? (
-            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5">
-              {contact.phone ? (
-                <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
-                  <Phone className="h-2.5 w-2.5" />
-                  <span className="truncate">{contact.phone}</span>
-                </span>
-              ) : null}
-              {contact.email ? (
-                <span className="flex min-w-0 items-center gap-1 text-[11px] text-muted-foreground">
-                  <Mail className="h-2.5 w-2.5 shrink-0" />
-                  <span className="truncate">{contact.email}</span>
-                </span>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-      </button>
-      {hasActions ? (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-auto w-12 shrink-0 text-muted-foreground active:bg-muted/60"
-              aria-label={`Actions for ${contact.full_name}`}
-            >
-              <MoreHorizontal className="h-5 w-5" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            {onEditContact ? (
-              <DropdownMenuItem onSelect={() => onEditContact(contact)}>
-                <Edit className="mr-2 h-4 w-4" />
-                Edit
-              </DropdownMenuItem>
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      {/* Mobile list */}
+      <div ref={mobileScrollRef} className="min-h-0 flex-1 overflow-auto md:hidden">
+        {entries.length === 0 ? (
+          empty
+        ) : (
+          <>
+            <ul className="divide-y">
+              {entries.map((entry) => {
+                const compliance =
+                  entry.kind === "company" ? complianceStatusByCompanyId[entry.id] : undefined;
+                const prequal =
+                  entry.kind === "company" ? prequalificationByCompanyId[entry.id] : undefined;
+                const meta = [entry.detail, entry.primary_company_name].filter(Boolean);
+                return (
+                  <li key={`${entry.kind}-${entry.id}`} className="flex items-stretch">
+                    <button
+                      type="button"
+                      onClick={() => onSelect(entry)}
+                      className="flex min-w-0 flex-1 items-center gap-3 px-3 py-3 text-left active:bg-muted/60"
+                    >
+                      <EntryAvatar entry={entry} />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-foreground">
+                          {entry.name}
+                        </p>
+                        {meta.length > 0 ? (
+                          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                            {meta.join(" · ")}
+                          </p>
+                        ) : null}
+                        <div className="mt-1.5">
+                          <RoleChips roles={entry.roles} />
+                        </div>
+                        {compliance || prequal ? (
+                          <div className="mt-1.5 flex flex-wrap items-center gap-x-3">
+                            <ComplianceFlag status={compliance} />
+                            <PrequalFlag glance={prequal} showTrades={showPrequalTrades} />
+                          </div>
+                        ) : null}
+                      </div>
+                    </button>
+                    <div className="flex items-center pr-1">
+                      <EntryActions
+                        entry={entry}
+                        onInvite={onInvite}
+                        onArchive={onArchive}
+                      />
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+            {hasMore ? (
+              <InfiniteScrollSentinel
+                hasMore={hasMore}
+                isLoading={isLoadingMore}
+                onLoadMore={onLoadMore}
+                rootRef={mobileScrollRef}
+              />
             ) : null}
-            {onInviteContact ? (
-              <DropdownMenuItem
-                disabled={!contact.email}
-                onSelect={() => onInviteContact(contact)}
-              >
-                <Send className="mr-2 h-4 w-4" />
-                Portal invite
-              </DropdownMenuItem>
-            ) : null}
-            {onArchiveContact ? (
-              <DropdownMenuItem
-                className="text-destructive focus:text-destructive"
-                onSelect={() => onArchiveContact(contact.id)}
-              >
-                <Archive className="mr-2 h-4 w-4" />
-                Archive
-              </DropdownMenuItem>
-            ) : null}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      ) : null}
-    </li>
-  );
-}
+            <InfiniteScrollStatus
+              hasMore={hasMore}
+              isLoading={isLoadingMore}
+              loadedCount={loadedCount}
+              total={total}
+              compact
+            />
+          </>
+        )}
+      </div>
 
-function CompanyRow({
-  item,
-  contacts,
-  view,
-  complianceStatus,
-  prequalification,
-  onSelectCompany,
-  onEditCompany,
-  onArchiveCompany,
-}: {
-  item: Extract<DirectoryItem, { type: "company" }>;
-  contacts: Contact[];
-  view: DirectoryView;
-  complianceStatus?: ComplianceStatusSummary;
-  prequalification?: PrequalificationGlance;
-  onSelectCompany?: (id: string) => void;
-  onEditCompany?: (company: Company) => void;
-  onArchiveCompany?: (companyId: string) => void;
-}) {
-  const company = item.company;
-  const contactCount = company.contact_count ?? contacts.length;
-  const openCompany = () => onSelectCompany?.(company.id);
-
-  return (
-    <TableRow
-      className="group cursor-pointer align-middle hover:bg-muted/30"
-      onClick={openCompany}
-    >
-      <TableCell className="pl-4">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center border bg-muted/40">
-            <Building2 className="h-4 w-4 text-muted-foreground" />
-          </div>
-          <div className="min-w-0">
-            <div className="truncate font-medium text-foreground">
-              {company.name}
-            </div>
-            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-              <span>{company.trade || "No trade"}</span>
-              <span>·</span>
-              <span>
-                {contactCount} contact{contactCount === 1 ? "" : "s"}
-              </span>
-              {complianceStatus && !complianceStatus.is_compliant ? (
-                <>
-                  <span>·</span>
-                  <ComplianceFlag status={complianceStatus} />
-                </>
-              ) : null}
-              {prequalification ? (
-                <>
-                  <span>·</span>
-                  <PrequalFlag glance={prequalification} />
-                </>
-              ) : null}
-            </div>
-          </div>
-        </div>
-      </TableCell>
-      {view === "companies" ? (
-        <>
-          <TableCell>
-            <Badge variant="outline">{formatType(company.company_type)}</Badge>
-          </TableCell>
-          <TableCell className="text-sm text-muted-foreground">
-            {company.trade || "—"}
-          </TableCell>
-          <TableCell>
-            <ContactMethods email={company.email} phone={company.phone} />
-          </TableCell>
-        </>
-      ) : (
-        <>
-          <TableCell>
-            <Badge variant="outline">Company</Badge>
-          </TableCell>
-          <TableCell className="text-sm text-muted-foreground">
-            {company.trade || formatType(company.company_type)}
-          </TableCell>
-          <TableCell>
-            <ContactMethods email={company.email} phone={company.phone} />
-          </TableCell>
-        </>
-      )}
-      <TableCell
-        className="pr-4 text-right"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-8 w-8">
-              <MoreHorizontal className="h-4 w-4" />
-              <span className="sr-only">Company actions</span>
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            {onEditCompany ? (
-              <DropdownMenuItem onSelect={() => onEditCompany(company)}>
-                <Edit className="mr-2 h-4 w-4" />
-                Edit
-              </DropdownMenuItem>
+      {/* Desktop table */}
+      <div ref={desktopScrollRef} className="hidden min-h-0 flex-1 overflow-auto md:block">
+        <Table className="min-w-[960px]">
+          <TableHeader className="sticky top-0 z-10 bg-background">
+            <TableRow className="bg-muted/40 hover:bg-muted/40">
+              <SortHead
+                label="Name"
+                sortKey="name"
+                activeSort={sort}
+                direction={direction}
+                onSortChange={onSortChange}
+                className="w-[30%] pl-4"
+              />
+              <TableHead className="w-[22%]">Roles</TableHead>
+              <SortHead
+                label={secondaryLabel}
+                sortKey="detail"
+                activeSort={sort}
+                direction={direction}
+                onSortChange={onSortChange}
+                className="w-[16%]"
+              />
+              <TableHead className="w-[30%]">Contact</TableHead>
+              <TableHead className="w-12 pr-4" />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {entries.map((entry) => {
+              const compliance =
+                entry.kind === "company" ? complianceStatusByCompanyId[entry.id] : undefined;
+              const prequal =
+                entry.kind === "company" ? prequalificationByCompanyId[entry.id] : undefined;
+              return (
+                <TableRow
+                  key={`${entry.kind}-${entry.id}`}
+                  className="group cursor-pointer align-middle hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                  // The row is the primary navigation of this page, so it has to
+                  // be reachable without a mouse. A div-role row gets neither
+                  // focus nor Enter for free.
+                  tabIndex={0}
+                  role="link"
+                  aria-label={entry.name}
+                  onClick={() => onSelect(entry)}
+                  onKeyDown={(event) => {
+                    if (event.target !== event.currentTarget) return;
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onSelect(entry);
+                    }
+                  }}
+                >
+                  <TableCell className="pl-4">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <EntryAvatar entry={entry} />
+                      <div className="min-w-0">
+                        <div className="truncate font-medium text-foreground">{entry.name}</div>
+                        {entry.primary_company_name ? (
+                          <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                            {entry.primary_company_name}
+                          </div>
+                        ) : null}
+                        {/* Exception reporting: a vendor in good standing says
+                            nothing, so this costs no row height when all is well
+                            and needs no column of its own. */}
+                        {statusUnavailable && entry.kind === "company" ? (
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            Compliance status unavailable
+                          </div>
+                        ) : compliance || prequal ? (
+                          <div className="mt-1 flex flex-wrap items-center gap-x-3">
+                            <ComplianceFlag status={compliance} />
+                            <PrequalFlag glance={prequal} showTrades={showPrequalTrades} />
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <RoleChips roles={entry.roles} />
+                  </TableCell>
+                  <TableCell className="text-sm text-muted-foreground">
+                    {entry.detail || "—"}
+                  </TableCell>
+                  <TableCell>
+                    <ContactMethods email={entry.email} phone={entry.phone} />
+                  </TableCell>
+                  <TableCell
+                    className="pr-4 text-right"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <EntryActions
+                      entry={entry}
+                      onInvite={onInvite}
+                      onArchive={onArchive}
+                    />
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+            {entries.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={5} className="h-56 p-0">
+                  {empty}
+                </TableCell>
+              </TableRow>
             ) : null}
-            {onArchiveCompany ? (
-              <DropdownMenuItem
-                className="text-destructive focus:text-destructive"
-                onSelect={() => onArchiveCompany(company.id)}
-              >
-                <Archive className="mr-2 h-4 w-4" />
-                Archive
-              </DropdownMenuItem>
+          </TableBody>
+        </Table>
+        {entries.length > 0 ? (
+          <>
+            {hasMore ? (
+              <InfiniteScrollSentinel
+                hasMore={hasMore}
+                isLoading={isLoadingMore}
+                onLoadMore={onLoadMore}
+                rootRef={desktopScrollRef}
+              />
             ) : null}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </TableCell>
-    </TableRow>
-  );
-}
-
-function ContactRow({
-  item,
-  companyLabel,
-  view,
-  onSelectContact,
-  onEditContact,
-  onInviteContact,
-  onArchiveContact,
-}: {
-  item: Extract<DirectoryItem, { type: "contact" }>;
-  companyLabel?: string;
-  view: DirectoryView;
-  onSelectContact?: (id: string) => void;
-  onEditContact?: (contact: Contact) => void;
-  onInviteContact?: (contact: Contact) => void;
-  onArchiveContact?: (contactId: string) => void;
-}) {
-  const contact = item.contact;
-  const openContact = () => onSelectContact?.(contact.id);
-
-  return (
-    <TableRow
-      className="group cursor-pointer align-middle hover:bg-muted/30"
-      onClick={openContact}
-    >
-      <TableCell className="pl-4">
-        <div className="flex min-w-0 items-center gap-3">
-          <Avatar className="h-9 w-9 rounded-none border">
-            <AvatarFallback className="rounded-none text-xs font-semibold text-muted-foreground">
-              {initialsFor(contact.full_name)}
-            </AvatarFallback>
-          </Avatar>
-          <div className="min-w-0">
-            <div className="truncate font-medium text-foreground">
-              {contact.full_name}
-            </div>
-            {companyLabel ? (
-              <div className="mt-1 truncate text-xs text-muted-foreground">
-                {companyLabel}
-              </div>
-            ) : null}
-          </div>
-        </div>
-      </TableCell>
-      {view === "people" ? (
-        <>
-          <TableCell className="text-sm text-muted-foreground">
-            {companyLabel ?? "—"}
-          </TableCell>
-          <TableCell>
-            <div className="flex flex-wrap gap-1.5">
-              <Badge variant="outline">
-                {formatType(contact.contact_type)}
-              </Badge>
-              {contact.role ? (
-                <Badge variant="secondary">{contact.role}</Badge>
-              ) : null}
-            </div>
-          </TableCell>
-          <TableCell>
-            <ContactMethods email={contact.email} phone={contact.phone} />
-          </TableCell>
-        </>
-      ) : (
-        <>
-          <TableCell>
-            <Badge variant="outline">Person</Badge>
-          </TableCell>
-          <TableCell className="text-sm text-muted-foreground">
-            {contact.role || formatType(contact.contact_type)}
-          </TableCell>
-          <TableCell>
-            <ContactMethods email={contact.email} phone={contact.phone} />
-          </TableCell>
-        </>
-      )}
-      <TableCell
-        className="pr-4 text-right"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-8 w-8">
-              <MoreHorizontal className="h-4 w-4" />
-              <span className="sr-only">Contact actions</span>
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            {onEditContact ? (
-              <DropdownMenuItem onSelect={() => onEditContact(contact)}>
-                <Edit className="mr-2 h-4 w-4" />
-                Edit
-              </DropdownMenuItem>
-            ) : null}
-            {onInviteContact ? (
-              <DropdownMenuItem
-                disabled={!contact.email}
-                onSelect={() => onInviteContact(contact)}
-              >
-                <Send className="mr-2 h-4 w-4" />
-                Portal invite
-              </DropdownMenuItem>
-            ) : null}
-            {onArchiveContact ? (
-              <DropdownMenuItem
-                className="text-destructive focus:text-destructive"
-                onSelect={() => onArchiveContact(contact.id)}
-              >
-                <Archive className="mr-2 h-4 w-4" />
-                Archive
-              </DropdownMenuItem>
-            ) : null}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </TableCell>
-    </TableRow>
+            <InfiniteScrollStatus
+              hasMore={hasMore}
+              isLoading={isLoadingMore}
+              loadedCount={loadedCount}
+              total={total}
+            />
+          </>
+        ) : null}
+      </div>
+    </div>
   );
 }

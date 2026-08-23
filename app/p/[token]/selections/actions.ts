@@ -17,6 +17,7 @@ async function run<T>(operation: () => Promise<T>): Promise<ActionResult<T>> {
 export async function loadSelectionsAction(token: string) {
   const access = await assertPortalActionAccess(token, {
     portalType: "client",
+    requireProject: true,
     permission: "can_submit_selections",
   })
 
@@ -111,6 +112,7 @@ export async function selectOptionAction(input: { token: string; selectionId: st
   return run(async () => {
     const access = await assertPortalActionAccess(input.token, {
       portalType: "client",
+      requireProject: true,
       permission: "can_submit_selections",
     })
 
@@ -129,6 +131,7 @@ export async function confirmGroupAction(input: { token: string; groupId: string
   return run(async () => {
     const access = await assertPortalActionAccess(input.token, {
       portalType: "client",
+      requireProject: true,
       permission: "can_submit_selections",
     })
     return confirmSelectionGroup({
@@ -144,6 +147,7 @@ export async function selectPackageAction(input: { token: string; packageId: str
   return run(async () => {
     const access = await assertPortalActionAccess(input.token, {
       portalType: "client",
+      requireProject: true,
       permission: "can_submit_selections",
     })
     return selectProjectPackage({

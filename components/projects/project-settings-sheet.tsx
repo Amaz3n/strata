@@ -32,6 +32,7 @@ import {
 import { DistributionListManager } from "@/components/projects/distribution-list-manager"
 import { ProjectLocationsManager } from "@/components/locations/project-locations-manager"
 import { ProjectComplianceManager } from "@/components/projects/project-compliance-manager"
+import { ProjectVendorRequirements } from "@/components/projects/project-vendor-requirements"
 import { listLocationsAction } from "@/app/(app)/projects/[id]/locations/actions"
 import { listProjectComplianceAction, type ProjectComplianceSettings } from "@/app/(app)/projects/[id]/actions"
 import { getCostCodingSettingsAction } from "@/app/(app)/settings/cost-coding/actions"
@@ -41,6 +42,7 @@ import {
   removeSampleProjectAction,
   setProjectModuleOverrideAction,
 } from "@/app/(app)/projects/[id]/actions"
+import { DEFAULT_ACCOUNTING_PROVIDER_LABEL } from "@/components/accounting/provider-label"
 import type { QBOClassOption, QBOCustomerOption } from "@/lib/integrations/accounting/qbo/client"
 import {
   PROJECT_MODULES,
@@ -138,6 +140,8 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
   const [customerPickerOpen, setCustomerPickerOpen] = useState(false)
   const [customerQuery, setCustomerQuery] = useState("")
   const [customerResults, setCustomerResults] = useState<QBOCustomerOption[]>([])
+  /** Named by the connection itself; falls back to the catalog default while the probe is in flight. */
+  const [providerName, setProviderName] = useState(DEFAULT_ACCOUNTING_PROVIDER_LABEL)
   const [customerSearchLoading, setCustomerSearchLoading] = useState(false)
   const [createCustomerOpen, setCreateCustomerOpen] = useState(false)
   const [newCustomer, setNewCustomer] = useState({ name: "", email: "", line1: "", city: "", state: "", postalCode: "" })
@@ -272,6 +276,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
       .then((result) => {
         if (cancelled) return
         setQboConnected(Boolean(result.connected))
+        setProviderName(result.providerName ?? DEFAULT_ACCOUNTING_PROVIDER_LABEL)
         setCustomerResults(result.customers ?? [])
       })
       .catch(() => {
@@ -328,9 +333,9 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
       }))
       selectQboCustomer(created)
       setNewCustomer({ name: "", email: "", line1: "", city: "", state: "", postalCode: "" })
-      toast.success(`Created "${created.name}" in QuickBooks`)
+      toast.success(`Created "${created.name}" in ${providerName}`)
     } catch (error: any) {
-      toast.error("Couldn't create customer in QuickBooks", { description: error?.message ?? "Try again." })
+      toast.error(`Couldn't create customer in ${providerName}`, { description: error?.message ?? "Try again." })
     } finally {
       setCreatingCustomer(false)
     }
@@ -610,7 +615,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                 Dates drive schedule progress and budget timelines. Leave blank if not yet scheduled.
               </p>
               {/* Client — a single field. The contact drives portal invites & signatures; */}
-              {/* the QuickBooks customer (the sync target) is shown beneath as an overridable detail. */}
+              {/* the accounting customer (the sync target) is shown beneath as an overridable detail. */}
               {accountingConnections.length > 0 ? <div className="space-y-2">
                 <Label>Accounting file</Label>
                 <Select value={accountingConnectionId ?? ""} onValueChange={(connectionId) => {
@@ -650,11 +655,11 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                     <Spinner className="h-3.5 w-3.5" />
                     {qboCustomerId ? (
                       <span className="truncate">
-                        Billed in QuickBooks as{" "}
+                        Billed in {providerName} as{" "}
                         <span className="font-medium text-foreground">{qboCustomerName || "selected customer"}</span>
                       </span>
                     ) : (
-                      "Checking QuickBooks…"
+                      `Checking ${providerName}…`
                     )}
                   </div>
                 ) : qboConnected ? (
@@ -672,7 +677,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                           <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
                             <Check className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
                             <span className="truncate">
-                              Billed in QuickBooks as{" "}
+                              Billed in {providerName} as{" "}
                               <span className="font-medium text-foreground">{qboCustomerName || "selected customer"}</span>
                             </span>
                           </span>
@@ -702,11 +707,11 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                           <span className="min-w-0 truncate text-xs text-muted-foreground">
                             {selectedClientContact?.full_name ? (
                               <>
-                                Will sync to QuickBooks as{" "}
+                                Will sync to {providerName} as{" "}
                                 <span className="font-medium text-foreground">&ldquo;{selectedClientContact.full_name}&rdquo;</span>
                               </>
                             ) : (
-                              "Choose the QuickBooks customer to bill"
+                              `Choose the ${providerName} customer to bill`
                             )}
                           </span>
                           <PopoverTrigger asChild>
@@ -795,7 +800,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                       ) : (
                         <Command shouldFilter={false}>
                           <CommandInput
-                            placeholder="Search QuickBooks customers…"
+                            placeholder={`Search ${providerName} customers…`}
                             value={customerQuery}
                             onValueChange={setCustomerQuery}
                           />
@@ -806,7 +811,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                               </div>
                             )}
                             {!customerSearchLoading && customerResults.length === 0 && (
-                              <CommandEmpty>No QuickBooks customers found.</CommandEmpty>
+                              <CommandEmpty>No {providerName} customers found.</CommandEmpty>
                             )}
                             {customerResults.length > 0 && (
                               <CommandGroup>
@@ -840,14 +845,14 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                 ) : null}
 
                 <p className="text-sm text-muted-foreground">
-                  Used as the default {terms.owner.toLowerCase()} for portal invites and signatures{qboConnected ? ", and as the QuickBooks customer for invoices, payables, and expenses" : ""}. This does not grant portal access.
+                  Used as the default {terms.owner.toLowerCase()} for portal invites and signatures{qboConnected ? `, and as the ${providerName} customer for invoices, payables, and expenses` : ""}. This does not grant portal access.
                 </p>
               </div>
               {/* Show the class field whenever QBO is connected (or while still probing if a class is
                   already saved) so a stored value never momentarily reads as "Not set". */}
               {qboConnected || (qboConnected === null && qboClassId) ? (
                 <div className="space-y-2">
-                  <Label>QuickBooks class</Label>
+                  <Label>{providerName} class</Label>
                   <Select
                     value={qboClassId ?? "none"}
                     onValueChange={(value) => {
@@ -879,7 +884,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                     </p>
                   ) : qboClassStale ? (
                     <p className="text-xs text-amber-600">
-                      This class isn&apos;t in your current QuickBooks list. Re-select to update the link.
+                      This class isn&apos;t in your current {providerName} list. Re-select to update the link.
                     </p>
                   ) : null}
                 </div>
@@ -956,6 +961,8 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
               </div>
 
               <ProjectComplianceManager projectId={project.id} compliance={projectCompliance} />
+
+              <ProjectVendorRequirements projectId={project.id} />
 
               <div className="border-t pt-5">
                 <DistributionListManager projectId={project.id} contacts={contacts} />

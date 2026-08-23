@@ -28,13 +28,12 @@ import { requireOrgContext } from "@/lib/services/context";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { recordAudit } from "@/lib/services/audit";
 import { recordEvent } from "@/lib/services/events";
-import { createStripePaymentIntent } from "@/lib/integrations/payments/stripe";
+import { cancelStripePaymentIntent, createStripePaymentIntent } from "@/lib/integrations/payments/stripe";
 import {
   calculatePaymentFeeQuote,
   type OnlinePaymentMethod,
   loadPaymentFeePolicy,
 } from "@/lib/payments/fee-engine";
-import { generateConditionalWaiverForPayment } from "@/lib/services/lien-waivers";
 import { releaseInvoiceLienWaiversIfPaid } from "@/lib/services/invoice-lien-waivers";
 import { enqueuePaymentSync } from "@/lib/services/accounting-sync";
 import { requireAuthorization } from "@/lib/services/authorization";
@@ -1003,6 +1002,17 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
     if (existing && existing.status === (parsed.status ?? "succeeded")) {
       return mapPayment(existing);
     }
+    // Webhooks arrive out of order: a retried `payment_intent.processing` after
+    // `succeeded` must never demote a settled payment (and with it the invoice).
+    const settledStatuses = ["succeeded", "completed", "paid"];
+    const incomingStatus = parsed.status ?? "succeeded";
+    if (
+      existing &&
+      settledStatuses.includes(existing.status) &&
+      (incomingStatus === "processing" || incomingStatus === "pending")
+    ) {
+      return mapPayment(existing);
+    }
   }
 
   const { data: providerIntent } = parsed.provider_payment_id
@@ -1142,15 +1152,6 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
     },
   });
 
-  // A processing ACH is not money received and cannot release a waiver.
-  if (paymentSettled) {
-    try {
-      await generateConditionalWaiverForPayment(paymentRow.id, resolvedOrgId);
-    } catch (waiverError) {
-      console.error("Failed to generate lien waiver", waiverError);
-    }
-  }
-
   if (paymentSettled && paymentLinkId) {
     const { data: linkRow } = await supabase
       .from("payment_links")
@@ -1176,9 +1177,69 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
     } catch (err) {
       console.error("Failed to enqueue QBO payment sync", err);
     }
+    // The balance just dropped — any open intent quoted against the old balance
+    // is now over-payable. Cancel them in Stripe so a stale client_secret in
+    // someone's browser can't capture money Arc will refuse to apply.
+    await cancelStaleOpenIntentsForInvoice({
+      supabase,
+      orgId: resolvedOrgId,
+      invoiceId,
+      excludeProviderIntentId: payload.provider_payment_id ?? null,
+    });
   }
 
   return mapPayment({ ...paymentRow, ...payload });
+}
+
+/**
+ * Cancel open Stripe intents whose charge no longer fits the invoice's
+ * outstanding balance. Non-fatal by design: a failed cancel leaves the old
+ * (worse) behaviour in place, and each failure is logged for follow-up.
+ */
+async function cancelStaleOpenIntentsForInvoice(params: {
+  supabase: ReturnType<typeof createServiceSupabaseClient>;
+  orgId: string;
+  invoiceId: string;
+  excludeProviderIntentId?: string | null;
+}) {
+  const { supabase, orgId, invoiceId } = params;
+  const { data: invoiceRow } = await supabase
+    .from("invoices")
+    .select("balance_due_cents, total_cents")
+    .eq("org_id", orgId)
+    .eq("id", invoiceId)
+    .maybeSingle();
+  if (!invoiceRow) return;
+  const balanceCents = Number(invoiceRow.balance_due_cents ?? invoiceRow.total_cents ?? 0);
+
+  const { data: openIntents } = await supabase
+    .from("payment_intents")
+    .select("id, provider_intent_id, amount_cents, connected_account_id, metadata")
+    .eq("org_id", orgId)
+    .eq("invoice_id", invoiceId)
+    .in("status", ["requires_payment_method", "requires_confirmation", "requires_action"]);
+
+  for (const intent of openIntents ?? []) {
+    if (params.excludeProviderIntentId && intent.provider_intent_id === params.excludeProviderIntentId) continue;
+    const principalCents = Number((intent.metadata as Record<string, any> | null)?.invoice_balance_cents ?? intent.amount_cents ?? 0);
+    if (balanceCents > 0 && principalCents <= balanceCents) continue;
+    try {
+      await cancelStripePaymentIntent(intent.provider_intent_id, intent.connected_account_id ?? null);
+      await supabase
+        .from("payment_intents")
+        .update({ status: "canceled" })
+        .eq("org_id", orgId)
+        .eq("id", intent.id);
+      await supabase
+        .from("invoice_payment_reservations")
+        .update({ status: "canceled", updated_at: new Date().toISOString() })
+        .eq("org_id", orgId)
+        .eq("provider_intent_id", intent.provider_intent_id)
+        .eq("status", "active");
+    } catch (err) {
+      console.error("Failed to cancel stale payment intent", intent.provider_intent_id, err);
+    }
+  }
 }
 
 export async function getReceivePaymentWorkspace(input: {
@@ -1322,7 +1383,6 @@ export async function recordMultiInvoicePayment(input: ReceivePaymentInput, orgI
         paymentId: item.payment_id,
       });
       try {
-        await generateConditionalWaiverForPayment(item.payment_id, context.orgId);
         await enqueuePaymentSync(item.payment_id, context.orgId);
       } catch (followupError) {
         console.error("Receipt follow-up could not be completed", followupError);

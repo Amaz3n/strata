@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache"
 import { z } from "zod"
 
-import { actionError, type ActionResult } from "@/lib/action-result"
+import { runAction, type ActionResult } from "@/lib/action-result"
 import {
   requestPrequalification,
   reviewPrequalification,
@@ -20,14 +20,6 @@ import {
   prequalificationTemplateSchema,
   prequalificationWaiverSchema,
 } from "@/lib/validation/prequalification"
-
-async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
-  try {
-    return { success: true, data: await fn() }
-  } catch (error) {
-    return actionError(error)
-  }
-}
 
 const companyIdSchema = z.string().uuid()
 const inviteInputSchema = z.object({
@@ -48,7 +40,7 @@ export async function requestPrequalificationAction(
   companyId: string,
   input?: unknown,
 ): Promise<ActionResult<{ invite: PrequalificationInviteResult | null }>> {
-  return run(async () => {
+  return runAction(async () => {
     const id = companyIdSchema.parse(companyId)
     const options = inviteInputSchema.parse(input ?? {})
     await requestPrequalification(id, { template: options.template })
@@ -78,7 +70,7 @@ export async function sendPrequalificationInviteAction(
   companyId: string,
   input?: unknown,
 ): Promise<ActionResult<PrequalificationInviteResult>> {
-  return run(async () => {
+  return runAction(async () => {
     const id = companyIdSchema.parse(companyId)
     const options = inviteInputSchema.parse(input ?? {})
     const invite = await sendPrequalificationInvite({
@@ -97,7 +89,7 @@ export async function setPrequalificationTemplateAction(
   /** Null adopts the current org program. */
   template: unknown | null,
 ): Promise<ActionResult<true>> {
-  return run(async () => {
+  return runAction(async () => {
     const id = companyIdSchema.parse(companyId)
     await setPrequalificationRequestTemplate({
       prequalificationId: z.string().uuid().parse(prequalificationId),
@@ -112,7 +104,7 @@ export async function waivePrequalificationAction(
   companyId: string,
   input: unknown,
 ): Promise<ActionResult<true>> {
-  return run(async () => {
+  return runAction(async () => {
     const id = companyIdSchema.parse(companyId)
     const parsed = prequalificationWaiverSchema.parse(input)
     await waivePrequalification({
@@ -130,7 +122,7 @@ export async function reviewPrequalificationAction(
   prequalificationId: string,
   input: unknown,
 ): Promise<ActionResult<{ notified: boolean }>> {
-  return run(async () => {
+  return runAction(async () => {
     const id = companyIdSchema.parse(companyId)
     const parsed = prequalificationReviewSchema.parse(input)
     const result = await reviewPrequalification(

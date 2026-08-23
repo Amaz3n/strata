@@ -17,6 +17,7 @@ import type {
   PortalType,
   ProjectAccessPerson,
   ProjectAccessStatus,
+  ProjectScopedPortalAccess,
   PunchItem,
   ReviewerPortalData,
   ReviewerRole,
@@ -298,7 +299,7 @@ const VENDOR_ACCOUNT_PERMISSIONS: Partial<PortalPermissions> = {
   can_submit_expenses: false,
   can_submit_daily_logs: false,
   can_upload_compliance_docs: true,
-  can_upload_subtier_waivers: false,
+  can_upload_subtier_waivers: true,
   can_view_punch_items: false,
   can_view_purchase_orders: false,
   can_report_po_completion: false,
@@ -643,6 +644,285 @@ const ORG_EXTERNAL_DIRECTORY_CAP = 500
  * project manager leaves a trade partner and you have to find every job they
  * were ever given access to.
  */
+/**
+ * What each contact at one company can reach today.
+ *
+ * The directory's contacts tab lists people; this says which of them can
+ * actually get in — the question behind every other tab on the page, since a
+ * vendor with nobody able to sign in cannot submit a certificate, sign a waiver
+ * or see a bill.
+ *
+ * Deliberately returns no token strings. A token is bearer access, and this is a
+ * read for a roster; the places that hand out links do so one at a time and
+ * record it.
+ */
+export interface CompanyContactAccess {
+  status: ProjectAccessStatus
+  /** How they get in today. Claiming an account flips this from link to account. */
+  accessMode: "account" | "link"
+  /** Whether their sign-in has been claimed and the email verified. */
+  identityVerified: boolean
+  projectNames: string[]
+  /** True for a company-scoped record — onboarding, prequal, compliance. */
+  hasAccountScope: boolean
+  lastAccessedAt: string | null
+}
+
+export async function listCompanyContactAccess(
+  companyId: string,
+  orgId?: string,
+): Promise<Map<string, CompanyContactAccess>> {
+  const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
+  // A roster read, not a link handout: anyone who can see the directory record
+  // can see who at that company is able to reach it.
+  await requireAnyPermission(["org.member", "directory.read", "directory.write"], {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  })
+  const serviceClient = createServiceSupabaseClient()
+
+  const { data: tokenRows, error } = await serviceClient
+    .from("portal_access_tokens")
+    .select(
+      "id, contact_id, project_id, paused_at, revoked_at, expires_at, last_accessed_at, project:projects(name)",
+    )
+    .eq("org_id", resolvedOrgId)
+    .eq("company_id", companyId)
+    .is("scoped_rfi_id", null)
+    .is("scoped_change_event_rfq_id", null)
+    .is("scoped_submittal_revision_id", null)
+
+  if (error) {
+    throw new Error(`Failed to load contact access: ${error.message}`)
+  }
+
+  const rows = (tokenRows ?? []) as any[]
+  const byContact = new Map<string, CompanyContactAccess>()
+  if (rows.length === 0) return byContact
+
+  const { data: grantRows } = await serviceClient
+    .from("external_identity_grants")
+    .select("portal_access_token_id, identity:external_identities(id, email_verified_at)")
+    .eq("org_id", resolvedOrgId)
+    .in(
+      "portal_access_token_id",
+      rows.map((row) => row.id),
+    )
+    .is("revoked_at", null)
+
+  const identityByToken = new Map<string, { id: string; email_verified_at: string | null }>()
+  for (const grant of (grantRows ?? []) as any[]) {
+    const identity = Array.isArray(grant.identity) ? grant.identity[0] : grant.identity
+    if (identity) identityByToken.set(grant.portal_access_token_id, identity)
+  }
+
+  // Status ranks worst-first so a person with one revoked and one live record
+  // still reads as reachable — the live one is what matters to the reader.
+  const rank: Record<ProjectAccessStatus, number> = {
+    active: 0,
+    paused: 1,
+    expired: 2,
+    revoked: 3,
+  }
+
+  for (const row of rows) {
+    if (!row.contact_id) continue
+    const project = Array.isArray(row.project) ? row.project[0] : row.project
+    const identity = identityByToken.get(row.id) ?? null
+    const status = resolveAccessStatus(row)
+
+    const existing = byContact.get(row.contact_id)
+    const entry: CompanyContactAccess = existing ?? {
+      status,
+      accessMode: identity ? "account" : "link",
+      identityVerified: Boolean(identity?.email_verified_at),
+      projectNames: [],
+      hasAccountScope: false,
+      lastAccessedAt: null,
+    }
+
+    if (rank[status] < rank[entry.status]) entry.status = status
+    if (identity) {
+      entry.accessMode = "account"
+      if (identity.email_verified_at) entry.identityVerified = true
+    }
+    if (project?.name && !entry.projectNames.includes(project.name)) {
+      entry.projectNames.push(project.name)
+    }
+    if (!row.project_id) entry.hasAccountScope = true
+    if (
+      row.last_accessed_at &&
+      (!entry.lastAccessedAt || new Date(row.last_accessed_at) > new Date(entry.lastAccessedAt))
+    ) {
+      entry.lastAccessedAt = row.last_accessed_at
+    }
+
+    byContact.set(row.contact_id, entry)
+  }
+
+  return byContact
+}
+
+/**
+ * One person's own external access, from the directory's side.
+ *
+ * The company roster above answers "who at this vendor can get in"; this
+ * answers it for a party that IS a person — a buyer, a prospect, an architect —
+ * who may never be attached to a company at all. `listOrgExternalAccess` can
+ * describe the same person, but it is a `project.manage` read that pages the
+ * whole org's tokens and caps at 500, so the one person you asked about can
+ * fall off the end of it.
+ *
+ * Like the company roster it deliberately returns no token strings: a token is
+ * bearer access, and this is a read.
+ */
+export interface ContactAccessRecord {
+  token_id: string
+  /** Null on a company-scoped record — onboarding, prequal, compliance. */
+  project_id: string | null
+  project_name: string | null
+  portal_type: PortalType
+  status: ProjectAccessStatus
+  pin_required: boolean
+  require_account: boolean
+  last_accessed_at: string | null
+  expires_at: string | null
+  created_at: string
+}
+
+export interface ContactAccessSummary {
+  /** The claimed Arc sign-in behind this person, when they have one. */
+  identity: {
+    id: string
+    email: string
+    full_name: string | null
+    email_verified: boolean
+    last_login_at: string | null
+  } | null
+  /** Claiming an account turns the link into a pointer to a sign-in. */
+  accessMode: "account" | "link" | "none"
+  records: ContactAccessRecord[]
+}
+
+interface ContactTokenRow {
+  id: string
+  project_id: string | null
+  portal_type: PortalType
+  pin_required: boolean | null
+  require_account: boolean | null
+  paused_at: string | null
+  revoked_at: string | null
+  expires_at: string | null
+  last_accessed_at: string | null
+  created_at: string
+  project: { name: string | null } | { name: string | null }[] | null
+}
+
+interface ContactIdentityRow {
+  external_identity_id: string | null
+  identity:
+    | {
+        id: string
+        email: string
+        full_name: string | null
+        email_verified_at: string | null
+        last_login_at: string | null
+      }
+    | {
+        id: string
+        email: string
+        full_name: string | null
+        email_verified_at: string | null
+        last_login_at: string | null
+      }[]
+    | null
+}
+
+function firstEmbed<T>(value: T | T[] | null | undefined): T | null {
+  if (!value) return null
+  return Array.isArray(value) ? (value[0] ?? null) : value
+}
+
+export async function listContactAccess(
+  contactId: string,
+  orgId?: string,
+): Promise<ContactAccessSummary> {
+  const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
+  // A roster read, matching the company roster: anyone who can see the
+  // directory record can see whether that person is able to reach it.
+  await requireAnyPermission(["org.member", "directory.read", "directory.write"], {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  })
+  const serviceClient = createServiceSupabaseClient()
+
+  const [contactResult, tokenResult] = await Promise.all([
+    serviceClient
+      .from("contacts")
+      .select(
+        "external_identity_id, identity:external_identities(id, email, full_name, email_verified_at, last_login_at)",
+      )
+      .eq("org_id", resolvedOrgId)
+      .eq("id", contactId)
+      .maybeSingle(),
+    serviceClient
+      .from("portal_access_tokens")
+      .select(
+        "id, project_id, portal_type, pin_required, require_account, paused_at, revoked_at, expires_at, last_accessed_at, created_at, project:projects(name)",
+      )
+      .eq("org_id", resolvedOrgId)
+      .eq("contact_id", contactId)
+      .is("scoped_rfi_id", null)
+      .is("scoped_change_event_rfq_id", null)
+      .is("scoped_submittal_revision_id", null)
+      .order("created_at", { ascending: false }),
+  ])
+
+  if (contactResult.error) {
+    throw new Error(`Failed to load contact identity: ${contactResult.error.message}`)
+  }
+  if (tokenResult.error) {
+    throw new Error(`Failed to load contact access: ${tokenResult.error.message}`)
+  }
+
+  const identityRow = firstEmbed((contactResult.data as ContactIdentityRow | null)?.identity)
+  const identity = identityRow
+    ? {
+        id: identityRow.id,
+        email: identityRow.email,
+        full_name: identityRow.full_name,
+        email_verified: Boolean(identityRow.email_verified_at),
+        last_login_at: identityRow.last_login_at,
+      }
+    : null
+
+  const records: ContactAccessRecord[] = ((tokenResult.data as ContactTokenRow[] | null) ?? []).map(
+    (row) => {
+      const project = firstEmbed(row.project)
+      return {
+        token_id: row.id,
+        project_id: row.project_id,
+        project_name: project?.name ?? null,
+        portal_type: row.portal_type,
+        status: resolveAccessStatus(row),
+        pin_required: Boolean(row.pin_required),
+        require_account: Boolean(row.require_account),
+        last_accessed_at: row.last_accessed_at,
+        expires_at: row.expires_at,
+        created_at: row.created_at,
+      }
+    },
+  )
+
+  return {
+    identity,
+    accessMode: identity ? "account" : records.length > 0 ? "link" : "none",
+    records,
+  }
+}
+
 export async function listOrgExternalAccess(
   orgId?: string,
 ): Promise<{ people: OrgExternalPerson[]; truncated: boolean }> {
@@ -961,14 +1241,31 @@ export async function isPortalPinVerified(token: string): Promise<boolean> {
   return isPinVerified(`portal:${token}`)
 }
 
+interface PortalActionAccessOptions {
+  portalType?: PortalType | PortalType[]
+  requireCompany?: boolean
+  /**
+   * Reject an access record with no job behind it — a bid-scoped record whose
+   * package has no project yet, or a company-scoped vendor account record.
+   * Set it on every surface that reads a project's data, so the null is handled
+   * once here instead of once per query below.
+   */
+  requireProject?: boolean
+  permission?: keyof PortalPermissions
+}
+
 export async function assertPortalActionAccess(
   token: string,
-  options: {
-    portalType?: PortalType | PortalType[]
-    requireCompany?: boolean
-    permission?: keyof PortalPermissions
-  } = {},
-): Promise<PortalAccessToken> {
+  options: PortalActionAccessOptions & { requireProject: true },
+): Promise<ProjectScopedPortalAccess>
+export async function assertPortalActionAccess(
+  token: string,
+  options?: PortalActionAccessOptions,
+): Promise<PortalAccessToken>
+export async function assertPortalActionAccess(
+  token: string,
+  options: PortalActionAccessOptions = {},
+): Promise<PortalAccessToken | ProjectScopedPortalAccess> {
   const access = await validatePortalToken(token)
   if (!access) {
     throw new Error("Invalid or expired portal access")
@@ -983,6 +1280,10 @@ export async function assertPortalActionAccess(
 
   if (options.requireCompany && !access.company_id) {
     throw new Error("This portal link is missing subcontractor access")
+  }
+
+  if (options.requireProject && access.project_id === null) {
+    throw new Error("This portal link is not scoped to a project")
   }
 
   if (options.permission && access.permissions[options.permission] !== true) {
@@ -1808,7 +2109,10 @@ export async function loadSubPortalShellContext({
           .not("status", "in", "(closed,ready_for_review)")
       : zero,
 
-    projectId
+    // Appointments are dispatched to the trade, so this is the one project
+    // section a vendor account link still has something to show — every visit
+    // the builder has scheduled them for rather than one job's worth.
+    (projectId
       ? supabase
           .from("warranty_service_visits")
           .select("id", { count: "exact", head: true })
@@ -1816,7 +2120,12 @@ export async function loadSubPortalShellContext({
           .eq("project_id", projectId)
           .eq("assigned_company_id", companyId)
           .in("status", ["scheduled", "confirmed"])
-      : zero,
+      : supabase
+          .from("warranty_service_visits")
+          .select("id", { count: "exact", head: true })
+          .eq("org_id", orgId)
+          .eq("assigned_company_id", companyId)
+          .in("status", ["scheduled", "confirmed"])),
   ])
 
   const [complianceStatus, prequalification, complianceRules, contractResult] = await Promise.all([

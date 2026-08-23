@@ -1,40 +1,18 @@
-import { notFound } from "next/navigation"
-import { z } from "zod"
+import { redirect } from "next/navigation"
 
-import { ContactAccountPage } from "@/components/contacts/contact-account-page"
-import { PageLayout } from "@/components/layout/page-layout"
-import { getContact, getContactAssignments } from "@/lib/services/contacts"
-import { getFinancialPartyReceivables } from "@/lib/services/financial-parties"
-import { getCurrentUserPermissions } from "@/lib/services/permissions"
-
-export default async function ContactPage({ params }: { params: Promise<{ id: string }> }) {
+/**
+ * A person's account lives in the directory shell alongside a company's.
+ *
+ * This route was the last piece of the split: companies got `/directory/[id]`
+ * with real tabs while people got a separate page outside that chrome, so the
+ * two halves of one directory never behaved alike. `/directory/[id]` now
+ * resolves either kind.
+ */
+export default async function LegacyContactPage({
+  params,
+}: {
+  params: Promise<{ id: string }>
+}) {
   const { id } = await params
-  if (!z.string().uuid().safeParse(id).success) notFound()
-
-  const contact = await getContact(id).catch(() => null)
-  if (!contact) notFound()
-
-  const [assignments, receivables, permissions] = await Promise.all([
-    getContactAssignments(id),
-    getFinancialPartyReceivables({ partyType: "contact", partyId: id }),
-    getCurrentUserPermissions(),
-  ])
-
-  return (
-    <PageLayout
-      title={contact.full_name}
-      breadcrumbs={[
-        { label: "Directory", href: "/directory?view=people" },
-        { label: contact.full_name },
-      ]}
-      fullBleed
-    >
-      <ContactAccountPage
-        contact={contact}
-        assignments={assignments}
-        receivables={receivables}
-        canEdit={permissions.permissions.includes("org.member") || permissions.permissions.includes("directory.write")}
-      />
-    </PageLayout>
-  )
+  redirect(`/directory/${id}`)
 }

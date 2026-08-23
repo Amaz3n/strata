@@ -13,7 +13,3 @@ export function qboTxnUrl(page: QboTxnPage, qboId: string | null | undefined): s
   if (!qboId) return null
   return `${QBO_APP_BASE_URL}/app/${page}?txnId=${encodeURIComponent(qboId)}`
 }
-
-export function qboHomepageUrl() {
-  return `${QBO_APP_BASE_URL}/app/homepage`
-}

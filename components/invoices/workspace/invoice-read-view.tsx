@@ -27,6 +27,7 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ArcInvoiceDocument, toArcInvoiceData, toArcInvoiceLines } from "@/components/invoices/arc-invoice-document"
 import { AccountingSyncBadge } from "@/components/accounting/accounting-sync-badge"
+import { DEFAULT_ACCOUNTING_PROVIDER_LABEL } from "@/components/accounting/provider-label"
 import {
   createInvoiceLienWaiverAction,
   generateInvoicePdfAction,
@@ -309,7 +310,7 @@ export function InvoiceReadView({
               ) : null}
               {invoice.qbo_sync_status ? (
                 <DropdownMenuItem onClick={handleResync} disabled={resyncing}>
-                  {resyncing ? "Syncing…" : "Sync to QuickBooks"}
+                  {resyncing ? "Syncing…" : `Sync to ${DEFAULT_ACCOUNTING_PROVIDER_LABEL}`}
                 </DropdownMenuItem>
               ) : null}
               <DropdownMenuSeparator />
@@ -433,7 +434,7 @@ export function InvoiceReadView({
           <DialogHeader>
             <DialogTitle>Record payment</DialogTitle>
             <DialogDescription>
-              Add a manual payment for {invoice.invoice_number}. This updates the Arc balance and queues the payment for QuickBooks sync.
+              Add a manual payment for {invoice.invoice_number}. This updates the Arc balance and queues the payment for accounting sync.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
@@ -461,7 +462,7 @@ export function InvoiceReadView({
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium" htmlFor="ws-invoice-payment-reference">Reference</label>
-              <Input id="ws-invoice-payment-reference" value={paymentReference} onChange={(event) => setPaymentReference(event.target.value)} placeholder="Check number, note, or QBO payment ref" />
+              <Input id="ws-invoice-payment-reference" value={paymentReference} onChange={(event) => setPaymentReference(event.target.value)} placeholder="Check number, note, or payment reference" />
             </div>
           </div>
           <DialogFooter>

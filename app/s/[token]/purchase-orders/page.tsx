@@ -12,6 +12,7 @@ export default async function PortalPurchaseOrdersPage({ params }: { params: Pro
   try {
     access = await assertPortalActionAccess(token, {
       portalType: "sub",
+      requireProject: true,
       requireCompany: true,
       permission: "can_view_purchase_orders",
     })

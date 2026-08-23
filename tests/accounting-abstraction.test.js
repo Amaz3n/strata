@@ -174,13 +174,13 @@ test("shared accounting orchestration does not hard-code the QBO provider", () =
   const path = require("node:path")
   const sync = fs.readFileSync(path.join(__dirname, "../lib/services/accounting-sync.ts"), "utf8")
   const outbox = fs.readFileSync(path.join(__dirname, "../app/api/accounting/process-outbox/route.ts"), "utf8")
-  const maintenance = fs.readFileSync(path.join(__dirname, "../lib/services/accounting-connection-maintenance.ts"), "utf8")
+  const connections = fs.readFileSync(path.join(__dirname, "../lib/services/accounting-connections.ts"), "utf8")
 
   assert.doesNotMatch(sync, /provider: "qbo"/)
   assert.match(sync, /provider\.pushInvoice\(\{ orgId: input\.orgId, connectionId, invoiceId:/)
   assert.doesNotMatch(outbox, /refreshQBOConnectionsDueForKeepalive|processQBOOutbox|QBO_JOB_TYPES/)
   assert.match(outbox, /keepAliveAccountingConnections/)
-  assert.match(maintenance, /listProviders\(\)/)
+  assert.match(connections, /listProviders\(\)/)
 })
 
 test("application accounting workflows depend on the provider seam", () => {
@@ -512,7 +512,7 @@ test("the outbound sync sets are declared once, and never re-typed on the seam",
   // No module on the accounting-sync seam re-declares either set inline.
   const seam = [
     "../lib/services/accounting-sync.ts",
-    "../lib/services/accounting-export.ts",
+    "../lib/services/financial-exports.ts",
     "../lib/integrations/accounting/qbo/adapter.ts",
     "../lib/integrations/accounting/qbo/reconcile.ts",
     "../lib/integrations/accounting/qbo/import.ts",
@@ -597,7 +597,13 @@ test("both money-moving creates stamp the marker and look before they create", (
   // lost response fails to make.
   assert.match(adapter, /createPayment\(\{[\s\S]{0,400}withArcTransactionMarker\(null, "payment", paymentId\)/)
   assert.match(adapter, /createBillPayment\(\{[\s\S]{0,400}withArcTransactionMarker\(payment\.reference, "bill_payment", paymentId\)/)
-  assert.equal((adapter.match(/findAlreadyCreatedQBOTransaction\(\{/g) ?? []).length, 2)
+  // Invoices are money-moving creates too: the push stamps the marker and a
+  // retry-after-unknown-outcome adopts its own work instead of duplicating it.
+  assert.match(adapter, /PrivateNote: withArcTransactionMarker\(typedInvoice\.title, "invoice", invoiceId\)/)
+  // A re-posted period summary doubles a whole month, so the mirror journal
+  // carries the marker and adopts as well.
+  assert.match(adapter, /withArcTransactionMarker\(`\$\{input\.memo\} \[\$\{input\.reference\}\]`, "period_summary", input\.reference\)/)
+  assert.equal((adapter.match(/findAlreadyCreatedQBOTransaction\(\{/g) ?? []).length, 4)
   // The lookup is only paid for on a retry: a sync record with no external id.
   assert.match(adapter, /paymentRetryAfterUnknownOutcome = existingPaymentSync != null/)
   assert.match(adapter, /billPaymentRetryAfterUnknownOutcome = existingSync != null/)
@@ -716,4 +722,88 @@ test("the job-cost subledger has one writer, and it voids rather than deletes", 
     )
     assert.match(source, /voidJobCostEntriesForVendorBill/, `${relative} must route through the subledger service`)
   }
+})
+
+// The tests below are source-text assertions, not behavior tests: each guards a
+// branch inside a function that is neither exported nor reachable without a
+// live Supabase client. They prove the shape of the code, so they cost less
+// than they look — treat a failure as "go read the function", not "the bug is
+// back".
+
+test("a QuickBooks void arrives as a zeroed Update and routes through the atomic void", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../lib/integrations/accounting/qbo/reconcile.ts"), "utf8")
+
+  // QBO sends no Delete for a void. Left on the normal update path the invoice
+  // became a live "$0 / sent" row that AR aging kept counting.
+  assert.match(source, /const looksVoided =/)
+  assert.match(source, /totalCents === 0 &&\s*\n\s*balanceCents === 0 &&/)
+  assert.match(source, /Number\(localInvoice\?\.total_cents \?\? 0\) > 0/)
+  assert.match(source, /if \(looksVoided\) \{[\s\S]{0,200}rpc\("void_invoice_atomic"/)
+
+  // Both removal paths — the explicit Delete and the zeroed Update — go through
+  // the same RPC, so draws, billed costs, and retainage release either way.
+  assert.equal(source.match(/rpc\("void_invoice_atomic"/g).length, 2)
+})
+
+test("the CDC cursor is clamped to Intuit's 30-day changedSince window", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../lib/integrations/accounting/qbo/reconcile.ts"), "utf8")
+
+  // An idle month (paused org, cron outage, a reconnect carrying the old cursor
+  // forward) made every poll fail forever: the cursor could never advance to
+  // heal itself. Clamping forfeits changes older than the window, which the
+  // reconciliation digest reports as drift.
+  assert.match(source, /const CDC_MAX_LOOKBACK_DAYS = 29/)
+  assert.match(source, /const cdcFloorMs = Date\.now\(\) - CDC_MAX_LOOKBACK_DAYS \* 24 \* 60 \* 60 \* 1000/)
+  assert.match(source, /Math\.max\(Number\.isFinite\(rawCursorMs\) \? rawCursorMs : cdcFloorMs, cdcFloorMs\)/)
+  // The overlap rewind must not push the request back through the floor again.
+  assert.match(source, /new Date\(Math\.max\(cursorMs - CDC_OVERLAP_MINUTES \* 60 \* 1000, cdcFloorMs\)\)/)
+  assert.match(source, /qbo_cdc_cursor_clamped/)
+})
+
+test("the reclaim sweep charges an attempt and dead-letters an event that keeps crashing", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../lib/integrations/accounting/qbo/reconcile.ts"), "utf8")
+
+  // A hard crash (timeout, OOM) bypasses markEventProcessed. Without the
+  // increment a poison event cycled processing→retry forever at the head of the
+  // oldest-first drain, occupying a batch slot on every run.
+  assert.match(source, /const MAX_EVENT_ATTEMPTS = \d+/)
+  assert.match(source, /\.eq\("process_status", "processing"\)\s*\n\s*\.lt\("next_attempt_at", nowIso\)/)
+  assert.match(source, /const attempts = \(strandedRow\.attempts \?\? 0\) \+ 1/)
+  assert.match(source, /const exhausted = attempts >= MAX_EVENT_ATTEMPTS/)
+  assert.match(source, /process_status: exhausted \? "error" : "retry"/)
+  // The reclaiming update is itself conditional on the row still being claimed,
+  // so two overlapping sweeps cannot charge the same crash twice.
+  assert.match(source, /\.eq\("id", strandedRow\.id\)\s*\n\s*\.eq\("process_status", "processing"\)/)
+
+  // And the drain only picks up retryable events that are still inside budget.
+  assert.match(source, /attempts\.lt\.\$\{MAX_EVENT_ATTEMPTS\}/)
+})
+
+test("resolving webhook events after an import is scoped to the entity that was imported", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../lib/integrations/accounting/qbo/import.ts"), "utf8")
+
+  // QBO ids are unique per entity type, not globally: importing Invoice 42 must
+  // not mark the pending Bill 42 event reconciled.
+  assert.match(source, /\.eq\("realm_id", realmId\)\s*\n\s*\.eq\("entity_qbo_id", qboId\)\s*\n\s*\.in\("entity_name", entityNames\)/)
+  assert.match(source, /markEventsResolved\(supabase, qboId, ctx\.externalAccountId, \["Invoice"\]\)/)
+  assert.match(source, /markEventsResolved\(supabase, qboId, ctx\.externalAccountId, \["Purchase", "Bill"\]\)/)
+  // Only unfinished events get swept; a reconciled one is never rewritten.
+  assert.match(source, /\.in\("process_status", \["ignored", "pending", "error"\]\)/)
+})
+
+test("a deferred accounting push is re-scheduled past the create lease, never completed", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../app/api/accounting/process-outbox/route.ts"), "utf8")
+
+  // Another attempt holds the 15-minute create claim. Marking the job completed
+  // would lose the push forever.
+  assert.match(source, /if \(result\.deferred\) \{/)
+  assert.match(source, /const deferRetry = \(job\.retry_count \?\? 0\) \+ 1/)
+  assert.match(source, /const giveUp = deferRetry >= MAX_RETRIES/)
+  assert.match(source, /status: giveUp \? "failed" : "pending"/)
+  // Re-run after the lease has had time to free, not immediately.
+  assert.match(source, /run_at: new Date\(Date\.now\(\) \+ 20 \* 60 \* 1000\)\.toISOString\(\)/)
+  // The deferred branch must return before the completion write below it.
+  assert.match(source, /continue\s*\n\s*\}\s*\n\s*await supabase\.from\("outbox"\)\.update\(\{ status: "completed" \}\)/)
+  // A claim that never frees still exhausts the retry budget and surfaces.
+  assert.match(source, /markAccountingPushExhausted\(\{/)
 })

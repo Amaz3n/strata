@@ -13,6 +13,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 import { Calendar as CalendarPicker } from "@/components/ui/calendar"
+import { accountingProviderLabel } from "@/components/accounting/provider-label"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Drawer, DrawerContent } from "@/components/ui/drawer"
@@ -28,6 +29,8 @@ type QBOVendorOption = { id: string; name: string }
 
 interface ExpenseAccountingContext {
   qboConnected: boolean
+  accountingProvider?: string | null
+  accountingProviderName?: string | null
   expenseAccounts: QBOAccountOption[]
   paymentAccounts: QBOAccountOption[]
   apAccounts: QBOAccountOption[]
@@ -294,6 +297,7 @@ function VendorField({
   placeholder?: string
 }) {
   const vendors = useMemo(() => context?.vendors ?? [], [context?.vendors])
+  const providerName = accountingProviderLabel(context?.accountingProvider, context?.accountingProviderName)
   const vendorName = form.vendor.trim()
   const exactVendor = vendorName
     ? vendors.find((vendor) => normalizeVendorName(vendor.name) === normalizeVendorName(vendorName)) ?? null
@@ -308,9 +312,9 @@ function VendorField({
     ? "Loading vendors"
     : context?.qboConnected
     ? form.createQboVendor && vendorName
-      ? "New QBO vendor"
+      ? `New ${providerName} vendor`
       : exactVendor || selectedVendor
-        ? "QuickBooks vendor"
+        ? `${providerName} vendor`
         : null
     : "Vendor"
 
@@ -372,9 +376,13 @@ function VendorField({
               />
               <CommandList className="max-h-72 overflow-y-auto">
                 <CommandEmpty>
-                  {context === null ? "Loading QBO vendors..." : vendorName ? "No matching QBO vendors." : "No QBO vendors found."}
+                  {context === null
+                    ? `Loading ${providerName} vendors...`
+                    : vendorName
+                      ? `No matching ${providerName} vendors.`
+                      : `No ${providerName} vendors found.`}
                 </CommandEmpty>
-                <CommandGroup heading={context === null ? "Loading" : "QuickBooks vendors"}>
+                <CommandGroup heading={context === null ? "Loading" : `${providerName} vendors`}>
                   {vendors
                     .filter((vendor) => !vendorName || normalizeVendorName(vendor.name).includes(normalizeVendorName(vendorName)))
                     .map((vendor) => {
@@ -398,7 +406,7 @@ function VendorField({
                       }}
                     >
                       <Plus className="size-4" />
-                      <span className="truncate">Add "{vendorName}" as new QBO vendor</span>
+                      <span className="truncate">Add &quot;{vendorName}&quot; as new {providerName} vendor</span>
                     </CommandItem>
                   </CommandGroup>
                 ) : null}
@@ -431,7 +439,9 @@ function AccountingFields({
   return (
     <div className="space-y-3 rounded-lg border bg-muted/20 p-3">
       <div>
-        <Label className="text-xs uppercase tracking-wide text-muted-foreground">QuickBooks</Label>
+        <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+          {accountingProviderLabel(context.accountingProvider, context.accountingProviderName)}
+        </Label>
         <p className="mt-1 text-xs text-muted-foreground">
           Choose the category and account used for this paid expense once it is approved.
         </p>

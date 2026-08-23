@@ -7,14 +7,22 @@ import { recordEvent } from "@/lib/services/events"
 import type { ComplianceRequirementTemplateItem, ComplianceRules } from "@/lib/types"
 import { complianceRequirementInputSchema } from "@/lib/validation/compliance-documents"
 
-const defaultRules: ComplianceRules = {
+/**
+ * What an org enforces before it has said otherwise, and the single fallback
+ * for any caller that must not hard-fail on a rules read. Callers used to
+ * inline their own partial copies of this, which then drifted from the shape as
+ * keys were added — a fallback missing a key silently answers "false" for it.
+ */
+export const DEFAULT_COMPLIANCE_RULES: Readonly<Required<ComplianceRules>> = Object.freeze({
   require_lien_waiver: false,
   block_payment_on_missing_docs: true,
   warn_subcontract_execution_on_missing_docs: true,
   block_subcontract_execution_on_missing_docs: false,
   block_commitment_on_prequal: false,
   prequalification_validity_days: 365,
-}
+})
+
+const defaultRules: ComplianceRules = DEFAULT_COMPLIANCE_RULES
 
 function normalizeBoolean(raw: unknown, fallback: boolean): boolean {
   if (typeof raw === "boolean") return raw
@@ -71,7 +79,12 @@ export async function getComplianceRulesWithClient(
 }
 
 export async function getComplianceRules(orgId?: string): Promise<ComplianceRules> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["compliance.read", "org.member"], {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  })
   const { data, error } = await supabase
     .from("orgs")
     .select("compliance_rules")

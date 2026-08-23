@@ -4,7 +4,7 @@ import { z } from "zod"
 
 import { BILLED_INVOICE_STATUSES, PAYABLE_VENDOR_BILL_STATUSES } from "@/lib/financials/ledger-status"
 
-import { recordAudit } from "@/lib/services/audit"
+import { listEntityAuditTrail, recordAudit } from "@/lib/services/audit"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { getOrgCostCodesEnabled, resolveCostCodesEnabled } from "@/lib/financials/cost-codes-enabled"
@@ -147,204 +147,27 @@ export async function createBudget(
   return budget
 }
 
-export async function duplicateBudgetVersion({
-  projectId,
-  fromBudgetId,
-  orgId,
-}: {
-  projectId: string
-  fromBudgetId: string
-  orgId?: string
-}) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireBudgetAuth({
-    permission: "budget.write",
-    userId,
-    orgId: resolvedOrgId,
-    projectId,
-    supabase,
-  })
-
-  const { data: latestBudget, error: latestError } = await supabase
-    .from("budgets")
-    .select("version")
-    .eq("org_id", resolvedOrgId)
-    .eq("project_id", projectId)
-    .order("version", { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
-  if (latestError) {
-    throw new Error(`Failed to determine next budget version: ${latestError.message}`)
-  }
-
-  const nextVersion = (latestBudget?.version ?? 0) + 1
-
-  const { data: fromBudget, error: fromBudgetError } = await supabase
-    .from("budgets")
-    .select("id, org_id, project_id, status, total_cents, currency, metadata")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", fromBudgetId)
-    .maybeSingle()
-
-  if (fromBudgetError || !fromBudget) {
-    throw new Error("Source budget not found")
-  }
-
-  const { data: fromLines, error: linesError } = await supabase
-    .from("budget_lines")
-    .select("cost_code_id, description, amount_cents, sort_order, metadata, cost_type")
-    .eq("org_id", resolvedOrgId)
-    .eq("budget_id", fromBudgetId)
-    .order("sort_order", { ascending: true })
-
-  if (linesError) {
-    throw new Error(`Failed to load budget lines: ${linesError.message}`)
-  }
-
-  const { data: newBudget, error: newBudgetError } = await supabase
-    .from("budgets")
-    .insert({
-      org_id: resolvedOrgId,
-      project_id: projectId,
-      version: nextVersion,
-      status: "draft",
-      total_cents: fromBudget.total_cents ?? 0,
-      currency: fromBudget.currency ?? "usd",
-      metadata: fromBudget.metadata ?? {},
-    })
-    .select("*")
-    .single()
-
-  if (newBudgetError || !newBudget) {
-    throw new Error(`Failed to create budget version: ${newBudgetError?.message}`)
-  }
-
-  if (fromLines?.length) {
-    const insertLines = fromLines.map((line: any, idx: number) => ({
-      org_id: resolvedOrgId,
-      budget_id: newBudget.id,
-      cost_code_id: line.cost_code_id ?? null,
-      description: line.description,
-      amount_cents: line.amount_cents ?? 0,
-      sort_order: idx,
-      metadata: line.metadata ?? {},
-      cost_type: line.cost_type ?? null,
-    }))
-
-    const { error: insertLinesError } = await supabase.from("budget_lines").insert(insertLines)
-    if (insertLinesError) {
-      throw new Error(`Failed to copy budget lines: ${insertLinesError.message}`)
-    }
-  }
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "insert",
-    entityType: "budget",
-    entityId: newBudget.id,
-    after: { ...newBudget, source_budget_id: fromBudgetId },
-  })
-
-  await recordEvent({
-    orgId: resolvedOrgId,
-    eventType: "budget_created",
-    entityType: "budget",
-    entityId: newBudget.id,
-    payload: { project_id: projectId, status: "draft", version: nextVersion },
-  })
-
-  return newBudget
-}
-
-export async function updateBudgetStatus({
-  budgetId,
-  status,
-  orgId,
-}: {
-  budgetId: string
-  status: "draft" | "approved" | "locked"
-  orgId?: string
-}) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-
-  const { data: existing, error: existingError } = await supabase
-    .from("budgets")
-    .select("id, org_id, project_id, status, total_cents, metadata")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", budgetId)
-    .maybeSingle()
-
-  if (existingError || !existing) {
-    throw new Error("Budget not found")
-  }
-
-  await requireBudgetAuth({
-    permission: "budget.write",
-    userId,
-    orgId: resolvedOrgId,
-    projectId: existing.project_id,
-    supabase,
-    resourceType: "budget",
-    resourceId: budgetId,
-  })
-
-  const nextMetadata = {
-    ...(existing.metadata ?? {}),
-    approved_at: status === "approved" ? (existing.metadata?.approved_at ?? new Date().toISOString()) : existing.metadata?.approved_at,
-    approved_by: status === "approved" ? (existing.metadata?.approved_by ?? userId) : existing.metadata?.approved_by,
-    locked_at: status === "locked" ? (existing.metadata?.locked_at ?? new Date().toISOString()) : existing.metadata?.locked_at,
-    locked_by: status === "locked" ? (existing.metadata?.locked_by ?? userId) : existing.metadata?.locked_by,
-  }
-
-  const { data, error } = await supabase
-    .from("budgets")
-    .update({ status, metadata: nextMetadata })
-    .eq("org_id", resolvedOrgId)
-    .eq("id", budgetId)
-    .select("*")
-    .single()
-
-  if (error || !data) {
-    throw new Error(`Failed to update budget status: ${error?.message}`)
-  }
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "update",
-    entityType: "budget",
-    entityId: budgetId,
-    before: existing,
-    after: data,
-  })
-
-  await recordEvent({
-    orgId: resolvedOrgId,
-    eventType: "budget_updated",
-    entityType: "budget",
-    entityId: budgetId,
-    payload: { project_id: existing.project_id, status },
-  })
-
-  return data
-}
-
 export async function replaceBudgetLines({
   budgetId,
   lines,
   orgId,
+  expectedUpdatedAt,
 }: {
   budgetId: string
   lines: Array<{ id?: string | null; cost_code_id?: string | null; description: string; amount_cents: number; metadata?: Record<string, any>; cost_type?: CostType | null }>
   orgId?: string
+  /**
+   * Optimistic-concurrency token: the budget's `updated_at` the caller last saw.
+   * A mismatch means someone else saved in between; reject rather than silently
+   * clobbering their lines (this write replaces the whole list).
+   */
+  expectedUpdatedAt?: string | null
 }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
 
   const { data: budget, error: budgetError } = await supabase
     .from("budgets")
-    .select("id, org_id, project_id, status, metadata")
+    .select("id, org_id, project_id, status, metadata, updated_at")
     .eq("org_id", resolvedOrgId)
     .eq("id", budgetId)
     .maybeSingle()
@@ -367,11 +190,19 @@ export async function replaceBudgetLines({
     throw new Error("Budget is locked and cannot be edited")
   }
 
+  if (
+    expectedUpdatedAt &&
+    budget.updated_at &&
+    new Date(expectedUpdatedAt).getTime() !== new Date(budget.updated_at).getTime()
+  ) {
+    throw new Error("This budget changed since you loaded it. Refresh the page and re-apply your edit.")
+  }
+
   const totalCents = lines.reduce((sum, line) => sum + (line.amount_cents ?? 0), 0)
 
   const { data: existingLines, error: existingLinesError } = await supabase
     .from("budget_lines")
-    .select("id")
+    .select("id, cost_code_id, description, amount_cents")
     .eq("org_id", resolvedOrgId)
     .eq("budget_id", budgetId)
 
@@ -454,13 +285,31 @@ export async function replaceBudgetLines({
     throw new Error(`Failed to update budget totals: ${updateError?.message}`)
   }
 
+  // Full line snapshots on both sides so the budget change log can render
+  // per-line diffs (who moved what, from → to) straight from the audit trail.
   await recordAudit({
     orgId: resolvedOrgId,
     actorId: userId,
     action: "update",
     entityType: "budget",
     entityId: budgetId,
-    after: { ...updatedBudget, lines_count: lines.length },
+    before: {
+      lines: (existingLines ?? []).map((line) => ({
+        id: line.id,
+        cost_code_id: line.cost_code_id ?? null,
+        description: line.description ?? "",
+        amount_cents: line.amount_cents ?? 0,
+      })),
+    },
+    after: {
+      ...updatedBudget,
+      lines: lines.map((line) => ({
+        id: line.id ?? null,
+        cost_code_id: line.cost_code_id ?? null,
+        description: line.description,
+        amount_cents: line.amount_cents,
+      })),
+    },
   })
 
   await recordEvent({
@@ -534,7 +383,25 @@ export async function lockBudgetBaseline(projectId: string, orgId?: string) {
   return { success: true, line_count: baselineLines.length }
 }
 
-export async function listVarianceAlertsForProject(projectId: string, orgId?: string) {
+export interface VarianceAlert {
+  id: string
+  project_id: string
+  cost_code_id: string | null
+  budget_line_id: string | null
+  alert_type: string
+  threshold_percent: number | null
+  current_percent: number | null
+  budget_cents: number | null
+  actual_cents: number | null
+  variance_cents: number | null
+  status: string
+  acknowledged_by: string | null
+  acknowledged_at: string | null
+  metadata: Record<string, unknown>
+  created_at: string
+}
+
+export async function listVarianceAlertsForProject(projectId: string, orgId?: string): Promise<VarianceAlert[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireBudgetAuth({
     permission: "budget.read",
@@ -716,11 +583,121 @@ function emptyBudgetBucket() {
   }
 }
 
+export interface BudgetLineCostCodeRef {
+  id: string
+  code: string | null
+  name: string | null
+  category?: string | null
+  cost_type: CostType | null
+}
+
+export interface BudgetLineRecord {
+  id: string
+  cost_code_id: string | null
+  description: string
+  amount_cents: number
+  sort_order: number
+  metadata: Record<string, unknown>
+  cost_type: CostType | null
+  /** Supabase embed — a single ref in practice, but the client may hand back an array. */
+  cost_code: BudgetLineCostCodeRef | BudgetLineCostCodeRef[] | null
+}
+
+export interface BudgetBaselineLine {
+  id?: string | null
+  cost_code_id?: string | null
+  description?: string | null
+  amount_cents?: number | null
+}
+
+export interface BudgetRecord {
+  id: string
+  org_id: string
+  project_id: string
+  version: number
+  status: string
+  total_cents: number | null
+  currency: string
+  metadata: Record<string, unknown>
+  created_at: string
+  updated_at: string
+  baseline_lines?: BudgetBaselineLine[] | null
+  baseline_locked_at?: string | null
+  baseline_locked_by?: string | null
+  lines: BudgetLineRecord[]
+}
+
+export interface BudgetBreakdownRow {
+  cost_code_id: string | null
+  cost_type: CostType | null
+  budget_line_id: string | null
+  budget_cents: number
+  baseline_cents: number | null
+  co_adjustment_cents: number
+  adjusted_budget_cents: number
+  committed_cents: number
+  committed_billed_cents: number
+  remaining_commitment_cents: number
+  pending_cost_cents: number
+  pending_change_cost_cents: number
+  exposure_cents: number
+  actual_cents: number
+  invoiced_cents: number
+  variance_cents: number
+  /** Percent of the adjusted budget already spent (misnamed for legacy snapshot compatibility). */
+  variance_percent: number
+  percent_complete: number | null
+  eac_cents: number
+  cost_to_complete_cents: number
+  variance_at_completion_cents: number
+  status: "ok" | "warning" | "over"
+}
+
+export interface BudgetCostTypeBreakdownRow {
+  cost_type: CostType | null
+  budget_cents: number
+  committed_cents: number
+  pending_cost_cents: number
+  actual_cents: number
+  eac_cents: number
+  variance_at_completion_cents: number
+}
+
+export interface BudgetSummary {
+  total_budget_cents: number
+  total_baseline_cents: number | null
+  baseline_locked_at: string | null
+  total_co_adjustment_cents: number
+  adjusted_budget_cents: number
+  total_committed_cents: number
+  total_committed_billed_cents: number
+  total_remaining_commitment_cents: number
+  total_pending_cost_cents: number
+  total_exposure_cents: number
+  total_actual_cents: number
+  total_invoiced_cents: number
+  total_variance_cents: number
+  variance_percent: number
+  total_eac_cents: number
+  total_ctc_cents: number
+  total_vac_cents: number
+  gross_margin_cents: number
+  gross_margin_percent: number
+  status: "critical" | "warning" | "healthy"
+}
+
+export interface BudgetWithActuals {
+  budget: BudgetRecord
+  summary: BudgetSummary
+  breakdown: BudgetBreakdownRow[]
+  cost_type_breakdown: BudgetCostTypeBreakdownRow[]
+}
+
 async function getBudgetWithActualsInternal(
   supabase: SupabaseClient,
   projectId: string,
   orgId: string,
-) {
+): Promise<BudgetWithActuals | null> {
   // When a project disables cost codes, budget lines themselves are the cost
   // bucket: actuals/commitments group by budget_line_id instead of cost_code_id.
   // Two query phases: settings/budget/parent ids first, then the line tables
@@ -1124,7 +1101,7 @@ async function getBudgetWithActualsInternal(
   let totalVac = 0
   let totalBaseline = 0
 
-  const breakdown = Array.from(byCostCode.entries()).map(([bucketId, values]) => {
+  const breakdown: BudgetBreakdownRow[] = Array.from(byCostCode.entries()).map(([bucketId, values]) => {
     const resolvedId = bucketId === "uncoded" ? null : bucketId
     const costCodeId = costCodesEnabled ? resolvedId : null
     const budgetLineId = costCodesEnabled ? null : resolvedId
@@ -1155,11 +1132,24 @@ async function getBudgetWithActualsInternal(
     const remaining_commitment_cents = values.committed_cents - values.committed_billed_cents
     const isOverbilled = values.committed_cents > 0 && values.committed_billed_cents > values.committed_cents
 
+    // Without a manual CTC, EAC floors at every cost already known: revised
+    // budget, actuals, commitments, AND exposure — pending bills beyond budget
+    // must move the forecast, not just paint the Exposure column red.
     const eac_cents = values.estimate_remaining_cents != null
       ? values.actual_cents + values.estimate_remaining_cents
-      : Math.max(adjustedBudget, values.actual_cents, values.committed_cents)
+      : Math.max(adjustedBudget, values.actual_cents, values.committed_cents, exposure_cents)
     const cost_to_complete_cents = Math.max(0, eac_cents - values.actual_cents)
     const variance_at_completion_cents = adjustedBudget - eac_cents
+
+    // Spend-outpacing-progress early warning. When nobody entered a manual
+    // percent complete, fall back to commitment billing progress (billed /
+    // committed) so the warning tier still fires instead of jumping straight
+    // from "ok" to "over" after the fact.
+    const progressForPace =
+      values.percent_complete ??
+      (values.committed_cents > 0
+        ? Math.round((values.committed_billed_cents / values.committed_cents) * 100)
+        : null)
 
     totalEac += eac_cents
     totalCtc += cost_to_complete_cents
@@ -1190,7 +1180,7 @@ async function getBudgetWithActualsInternal(
       status:
         variance_at_completion_cents < 0 || isOverbilled
           ? "over"
-          : values.percent_complete != null && variancePercent > values.percent_complete + 15
+          : progressForPace != null && variancePercent > progressForPace + 15
             ? "warning"
             : "ok",
     }
@@ -1312,7 +1302,23 @@ export async function takeBudgetSnapshot(
   return snapshot
 }
 
-export async function listBudgetSnapshots(projectId: string, orgId?: string) {
+export interface BudgetSnapshotRow {
+  id: string
+  snapshot_date: string
+  label: string | null
+  status: string
+  source: string
+  captured_at: string
+  total_budget_cents: number
+  total_committed_cents: number
+  total_actual_cents: number
+  variance_cents: number
+  margin_percent: number
+  /** The full per-bucket breakdown as captured at snapshot time. */
+  by_cost_code: BudgetBreakdownRow[]
+}
+
+export async function listBudgetSnapshots(projectId: string, orgId?: string): Promise<BudgetSnapshotRow[]> {
   const context = await requireOrgContext(orgId)
   await requireBudgetAuth({ permission: "budget.read", userId: context.userId, orgId: context.orgId, projectId, supabase: context.supabase })
   const { data, error } = await context.supabase.from("budget_snapshots").select("id,snapshot_date,label,status,source,captured_at,total_budget_cents,total_committed_cents,total_actual_cents,variance_cents,margin_percent,by_cost_code").eq("org_id", context.orgId).eq("project_id", projectId).order("captured_at", { ascending: false }).limit(120)
@@ -1518,4 +1524,244 @@ export async function updateCostCodeProgress({
   if (error) {
     throw new Error(`Failed to update cost code progress: ${error.message}`)
   }
+}
+
+// ---------------------------------------------------------------------------
+// Budget change log — rendered per-line diffs from the audit trail
+// ---------------------------------------------------------------------------
+
+export type BudgetChangeLogChange =
+  | { kind: "amount"; label: string; from_cents: number; to_cents: number }
+  | { kind: "added"; label: string; amount_cents: number }
+  | { kind: "removed"; label: string; amount_cents: number }
+
+export interface BudgetChangeLogEntry {
+  id: number
+  at: string
+  actor_name: string | null
+  action: "insert" | "update" | "delete"
+  changes: BudgetChangeLogChange[]
+  /** Fallback line for legacy audit rows recorded before line snapshots existed. */
+  summary: string | null
+}
+
+type AuditedBudgetLine = { id?: string | null; description?: string | null; amount_cents?: number | null }
+
+function auditedLines(data: Record<string, unknown> | null): AuditedBudgetLine[] | null {
+  const lines = data?.lines
+  return Array.isArray(lines) ? (lines as AuditedBudgetLine[]) : null
+}
+
+function lineKey(line: AuditedBudgetLine, index: number) {
+  return line.id ?? `desc:${(line.description ?? "").trim().toLowerCase() || index}`
+}
+
+/**
+ * Per-line budget history for the latest budget, computed from audit snapshots.
+ * Answers "who moved this line, when, from what to what" — the layer between
+ * the frozen baseline and point-in-time snapshots.
+ */
+export async function listBudgetChangeLog(projectId: string, orgId?: string): Promise<BudgetChangeLogEntry[]> {
+  const context = await requireOrgContext(orgId)
+  const { data: budget } = await context.supabase
+    .from("budgets")
+    .select("id")
+    .eq("org_id", context.orgId)
+    .eq("project_id", projectId)
+    .order("version", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (!budget) return []
+
+  const trail = await listEntityAuditTrail({
+    entityType: "budget",
+    entityId: budget.id as string,
+    permission: "budget.read",
+    projectId,
+    limit: 100,
+  })
+
+  return trail.map((entry) => {
+    const before = auditedLines(entry.before)
+    const after = auditedLines(entry.after)
+    const changes: BudgetChangeLogChange[] = []
+    let summary: string | null = null
+
+    if (entry.action === "insert") {
+      const lines = after ?? []
+      const total = lines.reduce((sum, line) => sum + (line.amount_cents ?? 0), 0)
+      summary = `Budget created — ${lines.length} ${lines.length === 1 ? "line" : "lines"}, $${(total / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}`
+    } else if (before && after) {
+      const beforeByKey = new Map(before.map((line, index) => [lineKey(line, index), line]))
+      const afterByKey = new Map(after.map((line, index) => [lineKey(line, index), line]))
+      for (const [key, line] of afterByKey) {
+        const previous = beforeByKey.get(key)
+        const label = (line.description ?? "").trim() || "Budget line"
+        if (!previous) {
+          changes.push({ kind: "added", label, amount_cents: line.amount_cents ?? 0 })
+        } else if ((previous.amount_cents ?? 0) !== (line.amount_cents ?? 0)) {
+          changes.push({
+            kind: "amount",
+            label,
+            from_cents: previous.amount_cents ?? 0,
+            to_cents: line.amount_cents ?? 0,
+          })
+        }
+      }
+      for (const [key, line] of beforeByKey) {
+        if (!afterByKey.has(key)) {
+          changes.push({
+            kind: "removed",
+            label: (line.description ?? "").trim() || "Budget line",
+            amount_cents: line.amount_cents ?? 0,
+          })
+        }
+      }
+      if (changes.length === 0) summary = "Budget saved (no amount changes)"
+    } else {
+      summary = "Budget updated"
+    }
+
+    return {
+      id: entry.id,
+      at: entry.createdAt,
+      actor_name: entry.actor?.name ?? null,
+      action: entry.action,
+      changes,
+      summary,
+    }
+  }).filter((entry) => entry.changes.length > 0 || entry.summary !== null)
+}
+
+// ---------------------------------------------------------------------------
+// Bucket cost transactions — what is inside the Actual number
+// ---------------------------------------------------------------------------
+
+export interface BudgetBucketTransaction {
+  id: string
+  incurred_on: string
+  cost_cents: number
+  source_type: string
+  /** Human label: vendor + bill number, expense description, or worker name. */
+  label: string
+  detail: string | null
+}
+
+const BUDGET_BUCKET_TRANSACTIONS_LIMIT = 200
+
+/**
+ * The posted job-cost entries behind one budget bucket's Actual column, with
+ * source labels resolved (vendor bills, expenses, labor). `bucketKey` is a
+ * cost_code_id (codes on) or budget_line_id (codes off).
+ */
+export async function listBudgetBucketTransactions(
+  projectId: string,
+  bucketKey: string | null,
+  groupBy: "cost_code" | "budget_line",
+  orgId?: string,
+): Promise<BudgetBucketTransaction[]> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireBudgetAuth({
+    permission: "budget.read",
+    userId,
+    orgId: resolvedOrgId,
+    projectId,
+    supabase,
+  })
+  if (!bucketKey) return []
+
+  const matchColumn = groupBy === "cost_code" ? "cost_code_id" : "budget_line_id"
+  const { data: entries, error } = await supabase
+    .from("job_cost_entries")
+    .select("id, source_type, source_id, incurred_on, cost_cents")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+    .eq("status", "posted")
+    .eq(matchColumn, bucketKey)
+    .order("incurred_on", { ascending: false })
+    .limit(BUDGET_BUCKET_TRANSACTIONS_LIMIT)
+
+  if (error) throw new Error(`Failed to load cost transactions: ${error.message}`)
+  if (!entries?.length) return []
+
+  const idsByType = new Map<string, string[]>()
+  for (const entry of entries) {
+    const list = idsByType.get(entry.source_type as string) ?? []
+    list.push(entry.source_id as string)
+    idsByType.set(entry.source_type as string, list)
+  }
+
+  // Resolve display labels per source family in parallel.
+  const billLineIds = idsByType.get("vendor_bill_line") ?? []
+  const expenseIds = idsByType.get("project_expense") ?? []
+  const expenseLineIds = idsByType.get("project_expense_line") ?? []
+  const timeEntryIds = idsByType.get("time_entry") ?? []
+
+  const [billLinesResult, expensesResult, expenseLinesResult, timeEntriesResult] = await Promise.all([
+    billLineIds.length
+      ? supabase.from("bill_lines").select("id, bill_id, description").eq("org_id", resolvedOrgId).in("id", billLineIds)
+      : Promise.resolve({ data: [], error: null }),
+    expenseIds.length
+      ? supabase.from("project_expenses").select("id, description, vendor_name_text, vendor:companies!project_expenses_vendor_company_id_fkey(name)").eq("org_id", resolvedOrgId).in("id", expenseIds)
+      : Promise.resolve({ data: [], error: null }),
+    expenseLineIds.length
+      ? supabase.from("project_expense_lines").select("id, description, expense:project_expenses!project_expense_lines_expense_id_fkey(description, vendor_name_text)").eq("org_id", resolvedOrgId).in("id", expenseLineIds)
+      : Promise.resolve({ data: [], error: null }),
+    timeEntryIds.length
+      ? supabase.from("time_entries").select("id, worker_name, work_date").eq("org_id", resolvedOrgId).in("id", timeEntryIds)
+      : Promise.resolve({ data: [], error: null }),
+  ])
+
+  const billLines = billLinesResult.data ?? []
+  const billIds = Array.from(new Set(billLines.map((line: { bill_id: string }) => line.bill_id).filter(Boolean)))
+  const { data: bills } = billIds.length
+    ? await supabase
+        .from("vendor_bills")
+        .select("id, bill_number, qbo_vendor_name, company:companies!vendor_bills_company_id_fkey(name)")
+        .eq("org_id", resolvedOrgId)
+        .in("id", billIds)
+    : { data: [] }
+
+  const firstOf = <T,>(value: T | T[] | null | undefined): T | null =>
+    Array.isArray(value) ? value[0] ?? null : value ?? null
+
+  const billById = new Map((bills ?? []).map((bill) => [bill.id as string, bill]))
+  const billLineById = new Map(billLines.map((line: { id: string }) => [line.id, line]))
+  const expenseById = new Map((expensesResult.data ?? []).map((row) => [row.id as string, row]))
+  const expenseLineById = new Map((expenseLinesResult.data ?? []).map((row) => [row.id as string, row]))
+  const timeEntryById = new Map((timeEntriesResult.data ?? []).map((row) => [row.id as string, row]))
+
+  return entries.map((entry) => {
+    const sourceType = entry.source_type as string
+    let label = "Job cost entry"
+    let detail: string | null = null
+    if (sourceType === "vendor_bill_line") {
+      const line = billLineById.get(entry.source_id as string) as { bill_id?: string; description?: string | null } | undefined
+      const bill = line?.bill_id ? billById.get(line.bill_id) : undefined
+      const vendor = firstOf(bill?.company)?.name ?? bill?.qbo_vendor_name ?? "Vendor bill"
+      label = bill?.bill_number ? `${vendor} · ${bill.bill_number}` : vendor
+      detail = line?.description ?? null
+    } else if (sourceType === "project_expense") {
+      const expense = expenseById.get(entry.source_id as string)
+      label = firstOf(expense?.vendor)?.name ?? expense?.vendor_name_text ?? "Expense"
+      detail = expense?.description ?? null
+    } else if (sourceType === "project_expense_line") {
+      const line = expenseLineById.get(entry.source_id as string)
+      const parent = firstOf(line?.expense)
+      label = parent?.vendor_name_text ?? "Expense"
+      detail = line?.description ?? parent?.description ?? null
+    } else if (sourceType === "time_entry") {
+      const timeEntry = timeEntryById.get(entry.source_id as string)
+      label = timeEntry?.worker_name ? `Labor · ${timeEntry.worker_name}` : "Labor"
+      detail = timeEntry?.work_date ?? null
+    }
+    return {
+      id: entry.id as string,
+      incurred_on: entry.incurred_on as string,
+      cost_cents: Number(entry.cost_cents ?? 0),
+      source_type: sourceType,
+      label,
+      detail,
+    }
+  })
 }

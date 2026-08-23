@@ -4,5 +4,5 @@ export const instant = false
 
 export default async function CompaniesPage() {
   await connection()
-  redirect("/directory?view=companies")
+  redirect("/directory?kind=company")
 }

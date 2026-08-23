@@ -10,7 +10,7 @@ export function formatMoneyFromCents(cents?: number | null) {
   return ((cents ?? 0) / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })
 }
 
-const STATUS_LABELS: Record<InvoiceStatusKey, string> = {
+export const STATUS_LABELS: Record<InvoiceStatusKey, string> = {
   draft: "Draft",
   saved: "Saved",
   sent: "Sent",
@@ -20,7 +20,7 @@ const STATUS_LABELS: Record<InvoiceStatusKey, string> = {
   void: "Void",
 }
 
-const STATUS_TONES: Record<InvoiceStatusKey, string> = {
+export const STATUS_TONES: Record<InvoiceStatusKey, string> = {
   draft: "bg-muted text-muted-foreground border-border",
   saved: "bg-muted text-muted-foreground border-border",
   sent: "bg-primary/10 text-primary border-primary/20",
@@ -37,10 +37,6 @@ export function invoiceStatusBadge(invoice: Invoice) {
       {STATUS_LABELS[key]}
     </Badge>
   )
-}
-
-export function statusLabel(invoice: Invoice) {
-  return STATUS_LABELS[displayStatusKey(invoice)]
 }
 
 /** Short due-date descriptor for the list rail, colour-coded by urgency. */

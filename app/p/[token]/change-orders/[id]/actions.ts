@@ -38,6 +38,7 @@ export async function approveChangeOrderInPortalAction(input: {
 }) {
   const access = await assertPortalActionAccess(input.token, {
     portalType: "client",
+    requireProject: true,
     permission: "can_approve_change_orders",
   })
 
@@ -86,6 +87,7 @@ export async function requestChangeOrderChangesAction(input: {
 
   const access = await assertPortalActionAccess(input.token, {
     portalType: "client",
+    requireProject: true,
     permission: "can_approve_change_orders",
   })
 

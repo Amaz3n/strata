@@ -10,8 +10,6 @@ import {
   RfiNotificationEmail,
   WeeklyExecutiveSnapshotEmail,
 } from "@/lib/emails"
-import { ComplianceDocumentReviewedEmail } from "@/lib/emails/compliance-document-reviewed-email"
-import { ComplianceDocumentUploadedEmail } from "@/lib/emails/compliance-document-uploaded-email"
 import { PrequalificationRequestEmail } from "@/lib/emails/prequalification-request-email"
 import { PrequalificationDecisionEmail } from "@/lib/emails/prequalification-decision-email"
 import { renderEmailTemplate } from "@/lib/services/mailer"
@@ -24,8 +22,6 @@ type TemplateId =
   | "invoice-reminder"
   | "team-invite"
   | "password-reset"
-  | "compliance-uploaded"
-  | "compliance-reviewed"
   | "prequalification-request"
   | "prequalification-decision"
   | "weekly-executive-snapshot"
@@ -38,8 +34,6 @@ const TEMPLATE_OPTIONS: Array<{ id: TemplateId; label: string; description: stri
   { id: "invoice-reminder", label: "Invoice Reminder", description: "Due or overdue reminders." },
   { id: "team-invite", label: "Team Invite", description: "Org invitation email." },
   { id: "password-reset", label: "Password Reset", description: "Password recovery email via Arc." },
-  { id: "compliance-uploaded", label: "Compliance Uploaded", description: "Internal alert for upload review." },
-  { id: "compliance-reviewed", label: "Compliance Reviewed", description: "Approved or rejected result." },
   {
     id: "prequalification-request",
     label: "Prequalification Request",
@@ -65,7 +59,6 @@ const TEMPLATE_OPTIONS: Array<{ id: TemplateId; label: string; description: stri
 const RFI_KIND_OPTIONS = ["created", "response", "decision"] as const
 const RFI_AUDIENCE_OPTIONS = ["internal", "client", "sub"] as const
 const REMINDER_VARIANTS = ["due", "overdue"] as const
-const COMPLIANCE_DECISIONS = ["approved", "rejected"] as const
 
 
 function firstValue(value: string | string[] | undefined): string | undefined {
@@ -106,7 +99,6 @@ export default async function EmailPreviewPage({ searchParams }: { searchParams:
   const rfiKind = parseEnum(params.get("kind") ?? undefined, RFI_KIND_OPTIONS, "created")
   const rfiAudience = parseEnum(params.get("audience") ?? undefined, RFI_AUDIENCE_OPTIONS, "sub")
   const reminderVariant = parseEnum(params.get("variant") ?? undefined, REMINDER_VARIANTS, "due")
-  const complianceDecision = parseEnum(params.get("decision") ?? undefined, COMPLIANCE_DECISIONS, "approved")
 
   const withPatch = (patch: Record<string, string>) => {
     const next = toUrlParams(resolvedSearchParams)
@@ -249,24 +241,6 @@ export default async function EmailPreviewPage({ searchParams }: { searchParams:
             orgLogoUrl: sample.orgLogoUrl,
             recipientEmail: sample.inviteeEmail,
             resetLink: sample.resetLink,
-          })
-        case "compliance-uploaded":
-          return ComplianceDocumentUploadedEmail({
-            orgName: sample.orgName,
-            orgLogoUrl: sample.orgLogoUrl,
-            companyName: sample.companyName,
-            documentType: sample.documentType,
-            uploadedAt: sample.uploadedAt,
-          })
-        case "compliance-reviewed":
-          return ComplianceDocumentReviewedEmail({
-            orgName: sample.orgName,
-            orgLogoUrl: sample.orgLogoUrl,
-            companyName: sample.companyName,
-            documentType: sample.documentType,
-            decision: complianceDecision,
-            reviewNotes: sample.reviewNotes,
-            rejectionReason: complianceDecision === "rejected" ? sample.rejectionReason : null,
           })
         case "prequalification-request":
           return PrequalificationRequestEmail({
@@ -533,19 +507,6 @@ export default async function EmailPreviewPage({ searchParams }: { searchParams:
               <div className="flex flex-wrap gap-2">
                 {REMINDER_VARIANTS.map((option) => (
                   <Link key={option} href={withPatch({ variant: option })} className={pillClass(reminderVariant === option)}>
-                    {option}
-                  </Link>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {template === "compliance-reviewed" && (
-            <div className="space-y-2">
-              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Decision</p>
-              <div className="flex flex-wrap gap-2">
-                {COMPLIANCE_DECISIONS.map((option) => (
-                  <Link key={option} href={withPatch({ decision: option })} className={pillClass(complianceDecision === option)}>
                     {option}
                   </Link>
                 ))}

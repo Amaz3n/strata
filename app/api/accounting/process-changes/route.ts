@@ -36,6 +36,7 @@ async function processAccountingCdc(request: NextRequest) {
 
   let scanned = 0
   let inserted = 0
+  let failedConnections = 0
   const lookbackMinutes = getManualLookbackMinutes(request)
 
   for (const connection of connections ?? []) {
@@ -54,16 +55,30 @@ async function processAccountingCdc(request: NextRequest) {
       scanned += result.scanned
       inserted += result.inserted
     } catch (cdcError) {
+      // A per-connection failure must be VISIBLE, not just a warn log: one
+      // org's change feed being down for a month while job_runs stayed green
+      // is exactly the failure this loop used to hide. The 207 below makes
+      // the run record as failed, and the connection row carries the reason.
+      failedConnections += 1
+      const message = cdcError instanceof Error ? cdcError.message : String(cdcError)
       logAccounting("warn", "accounting_cdc_failed", {
         provider: connection.provider,
         orgId: connection.org_id,
         connectionId: connection.id,
-        error: cdcError instanceof Error ? cdcError.message : String(cdcError),
+        error: message,
       })
+      await supabase
+        .from("accounting_connections")
+        .update({ last_error: `Change-feed poll failed: ${message}`.slice(0, 4000) })
+        .eq("org_id", connection.org_id)
+        .eq("id", connection.id)
     }
   }
 
-  return NextResponse.json({ connections: connections?.length ?? 0, scanned, inserted })
+  return NextResponse.json(
+    { connections: connections?.length ?? 0, scanned, inserted, failedConnections },
+    { status: failedConnections > 0 ? 207 : 200 },
+  )
 }
 
 export const GET = withCronRun("accounting-process-changes", processAccountingCdc)

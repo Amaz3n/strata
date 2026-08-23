@@ -14,6 +14,7 @@ export default async function SubmittalsPortalPage({ params }: Params) {
   try {
     await assertPortalActionAccess(token, {
       portalType: "sub",
+      requireProject: true,
       requireCompany: true,
       permission: "can_view_submittals",
     })

@@ -7,26 +7,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 import { getProvider } from "@/lib/integrations/accounting/registry"
 import { ACCOUNTING_PROVIDERS } from "@/lib/integrations/accounting/catalog"
-import {
-  getCompanyComplianceStatus,
-  getCompanyRequirements,
-  listComplianceDocumentTypes,
-  listComplianceDocuments,
-  revokeCompanyRequirementWaiver,
-  reviewComplianceDocument,
-  setCompanyRequirements,
-  uploadComplianceDocument,
-  waiveCompanyRequirement,
-} from "@/lib/services/compliance-documents"
 import { companyFiltersSchema, companyInputSchema, companyUpdateSchema } from "@/lib/validation/companies"
-import {
-  complianceDocumentFiltersSchema,
-  complianceRequirementWaiverInputSchema,
-  complianceRequirementWaiverRevokeSchema,
-  complianceReviewDecisionSchema,
-  type ComplianceRequirementInput,
-  type ComplianceDocumentUploadInput,
-} from "@/lib/validation/compliance-documents"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 import { inviteCompanyToPaymentSetup, setCompanyPaymentAccessStatus } from "@/lib/services/vendor-payment-invitations"
@@ -159,89 +140,5 @@ export async function createAccountingVendorForCompanyAction(companyId: string) 
       revalidatePath("/directory")
       revalidatePath(`/directory/${companyId}`)
       return updated
-  })
-}
-
-// Compliance Document Actions
-
-export async function listComplianceDocumentTypesAction() {
-      return listComplianceDocumentTypes()
-}
-
-export async function getCompanyComplianceStatusAction(companyId: string) {
-      return getCompanyComplianceStatus(companyId)
-}
-
-export async function getCompanyRequirementsAction(companyId: string) {
-      return getCompanyRequirements(companyId)
-}
-
-export async function setCompanyRequirementsAction(
-  companyId: string,
-  requirements: ComplianceRequirementInput[]
-) {
-  return run(async () => {
-      const result = await setCompanyRequirements({ companyId, requirements })
-      revalidatePath(`/directory/${companyId}/compliance`)
-      return result
-  })
-}
-
-export async function waiveCompanyRequirementAction(
-  companyId: string,
-  input: unknown
-) {
-  return run(async () => {
-      const parsed = complianceRequirementWaiverInputSchema.parse(input)
-      const result = await waiveCompanyRequirement({ companyId, input: parsed })
-      revalidatePath(`/directory/${companyId}/compliance`)
-      revalidatePath("/directory")
-      return result
-  })
-}
-
-export async function revokeCompanyRequirementWaiverAction(
-  waiverId: string,
-  input?: unknown
-) {
-  return run(async () => {
-      const parsed = complianceRequirementWaiverRevokeSchema.parse(input ?? {})
-      const result = await revokeCompanyRequirementWaiver({ waiverId, input: parsed })
-      revalidatePath(`/directory/${result.company_id}/compliance`)
-      revalidatePath("/directory")
-      return result
-  })
-}
-
-export async function listComplianceDocumentsAction(filters?: unknown) {
-      const parsed = complianceDocumentFiltersSchema.parse(filters ?? {}) ?? undefined
-      return listComplianceDocuments(parsed)
-}
-
-export async function uploadComplianceDocumentAction({
-  companyId,
-  input,
-  fileId,
-}: {
-  companyId: string
-  input: ComplianceDocumentUploadInput
-  fileId: string
-}) {
-  return run(async () => {
-      const result = await uploadComplianceDocument({ companyId, input, fileId })
-      revalidatePath(`/directory/${companyId}/compliance`)
-      return result
-  })
-}
-
-export async function reviewComplianceDocumentAction(
-  documentId: string,
-  decision: unknown
-) {
-  return run(async () => {
-      const parsed = complianceReviewDecisionSchema.parse(decision)
-      const result = await reviewComplianceDocument({ documentId, decision: parsed })
-      revalidatePath("/directory")
-      return result
   })
 }

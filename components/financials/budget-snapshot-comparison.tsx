@@ -7,7 +7,9 @@ import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 
-type Snapshot = { id: string; snapshot_date: string; label: string | null; source: string; by_cost_code: any[] }
+import type { BudgetSnapshotRow } from "@/lib/services/budgets"
+
+type Snapshot = Pick<BudgetSnapshotRow, "id" | "snapshot_date" | "label" | "source" | "by_cost_code">
 const money = (cents: number) => (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
 
 export function BudgetSnapshotComparison({ projectId, snapshots }: { projectId: string; snapshots: Snapshot[] }) {

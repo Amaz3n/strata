@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { addDays, format, parse } from "date-fns"
-import { CalendarIcon, Check, ChevronDown, Download, Loader2, Plus, Search, Send, ShieldCheck, UserRound, X } from "lucide-react"
+import { AlertTriangle, CalendarIcon, Check, ChevronDown, Download, Loader2, Plus, Search, Send, ShieldCheck, UserRound, X } from "lucide-react"
 import NumberFlow from "@number-flow/react"
 import { toast } from "sonner"
 
@@ -46,7 +46,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrig
 import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
 import { buildPartyDetailsBlock, parsePartyDetailsBlock } from "@/lib/invoices/party-details"
-import { calculateInvoiceTotals, deriveRetainageCents } from "@/lib/financials/invoice-totals"
+import { calculateInvoiceTotals, deriveManualRetainageCents } from "@/lib/financials/invoice-totals"
 import { UnbilledCostsPicker, type CostSelection } from "@/components/invoices/unbilled-costs-picker"
 import { unwrapAction } from "@/lib/action-result"
 import { useProductTerminology } from "@/components/layout/use-product-terminology"
@@ -54,6 +54,7 @@ import { usePageTitle } from "@/components/layout/page-title-context"
 import { getProjectPosture } from "@/lib/product-tier"
 import { getReceivablesPosturePolicy } from "@/lib/receivables/policy"
 import { groupCostCodesByStandard } from "@/lib/cost-code-groups"
+import { accountingProviderLabel } from "@/components/accounting/provider-label"
 import { cn } from "@/lib/utils"
 
 type BillingSource = "manual" | "draw" | "change_order" | "from_costs"
@@ -339,7 +340,7 @@ function QboLineAccountPicker({ valueId, valueLabel, accounts, onSelect, onCreat
       </PopoverTrigger>
       <PopoverContent className="w-[var(--radix-popover-trigger-width)] min-w-[300px] overflow-hidden p-0" align="start">
         <Command>
-          <CommandInput placeholder="Search QBO account..." value={query} onValueChange={setQuery} />
+          <CommandInput placeholder="Search account..." value={query} onValueChange={setQuery} />
           <CommandList className="max-h-64 overscroll-contain" onWheelCapture={(event) => event.stopPropagation()}>
             <CommandEmpty>No matching accounts.</CommandEmpty>
             <CommandGroup heading="Accounts">
@@ -456,7 +457,7 @@ export function InvoiceEditableDocument({
   const [invoiceKind, setInvoiceKind] = useState<InvoiceKind>(
     seed?.metadata?.invoice_kind === "earnest_deposit" || seed?.metadata?.invoice_kind === "closing_invoice"
       ? seed.metadata.invoice_kind
-      : productPosture === "production"
+      : receivablesPolicy.supportsClosingInvoices
         ? "closing_invoice"
         : "standard",
   )
@@ -527,6 +528,8 @@ export function InvoiceEditableDocument({
   const [qboConnected, setQboConnected] = useState(false)
   const [qboIncomeAccounts, setQboIncomeAccounts] = useState<QBOIncomeAccountOption[]>([])
   const [qboDiagnostics, setQboDiagnostics] = useState<QboDiagnostics | null>(null)
+  const [accountingProvider, setAccountingProvider] = useState<string | null>(null)
+  const [accountingProviderName, setAccountingProviderName] = useState<string | null>(null)
   const [taxJurisdictions, setTaxJurisdictions] = useState<TaxJurisdictionOption[]>([])
   const [contextLoading, setContextLoading] = useState(false)
 
@@ -558,11 +561,18 @@ export function InvoiceEditableDocument({
     [onAutosaveStateChange],
   )
 
+  // The reserved number is fetched async and usually lands after this component mounts —
+  // adopt it (and its reservation id) unless the user already typed a number or a draft exists.
+  const invoiceNumberTouchedRef = useRef(false)
+  useEffect(() => {
+    if (!reservation || initialInvoice || invoiceIdRef.current || invoiceNumberTouchedRef.current) return
+    reservationIdRef.current = reservation.reservationId
+    setInvoiceNumber((current) => (current.trim() ? current : reservation.number))
+  }, [reservation, initialInvoice])
+
+  // Recipients arrive pre-filtered by party roles (listBillableContacts) — no type columns here.
   const financialContacts = useMemo(
-    () =>
-      [...contacts]
-        .sort((a, b) => (a.full_name ?? "").localeCompare(b.full_name ?? ""))
-        .filter((c) => c.contact_type === "client" || c.contact_type === "consultant"),
+    () => [...contacts].sort((a, b) => (a.full_name ?? "").localeCompare(b.full_name ?? "")),
     [contacts],
   )
   const arcCustomerOptions = useMemo(
@@ -570,9 +580,11 @@ export function InvoiceEditableDocument({
     [financialContacts],
   )
   const costCodeGroups = useMemo(
-    () => groupCostCodesByStandard(costCodes, getProjectPosture(project?.property_type, productTier)),
-    [costCodes, productTier, project?.property_type],
+    () => groupCostCodesByStandard(costCodes, productPosture),
+    [costCodes, productPosture],
   )
+
+  const hasCostLines = useMemo(() => lines.some((line) => (line.billable_cost_ids?.length ?? 0) > 0), [lines])
 
   const lineTotals = useMemo(() => {
     const normalized = lines.map((line) => {
@@ -596,7 +608,22 @@ export function InvoiceEditableDocument({
   }, [discountType, discountValue, lines, taxRate])
 
   const retainagePercent = Number(project?.billing_contract?.retainage_percent ?? project?.retainage_percent ?? 0)
-  const retainageCents = deriveRetainageCents(lineTotals.subtotal, lineTotals.discount, retainagePercent)
+  const retainageAppliesToFee = Boolean(project?.billing_contract?.retainage_applies_to_fee ?? false)
+  // Mirrors the server: retainage only applies to manual/draw/change-order invoices on
+  // retainage-bearing postures — approved-cost invoices carry none on this path.
+  const retainageCents =
+    receivablesPolicy.supportsRetainage && !hasCostLines
+      ? deriveManualRetainageCents(
+          lines.map((line) => ({
+            quantity: Number(line.quantity) || 0,
+            unit_cost_cents: Math.round((Number(line.unit_cost) || 0) * 100),
+            unit: line.unit,
+            description: line.description,
+          })),
+          retainagePercent,
+          retainageAppliesToFee,
+        )
+      : 0
   const netInvoiceTotal = lineTotals.total - retainageCents
 
   const showCustomerSelector = customerDetails.trim().length === 0
@@ -605,6 +632,7 @@ export function InvoiceEditableDocument({
   const showQboWarning = Boolean(
     qboConnected && (qboIncomeAccounts.length === 0 || qboDiagnostics?.accountLoadWarning || qboDiagnostics?.connectionLastError),
   )
+  const providerName = accountingProviderLabel(accountingProvider, accountingProviderName)
   const showQboCustomerPicker = showCustomerSelector && qboConnected
   const showArcCustomerPicker = showCustomerSelector && !qboConnected && (arcCustomerOptions.length > 0 || contextLoading)
   const showCustomerPicker = showQboCustomerPicker || showArcCustomerPicker
@@ -646,8 +674,11 @@ export function InvoiceEditableDocument({
 
       const parsedCustomer = parsePartyDetailsBlock(customerDetails)
       const parsedFrom = parsePartyDetailsBlock(fromDetails)
-      const email = (recipientEmail ?? parsedCustomer.email).trim()
-      const hasCostLines = lines.some((line) => (line.billable_cost_ids?.length ?? 0) > 0)
+      // Recipients accept a comma/semicolon-separated list — real jobs bill owner + lender + architect.
+      const emails = (recipientEmail ?? parsedCustomer.email)
+        .split(/[,;]+/)
+        .map((value) => value.trim())
+        .filter((value) => value.includes("@"))
       const derivedSourceType: BillingSource = hasCostLines
         ? "from_costs"
         : sourceDrawId !== "none"
@@ -681,7 +712,7 @@ export function InvoiceEditableDocument({
         discount_type: discountType && Number(discountValue) > 0 ? discountType : undefined,
         discount_value: discountType && Number(discountValue) > 0 ? Number(discountValue) : undefined,
         lines: parsedLines,
-        sent_to_emails: sendToClient && email ? [email] : undefined,
+        sent_to_emails: sendToClient && emails.length > 0 ? emails : undefined,
         payment_terms_days: paymentTermsDays,
         source_type: derivedSourceType,
         source_draw_id: sourceDrawId !== "none" ? sourceDrawId : undefined,
@@ -689,7 +720,8 @@ export function InvoiceEditableDocument({
         qbo_income_account_id: null,
         qbo_income_account_name: null,
         metadata: {
-          invoice_kind: productPosture === "production" ? invoiceKind : "standard",
+          invoice_kind:
+            receivablesPolicy.supportsClosingInvoices || receivablesPolicy.supportsBuyerDeposits ? invoiceKind : "standard",
         },
       }
     },
@@ -700,6 +732,7 @@ export function InvoiceEditableDocument({
       discountValue,
       dueDate,
       fromDetails,
+      hasCostLines,
       invoiceNumber,
       invoiceKind,
       issueDate,
@@ -707,7 +740,7 @@ export function InvoiceEditableDocument({
       notes,
       paymentTermsDays,
       projectId,
-      productPosture,
+      receivablesPolicy,
       qboIncomeAccounts,
       selectedQboCustomer,
       sourceChangeOrderId,
@@ -725,14 +758,18 @@ export function InvoiceEditableDocument({
   }, [buildPayload])
 
   // Persist the current form if it's savable and something changed since the last save.
-  const flushSave = useCallback(async () => {
+  // Approved-cost invoices are one-shot on the server (updateInvoice rejects them), so they
+  // only persist on an explicit Save/Send — never from the debounce timer.
+  const flushSave = useCallback(async (options?: { explicit?: boolean }) => {
     if (committedRef.current) return
-    if (inFlightSaveRef.current) {
-      await inFlightSaveRef.current
-      return
-    }
+    // Let an in-flight save settle, then continue with the latest payload so an
+    // explicit flush never returns with newer edits still unsaved.
+    if (inFlightSaveRef.current) await inFlightSaveRef.current
+    if (committedRef.current) return
     const payload = latestPayloadRef.current ?? buildPayload()
     if (!payload) return
+    const isFromCosts = payload.source_type === "from_costs"
+    if (isFromCosts && (invoiceIdRef.current || !options?.explicit)) return
     const snapshot = JSON.stringify(payload)
     if (snapshot === savedSnapshotRef.current) {
       dirtyRef.current = false
@@ -749,6 +786,8 @@ export function InvoiceEditableDocument({
         reservationIdRef.current = null
         savedSnapshotRef.current = snapshot
         dirtyRef.current = false
+        // A persisted approved-cost invoice is controlled by the cost ledger from here on.
+        if (isFromCosts) committedRef.current = true
         setAutosave("saved")
       } catch (error) {
         setAutosave("error")
@@ -761,7 +800,7 @@ export function InvoiceEditableDocument({
     } finally {
       inFlightSaveRef.current = null
       // A change landed while we were saving — reschedule.
-      if (dirtyRef.current) scheduleSave()
+      if (dirtyRef.current && !committedRef.current) scheduleSave()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [buildPayload, onAutosave, onCreateDraft, setAutosave])
@@ -803,6 +842,8 @@ export function InvoiceEditableDocument({
         setQboConnected(Boolean(result.qboConnected))
         setQboIncomeAccounts(result.qboIncomeAccounts ?? [])
         setQboDiagnostics((result.qboDiagnostics as QboDiagnostics | undefined) ?? null)
+        setAccountingProvider(result.accountingProvider ?? null)
+        setAccountingProviderName(result.accountingProviderName ?? null)
         setTaxJurisdictions((result.taxJurisdictions as TaxJurisdictionOption[] | undefined) ?? [])
         if (initialSourceChangeOrderId && !initialSourceAppliedRef.current) {
           const co = (result.changeOrders ?? []).find((c) => c.id === initialSourceChangeOrderId)
@@ -1045,9 +1086,9 @@ export function InvoiceEditableDocument({
       const created = unwrapAction(await createQboCustomerAction({ name, projectId }))
       selectQboCustomer(created)
       setCustomerQuery("")
-      toast.success(`Created "${created.name}" in QuickBooks`)
+      toast.success(`Created "${created.name}" in ${providerName}`)
     } catch (error: any) {
-      toast.error("Couldn't create customer in QuickBooks", { description: error?.message ?? "Try again." })
+      toast.error(`Couldn't create customer in ${providerName}`, { description: error?.message ?? "Try again." })
     } finally {
       setCreatingQboCustomer(false)
     }
@@ -1075,12 +1116,17 @@ export function InvoiceEditableDocument({
       toast.error("Fix the highlighted fields before sending")
       return false
     }
-    if (!sendRecipient.trim()) {
+    const recipients = sendRecipient.split(/[,;]+/).map((value) => value.trim()).filter(Boolean)
+    if (recipients.length === 0) {
       toast.error(`Add the ${receivablesPolicy.customerLabel.toLowerCase()}'s email before sending`)
       return false
     }
+    if (recipients.some((value) => !value.includes("@"))) {
+      toast.error("One of the recipient emails doesn't look valid")
+      return false
+    }
     if (qboConnected && qboIncomeAccounts.length > 0 && lines.some((line) => !line.qbo_income_account_id)) {
-      toast.error("Pick a QuickBooks account for every line item")
+      toast.error(`Pick a ${providerName} account for every line item`)
       return false
     }
     return true
@@ -1099,7 +1145,7 @@ export function InvoiceEditableDocument({
 
   const ensurePersistedDraft = async () => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
-    await flushSave()
+    await flushSave({ explicit: true })
     let invoiceId = invoiceIdRef.current
     if (!invoiceId) {
       const payload = buildPayload()
@@ -1150,12 +1196,28 @@ export function InvoiceEditableDocument({
     const payload = buildPayload("sent", sendRecipient)
     if (!payload) return
     setSending(true)
-    // Make sure the latest edits are persisted before we flip to sent.
+    // Make sure the latest edits are persisted before we flip to sent, and let any
+    // in-flight autosave settle so it can't land after the send.
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
     try {
+      if (inFlightSaveRef.current) await inFlightSaveRef.current
       let invoiceId = invoiceIdRef.current
       if (!invoiceId) {
-        const created = await onCreateDraft(buildPayload() as InvoiceInput)
+        if (payload.source_type === "from_costs") {
+          // Approved-cost invoices are one-shot on the server — create them already sent.
+          await onCreateDraft(payload)
+          committedRef.current = true
+          dirtyRef.current = false
+          setSendConfirmOpen(false)
+          toast.success("Invoice sent")
+          return
+        }
+        const draftPayload = buildPayload()
+        if (!draftPayload) {
+          toast.error("Fix the highlighted fields before sending")
+          return
+        }
+        const created = await onCreateDraft(draftPayload)
         invoiceId = created.id
         invoiceIdRef.current = created.id
         reservationIdRef.current = null
@@ -1176,7 +1238,7 @@ export function InvoiceEditableDocument({
     if (generatingPdf) return
     setGeneratingPdf(true)
     try {
-      if (dirtyRef.current || !invoiceIdRef.current) await flushSave()
+      if (dirtyRef.current || !invoiceIdRef.current) await flushSave({ explicit: true })
       const invoiceId = invoiceIdRef.current
       if (!invoiceId) {
         toast.error("Add a line item before downloading a PDF")
@@ -1217,7 +1279,7 @@ export function InvoiceEditableDocument({
 
   const handleSaveDraft = () => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
-    void flushSave()
+    void flushSave({ explicit: true })
   }
 
   const costSummary = useMemo(() => {
@@ -1266,8 +1328,21 @@ export function InvoiceEditableDocument({
         </div>
       )}
       {showQboWarning && (
-        <div className="border-b bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
-          {qboDiagnostics?.accountLoadWarning || qboDiagnostics?.connectionLastError || "QuickBooks is connected, but no income accounts were found."}
+        <div
+          className={cn(
+            "flex items-start gap-2 border-b px-4 py-2 text-xs font-medium",
+            qboDiagnostics?.connectionLastError
+              ? "border-destructive/30 bg-destructive/10 text-destructive"
+              : "border-warning/30 bg-warning/10 text-warning",
+          )}
+        >
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>
+            {qboDiagnostics?.connectionLastError
+              ? `${providerName} connection problem: ${qboDiagnostics.connectionLastError}`
+              : (qboDiagnostics?.accountLoadWarning ??
+                `${providerName} is connected, but no income accounts were found.`)}
+          </span>
         </div>
       )}
 
@@ -1276,10 +1351,10 @@ export function InvoiceEditableDocument({
         <div className="flex items-start justify-between gap-8">
           <div className="min-w-0 flex-1">
             <h1 className="text-2xl font-bold tracking-tight text-foreground">
-              {productPosture === "commercial"
-                ? "Pay application"
-                : productPosture === "production"
-                  ? invoiceKind === "earnest_deposit" ? "Deposit request" : "Closing statement"
+              {invoiceKind === "earnest_deposit" && receivablesPolicy.supportsBuyerDeposits
+                ? "Deposit request"
+                : invoiceKind === "closing_invoice" && receivablesPolicy.supportsClosingInvoices
+                  ? "Closing statement"
                   : "Invoice"}
             </h1>
             <GhostInput
@@ -1296,7 +1371,7 @@ export function InvoiceEditableDocument({
               <span className="text-right text-muted-foreground">Invoice #</span>
               <GhostInput
                 value={invoiceNumber}
-                onChange={(e) => { markDirty(); setInvoiceNumber(e.target.value) }}
+                onChange={(e) => { invoiceNumberTouchedRef.current = true; markDirty(); setInvoiceNumber(e.target.value) }}
                 placeholder="—"
                 className={cn("h-7 w-full px-2 text-right text-sm tabular-nums", submitAttempted && !invoiceNumber.trim() && "border-destructive/60")}
               />
@@ -1314,7 +1389,7 @@ export function InvoiceEditableDocument({
                 onChange={(e) => handleTermsChange(Number(e.target.value || 0))}
                 className={cn("h-7 w-full px-2 text-right text-sm tabular-nums", noSpinner)}
               />
-              {productPosture === "production" ? (
+              {receivablesPolicy.supportsBuyerDeposits || receivablesPolicy.supportsClosingInvoices ? (
                 <>
                   <span className="text-right text-muted-foreground">Type</span>
                   <Select
@@ -1358,7 +1433,7 @@ export function InvoiceEditableDocument({
                   {selectedQboCustomer && (
                     <Badge variant="secondary" className="h-5 gap-1 px-1.5 text-[10px]">
                       <Check className="h-3 w-3" />
-                      QuickBooks
+                      {providerName}
                     </Badge>
                   )}
                   <button
@@ -1381,19 +1456,19 @@ export function InvoiceEditableDocument({
                     className="mt-2 h-9 w-full justify-start rounded-none border-input bg-transparent text-sm font-normal text-muted-foreground shadow-none transition-colors hover:bg-muted/40"
                   >
                     <Search className="mr-2 h-3.5 w-3.5 shrink-0 opacity-60" />
-                    Search QuickBooks customers…
+                    Search {providerName} customers…
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent className="w-[var(--radix-popover-trigger-width)] min-w-[300px] p-0" align="start">
                   <Command shouldFilter={false}>
-                    <CommandInput placeholder="Search QuickBooks customers…" value={customerQuery} onValueChange={setCustomerQuery} />
+                    <CommandInput placeholder={`Search ${providerName} customers…`} value={customerQuery} onValueChange={setCustomerQuery} />
                     <CommandList>
                       {customerSearchLoading && (
                         <div className="flex items-center gap-2 px-3 py-3 text-sm text-muted-foreground">
                           <Spinner className="h-3.5 w-3.5" /> Searching…
                         </div>
                       )}
-                      {!customerSearchLoading && customerResults.length === 0 && <CommandEmpty>No QuickBooks customers found.</CommandEmpty>}
+                      {!customerSearchLoading && customerResults.length === 0 && <CommandEmpty>No {providerName} customers found.</CommandEmpty>}
                       {customerResults.length > 0 && (
                         <CommandGroup>
                           {customerResults.map((customer) => (
@@ -1412,7 +1487,7 @@ export function InvoiceEditableDocument({
                           <CommandGroup>
                             <CommandItem value={`__create_${customerQuery}`} onSelect={handleCreateQboCustomer} disabled={creatingQboCustomer}>
                               {creatingQboCustomer ? <Spinner className="mr-2 h-3.5 w-3.5" /> : <Plus className="mr-2 h-3.5 w-3.5" />}
-                              Create &ldquo;{customerQuery.trim()}&rdquo; in QuickBooks
+                              Create &ldquo;{customerQuery.trim()}&rdquo; in {providerName}
                             </CommandItem>
                           </CommandGroup>
                         </>
@@ -1510,7 +1585,7 @@ export function InvoiceEditableDocument({
                             try {
                               return await handleCreateQboIncomeAccount(name)
                             } catch (error: any) {
-                              toast.error("Could not create QBO account", { description: error?.message ?? "Please try again." })
+                              toast.error(`Could not create ${providerName} account`, { description: error?.message ?? "Please try again." })
                               throw error
                             }
                           }}
@@ -1749,7 +1824,7 @@ export function InvoiceEditableDocument({
                 )}
                 <span className="tabular-nums">{formatMoney(lineTotals.tax / 100)}</span>
               </div>
-              {taxRate > 0 ? (
+              {taxJurisdictions.length > 0 ? (
                 <Select
                   value={taxJurisdictionId}
                   onValueChange={(value) => {
@@ -1836,7 +1911,7 @@ export function InvoiceEditableDocument({
           ) : (
             <Button size="sm" className="h-9 text-xs" disabled={sending} onClick={handleSendClick}>
               <Send className="mr-1.5 h-3.5 w-3.5" />
-              {sending ? "Sending…" : productPosture === "production" ? "Send buyer invoice" : productPosture === "commercial" ? "Send owner billing" : "Send invoice"}
+              {sending ? "Sending…" : receivablesPolicy.sendActionLabel}
             </Button>
           )}
         </div>
@@ -1859,7 +1934,18 @@ export function InvoiceEditableDocument({
             </div>
             <div className="space-y-1.5">
               <label htmlFor="invoice-send-recipient" className="text-xs font-medium text-muted-foreground">Send to</label>
-              <Input id="invoice-send-recipient" type="email" value={sendRecipient} onChange={(event) => setSendRecipient(event.target.value)} placeholder="client@email.com" className="h-9" />
+              <Input
+                id="invoice-send-recipient"
+                type="text"
+                inputMode="email"
+                value={sendRecipient}
+                onChange={(event) => setSendRecipient(event.target.value)}
+                placeholder="client@email.com, lender@bank.com"
+                className="h-9"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Separate multiple recipients with commas — each gets the same secure link. The invoice locks once sent; void and reissue to change it.
+              </p>
             </div>
           </div>
           <DialogFooter>

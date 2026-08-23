@@ -4,7 +4,13 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import type { Invoice, InvoiceLine, InvoiceTotals, InvoiceView } from "@/lib/types"
 import type { InvoiceInput, InvoiceLineInput } from "@/lib/validation/invoices"
 import { isCostDrivenBillingModel, resolveProjectBillingModel } from "@/lib/financials/billing-model"
-import { calculateInvoiceTotals, type InvoiceDiscountInput } from "@/lib/financials/invoice-totals"
+import {
+  calculateInvoiceTotals,
+  calculateInvoiceTotalsWithRetainage,
+  isInvoiceFeeLine,
+  isSystemGeneratedRetainageLine,
+  type InvoiceDiscountInput,
+} from "@/lib/financials/invoice-totals"
 import { dollarsToCents } from "@/lib/financials/money"
 import { getProjectPosture, type ProductTier, type ProjectPosture } from "@/lib/product-tier"
 import { getReceivablesPosturePolicy } from "@/lib/receivables/policy"
@@ -18,6 +24,7 @@ import { InvoiceEmail } from "@/lib/emails/invoice-email"
 import { getNextInvoiceNumber, markReservationUsed, releaseInvoiceNumberReservation } from "@/lib/services/invoice-numbers"
 import { enqueueInvoiceSync } from "@/lib/services/accounting-sync"
 import { isSyncableInvoiceStatus } from "@/lib/financials/ledger-status"
+import { getAgingBucket, type AgingBucket as ReportAgingBucket } from "@/lib/services/reports/aging"
 import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { releaseInvoiceFromBillingPeriod } from "@/lib/services/billing-periods"
@@ -55,6 +62,7 @@ type InvoiceRow = {
   viewed_at?: string | null
   sent_at?: string | null
   sent_to_emails?: string[] | null
+  source_type?: string | null
   product_posture?: ProjectPosture | null
   approval_status?: Invoice["approval_status"]
   delivery_status?: Invoice["delivery_status"]
@@ -177,9 +185,6 @@ function discountFromInput(input: Pick<InvoiceInput, "discount_type" | "discount
   return { type: input.discount_type, value: input.discount_value }
 }
 
-function calculateTotals(lines: InvoiceLineInput[], taxRate = 0): InvoiceTotals {
-  return calculateInvoiceTotals(normalizeLines(lines), taxRate)
-}
 
 export function buildApprovedCostInvoicePreview({
   projectId,
@@ -226,18 +231,8 @@ export function buildApprovedCostInvoicePreview({
   }
 }
 
-function isSystemGeneratedRetainageLine(line: Pick<InvoiceLine, "description" | "unit">) {
-  const normalizedUnit = String(line.unit ?? "").toLowerCase()
-  const normalizedDescription = String(line.description ?? "").toLowerCase()
-  return normalizedUnit === "retainage" || normalizedDescription.startsWith("retainage held")
-}
-
 function stripSystemGeneratedBillingLines(lines: InvoiceLine[]) {
   return lines.filter((line) => !isSystemGeneratedRetainageLine(line))
-}
-
-function isInvoiceFeeLine(line: InvoiceLine) {
-  return String(line.unit ?? "").toLowerCase() === "fee" || Boolean(((line as any).metadata ?? {})?.fee_line_kind)
 }
 
 async function resolveInvoiceSourceBillingContext(params: {
@@ -883,6 +878,7 @@ function mapInvoiceRow(row: InvoiceRow, accountingState?: AccountingSyncState | 
     currency: "usd",
     balance_due_cents: row.balance_due_cents ?? totals?.balance_due_cents,
     metadata: metadata ?? undefined,
+    source_type: row.source_type ?? (metadata as any)?.source_type ?? undefined,
     customer_name: (metadata as any)?.customer_name ?? (row as any).customer_name,
     lines,
     totals,
@@ -1044,26 +1040,24 @@ export async function getProjectInvoiceArSummary({
 
   if (error) throw new Error(`Failed to load AR summary: ${error.message}`)
 
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
+  // One aging ladder for the whole app: lib/services/reports/aging.ts.
   const summary: InvoiceArSummary = { outstandingCents: 0, overdueCents: 0, buckets: [0, 0, 0, 0] }
+  const bucketIndex: Partial<Record<ReportAgingBucket, 0 | 1 | 2 | 3>> = {
+    "1_30": 0,
+    "31_60": 1,
+    "61_90": 2,
+    "90_plus": 3,
+  }
 
   for (const row of data ?? []) {
     const balance = Number(row.balance_due_cents ?? row.total_cents ?? 0)
     if (balance <= 0) continue
     summary.outstandingCents += balance
-    if (!row.due_date) continue
-    // Date-only strings parsed at local midnight to match the client's overdue math.
-    const [year, month, day] = String(row.due_date).split("-").map(Number)
-    if (!year || !month || !day) continue
-    const due = new Date(year, month - 1, day)
-    const days = Math.floor((today.getTime() - due.getTime()) / 86_400_000)
-    if (days <= 0) continue
+    const { bucket } = getAgingBucket({ dueDate: row.due_date, isPaid: false })
+    const index = bucketIndex[bucket]
+    if (index === undefined) continue
     summary.overdueCents += balance
-    if (days <= 30) summary.buckets[0] += balance
-    else if (days <= 60) summary.buckets[1] += balance
-    else if (days <= 90) summary.buckets[2] += balance
-    else summary.buckets[3] += balance
+    summary.buckets[index] += balance
   }
 
   return summary
@@ -1152,7 +1146,7 @@ export async function createInvoice({
   if (sourceType === "from_costs" && !input.project_id) {
     throw new Error("Project is required to invoice approved costs")
   }
-  const totals = calculateInvoiceTotals(lines, input.tax_rate, discountFromInput(input))
+  const totals = calculateInvoiceTotalsWithRetainage(lines, input.tax_rate, discountFromInput(input))
   const shouldGenerateToken = input.client_visible === true || input.status === "sent"
   const approvalStatus =
     sourceType === "pay_application"
@@ -1420,9 +1414,10 @@ export async function createInvoice({
   })
 
   // Bookkeeping tail: events, audit, email, and sync enqueue are independent of
-  // each other — run them together instead of serially.
+  // each other — run them together. The invoice is already committed, so a
+  // failure here must not make the caller believe creation failed; log and move on.
   const wasSent = payload.client_visible || payload.status === "sent"
-  await Promise.all([
+  const bookkeepingResults = await Promise.allSettled([
     recordEvent({
       orgId: resolvedOrgId,
       eventType: "invoice_created",
@@ -1465,6 +1460,11 @@ export async function createInvoice({
       ? enqueueInvoiceSync(data.id, resolvedOrgId)
       : Promise.resolve(),
   ])
+  for (const settled of bookkeepingResults) {
+    if (settled.status === "rejected") {
+      console.error("[invoices.createInvoice] post-commit bookkeeping failed", data.id, settled.reason)
+    }
+  }
 
   const fresh = await getInvoiceWithLines(data.id, resolvedOrgId)
   return fresh ?? mapInvoiceRow(data as InvoiceRow)
@@ -1532,6 +1532,9 @@ export async function updateInvoice({
   if (sourceType === "pay_application" || (existing.metadata as any)?.source_type === "pay_application") {
     throw new Error("Pay application invoices are generated from the pay app. Void the pay application and resubmit instead.")
   }
+  if (sourceType === "fee" || (existing.metadata as any)?.source_type === "fee") {
+    throw new Error("Fee invoices are generated from the fee schedule. Void this invoice and re-invoice from the Fee tab instead.")
+  }
   await assertDirectChangeOrderInvoiceAllowed({
     supabase,
     orgId: resolvedOrgId,
@@ -1554,7 +1557,7 @@ export async function updateInvoice({
       ? { ...resolvedSourceContext, retainagePercent: 0, retainageAmountCents: 0 }
       : null
   const lines = applySourceDerivedBillingLines(normalizeLines(input.lines), sourceContext)
-  const totals = calculateInvoiceTotals(lines, input.tax_rate, discountFromInput(input))
+  const totals = calculateInvoiceTotalsWithRetainage(lines, input.tax_rate, discountFromInput(input))
   // Internal PDF rendering may create a token without publishing the invoice.
   // Only an explicit publish input (or an already-published invoice) can advance
   // the lifecycle; token possession alone is never authority to send.

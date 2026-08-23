@@ -84,6 +84,7 @@ async function SubPortalLayoutContent({ children, params }: SubPortalLayoutProps
   const nav = buildSubPortalNav({
     permissions: access.permissions,
     counts: context.counts,
+    hasProject: access.project_id !== null,
     showPurchaseOrders,
     showPayments,
   })

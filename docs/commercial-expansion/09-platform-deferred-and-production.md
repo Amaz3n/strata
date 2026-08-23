@@ -53,7 +53,6 @@
 ### A6. Consolidations noted during the audit (cleanup debt, not expansion)
 
 - Estimates-as-executed-offer vs Proposals: two overlapping signable artifacts.
-- Legacy CRM (`lib/services/crm.ts`) vs prospects.
 - Schedule-item `inspection` type vs the new inspections engine (06).
 - `change_orders.status` free-text column after lifecycle (03) fully lands.
 Each is a candidate `/simplify`-style follow-up; none blocks commercial launch.

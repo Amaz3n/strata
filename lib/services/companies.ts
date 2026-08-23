@@ -7,8 +7,17 @@ import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
 import { requireAnyPermission } from "@/lib/services/permissions"
 import { requireAuthorization } from "@/lib/services/authorization"
-import { getDefaultComplianceRequirements } from "@/lib/services/compliance"
-import { setCompanyRequirements } from "@/lib/services/compliance-documents"
+import {
+  assignPartyRoleWithClient,
+  endPartyRolesForPartyWithClient,
+  revivePartyRolesEndedAtWithClient,
+} from "@/lib/services/party-roles"
+import {
+  DIRECTORY_READ_PERMISSIONS,
+  DIRECTORY_WRITE_PERMISSIONS,
+} from "@/lib/directory/permissions"
+import { NotFoundError } from "@/lib/not-found-error"
+import { getCompanyComplianceStatusWithClient } from "@/lib/services/compliance-documents"
 import {
   getFinancialPartyReceivables,
   type PartyReceivableProject,
@@ -70,6 +79,9 @@ function mapCompany(row: any, accountingLink?: CompanyAccountingLink | null): Co
     email: row.email ?? undefined,
     website: row.website ?? undefined,
     address: row.address ?? metadata.address ?? undefined,
+    // `?? metadata.X` reads rows written before these columns existed. New
+    // writes go to the column only; a gated migration backfills and drops the
+    // JSONB copies.
     license_number: row.license_number ?? metadata.license_number ?? undefined,
     // Written only by the prequalification workflow (lib/services/prequalification.ts).
     prequalified: row.prequalified ?? metadata.prequalified ?? undefined,
@@ -187,11 +199,17 @@ function normalizeDirectoryName(value?: string | null) {
   return normalized || undefined
 }
 
-async function resolveDirectoryCompanyClassification(
+/**
+ * Resolve a company's relationship type and trade rows from its type + trade
+ * text. Shared with the CSV importer so both create paths classify identically;
+ * `source` records which one minted a new trade.
+ */
+export async function resolveDirectoryCompanyClassification(
   supabase: SupabaseClient,
   orgId: string,
   companyType: string,
   trade?: string | null,
+  source = "company_form",
 ) {
   const relationshipKey =
     ["subcontractor", "supplier", "client", "architect", "engineer"].includes(companyType)
@@ -215,7 +233,7 @@ async function resolveDirectoryCompanyClassification(
               name: trade?.trim(),
               normalized_name: normalizedTrade,
               is_active: true,
-              metadata: { source: "company_form" },
+              metadata: { source },
             },
             { onConflict: "org_id,normalized_name" },
           )
@@ -248,7 +266,7 @@ export async function listCompanies(orgId?: string, filtersOrContext?: CompanyFi
   }
 
   const { supabase, orgId: resolvedOrgId, userId } = actualContext || await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read", "directory.read", "directory.write"], {
+  await requireAnyPermission(DIRECTORY_READ_PERMISSIONS, {
     supabase,
     orgId: resolvedOrgId,
     userId,
@@ -275,7 +293,7 @@ export async function listCompaniesWithClient(
     `,
     )
     .eq("org_id", orgId)
-    .is("metadata->>archived_at", null)
+    .is("archived_at", null)
     .order("created_at", { ascending: false })
 
   if (parsedFilters.company_type) {
@@ -298,7 +316,7 @@ export async function listCompaniesWithClient(
 
 export async function getCompany(companyId: string, orgId?: string): Promise<Company & { contacts: Contact[] }> {
   const { supabase, orgId: resolvedOrgId, userId, productTier } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read", "directory.read", "directory.write"], {
+  await requireAnyPermission(DIRECTORY_READ_PERMISSIONS, {
     supabase,
     orgId: resolvedOrgId,
     userId,
@@ -324,8 +342,11 @@ export async function getCompany(companyId: string, orgId?: string): Promise<Com
     .eq("id", companyId)
     .maybeSingle()
 
-  if (error || !data) {
-    throw new Error("Company not found")
+  if (error) {
+    throw new Error(`Failed to load company: ${error.message}`)
+  }
+  if (!data) {
+    throw new NotFoundError("Company not found")
   }
 
   const primaryContactQuery = await supabase
@@ -386,7 +407,7 @@ export async function getCompaniesVendorFinancialSummary(
   if (ids.length === 0) return {}
 
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read", "directory.read", "directory.write"], {
+  await requireAnyPermission(DIRECTORY_READ_PERMISSIONS, {
     supabase,
     orgId: resolvedOrgId,
     userId,
@@ -508,6 +529,18 @@ export interface VendorPayableProfile {
   payoutBankLast4: string | null
   /** False when the viewer may not read payables — the money fields read zero. */
   canViewBills: boolean
+  /**
+   * Enough compliance to say whether this vendor can be paid. The full record
+   * lives on the directory workspace; a payables dialog only needs the verdict
+   * and a way to get there.
+   */
+  compliance: {
+    isCompliant: boolean
+    missingCount: number
+    expiredCount: number
+    pendingCount: number
+    deficientCount: number
+  } | null
 }
 
 export async function getVendorPayableProfile(
@@ -517,7 +550,7 @@ export async function getVendorPayableProfile(
 ): Promise<VendorPayableProfile | null> {
   const trailingDays = options?.trailingDays ?? 365
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read", "directory.read", "directory.write"], {
+  await requireAnyPermission(DIRECTORY_READ_PERMISSIONS, {
     supabase,
     orgId: resolvedOrgId,
     userId,
@@ -553,7 +586,13 @@ export async function getVendorPayableProfile(
 
   // Vendor credits live in the same table and are not money owed to the vendor.
   const excludeCredits = "metadata->>source.is.null,metadata->>source.neq.vendor_credit"
-  const [{ data: recent }, { data: open }, readiness, { data: paymentRelationship }] = await Promise.all([
+  const [
+    { data: recent },
+    { data: open },
+    readiness,
+    { data: paymentRelationship },
+    complianceStatus,
+  ] = await Promise.all([
     canViewBills
       ? supabase
           .from("vendor_bills")
@@ -582,6 +621,7 @@ export async function getVendorPayableProfile(
       .eq("org_id", resolvedOrgId)
       .eq("company_id", companyId)
       .maybeSingle(),
+    getCompanyComplianceStatusWithClient(supabase, resolvedOrgId, companyId).catch(() => null),
   ])
 
   const metadata = (company.metadata ?? {}) as Record<string, unknown>
@@ -627,6 +667,15 @@ export async function getVendorPayableProfile(
     payoutBankName: recipient?.payout_bank_name ?? null,
     payoutBankLast4: recipient?.payout_bank_last4 ?? null,
     canViewBills,
+    compliance: complianceStatus
+      ? {
+          isCompliant: complianceStatus.is_compliant,
+          missingCount: complianceStatus.missing.length,
+          expiredCount: complianceStatus.expired.length,
+          pendingCount: complianceStatus.pending_review.length,
+          deficientCount: complianceStatus.deficiencies.length,
+        }
+      : null,
   }
 }
 
@@ -647,14 +696,12 @@ function buildCompanyInsert(input: CompanyInput, orgId: string) {
     tax_id_last4: input.tax_id_last4 ?? null,
     tax_entity_type: input.tax_entity_type ?? null,
     is_1099_eligible: input.is_1099_eligible ?? null,
+    // Only what has no column of its own. license_number, rating,
+    // default_payment_terms, internal_notes and notes used to be written here
+    // AND to their real columns, so every read had to coalesce the two.
     metadata: {
       trade: input.trade,
-      license_number: input.license_number,
-      rating: input.rating,
-      default_payment_terms: input.default_payment_terms,
       default_payment_method: input.default_payment_method,
-      internal_notes: input.internal_notes,
-      notes: input.notes,
     },
   }
 }
@@ -662,7 +709,7 @@ function buildCompanyInsert(input: CompanyInput, orgId: string) {
 export async function createCompany({ input, orgId }: { input: CompanyInput; orgId?: string }): Promise<Company> {
   const parsed = companyInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "directory.write"], { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(DIRECTORY_WRITE_PERMISSIONS, { supabase, orgId: resolvedOrgId, userId })
   const classification = await resolveDirectoryCompanyClassification(
     supabase,
     resolvedOrgId,
@@ -699,27 +746,21 @@ export async function createCompany({ input, orgId }: { input: CompanyInput; org
     after: data,
   })
 
-  // Auto-apply org default compliance requirements for new subs/suppliers.
-  if (data.company_type === "subcontractor" || data.company_type === "supplier") {
-    const defaults = await getDefaultComplianceRequirements(resolvedOrgId).catch(() => [])
-    if (defaults.length > 0) {
-      await setCompanyRequirements({
-        companyId: data.id as string,
-        requirements: defaults.map((d) => ({
-          document_type_id: d.document_type_id,
-          is_required: true,
-          min_coverage_cents: d.min_coverage_cents,
-          requires_additional_insured: d.requires_additional_insured ?? false,
-          requires_primary_noncontributory: d.requires_primary_noncontributory ?? false,
-          requires_waiver_of_subrogation: d.requires_waiver_of_subrogation ?? false,
-          notes: d.notes,
-        })),
-        orgId: resolvedOrgId,
-      }).catch(() => {
-        // Best-effort: company creation should succeed even if defaults fail.
-      })
-    }
-  }
+  // What this company is to the org is a role, not the type column. The type is
+  // still written above so existing readers keep working until the gated drop;
+  // this row is what every new reader resolves against.
+  await assignPartyRoleWithClient(supabase, resolvedOrgId, userId, {
+    kind: "company",
+    partyId: data.id as string,
+    roleKey: parsed.company_type,
+    status: "active",
+  })
+
+  // Org default requirements are deliberately NOT copied onto a new vendor.
+  // `resolveEffectiveRequirements` applies them at read time as the base layer,
+  // and a copy would sit in the vendor-override layer above it — so raising the
+  // org's coverage floor later would silently skip every vendor created before
+  // the change, each one frozen at the policy of the day they were added.
 
   if (parsed.qbo_vendor_id) {
     await saveCompanyAccountingVendorLink({
@@ -746,7 +787,7 @@ export async function updateCompany({
 }): Promise<Company> {
   const parsed = companyUpdateSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "directory.write"], { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(DIRECTORY_WRITE_PERMISSIONS, { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: existingError } = await supabase
     .from("companies")
@@ -762,12 +803,7 @@ export async function updateCompany({
   const metadata = {
     ...(existing.metadata ?? {}),
     trade: parsed.trade ?? existing.metadata?.trade,
-    license_number: parsed.license_number ?? existing.metadata?.license_number,
-    rating: parsed.rating ?? existing.metadata?.rating,
-    default_payment_terms: parsed.default_payment_terms ?? existing.metadata?.default_payment_terms,
     default_payment_method: parsed.default_payment_method ?? existing.metadata?.default_payment_method,
-    internal_notes: parsed.internal_notes ?? existing.metadata?.internal_notes,
-    notes: parsed.notes ?? existing.metadata?.notes,
   }
 
   const nextCompanyType = parsed.company_type ?? existing.company_type
@@ -829,6 +865,19 @@ export async function updateCompany({
     after: data,
   })
 
+  // Roles are additive: changing the type column grants the new role and does
+  // not revoke the old one, because a company that stopped being a sub and
+  // became a supplier was both, and the commitments filed under the first still
+  // have to be explicable. Removal is a deliberate act in the roles editor.
+  if (parsed.company_type && parsed.company_type !== existing.company_type) {
+    await assignPartyRoleWithClient(supabase, resolvedOrgId, userId, {
+      kind: "company",
+      partyId: companyId,
+      roleKey: parsed.company_type,
+      status: "active",
+    })
+  }
+
   if (parsed.qbo_vendor_id) {
     await saveCompanyAccountingVendorLink({
       supabase,
@@ -845,7 +894,7 @@ export async function updateCompany({
 
 export async function archiveCompany(companyId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "directory.write"], {
+  await requireAnyPermission(DIRECTORY_WRITE_PERMISSIONS, {
     supabase,
     orgId: resolvedOrgId,
     userId,
@@ -866,7 +915,7 @@ export async function archiveCompany(companyId: string, orgId?: string) {
 
   const { data: existing, error: fetchError } = await supabase
     .from("companies")
-    .select("id, org_id, name, metadata")
+    .select("id, org_id, name, archived_at")
     .eq("org_id", resolvedOrgId)
     .eq("id", companyId)
     .maybeSingle()
@@ -875,25 +924,43 @@ export async function archiveCompany(companyId: string, orgId?: string) {
     throw new Error("Company not found")
   }
 
+  const archivedAt = new Date().toISOString()
   const { data, error } = await supabase
     .from("companies")
-    .update({ metadata: { ...(existing.metadata ?? {}), archived_at: new Date().toISOString() } })
+    .update({ archived_at: archivedAt })
     .eq("org_id", resolvedOrgId)
     .eq("id", companyId)
-    .select("id, org_id, name, metadata")
+    .select("id, org_id, name, archived_at")
     .maybeSingle()
 
   if (error || !data) {
     throw new Error(`Failed to archive company: ${error?.message}`)
   }
 
+  // Archiving the record has to end the relationships too. Otherwise the party
+  // leaves the directory list (which filters on archived_at) while every
+  // role-based read — pickers, compliance, the vendor guard — still calls it a
+  // live vendor.
+  await endPartyRolesForPartyWithClient(supabase, resolvedOrgId, userId, {
+    kind: "company",
+    partyId: companyId,
+    endedAt: archivedAt,
+  })
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "company_archived",
+    entityType: "company",
+    entityId: data.id as string,
+    payload: { name: data.name },
+  })
   await recordAudit({
     orgId: resolvedOrgId,
     actorId: userId,
     action: "update",
     entityType: "company",
     entityId: data.id as string,
-    before: null,
+    before: existing,
     after: data,
   })
 
@@ -902,7 +969,7 @@ export async function archiveCompany(companyId: string, orgId?: string) {
 
 export async function restoreCompany(companyId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "directory.write"], {
+  await requireAnyPermission(DIRECTORY_WRITE_PERMISSIONS, {
     supabase,
     orgId: resolvedOrgId,
     userId,
@@ -910,7 +977,7 @@ export async function restoreCompany(companyId: string, orgId?: string) {
 
   const { data: existing, error: fetchError } = await supabase
     .from("companies")
-    .select("id, org_id, name, metadata")
+    .select("id, org_id, name, archived_at")
     .eq("org_id", resolvedOrgId)
     .eq("id", companyId)
     .maybeSingle()
@@ -919,21 +986,36 @@ export async function restoreCompany(companyId: string, orgId?: string) {
     throw new Error("Company not found")
   }
 
-  const metadata = { ...(existing.metadata ?? {}) }
-  delete metadata.archived_at
-
   const { data, error } = await supabase
     .from("companies")
-    .update({ metadata })
+    .update({ archived_at: null })
     .eq("org_id", resolvedOrgId)
     .eq("id", companyId)
-    .select("id, org_id, name, metadata")
+    .select("id, org_id, name, archived_at")
     .maybeSingle()
 
   if (error || !data) {
     throw new Error(`Failed to restore company: ${error?.message}`)
   }
 
+  // Give back exactly the roles the archive ended, so a restored company is not
+  // resurrected roleless.
+  const archivedAt = existing.archived_at as string | null
+  if (archivedAt) {
+    await revivePartyRolesEndedAtWithClient(supabase, resolvedOrgId, userId, {
+      kind: "company",
+      partyId: companyId,
+      endedAt: archivedAt,
+    })
+  }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "company_restored",
+    entityType: "company",
+    entityId: data.id as string,
+    payload: { name: data.name },
+  })
   await recordAudit({
     orgId: resolvedOrgId,
     actorId: userId,
@@ -949,7 +1031,7 @@ export async function restoreCompany(companyId: string, orgId?: string) {
 
 export async function getCompanyContacts(companyId: string, orgId?: string): Promise<Contact[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read", "directory.read", "directory.write"], {
+  await requireAnyPermission(DIRECTORY_READ_PERMISSIONS, {
     supabase,
     orgId: resolvedOrgId,
     userId,

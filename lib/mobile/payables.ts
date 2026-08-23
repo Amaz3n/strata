@@ -360,6 +360,7 @@ function mapPayable(
         }
       : null,
     over_budget: Boolean(bill.over_budget),
+    accounting_sync_status: bill.qbo_sync_status ?? null,
   }
 }
 
@@ -375,7 +376,10 @@ async function decorate(context: MobileOrgContext, bills: VendorBillSummary[]) {
     runWithServiceOrgContext(context.serviceContext, () => getComplianceRules(context.orgId)),
     companyIds.length > 0
       ? runWithServiceOrgContext(context.serviceContext, () =>
-          getCompaniesComplianceStatus(companyIds, context.orgId),
+          // Scoped to the jobs these payables are on — the release gate reads a
+          // vendor against the project overlay, and a signal resolved without
+          // it reads clear on a bill the gate will stop.
+          getCompaniesComplianceStatus(companyIds, context.orgId, { projectIds }),
         )
       : Promise.resolve<Record<string, ComplianceStatusSummary>>({}),
     loadLotContext(context, projectIds),

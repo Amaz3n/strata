@@ -17,7 +17,7 @@ import {
   withArcTransactionMarker,
 } from "@/lib/integrations/accounting/qbo/sync-safety"
 import { createQBOOAuthState, decryptToken, getQBOAuthUrl, revokeQBOToken } from "@/lib/integrations/accounting/qbo/auth"
-import { drainQboInboundEvents, ingestQboCdcChanges, receiveQboWebhook } from "@/lib/integrations/accounting/qbo/reconcile"
+import { drainQboInboundEvents, forceReconcileFromQbo, ingestQboCdcChanges, receiveQboWebhook } from "@/lib/integrations/accounting/qbo/reconcile"
 import { accountingDimension, accountingReference, type AccountingCoding } from "@/lib/services/accounting-coding"
 import { stampLocalFingerprint } from "@/lib/integrations/accounting/local-change"
 import { resolveAccountingExternalId } from "@/lib/services/accounting-sync-state"
@@ -467,14 +467,20 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
         const classRef = resolveQBOClassRef(line.metadata, projectClass)
         return {
           DetailType: "SalesItemLineDetail" as const,
-          Amount: (line.quantity * line.unit_price_cents) / 100,
+          Amount: centsToAmount(line.quantity * line.unit_price_cents),
           Description: line.description,
           SalesItemLineDetail: {
             ItemRef: { value: item.id, name: item.name },
             Qty: line.quantity,
-            UnitPrice: line.unit_price_cents / 100,
+            UnitPrice: centsToAmount(line.unit_price_cents),
+            // "TAX"/"NON" only exist in US non-AST company files; Canadian/UK/AU
+            // realms and Automated-Sales-Tax files need their own codes, set via
+            // connection settings until a picker exists.
             TaxCodeRef: {
-              value: (line.metadata as any)?.taxable === false ? "NON" : "TAX",
+              value:
+                (line.metadata as any)?.taxable === false
+                  ? ((connectionSettings.exempt_tax_code as string | undefined) ?? "NON")
+                  : ((connectionSettings.taxable_tax_code as string | undefined) ?? "TAX"),
             },
             ClassRef: classRef,
           },
@@ -488,7 +494,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
     if (invoiceDiscountCents > 0) {
       qboLines.push({
         DetailType: "DiscountLineDetail",
-        Amount: invoiceDiscountCents / 100,
+        Amount: centsToAmount(invoiceDiscountCents),
         DiscountLineDetail: { PercentBased: false },
       } as any)
     }
@@ -496,7 +502,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
     // Resolve a usable SyncToken before updating: invoices imported from QBO
     // (or with a token that drifted) carry a qbo_id but no cached token, which
     // would otherwise fail with "Invoice Id and SyncToken required for update".
-    const invoiceTarget = await resolveQBOSyncTarget({
+    let invoiceTarget = await resolveQBOSyncTarget({
       client,
       entityType: "invoice",
       qboId: existingSync.data?.external_id,
@@ -504,7 +510,6 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
       logContext: { orgId, invoiceId },
       allowRecreateDeleted: options?.allowRecreateDeleted === true,
     })
-    invoiceIsUpdate = invoiceTarget.mode === "update"
     if (invoiceTarget.mode === "create") {
       const claimed = await claimSyncCreate({
         orgId,
@@ -515,16 +520,39 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
       if (!claimed) {
         return { success: true, skipped: true, pending: true }
       }
+      // A sync record with no external id is evidence of a prior create whose
+      // response was lost — look for our own marker before creating a SECOND
+      // invoice in the customer's books.
+      if (existingSync.data) {
+        const adoptedInvoiceId = await findAlreadyCreatedQBOTransaction({
+          client,
+          entity: "Invoice",
+          entityType: "invoice",
+          entityId: invoiceId,
+          logContext: { orgId },
+        })
+        if (adoptedInvoiceId) {
+          const adopted = await client.getInvoiceById(adoptedInvoiceId)
+          if (adopted?.SyncToken) {
+            invoiceTarget = { mode: "update", id: adoptedInvoiceId, syncToken: adopted.SyncToken }
+          }
+        }
+      }
     }
+    invoiceIsUpdate = invoiceTarget.mode === "update"
 
     qboInvoice = {
-      ...(invoiceTarget.mode === "update" ? { Id: invoiceTarget.id, SyncToken: invoiceTarget.syncToken } : {}),
+      // Sparse update: QBO clears any field absent from a full update, so a
+      // non-sparse payload wiped SalesTermRef, CustomerMemo, BillEmail, custom
+      // fields and tax overrides the accountant set on the live invoice. The
+      // fields Arc owns are all present below and still replace.
+      ...(invoiceTarget.mode === "update" ? { Id: invoiceTarget.id, SyncToken: invoiceTarget.syncToken, sparse: true } : {}),
       DocNumber: typedInvoice.invoice_number,
       TxnDate: typedInvoice.issue_date ?? new Date().toISOString().split("T")[0],
       DueDate: typedInvoice.due_date ?? undefined,
       CustomerRef: { value: customer.Id!, name: customer.DisplayName },
       Line: qboLines,
-      PrivateNote: typedInvoice.title ?? undefined,
+      PrivateNote: withArcTransactionMarker(typedInvoice.title, "invoice", invoiceId),
     }
 
     persistResolvedLineLinks = async (remoteInvoice: any) => {
@@ -576,11 +604,12 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
       qboInvoiceId: result.Id!,
     })
     await markConnectionHealthy(orgId, options?.connectionId)
+    warnOnInvoiceTotalDivergence(orgId, invoiceId, typedInvoice.total_cents, result)
     logQBO("info", "invoice_sync_success", { orgId, invoiceId, qboId: result.Id })
 
     return { success: true, qbo_id: result.Id }
   } catch (err: any) {
-    if (err instanceof QBOError && isStaleObjectError(err) && existingSync.data?.external_id) {
+    if (err instanceof QBOError && isStaleObjectError(err) && existingSync?.data?.external_id) {
       try {
         const latestInvoice = await client.getInvoiceById(existingSync.data.external_id)
         if (!latestInvoice?.SyncToken) {
@@ -633,7 +662,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
           qbo_fault_detail: retryError instanceof QBOError ? retryError.faultDetail : undefined,
           intuit_tid: retryError instanceof QBOError ? retryError.intuitTid : undefined,
         })
-        return { success: false, error: retryErrorMessage }
+        return { success: false, error: retryErrorMessage, ...qboFaultFields(retryError) }
       }
     }
 
@@ -717,14 +746,14 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
           qbo_fault_detail: retryError instanceof QBOError ? retryError.faultDetail : undefined,
           intuit_tid: retryError instanceof QBOError ? retryError.intuitTid : undefined,
         })
-        return { success: false, error: retryErrorMessage }
+        return { success: false, error: retryErrorMessage, ...qboFaultFields(retryError) }
       }
     }
 
     const errorMessage = err instanceof QBOError ? err.message : String(err)
     if (errorMessage === QBO_DELETED_REVIEW_MESSAGE) {
       await markSyncRecordNeedsReview(orgId, "invoice", invoiceId, errorMessage, options?.connectionId)
-      return { success: false, error: errorMessage }
+      return { success: false, error: errorMessage, ...qboFaultFields(err) }
     }
     await markSyncRecordError(orgId, "invoice", invoiceId, errorMessage, options?.connectionId)
     await markConnectionErrorIfConnectionLevel(orgId, err, errorMessage, options?.connectionId)
@@ -738,12 +767,8 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
       qbo_fault_detail: err instanceof QBOError ? err.faultDetail : undefined,
       intuit_tid: err instanceof QBOError ? err.intuitTid : undefined,
     })
-    return { success: false, error: errorMessage }
+    return { success: false, error: errorMessage, ...qboFaultFields(err) }
   }
-}
-
-export async function forceSyncInvoiceToQBO(invoiceId: string, orgId: string) {
-  return syncInvoiceToQBO(invoiceId, orgId, { allowRecreateDeleted: true })
 }
 
 export async function syncPaymentToQBO(paymentId: string, orgId: string, options?: { connectionId?: string }) {
@@ -791,7 +816,15 @@ export async function syncPaymentToQBO(paymentId: string, orgId: string, options
       .single()
 
     if (error || !payment) return { success: false, error: error?.message ?? "Payment not found" }
-    
+
+    // Internal settlement rows (deposit application, Arc Books credits) move no
+    // new cash — pushing them would double-count the deposit that was already
+    // received and pushed as its own payment.
+    if (payment.provider === "arc_books" || payment.method === "credit") {
+      logQBO("info", "payment_sync_skipped_internal_settlement", { orgId, paymentId, provider: payment.provider, method: payment.method })
+      return { success: true, skipped: true }
+    }
+
     const invoice = Array.isArray(payment.invoice) ? payment.invoice[0] : payment.invoice
     // C3.4 dual-read: the sync ledger owns this link now, the column is only the
     // fallback for entities the backfill has not reached.
@@ -871,11 +904,11 @@ export async function syncPaymentToQBO(paymentId: string, orgId: string, options
       ? { Id: adoptedPaymentId }
       : await client.createPayment({
           CustomerRef: customerRef,
-          TotalAmt: payment.amount_cents / 100,
+          TotalAmt: centsToAmount(payment.amount_cents),
           PrivateNote: withArcTransactionMarker(null, "payment", paymentId),
           Line: [
             {
-              Amount: payment.amount_cents / 100,
+              Amount: centsToAmount(payment.amount_cents),
               LinkedTxn: [{ TxnId: invoiceExternalId, TxnType: "Invoice" }],
             },
           ],
@@ -907,7 +940,7 @@ export async function syncPaymentToQBO(paymentId: string, orgId: string, options
       qbo_fault_detail: error instanceof QBOError ? error.faultDetail : undefined,
       intuit_tid: error instanceof QBOError ? error.intuitTid : undefined,
     })
-    return { success: false, error: message }
+    return { success: false, error: message, ...qboFaultFields(error) }
   }
 }
 
@@ -986,7 +1019,7 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string, 
     const vendorName = resolveExpenseVendorName(typedExpense)
     const vendor = await resolveQboVendorForConnection({ client, supabase, orgId, connectionId: resolvedConnectionId, companyId: typedExpense.vendor_company_id, displayName: vendorName, legacyId: typedExpense.qbo_vendor_id, legacyName: typedExpense.qbo_vendor_name })
     const customer = await getOrCreateProjectCustomer({ client, supabase, orgId, connectionId: resolvedConnectionId, projectId: typedExpense.project_id, projectName: typedExpense.project?.name ?? null })
-    const totalAmount = (Number(typedExpense.amount_cents ?? 0) + Number(typedExpense.tax_cents ?? 0)) / 100
+    const totalAmount = centsToAmount(Number(typedExpense.amount_cents ?? 0) + Number(typedExpense.tax_cents ?? 0))
     const lineDescription = typedExpense.description?.trim() || vendorName
     const billableStatus = typedExpense.is_billable === false ? "NotBillable" : "Billable"
     const parentClassRef = resolveQBOClassRef(
@@ -1019,6 +1052,9 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string, 
         .in("id", projectIds)
       const projectInfoById = new Map((projectInfos ?? []).map((p) => [p.id, p]))
       const customerByProject = new Map<string, Awaited<ReturnType<typeof getOrCreateProjectCustomer>>>()
+      // Class routing lives in the entity map now; projects.qbo_class_* is only
+      // written by pre-cutover data, so it is the fallback rather than the source.
+      const classByProject = new Map<string, { value: string; name?: string } | undefined>()
       for (const pid of projectIds) {
         customerByProject.set(
           pid,
@@ -1026,19 +1062,24 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string, 
             ? customer
             : await getOrCreateProjectCustomer({ client, supabase, orgId, connectionId: resolvedConnectionId, projectId: pid, projectName: projectInfoById.get(pid)?.name ?? null }),
         )
+        const lineTarget = await resolveAccountingTarget({ orgId, projectId: pid })
+        const mappedClass = lineTarget?.dimensions.class
+        classByProject.set(pid, mappedClass?.id ? { value: mappedClass.id, name: mappedClass.name ?? undefined } : undefined)
       }
 
       qboLines = (splitLines ?? []).map((line) => {
         const lineProjectId = line.project_id ?? typedExpense.project_id
         const lineCustomer = customerByProject.get(lineProjectId) ?? customer
         const lineProject = projectInfoById.get(lineProjectId) ?? typedExpense.project
-        const lineClassRef = resolveQBOClassRef(
-          { qbo_class_id: lineProject?.qbo_class_id, qbo_class_name: lineProject?.qbo_class_name },
-          lineProject,
-        )
+        const lineClassRef =
+          classByProject.get(lineProjectId) ??
+          resolveQBOClassRef(
+            { qbo_class_id: lineProject?.qbo_class_id, qbo_class_name: lineProject?.qbo_class_name },
+            lineProject,
+          )
         return {
           DetailType: "AccountBasedExpenseLineDetail",
-          Amount: Number(line.amount_cents ?? 0) / 100,
+          Amount: centsToAmount(Number(line.amount_cents ?? 0)),
           Description: line.description?.trim() || lineDescription,
           AccountBasedExpenseLineDetail: {
             AccountRef: {
@@ -1081,7 +1122,7 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string, 
 
     const basePayload = {
       TxnDate: typedExpense.expense_date,
-      PrivateNote: typedExpense.description ?? undefined,
+      PrivateNote: withArcTransactionMarker(typedExpense.description, "project_expense", expenseId),
       Line: qboLines,
       ...(transactionType === "bill"
         ? {
@@ -1164,7 +1205,7 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string, 
       qbo_fault_detail: error instanceof QBOError ? error.faultDetail : undefined,
       intuit_tid: error instanceof QBOError ? error.intuitTid : undefined,
     })
-    return { success: false, error: message }
+    return { success: false, error: message, ...qboFaultFields(error) }
   }
 }
 
@@ -1288,7 +1329,7 @@ export async function syncVendorBillToQBO(billId: string, orgId: string, options
     )
 
     const qboLines = sourceLines.map((line) => {
-      const amount = Math.abs(((line.unit_cost_cents ?? 0) * (line.quantity ?? 1)) / 100)
+      const amount = Math.abs(centsToAmount((line.unit_cost_cents ?? 0) * (line.quantity ?? 1)))
       const metadata = (line.metadata as Record<string, any> | null) ?? {}
       const lineProjectId = line.project_id ?? typedBill.project_id
       const billableToCustomer =
@@ -1350,7 +1391,7 @@ export async function syncVendorBillToQBO(billId: string, orgId: string, options
       APAccountRef: typedBill.qbo_ap_account_id
         ? { value: typedBill.qbo_ap_account_id, name: typedBill.qbo_ap_account_name ?? undefined }
         : undefined,
-      PrivateNote: typedBill.commitment?.title ?? undefined,
+      PrivateNote: withArcTransactionMarker(typedBill.commitment?.title, "vendor_bill", billId),
       Line: qboLines,
     }
 
@@ -1435,7 +1476,7 @@ export async function syncVendorBillToQBO(billId: string, orgId: string, options
       qbo_fault_detail: error instanceof QBOError ? error.faultDetail : undefined,
       intuit_tid: error instanceof QBOError ? error.intuitTid : undefined,
     })
-    return { success: false, error: message }
+    return { success: false, error: message, ...qboFaultFields(error) }
   }
 }
 
@@ -1494,7 +1535,8 @@ export async function syncBillPaymentToQBO(paymentId: string, orgId: string, opt
   if (!billExternalId) {
     const billSync = await syncVendorBillToQBO(billId, orgId, { connectionId: resolvedConnectionId })
     if (!billSync.success) {
-      return { success: false, error: billSync.error ?? "Bill is not linked to QuickBooks yet" }
+      const syncError = "error" in billSync ? billSync.error : null
+      return { success: false, error: syncError ?? "Bill is not linked to QuickBooks yet" }
     }
     const { data: refreshedBill } = await supabase
       .from("vendor_bills")
@@ -1549,14 +1591,14 @@ export async function syncBillPaymentToQBO(paymentId: string, orgId: string, opt
           VendorRef: vendorRef,
           PayType: payType,
           TxnDate: payment.received_at ? new Date(payment.received_at).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
-          TotalAmt: payment.amount_cents / 100,
+          TotalAmt: centsToAmount(payment.amount_cents),
           PrivateNote: withArcTransactionMarker(payment.reference, "bill_payment", paymentId),
           ...(isCheck
             ? { CheckPayment: { BankAccountRef: { value: paymentAccountId } } }
             : { CreditCardPayment: { CCAccountRef: { value: paymentAccountId } } }),
           Line: [
             {
-              Amount: payment.amount_cents / 100,
+              Amount: centsToAmount(payment.amount_cents),
               LinkedTxn: [{ TxnId: billExternalId, TxnType: "Bill" }],
             },
           ],
@@ -1587,7 +1629,7 @@ export async function syncBillPaymentToQBO(paymentId: string, orgId: string, opt
       qbo_fault_detail: error instanceof QBOError ? error.faultDetail : undefined,
       intuit_tid: error instanceof QBOError ? error.intuitTid : undefined,
     })
-    return { success: false, error: message }
+    return { success: false, error: message, ...qboFaultFields(error) }
   }
 }
 
@@ -1650,7 +1692,7 @@ export async function voidBillPaymentInQBO(
     await markSyncRecordError(orgId, "bill_payment", paymentId, message, options?.connectionId)
     await markConnectionErrorIfConnectionLevel(orgId, error, message, options?.connectionId)
     logQBO("error", "bill_payment_void_failed", { orgId, paymentId, error: message })
-    return { success: false, error: message }
+    return { success: false, error: message, ...qboFaultFields(error) }
   }
 }
 
@@ -1712,11 +1754,17 @@ async function claimSyncCreate(input: {
   const supabase = createServiceSupabaseClient()
   let connectionId = input.connectionId
   if (!connectionId) {
+    // Provider-filtered like every other resolver in this file: an org can hold
+    // an active file connection alongside QBO, and an unfiltered maybeSingle()
+    // errors on two rows — which skipped every create for that org.
     const { data: connection } = await supabase
       .from("accounting_connections")
       .select("id")
       .eq("org_id", input.orgId)
+      .eq("provider", "qbo")
       .eq("status", "active")
+      .order("connected_at", { ascending: true })
+      .limit(1)
       .maybeSingle()
     connectionId = connection?.id ?? null
   }
@@ -2030,10 +2078,12 @@ async function markConnectionHealthy(orgId: string, connectionId?: string | null
  * QBO connection into an error state.
  */
 async function markConnectionErrorIfConnectionLevel(orgId: string, error: unknown, message: string, connectionId?: string | null) {
-  if (error instanceof QBOError) {
-    const connectionLevel = error.isAuthError || error.isPermissionError || error.isRateLimit || error.status >= 500
-    if (!connectionLevel) return
-  }
+  // Only QBOErrors can indict the connection. A Supabase or application error
+  // says nothing about QuickBooks, and writing it onto the connection row is
+  // exactly the misattribution this function exists to prevent.
+  if (!(error instanceof QBOError)) return
+  const connectionLevel = error.isAuthError || error.isPermissionError || error.isRateLimit || error.status >= 500
+  if (!connectionLevel) return
   await markConnectionError(orgId, message, connectionId)
 }
 
@@ -2255,16 +2305,71 @@ async function getOrCreateProjectCustomer(params: {
   return customer
 }
 
-function isDuplicateDocNumber(error: QBOError) {
-  const detail = JSON.stringify(error.qboError ?? {}).toLowerCase()
-  return detail.includes("docnumber") || detail.includes("duplicate") || detail.includes("already exists")
+/**
+ * Integer cents → QBO decimal dollars. Rounded first so float arithmetic can
+ * never emit 100.00000000000001 — QBO rounds on its side, which is how Arc and
+ * QuickBooks used to disagree by a cent with nothing checking.
+ */
+function centsToAmount(cents: number) {
+  return Math.round(cents) / 100
 }
 
-function requirePushResult(result: { success: boolean; qbo_id?: string; error?: string; skipped?: boolean }): PushResult {
+/**
+ * Compare what QuickBooks computed against what Arc believes after a push.
+ * QBO recomputes tax and rounding on its side, so the two CAN drift by cents —
+ * and nothing used to look. A warn (not a failure) because the push itself
+ * succeeded; the reconciliation digest is where a persistent gap gets escalated.
+ */
+function warnOnInvoiceTotalDivergence(orgId: string, invoiceId: string, arcTotalCents: number | null | undefined, remoteInvoice: unknown) {
+  const remoteTotal = (remoteInvoice as { TotalAmt?: number | string | null } | null)?.TotalAmt
+  if (arcTotalCents == null || remoteTotal == null) return
+  const remoteCents = Math.round(Number(remoteTotal) * 100)
+  if (!Number.isFinite(remoteCents) || remoteCents === Number(arcTotalCents)) return
+  logQBO("warn", "invoice_total_divergence", {
+    orgId,
+    invoiceId,
+    arc_total_cents: Number(arcTotalCents),
+    qbo_total_cents: remoteCents,
+  })
+}
+
+/**
+ * Fault metadata for a failed sync result, so the outbox's permanent-failure
+ * classifier receives real codes instead of matching on message substrings.
+ */
+function qboFaultFields(error: unknown) {
+  return error instanceof QBOError
+    ? { errorStatus: error.status ?? null, errorFaultCode: error.faultCode ?? null, errorFaultDetail: error.faultDetail ?? null }
+    : {}
+}
+
+function isDuplicateDocNumber(error: QBOError) {
+  // Fault 6140 is QBO's duplicate-DocNumber validation error. Matching on it
+  // exactly matters: this predicate gates a path that RENUMBERS the customer's
+  // invoice, and the old substring match ("docnumber"/"duplicate") also fired
+  // on unrelated faults that merely named the field.
+  if (error.faultCode === "6140") return true
+  const detail = `${error.faultDetail ?? ""} ${error.message ?? ""}`.toLowerCase()
+  return detail.includes("duplicate document number")
+}
+
+function requirePushResult(result: { success: boolean; qbo_id?: string; error?: string; skipped?: boolean; pending?: boolean; errorStatus?: number | null; errorFaultCode?: string | null; errorFaultDetail?: string | null }): PushResult {
+  // A lost create-claim race is not done — another attempt holds the lease, and
+  // this job must run again after it lapses. Reporting it as a plain skip made
+  // the outbox mark the job completed, which dropped the push forever.
+  if (result.success && result.pending) return { externalId: null, skipped: true, deferred: true }
   // A successful skip (e.g. voiding an invoice that never reached QBO) is not a failure;
   // throwing here would turn it into a retrying outbox job.
   if (result.success && result.skipped) return { externalId: result.qbo_id ?? null, skipped: true }
-  if (!result.success || !result.qbo_id) throw new Error(result.error ?? "QuickBooks sync failed")
+  if (!result.success || !result.qbo_id) {
+    // Carry the QBO fault through so the outbox's permanent-failure classifier
+    // sees real status/fault codes instead of null.
+    const error = new Error(result.error ?? "QuickBooks sync failed") as Error & { status?: number | null; faultCode?: string | null; faultDetail?: string | null }
+    error.status = result.errorStatus ?? null
+    error.faultCode = result.errorFaultCode ?? null
+    error.faultDetail = result.errorFaultDetail ?? null
+    throw error
+  }
   return { externalId: result.qbo_id }
 }
 
@@ -2293,7 +2398,7 @@ async function pushSummaryJournalToQbo(input: {
 }): Promise<PushResult> {
   if (input.lines.length < 2) throw new Error("A summarized journal needs at least two lines")
   const qboLines = input.lines.map((line) => ({
-    Amount: (line.debitCents || line.creditCents) / 100,
+    Amount: centsToAmount(line.debitCents || line.creditCents),
     Description: line.description,
     DetailType: "JournalEntryLineDetail",
     JournalEntryLineDetail: {
@@ -2302,9 +2407,20 @@ async function pushSummaryJournalToQbo(input: {
     },
   }))
   const client = await requireQboClient(input.connectionId)
+  // The mirror engine's sync-record pre-check cannot see a create whose
+  // response was lost, and a re-posted period doubles a whole month — so look
+  // for our own marker before posting, exactly like the payment path.
+  const adoptedId = await findAlreadyCreatedQBOTransaction({
+    client,
+    entity: "JournalEntry",
+    entityType: "period_summary",
+    entityId: input.reference,
+    logContext: { orgId: input.orgId, connectionId: input.connectionId },
+  })
+  if (adoptedId) return { externalId: adoptedId, raw: null }
   const created = await client.createJournalEntry({
     TxnDate: input.date,
-    PrivateNote: `${input.memo} [${input.reference}]`,
+    PrivateNote: withArcTransactionMarker(`${input.memo} [${input.reference}]`, "period_summary", input.reference),
     Line: qboLines,
   })
   if (!created?.Id) throw new Error("QuickBooks did not return the mirrored summary id")
@@ -2336,7 +2452,7 @@ async function pushBooksJournalToQbo(input: { orgId: string; connectionId: strin
     const debit = Number(line.debit_cents ?? 0)
     const credit = Number(line.credit_cents ?? 0)
     return {
-      Amount: (debit || credit) / 100,
+      Amount: centsToAmount(debit || credit),
       Description: line.description ?? undefined,
       DetailType: "JournalEntryLineDetail",
       JournalEntryLineDetail: {
@@ -2346,7 +2462,7 @@ async function pushBooksJournalToQbo(input: { orgId: string; connectionId: strin
     }
   })
   const client = await requireQboClient(input.connectionId)
-  const created = await client.createJournalEntry({ TxnDate: journal.entry_date, PrivateNote: `Arc mirror · ${journal.memo}`, Line: qboLines })
+  const created = await client.createJournalEntry({ TxnDate: journal.entry_date, PrivateNote: withArcTransactionMarker(`Arc mirror · ${journal.memo}`, "journal_entry", input.journalId), Line: qboLines })
   if (!created?.Id) throw new Error("QuickBooks did not return the mirrored journal id")
   await upsertSyncRecord({ orgId: input.orgId, connectionId: input.connectionId, entityId: input.journalId, qboId: String(created.Id), syncToken: created.SyncToken ? String(created.SyncToken) : undefined, entityType: "journal_entry" })
   return { externalId: String(created.Id), externalVersion: created.SyncToken ? String(created.SyncToken) : null, raw: created }
@@ -2355,20 +2471,14 @@ async function pushBooksJournalToQbo(input: { orgId: string; connectionId: strin
 export const qboProvider: AccountingProvider = {
   key: "qbo",
   capabilities: {
-    supportsClasses: true,
-    supportsLocations: false,
-    supportsDepartments: false,
     supportsSubCustomers: true,
-    supportsInvoiceNumberReservation: true,
     supportsInvoiceDocNumberSync: true,
     supportsImport: true,
     supportsCDC: true,
-    supportsWebhooks: true,
     supportsAttachments: true,
     supportsJournalEntryPush: true,
     supportsVendorCredits: true,
     supportsBillPaymentVoid: true,
-    updateConcurrency: "sync_token",
     dimensions: ["class", "customer"],
   },
   async ensureHealthy(connectionId) {
@@ -2404,6 +2514,7 @@ export const qboProvider: AccountingProvider = {
   },
   pushJournalEntry: pushBooksJournalToQbo,
   pushSummaryJournal: pushSummaryJournalToQbo,
+  resolveConflictTakeRemote: forceReconcileFromQbo,
   async listDimensionValues(input) {
     const client = await requireQboClient(input.connectionId)
     if (input.kind === "class") return (await client.listClasses()).map((item) => ({ id: item.id, name: item.name }))

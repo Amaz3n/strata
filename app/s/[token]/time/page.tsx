@@ -21,6 +21,7 @@ export default async function PortalTimePage({ params }: Props) {
   try {
     access = await assertPortalActionAccess(token, {
       portalType: "sub",
+      requireProject: true,
       requireCompany: true,
       permission: "can_submit_time",
     })

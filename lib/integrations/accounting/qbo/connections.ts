@@ -98,27 +98,45 @@ async function refreshConnectionTokens(
     const encryptedAccessToken = encryptToken(newTokens.access_token)
     const encryptedRefreshToken = encryptToken(newTokens.refresh_token)
 
-    const { data: updatedRow, error: updateError } = await supabase
-      .from("accounting_connections")
-      .update({
-        access_token: encryptedAccessToken,
-        refresh_token: encryptedRefreshToken,
-        token_expires_at: new Date(Date.now() + newTokens.expires_in * 1000).toISOString(),
-        refresh_token_expires_at: refreshTokenExpiresAt,
-        refresh_failure_count: 0,
-        status: "active",
-        last_error: null,
-        // Stamp/backfill the owning client_id now that this app successfully refreshed.
-        ...(configuredClientId ? { client_id: configuredClientId } : {}),
-      })
-      .eq("id", connection.id)
-      .eq("status", "active")
-      .eq("refresh_token", connection.refresh_token)
-      .select("id")
-      .maybeSingle()
+    // Intuit has already ROTATED the refresh token by this point — a failed
+    // persist strands credentials only this process holds. A DB blip must be
+    // retried, and must never count as a "refresh failure" (three of those
+    // expire the connection over a problem that was never Intuit's).
+    const persistTokens = () =>
+      supabase
+        .from("accounting_connections")
+        .update({
+          access_token: encryptedAccessToken,
+          refresh_token: encryptedRefreshToken,
+          token_expires_at: new Date(Date.now() + newTokens.expires_in * 1000).toISOString(),
+          refresh_token_expires_at: refreshTokenExpiresAt,
+          refresh_failure_count: 0,
+          status: "active",
+          last_error: null,
+          // Stamp/backfill the owning client_id now that this app successfully refreshed.
+          ...(configuredClientId ? { client_id: configuredClientId } : {}),
+        })
+        .eq("id", connection.id)
+        .eq("status", "active")
+        .eq("refresh_token", connection.refresh_token)
+        .select("id")
+        .maybeSingle()
 
+    let { data: updatedRow, error: updateError } = await persistTokens()
     if (updateError) {
-      throw new Error(updateError.message)
+      ;({ data: updatedRow, error: updateError } = await persistTokens())
+    }
+    if (updateError) {
+      logQBO("error", "token_refresh_persist_failed", {
+        orgId: options.orgIdForLogs ?? connection.org_id,
+        connectionId: connection.id,
+        source: options.source,
+        error: updateError.message,
+      })
+      // Serve the fresh token for this request; the next refresh will get a
+      // new pair from Intuit (the old refresh token stays valid briefly after
+      // rotation, and invalid_grant on the next pass surfaces the real state).
+      return { token: newTokens.access_token, realmId: connection.external_account_id }
     }
 
     if (!updatedRow) {
@@ -142,7 +160,7 @@ async function refreshConnectionTokens(
     const shouldExpire = invalidGrant || nextFailureCount >= MAX_TRANSIENT_REFRESH_FAILURES
     const errorMessage = String(error ?? "Token refresh failed").slice(0, 500)
 
-    await supabase
+    const { data: expiredRow } = await supabase
       .from("accounting_connections")
       .update({
         status: shouldExpire ? "expired" : "active",
@@ -151,6 +169,25 @@ async function refreshConnectionTokens(
       })
       .eq("id", connection.id)
       .eq("status", "active")
+      .select("id, org_id")
+      .maybeSingle()
+
+    // The moment sync dies is the moment somebody has to hear about it — a
+    // status flip plus a log line left connections dead for days with the only
+    // signal being a settings badge nobody watches. The `expiredRow` guard
+    // means a concurrent worker's flip emits exactly one event.
+    if (shouldExpire && expiredRow?.org_id) {
+      await recordEvent({
+        orgId: expiredRow.org_id,
+        eventType: "accounting_connection_expired",
+        entityType: "accounting_connection",
+        entityId: connection.id,
+        payload: { provider: "qbo", reason: invalidGrant ? "authorization_revoked_or_expired" : "repeated_refresh_failures", error: errorMessage },
+        channel: "notification",
+      }).catch((eventError) => {
+        logQBO("error", "connection_expired_event_failed", { connectionId: connection.id, error: String(eventError) })
+      })
+    }
 
     logQBO(shouldExpire ? "error" : "warn", "token_refresh_failed", {
       orgId: options.orgIdForLogs ?? connection.org_id,
@@ -319,26 +356,24 @@ export async function refreshQBOConnectionsDueForKeepalive(limit = 10) {
   const supabase = createServiceSupabaseClient()
   const keepaliveHorizonIso = new Date(Date.now() + KEEPALIVE_REFRESH_WINDOW_MS).toISOString()
 
+  // Due-ness is filtered in SQL, most-urgent first. The previous shape scanned
+  // a fixed window ordered by updated_at and filtered in JS — not-due rows are
+  // never touched, so their updated_at stays oldest and they permanently
+  // occupy the window, starving genuinely due connections behind them.
   const { data: candidates, error } = await supabase
     .from("accounting_connections")
     .select("id, org_id, external_account_id, access_token, refresh_token, token_expires_at, refresh_token_expires_at, refresh_failure_count, client_id")
     .eq("status", "active")
     .eq("provider", "qbo")
-    .order("updated_at", { ascending: true })
-    .limit(Math.max(limit * 5, 25))
+    .or(`refresh_token_expires_at.is.null,refresh_token_expires_at.lte.${keepaliveHorizonIso}`)
+    .order("refresh_token_expires_at", { ascending: true, nullsFirst: true })
+    .limit(limit)
 
   if (error || !candidates?.length) {
     return { scanned: 0, refreshed: 0, failed: 0 }
   }
 
-  const due = (candidates as QBOConnectionTokenRow[]).filter((connection) => {
-    if (!connection.refresh_token_expires_at) return true
-    const expiresAt = Date.parse(connection.refresh_token_expires_at)
-    if (!Number.isFinite(expiresAt)) return true
-    return expiresAt <= Date.parse(keepaliveHorizonIso)
-  })
-
-  const selected = due.slice(0, limit)
+  const selected = candidates as QBOConnectionTokenRow[]
   let refreshed = 0
   let failed = 0
 

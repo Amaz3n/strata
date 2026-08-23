@@ -133,24 +133,21 @@ function unsupported(operation: string): never {
 export const fileProvider: AccountingProvider = {
   key: "file",
   capabilities: {
-    supportsClasses: false,
-    supportsLocations: false,
-    supportsDepartments: false,
     supportsSubCustomers: false,
-    supportsInvoiceNumberReservation: false,
     supportsInvoiceDocNumberSync: false,
     supportsImport: false,
     supportsCDC: false,
-    supportsWebhooks: false,
     supportsAttachments: false,
-    supportsJournalEntryPush: true,
+    // A batch target cannot accept a per-entry or summarized journal push — the
+    // mirror engine checks this flag alone in the Books cutover readiness
+    // screen, so declaring it true promised a capability neither method backs.
+    supportsJournalEntryPush: false,
     supportsVendorCredits: true,
     // A batch cannot be un-imported, so a reversal is a new negative line rather
     // than an edit of the original. That is a supported reversal, not a missing
     // one — the controller imports the correction the same way they imported the
     // payment.
     supportsBillPaymentVoid: true,
-    updateConcurrency: "none",
     dimensions: [],
   },
   async ensureHealthy() {

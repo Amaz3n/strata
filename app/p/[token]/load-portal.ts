@@ -10,7 +10,7 @@ import { assertPortalActionAccess, loadClientPortalData } from "@/lib/services/p
 export async function loadClientPortalPage(token: string) {
   let access
   try {
-    access = await assertPortalActionAccess(token, { portalType: "client" })
+    access = await assertPortalActionAccess(token, { portalType: "client", requireProject: true })
   } catch {
     notFound()
   }

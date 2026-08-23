@@ -249,9 +249,13 @@ export async function sendChangeEventRfqs(id: string, input: SendChangeEventRfqs
 export async function getPortalChangeEventRfq(token: string) {
   const access = await validatePortalToken(token)
   if (!access?.scoped_change_event_rfq_id || access.portal_type !== "sub") return null
+  // An RFQ hangs off a change event on one job. A link with no project behind
+  // it cannot name the row, so there is nothing here for it to answer.
+  const projectId = access.project_id
+  if (projectId === null) return null
   const service = createServiceSupabaseClient()
-  const { data } = await service.from("change_event_rfqs").select("id,change_event_id,status,due_date,response_amount_cents,response_notes,change_event:change_events(id,event_number,title,description,rom_cents,created_by),commitment:commitments(title)").eq("org_id", access.org_id).eq("project_id", access.project_id).eq("id", access.scoped_change_event_rfq_id).maybeSingle()
-  return data ? { access, rfq: data } : null
+  const { data } = await service.from("change_event_rfqs").select("id,change_event_id,status,due_date,response_amount_cents,response_notes,change_event:change_events(id,event_number,title,description,rom_cents,created_by),commitment:commitments(title)").eq("org_id", access.org_id).eq("project_id", projectId).eq("id", access.scoped_change_event_rfq_id).maybeSingle()
+  return data ? { access: { ...access, project_id: projectId }, rfq: data } : null
 }
 
 export async function recordPortalChangeEventRfqResponse(token: string, input: ChangeEventRfqResponseInput) {

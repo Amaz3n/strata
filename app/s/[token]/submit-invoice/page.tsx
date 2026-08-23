@@ -28,6 +28,7 @@ export default async function SubmitInvoicePage({
   try {
     access = await assertPortalActionAccess(token, {
       portalType: "sub",
+      requireProject: true,
       requireCompany: true,
       permission: "can_submit_invoices",
     })

@@ -1,5 +1,6 @@
 import { AlertCircle, CheckCircle2, Clock, CloudOff, RefreshCw } from "lucide-react"
 
+import { accountingProviderLabel, accountingProviderShortLabel } from "@/components/accounting/provider-label"
 import { Badge } from "@/components/ui/badge"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
@@ -22,8 +23,10 @@ interface Props {
   externalId?: string | null
   /** Last sync error, shown in the tooltip for error states. */
   error?: string | null
-  /** Accounting provider display name. */
-  providerLabel?: string
+  /** Provider key of the connection this record syncs through, when the surface knows it. */
+  provider?: string | null
+  /** Provider display name, for connections whose label is not in the catalog (e.g. Arc Books). */
+  providerLabel?: string | null
   /** ISO timestamp of the last successful sync, shown in the tooltip. */
   syncedAt?: string | null
   /** Icon-only round badge for dense table cells. */
@@ -67,7 +70,9 @@ const STATUS_CONFIG: Record<
     icon: AlertCircle,
     label: () => "Sync error",
     tone: "border-destructive/20 bg-destructive/10 text-destructive",
-    tooltip: (provider) => `Failed to sync to ${provider}. Will retry automatically.`,
+    // Never promise an indefinite retry: a push that exhausts its attempts stops
+    // for good and only the sync queue can restart it.
+    tooltip: (provider) => `Failed to sync to ${provider}. Arc retries a few times, then leaves it in the sync queue.`,
   },
   conflict: {
     icon: AlertCircle,
@@ -85,7 +90,8 @@ const STATUS_CONFIG: Record<
     icon: AlertCircle,
     label: () => "Needs review",
     tone: "border-warning/20 bg-warning/10 text-warning",
-    tooltip: (provider) => `Arc and ${provider} disagree on this record. Review it in the sync queue, then resync.`,
+    tooltip: (provider) =>
+      `${provider} needs a person on this record — it will not retry automatically. Resolve it in the sync queue, then resync.`,
   },
   disabled: {
     icon: CloudOff,
@@ -99,15 +105,24 @@ function normalizeStatus(status: string): AccountingSyncStatus {
   return status in STATUS_CONFIG ? (status as AccountingSyncStatus) : "not_synced"
 }
 
-export function AccountingSyncBadge({ status, externalId, error, providerLabel = "QuickBooks", syncedAt, compact = false }: Props) {
+export function AccountingSyncBadge({
+  status,
+  externalId,
+  error,
+  provider,
+  providerLabel,
+  syncedAt,
+  compact = false,
+}: Props) {
   if (!status) return null
 
-  const providerShort = providerLabel === "QuickBooks" ? "QBO" : providerLabel
+  const providerName = accountingProviderLabel(provider, providerLabel)
+  const providerShort = accountingProviderShortLabel(provider, providerLabel)
   const normalized = normalizeStatus(status.toLowerCase())
   const { icon: Icon, label, tone, tooltip } = STATUS_CONFIG[normalized]
 
   const tooltipText =
-    normalized === "synced" && syncedAt ? `Synced ${new Date(syncedAt).toLocaleString()}` : tooltip(providerLabel)
+    normalized === "synced" && syncedAt ? `Synced ${new Date(syncedAt).toLocaleString()}` : tooltip(providerName)
   const errorDetail = (normalized === "error" || normalized === "needs_review" || normalized === "conflict") && error ? error : null
 
   return (
@@ -115,7 +130,7 @@ export function AccountingSyncBadge({ status, externalId, error, providerLabel =
       <TooltipTrigger asChild>
         <Badge variant="outline" className={cn(tone, compact ? "h-6 w-6 cursor-help rounded-full p-0" : "gap-1 cursor-help")}>
           <Icon className={compact ? "mx-auto h-3 w-3" : "h-3 w-3"} />
-          {!compact && label(providerLabel, providerShort)}
+          {!compact && label(providerName, providerShort)}
         </Badge>
       </TooltipTrigger>
       <TooltipContent>

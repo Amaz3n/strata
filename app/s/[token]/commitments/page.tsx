@@ -15,6 +15,7 @@ export default async function SubCommitmentsPage({ params }: SubCommitmentsPageP
   try {
     access = await assertPortalActionAccess(token, {
       portalType: "sub",
+      requireProject: true,
       requireCompany: true,
       permission: "can_view_commitments",
     })

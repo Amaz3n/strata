@@ -41,6 +41,7 @@ async function ReviewerPortalLayoutContent({ children, params }: ReviewerPortalL
   const gate = await resolvePortalGate({
     token,
     portalType: "reviewer",
+    requireProject: true,
     fallbackLabel: "this project",
   })
 

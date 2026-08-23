@@ -927,7 +927,7 @@ function DrawDetailSheet({
                       Already invoiced outside this draw?
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      Attach an existing invoice (including one imported from QuickBooks) instead of generating a new one.
+                      Attach an existing invoice (including one imported from your accounting system) instead of generating a new one.
                     </p>
                   </div>
                   <Button size="sm" variant="outline" className="shrink-0" onClick={onLinkInvoice} disabled={saving}>

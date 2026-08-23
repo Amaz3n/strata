@@ -22,14 +22,6 @@ export {
   type AccountingReconciliationEmailProps,
 } from "./accounting-reconciliation-email"
 export {
-  ComplianceDocumentReviewedEmail,
-  type ComplianceDocumentReviewedEmailProps,
-} from "./compliance-document-reviewed-email"
-export {
-  ComplianceDocumentUploadedEmail,
-  type ComplianceDocumentUploadedEmailProps,
-} from "./compliance-document-uploaded-email"
-export {
   PrequalificationRequestEmail,
   type PrequalificationRequestEmailProps,
 } from "./prequalification-request-email"

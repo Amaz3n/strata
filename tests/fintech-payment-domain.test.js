@@ -2162,15 +2162,37 @@ test("every intake door checks for a duplicate payable", () => {
   assert.match(duplicates, /\.order\("created_at", \{ ascending: false \}\)/)
 })
 
-test("a waiver signed in the portal is verified like one signed by email", () => {
+test("every waiver Arc takes is verified against the payable it covers", () => {
   const waivers = paymentSource("lib/services/lien-waivers.ts")
 
-  // Verification ran only on the emailed-token path, so the `waiver_verified`
-  // hold had nothing to read for the majority of waivers and never fired.
+  // The portal is now the only way a waiver gets signed: the emailed-token path
+  // handed out `/sign/lien-waiver/<token>`, a route that does not exist, and its
+  // `signLienWaiver` had no callers at all. Whatever signing paths exist, each
+  // must verify — otherwise the `waiver_verified` hold has nothing to read.
   const calls = waivers.split(/await verifyBillWaiver\(/).length - 1
-  assert.equal(calls, 2, "both signing paths must verify the waiver they just took")
+  assert.equal(calls, 1, "every signing path must verify the waiver it just took")
   const portal = waivers.slice(waivers.indexOf("export async function signVendorBillWaiverFromPortal"))
   assert.match(portal, /verifyBillWaiver\(billId, orgId\)/)
+
+  // The dead token flow stays dead: it minted bearer links to a 404 and created
+  // payment-anchored rows the bill-keyed release gate could never see.
+  assert.doesNotMatch(waivers, /sign\/lien-waiver/)
+  assert.doesNotMatch(waivers, /export async function signLienWaiver\b/)
+  assert.doesNotMatch(waivers, /generateConditionalWaiverForPayment/)
+})
+
+test("a payable holding retainage can be waived from the portal", () => {
+  const waivers = paymentSource("lib/services/lien-waivers.ts")
+  const retainage = paymentSource("lib/services/ap-retainage.ts")
+
+  // `releaseRetainage` refuses without a signed FINAL waiver, and the portal
+  // hardcoded `waiver_type: "conditional"` — so retainage was unreleasable for
+  // any org that requires waivers, with no way for the sub to fix it.
+  assert.match(retainage, /\.eq\("waiver_type", "final"\)/)
+  const portal = waivers.slice(waivers.indexOf("export async function signVendorBillWaiverFromPortal"))
+  assert.match(portal, /waiverTypeSchema\.parse\(waiverType\)/)
+  assert.match(portal, /waiver_type: type/)
+  assert.doesNotMatch(portal, /waiver_type: "conditional"/)
 })
 
 test("a retainage release is born payable", () => {

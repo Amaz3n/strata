@@ -21,10 +21,14 @@ export default async function SubPortalWarrantyPage({ params }: Props) {
   }
   if (!access.company_id) notFound()
 
+  // Warranty appointments are dispatched to the trade, not to the link. A
+  // project-scoped link narrows to its own job; a vendor account link has no
+  // job and correctly shows every appointment this builder has scheduled them
+  // for.
   const visits = await listWarrantyVisitsForCompanyPortal({
     orgId: access.org_id,
     companyId: access.company_id,
-    projectId: access.project_id,
+    projectId: access.project_id ?? undefined,
   })
 
   return (

@@ -10,6 +10,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { requireAuthorization } from "@/lib/services/authorization"
+import { ensureVendorRoleWithClient } from "@/lib/services/party-roles"
 import { attachFileWithServiceRole } from "@/lib/services/file-links"
 import { vendorBillStatusUpdateSchema, vendorBillCreateSchema, type VendorBillStatusUpdate, type VendorBillCreate } from "@/lib/validation/vendor-bills"
 import { getComplianceRules } from "@/lib/services/compliance"
@@ -1575,19 +1576,20 @@ export async function updateVendorBillStatus({
   }
 
   if (parsed.status === "approved" && parsed.lien_waiver_status === undefined) {
-    const rules = await getComplianceRules(resolvedOrgId).catch(() => ({
-      require_lien_waiver: false,
-      block_payment_on_missing_docs: true,
-      warn_subcontract_execution_on_missing_docs: true,
-      block_subcontract_execution_on_missing_docs: false,
-    }))
+    // A read failure must not be allowed to stamp "not_required" onto a bill:
+    // that is a weakening the release gate would then have to un-learn. Leaving
+    // the field untouched keeps `assertBillReleasable` — which deliberately does
+    // not swallow this read — the one that decides.
+    const rules = await getComplianceRules(resolvedOrgId).catch(() => null)
 
-    if (rules.require_lien_waiver && existing.lien_waiver_status !== "received") {
-      updateData.lien_waiver_status = "requested"
-      updateData.lien_waiver_received_at = null
-    } else if (!rules.require_lien_waiver && !existing.lien_waiver_status) {
-      updateData.lien_waiver_status = "not_required"
-      updateData.lien_waiver_received_at = null
+    if (rules) {
+      if (rules.require_lien_waiver && existing.lien_waiver_status !== "received") {
+        updateData.lien_waiver_status = "requested"
+        updateData.lien_waiver_received_at = null
+      } else if (!rules.require_lien_waiver && !existing.lien_waiver_status) {
+        updateData.lien_waiver_status = "not_required"
+        updateData.lien_waiver_received_at = null
+      }
     }
   }
 
@@ -2252,6 +2254,15 @@ export async function createProjectVendorBill({
     } catch (error) {
       console.warn("Failed to attach file", error)
     }
+  }
+
+  // Money creates roles. A commitment already guarantees the vendor role, but a
+  // company can receive bills without ever having one — an emergency repair, a
+  // supplier invoice entered straight into AP — and it would then be a payee
+  // that no role-based read recognizes as a vendor: no compliance watch, no
+  // account tabs, invisible to the vendor lens.
+  if (companyId) {
+    await ensureVendorRoleWithClient(supabase, resolvedOrgId, companyId, userId)
   }
 
   await recordAudit({

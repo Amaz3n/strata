@@ -113,7 +113,6 @@ const PATHNAME_FALLBACK_LABELS: Record<string, string> = {
   communities: "Communities",
   pipeline: "Pipeline",
   prospects: "Prospects",
-  crm: "CRM",
   estimates: "Estimates",
   schedule: "Schedule",
   tasks: "Tasks",

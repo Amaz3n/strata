@@ -81,7 +81,7 @@ export async function getNextInvoiceNumber(orgId?: string): Promise<NextInvoiceN
 
   if (connection && connection.settings?.invoice_number_sync !== false) {
     const provider = target ? getProvider(target.connection.provider) : null
-    if (provider?.capabilities.supportsInvoiceNumberReservation && provider.getLastInvoiceNumber) {
+    if (provider?.getLastInvoiceNumber) {
       try {
         const [qboLastNumber, lastInvoice, latestReservation] = await Promise.all([
           provider.getLastInvoiceNumber({ connectionId: target!.connection.id }).catch(() => null),

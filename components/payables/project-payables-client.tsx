@@ -38,6 +38,7 @@ import { billStatus } from "./workspace/payable-form"
 import { PayableCreateWorkspace } from "./payable-create-workspace"
 import { PayablesWorkspace } from "./payables-workspace"
 import { AccountingSyncSheet } from "@/components/integrations/accounting-sync-sheet"
+import { accountingProviderLabel } from "@/components/accounting/provider-label"
 import type { AccountingSyncState } from "@/lib/services/accounting-sync-state"
 
 import { unwrapAction } from "@/lib/action-result"
@@ -114,6 +115,10 @@ export function ProjectPayablesClient({
 
   const [workspaceBillId, openBill] = useWorkspaceParam("bill")
 
+  // "Arc Books is the ledger" and "no connection at all" both mean there is no
+  // external system to sync to; everything else does, whichever adapter it is.
+  const externalAccountingEnabled = accountingEnabled && Boolean(accountingProvider) && accountingProvider !== "arc_books"
+  const providerName = accountingProviderLabel(accountingProvider, accountingProviderName)
   const getExpenseAccountName = (accountId?: string) => qboExpenseAccounts.find((account) => account.id === accountId)?.name
   const mayApproveBill = (bill: VendorBillSummary) =>
     !bill.preferred_approver_ids?.length ||
@@ -130,7 +135,9 @@ export function ProjectPayablesClient({
         setQboApAccounts(context.apAccounts ?? [])
         setQboDefaults(context.defaults ?? {})
         setAccountingDimensions(context.dimensions ?? [])
-        if (context.provider === "qbo") {
+        // Any external accounting connection attributes payables to a customer
+        // on the other side; the nudge is not QuickBooks-specific.
+        if (context.enabled && context.provider && context.provider !== "arc_books") {
           getProjectAccountingCustomerPreviewAction(projectId)
             .then((preview) => {
               if (!cancelled) setCustomerPreview(preview)
@@ -208,7 +215,7 @@ export function ProjectPayablesClient({
           return
         }
         if (updated.data.qbo_sync_status === "needs_review") {
-          toast.warning(`Bill approved, but ${accountingProviderName ?? "accounting"} needs coding`, {
+          toast.warning(`Bill approved, but ${providerName} needs coding`, {
             description: updated.data.qbo_sync_error ?? "Choose an accounting category before syncing.",
           })
         } else {
@@ -223,7 +230,7 @@ export function ProjectPayablesClient({
 
   return (
     <div className={fullBleed ? "w-full" : "h-full flex flex-col"}>
-      {accountingProvider === "qbo" && customerPreview && !customerPreview.hasDefault && !customerNudgeDismissed ? (
+      {externalAccountingEnabled && customerPreview && !customerPreview.hasDefault && !customerNudgeDismissed ? (
         <div
           className={cn(
             "mb-3 flex items-start justify-between gap-3 border border-warning/30 bg-warning/10 px-4 py-2.5 text-sm text-foreground",
@@ -231,7 +238,7 @@ export function ProjectPayablesClient({
           )}
         >
           <p>
-            Payables sync to QuickBooks under{" "}
+            Payables sync to {providerName} under{" "}
             <span className="font-medium">{customerPreview.customerName ?? "this project's client"}</span>. Set a default
             customer in project settings to control cost attribution.
           </p>
@@ -252,7 +259,7 @@ export function ProjectPayablesClient({
           costCodes={costCodes}
           costCodesEnabled={costCodesEnabled}
           accountingEnabled={accountingEnabled}
-          externalAccountingEnabled={accountingEnabled && accountingProvider !== "arc_books"}
+          externalAccountingEnabled={externalAccountingEnabled}
           runMembershipByBillId={runMembershipByBillId}
           accountingProviderName={accountingProviderName}
           qboExpenseAccounts={qboExpenseAccounts}
@@ -264,7 +271,7 @@ export function ProjectPayablesClient({
           initialQueue={initialQueue}
           initialSearch={initialSearch}
           onAddPayable={() => setAddPayableOpen(true)}
-          onOpenSyncSheet={accountingProvider === "qbo" ? () => setSyncSheetOpen(true) : undefined}
+          onOpenSyncSheet={externalAccountingEnabled ? () => setSyncSheetOpen(true) : undefined}
           onSelectQboExpenseAccount={(bill, accountId) => {
             startTransition(async () => {
               try {
@@ -345,7 +352,7 @@ export function ProjectPayablesClient({
                 return
               }
               unwrapAction(await syncProjectVendorBillToAccountingAction(projectId, bill.id))
-              toast.success(`Synced to ${accountingProviderName ?? "accounting"}`)
+              toast.success(`Synced to ${providerName}`)
               router.refresh()
             })
           }}
@@ -361,7 +368,7 @@ export function ProjectPayablesClient({
         onSuccess={() => router.refresh()}
       />
 
-      {accountingProvider === "qbo" ? <AccountingSyncSheet open={syncSheetOpen} onOpenChange={setSyncSheetOpen} projectId={projectId} /> : null}
+      {externalAccountingEnabled ? <AccountingSyncSheet open={syncSheetOpen} onOpenChange={setSyncSheetOpen} projectId={projectId} /> : null}
 
       <PayablesWorkspace
         projectId={projectId}

@@ -382,8 +382,10 @@ export async function sendReminderSMS(payload: ReminderSMSPayload): Promise<stri
 
 export interface ComplianceAutopilotEmailItem {
   documentName: string
-  reminderKind: "missing" | "expiring" | "expired"
+  reminderKind: "missing" | "expiring" | "expired" | "rejected"
   expiryDate?: string | null
+  /** The builder's words on why it came back. Only set for a rejection. */
+  rejectionReason?: string | null
 }
 
 export interface ComplianceAutopilotEmailPayload {
@@ -420,6 +422,7 @@ function formatComplianceDate(value?: string | null): string | null {
 function complianceItemStatus(item: ComplianceAutopilotEmailItem): string {
   const date = formatComplianceDate(item.expiryDate)
   if (item.reminderKind === "missing") return "Not on file"
+  if (item.reminderKind === "rejected") return "Sent back"
   if (item.reminderKind === "expired") return date ? `Expired ${date}` : "Expired"
   return date ? `Expires ${date}` : "Expiring soon"
 }
@@ -431,6 +434,7 @@ function complianceEmailTitle(items: ComplianceAutopilotEmailItem[]): string {
   const [kind] = kinds
   if (kind === "expired") return `Compliance ${noun} expired`
   if (kind === "expiring") return `Compliance ${noun} expiring`
+  if (kind === "rejected") return `Compliance ${noun} sent back`
   return `Compliance ${noun} needed`
 }
 
@@ -441,6 +445,7 @@ export function buildComplianceAutopilotSubject(items: ComplianceAutopilotEmailI
     const [item] = items
     if (item.reminderKind === "missing") return `Compliance request: ${item.documentName} needed`
     if (item.reminderKind === "expired") return `Compliance expired: ${item.documentName}`
+    if (item.reminderKind === "rejected") return `Action needed: ${item.documentName} was sent back`
     return `Compliance reminder: ${item.documentName} expires soon`
   }
 
@@ -448,10 +453,84 @@ export function buildComplianceAutopilotSubject(items: ComplianceAutopilotEmailI
     const [kind] = kinds
     if (kind === "missing") return `Compliance request: ${items.length} documents needed`
     if (kind === "expired") return `Compliance expired: ${items.length} documents`
+    if (kind === "rejected") return `Action needed: ${items.length} documents were sent back`
     return `Compliance reminder: ${items.length} documents expire soon`
   }
 
   return `Compliance update: ${items.length} documents need attention`
+}
+
+export interface ComplianceDecisionEmailPayload {
+  to: string
+  recipientName?: string | null
+  companyName: string
+  documentName: string
+  decision: "approved" | "rejected"
+  rejectionReason?: string | null
+  orgName?: string | null
+  orgLogoUrl?: string | null
+  orgSlug?: string | null
+  /** An existing portal link. A decision email never mints new access. */
+  portalToken?: string | null
+}
+
+/**
+ * Tell a vendor what happened to the document they sent.
+ *
+ * A rejection nobody is told about is a document that never gets fixed: the
+ * autopilot only ever chased missing and expiring items, so a returned
+ * certificate was invisible until the vendor happened to open the portal.
+ */
+export async function sendComplianceDecisionEmail(
+  payload: ComplianceDecisionEmailPayload,
+): Promise<boolean> {
+  const approved = payload.decision === "approved"
+  const documentName = escapeMessage(payload.documentName)
+  const companyName = escapeMessage(payload.companyName)
+  const greeting = payload.recipientName
+    ? `<p style="margin:0 0 14px 0;">Hi ${escapeMessage(payload.recipientName)},</p>`
+    : ""
+
+  const baseUrl = (process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com").replace(/\/$/, "")
+  const portalUrl = payload.portalToken ? `${baseUrl}/s/${payload.portalToken}/compliance` : null
+
+  const reasonBlock =
+    !approved && payload.rejectionReason
+      ? `<p style="margin:0 0 14px 0; padding:12px 14px; background:#faf7f2; border-left:3px solid #b45309; color:#111111; font-size:14px;">${escapeMessage(payload.rejectionReason)}</p>`
+      : ""
+
+  const body = approved
+    ? `<p style="margin:0;">Nothing further is needed for this document. We will let you know before it expires.</p>`
+    : `<p style="margin:0;">${
+        portalUrl
+          ? "Upload a corrected copy from your portal so work and payments are not held up."
+          : "Please send a corrected copy to the project team so work and payments are not held up."
+      }</p>`
+
+  const html = renderStandardEmailLayout({
+    title: approved ? `${payload.documentName} approved` : `${payload.documentName} needs another look`,
+    messageHtml: `
+      ${greeting}
+      <p style="margin:0 0 14px 0;">Your <strong>${documentName}</strong> for ${companyName} was ${
+        approved ? "approved" : "sent back"
+      }.</p>
+      ${reasonBlock}
+      ${body}
+    `,
+    buttonText: !approved && portalUrl ? "Upload a new copy" : undefined,
+    buttonUrl: !approved && portalUrl ? portalUrl : undefined,
+    orgName: payload.orgName,
+    orgLogoUrl: payload.orgLogoUrl,
+  })
+
+  return sendEmail({
+    to: [payload.to],
+    subject: approved
+      ? `Approved: ${payload.documentName}`
+      : `Action needed: ${payload.documentName} was sent back`,
+    html,
+    from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
+  })
 }
 
 export async function sendComplianceAutopilotEmail(

@@ -5,9 +5,8 @@ import { revalidatePath } from "next/cache"
 import { getBudgetWithActuals, listBudgetBucketChangeOrders, listProjectBudgetLines, listVarianceAlertsForProject } from "@/lib/services/budgets"
 import { listCostCodes } from "@/lib/services/cost-codes"
 import { listProjectCommitments } from "@/lib/services/commitments"
-import { listCompanies } from "@/lib/services/companies"
 import { getProjectInvoiceArSummary, listInvoices } from "@/lib/services/invoices"
-import { listContacts } from "@/lib/services/contacts"
+import { listBillableContacts } from "@/lib/services/contacts"
 import { listVendorBillsPageForProject } from "@/lib/services/vendor-bills"
 import { getProjectBuyoutStatus } from "@/lib/services/bids"
 import { getComplianceRules } from "@/lib/services/compliance"
@@ -49,7 +48,6 @@ import {
   saveProjectFinancialSetup,
   type FinancialSetupInput,
 } from "@/lib/services/project-financial-setup"
-import { prepareBillingAutopilotRun } from "@/lib/services/billing-autopilot"
 import {
   importSovFromBudget,
   importSovFromEstimate,
@@ -102,7 +100,10 @@ function resultError(label: string, result: PromiseSettledResult<unknown>) {
  * - Cost codes for line item assignment
  * - Variance alerts
  * - Commitments (merged into budget tab)
- * - Companies (for commitment vendor selection)
+ *
+ * Vendor companies are deliberately NOT loaded here — the commitment dialogs
+ * lazy-load them on open (`listBudgetCompaniesAction`) so a large org
+ * directory never rides along with every budget page view.
  */
 export async function fetchBudgetTabDataAction(projectId: string) {
       const setupStatus = await getProjectFinancialSetupStatusForProject(projectId).catch(() => null)
@@ -112,7 +113,6 @@ export async function fetchBudgetTabDataAction(projectId: string) {
         costCodesResult,
         varianceAlertsResult,
         commitmentsResult,
-        companiesResult,
         buyoutStatusResult,
         feeSummaryResult,
         gmpSummaryResult,
@@ -122,7 +122,6 @@ export async function fetchBudgetTabDataAction(projectId: string) {
         listCostCodes(),
         listVarianceAlertsForProject(projectId),
         listProjectCommitments(projectId),
-        listCompanies(),
         getProjectBuyoutStatus(projectId),
         isFixedPrice ? Promise.resolve(null) : getProjectFeeBillingSummary(projectId),
         isFixedPrice ? Promise.resolve(null) : getProjectGmpControlSummary(projectId),
@@ -133,13 +132,11 @@ export async function fetchBudgetTabDataAction(projectId: string) {
       const costCodes = costCodesResult.status === "fulfilled" ? costCodesResult.value : []
       const varianceAlerts = varianceAlertsResult.status === "fulfilled" ? varianceAlertsResult.value : []
       const commitments = commitmentsResult.status === "fulfilled" ? commitmentsResult.value : []
-      const companies = companiesResult.status === "fulfilled" ? companiesResult.value : []
       const errors = [
         resultError("Budget", budgetDataResult),
         resultError("Cost codes", costCodesResult),
         resultError("Variance alerts", varianceAlertsResult),
         resultError("Commitments", commitmentsResult),
-        resultError("Companies", companiesResult),
         resultError("Buyout status", buyoutStatusResult),
         isFixedPrice ? null : resultError("Fee billing", feeSummaryResult),
         isFixedPrice ? null : resultError("GMP control", gmpSummaryResult),
@@ -152,7 +149,6 @@ export async function fetchBudgetTabDataAction(projectId: string) {
         costCodes,
         varianceAlerts,
         commitments,
-        companies,
         buyoutStatus: buyoutStatusResult.status === "fulfilled" ? buyoutStatusResult.value : null,
         budgetBucketCompanies,
         feeSummary: feeSummaryResult.status === "fulfilled" ? feeSummaryResult.value : null,
@@ -201,41 +197,37 @@ async function buildBudgetBucketCompanies(commitments: Awaited<ReturnType<typeof
  * - Cost codes for invoice line items
  */
 export async function fetchReceivablesTabDataAction(projectId: string) {
-      const setupStatus = await getProjectFinancialSetupStatusForProject(projectId).catch(() => null)
-      const isFixedFee = setupStatus?.billingModel === "cost_plus_fixed_fee"
       const [invoicesResult, contactsResult, costCodesResult, ownerPackagesResult, feeSummaryResult, arSummaryResult] = await Promise.allSettled([
         // First page only; the invoices tab lazy-loads the rest via "Load more".
         listInvoices({ projectId, limit: 100 }),
-        listContacts(),
+        listBillableContacts(),
         listCostCodes(),
         listProjectOwnerBillingPackageSummaries(projectId),
-        isFixedFee ? getProjectFeeBillingSummary(projectId) : Promise.resolve(null),
+        // Always fetched: it resolves the billing model itself, so the Fee tab can't
+        // desync from a separately-fetched setup status.
+        getProjectFeeBillingSummary(projectId),
         // Whole-book aging so the AR strip stays correct beyond the first invoice page.
         getProjectInvoiceArSummary({ projectId }),
       ])
 
+      const feeSummary = feeSummaryResult.status === "fulfilled" ? feeSummaryResult.value : null
       return {
         invoices: invoicesResult.status === "fulfilled" ? invoicesResult.value : [],
         contacts: contactsResult.status === "fulfilled" ? contactsResult.value : [],
         costCodes: costCodesResult.status === "fulfilled" ? costCodesResult.value : [],
         ownerBillingPackages: ownerPackagesResult.status === "fulfilled" ? ownerPackagesResult.value : [],
-        feeSummary: feeSummaryResult.status === "fulfilled" ? feeSummaryResult.value : null,
+        feeSummary,
         arSummary: arSummaryResult.status === "fulfilled" ? arSummaryResult.value : null,
         errors: [
           resultError("Invoices", invoicesResult),
           resultError("Contacts", contactsResult),
           resultError("Cost codes", costCodesResult),
           resultError("Owner billing packages", ownerPackagesResult),
-          isFixedFee ? resultError("Fee billing", feeSummaryResult) : null,
+          resultError("Fee billing", feeSummaryResult),
         ].filter(Boolean) as string[],
       }
 }
 
-export async function prepareBillingAutopilotAction(projectId: string) {
-      const state = await prepareBillingAutopilotRun(projectId)
-      revalidatePath(`/projects/${projectId}/financials/receivables`)
-      return state
-}
 
 /**
  * Fetch all data needed for the Payables tab
@@ -264,7 +256,11 @@ export async function fetchPayablesTabDataAction(projectId: string, query: { pag
       const costCodes = costCodesResult.status === "fulfilled" ? costCodesResult.value : []
       const budgetLines = budgetLinesResult.status === "fulfilled" ? budgetLinesResult.value : []
       const companyIds = Array.from(new Set(vendorBills.map((b) => b.company_id).filter(Boolean))) as string[]
-      const complianceStatusResult = await Promise.allSettled([getCompaniesComplianceStatus(companyIds)])
+      // This tab is one job, so the vendors are read against that job's
+      // overlay — the same scope the release gate uses.
+      const complianceStatusResult = await Promise.allSettled([
+        getCompaniesComplianceStatus(companyIds, undefined, { projectIds: [projectId] }),
+      ])
       const complianceStatusByCompanyId =
         complianceStatusResult[0].status === "fulfilled" ? complianceStatusResult[0].value : {}
       const paymentDecorations = await loadPayablePaymentDecorations(vendorBills).catch(() => ({

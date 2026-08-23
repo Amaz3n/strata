@@ -1,3 +1,5 @@
+import type { createServiceSupabaseClient } from "@/lib/supabase/server"
+
 export interface AccountingInvoiceLineLinkInput {
   invoiceLineId: string
   externalLineId?: string | null
@@ -14,7 +16,7 @@ export interface AccountingInvoiceLineLinkInput {
  * so authorization remains owned by the calling workflow.
  */
 export async function persistAccountingInvoiceLineLinks(input: {
-  supabase: any
+  supabase: ReturnType<typeof createServiceSupabaseClient>
   orgId: string
   connectionId: string
   provider: string

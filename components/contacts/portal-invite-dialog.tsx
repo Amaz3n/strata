@@ -14,7 +14,9 @@ import { useToast } from "@/hooks/use-toast"
 import { unwrapAction } from "@/lib/action-result"
 
 interface PortalInviteDialogProps {
-  contact?: Contact
+  /** Narrowed to what the dialog actually shows, so a list row that holds only
+   *  an id and a name can invite without loading the whole contact. */
+  contact?: Pick<Contact, "id" | "full_name">
   projects: Project[]
   open: boolean
   onOpenChange: (open: boolean) => void

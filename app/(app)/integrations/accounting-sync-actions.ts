@@ -2,10 +2,16 @@
 
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { listInvoices } from "@/lib/services/invoices"
-import { enqueueAccountingPush, processAccountingPush, type AccountingPushEntityType } from "@/lib/services/accounting-sync"
+import { ACCOUNTING_JOB_TYPES, enqueueAccountingPush, processAccountingPush, type AccountingPushEntityType } from "@/lib/services/accounting-sync"
 import { ACCOUNTING_PROVIDERS } from "@/lib/integrations/accounting/catalog"
 import { getProvider, isAccountingProviderKey } from "@/lib/integrations/accounting/registry"
+
+/**
+ * Row cap per entity type. A 200-active-project org's backlog must not load
+ * the entire invoices table into one server action — the caller is told when
+ * the cap truncated (`truncated` on the queue payload).
+ */
+const QUEUE_ROW_CAP = 500
 
 export type AccountingSyncEntityType = "invoice" | "expense" | "bill" | "payment" | "bill_payment" | "webhook_event"
 
@@ -33,6 +39,15 @@ export type AccountingSyncQueue = {
    */
   provider: { key: string; name: string; supportsImport: boolean } | null
   items: AccountingSyncQueueItem[]
+  /** True when a per-type row cap trimmed the queue — the counts understate. */
+  truncated: boolean
+  /**
+   * Inbound changes that were dropped on the floor with a terminal reason
+   * ("no local mapping", "entity not handled", …). These were previously
+   * invisible anywhere — which made "why didn't this sync?" unanswerable
+   * without database access.
+   */
+  ignoredEvents: { count: number; reasons: Array<{ reason: string; count: number }> }
 }
 
 export type AccountingSyncHistoryItem = {
@@ -101,24 +116,36 @@ export async function listAccountingSyncQueueAction(params?: { projectId?: strin
     ((projectRows ?? []) as any[]).map((row) => [row.id as string, row.name as string]),
   )
 
-  const [invoicesAll, expensesRes, billsRes, paymentRecordsRes, webhookEventsRes] = await Promise.all([
-    listInvoices({ orgId }),
-    supabase
-      .from("project_expenses")
-      .select(
-        "id, project_id, description, vendor_name_text, expense_date, amount_cents, tax_cents, qbo_sync_status, qbo_sync_error, vendor_company:companies(name)",
-      )
-      .eq("org_id", orgId)
-      .in("qbo_sync_status", ["pending", "error", "needs_review"])
-      .order("expense_date", { ascending: false }),
-    supabase
-      .from("vendor_bills")
-      .select(
-        "id, project_id, bill_number, bill_date, total_cents, qbo_sync_status, qbo_sync_error, commitment:commitments(title, company:companies(name))",
-      )
-      .eq("org_id", orgId)
-      .in("qbo_sync_status", ["pending", "error", "needs_review"])
-      .order("bill_date", { ascending: false }),
+  // Every filter runs in SQL with an explicit cap. The previous shape loaded
+  // EVERY invoice/expense/bill in the org into the action and filtered in JS —
+  // on the surface a 200-project org opens most.
+  let invoicesQuery = supabase
+    .from("invoices")
+    .select("id, project_id, invoice_number, title, issue_date, total_cents, qbo_sync_status")
+    .eq("org_id", orgId)
+    .in("qbo_sync_status", ["pending", "error", "needs_review"])
+  if (projectId) invoicesQuery = invoicesQuery.eq("project_id", projectId)
+  let expensesQuery = supabase
+    .from("project_expenses")
+    .select(
+      "id, project_id, description, vendor_name_text, expense_date, amount_cents, tax_cents, qbo_sync_status, qbo_sync_error, vendor_company:companies(name)",
+    )
+    .eq("org_id", orgId)
+    .in("qbo_sync_status", ["pending", "error", "needs_review"])
+  if (projectId) expensesQuery = expensesQuery.eq("project_id", projectId)
+  let billsQuery = supabase
+    .from("vendor_bills")
+    .select(
+      "id, project_id, bill_number, bill_date, total_cents, qbo_sync_status, qbo_sync_error, commitment:commitments(title, company:companies(name))",
+    )
+    .eq("org_id", orgId)
+    .in("qbo_sync_status", ["pending", "error", "needs_review"])
+  if (projectId) billsQuery = billsQuery.eq("project_id", projectId)
+
+  const [invoicesRes, expensesRes, billsRes, paymentRecordsRes, webhookEventsRes, ignoredEventsRes] = await Promise.all([
+    invoicesQuery.order("issue_date", { ascending: false }).limit(QUEUE_ROW_CAP),
+    expensesQuery.order("expense_date", { ascending: false }).limit(QUEUE_ROW_CAP),
+    billsQuery.order("bill_date", { ascending: false }).limit(QUEUE_ROW_CAP),
     supabase
       .from("accounting_sync_records")
       .select("entity_id, entity_type, status, error_message, external_id, last_synced_at, created_at")
@@ -126,7 +153,8 @@ export async function listAccountingSyncQueueAction(params?: { projectId?: strin
       .in("entity_type", ["payment", "bill_payment"])
       // "conflict" is how a provider-side deletion of a posted payment is
       // recorded; leaving it out of the queue made the divergence invisible.
-      .in("status", ["pending", "error", "needs_review", "conflict"]),
+      .in("status", ["pending", "error", "needs_review", "conflict"])
+      .limit(QUEUE_ROW_CAP),
     supabase
       .from("qbo_webhook_events")
       .select("id, entity_name, entity_qbo_id, operation, process_error, attempts, received_at, processed_at")
@@ -134,17 +162,37 @@ export async function listAccountingSyncQueueAction(params?: { projectId?: strin
       .eq("process_status", "error")
       .order("received_at", { ascending: false })
       .limit(25),
+    supabase
+      .from("qbo_webhook_events")
+      .select("process_error")
+      .in("realm_id", realmIds.length > 0 ? realmIds : [""])
+      .eq("process_status", "ignored")
+      .not("process_error", "is", null)
+      .order("received_at", { ascending: false })
+      .limit(200),
   ])
 
-  const invoices = invoicesAll.filter(
-    (invoice) =>
-      (invoice.qbo_sync_status === "pending" || invoice.qbo_sync_status === "error" || invoice.qbo_sync_status === "needs_review") &&
-      (!projectId || invoice.project_id === projectId),
-  )
-  const expenses = ((expensesRes.data ?? []) as any[]).filter((expense) => !projectId || expense.project_id === projectId)
-  const bills = ((billsRes.data ?? []) as any[]).filter((bill) => !projectId || bill.project_id === projectId)
+  const invoices = (invoicesRes.data ?? []) as any[]
+  const expenses = (expensesRes.data ?? []) as any[]
+  const bills = (billsRes.data ?? []) as any[]
   const paymentRecords = (paymentRecordsRes.data ?? []) as any[]
   const deadLetterEvents = projectId ? [] : ((webhookEventsRes.data ?? []) as any[])
+  const truncated =
+    invoices.length >= QUEUE_ROW_CAP || expenses.length >= QUEUE_ROW_CAP || bills.length >= QUEUE_ROW_CAP || paymentRecords.length >= QUEUE_ROW_CAP
+
+  const ignoredReasonCounts = new Map<string, number>()
+  for (const row of (ignoredEventsRes.data ?? []) as Array<{ process_error: string | null }>) {
+    const reason = (row.process_error ?? "").trim()
+    if (!reason) continue
+    ignoredReasonCounts.set(reason, (ignoredReasonCounts.get(reason) ?? 0) + 1)
+  }
+  const ignoredEvents = {
+    count: [...ignoredReasonCounts.values()].reduce((sum, value) => sum + value, 0),
+    reasons: [...ignoredReasonCounts.entries()]
+      .map(([reason, count]) => ({ reason, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 8),
+  }
 
   // Latest sync record per entity (external id / last attempt / error) on invoices, expenses, bills.
   const recordLookup = new Map<string, { externalId: string | null; lastAttemptAt: string | null; error: string | null }>()
@@ -188,7 +236,7 @@ export async function listAccountingSyncQueueAction(params?: { projectId?: strin
       projectId: invoice.project_id ?? null,
       label: invoice.invoice_number || invoice.title || "Invoice",
       sublabel: invoice.project_id ? projectName.get(invoice.project_id) ?? null : null,
-      amountCents: invoice.total_cents ?? invoice.totals?.total_cents ?? 0,
+      amountCents: Number(invoice.total_cents ?? 0),
       status: mapStatus(invoice.qbo_sync_status),
       error: record?.error ?? null,
       externalId: record?.externalId ?? null,
@@ -287,7 +335,7 @@ export async function listAccountingSyncQueueAction(params?: { projectId?: strin
     })
   }
 
-  return { connected, provider, items }
+  return { connected, provider, items, truncated, ignoredEvents }
 }
 
 /**
@@ -326,6 +374,12 @@ export async function syncAccountingItemAction(
 export async function syncAllAccountingPendingAction(params?: { projectId?: string | null }): Promise<{ queued: number; failed: number; errors: string[] }> {
   const { orgId } = await requireOrgContext()
   const { items } = await listAccountingSyncQueueAction({ projectId: params?.projectId })
+
+  // Org-wide "sync everything" also revives dead-lettered outbox jobs — the
+  // one state this surface previously had no exit from.
+  if (!params?.projectId) {
+    await retryFailedAccountingOutboxAction().catch(() => {})
+  }
 
   let queued = 0
   let failed = 0
@@ -382,8 +436,22 @@ function describeEnqueueBlock(reason: string): string {
  * has an inbound webhook stream to replay.
  */
 export async function retryQboWebhookEventAction(id: string): Promise<{ success: boolean; error: string | null }> {
-  await requireOrgContext()
+  const { orgId } = await requireOrgContext()
   const supabase = createServiceSupabaseClient()
+  // `qbo_webhook_events` has no org column, so tenancy is enforced through the
+  // realm: only events belonging to one of THIS org's QuickBooks connections
+  // may be replayed. Without the realm predicate any signed-in user could
+  // replay any tenant's dead-lettered event by id.
+  const { data: realmRows } = await supabase
+    .from("accounting_connections")
+    .select("external_account_id")
+    .eq("org_id", orgId)
+    .eq("provider", "qbo")
+  const realmIds = (realmRows ?? [])
+    .map((row) => row.external_account_id)
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+  if (realmIds.length === 0) return { success: false, error: "No QuickBooks connection for this organization" }
+
   const { error } = await supabase
     .from("qbo_webhook_events")
     .update({
@@ -394,10 +462,86 @@ export async function retryQboWebhookEventAction(id: string): Promise<{ success:
       processed_at: null,
     })
     .eq("id", id)
+    .in("realm_id", realmIds)
     .eq("process_status", "error")
 
   if (error) return { success: false, error: error.message }
   return { success: true, error: null }
+}
+
+/**
+ * Resolve a both-sides conflict. `keep_arc` re-queues Arc's copy through the
+ * outbox so Arc wins in the accounting system; `take_remote` re-applies the
+ * provider's copy over Arc with the conflict guard released. Until this
+ * existed, a needs_review row's only exit was a human editing one side until
+ * the amounts happened to agree.
+ */
+export async function resolveAccountingConflictAction(input: {
+  entityType: "invoice" | "expense" | "bill"
+  id: string
+  resolution: "keep_arc" | "take_remote"
+}): Promise<{ resolved: boolean; error: string | null }> {
+  const { orgId } = await requireOrgContext()
+  const supabase = createServiceSupabaseClient()
+  const mapped: "invoice" | "project_expense" | "bill" = input.entityType === "expense" ? "project_expense" : input.entityType === "bill" ? "bill" : "invoice"
+
+  const { data: record } = await supabase
+    .from("accounting_sync_records")
+    .select("connection_id, external_id, provider")
+    .eq("org_id", orgId)
+    .eq("entity_type", mapped)
+    .eq("entity_id", input.id)
+    .maybeSingle()
+  if (!record?.connection_id) return { resolved: false, error: "No sync record found for this transaction" }
+
+  if (input.resolution === "keep_arc") {
+    const { error } = await supabase
+      .from("accounting_sync_records")
+      .update({ status: "pending", error_message: null })
+      .eq("org_id", orgId)
+      .eq("connection_id", record.connection_id)
+      .eq("entity_type", mapped)
+      .eq("entity_id", input.id)
+    if (error) return { resolved: false, error: error.message }
+    const pushType: AccountingPushEntityType = mapped === "bill" ? "vendor_bill" : mapped
+    const result = await enqueueAccountingPush({ orgId, entityType: pushType, entityId: input.id })
+    return result.queued ? { resolved: true, error: null } : { resolved: false, error: describeEnqueueBlock(result.reason) }
+  }
+
+  if (!record.external_id) return { resolved: false, error: "This transaction has no linked record in the accounting system" }
+  if (!isAccountingProviderKey(record.provider)) return { resolved: false, error: "Unknown accounting provider" }
+  const provider = getProvider(record.provider)
+  if (!provider.resolveConflictTakeRemote) return { resolved: false, error: `${record.provider} cannot re-apply its copy` }
+  const result = await provider.resolveConflictTakeRemote({
+    orgId,
+    connectionId: record.connection_id,
+    entityType: mapped,
+    externalId: record.external_id,
+  })
+  return result.reconciled ? { resolved: true, error: null } : { resolved: false, error: result.reason ?? "Unable to apply the accounting system's copy" }
+}
+
+/**
+ * Revive this org's dead-lettered accounting outbox jobs.
+ *
+ * "Failed" was a lifetime counter with no exit: "Sync now" enqueued a NEW row
+ * (the dedupe index only covers pending), the admin retry tool explicitly
+ * excludes accounting job types, and nothing anywhere reset a failed row. This
+ * is that affordance — the retry budget starts over and the normal backoff
+ * applies from the first re-attempt.
+ */
+export async function retryFailedAccountingOutboxAction(): Promise<{ revived: number }> {
+  const { orgId } = await requireOrgContext()
+  const supabase = createServiceSupabaseClient()
+  const { data, error } = await supabase
+    .from("outbox")
+    .update({ status: "pending", retry_count: 0, last_error: null, run_at: new Date().toISOString() })
+    .eq("org_id", orgId)
+    .eq("status", "failed")
+    .in("job_type", [...ACCOUNTING_JOB_TYPES])
+    .select("id")
+  if (error) throw new Error(`Unable to retry failed accounting jobs: ${error.message}`)
+  return { revived: (data ?? []).length }
 }
 
 export async function listAccountingSyncHistoryAction(params?: { projectId?: string | null; limit?: number }): Promise<AccountingSyncHistoryItem[]> {
@@ -406,12 +550,30 @@ export async function listAccountingSyncHistoryAction(params?: { projectId?: str
   const projectId = params?.projectId ?? null
   const limit = params?.limit ?? 50
 
-  const { data: records } = await supabase
+  // Project scope narrows the QUERY, not the org-wide top-N after the fact —
+  // the old shape showed "No sync history yet" on any project whose rows fell
+  // outside the org's 50 most recent.
+  let recordsQuery = supabase
     .from("accounting_sync_records")
     .select("id, entity_type, entity_id, external_id, last_synced_at, sync_direction, status, error_message, created_at")
     .eq("org_id", orgId)
-    .order("last_synced_at", { ascending: false })
-    .limit(limit)
+  if (projectId) {
+    const [invoiceIds, expenseIds, billIds, paymentIds] = await Promise.all([
+      supabase.from("invoices").select("id").eq("org_id", orgId).eq("project_id", projectId).order("created_at", { ascending: false }).limit(400),
+      supabase.from("project_expenses").select("id").eq("org_id", orgId).eq("project_id", projectId).order("created_at", { ascending: false }).limit(400),
+      supabase.from("vendor_bills").select("id").eq("org_id", orgId).eq("project_id", projectId).order("created_at", { ascending: false }).limit(400),
+      supabase.from("payments").select("id").eq("org_id", orgId).eq("project_id", projectId).order("created_at", { ascending: false }).limit(400),
+    ])
+    const projectEntityIds = [
+      ...(invoiceIds.data ?? []),
+      ...(expenseIds.data ?? []),
+      ...(billIds.data ?? []),
+      ...(paymentIds.data ?? []),
+    ].map((row) => row.id as string)
+    if (projectEntityIds.length === 0) return []
+    recordsQuery = recordsQuery.in("entity_id", projectEntityIds)
+  }
+  const { data: records } = await recordsQuery.order("last_synced_at", { ascending: false }).limit(limit)
 
   const rows = (records ?? []) as any[]
   if (rows.length === 0) return []

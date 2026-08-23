@@ -9,6 +9,7 @@ import { warrantyRequestInputSchema } from "@/lib/validation/warranty"
 export async function createWarrantyRequestPortalAction(token: string, formData: FormData) {
   const access = await assertPortalActionAccess(token, {
     portalType: "client",
+    requireProject: true,
     permission: "can_view_warranty",
   })
 
@@ -56,7 +57,7 @@ export async function createWarrantyRequestPortalAction(token: string, formData:
 }
 
 export async function signOffWarrantyVisitPortalAction(token: string, formData: FormData) {
-  const access = await assertPortalActionAccess(token, { portalType: "client", permission: "can_view_warranty" })
+  const access = await assertPortalActionAccess(token, { portalType: "client", requireProject: true, permission: "can_view_warranty" })
   const visitId = String(formData.get("visit_id") || "")
   const name = String(formData.get("name") || "").trim()
   if (!visitId || !name) throw new Error("Visit and sign-off name are required")

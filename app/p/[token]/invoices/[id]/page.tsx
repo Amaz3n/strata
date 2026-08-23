@@ -20,6 +20,7 @@ export default async function InvoicePortalPage({ params }: Params) {
   try {
     access = await assertPortalActionAccess(token, {
       portalType: "client",
+      requireProject: true,
       permission: "can_view_invoices",
     })
   } catch {

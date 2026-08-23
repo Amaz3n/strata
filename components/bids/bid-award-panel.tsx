@@ -85,6 +85,7 @@ export function BidAwardPanel({
   const variancePct = budgetCents && budgetCents > 0 ? (variance! / budgetCents) * 100 : null
 
   const prequalWarning = submission.invite?.prequalification_warning
+  const complianceWarning = submission.invite?.compliance_warning
   const bondMissing = bidPackage.bond_required && hasAttachments === false
 
   function toggleAlternate(id: string) {
@@ -164,6 +165,12 @@ export function BidAwardPanel({
           <div className="space-y-2">
             <p className="text-xs font-medium text-muted-foreground">Pre-award checks</p>
             <GateItem ok={!prequalWarning} label={prequalWarning ? prequalWarning : "Vendor prequalification current"} />
+            {/* Checked here rather than only at the first payable: a lapsed
+                certificate is far cheaper to fix before the contract. */}
+            <GateItem
+              ok={!complianceWarning}
+              label={complianceWarning ? complianceWarning : "Vendor compliance current"}
+            />
             {bidPackage.bond_required ? (
               <GateItem
                 ok={!bondMissing}

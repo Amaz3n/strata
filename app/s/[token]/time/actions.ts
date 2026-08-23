@@ -25,6 +25,7 @@ function parseDateEntry(value: FormDataEntryValue | null, label: string) {
 export async function submitPortalTimeAction(token: string, formData: FormData) {
   const portalToken = await assertPortalActionAccess(token, {
     portalType: "sub",
+    requireProject: true,
     requireCompany: true,
     permission: "can_submit_time",
   })

@@ -1,4 +1,4 @@
-import type { PortalAccessToken } from "@/lib/types"
+import type { PortalAccessToken, ProjectScopedPortalAccess } from "@/lib/types"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
 import { getDivisionScopedProjectIds, requireAuthorization } from "@/lib/services/authorization"
@@ -141,7 +141,7 @@ export async function reportPoCompletion(input: ReportPoCompletionInput, orgId?:
 }
 
 export async function reportPoCompletionFromPortal(token: string, input: Omit<ReportPoCompletionInput, "reported_source">) {
-  const access = await assertPortalActionAccess(token, { portalType: "sub", requireCompany: true, permission: "can_report_po_completion" })
+  const access = await assertPortalActionAccess(token, { portalType: "sub", requireCompany: true, requireProject: true, permission: "can_report_po_completion" })
   const service = createServiceSupabaseClient()
   const commitment = await loadCommitment(service, access.org_id, input.commitment_id)
   if (commitment.project_id !== access.project_id || commitment.company_id !== access.company_id) throw new Error("Purchase order not found")
@@ -252,7 +252,7 @@ function firstRelation(value: unknown) {
   return row && typeof row === "object" ? row as Record<string, unknown> : null
 }
 
-export async function listPortalPurchaseOrders(access: PortalAccessToken): Promise<PortalPurchaseOrder[]> {
+export async function listPortalPurchaseOrders(access: ProjectScopedPortalAccess): Promise<PortalPurchaseOrder[]> {
   if (!access.company_id || access.permissions.can_view_purchase_orders !== true) throw new Error("Access denied")
   const service = createServiceSupabaseClient()
   try {
@@ -315,6 +315,10 @@ export async function listPortalPurchaseOrders(access: PortalAccessToken): Promi
 
 export async function isPortalPayOnPoEnabled(access: PortalAccessToken) {
   if (access.permissions.can_view_purchase_orders !== true) return false
+  // Pay-on-PO is a community setting resolved through the job's lot, so a
+  // vendor account link has nothing to resolve it against — and no purchase
+  // orders to show either.
+  if (access.project_id === null) return false
   try {
     await requirePayOnPoEnabled(createServiceSupabaseClient(), access.org_id, access.project_id)
     return true

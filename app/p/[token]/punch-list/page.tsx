@@ -14,6 +14,7 @@ export default async function PunchListPortalPage({ params }: Params) {
   try {
     await assertPortalActionAccess(token, {
       portalType: "client",
+      requireProject: true,
       permission: "can_create_punch_items",
     })
   } catch {

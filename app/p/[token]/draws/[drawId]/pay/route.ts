@@ -11,6 +11,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
   try {
     const access = await assertPortalActionAccess(token, {
       portalType: "client",
+      requireProject: true,
       permission: "can_pay_invoices",
     })
     if (!access.permissions.can_view_invoices) {

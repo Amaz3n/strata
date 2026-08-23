@@ -7,7 +7,7 @@ import { z } from "zod";
 import { PrequalificationWorkspace } from "@/components/companies/account/prequalification-workspace";
 import { listComplianceDocumentTypes } from "@/lib/services/compliance-documents";
 import { getPrequalificationPackage } from "@/lib/services/prequalification";
-import { loadCompanyAccount } from "../page-data";
+import { loadVendorCompany } from "../page-data";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -16,9 +16,9 @@ interface PageProps {
 export default async function CompanyPrequalificationPage({ params }: PageProps) {
   const { id } = await params;
   if (!z.string().uuid().safeParse(id).success) notFound();
-  const account = await loadCompanyAccount(id).catch(() => null);
-  if (!account) notFound();
-  if (account.posture !== "vendor") redirect(`/directory/${id}`);
+  const account = await loadVendorCompany(id);
+  // Null means: not a company, or a company with no vendor role.
+  if (!account) redirect(`/directory/${id}`);
 
   // Document types feed the program editor and name the document rows; losing
   // them should not take the tab down with them.

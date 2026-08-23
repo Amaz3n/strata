@@ -19,6 +19,7 @@ import { PayableDocumentPane } from "@/components/payables/payable-document-pane
 import { WorkspaceShell } from "@/components/financials/workspace/workspace-shell"
 import { WorkspaceListPanel, type WorkspaceQueue } from "@/components/financials/workspace/workspace-list-panel"
 import { AccountingSyncBadge } from "@/components/accounting/accounting-sync-badge"
+import { accountingProviderLabel } from "@/components/accounting/provider-label"
 import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
 import {
   getExpenseAccountingContextAction,
@@ -130,6 +131,8 @@ export function ExpenseWorkspace({
   const receiptFileIdRef = useRef<string | null>(null)
 
   const qboConnected = Boolean(accountingContext?.qboConnected)
+  const accountingProvider = accountingContext?.accountingProvider ?? null
+  const providerName = accountingProviderLabel(accountingProvider, accountingContext?.accountingProviderName)
   const expenseAccounts = accountingContext?.expenseAccounts ?? []
   const paymentAccounts = accountingContext?.paymentAccounts ?? []
   const vendors = accountingContext?.vendors ?? []
@@ -486,7 +489,12 @@ export function ExpenseWorkspace({
             {statusLabels[selectedExpense.status] ?? selectedExpense.status}
           </Badge>
           {qboConnected ? (
-            <AccountingSyncBadge status={selectedExpense.qbo_sync_status ?? "not_synced"} error={selectedExpense.qbo_sync_error} />
+            <AccountingSyncBadge
+              status={selectedExpense.qbo_sync_status ?? "not_synced"}
+              error={selectedExpense.qbo_sync_error}
+              provider={accountingProvider}
+              providerLabel={accountingContext?.accountingProviderName}
+            />
           ) : null}
         </div>
       </div>
@@ -511,10 +519,15 @@ export function ExpenseWorkspace({
             <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3 text-xs">
               <div className="flex items-center gap-2">
                 <span className="microlabel">Sync status</span>
-                <AccountingSyncBadge status={selectedExpense.qbo_sync_status ?? "not_synced"} error={selectedExpense.qbo_sync_error} />
-                {qboDeepLink(selectedExpense) ? (
+                <AccountingSyncBadge
+                  status={selectedExpense.qbo_sync_status ?? "not_synced"}
+                  error={selectedExpense.qbo_sync_error}
+                  provider={accountingProvider}
+                  providerLabel={accountingContext?.accountingProviderName}
+                />
+                {accountingProvider === "qbo" && qboDeepLink(selectedExpense) ? (
                   <a href={qboDeepLink(selectedExpense)!} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-medium text-primary hover:underline">
-                    Open in QuickBooks <ExternalLink className="h-3 w-3" />
+                    Open in {providerName} <ExternalLink className="h-3 w-3" />
                   </a>
                 ) : null}
               </div>
@@ -536,8 +549,8 @@ export function ExpenseWorkspace({
           {qboConnected ? (
             <p className="mt-1 text-xs text-muted-foreground">
               {selectedExpense.qbo_vendor_id
-                ? `QuickBooks vendor: ${selectedExpense.qbo_vendor_name ?? "Linked vendor"}`
-                : "No QuickBooks vendor linked. Choose one below or let Arc match by merchant name."}
+                ? `${providerName} vendor: ${selectedExpense.qbo_vendor_name ?? "Linked vendor"}`
+                : `No ${providerName} vendor linked. Choose one below or let Arc match by merchant name.`}
             </p>
           ) : null}
         </div>
@@ -591,12 +604,12 @@ export function ExpenseWorkspace({
           </div>
         </section>
 
-        {/* QuickBooks coding */}
+        {/* Accounting coding */}
         {qboConnected ? (
           <section className="space-y-4 border bg-card p-4">
-            <h3 className="microlabel">QuickBooks coding</h3>
+            <h3 className="microlabel">{providerName} coding</h3>
             <div className="space-y-1.5">
-              <Label className="microlabel">QBO vendor</Label>
+              <Label className="microlabel">{providerName} vendor</Label>
               <Select value={qboVendorId} onValueChange={setQboVendorId}>
                 <SelectTrigger className="h-10 w-full text-sm">
                   <SelectValue placeholder="Match/create automatically" />
@@ -625,7 +638,7 @@ export function ExpenseWorkspace({
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-[11px] text-muted-foreground">The QBO expense category is set per line item below.</p>
+              <p className="text-[11px] text-muted-foreground">The {providerName} expense category is set per line item below.</p>
             </div>
           </section>
         ) : null}
@@ -643,7 +656,7 @@ export function ExpenseWorkspace({
           {isSplitAcrossProjects ? (
             <div className="flex items-center gap-2 border bg-muted/40 px-3 py-1.5 text-[11px] font-medium text-foreground">
               <Layers className="h-3.5 w-3.5 text-primary" />
-              Split across {distinctSplitProjects.length} projects — one receipt, one QuickBooks transaction.
+              Split across {distinctSplitProjects.length} projects — one receipt, one {providerName} transaction.
             </div>
           ) : null}
 
@@ -742,7 +755,7 @@ export function ExpenseWorkspace({
 
                 {qboConnected ? (
                   <div className="mt-3 border-t pt-3">
-                    <Label className="microlabel mb-1 block">QBO category</Label>
+                    <Label className="microlabel mb-1 block">{providerName} category</Label>
                     <Select
                       value={line.qboExpenseAccountId || undefined}
                       onValueChange={(value) => setSplitLines((prev) => prev.map((item) => (item.id === line.id ? { ...item, qboExpenseAccountId: value } : item)))}
@@ -792,10 +805,10 @@ export function ExpenseWorkspace({
         <Button
           variant="ghost"
           disabled={isPending || !canSync || !qboConnected}
-          onClick={() => runAction(() => syncProjectExpenseToQBOAction(projectId, selectedExpense.id).then(unwrapAction), "Expense synced to QuickBooks")}
+          onClick={() => runAction(() => syncProjectExpenseToQBOAction(projectId, selectedExpense.id).then(unwrapAction), `Expense synced to ${providerName}`)}
         >
           <ExternalLink className="mr-2 h-4 w-4" />
-          Sync to QuickBooks
+          Sync to {providerName}
         </Button>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={() => onSelect(null)}>

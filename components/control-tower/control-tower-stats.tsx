@@ -504,6 +504,16 @@ function Section({
   )
 }
 
+/**
+ * A held-money figure that never reads as an all-clear it did not establish.
+ * The trailing `+` marks a scan that hit its cap, and a scan that could not run
+ * says so rather than showing the dash a reader would take for zero.
+ */
+function formatHeldByCompliance(cents: number, truncated: boolean): string {
+  if (cents > 0) return truncated ? `${formatMoney(cents)}+` : formatMoney(cents)
+  return truncated ? "Not counted" : "—"
+}
+
 function LineRow({
   label,
   value,
@@ -973,7 +983,37 @@ function DueSheet({
           <LineRow label="Submittals" value={String(openItems.submittals)} href="/submittals" tone={openItems.submittals === 0 ? "muted" : "default"} />
           <LineRow label="Change orders" value={String(openItems.changeOrders)} href="/change-orders" tone={openItems.changeOrders === 0 ? "muted" : "default"} />
           <LineRow label="Punch items" value={String(openItems.punchItems)} href="/tasks" tone={openItems.punchItems === 0 ? "muted" : "default"} />
+          <LineRow
+            label="Compliance reviews"
+            value={String(openItems.complianceReviews)}
+            href="/directory?compliance=pending"
+            tone={openItems.complianceReviews === 0 ? "muted" : "default"}
+          />
         </Section>
+
+        {openItems.complianceReviews > 0 && (
+          // An unreviewed certificate reads to the payment gate exactly like a
+          // non-compliant vendor, so the number that matters is the money, not
+          // the document count. It is only the money the hold provably stops —
+          // a dash here means these reviews are holding nothing up.
+          <Section label="Held by compliance">
+            <LineRow
+              label={`${openItems.complianceReviews} document${openItems.complianceReviews === 1 ? "" : "s"} waiting on review`}
+              value={formatHeldByCompliance(
+                openItems.complianceHeldCents,
+                openItems.complianceHeldCentsTruncated,
+              )}
+              tone={
+                openItems.complianceHeldCents > 0
+                  ? "destructive"
+                  : openItems.complianceHeldCentsTruncated
+                    ? "default"
+                    : "muted"
+              }
+              href="/directory?compliance=pending"
+            />
+          </Section>
+        )}
       </SheetBody>
       <SheetFootLinks>
         <FootLink href="/tasks">Tasks</FootLink>

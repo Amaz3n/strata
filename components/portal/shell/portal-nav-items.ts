@@ -59,15 +59,23 @@ export interface SubPortalNavCounts {
  * Sub portal destinations, filtered by what the token may actually reach.
  * Order is deliberate: the things a sub owes the builder come before the
  * things the builder owes the sub.
+ *
+ * A vendor account link (`hasProject: false`) is about the relationship rather
+ * than a job, so everything that reads one project's data is dropped — those
+ * routes fail their gate, and offering a tab that 404s is worse than not
+ * offering it. Compliance, prequalification, payouts and warranty appointments
+ * all belong to the vendor, not the job, and stay.
  */
 export function buildSubPortalNav({
   permissions,
   counts,
+  hasProject,
   showPurchaseOrders,
   showPayments,
 }: {
   permissions: PortalPermissions
   counts: SubPortalNavCounts
+  hasProject: boolean
   showPurchaseOrders: boolean
   showPayments: boolean
 }): PortalNavItem[] {
@@ -75,7 +83,7 @@ export function buildSubPortalNav({
     { segment: "", label: "Home", icon: "home", primary: true },
   ]
 
-  if (permissions.can_view_rfis !== false) {
+  if (hasProject && permissions.can_view_rfis !== false) {
     items.push({
       segment: "rfis",
       label: "RFIs",
@@ -85,7 +93,7 @@ export function buildSubPortalNav({
     })
   }
 
-  if (permissions.can_view_submittals !== false) {
+  if (hasProject && permissions.can_view_submittals !== false) {
     items.push({
       segment: "submittals",
       label: "Submittals",
@@ -95,7 +103,7 @@ export function buildSubPortalNav({
     })
   }
 
-  if (permissions.can_view_punch_items) {
+  if (hasProject && permissions.can_view_punch_items) {
     items.push({
       segment: "punch",
       label: "Punch list",
@@ -116,7 +124,7 @@ export function buildSubPortalNav({
     })
   }
 
-  if (permissions.can_view_commitments !== false) {
+  if (hasProject && permissions.can_view_commitments !== false) {
     items.push({ segment: "commitments", label: "Contracts", icon: "contracts" })
   }
 
@@ -124,24 +132,38 @@ export function buildSubPortalNav({
     items.push({ segment: "purchase-orders", label: "Purchase orders", shortLabel: "POs", icon: "purchase-orders" })
   }
 
-  if (permissions.can_view_bills !== false) {
+  if (hasProject && permissions.can_view_bills !== false) {
     items.push({ segment: "bills", label: "Invoices", icon: "invoices", primary: true })
   }
 
-  if (permissions.can_submit_daily_logs) {
+  if (hasProject && permissions.can_submit_daily_logs) {
     items.push({ segment: "daily-logs", label: "Daily logs", shortLabel: "Logs", icon: "daily-logs" })
   }
 
-  // Both sections are gated by the same permission the routes themselves check,
-  // so a link that cannot upload never advertises a page that would refuse it.
-  if (permissions.can_upload_compliance_docs !== false) {
+  // Sub-tier waivers were reachable only from the email that requested them, so
+  // a vendor who lost that email had no route back to a page holding up their
+  // own payment.
+  if (hasProject && permissions.can_upload_subtier_waivers !== false) {
     items.push({
-      segment: "compliance",
-      label: "Compliance",
+      segment: "subtier-waivers",
+      label: "Sub-tier waivers",
+      shortLabel: "Sub-tier",
       icon: "compliance",
-      count: counts.compliance,
     })
+  }
 
+  // Compliance is always visible: knowing whether your own insurance is holding
+  // up your payments is not an editing right, and the page renders read-only
+  // without upload access. Prequalification is a package you either fill in or
+  // do not, so it stays behind the upload permission.
+  items.push({
+    segment: "compliance",
+    label: "Compliance",
+    icon: "compliance",
+    count: counts.compliance,
+  })
+
+  if (permissions.can_upload_compliance_docs !== false) {
     items.push({
       segment: "prequalification",
       label: "Prequalification",
@@ -151,7 +173,7 @@ export function buildSubPortalNav({
     })
   }
 
-  if (permissions.can_view_documents !== false) {
+  if (hasProject && permissions.can_view_documents !== false) {
     items.push({ segment: "documents", label: "Documents", shortLabel: "Docs", icon: "documents" })
   }
 

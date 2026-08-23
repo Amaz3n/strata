@@ -461,11 +461,24 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     return uniqUserIds((memberships ?? []).map((row) => row.user_id)).filter((id) => id !== actorId)
   }
 
-  if (event.event_type === "accounting_reconciliation_drift") {
+  // Accounting-health events share one audience: whoever owns keeping the
+  // books tied out. A dead connection, a dead-lettered push, and ledger drift
+  // are all the same person's Monday morning.
+  const accountingHealthEvents = new Set([
+    "accounting_reconciliation_drift",
+    "accounting_connection_expired",
+    "accounting_push_dead_lettered",
+    "accounting_sync_needs_review",
+  ])
+  if (accountingHealthEvents.has(event.event_type)) {
+    // org.admin and the wildcard are included so an org that never enabled
+    // Books (no role carries books.reconcile) still has SOMEONE hearing that
+    // its accounting connection died — an empty audience is how these alerts
+    // were silent in the first place.
     const { data: roleRows } = await supabase
       .from("role_permissions")
       .select("role_id")
-      .eq("permission_key", "books.reconcile")
+      .in("permission_key", ["books.reconcile", "org.admin", "*"])
     const roleIds = [...new Set((roleRows ?? []).map((row) => row.role_id).filter(Boolean))]
     if (roleIds.length === 0) return []
     const { data: memberships } = await supabase
@@ -664,6 +677,28 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     return eligibleRecipients.filter((userId) => routedSet.has(userId))
   }
 
+  // A vendor's submission used to land as an event row and nothing else, so a
+  // certificate holding up payment sat unreviewed until somebody happened to
+  // open the vendor's compliance tab. It goes to the people who can decide it.
+  if (
+    event.event_type === "compliance_document_submitted" ||
+    event.event_type === "compliance_document_expiring"
+  ) {
+    const { data: roleRows } = await supabase
+      .from("role_permissions")
+      .select("role_id")
+      .eq("permission_key", "compliance.review")
+    const roleIds = [...new Set((roleRows ?? []).map((row) => row.role_id).filter(Boolean))]
+    if (roleIds.length === 0) return []
+    const { data: memberships } = await supabase
+      .from("memberships")
+      .select("user_id")
+      .eq("org_id", orgId)
+      .eq("status", "active")
+      .in("role_id", roleIds)
+    return uniqUserIds((memberships ?? []).map((row) => row.user_id)).filter((id) => id !== actorId)
+  }
+
   // Every failure mode of a payment run was emailed and success was not, so the
   // only way an AP clerk learned a run finished was to go looking.
   if (event.event_type === "vendor_payment_paid") {
@@ -851,6 +886,46 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
           href: "/books/close",
           new_discrepancy_count: safePayload.new_discrepancy_count,
         },
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+
+    case "accounting_connection_expired":
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "accounting_connection_expired" as NotificationType,
+        title: "Accounting connection needs re-authorization",
+        message:
+          "The accounting connection stopped syncing and nothing will post in either direction until it is reconnected.",
+        metadata: { href: "/settings?tab=integrations" },
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+
+    case "accounting_push_dead_lettered":
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "accounting_push_dead_lettered" as NotificationType,
+        title: "Accounting sync gave up on a transaction",
+        message: fallbackMessage,
+        metadata: { href: "/settings?tab=integrations" },
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+
+    case "accounting_sync_needs_review":
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "accounting_sync_needs_review" as NotificationType,
+        title: "Accounting sync needs review",
+        message: fallbackMessage,
+        metadata: { href: "/settings?tab=integrations" },
         entityType: entity_type,
         entityId: entity_id,
         eventId: event.id,
@@ -1575,6 +1650,35 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
       }
     }
 
+    case "compliance_document_submitted":
+    case "compliance_document_expiring": {
+      const companyName = typeof safePayload.company_name === "string" && safePayload.company_name
+        ? safePayload.company_name
+        : "A vendor"
+      const documentName = typeof safePayload.document_name === "string" && safePayload.document_name
+        ? safePayload.document_name
+        : "a compliance document"
+      const blocking = safePayload.blocks_payment === true
+        ? " Payments to this vendor are on hold until it clears."
+        : ""
+      const message = event_type === "compliance_document_submitted"
+        ? `${companyName} submitted ${documentName} for review.${blocking}`
+        : `${documentName} for ${companyName} expires soon.${blocking}`
+      return {
+        orgId: event.org_id,
+        userId,
+        type: event_type as NotificationType,
+        title: event_type === "compliance_document_submitted"
+          ? `${companyName} sent a compliance document`
+          : `${companyName} has compliance expiring`,
+        message,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
     default:
       // Generic fallback for supported event types
       return {
@@ -1812,6 +1916,12 @@ function titleForEventType(eventType: string): string {
       return "Customer payment reversed"
     case "payment_reversed_from_qbo":
       return "Customer payment reversed in QuickBooks"
+    case "accounting_connection_expired":
+      return "Accounting connection needs re-authorization"
+    case "accounting_push_dead_lettered":
+      return "Accounting sync gave up on a transaction"
+    case "accounting_sync_needs_review":
+      return "Accounting sync needs review"
     case "vendor_bill_payment_reversed":
       return "Vendor payment reversed"
     case "vendor_credit_applied":

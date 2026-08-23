@@ -1,8 +1,4 @@
-"use client";
-
-import { useMemo, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
 
 import type { VendorLedgerEntry, VendorLedgerEntryKind } from "@/lib/services/vendor-account";
 import {
@@ -27,16 +23,6 @@ const KIND_LABEL: Record<VendorLedgerEntryKind, string> = {
   payment: "Payment",
   expense: "Expense",
 };
-
-type KindFilter = "all" | VendorLedgerEntryKind;
-
-const FILTERS: { key: KindFilter; label: string }[] = [
-  { key: "all", label: "All" },
-  { key: "bill", label: "Bills" },
-  { key: "payment", label: "Payments" },
-  { key: "vendor_credit", label: "Credits" },
-  { key: "expense", label: "Expenses" },
-];
 
 function statusTone(entry: VendorLedgerEntry) {
   if (entry.is_draft) return "text-muted-foreground";
@@ -68,67 +54,28 @@ function statusLabel(entry: VendorLedgerEntry) {
   return entry.status ?? "—";
 }
 
+/**
+ * The compact ledger on the vendor overview: the most recent transactions, no
+ * controls. Filtering, faceting and paging are the Transactions tab's job — this
+ * carried a full filter row that its only caller has always passed
+ * `showFilters={false}` to hide.
+ */
 export function VendorLedgerTable({
   entries,
   truncated = false,
   limit,
-  showFilters = true,
   emptyMessage = "No transactions with this vendor yet.",
 }: {
   entries: VendorLedgerEntry[];
   truncated?: boolean;
-  /** Compact mode for the overview: caps rows and hides the filter row. */
+  /** Caps the rows shown; the full register lives on the Transactions tab. */
   limit?: number;
-  showFilters?: boolean;
   emptyMessage?: string;
 }) {
-  const searchParams = useSearchParams();
-  const [kind, setKind] = useState<KindFilter>("all");
-  const overdueOnly = showFilters && searchParams.get("filter") === "overdue";
-
-  const visible = useMemo(() => {
-    let rows = entries;
-    if (kind !== "all") rows = rows.filter((entry) => entry.kind === kind);
-    if (overdueOnly) {
-      const today = new Date().toISOString().slice(0, 10);
-      rows = rows.filter(
-        (entry) =>
-          entry.kind === "bill" &&
-          !entry.is_draft &&
-          entry.status !== "paid" &&
-          entry.status !== "rejected" &&
-          entry.date !== null &&
-          entry.date < today,
-      );
-    }
-    return limit ? rows.slice(0, limit) : rows;
-  }, [entries, kind, limit, overdueOnly]);
+  const visible = limit ? entries.slice(0, limit) : entries;
 
   return (
     <div>
-      {showFilters ? (
-        <div className="flex flex-wrap items-center gap-1 border-b px-4 py-2">
-          {FILTERS.map((filter) => (
-            <button
-              key={filter.key}
-              type="button"
-              onClick={() => setKind(filter.key)}
-              className={cn(
-                "border px-2.5 py-1 text-xs font-medium transition-colors",
-                kind === filter.key
-                  ? "border-primary bg-primary/10 text-foreground"
-                  : "border-transparent text-muted-foreground hover:border-border hover:text-foreground",
-              )}
-            >
-              {filter.label}
-            </button>
-          ))}
-          {overdueOnly ? (
-            <span className="ml-auto text-xs text-warning">Showing overdue bills only</span>
-          ) : null}
-        </div>
-      ) : null}
-
       {visible.length > 0 ? (
         <div className="overflow-x-auto">
           <Table className={cn("min-w-[860px]", TABLE_EDGE)}>

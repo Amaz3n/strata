@@ -77,7 +77,7 @@ export function AccountingSettingsPanel({
         <p className="microlabel">Accounting strategy</p>
         <h2 className="mt-2 text-xl font-semibold tracking-tight">Choose how far Arc goes.</h2>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-          External accounting connections are always independent. Arc can keep syncing invoices, bills, expenses, and payments to QuickBooks or another provider whether Arc Books is on or off.
+          External accounting connections are always independent. Arc can keep syncing invoices, bills, expenses, and payments to your connected accounting provider whether Arc Books is on or off.
         </p>
       </div>
 

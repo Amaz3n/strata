@@ -17,6 +17,9 @@ insert into permissions (key, description) values
   ('bill.read', 'View vendor bills'),
   ('bill.write', 'Create and edit vendor bills'),
   ('billing.manage', 'Manage billing and subscriptions'),
+  ('compliance.read', 'View vendor compliance requirements, documents, and status'),
+  ('compliance.manage', 'Set vendor compliance requirements, waive them, and upload documents'),
+  ('compliance.review', 'Approve or reject a vendor compliance document, and revoke an approval'),
   ('financials.export', 'Export accounting journals, AP, and job-cost data'),
   ('budget.lock', 'Lock budget versions'),
   ('budget.approve', 'Approve and post budget transfers'),
@@ -1568,6 +1571,27 @@ with desired (role_key, permission_key) as (values
   ,('org_bookkeeper', 'accounting.entity_map.manage')
   ,('org_bookkeeper', 'financials.export')
   ,('org_office_admin', 'financials.export')
+  ,('org_owner', 'compliance.read')
+  ,('org_owner', 'compliance.manage')
+  ,('org_owner', 'compliance.review')
+  ,('org_admin', 'compliance.read')
+  ,('org_admin', 'compliance.manage')
+  ,('org_admin', 'compliance.review')
+  ,('org_office_admin', 'compliance.read')
+  ,('org_office_admin', 'compliance.manage')
+  ,('org_office_admin', 'compliance.review')
+  ,('org_bookkeeper', 'compliance.read')
+  ,('org_bookkeeper', 'compliance.manage')
+  ,('org_bookkeeper', 'compliance.review')
+  ,('org_purchasing_manager', 'compliance.read')
+  ,('org_purchasing_manager', 'compliance.manage')
+  ,('org_purchasing_manager', 'compliance.review')
+  ,('org_project_lead', 'compliance.read')
+  ,('org_superintendent', 'compliance.read')
+  ,('org_estimator', 'compliance.read')
+  ,('org_starts_coordinator', 'compliance.read')
+  ,('org_user', 'compliance.read')
+  ,('org_viewer', 'compliance.read')
 )
 delete from role_permissions rp using roles r
 where rp.role_id = r.id

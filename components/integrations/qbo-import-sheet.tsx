@@ -210,6 +210,13 @@ export function QboImportPanel({ active = true, projectId, connectionId, connect
   const [records, setRecords] = useState<QboImportRecord[]>([])
   const [alreadyImportedCounts, setAlreadyImportedCounts] = useState<Partial<Record<QboImportEntityType, number>>>({})
   const [loadErrors, setLoadErrors] = useState<{ entityType: QboImportEntityType; message: string }[]>([])
+  /**
+   * Failures loading the pickers (projects, cost codes, customers, the project
+   * link). These used to be swallowed, so a failed lookup showed as an empty
+   * dropdown that looked like "you have none of these".
+   */
+  const [contextError, setContextError] = useState<string | null>(null)
+  const [contextReloadNonce, setContextReloadNonce] = useState(0)
   const [connected, setConnected] = useState(true)
   const [loading, setLoading] = useState(false)
   const [importing, setImporting] = useState(false)
@@ -289,31 +296,36 @@ export function QboImportPanel({ active = true, projectId, connectionId, connect
     setLineCostCodes({})
     setDestinations({})
     setExpanded(new Set())
+    setContextError(null)
+    const failContext = (what: string) => (error: unknown) => {
+      if (requestId !== contextRequestId.current) return
+      setContextError(`${what} could not load: ${error instanceof Error ? error.message : "Try again."}`)
+    }
     getProjectQboLinkAction({ projectId })
       .then((link) => {
         if (requestId === contextRequestId.current) setQboLink(link)
       })
-      .catch(() => {})
+      .catch(failContext("The project's accounting link"))
     listProjectsForImportAction()
       .then((listing) => {
         if (requestId === contextRequestId.current) setProjects(listing)
       })
-      .catch(() => {})
+      .catch(failContext("Projects"))
     listCostCodesForImportAction()
       .then((listing) => {
         if (requestId === contextRequestId.current) setCostCodes(listing)
       })
-      .catch(() => {})
+      .catch(failContext("Cost codes"))
     listQboCustomersForImportAction(connectionId)
       .then((listing) => {
         if (requestId === contextRequestId.current) setQboCustomers(listing.customers)
       })
-      .catch(() => {})
+      .catch(failContext("Customers"))
 
     return () => {
       if (requestId === contextRequestId.current) contextRequestId.current += 1
     }
-  }, [active, connectionId, projectId])
+  }, [active, connectionId, projectId, contextReloadNonce])
 
   // Effective line→project for a record: the user's per-line override, else the line's suggested
   // (customer-linked) project. Only lines with a destination are included.
@@ -897,6 +909,23 @@ export function QboImportPanel({ active = true, projectId, connectionId, connect
                   Retry
                 </Button>
               </div>
+            </div>
+          ) : null}
+
+          {contextError ? (
+            <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-warning/30 bg-warning/10 px-4 py-2.5 text-xs font-medium text-warning">
+              <AlertTriangle className="size-4 shrink-0" />
+              <span>{contextError}</span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="ml-auto h-7 bg-background/80 text-xs"
+                onClick={() => setContextReloadNonce((value) => value + 1)}
+                disabled={loading || importing}
+              >
+                Retry
+              </Button>
             </div>
           ) : null}
 

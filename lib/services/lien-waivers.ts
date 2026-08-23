@@ -1,4 +1,3 @@
-import { createHmac, randomBytes } from "node:crypto"
 import { z } from "zod"
 
 import { requireOrgContext } from "@/lib/services/context"
@@ -7,20 +6,6 @@ import { recordEvent } from "@/lib/services/events"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requirePermission } from "@/lib/services/permissions"
 import { escapeHtml, getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
-
-const lienWaiverSecret = process.env.LIEN_WAIVER_SECRET
-
-const createLienWaiverSchema = z.object({
-  project_id: z.string().uuid(),
-  payment_id: z.string().uuid().optional(),
-  company_id: z.string().uuid().optional(),
-  contact_id: z.string().uuid().optional(),
-  waiver_type: z.enum(["conditional", "unconditional", "final"]),
-  amount_cents: z.number().int().min(0),
-  through_date: z.string(),
-  claimant_name: z.string().min(1),
-  property_description: z.string().optional(),
-})
 
 const waiverTypeSchema = z.enum(["conditional", "unconditional", "final"])
 
@@ -46,215 +31,19 @@ export type WaiverMatrixRow = {
   requirements: Array<any & { received: boolean; matching_waiver_id: string | null }>
 }
 
-function hashToken(token: string) {
-  if (!lienWaiverSecret) {
-    throw new Error("LIEN_WAIVER_SECRET is not configured")
-  }
-  return createHmac("sha256", lienWaiverSecret).update(token).digest("hex")
-}
-
-export async function createLienWaiver(input: z.infer<typeof createLienWaiverSchema>, orgId?: string) {
-  const parsed = createLienWaiverSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
-
-  // Idempotency: avoid duplicate conditional waivers per payment
-  if (parsed.payment_id) {
-    const { data: existing } = await supabase
-      .from("lien_waivers")
-      .select("*")
-      .eq("org_id", resolvedOrgId)
-      .eq("payment_id", parsed.payment_id)
-      .eq("waiver_type", parsed.waiver_type)
-      .maybeSingle()
-    if (existing) {
-      return { waiver: existing, signatureUrl: undefined }
-    }
-  }
-
-  const token = randomBytes(32).toString("hex")
-  const tokenHash = hashToken(token)
-
-  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
-
-  const { data, error } = await supabase
-    .from("lien_waivers")
-    .insert({
-      org_id: resolvedOrgId,
-      ...parsed,
-      status: "sent",
-      token_hash: tokenHash,
-      expires_at: expiresAt,
-    })
-    .select("*")
-    .single()
-
-  if (error || !data) {
-    throw new Error(`Failed to create lien waiver: ${error?.message}`)
-  }
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    action: "insert",
-    entityType: "lien_waiver",
-    entityId: data.id,
-    after: data,
-  })
-
-  await recordEvent({
-    orgId: resolvedOrgId,
-    eventType: "lien_waiver_created",
-    entityType: "lien_waiver",
-    entityId: data.id,
-    payload: { waiver_type: parsed.waiver_type, amount_cents: parsed.amount_cents },
-  })
-
-  return { waiver: data, signatureUrl: `${process.env.NEXT_PUBLIC_APP_URL}/sign/lien-waiver/${token}` }
-}
-
-export async function signLienWaiver(
-  token: string,
-  signatureData: {
-    signature_svg: string
-    signer_name: string
-    signer_ip?: string
-  },
-) {
-  const supabase = createServiceSupabaseClient()
-  const tokenHash = hashToken(token)
-
-  const { data: waiver, error: findError } = await supabase
-    .from("lien_waivers")
-    .select("*")
-    .eq("token_hash", tokenHash)
-    .in("status", ["sent", "pending"])
-    .maybeSingle()
-
-  if (findError || !waiver) {
-    throw new Error("Lien waiver not found or already signed")
-  }
-
-  if (waiver.expires_at && new Date(waiver.expires_at) < new Date()) {
-    throw new Error("Lien waiver has expired")
-  }
-
-  const signedAt = new Date().toISOString()
-
-  const { data, error } = await supabase
-    .from("lien_waivers")
-    .update({
-      status: "signed",
-      signed_at: signedAt,
-      signature_data: {
-        ...signatureData,
-        signed_at: signedAt,
-      },
-    })
-    .eq("id", waiver.id)
-    .select("*")
-    .single()
-
-  if (error) {
-    throw new Error(`Failed to sign lien waiver: ${error.message}`)
-  }
-
-  await recordEvent({
-    orgId: waiver.org_id,
-    eventType: "lien_waiver_signed",
-    entityType: "lien_waiver",
-    entityId: waiver.id,
-    payload: { claimant_name: waiver.claimant_name, amount_cents: waiver.amount_cents },
-  })
-
-  // Signing is the moment the document's facts become checkable against the
-  // payable it covers. Best-effort by design: a failed check must never undo a
-  // signature the sub already gave, and the claim can be recomputed later.
-  if (waiver.bill_id) {
-    try {
-      const { verifyBillWaiver } = await import("@/lib/services/ap-document-verification")
-      await verifyBillWaiver(waiver.bill_id, waiver.org_id)
-    } catch {
-      // Verification is advisory; the waiver stands either way.
-    }
-  }
-
-  return data
-}
-
-export async function generateConditionalWaiverForPayment(paymentId: string, orgId: string) {
-  const supabase = createServiceSupabaseClient()
-
-  const { data: payment, error } = await supabase
-    .from("payments")
-    .select(
-      "id, amount_cents, org_id, invoice:invoices(id, project_id, project:projects(name, address, metadata))",
-    )
-    .eq("id", paymentId)
-    .eq("org_id", orgId)
-    .single()
-
-  const invoice = Array.isArray(payment?.invoice) ? payment.invoice[0] : payment?.invoice
-  const project = Array.isArray(invoice?.project) ? invoice.project[0] : invoice?.project
-
-  if (error || !invoice?.project_id) return null
-
-  const propertyDescription =
-    project?.address ??
-    (project?.metadata as any)?.location ??
-    undefined
-
-  return createLienWaiver(
-    {
-      project_id: invoice.project_id,
-      payment_id: paymentId,
-      waiver_type: "conditional",
-      amount_cents: payment.amount_cents,
-      through_date: new Date().toISOString().split("T")[0],
-      claimant_name: "TBD",
-      property_description: propertyDescription,
-    },
-    orgId,
-  )
-}
-
-export async function convertToUnconditionalWaiver(paymentId: string, orgId: string) {
-  const supabase = createServiceSupabaseClient()
-
-  const { data: conditionalWaiver } = await supabase
-    .from("lien_waivers")
-    .select("*")
-    .eq("payment_id", paymentId)
-    .eq("org_id", orgId)
-    .eq("waiver_type", "conditional")
-    .eq("status", "signed")
-    .maybeSingle()
-
-  if (!conditionalWaiver) return null
-
-  const { data: existingUnconditional } = await supabase
-    .from("lien_waivers")
-    .select("id")
-    .eq("payment_id", paymentId)
-    .eq("org_id", orgId)
-    .eq("waiver_type", "unconditional")
-    .maybeSingle()
-
-  if (existingUnconditional) return existingUnconditional
-
-  return createLienWaiver(
-    {
-      project_id: conditionalWaiver.project_id,
-      payment_id: paymentId,
-      company_id: conditionalWaiver.company_id ?? undefined,
-      contact_id: conditionalWaiver.contact_id ?? undefined,
-      waiver_type: "unconditional",
-      amount_cents: conditionalWaiver.amount_cents,
-      through_date: conditionalWaiver.through_date,
-      claimant_name: conditionalWaiver.claimant_name,
-      property_description: conditionalWaiver.property_description ?? undefined,
-    },
-    orgId,
-  )
-}
+/**
+ * Waivers are anchored to the payable they cover.
+ *
+ * The token-and-email flow that used to live here (`createLienWaiver`,
+ * `signLienWaiver`, `generateConditionalWaiverForPayment`,
+ * `convertToUnconditionalWaiver`) handed out `/sign/lien-waiver/<token>` links
+ * to a route that does not exist, and its payment-anchored rows carried
+ * `claimant_name: "TBD"` and no `bill_id`, so the release gate — which queries
+ * by bill — could never see them. Subs now sign in the portal
+ * (`signVendorBillWaiverFromPortal`), and the receivables side is
+ * `invoice_lien_waivers`, which is a different document with a different
+ * signer.
+ */
 
 export interface PortalVendorBillWaiverContext {
   bill: {
@@ -267,6 +56,8 @@ export interface PortalVendorBillWaiverContext {
     billing_period_end: string
     lien_waiver_status?: string | null
     lien_waiver_received_at?: string | null
+    /** Held back on this payable. Releasing it needs a FINAL waiver. */
+    retainage_cents: number
   }
   commitment?: {
     id: string
@@ -281,13 +72,17 @@ export interface PortalVendorBillWaiverContext {
     name: string
     property_description?: string | null
   }
-  waiver?: {
+  /** Every waiver row on this payable, signed or still awaiting signature. */
+  waivers: Array<{
     id: string
+    waiver_type: WaiverType
     status: string
     signed_at?: string | null
     signer_name?: string | null
-  } | null
+  }>
 }
+
+export type WaiverType = z.infer<typeof waiverTypeSchema>
 
 function relationOne<T>(value: T | T[] | null | undefined): T | null {
   if (Array.isArray(value)) return value[0] ?? null
@@ -324,7 +119,7 @@ export async function getVendorBillWaiverForPortal({
     .select(
       `
       id, org_id, project_id, commitment_id, company_id, bill_number, status,
-      total_cents, paid_cents, bill_date, due_date, lien_waiver_status, lien_waiver_received_at, metadata,
+      total_cents, paid_cents, retainage_cents, bill_date, due_date, lien_waiver_status, lien_waiver_received_at, metadata,
       company:companies!vendor_bills_company_id_fkey(id, name),
       commitment:commitments(id, title, company_id),
       project:projects(id, name, location, metadata)
@@ -351,15 +146,15 @@ export async function getVendorBillWaiverForPortal({
     throw new Error("Set the payable period end before requesting its lien waiver")
   }
 
-  const { data: waiver, error: waiverError } = await supabase
+  // Every type, not just the conditional one: a payable with retainage needs a
+  // final waiver too, and a portal that could only ever see conditional waivers
+  // was how retainage release became impossible to satisfy from the sub's side.
+  const { data: waivers, error: waiverError } = await supabase
     .from("lien_waivers")
-    .select("id, status, signed_at, signature_data")
+    .select("id, waiver_type, status, signed_at, signature_data")
     .eq("org_id", orgId)
     .eq("bill_id", billId)
-    .eq("waiver_type", "conditional")
     .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
 
   if (waiverError) {
     throw new Error(`Failed to load payable waiver: ${waiverError.message}`)
@@ -376,6 +171,7 @@ export async function getVendorBillWaiverForPortal({
       billing_period_end: billingPeriodEnd,
       lien_waiver_status: bill.lien_waiver_status ?? null,
       lien_waiver_received_at: bill.lien_waiver_received_at ?? null,
+      retainage_cents: Number(bill.retainage_cents ?? 0),
     },
     commitment: commitment
       ? {
@@ -392,17 +188,16 @@ export async function getVendorBillWaiverForPortal({
       name: project?.name ?? "Project",
       property_description: projectPropertyDescription(project),
     },
-    waiver: waiver
-      ? {
-          id: waiver.id,
-          status: waiver.status,
-          signed_at: waiver.signed_at ?? null,
-          signer_name:
-            typeof waiver.signature_data?.signer_name === "string"
-              ? waiver.signature_data.signer_name
-              : null,
-        }
-      : null,
+    waivers: (waivers ?? []).map((waiver) => ({
+      id: waiver.id as string,
+      waiver_type: waiver.waiver_type as WaiverType,
+      status: waiver.status as string,
+      signed_at: waiver.signed_at ?? null,
+      signer_name:
+        typeof waiver.signature_data?.signer_name === "string"
+          ? waiver.signature_data.signer_name
+          : null,
+    })),
   }
 }
 
@@ -416,6 +211,7 @@ export async function signVendorBillWaiverFromPortal({
   signerName,
   signatureText,
   consentAccepted,
+  waiverType = "conditional",
 }: {
   orgId: string
   projectId: string
@@ -426,12 +222,20 @@ export async function signVendorBillWaiverFromPortal({
   signerName: string
   signatureText?: string | null
   consentAccepted: boolean
+  /**
+   * Which document is being signed. Hardcoding "conditional" here meant a
+   * final waiver could not be produced from the portal at all — and
+   * `releaseRetainage` refuses to release without one, so retainage was
+   * unreachable for any org that requires waivers.
+   */
+  waiverType?: WaiverType
 }) {
   const normalizedSignerName = signerName.trim()
   const normalizedSignature = signatureText?.trim() || normalizedSignerName
   if (!consentAccepted || normalizedSignerName.length < 2 || normalizedSignature.length < 2) {
     throw new Error("Signer name, signature, and electronic consent are required.")
   }
+  const type = waiverTypeSchema.parse(waiverType)
 
   const context = await getVendorBillWaiverForPortal({ orgId, projectId, companyId, billId })
   if (!context) {
@@ -452,7 +256,7 @@ export async function signVendorBillWaiverFromPortal({
     contact_id: contactId ?? null,
   }
 
-  let waiverId = context.waiver?.id ?? null
+  let waiverId = context.waivers.find((waiver) => waiver.waiver_type === type)?.id ?? null
   if (waiverId) {
     const { error: updateWaiverError } = await supabase
       .from("lien_waivers")
@@ -486,7 +290,7 @@ export async function signVendorBillWaiverFromPortal({
         bill_id: billId,
         company_id: companyId,
         contact_id: contactId ?? null,
-        waiver_type: "conditional",
+        waiver_type: type,
         status: "signed",
         amount_cents: context.bill.total_cents,
         through_date: throughDate,
@@ -510,25 +314,29 @@ export async function signVendorBillWaiverFromPortal({
     waiverId = created.id
   }
 
-  const { error: billUpdateError } = await supabase
-    .from("vendor_bills")
-    .update({
-      lien_waiver_status: "received",
-      lien_waiver_received_at: nowIso,
-    })
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
-    .eq("id", billId)
+  // Only the types the release gate actually accepts as evidence may mark the
+  // payable received. Stamping "received" for an unconditional waiver would
+  // show the hold as satisfied on the payables screen while release kept
+  // refusing, with nothing on either screen explaining the disagreement.
+  if (type === "conditional" || type === "final") {
+    const { error: billUpdateError } = await supabase
+      .from("vendor_bills")
+      .update({
+        lien_waiver_status: "received",
+        lien_waiver_received_at: nowIso,
+      })
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .eq("id", billId)
 
-  if (billUpdateError) {
-    throw new Error(`Waiver signed but payable could not be updated: ${billUpdateError.message}`)
+    if (billUpdateError) {
+      throw new Error(`Waiver signed but payable could not be updated: ${billUpdateError.message}`)
+    }
   }
 
-  // Same verification the emailed-token signing path runs. Skipping it here
-  // meant `metadata.waiver_verification` was almost never written — most
-  // waivers are signed in the portal — so the `waiver_verified` payment hold
-  // had nothing to read and never fired. Best effort, as on the other path: a
-  // failed check must not undo a signature the sub already gave.
+  // Verification writes `metadata.waiver_verification`, which the
+  // `waiver_verified` payment hold reads. Best effort: a failed check must not
+  // undo a signature the sub already gave.
   try {
     const { verifyBillWaiver } = await import("@/lib/services/ap-document-verification")
     await verifyBillWaiver(billId, orgId)

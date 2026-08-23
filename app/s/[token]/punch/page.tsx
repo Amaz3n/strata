@@ -16,6 +16,7 @@ export default async function SubPortalPunchPage({ params }: Props) {
   try {
     access = await assertPortalActionAccess(token, {
       portalType: "sub",
+      requireProject: true,
       requireCompany: true,
       permission: "can_view_punch_items",
     })

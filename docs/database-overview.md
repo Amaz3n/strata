@@ -144,11 +144,29 @@ money source of truth; readers must never infer it from a `paid` status label.
 - **`submittals`** - Submittal packages
 - **`submittal_items`** - Individual submittal items
 
-#### Client Interactions
-- **`companies`** - Client/vendor companies
-- **`contacts`** - Individual contacts
-- **`contact_company_links`** - Contact-company relationships
+#### Directory (parties, roles, identity)
+
+A **party** is a `companies` row or a `contacts` row. What it IS to the org is a
+**set of roles**, not a type column — a company can be a subcontractor and a
+client at once, and a person moves prospect → buyer → homeowner without any
+other table changing. `companies.company_type` and `contacts.contact_type` are
+still written for readers that have not moved yet; `party_roles` is the source
+of truth and the type columns are dropped in a later gated migration.
+
+- **`companies`** - Businesses: subs, suppliers, clients, design firms
+- **`contacts`** - People. `external_identity_id` links a claimed portal account
+- **`party_roles`** - What a party is to this org, with lifecycle state and history
+- **`directory_relationship_types`** - The org's role vocabulary (key, canonical_category, applies_to)
+- **`directory_trades`** - Normalized trades; `companies.trade_id` points here
+- **`contact_company_links`** - Person↔company, with `is_primary` and `title`. The
+  ONLY linkage; `contacts.primary_company_id` is retired
+- **`directory_merge_candidates`** - Detected duplicates awaiting review
+- **`directory_entries`** (view) - One row per party with its current roles; what
+  the directory list reads, so paging and counting happen in the database
 - **`project_vendors`** - Project-specific vendor relationships
+- **`vendor_scorecards`** / **`vendor_tax_readiness`** - Vendor intelligence
+
+Roles are resolved by `lib/directory/roles.ts` (pure) and `lib/services/party-roles.ts` (I/O).
 
 #### Selection Management
 - **`selection_categories`** - Org/community categories with archived and override lineage
@@ -178,9 +196,44 @@ backward compatibility and is retired for catalog mode.
 
 #### Compliance & Legal
 - **`approvals`** - Approval workflows
-- **`lien_waivers`** - Lien waiver documents
 - **`retainage`** - Retainage tracking
 - **`allowances`** - Allowance budgets
+
+**Vendor compliance.** Requirements resolve in three layers — org default →
+vendor override → project overlay — and a waiver is the only exit. See
+`resolveEffectiveRequirements` in `lib/services/compliance-documents.ts`, which
+every consumer (the directory tab, the vendor portal, the payment hold, the
+nightly autopilot) goes through.
+- **`compliance_document_types`** - What an org can ask for. `kind`
+  (`insurance | tax | license | safety | other`) decides which fields the upload
+  form collects and whether the certificate is read by the extraction pipeline.
+  `expiry_warning_days` drives the reminder schedule.
+- **`compliance_documents`** - Submissions. `subject` is `company` (vendor docs)
+  or `org` (the builder's own project documents, via a hidden `org_self` shim
+  company). `revoked_at` marks a withdrawn decision; `superseded_by_id` points at
+  the newer submission. `metadata.coi_extraction` holds the certificate reading.
+- **`company_compliance_requirements`** - Per-vendor rules (layer 2).
+- **`project_compliance_requirements`** - Per-project overlay (layer 3). A row
+  with no `company_id` applies to every vendor on the project.
+- **`company_compliance_requirement_waivers`** - Audited exemptions.
+- **`compliance_autopilot_runs` / `_deliveries`** - Nightly chase telemetry,
+  idempotent per reminder bucket.
+- **`vendor_document_shares`** - A vendor's consent to carry a document from one
+  builder's org into another. Service-role writes only.
+- Org-level config lives on `orgs.compliance_rules` and
+  `orgs.default_compliance_requirements` (both jsonb), not in tables.
+
+**Lien waivers — two unrelated systems that share a noun.**
+- **`lien_waivers`** - Payables side: waivers collected FROM subs, anchored to
+  `bill_id`. Tier 2 claimants are declared in `subtier_waiver_requirements`.
+  This is the one the payment release gate reads.
+- **`invoice_lien_waivers`** - Receivables side: waivers the builder ISSUES to
+  the client on an invoice. No connection to compliance rules or payment holds.
+
+**Payment holds** are derived, never stored. Only policy
+(`payment_hold_policies`, project row wins over the org default) and human
+overrides (`payment_hold_overrides`) persist. `assertBillReleasable` in
+`lib/services/payment-holds.ts` is the gate every payment path must call.
 
 #### Automation & Customization
 - **`workflows`** - Automated business processes

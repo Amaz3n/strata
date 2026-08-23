@@ -18,7 +18,7 @@ import { getAccountingSyncPosture, type AccountingSyncPosture } from "@/lib/serv
 import { getCurrentUserPermissions, requirePermission } from "@/lib/services/permissions"
 import { accountingConnectionLabelSchema, accountingConnectionSettingsSchema, accountingEntityMapSchema } from "@/lib/validation/accounting"
 import { upsertAccountingEntityMap } from "@/lib/services/accounting-target"
-import { createAccountingExport, type AccountingExportKind } from "@/lib/services/accounting-export"
+import { createAccountingExport, type AccountingExportKind } from "@/lib/services/financial-exports"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 
@@ -183,8 +183,11 @@ export async function disconnectAccountingConnectionAction(connectionId: string)
   return run(async () => {
     const { supabase, orgId, userId } = await requireOrgContext()
     await requirePermission("org.admin", { supabase, orgId, userId })
-    const connection = await requireAccountingConnectionForOrg(connectionId, orgId)
-    await getProvider(connection.provider).disconnect({ orgId, connectionId })
+    await requireAccountingConnectionForOrg(connectionId, orgId)
+    // The service owns the provider revoke (by its own contract). Calling
+    // disconnect here too revoked twice — the second call always failed
+    // against the already-dead token and logged a spurious "revoke failed"
+    // on every normal disconnect.
     await disconnectAccountingConnection(connectionId, orgId)
     return { disconnected: true }
   })

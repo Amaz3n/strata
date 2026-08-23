@@ -8,6 +8,7 @@ import { MobileBottomNav } from "@/components/layout/mobile-bottom-nav"
 import { PageTitleProvider } from "@/components/layout/page-title-context"
 import { MobileActionProvider } from "@/components/layout/mobile-action-context"
 import { AppPageContent } from "@/components/layout/app-page-content"
+import { ArcLoadingMark } from "@/components/brand/arc-loading-mark"
 import { ReleaseNotesAnnouncement } from "@/components/layout/release-notes-announcement"
 import { OrgInactiveScreen } from "@/components/layout/org-inactive-screen"
 import { TrialStatusBanner } from "@/components/layout/trial-status-banner"
@@ -18,7 +19,6 @@ import {
   type NavigationBadgeValues,
 } from "@/components/layout/navigation-badge-context"
 import { getCurrentUserAction } from "../actions/user"
-import { getCrmDashboardStats } from "@/lib/services/crm"
 import { getOrgAccessState, type OrgAccessState } from "@/lib/services/access"
 import { getCurrentPlatformAccess } from "@/lib/services/platform-access"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
@@ -44,10 +44,10 @@ export const instant = true
  * is*: identity, access, permissions, posture and ambient scope.
  */
 async function loadNavigationBadges(): Promise<NavigationBadgeValues> {
-  const [crmStats, releaseNotesSummary, navigationBadgeCounts] = await Promise.all([
-    getCrmDashboardStats().catch(() => null),
+  const [releaseNotesSummary, navigationBadgeCounts] = await Promise.all([
     getReleaseNotesSummary().catch(() => ({ unreadCount: 0, announcement: null })),
     getNavigationBadgeCounts().catch(() => ({
+      pipelineBadgeCount: 0,
       myWorkBadgeCount: 0,
       readyToBillBadgeCount: 0,
       projectReviewBadgeCounts: {} as Record<string, number>,
@@ -55,7 +55,7 @@ async function loadNavigationBadges(): Promise<NavigationBadgeValues> {
   ])
 
   return {
-    pipelineBadgeCount: crmStats ? crmStats.followUpsOverdue + crmStats.followUpsDueToday : 0,
+    pipelineBadgeCount: navigationBadgeCounts.pipelineBadgeCount,
     myWorkBadgeCount: navigationBadgeCounts.myWorkBadgeCount,
     readyToBillBadgeCount: navigationBadgeCounts.readyToBillBadgeCount,
     projectReviewBadgeCounts: navigationBadgeCounts.projectReviewBadgeCounts,
@@ -165,11 +165,20 @@ async function AuthenticatedAppChrome({
 
 function AppChromeFallback() {
   return (
-    <div className="flex h-svh max-h-svh overflow-hidden bg-background" aria-busy="true">
+    <div
+      className="flex h-svh max-h-svh overflow-hidden bg-background"
+      role="status"
+      aria-busy="true"
+      aria-label="Loading Arc"
+    >
       <div className="hidden w-64 shrink-0 border-r bg-sidebar md:block" />
-      <div className="min-w-0 flex-1">
+      <div className="flex min-w-0 flex-1 flex-col">
         <div className="h-14 border-b bg-background" />
-        <div className="h-[calc(100svh-3.5rem)] animate-pulse bg-muted/20" />
+        <div className="flex min-h-0 flex-1 items-center justify-center">
+          <div className="arc-loading-presence">
+            <ArcLoadingMark className="h-16 w-auto sm:h-[4.5rem]" />
+          </div>
+        </div>
       </div>
     </div>
   )

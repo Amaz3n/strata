@@ -8,13 +8,13 @@ import { uploadPortalFile } from "@/lib/services/portal-uploads"
 const submissionSchema = z.object({ date: z.string().date(), narrative: z.string().trim().max(5000).optional(), trade: z.string().trim().max(200).optional(), workers: z.coerce.number().int().min(1).max(999), hours: z.coerce.number().min(0).max(24).optional() })
 
 export async function listSubPortalDailyLogsAction(token: string) {
-  const access = await assertPortalActionAccess(token, { portalType: "sub", requireCompany: true, permission: "can_submit_daily_logs" })
+  const access = await assertPortalActionAccess(token, { portalType: "sub", requireCompany: true, requireProject: true, permission: "can_submit_daily_logs" })
   if (!access.company_id) throw new Error("Access denied")
   return listPortalDailyLogSubmissions({ orgId: access.org_id, projectId: access.project_id, companyId: access.company_id })
 }
 
 export async function submitSubPortalDailyLogAction(token: string, formData: FormData) {
-  const access = await assertPortalActionAccess(token, { portalType: "sub", requireCompany: true, permission: "can_submit_daily_logs" })
+  const access = await assertPortalActionAccess(token, { portalType: "sub", requireCompany: true, requireProject: true, permission: "can_submit_daily_logs" })
   if (!access.company_id) throw new Error("Access denied")
   const parsed = submissionSchema.parse(Object.fromEntries(formData.entries()))
   const supabase = (await import("@/lib/supabase/server")).createServiceSupabaseClient()

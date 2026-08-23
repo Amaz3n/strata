@@ -10,6 +10,7 @@ import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { createInvoice } from "@/lib/services/invoices"
 import { getNextInvoiceNumber } from "@/lib/services/invoice-numbers"
+import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 
 export type GmpClassification = "inside_gmp" | "outside_gmp"
 export type GmpImpact = "none" | "increase_gmp" | "decrease_gmp" | "outside_gmp"
@@ -199,14 +200,19 @@ async function loadProjectAndContract({
   const contracts = Array.isArray(row.billing_contract) ? row.billing_contract : row.billing_contract ? [row.billing_contract] : []
   const activeContract = (contracts.find((contract: Contract) => contract.status === "active") ?? contracts[0] ?? null) as Contract | null
 
+  // Customer identity lives in the entity map now; the project columns are
+  // pre-cutover fallback only.
+  const accountingTarget = await resolveAccountingTarget({ orgId, projectId })
+  const accountingCustomer = accountingTarget?.dimensions.customer ?? null
+
   return {
     project: {
       id: row.id,
       org_id: row.org_id,
       name: row.name,
       status: row.status,
-      qbo_customer_id: row.qbo_customer_id ?? null,
-      qbo_customer_name: row.qbo_customer_name ?? null,
+      qbo_customer_id: accountingCustomer?.id ?? row.qbo_customer_id ?? null,
+      qbo_customer_name: accountingCustomer?.name ?? row.qbo_customer_name ?? null,
       financial_settings: Array.isArray(row.financial_settings) ? row.financial_settings[0] ?? null : row.financial_settings ?? null,
       billing_contract: activeContract,
     } as ProjectRow,

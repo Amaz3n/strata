@@ -1,5 +1,6 @@
 import { createHash } from "crypto"
 
+import { accountingReference } from "@/lib/services/accounting-coding"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 /**
@@ -42,18 +43,72 @@ export const LOCAL_FINGERPRINT_KEY = "local_fingerprint"
  * hashed makes the predicate miss a real edit, and a field hashed but not
  * compared makes it report an edit that could never conflict.
  */
-const FINGERPRINT_FIELDS: Record<string, { table: string; columns: readonly string[] }> = {
+type FingerprintConfig = {
+  table: string
+  /** Columns fetched to build the fingerprint (superset of what's hashed). */
+  columns: readonly string[]
+  /**
+   * Canonical labeled values that get hashed, in order. The labels are part of
+   * the hash input and must NEVER change: the counterparty/account identities
+   * are resolved from `accounting_coding` FIRST and fall back to the legacy
+   * `qbo_*` columns, which the dual-write keeps equal — so the hash stays
+   * byte-identical today, and stays byte-identical the day the legacy columns
+   * drop. (Hashing the legacy columns directly was the D2 landmine: the drop
+   * would have flipped every fingerprint at once and routed the entire QBO
+   * change feed to needs_review.)
+   */
+  material: (row: Record<string, unknown>) => Array<[string, unknown]>
+}
+
+const externalRefId = (row: Record<string, unknown>, codingKey: "counterparty" | "expense_account", legacyColumn: string) =>
+  accountingReference(row.accounting_coding, codingKey)?.id ?? row[legacyColumn] ?? null
+
+const FINGERPRINT_FIELDS: Record<string, FingerprintConfig> = {
   invoice: {
     table: "invoices",
     columns: ["subtotal_cents", "tax_cents", "total_cents", "balance_due_cents"],
+    material: (row) => [
+      ["subtotal_cents", row.subtotal_cents],
+      ["tax_cents", row.tax_cents],
+      ["total_cents", row.total_cents],
+      ["balance_due_cents", row.balance_due_cents],
+    ],
   },
   project_expense: {
     table: "project_expenses",
-    columns: ["amount_cents", "tax_cents", "expense_date", "qbo_vendor_id", "qbo_expense_account_id"],
+    columns: ["amount_cents", "tax_cents", "expense_date", "accounting_coding", "qbo_vendor_id", "qbo_expense_account_id"],
+    material: (row) => [
+      ["amount_cents", row.amount_cents],
+      ["tax_cents", row.tax_cents],
+      ["expense_date", row.expense_date],
+      ["qbo_vendor_id", externalRefId(row, "counterparty", "qbo_vendor_id")],
+      ["qbo_expense_account_id", externalRefId(row, "expense_account", "qbo_expense_account_id")],
+    ],
   },
   bill: {
     table: "vendor_bills",
-    columns: ["total_cents", "bill_date", "due_date", "qbo_vendor_id", "qbo_expense_account_id"],
+    columns: ["total_cents", "bill_date", "due_date", "accounting_coding", "qbo_vendor_id", "qbo_expense_account_id"],
+    material: (row) => [
+      ["total_cents", row.total_cents],
+      ["bill_date", row.bill_date],
+      ["due_date", row.due_date],
+      ["qbo_vendor_id", externalRefId(row, "counterparty", "qbo_vendor_id")],
+      ["qbo_expense_account_id", externalRefId(row, "expense_account", "qbo_expense_account_id")],
+    ],
+  },
+  // Vendor credits live in vendor_bills; the push path writes this ledger type
+  // (accounting-sync.ts resolveVendorBillLedgerContext), so without a definition
+  // here the both-sides protection was silently off for credits.
+  vendor_credit: {
+    table: "vendor_bills",
+    columns: ["total_cents", "bill_date", "due_date", "accounting_coding", "qbo_vendor_id", "qbo_expense_account_id"],
+    material: (row) => [
+      ["total_cents", row.total_cents],
+      ["bill_date", row.bill_date],
+      ["due_date", row.due_date],
+      ["qbo_vendor_id", externalRefId(row, "counterparty", "qbo_vendor_id")],
+      ["qbo_expense_account_id", externalRefId(row, "expense_account", "qbo_expense_account_id")],
+    ],
   },
 }
 
@@ -78,7 +133,7 @@ function normalizeValue(value: unknown): string | number | null {
 export function computeLocalFingerprint(entityType: string, row: Record<string, unknown> | null | undefined): string | null {
   const config = FINGERPRINT_FIELDS[entityType]
   if (!config || !row) return null
-  const material = config.columns.map((column) => [column, normalizeValue(row[column])])
+  const material = config.material(row).map(([label, value]) => [label, normalizeValue(value)])
   return createHash("sha256").update(JSON.stringify(material)).digest("hex").slice(0, 32)
 }
 

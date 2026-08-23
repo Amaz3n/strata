@@ -61,11 +61,69 @@ export function calculateInvoiceTotals(
   }
 }
 
+export interface RetainageBaseLine {
+  quantity: number
+  unit_cost_cents: number
+  unit?: string | null
+  description?: string | null
+  metadata?: Record<string, unknown> | null
+}
+
+/** A system-appended retainage hold line (negative, non-taxable). */
+export function isSystemGeneratedRetainageLine(line: Pick<RetainageBaseLine, "description" | "unit">) {
+  const normalizedUnit = String(line.unit ?? "").toLowerCase()
+  const normalizedDescription = String(line.description ?? "").toLowerCase()
+  return normalizedUnit === "retainage" || normalizedDescription.startsWith("retainage held")
+}
+
+export function isInvoiceFeeLine(line: Pick<RetainageBaseLine, "unit" | "metadata">) {
+  return String(line.unit ?? "").toLowerCase() === "fee" || Boolean((line.metadata ?? {})?.fee_line_kind)
+}
+
+export interface RetainageAwareTotalsLine extends InvoiceTotalsLine {
+  unit?: string | null
+  description?: string | null
+}
+
 /**
- * Retainage held on an invoice: a percentage of the discounted pre-tax base.
- * Mirrors the server's source-billing derivation for the manual/contract path.
+ * Totals for a line set that may carry a system-generated retainage hold line.
+ * Subtotal, discount, and tax are computed on the GROSS billing base (retainage
+ * is not a discount and must not shrink the discount/tax base); the hold then
+ * nets off the total. This is what the composer preview shows: gross subtotal,
+ * discount and tax on gross, retainage as a final deduction.
  */
-export function deriveRetainageCents(subtotalCents: number, discountCents: number, retainagePercent: number): number {
+export function calculateInvoiceTotalsWithRetainage(
+  lines: RetainageAwareTotalsLine[],
+  taxRate = 0,
+  discount: InvoiceDiscountInput = null,
+): InvoiceTotals {
+  const retainageCents = lines
+    .filter((line) => isSystemGeneratedRetainageLine(line))
+    .reduce((sum, line) => sum + Math.round(line.quantity * line.unit_cost_cents), 0)
+  const base = calculateInvoiceTotals(
+    lines.filter((line) => !isSystemGeneratedRetainageLine(line)),
+    taxRate,
+    discount,
+  )
+  const total_cents = base.total_cents + retainageCents
+  return { ...base, total_cents, balance_due_cents: total_cents }
+}
+
+/**
+ * Retainage held on a manual/draw/change-order invoice: a percentage of the
+ * gross billing base — system retainage lines stripped, fee lines excluded
+ * unless the contract retains on fee, and no discount subtraction. This is the
+ * single derivation for both the server write path and the composer preview.
+ */
+export function deriveManualRetainageCents(
+  lines: RetainageBaseLine[],
+  retainagePercent: number,
+  retainageAppliesToFee: boolean,
+): number {
   if (!Number.isFinite(retainagePercent) || retainagePercent <= 0) return 0
-  return Math.round(Math.max(subtotalCents - discountCents, 0) * (retainagePercent / 100))
+  const grossAmountCents = lines
+    .filter((line) => !isSystemGeneratedRetainageLine(line))
+    .filter((line) => retainageAppliesToFee || !isInvoiceFeeLine(line))
+    .reduce((sum, line) => sum + Math.round(line.quantity * line.unit_cost_cents), 0)
+  return Math.round(Math.max(grossAmountCents, 0) * (retainagePercent / 100))
 }

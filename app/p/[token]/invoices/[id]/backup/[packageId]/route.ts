@@ -15,6 +15,7 @@ export async function GET(_request: Request, { params }: Params) {
   try {
     access = await assertPortalActionAccess(token, {
       portalType: "client",
+      requireProject: true,
       permission: "can_view_invoices",
     })
   } catch {

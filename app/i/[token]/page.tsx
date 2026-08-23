@@ -59,7 +59,8 @@ export default async function InvoicePublicPage({ params }: Params) {
   if (publishableKey) {
     try {
       const policy = await loadPaymentFeePolicy(createServiceSupabaseClient(), invoice.org_id)
-      const balanceDue = invoice.totals?.balance_due_cents ?? invoice.balance_due_cents ?? invoice.total_cents ?? 0
+      // The stored column is live (payments recalc it); metadata totals are frozen at issue time.
+      const balanceDue = invoice.balance_due_cents ?? invoice.totals?.balance_due_cents ?? invoice.total_cents ?? 0
       paymentProps = {
         publishableKey,
         token,

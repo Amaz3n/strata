@@ -10,7 +10,6 @@ function parseBooleanEnv(raw: string | undefined): boolean | undefined {
 }
 
 const explicitSandbox = parseBooleanEnv(process.env.QBO_SANDBOX)
-export const hasExplicitQboSandboxSetting = explicitSandbox !== undefined
 
 // Backwards-compatible fallback: local/dev defaults to sandbox.
 export const isQboSandbox = explicitSandbox ?? process.env.NODE_ENV !== "production"

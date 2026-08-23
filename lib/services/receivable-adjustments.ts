@@ -2,11 +2,31 @@ import "server-only"
 
 import { z } from "zod"
 
+import type { SupabaseClient } from "@supabase/supabase-js"
+
 import { requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import type { ReceivableAdjustment } from "@/lib/types"
+
+/**
+ * An adjustment moved Arc's balance but there is no credit-memo push to the
+ * accounting provider yet — flag the SYNC RECORD for review, which is what the
+ * UI actually reads. (The RPCs also stamp the legacy invoices.qbo_sync_status
+ * column, but mapInvoiceRow sources sync state exclusively from
+ * accounting_sync_records, so without this the flag was invisible.)
+ */
+async function flagInvoiceSyncNeedsReview(service: SupabaseClient, orgId: string, invoiceId: string, reason: string) {
+  await service
+    .from("accounting_sync_records")
+    .update({ status: "needs_review", error_message: reason })
+    .eq("org_id", orgId)
+    .eq("entity_type", "invoice")
+    .eq("entity_id", invoiceId)
+    .not("external_id", "is", null)
+    .neq("external_id", "")
+}
 
 const adjustmentSchema = z.object({
   invoiceId: z.string().uuid(),
@@ -63,6 +83,13 @@ export async function createReceivableAdjustment(input: CreateReceivableAdjustme
   if (error) throw new Error(`Failed to post receivable adjustment: ${error.message}`)
   const adjustment = data as ReceivableAdjustment
 
+  await flagInvoiceSyncNeedsReview(
+    service,
+    orgId,
+    parsed.invoiceId,
+    "A credit memo/write-off changed this invoice's balance in Arc; apply the matching credit in the accounting system.",
+  )
+
   await recordEvent({
     eventType: "receivable_adjustment_posted",
     entityType: "invoice",
@@ -110,6 +137,13 @@ export async function voidReceivableAdjustment(adjustmentId: string) {
   })
   if (error) throw new Error(`Failed to void receivable adjustment: ${error.message}`)
   const result = data as ReceivableAdjustment
+
+  await flagInvoiceSyncNeedsReview(
+    service,
+    orgId,
+    adjustment.invoice_id,
+    "A posted credit/write-off was voided in Arc; verify the accounting system reflects the reversal.",
+  )
 
   await recordEvent({
     eventType: "receivable_adjustment_voided",

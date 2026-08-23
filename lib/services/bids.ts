@@ -3,6 +3,7 @@ import { hashBidToken } from "@/lib/services/portal-credentials"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
+import { assignPartyRoleWithClient } from "@/lib/services/party-roles"
 import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 import {
   createBidPackageInputSchema,
@@ -28,6 +29,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { listRfiResponses } from "@/lib/services/rfis"
 import type { Rfi, RfiResponse } from "@/lib/types"
 import { getBidInvitePrequalificationWarnings } from "@/lib/services/prequalification"
+import { getBidInviteComplianceWarnings } from "@/lib/services/compliance-documents"
 import { getDivisionAccessForUser, getDivisionScopedProjectIds } from "@/lib/services/authorization"
 
 export interface BidPackage {
@@ -117,6 +119,8 @@ export interface BidInvite {
   linked_paused_account_count?: number
   linked_revoked_account_count?: number
   prequalification_warning?: string
+  /** Set when the bidder's insurance or paperwork is not current. */
+  compliance_warning?: string
   company?: { id: string; name: string; phone?: string; email?: string }
   contact?: { id: string; full_name: string; email?: string; phone?: string }
 }
@@ -250,6 +254,7 @@ function mapBidInvite(row: any): BidInvite {
     created_at: row.created_at,
     updated_at: row.updated_at ?? null,
     prequalification_warning: row.prequalification_warning ?? undefined,
+    compliance_warning: row.compliance_warning ?? undefined,
     access_total: row.access_total ?? undefined,
     active_access_count: row.active_access_count ?? undefined,
     paused_access_count: row.paused_access_count ?? undefined,
@@ -1732,7 +1737,13 @@ export async function listBidInvites(bidPackageId: string, orgId?: string): Prom
 
   const invites = (data ?? []).map(mapBidInvite)
   if (invites.length === 0) return invites
-  const prequalificationWarnings = await getBidInvitePrequalificationWarnings(invites.map((invite) => invite.company_id), resolvedOrgId)
+  // Awarding to a vendor whose coverage lapsed is a mistake worth catching
+  // before the contract, not at their first payable.
+  const companyIds = invites.map((invite) => invite.company_id)
+  const [prequalificationWarnings, complianceWarnings] = await Promise.all([
+    getBidInvitePrequalificationWarnings(companyIds, resolvedOrgId),
+    getBidInviteComplianceWarnings(companyIds, resolvedOrgId),
+  ])
 
   const inviteIds = invites.map((invite) => invite.id)
   const { data: tokenRows, error: tokenError } = await supabase
@@ -1832,6 +1843,7 @@ export async function listBidInvites(bidPackageId: string, orgId?: string): Prom
       linked_paused_account_count: accountAgg.paused,
       linked_revoked_account_count: accountAgg.revoked,
       prequalification_warning: prequalificationWarnings.get(invite.company_id),
+      compliance_warning: complianceWarnings.get(invite.company_id),
     }
   })
 }
@@ -2106,7 +2118,28 @@ export async function bulkCreateBidInvites({
           continue
         }
 
-        companyId = newCompany.id
+        const createdCompanyId = newCompany.id as string
+        companyId = createdCompanyId
+
+        // Inviting someone to bid makes them a vendor in this org. Without the
+        // role row the new company is invisible to the vendor lens, the
+        // compliance watch list and its own account tabs; without the audit it
+        // never reaches the search index.
+        await assignPartyRoleWithClient(supabase, resolvedOrgId, userId, {
+          kind: "company",
+          partyId: createdCompanyId,
+          roleKey: "subcontractor",
+          status: "invited",
+          source: "system",
+        })
+        await recordAudit({
+          orgId: resolvedOrgId,
+          actorId: userId ?? undefined,
+          action: "insert",
+          entityType: "company",
+          entityId: createdCompanyId,
+          after: newCompany,
+        })
         companiesCreated++
       }
 

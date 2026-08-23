@@ -42,6 +42,21 @@ export function actionError(error: unknown, fallback = "Something went wrong. Pl
   return { success: false, error: fallback }
 }
 
+/**
+ * Wrap a server action body so it returns a result instead of throwing.
+ *
+ * Every action file grew its own private copy of this three-line helper; the
+ * directory alone had it three times. Actions must not throw — a thrown error
+ * is redacted to an opaque digest in production, so the toast would say nothing.
+ */
+export async function runAction<T>(work: () => Promise<T>): Promise<ActionResult<T>> {
+  try {
+    return { success: true, data: await work() }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
 /** Client-side helper: unwrap a result, throwing locally (safe — no prod redaction in the browser). */
 export function unwrapAction<T>(result: ActionResult<T>): T {
   if (!result.success) throw new Error(result.error)

@@ -196,8 +196,8 @@ export function PayableIdentity({
                               {accountingEnabled ? (
                                 <span className="block truncate text-[10px] text-muted-foreground">
                                   {company.qbo_vendor_id
-                                    ? `QuickBooks: ${company.qbo_vendor_name ?? "Linked"}`
-                                    : "No QuickBooks vendor linked"}
+                                    ? `Accounting vendor: ${company.qbo_vendor_name ?? "Linked"}`
+                                    : "No accounting vendor linked"}
                                 </span>
                               ) : null}
                             </span>

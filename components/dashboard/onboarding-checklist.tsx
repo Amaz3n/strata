@@ -26,7 +26,7 @@ export function OnboardingChecklist({ members, projects, contacts }: OnboardingC
     },
     {
       label: "Add contacts/companies",
-      href: "/directory?view=people",
+      href: "/directory?kind=contact",
       done: contacts > 0,
     },
   ]

@@ -15,6 +15,7 @@ export default async function DecisionsPortalPage({ params }: Params) {
   try {
     await assertPortalActionAccess(token, {
       portalType: "client",
+      requireProject: true,
       permission: "can_submit_selections",
     })
   } catch {

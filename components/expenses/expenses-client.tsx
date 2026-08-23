@@ -41,6 +41,7 @@ import {
 } from "@/app/(app)/projects/[id]/expenses/actions"
 import { getFileAction, getFileDownloadUrlAction } from "@/app/(app)/documents/actions"
 import { AccountingSyncBadge } from "@/components/accounting/accounting-sync-badge"
+import { accountingProviderLabel } from "@/components/accounting/provider-label"
 import { ExpenseForm } from "@/components/expenses/expense-form"
 import { CodingCombobox } from "@/components/financials/workspace/coding-combobox"
 import { useWorkspaceParam } from "@/components/financials/workspace/use-workspace-param"
@@ -143,7 +144,8 @@ function AccountCombobox({
   const accounts = context?.expenseAccounts ?? []
   const selectedAccount = expense.qbo_expense_account_id ? findAccount(accounts, expense.qbo_expense_account_id) : null
   const selectedName = selectedAccount?.name ?? expense.qbo_expense_account_name?.split(":").pop()?.trim() ?? "Choose account"
-  const selectedPath = selectedAccount?.fullyQualifiedName ?? expense.qbo_expense_account_name ?? "QBO category"
+  const providerName = accountingProviderLabel(context?.accountingProvider, context?.accountingProviderName)
+  const selectedPath = selectedAccount?.fullyQualifiedName ?? expense.qbo_expense_account_name ?? `${providerName} category`
 
   return (
     <CodingCombobox
@@ -184,6 +186,7 @@ function VendorCombobox({
   onSelect: (vendorId: string) => void
 }) {
   const vendors = context?.vendors ?? []
+  const providerName = accountingProviderLabel(context?.accountingProvider, context?.accountingProviderName)
 
   return (
     <CodingCombobox
@@ -191,11 +194,11 @@ function VendorCombobox({
       onOpenChange={onOpenChange}
       disabled={disabled}
       triggerLabel={expense.qbo_vendor_name ?? vendorOf(expense)}
-      triggerSublabel="QuickBooks vendor"
+      triggerSublabel={`${providerName} vendor`}
       searchPlaceholder="Search vendors..."
       groupHeading="Vendors"
       emptyLabel="No vendors found."
-      options={vendors.map((vendor) => ({ id: vendor.id, label: vendor.name, sublabel: "QuickBooks vendor" }))}
+      options={vendors.map((vendor) => ({ id: vendor.id, label: vendor.name, sublabel: `${providerName} vendor` }))}
       selectedId={expense.qbo_vendor_id ?? null}
       clearOption={{ label: "Auto match/create", sublabel: "Use the merchant name on sync" }}
       onSelect={(vendorId) => onSelect(vendorId ?? AUTO_QBO_VENDOR)}
@@ -314,6 +317,7 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
   const [viewerOpen, setViewerOpen] = useState(false)
   const [viewerFile, setViewerFile] = useState<FileWithDetails | null>(null)
   const costCodesEnabled = accountingContext?.costCodesEnabled ?? true
+  const accountingProviderName = accountingProviderLabel(accountingContext?.accountingProvider, accountingContext?.accountingProviderName)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const dragDepthRef = useRef(0)
   const [isPending, startTransition] = useTransition()
@@ -533,10 +537,10 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
     startTransition(async () => {
       try {
         unwrapAction(await syncProjectExpenseToQBOAction(projectId, expenseId))
-        toast.success("Expense synced to QuickBooks")
+        toast.success(`Expense synced to ${accountingProviderName}`)
         refresh()
       } catch (error: any) {
-        toast.error("Could not sync to QuickBooks", {
+        toast.error(`Could not sync to ${accountingProviderName}`, {
           description: error?.message,
         })
         refresh()
@@ -558,7 +562,7 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
           unwrapAction(await syncProjectExpenseToQBOAction(projectId, expense.id))
           synced += 1
         } catch (error: any) {
-          toast.error(error?.message ?? "QuickBooks sync failed", { description: vendorOf(expense) })
+          toast.error(error?.message ?? `${accountingProviderName} sync failed`, { description: vendorOf(expense) })
         }
       }
       if (synced > 0) toast.success(`${synced} expense${synced === 1 ? "" : "s"} synced`)
@@ -570,7 +574,7 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
   async function saveExpenseAccount(expense: ProjectExpense, accountId: string) {
     const account = findAccount(accountingContext?.expenseAccounts, accountId)
     if (!account) {
-      toast.error("Choose a QuickBooks account")
+      toast.error(`Choose a ${accountingProviderName} account`)
       return
     }
 
@@ -600,9 +604,9 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
         qboVendorName: qboVendor ? accountLabel(qboVendor) : (expense.qbo_vendor_name ?? null),
       }))
       await loadExpensesPage(pagination.page)
-      toast.success("QuickBooks account saved")
+      toast.success(`${accountingProviderName} account saved`)
     } catch (error: any) {
-      toast.error("Could not save QuickBooks account", {
+      toast.error(`Could not save ${accountingProviderName} account`, {
         description: error?.message ?? "Please try again.",
       })
       refresh()
@@ -614,7 +618,7 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
   async function saveExpenseVendor(expense: ProjectExpense, vendorId: string) {
     const qboVendor = vendorId === AUTO_QBO_VENDOR ? null : findAccount(accountingContext?.vendors, vendorId)
     if (vendorId !== AUTO_QBO_VENDOR && !qboVendor) {
-      toast.error("Choose a QuickBooks vendor")
+      toast.error(`Choose a ${accountingProviderName} vendor`)
       return
     }
 
@@ -640,9 +644,9 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
         qboVendorName: qboVendor ? accountLabel(qboVendor) : null,
       }))
       await loadExpensesPage(pagination.page)
-      toast.success("QuickBooks vendor saved")
+      toast.success(`${accountingProviderName} vendor saved`)
     } catch (error: any) {
-      toast.error("Could not save QuickBooks vendor", {
+      toast.error(`Could not save ${accountingProviderName} vendor`, {
         description: error?.message ?? "Please try again.",
       })
       refresh()
@@ -710,14 +714,14 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
         </Tooltip>
         <DropdownMenuContent align="end">
           <DropdownMenuItem onClick={() => openExpense(expense.id)}>Open</DropdownMenuItem>
-          <DropdownMenuItem onClick={() => openExpense(expense.id)}>QuickBooks coding</DropdownMenuItem>
+          <DropdownMenuItem onClick={() => openExpense(expense.id)}>{accountingProviderName} coding</DropdownMenuItem>
           <DropdownMenuSeparator />
           {isSubmitted ? (
             <DropdownMenuItem asChild>
               <Link href={`/projects/${projectId}/financials/review`}>Review in Financials</Link>
             </DropdownMenuItem>
           ) : canSync ? (
-            <DropdownMenuItem onClick={() => syncExpense(expense.id)}>Sync to QuickBooks</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => syncExpense(expense.id)}>Sync to {accountingProviderName}</DropdownMenuItem>
           ) : (
             <DropdownMenuItem disabled>No actions available</DropdownMenuItem>
           )}
@@ -927,7 +931,7 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
           <div className="flex w-full gap-2 sm:w-auto">
             <Button type="button" variant="outline" onClick={() => setSyncSheetOpen(true)} className="w-full sm:w-auto">
               <RefreshCcw className="mr-2 h-4 w-4" />
-              QuickBooks
+              {accountingProviderName}
             </Button>
             {allowCreate ? (
               <Button onClick={openBlankExpense} className="w-full sm:w-auto">
@@ -952,7 +956,7 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
                 onClick={() => bulkSyncExpenses(bulkSyncable)}
               >
                 <ExternalLink className="mr-2 h-4 w-4" />
-                Sync {bulkSyncable.length || ""} to QuickBooks
+                Sync {bulkSyncable.length || ""} to {accountingProviderName}
               </Button>
               <Button type="button" variant="ghost" size="sm" onClick={() => setSelectedIds([])}>
                 Clear
@@ -998,7 +1002,12 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
                         />
                       </div>
                       <div className="mt-1">
-                        <AccountingSyncBadge status={expense.qbo_sync_status} error={expense.qbo_sync_error} />
+                        <AccountingSyncBadge
+                          status={expense.qbo_sync_status}
+                          error={expense.qbo_sync_error}
+                          provider={accountingContext?.accountingProvider}
+                          providerLabel={accountingContext?.accountingProviderName}
+                        />
                       </div>
                     </div>
                     <div onClick={(event) => event.stopPropagation()}>{rowActions(expense)}</div>
@@ -1034,10 +1043,10 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
                   <TableHead className="w-[220px] max-w-[220px] px-4 py-3">Merchant / Vendor</TableHead>
                   <TableHead className="w-[132px] px-4 py-3 text-center">Date</TableHead>
                   <TableHead className="w-[168px] px-4 py-3 text-right">Amount</TableHead>
-                  <TableHead className="min-w-[340px] px-4 py-3">QBO Category</TableHead>
+                  <TableHead className="min-w-[340px] px-4 py-3">{accountingProviderName} category</TableHead>
                   <TableHead className="w-[96px] px-4 py-3 text-center">Receipt</TableHead>
                   <TableHead className="min-w-[220px] px-4 py-3">Memo</TableHead>
-                  <TableHead className="min-w-[280px] px-4 py-3">QBO Vendor</TableHead>
+                  <TableHead className="min-w-[280px] px-4 py-3">{accountingProviderName} vendor</TableHead>
                   {costCodesEnabled ? <TableHead className="min-w-[180px] px-4 py-3">Cost Code</TableHead> : null}
                   <TableHead className="sticky right-[56px] z-10 w-14 min-w-14 border-l-2 border-r bg-background px-2 py-3 text-center shadow-[-2px_0_0_hsl(var(--border))]">
                     <span className="sr-only">Review</span>

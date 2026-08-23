@@ -70,6 +70,7 @@ function getIntuitTid(response: Response): string | null {
 const REQUEST_MAX_ATTEMPTS = 4
 const RETRY_BASE_DELAY_MS = 1500
 const RETRY_MAX_DELAY_MS = 30_000
+const REQUEST_TIMEOUT_MS = 45_000
 
 // One in-flight Intuit token refresh per connection within this process. Intuit rotates the
 // refresh token on every refresh, so N concurrent 401s each forcing their own refresh can
@@ -80,8 +81,8 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function retryDelayMs(response: Response, attempt: number): number {
-  const retryAfter = Number(response.headers.get("retry-after"))
+function retryDelayMs(response: Response | null, attempt: number): number {
+  const retryAfter = Number(response?.headers.get("retry-after"))
   if (Number.isFinite(retryAfter) && retryAfter > 0) return Math.min(retryAfter * 1000, 60_000)
   const backoff = Math.min(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), RETRY_MAX_DELAY_MS)
   return Math.round(backoff * (0.5 + Math.random() * 0.5))
@@ -294,6 +295,10 @@ export class QBOClient {
         ...(init?.headers ?? {}),
       },
       body: init?.body,
+      // A hung Intuit socket must not consume the whole function budget — a
+      // timed-out create is recoverable via the PrivateNote marker; a silent
+      // hang past the platform limit is not.
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
   }
 
@@ -319,12 +324,24 @@ export class QBOClient {
     let attempt = 0
     for (;;) {
       attempt += 1
-      const response = await this.fetchEndpoint(method, endpoint, {
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: body ? JSON.stringify(body) : undefined,
-      })
+      let response: Response
+      try {
+        response = await this.fetchEndpoint(method, endpoint, {
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: body ? JSON.stringify(body) : undefined,
+        })
+      } catch (networkError) {
+        // fetch throws (timeout, DNS, reset) without an HTTP response. Reads are
+        // safe to retry; a write may have landed, so it goes to the outbox path
+        // whose duplicate protection owns write retries.
+        if (method === "GET" && attempt < REQUEST_MAX_ATTEMPTS) {
+          await sleep(retryDelayMs(null, attempt))
+          continue
+        }
+        throw networkError
+      }
 
       if (response.ok) return response.json()
 
@@ -338,6 +355,8 @@ export class QBOClient {
       // writes, and the outbox retry path owns write retries with duplicate protection.
       const retryable = response.status === 429 || (method === "GET" && response.status >= 500)
       if (retryable && attempt < REQUEST_MAX_ATTEMPTS) {
+        // Release the abandoned response body so retries don't pin sockets.
+        void response.body?.cancel()
         await sleep(retryDelayMs(response, attempt))
         continue
       }
@@ -359,12 +378,6 @@ export class QBOClient {
     return pickHighestDocNumber((result.QueryResponse.Invoice ?? []).map((row) => row.DocNumber)) ?? "0"
   }
 
-  async checkDocNumberExists(docNumber: string): Promise<boolean> {
-    const query = `SELECT Id FROM Invoice WHERE DocNumber = '${this.toQboStringLiteral(docNumber)}'`
-    const result = await this.request<QueryInvoiceResponse>("GET", `query?query=${encodeURIComponent(query)}`)
-    return (result.QueryResponse.Invoice?.length ?? 0) > 0
-  }
-
   async findCustomerByName(displayName: string): Promise<QBOCustomer | null> {
     const query = `SELECT * FROM Customer WHERE DisplayName = '${this.toQboStringLiteral(displayName)}'`
     const result = await this.request<{ QueryResponse: { Customer?: QBOCustomer[] } }>(
@@ -382,7 +395,24 @@ export class QBOClient {
   async getOrCreateCustomer(displayName: string): Promise<QBOCustomer> {
     const found = await this.findCustomerByName(displayName)
     if (found) return found
-    return this.createCustomer({ DisplayName: displayName })
+    try {
+      return await this.createCustomer({ DisplayName: displayName })
+    } catch (error) {
+      // Fault 6240: the name exists. Either a concurrent push created it first
+      // (re-lookup adopts the winner) or an INACTIVE same-name customer holds
+      // the name — QBO name-uniqueness spans inactive records, so say so
+      // instead of failing forever with Intuit's raw text.
+      if (error instanceof QBOError && error.faultCode === "6240") {
+        const raced = await this.findCustomerByName(displayName)
+        if (raced) return raced
+        throw new QBOError(
+          error.status,
+          { Fault: { Error: [{ code: "6240", Detail: `An inactive QuickBooks customer already uses the name "${displayName}". Reactivate or rename it in QuickBooks, then retry.` }] } },
+          error.intuitTid,
+        )
+      }
+      throw error
+    }
   }
 
   async listCustomers(limit = 1000): Promise<QBOCustomerOption[]> {
@@ -437,7 +467,7 @@ export class QBOClient {
     const max = Math.min(Math.max(limit, 1), 100)
     const trimmed = term.trim()
     const where = trimmed
-      ? `WHERE Active = true AND DisplayName LIKE '%${this.toQboStringLiteral(trimmed)}%'`
+      ? `WHERE Active = true AND DisplayName LIKE '%${this.toQboStringLiteral(trimmed).replace(/([%_])/g, "\\$1")}%'`
       : `WHERE Active = true`
     // SELECT * — see listCustomers: an explicit column list with BillAddr / PrimaryEmailAddr is
     // rejected by QBO ("Property BillAddr not found for Entity Customer").
@@ -513,7 +543,22 @@ export class QBOClient {
     const normalized = displayName.trim() || "Unknown Vendor"
     const found = await this.findVendorByName(normalized)
     if (found) return found
-    return this.createVendor({ DisplayName: normalized })
+    try {
+      return await this.createVendor({ DisplayName: normalized })
+    } catch (error) {
+      // See getOrCreateCustomer: 6240 is a lost create race or an inactive
+      // same-name vendor squatting on the name.
+      if (error instanceof QBOError && error.faultCode === "6240") {
+        const raced = await this.findVendorByName(normalized)
+        if (raced) return raced
+        throw new QBOError(
+          error.status,
+          { Fault: { Error: [{ code: "6240", Detail: `An inactive QuickBooks vendor already uses the name "${normalized}". Reactivate or rename it in QuickBooks, then retry.` }] } },
+          error.intuitTid,
+        )
+      }
+      throw error
+    }
   }
 
   async listVendors(limit = 1000): Promise<QBOVendorOption[]> {
@@ -556,7 +601,10 @@ export class QBOClient {
         incomeAccountName: item.IncomeAccountRef?.name ? String(item.IncomeAccountRef.name) : null,
       }
     } catch (error) {
-      if (error instanceof QBOError && error.status === 404) return null
+      // Deleted transactions come back as ValidationFault 610 on HTTP 400, not
+      // 404 — checking only 404 made the deleted-entity recovery path
+      // unreachable for this entity type.
+      if (error instanceof QBOError && isQboMissingEntityFault(error)) return null
       throw error
     }
   }
@@ -586,26 +634,53 @@ export class QBOClient {
       }))
   }
 
+  /**
+   * Page a list query to completion. Chart-of-accounts and class listings used
+   * to cap silently at 1000 rows — a job-costing file with a class per job
+   * loses the tail and the mapping UI shows a partial chart as if it were
+   * complete. Errors propagate: an Intuit outage must not render as "this
+   * company has no accounts".
+   */
+  private async queryAllPages<TRow>(baseQuery: string, extract: (payload: QueryAccountResponse & QueryClassResponse) => TRow[] | undefined): Promise<TRow[]> {
+    const pageSize = 1000
+    const rows: TRow[] = []
+    for (let start = 1; ; start += pageSize) {
+      const query = `${baseQuery} STARTPOSITION ${start} MAXRESULTS ${pageSize}`
+      const result = await this.request<QueryAccountResponse & QueryClassResponse>("GET", `query?query=${encodeURIComponent(query)}`)
+      const page = extract(result) ?? []
+      rows.push(...page)
+      if (page.length < pageSize) return rows
+    }
+  }
+
+  private async queryAccountRefs(where: string, orderBy = "Name"): Promise<QBOAccountRef[]> {
+    const rows = await this.queryAllPages(
+      `SELECT Id, Name, FullyQualifiedName, AccountType FROM Account WHERE ${where} ORDERBY ${orderBy}`,
+      (payload) => payload.QueryResponse.Account,
+    )
+    return rows
+      .filter((account) => account.Id && account.Name)
+      .map((account) => ({
+        id: String(account.Id),
+        name: String(account.Name),
+        fullyQualifiedName: account.FullyQualifiedName ? String(account.FullyQualifiedName) : undefined,
+        accountType: account.AccountType ? String(account.AccountType) : undefined,
+      }))
+  }
+
   async listIncomeAccounts(): Promise<QBOIncomeAccount[]> {
-    const runAccountQuery = async (query: string): Promise<QBOIncomeAccount[]> => {
-      try {
-        const result = await this.request<QueryAccountResponse>("GET", `query?query=${encodeURIComponent(query)}`)
-        return mapQboAccountRows(result.QueryResponse.Account)
-      } catch {
-        return []
-      }
+    const runAccountQuery = async (where: string): Promise<QBOIncomeAccount[]> => {
+      const rows = await this.queryAllPages(
+        `SELECT Id, Name, FullyQualifiedName FROM Account WHERE ${where} ORDERBY Name`,
+        (payload) => payload.QueryResponse.Account,
+      )
+      return mapQboAccountRows(rows)
     }
 
-    const incomeAccounts = await runAccountQuery(
-      `SELECT Id, Name, FullyQualifiedName FROM Account WHERE AccountType = 'Income' AND Active = true ORDERBY Name MAXRESULTS 1000`,
-    )
-    const otherIncomeAccounts = await runAccountQuery(
-      `SELECT Id, Name, FullyQualifiedName FROM Account WHERE AccountType = 'Other Income' AND Active = true ORDERBY Name MAXRESULTS 1000`,
-    )
-
-    const revenueFallback = await runAccountQuery(
-      `SELECT Id, Name, FullyQualifiedName FROM Account WHERE Classification = 'Revenue' AND Active = true ORDERBY Name MAXRESULTS 1000`,
-    )
+    const incomeAccounts = await runAccountQuery(`AccountType = 'Income' AND Active = true`)
+    const otherIncomeAccounts = await runAccountQuery(`AccountType = 'Other Income' AND Active = true`)
+    const revenueFallback =
+      incomeAccounts.length + otherIncomeAccounts.length > 0 ? [] : await runAccountQuery(`Classification = 'Revenue' AND Active = true`)
     return pickPreferredQboIncomeAccounts({
       income: incomeAccounts,
       otherIncome: otherIncomeAccounts,
@@ -614,102 +689,42 @@ export class QBOClient {
   }
 
   async listExpenseAccounts(): Promise<QBOAccountRef[]> {
-    const runAccountQuery = async (query: string): Promise<QBOAccountRef[]> => {
-      try {
-        const result = await this.request<QueryAccountResponse>("GET", `query?query=${encodeURIComponent(query)}`)
-        return (result.QueryResponse.Account ?? [])
-          .filter((account) => account.Id && account.Name)
-          .map((account) => ({
-            id: String(account.Id),
-            name: String(account.Name),
-            fullyQualifiedName: account.FullyQualifiedName ? String(account.FullyQualifiedName) : undefined,
-            accountType: account.AccountType ? String(account.AccountType) : undefined,
-          }))
-      } catch {
-        return []
-      }
-    }
-
-    const expense = await runAccountQuery(
-      `SELECT Id, Name, FullyQualifiedName, AccountType FROM Account WHERE AccountType = 'Expense' AND Active = true ORDERBY Name MAXRESULTS 1000`,
-    )
-    const cogs = await runAccountQuery(
-      `SELECT Id, Name, FullyQualifiedName, AccountType FROM Account WHERE AccountType = 'Cost of Goods Sold' AND Active = true ORDERBY Name MAXRESULTS 1000`,
-    )
-    const otherExpense = await runAccountQuery(
-      `SELECT Id, Name, FullyQualifiedName, AccountType FROM Account WHERE AccountType = 'Other Expense' AND Active = true ORDERBY Name MAXRESULTS 1000`,
-    )
+    const [expense, cogs, otherExpense] = await Promise.all([
+      this.queryAccountRefs(`AccountType = 'Expense' AND Active = true`),
+      this.queryAccountRefs(`AccountType = 'Cost of Goods Sold' AND Active = true`),
+      this.queryAccountRefs(`AccountType = 'Other Expense' AND Active = true`),
+    ])
     return [...expense, ...cogs, ...otherExpense]
   }
 
   async listPaymentAccounts(): Promise<QBOAccountRef[]> {
-    const query = `SELECT Id, Name, FullyQualifiedName, AccountType FROM Account WHERE Active = true ORDERBY Name MAXRESULTS 1000`
-    const result = await this.request<QueryAccountResponse>("GET", `query?query=${encodeURIComponent(query)}`)
-    return (result.QueryResponse.Account ?? [])
-      .filter((account) => account.Id && account.Name)
-      .filter((account) => {
-        const type = String(account.AccountType ?? "").toLowerCase()
-        return type === "bank" || type === "credit card" || type === "other current asset"
-      })
-      .map((account) => ({
-        id: String(account.Id),
-        name: String(account.Name),
-        fullyQualifiedName: account.FullyQualifiedName ? String(account.FullyQualifiedName) : undefined,
-        accountType: account.AccountType ? String(account.AccountType) : undefined,
-      }))
+    const accounts = await this.queryAccountRefs(`Active = true`)
+    return accounts.filter((account) => {
+      const type = String(account.accountType ?? "").toLowerCase()
+      return type === "bank" || type === "credit card" || type === "other current asset"
+    })
   }
 
   async listAllAccounts(): Promise<QBOAccountRef[]> {
-    const query = `SELECT Id, Name, FullyQualifiedName, AccountType FROM Account WHERE Active = true ORDERBY FullyQualifiedName MAXRESULTS 1000`
-    const result = await this.request<QueryAccountResponse>("GET", `query?query=${encodeURIComponent(query)}`)
-    return (result.QueryResponse.Account ?? [])
-      .filter((account) => account.Id && account.Name)
-      .map((account) => ({
-        id: String(account.Id),
-        name: String(account.Name),
-        fullyQualifiedName: account.FullyQualifiedName ? String(account.FullyQualifiedName) : undefined,
-        accountType: account.AccountType ? String(account.AccountType) : undefined,
-      }))
+    return this.queryAccountRefs(`Active = true`, "FullyQualifiedName")
   }
 
   async listAccountsPayableAccounts(): Promise<QBOAccountRef[]> {
-    const query = `SELECT Id, Name, FullyQualifiedName, AccountType FROM Account WHERE AccountType = 'Accounts Payable' AND Active = true ORDERBY Name MAXRESULTS 1000`
-    const result = await this.request<QueryAccountResponse>("GET", `query?query=${encodeURIComponent(query)}`)
-    return (result.QueryResponse.Account ?? [])
-      .filter((account) => account.Id && account.Name)
-      .map((account) => ({
-        id: String(account.Id),
-        name: String(account.Name),
-        fullyQualifiedName: account.FullyQualifiedName ? String(account.FullyQualifiedName) : undefined,
-        accountType: account.AccountType ? String(account.AccountType) : undefined,
-      }))
+    return this.queryAccountRefs(`AccountType = 'Accounts Payable' AND Active = true`)
   }
 
-  async listClasses(limit = 1000): Promise<QBOClassOption[]> {
-    const query = `SELECT Id, Name, FullyQualifiedName FROM Class WHERE Active = true ORDERBY FullyQualifiedName MAXRESULTS ${Math.min(Math.max(limit, 1), 1000)}`
-    const result = await this.request<QueryClassResponse>("GET", `query?query=${encodeURIComponent(query)}`)
-    return (result.QueryResponse.Class ?? [])
+  async listClasses(): Promise<QBOClassOption[]> {
+    const rows = await this.queryAllPages(
+      `SELECT Id, Name, FullyQualifiedName FROM Class WHERE Active = true ORDERBY FullyQualifiedName`,
+      (payload) => payload.QueryResponse.Class,
+    )
+    return rows
       .filter((qboClass) => qboClass.Id && qboClass.Name)
       .map((qboClass) => ({
         id: String(qboClass.Id),
         name: String(qboClass.Name),
         fullyQualifiedName: qboClass.FullyQualifiedName ? String(qboClass.FullyQualifiedName) : undefined,
       }))
-  }
-
-  async getIncomeAccountById(accountId: string): Promise<QBOIncomeAccount | null> {
-    const normalized = String(accountId ?? "").trim()
-    if (!normalized) return null
-
-    const query = `SELECT Id, Name, FullyQualifiedName FROM Account WHERE Id = '${this.toQboStringLiteral(normalized)}' MAXRESULTS 1`
-    const result = await this.request<QueryAccountResponse>("GET", `query?query=${encodeURIComponent(query)}`)
-    const match = result.QueryResponse.Account?.[0]
-    if (!match?.Id || !match?.Name) return null
-    return {
-      id: String(match.Id),
-      name: String(match.Name),
-      fullyQualifiedName: match.FullyQualifiedName ? String(match.FullyQualifiedName) : undefined,
-    }
   }
 
   private async findIncomeAccountByName(name: string): Promise<QBOIncomeAccount | null> {
@@ -867,7 +882,10 @@ export class QBOClient {
       )
       return result.BillPayment ?? null
     } catch (error) {
-      if (error instanceof QBOError && error.status === 404) return null
+      // Deleted transactions come back as ValidationFault 610 on HTTP 400, not
+      // 404 — checking only 404 made the deleted-entity recovery path
+      // unreachable for this entity type.
+      if (error instanceof QBOError && isQboMissingEntityFault(error)) return null
       throw error
     }
   }
@@ -903,7 +921,10 @@ export class QBOClient {
       )
       return result.Payment ?? null
     } catch (error) {
-      if (error instanceof QBOError && error.status === 404) return null
+      // Deleted transactions come back as ValidationFault 610 on HTTP 400, not
+      // 404 — checking only 404 made the deleted-entity recovery path
+      // unreachable for this entity type.
+      if (error instanceof QBOError && isQboMissingEntityFault(error)) return null
       throw error
     }
   }
@@ -919,7 +940,10 @@ export class QBOClient {
       )
       return result.Purchase ?? null
     } catch (error) {
-      if (error instanceof QBOError && error.status === 404) return null
+      // Deleted transactions come back as ValidationFault 610 on HTTP 400, not
+      // 404 — checking only 404 made the deleted-entity recovery path
+      // unreachable for this entity type.
+      if (error instanceof QBOError && isQboMissingEntityFault(error)) return null
       throw error
     }
   }
@@ -935,7 +959,10 @@ export class QBOClient {
       )
       return result.Bill ?? null
     } catch (error) {
-      if (error instanceof QBOError && error.status === 404) return null
+      // Deleted transactions come back as ValidationFault 610 on HTTP 400, not
+      // 404 — checking only 404 made the deleted-entity recovery path
+      // unreachable for this entity type.
+      if (error instanceof QBOError && isQboMissingEntityFault(error)) return null
       throw error
     }
   }
@@ -951,7 +978,10 @@ export class QBOClient {
       )
       return result.VendorCredit ?? null
     } catch (error) {
-      if (error instanceof QBOError && error.status === 404) return null
+      // Deleted transactions come back as ValidationFault 610 on HTTP 400, not
+      // 404 — checking only 404 made the deleted-entity recovery path
+      // unreachable for this entity type.
+      if (error instanceof QBOError && isQboMissingEntityFault(error)) return null
       throw error
     }
   }
@@ -967,7 +997,10 @@ export class QBOClient {
       )
       return result.JournalEntry ?? null
     } catch (error) {
-      if (error instanceof QBOError && error.status === 404) return null
+      // Deleted transactions come back as ValidationFault 610 on HTTP 400, not
+      // 404 — checking only 404 made the deleted-entity recovery path
+      // unreachable for this entity type.
+      if (error instanceof QBOError && isQboMissingEntityFault(error)) return null
       throw error
     }
   }
@@ -1065,7 +1098,7 @@ export class QBOClient {
    * is deliberate: QBO rejects queries that name complex columns.
    */
   async findTransactionByPrivateNote(
-    entity: "Payment" | "BillPayment",
+    entity: "Payment" | "BillPayment" | "Invoice" | "Bill" | "Purchase" | "VendorCredit" | "JournalEntry",
     marker: string,
     opts?: { sinceDate?: string | null },
   ): Promise<{ Id?: string; SyncToken?: string; PrivateNote?: string } | null> {
@@ -1106,20 +1139,39 @@ export class QBOClient {
       Note: params.note ?? undefined,
     }
 
-    const form = new FormData()
     const fileBytes = Buffer.isBuffer(params.content) ? params.content : Buffer.from(params.content)
     const fileArrayBuffer = fileBytes.buffer.slice(
       fileBytes.byteOffset,
       fileBytes.byteOffset + fileBytes.byteLength,
     ) as ArrayBuffer
-    form.append("file_metadata_01", new Blob([JSON.stringify(metadata)], { type: "application/json" }), "attachment.json")
-    form.append("file_content_01", new Blob([fileArrayBuffer], { type: params.contentType }), params.fileName)
 
-    const response = await this.fetchEndpoint("POST", "upload", {
-      body: form,
-    })
-
-    if (!response.ok) {
+    // Multipart, so it cannot ride `request()` — but it still needs the same
+    // 401-refresh and 429/retry treatment: this runs at the END of a push,
+    // after money has already posted, which is exactly when the access token
+    // is most likely to have aged out mid-batch.
+    let refreshedOnce = false
+    let attempt = 0
+    let response: Response
+    for (;;) {
+      attempt += 1
+      // FormData is single-use once sent; rebuild it per attempt.
+      const form = new FormData()
+      form.append("file_metadata_01", new Blob([JSON.stringify(metadata)], { type: "application/json" }), "attachment.json")
+      form.append("file_content_01", new Blob([fileArrayBuffer], { type: params.contentType }), params.fileName)
+      response = await this.fetchEndpoint("POST", "upload", { body: form })
+      if (response.ok) break
+      if (response.status === 401 && !refreshedOnce && (this.connectionId || this.orgId)) {
+        refreshedOnce = true
+        if (await this.refreshTokenSingleFlight()) continue
+      }
+      // An attachment upload is idempotent enough to retry on 429/5xx: the
+      // caller fingerprints uploads, and a duplicated receipt is recoverable
+      // where a failed whole push after posted money is not.
+      if ((response.status === 429 || response.status >= 500) && attempt < REQUEST_MAX_ATTEMPTS) {
+        void response.body?.cancel()
+        await sleep(retryDelayMs(response, attempt))
+        continue
+      }
       const errorPayload = await response.json().catch(() => ({}))
       throw new QBOError(response.status, errorPayload, getIntuitTid(response))
     }

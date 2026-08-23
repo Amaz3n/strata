@@ -97,6 +97,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
   try {
     const access = await assertPortalActionAccess(token, {
       portalType: "sub",
+      requireProject: true,
       requireCompany: true,
       permission: "can_view_commitments",
     })

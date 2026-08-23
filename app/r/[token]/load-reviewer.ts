@@ -10,7 +10,7 @@ import { assertPortalActionAccess, loadReviewerPortalData } from "@/lib/services
 export async function loadReviewerPortalPage(token: string) {
   let access
   try {
-    access = await assertPortalActionAccess(token, { portalType: "reviewer" })
+    access = await assertPortalActionAccess(token, { portalType: "reviewer", requireProject: true })
   } catch {
     notFound()
   }

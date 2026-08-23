@@ -4,143 +4,130 @@ import { PageLayout } from "@/components/layout/page-layout";
 import { getCurrentUserPermissions } from "@/lib/services/permissions";
 import { getCompaniesComplianceStatus } from "@/lib/services/compliance-documents";
 import { getCompaniesPrequalificationSummary } from "@/lib/services/prequalification";
-import { listCompanies } from "@/lib/services/companies";
 import { listProjects } from "@/lib/services/projects";
+import type { PartyKind } from "@/lib/directory/roles";
+import { canEditDirectory } from "@/lib/directory/permissions";
+import { terminology } from "@/lib/terminology";
 import { DirectoryClient } from "@/components/directory/directory-client";
 import {
+  listComplianceWatchCompanies,
   listDirectoryPage,
   listDirectoryTrades,
   type DirectorySortDirection,
   type DirectorySortKey,
-  type DirectoryView,
 } from "@/lib/services/directory";
 
 import { requireOrgContext } from "@/lib/services/context";
-
 
 const PAGE_SIZE = 25;
 
 interface DirectoryPageProps {
   searchParams: Promise<{
-    view?: string;
+    kind?: string;
     q?: string;
-    type?: string;
+    role?: string;
     trade?: string;
     sort?: string;
     direction?: string;
-    page?: string;
   }>;
 }
 
-function resolveView(value?: string): DirectoryView {
-  return value === "companies" || value === "people" ? value : "all";
+/** Companies is the default: it is the larger list and the operational unit. */
+function resolveKind(value?: string): PartyKind {
+  return value === "contact" ? "contact" : "company";
 }
 
 function resolveSort(value?: string): DirectorySortKey {
-  return value === "type" || value === "detail" ? value : "name";
+  return value === "detail" || value === "recent" ? value : "name";
 }
 
 function resolveDirection(value?: string): DirectorySortDirection {
   return value === "desc" ? "desc" : "asc";
 }
 
-function resolvePage(value?: string) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 1;
-}
-
 async function DirectoryData({ searchParams }: DirectoryPageProps) {
-  const { orgId } = await requireOrgContext();
-  const resolvedSearchParams = await searchParams;
-  const view = resolveView(resolvedSearchParams?.view);
-  const search =
-    typeof resolvedSearchParams?.q === "string"
-      ? resolvedSearchParams.q.trim()
-      : "";
-  const typeFilter =
-    typeof resolvedSearchParams?.type === "string"
-      ? resolvedSearchParams.type
-      : "all";
-  const tradeFilter =
-    typeof resolvedSearchParams?.trade === "string"
-      ? resolvedSearchParams.trade
-      : "all";
-  const sort = resolveSort(resolvedSearchParams?.sort);
-  const direction = resolveDirection(resolvedSearchParams?.direction);
-  const page = resolvePage(resolvedSearchParams?.page);
+  const { orgId, productTier } = await requireOrgContext();
+  const resolved = await searchParams;
 
-  const [
-    directoryPage,
-    trades,
-    permissionResult,
-    projects,
-    subcontractors,
-    suppliers,
-  ] = await Promise.all([
-    listDirectoryPage({
-      view,
-      page,
-      pageSize: PAGE_SIZE,
-      search,
-      type: typeFilter,
-      trade: tradeFilter,
-      sort,
-      direction,
-    }),
-    listDirectoryTrades(),
-    getCurrentUserPermissions(),
-    listProjects().catch(() => []),
-    listCompanies(undefined, { company_type: "subcontractor" }).catch(
-      () => [],
-    ),
-    listCompanies(undefined, { company_type: "supplier" }).catch(() => []),
-  ]);
+  const kind = resolveKind(resolved?.kind);
+  const search = typeof resolved?.q === "string" ? resolved.q.trim() : "";
+  const roleFilter = typeof resolved?.role === "string" ? resolved.role : "all";
+  const tradeFilter = typeof resolved?.trade === "string" ? resolved.trade : "all";
+  const sort = resolveSort(resolved?.sort);
+  const direction = resolveDirection(resolved?.direction);
 
-  const permissions = permissionResult?.permissions ?? [];
-  const canEdit =
-    permissions.includes("org.member") ||
-    permissions.includes("directory.write");
-  const canArchive = canEdit;
-  const watchCompanies = [...subcontractors, ...suppliers];
-  const complianceCompanyIds = Array.from(
-    new Set([
-      ...watchCompanies.map((company) => company.id),
-      ...directoryPage.entries
-        .filter(
-          (entry) =>
-            entry.type === "company" &&
-            (entry.company.company_type === "subcontractor" ||
-              entry.company.company_type === "supplier"),
-        )
-        .map((entry) => entry.id),
-    ]),
+  const [directoryPage, trades, permissionResult, projects, watchList] =
+    await Promise.all([
+      listDirectoryPage({
+        kind,
+        page: 1,
+        pageSize: PAGE_SIZE,
+        search,
+        role: roleFilter,
+        trade: tradeFilter,
+        sort,
+        direction,
+      }),
+      listDirectoryTrades(),
+      getCurrentUserPermissions(),
+      listProjects().catch(() => []),
+      listComplianceWatchCompanies().catch(() => ({
+        companies: [] as Array<{ id: string; name: string }>,
+        total: 0,
+        truncated: false,
+      })),
+    ]);
+
+  const canEdit = canEditDirectory(permissionResult?.permissions ?? []);
+
+  // Status decorates vendor companies only, and only the ones actually on this
+  // page plus the banner's watch list — the page used to load every
+  // subcontractor and supplier in the org unpaginated just to feed the banner.
+  const companyIdsOnPage = directoryPage.entries
+    .filter((entry) => entry.kind === "company" && entry.role_categories.includes("vendor"))
+    .map((entry) => entry.id);
+  const statusCompanyIds = Array.from(
+    new Set([...watchList.companies.map((company) => company.id), ...companyIdsOnPage]),
   );
-  const [complianceStatusByCompanyId, prequalificationByCompanyId] = await Promise.all([
-    getCompaniesComplianceStatus(complianceCompanyIds).catch(() => ({})),
-    getCompaniesPrequalificationSummary(complianceCompanyIds).catch(() => ({})),
+
+  // A failed status read must not render as "everyone is compliant". The client
+  // shows an unavailable state instead, because on this surface silence is
+  // indistinguishable from an all-clear — and an all-clear releases payment.
+  const [complianceResult, prequalificationResult] = await Promise.all([
+    getCompaniesComplianceStatus(statusCompanyIds).then(
+      (value) => ({ ok: true as const, value }),
+      () => ({ ok: false as const, value: {} }),
+    ),
+    getCompaniesPrequalificationSummary(statusCompanyIds).then(
+      (value) => ({ ok: true as const, value }),
+      () => ({ ok: false as const, value: {} }),
+    ),
   ]);
 
   return (
     <DirectoryClient
       key={orgId}
-      companies={directoryPage.companies}
-      contacts={directoryPage.contacts}
       entries={directoryPage.entries}
-      complianceStatusByCompanyId={complianceStatusByCompanyId}
-      prequalificationByCompanyId={prequalificationByCompanyId}
-      complianceWatchCompanies={watchCompanies}
+      total={directoryPage.total}
+      pageSize={directoryPage.pageSize}
+      relationshipTypes={directoryPage.relationshipTypes}
+      complianceStatusByCompanyId={complianceResult.value}
+      prequalificationByCompanyId={prequalificationResult.value}
+      vendorStatusUnavailable={!complianceResult.ok || !prequalificationResult.ok}
+      complianceWatchCompanies={watchList.companies}
+      complianceWatchTruncated={watchList.truncated}
+      complianceWatchTotal={watchList.total}
       projects={projects}
+      terms={terminology(productTier)}
+      showPrequalTrades={productTier === "commercial"}
       canCreate={canEdit}
-      canArchive={canArchive}
-      view={view}
+      canArchive={canEdit}
+      kind={kind}
       search={search}
-      typeFilter={typeFilter}
+      roleFilter={roleFilter}
       tradeFilter={tradeFilter}
       sort={sort}
       direction={direction}
-      page={directoryPage.page}
-      pageSize={directoryPage.pageSize}
-      total={directoryPage.total}
       trades={trades}
     />
   );

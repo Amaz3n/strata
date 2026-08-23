@@ -18,6 +18,7 @@ import {
 } from "@/app/(app)/invoices/actions"
 import { unwrapAction } from "@/lib/action-result"
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
+import { Skeleton } from "@/components/ui/skeleton"
 import { WorkspaceShell } from "@/components/financials/workspace/workspace-shell"
 import { WorkspaceListPanel } from "@/components/financials/workspace/workspace-list-panel"
 import { MakeRecurringDialog } from "@/components/invoices/invoice-schedules"
@@ -41,6 +42,7 @@ import {
   filterInvoices,
   invoiceNeedsAttention,
   invoiceQueueCounts,
+  invoiceReleaseDescription,
   isEditableInvoice,
   type InvoiceQueue,
 } from "./workspace/receivables-filters"
@@ -266,12 +268,20 @@ export function ReceivablesWorkspace({
     async (input: InvoiceInput): Promise<Invoice> => {
       const created = unwrapAction(await createInvoiceAction(input))
       onUpsertInvoice(created)
-      setNewSession((prev) => (prev ? { ...prev, draftId: created.id } : { nonce: newNonceRef.current, draftId: created.id }))
+      if (isEditableInvoice(created)) {
+        setNewSession((prev) => (prev ? { ...prev, draftId: created.id } : { nonce: newNonceRef.current, draftId: created.id }))
+      } else {
+        // System-controlled invoices (approved costs) can't be edited in place —
+        // end the create session so the read view takes over.
+        setNewSession(null)
+        setReservation(null)
+        onRefresh()
+      }
       setDetail({ invoice: created })
       setInvoiceParam(created.id, { duplicate: null, source: null })
       return created
     },
-    [onUpsertInvoice, setInvoiceParam],
+    [onRefresh, onUpsertInvoice, setInvoiceParam],
   )
 
   const handleAutosave = useCallback(
@@ -367,13 +377,35 @@ export function ReceivablesWorkspace({
   const editableInitialInvoice = focusedCreate ? null : detail?.invoice ?? null
   const editKey = newSession ? `new:${newSession.nonce}` : selection ?? "none"
 
+  // A deep-linked duplicate must not mount the editor before its seed arrives —
+  // the form seeds state on mount and would otherwise open blank.
+  const awaitingDuplicateSeed = isNewSelection && Boolean(duplicateFromId) && duplicateSeed?.id !== duplicateFromId
+
   const center = (() => {
-    if (pendingLabel && !selection) {
+    if (awaitingDuplicateSeed) {
       return (
-        <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
+        <div className="flex h-full items-center justify-center">
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          <p className="text-sm font-medium">Preparing invoice…</p>
-          <p className="text-xs text-muted-foreground">{pendingLabel}</p>
+        </div>
+      )
+    }
+    if (pendingLabel && !selection) {
+      // Skeleton matching the invoice document layout, not a bare spinner.
+      return (
+        <div className="flex h-full flex-col gap-6 overflow-hidden px-6 py-6 sm:px-8">
+          <div className="flex items-start justify-between gap-8">
+            <div className="space-y-2">
+              <Skeleton className="h-7 w-44" />
+              <Skeleton className="h-4 w-64" />
+            </div>
+            <Skeleton className="h-24 w-56" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Skeleton className="h-36 w-full" />
+            <Skeleton className="h-36 w-full" />
+          </div>
+          <Skeleton className="h-48 w-full" />
+          <p className="text-center text-xs text-muted-foreground">Preparing invoice — {pendingLabel}</p>
         </div>
       )
     }
@@ -519,7 +551,8 @@ export function ReceivablesWorkspace({
           <AlertDialogHeader>
             <AlertDialogTitle>Void invoice?</AlertDialogTitle>
             <AlertDialogDescription>
-              This cancels {voidingInvoice?.invoice_number ?? "this invoice"} and releases any linked draws, change orders, or retainage so they can be billed again.
+              This cancels {voidingInvoice?.invoice_number ?? "this invoice"} and releases any{" "}
+              {invoiceReleaseDescription(Boolean(enableApprovedCostsSource))} so they can be billed again.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

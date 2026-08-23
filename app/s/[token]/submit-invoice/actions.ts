@@ -31,6 +31,7 @@ export async function submitInvoiceAction({
   try {
     const portalToken = await assertPortalActionAccess(token, {
       portalType: "sub",
+      requireProject: true,
       requireCompany: true,
       permission: "can_submit_invoices",
     })
@@ -91,6 +92,7 @@ export async function uploadInvoiceFileAction({
   try {
     const portalToken = await assertPortalActionAccess(token, {
       portalType: "sub",
+      requireProject: true,
       requireCompany: true,
       permission: "can_submit_invoices",
     })
@@ -219,6 +221,7 @@ export async function scanPortalInvoiceAction({
   try {
     const portalToken = await assertPortalActionAccess(token, {
       portalType: "sub",
+      requireProject: true,
       requireCompany: true,
       permission: "can_submit_invoices",
     })

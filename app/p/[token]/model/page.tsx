@@ -22,7 +22,7 @@ export default async function ClientPortalModelPage({ params }: Props) {
   const { token } = await params
   let access
   try {
-    access = await assertPortalActionAccess(token, { portalType: "client" })
+    access = await assertPortalActionAccess(token, { portalType: "client", requireProject: true })
   } catch {
     notFound()
   }

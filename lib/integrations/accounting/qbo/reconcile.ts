@@ -2,7 +2,7 @@ import { createHash } from "crypto"
 
 import type { QBOClient, QBOPaymentSnapshot } from "@/lib/integrations/accounting/qbo/client"
 import { QBOClient as QBOClientFactory } from "@/lib/integrations/accounting/qbo/client"
-import { extractIntuitEntityEvents, verifyIntuitWebhookSignature } from "@/lib/integrations/accounting/qbo/webhook"
+import { extractIntuitEntityEvents, normalizeEventTimestamp, verifyIntuitWebhookSignature } from "@/lib/integrations/accounting/qbo/webhook"
 import { qboPurchaseIsCredit } from "@/lib/integrations/accounting/qbo/import-rules"
 import {
   arcChangedSinceSync,
@@ -15,10 +15,14 @@ import { isPayableVendorBillStatus } from "@/lib/financials/ledger-status"
 import { logQBO } from "@/lib/services/accounting-logger"
 import { resolveLedgerAuthority, type LedgerAuthority } from "@/lib/services/books/authority"
 import { recordEvent } from "@/lib/services/events"
+import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
+import { recordAccountingSyncAttempt } from "@/lib/services/accounting-sync-attempts"
 import { rememberAccountingInvoiceNumberCursor } from "@/lib/services/invoice-numbers"
 
-const CDC_ENTITIES = ["Invoice", "Payment", "Purchase", "Bill", "BillPayment"]
+const CDC_ENTITIES = ["Invoice", "Payment", "Purchase", "Bill", "BillPayment", "VendorCredit", "JournalEntry"]
 const CDC_OVERLAP_MINUTES = 5
+/** Intuit rejects `changedSince` older than 30 days; stay safely inside it. */
+const CDC_MAX_LOOKBACK_DAYS = 29
 const EVENT_CLAIM_LEASE_MINUTES = 30
 const MAX_EVENT_ATTEMPTS = 5
 
@@ -52,16 +56,6 @@ function normalizeDate(value: unknown): string | null {
   return parsed.toISOString().split("T")[0]
 }
 
-function isPastDue(dateIso: string | null) {
-  if (!dateIso) return false
-  const due = new Date(dateIso)
-  if (Number.isNaN(due.getTime())) return false
-  due.setHours(0, 0, 0, 0)
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  return due < today
-}
-
 function deriveInvoiceLinesFromQbo(qboInvoice: Awaited<ReturnType<QBOClient["getInvoiceById"]>>) {
   const lines = (qboInvoice?.Line ?? [])
     .filter((line) => line && typeof line === "object" && line.DetailType === "SalesItemLineDetail")
@@ -93,24 +87,6 @@ function deriveInvoiceLinesFromQbo(qboInvoice: Awaited<ReturnType<QBOClient["get
   return lines.filter((line) => line.description.length > 0 || line.unit_price_cents !== 0)
 }
 
-function deriveInvoiceStatusFromQbo(params: {
-  operation?: string | null
-  totalCents: number | null
-  balanceCents: number | null
-  dueDate: string | null
-}) {
-  const operation = String(params.operation ?? "").toLowerCase()
-  if (operation === "delete") return "void"
-
-  const total = params.totalCents ?? 0
-  const balance = params.balanceCents ?? total
-
-  if (total > 0 && balance <= 0) return "paid"
-  if (total > 0 && balance > 0 && balance < total) return "partial"
-  if (balance > 0 && isPastDue(params.dueDate)) return "overdue"
-  return "sent"
-}
-
 async function resolveLocalSyncMapping(
   supabase: ServiceClient,
   orgId: string,
@@ -135,6 +111,25 @@ async function resolveLocalSyncMapping(
     externalVersion: (match.external_version as string | null) ?? null,
     localFingerprint: storedLocalFingerprint(match.metadata),
   }
+}
+
+/**
+ * A needs_review outcome is work only a person can finish, so it must reach a
+ * person: the sync row's status alone was invisible unless somebody happened to
+ * open the sync sheet. Best-effort — a failed notification never fails the
+ * reconcile that produced it.
+ */
+async function emitNeedsReviewEvent(orgId: string, entityType: string, entityId: string, reason: string) {
+  await recordEvent({
+    orgId,
+    eventType: "accounting_sync_needs_review",
+    entityType,
+    entityId,
+    payload: { provider: "qbo", message: reason },
+    channel: "notification",
+  }).catch((eventError) => {
+    logQBO("warn", "needs_review_event_failed", { entityType, entityId, error: String(eventError) })
+  })
 }
 
 /**
@@ -193,6 +188,8 @@ export async function reconcileInvoiceFromQbo(params: {
   connectionId: string
   qboInvoiceId: string
   operation?: string | null
+  /** "Take QuickBooks": apply the remote copy even though Arc also changed. */
+  force?: boolean
 }) {
   const nowIso = new Date().toISOString()
   const mapping = await resolveLocalSyncMapping(params.supabase, params.orgId, params.connectionId, "invoice", params.qboInvoiceId)
@@ -203,20 +200,39 @@ export async function reconcileInvoiceFromQbo(params: {
 
   const normalizedOp = String(params.operation ?? "").toLowerCase()
   if (normalizedOp === "delete") {
-    const { error: updateError } = await params.supabase
-      .from("invoices")
-      .update({
-        status: "void",
-        balance_due_cents: 0,
-        qbo_id: params.qboInvoiceId,
-        qbo_sync_status: "synced",
-        qbo_synced_at: nowIso,
-      })
-      .eq("org_id", params.orgId)
-      .eq("id", invoiceId)
+    // Void through the same atomic path the app uses so draws, fee billings,
+    // billed costs, retainage, and billing periods release with the invoice —
+    // a bare status UPDATE left them all stranded as "invoiced".
+    const { error: voidError } = await params.supabase.rpc("void_invoice_atomic", {
+      p_org_id: params.orgId,
+      p_invoice_id: invoiceId,
+      p_actor_id: null,
+    })
 
-    if (updateError) {
-      return { reconciled: false as const, reason: updateError.message }
+    if (voidError) {
+      // Payments recorded or a posted pay app — this cannot be voided cleanly,
+      // so flag it for a human instead of silently mismarking it.
+      const reason = `QuickBooks deleted this invoice but Arc could not void it: ${voidError.message}`
+      await params.supabase
+        .from("invoices")
+        .update({ qbo_sync_status: "needs_review" })
+        .eq("org_id", params.orgId)
+        .eq("id", invoiceId)
+      await params.supabase.from("accounting_sync_records").upsert(
+        {
+          org_id: params.orgId,
+          connection_id: params.connectionId,
+          entity_type: "invoice",
+          entity_id: invoiceId,
+          provider: "qbo",
+          external_id: params.qboInvoiceId,
+          last_synced_at: nowIso,
+          status: "needs_review",
+          error_message: reason,
+        },
+        { onConflict: "org_id,connection_id,entity_type,entity_id" },
+      )
+      return { reconciled: false as const, reason }
     }
 
     await upsertInvoiceSyncRecord({
@@ -225,6 +241,10 @@ export async function reconcileInvoiceFromQbo(params: {
       connectionId: params.connectionId,
       invoiceId,
       qboInvoiceId: params.qboInvoiceId,
+      // Preserve the last known version rather than nulling it: a null stored
+      // version reads as "never compared", which re-ran the full reconcile on
+      // every subsequent event for this invoice.
+      qboSyncToken: mapping.externalVersion,
     })
     return { reconciled: true as const }
   }
@@ -248,12 +268,6 @@ export async function reconcileInvoiceFromQbo(params: {
     totalCents !== null
       ? Math.max(totalCents - taxCents, 0)
       : nextLines.reduce((sum, line) => sum + Math.round(line.quantity * line.unit_price_cents), 0)
-  const nextStatus = deriveInvoiceStatusFromQbo({
-    operation: params.operation,
-    totalCents,
-    balanceCents,
-    dueDate,
-  })
 
   const { data: localInvoice } = await params.supabase
     .from("invoices")
@@ -261,6 +275,35 @@ export async function reconcileInvoiceFromQbo(params: {
     .eq("org_id", params.orgId)
     .eq("id", invoiceId)
     .maybeSingle()
+  // A QuickBooks VOID arrives as an Update with the amounts zeroed, not as a
+  // Delete. Left on the normal path it became a live "$0 / sent" invoice that
+  // AR aging kept counting; route it through the same atomic void as a delete.
+  const looksVoided =
+    totalCents === 0 &&
+    balanceCents === 0 &&
+    Number(localInvoice?.total_cents ?? 0) > 0 &&
+    (typeof qboInvoice.PrivateNote !== "string" || /void/i.test(qboInvoice.PrivateNote) || nextLines.every((line) => line.unit_price_cents === 0))
+  if (looksVoided) {
+    const { error: voidError } = await params.supabase.rpc("void_invoice_atomic", {
+      p_org_id: params.orgId,
+      p_invoice_id: invoiceId,
+      p_actor_id: null,
+    })
+    if (!voidError) {
+      await upsertInvoiceSyncRecord({
+        supabase: params.supabase,
+        orgId: params.orgId,
+        connectionId: params.connectionId,
+        invoiceId,
+        qboInvoiceId: params.qboInvoiceId,
+        qboSyncToken: qboInvoice.SyncToken ?? null,
+      })
+      return { reconciled: true as const }
+    }
+    // Fall through: an invoice that cannot void cleanly (payments recorded)
+    // continues into the conflict check below and lands in needs_review.
+  }
+
   const arcChangedAfterSync = arcChangedSinceSync({
     storedFingerprint: mapping.localFingerprint,
     currentFingerprint: computeLocalFingerprint("invoice", localInvoice),
@@ -271,8 +314,9 @@ export async function reconcileInvoiceFromQbo(params: {
     Number(localInvoice?.subtotal_cents ?? 0) !== subtotalCents ||
     Number(localInvoice?.tax_cents ?? 0) !== taxCents
 
-  if (arcChangedAfterSync && amountsDiffer) {
+  if (!params.force && arcChangedAfterSync && amountsDiffer) {
     const reason = "Both Arc and QuickBooks changed this invoice since the last sync."
+    await emitNeedsReviewEvent(params.orgId, "invoice", invoiceId, reason)
     await params.supabase
       .from("invoices")
       .update({ qbo_sync_status: "needs_review" })
@@ -296,11 +340,14 @@ export async function reconcileInvoiceFromQbo(params: {
     return { reconciled: false as const, reason }
   }
 
+  // Document fields only — status and balance belong to the unified status
+  // engine (invoice_paid_cents/derive_invoice_status). Writing QBO's Balance
+  // here just got silently reverted by the next recalc, so instead the QBO
+  // payment import creates the payment rows and the recalc below converges.
   const invoiceUpdate: Record<string, unknown> = {
     qbo_id: params.qboInvoiceId,
     qbo_sync_status: "synced",
     qbo_synced_at: nowIso,
-    status: nextStatus,
     subtotal_cents: subtotalCents,
     tax_cents: taxCents,
   }
@@ -312,7 +359,6 @@ export async function reconcileInvoiceFromQbo(params: {
   if (dueDate) invoiceUpdate.due_date = dueDate
   if (typeof qboInvoice.PrivateNote === "string") invoiceUpdate.notes = qboInvoice.PrivateNote
   if (totalCents !== null) invoiceUpdate.total_cents = totalCents
-  if (balanceCents !== null) invoiceUpdate.balance_due_cents = Math.max(balanceCents, 0)
 
   const { error: reconcileError } = await params.supabase.rpc("replace_invoice_lines_atomic", {
     p_org_id: params.orgId,
@@ -324,6 +370,12 @@ export async function reconcileInvoiceFromQbo(params: {
   if (reconcileError) {
     return { reconciled: false as const, reason: reconcileError.message }
   }
+
+  await recalcInvoiceBalanceAndStatus({
+    supabase: params.supabase,
+    orgId: params.orgId,
+    invoiceId,
+  })
 
   if (typeof qboInvoice.DocNumber === "string" && qboInvoice.DocNumber.trim().length > 0) {
     await rememberAccountingInvoiceNumberCursor(params.connectionId, params.orgId, qboInvoice.DocNumber.trim())
@@ -349,6 +401,8 @@ async function reconcileProjectExpenseFromQbo(params: {
   qboId: string
   entityName: "purchase" | "bill"
   operation?: string | null
+  /** "Take QuickBooks": apply the remote copy even though Arc also changed. */
+  force?: boolean
 }) {
   const mapping = await resolveLocalSyncMapping(params.supabase, params.orgId, params.connectionId, "project_expense", params.qboId)
   if (!mapping) {
@@ -357,7 +411,7 @@ async function reconcileProjectExpenseFromQbo(params: {
   const expenseId = mapping.entityId
   const { data: localExpense } = await params.supabase
     .from("project_expenses")
-    .select("amount_cents, tax_cents, status, metadata, expense_date, qbo_vendor_id, qbo_expense_account_id")
+    .select("amount_cents, tax_cents, status, metadata, expense_date, accounting_coding, qbo_vendor_id, qbo_expense_account_id")
     .eq("org_id", params.orgId)
     .eq("id", expenseId)
     .maybeSingle()
@@ -369,7 +423,8 @@ async function reconcileProjectExpenseFromQbo(params: {
       .from("project_expenses")
       .update({
         qbo_sync_status: "needs_review",
-        qbo_sync_error: "The linked QuickBooks transaction was deleted.",
+        qbo_sync_error:
+          "The linked QuickBooks transaction was deleted. Its cost is still posted to job-cost actuals in Arc — delete or reassign the expense to release it.",
         qbo_synced_at: nowIso,
       })
       .eq("org_id", params.orgId)
@@ -415,8 +470,9 @@ async function reconcileProjectExpenseFromQbo(params: {
     (qboVendorId !== null && localData?.qbo_vendor_id != null && qboVendorId !== String(localData.qbo_vendor_id)) ||
     (txnDate !== null && localData?.expense_date != null && txnDate !== String(localData.expense_date)) ||
     (accountRef?.value != null && localData?.qbo_expense_account_id != null && String(accountRef.value) !== String(localData.qbo_expense_account_id))
-  if (arcChangedAfterSync && materiallyDiffers) {
+  if (!params.force && arcChangedAfterSync && materiallyDiffers) {
     const reason = `Both Arc and QuickBooks changed this ${params.entityName === "bill" ? "bill" : "expense"} since the last sync.`
+    await emitNeedsReviewEvent(params.orgId, "project_expense", expenseId, reason)
     await params.supabase
       .from("project_expenses")
       .update({ qbo_sync_status: "needs_review", qbo_sync_error: reason })
@@ -527,6 +583,8 @@ async function reconcileVendorBillFromQbo(params: {
   connectionId: string
   qboId: string
   operation?: string | null
+  /** "Take QuickBooks": apply the remote copy even though Arc also changed. */
+  force?: boolean
 }) {
   const mapping = await resolveLocalSyncMapping(params.supabase, params.orgId, params.connectionId, "bill", params.qboId)
   if (!mapping) {
@@ -541,7 +599,8 @@ async function reconcileVendorBillFromQbo(params: {
       .from("vendor_bills")
       .update({
         qbo_sync_status: "needs_review",
-        qbo_sync_error: "The linked QuickBooks bill was deleted.",
+        qbo_sync_error:
+          "The linked QuickBooks bill was deleted. Its cost is still posted to job-cost actuals in Arc — void or reassign the bill to release it.",
         qbo_synced_at: nowIso,
       })
       .eq("org_id", params.orgId)
@@ -553,7 +612,7 @@ async function reconcileVendorBillFromQbo(params: {
     params.client.getBillById(params.qboId),
     params.supabase
       .from("vendor_bills")
-      .select("total_cents, status, qbo_vendor_id, bill_date, due_date, qbo_expense_account_id")
+      .select("total_cents, status, qbo_vendor_id, bill_date, due_date, accounting_coding, qbo_expense_account_id")
       .eq("org_id", params.orgId)
       .eq("id", billId)
       .maybeSingle(),
@@ -588,8 +647,9 @@ async function reconcileVendorBillFromQbo(params: {
     (qboBillDate !== null && local?.bill_date != null && qboBillDate !== String(local.bill_date)) ||
     (qboDueDate !== null && local?.due_date != null && qboDueDate !== String(local.due_date)) ||
     (accountRef?.value != null && local?.qbo_expense_account_id != null && String(accountRef.value) !== String(local.qbo_expense_account_id))
-  if (arcChangedAfterSync && materiallyDiffers) {
+  if (!params.force && arcChangedAfterSync && materiallyDiffers) {
     const reason = "Both Arc and QuickBooks changed this bill since the last sync."
+    await emitNeedsReviewEvent(params.orgId, "vendor_bill", billId, reason)
     await params.supabase
       .from("vendor_bills")
       .update({ qbo_sync_status: "needs_review", qbo_sync_error: reason })
@@ -954,7 +1014,13 @@ export async function receiveQboWebhook(input: {
       onConflict: "event_id",
       ignoreDuplicates: true,
     })
-    if (!error) inserted += 1
+    if (!error) {
+      inserted += 1
+    } else {
+      // A duplicate is silently ignored by the upsert; reaching here is a real
+      // insert failure and must not be indistinguishable from one.
+      logQBO("error", "webhook_event_insert_failed", { eventId: event.eventId, error: error.message })
+    }
   }
   return { received: events.length, inserted }
 }
@@ -985,13 +1051,27 @@ export async function ingestQboCdcChanges(input: {
 
   const settings = (connection.settings as Record<string, unknown> | null) ?? {}
   const storedCursor = typeof settings.qbo_cdc_last_synced_at === "string" ? settings.qbo_cdc_last_synced_at : null
-  const cursorMs =
+  const rawCursorMs =
     input.lookbackMinutes != null
       ? Date.now() - input.lookbackMinutes * 60 * 1000
       : storedCursor
       ? new Date(storedCursor).getTime()
       : Date.now() - 24 * 60 * 60 * 1000
-  const changedSince = new Date(cursorMs - CDC_OVERLAP_MINUTES * 60 * 1000).toISOString()
+  // Intuit rejects changedSince older than 30 days, so an idle month (paused
+  // org, cron outage, a reconnect carrying the old cursor forward) used to
+  // fail EVERY poll forever — the cursor could never advance to heal itself.
+  // Clamping forfeits changes older than the window, which the reconciliation
+  // digest reports as drift; an unfixable poll loop reported nothing.
+  const cdcFloorMs = Date.now() - CDC_MAX_LOOKBACK_DAYS * 24 * 60 * 60 * 1000
+  const cursorMs = Math.max(Number.isFinite(rawCursorMs) ? rawCursorMs : cdcFloorMs, cdcFloorMs)
+  if (rawCursorMs < cdcFloorMs) {
+    logQBO("warn", "qbo_cdc_cursor_clamped", {
+      connectionId: connection.id,
+      storedCursor,
+      clampedTo: new Date(cdcFloorMs).toISOString(),
+    })
+  }
+  const changedSince = new Date(Math.max(cursorMs - CDC_OVERLAP_MINUTES * 60 * 1000, cdcFloorMs)).toISOString()
 
   const client = await QBOClientFactory.forConnection(connection.id)
   if (!client) return { scanned: 0, inserted: 0 }
@@ -1008,7 +1088,10 @@ export async function ingestQboCdcChanges(input: {
         rows.push({
           entityName,
           id: String(entity.Id),
-          lastUpdated: String(entity.MetaData?.LastUpdatedTime ?? new Date().toISOString()),
+          // No wall-clock fallback: stamping now() minted a brand-new event id
+          // for the same unchanged entity on every poll — unbounded queue rows
+          // plus repeated reconciliation. The sentinel keeps the id stable.
+          lastUpdated: entity.MetaData?.LastUpdatedTime ? String(entity.MetaData.LastUpdatedTime) : "unknown-time",
           deleted: String(entity.status ?? "") === "Deleted",
         })
       }
@@ -1020,9 +1103,12 @@ export async function ingestQboCdcChanges(input: {
   const nowIso = new Date().toISOString()
   for (const row of rows) {
     const operation = row.deleted ? "Delete" : "Update"
-    // Same event-id shape as webhook deliveries, so a change that arrives via both
-    // webhook and CDC collapses into one queue row instead of being reconciled twice.
-    const eventId = `${connection.external_account_id}:${row.entityName}:${row.id}:${operation}:${row.lastUpdated}`
+    // Same event-id shape as webhook deliveries — with the timestamp ISO-
+    // normalized on BOTH paths (see normalizeEventTimestamp) — so a change that
+    // arrives via webhook and CDC collapses into one queue row instead of being
+    // reconciled twice.
+    const idTimestamp = row.lastUpdated === "unknown-time" ? row.lastUpdated : normalizeEventTimestamp(row.lastUpdated)
+    const eventId = `${connection.external_account_id}:${row.entityName}:${row.id}:${operation}:${idTimestamp}`
     const { error: insertError } = await supabase.from("qbo_webhook_events").upsert({
       event_id: eventId,
       payload_hash: createHash("sha256").update(eventId).digest("hex"),
@@ -1030,7 +1116,7 @@ export async function ingestQboCdcChanges(input: {
       entity_name: row.entityName,
       entity_qbo_id: row.id,
       operation,
-      last_updated: new Date(row.lastUpdated).toISOString(),
+      last_updated: row.lastUpdated === "unknown-time" ? null : new Date(row.lastUpdated).toISOString(),
       received_at: nowIso,
       process_status: "pending",
       process_error: null,
@@ -1060,19 +1146,180 @@ export async function ingestQboCdcChanges(input: {
 }
 
 /**
+ * Conservative reconcile for entity types Arc imports but has no field-level
+ * merge for (vendor credits, journal entries). Before this they were
+ * import-once-and-diverge: a QBO-side edit or deletion after import was never
+ * picked up by anything. The goal here is honesty rather than auto-merge — a
+ * remote change flips the imported record's sync row to needs_review so a
+ * person sees the divergence, and an echo of Arc's own push is suppressed by
+ * the SyncToken comparison exactly like the invoice path.
+ */
+async function reconcileImportedRecordFromQbo(params: {
+  supabase: ServiceClient
+  client: QBOClient
+  orgId: string
+  connectionId: string
+  entityName: "vendorcredit" | "journalentry"
+  qboId: string
+  operation: string | null
+}): Promise<{ reconciled: boolean; reason?: string }> {
+  const { supabase, orgId, connectionId } = params
+  const ledgerType = params.entityName === "vendorcredit" ? "vendor_credit" : "journal_entry"
+  const { data: sync } = await supabase
+    .from("accounting_sync_records")
+    .select("id, entity_id, external_version")
+    .eq("org_id", orgId)
+    .eq("connection_id", connectionId)
+    .eq("entity_type", ledgerType)
+    .eq("external_id", params.qboId)
+    .maybeSingle()
+  if (!sync?.entity_id) {
+    return { reconciled: false, reason: `No local ${ledgerType} mapping — available for manual import` }
+  }
+
+  const nowIso = new Date().toISOString()
+  const markNeedsReview = async (message: string, externalVersion?: string | null) => {
+    await supabase
+      .from("accounting_sync_records")
+      .update({
+        status: "needs_review",
+        error_message: message,
+        ...(externalVersion !== undefined ? { external_version: externalVersion } : {}),
+        last_synced_at: nowIso,
+      })
+      .eq("id", sync.id)
+    await emitNeedsReviewEvent(orgId, ledgerType, sync.entity_id as string, message)
+  }
+
+  const remote =
+    String(params.operation ?? "").toLowerCase() === "delete"
+      ? null
+      : params.entityName === "vendorcredit"
+        ? await params.client.getVendorCreditById(params.qboId)
+        : await params.client.getJournalEntryById(params.qboId)
+
+  if (!remote) {
+    await markNeedsReview("Deleted in QuickBooks — the imported record still exists in Arc and may need reversal.")
+    return { reconciled: true }
+  }
+
+  const remoteVersion = remote.SyncToken ? String(remote.SyncToken) : null
+  if (remoteVersion && sync.external_version && remoteVersion === sync.external_version) {
+    return { reconciled: false, reason: "Remote unchanged since last sync" }
+  }
+  await markNeedsReview("Changed in QuickBooks after import — review the Arc copy for divergence.", remoteVersion)
+  return { reconciled: true }
+}
+
+/**
+ * "Take QuickBooks" for a conflicted record: re-run the reconcile with the
+ * both-sides guard released, so the remote copy is applied and the sync row
+ * returns to synced. The stored SyncToken makes this safe — the caller only
+ * offers it on rows already flagged needs_review/conflict.
+ */
+export async function forceReconcileFromQbo(input: {
+  orgId: string
+  connectionId: string
+  entityType: "invoice" | "project_expense" | "bill"
+  externalId: string
+}): Promise<{ reconciled: boolean; reason?: string }> {
+  const supabase = createServiceSupabaseClient()
+  const client = await QBOClientFactory.forConnection(input.connectionId)
+  if (!client) return { reconciled: false, reason: "QuickBooks connection is unavailable" }
+  if (input.entityType === "invoice") {
+    return reconcileInvoiceFromQbo({ supabase, client, orgId: input.orgId, connectionId: input.connectionId, qboInvoiceId: input.externalId, force: true })
+  }
+  if (input.entityType === "bill") {
+    return reconcileVendorBillFromQbo({ supabase, client, orgId: input.orgId, connectionId: input.connectionId, qboId: input.externalId, force: true })
+  }
+  // A project expense may live in QBO as a Purchase or a Bill; try both shapes.
+  const asBill = await reconcileProjectExpenseFromQbo({ supabase, client, orgId: input.orgId, connectionId: input.connectionId, qboId: input.externalId, entityName: "bill", operation: null, force: true })
+  if (asBill.reconciled) return asBill
+  return reconcileProjectExpenseFromQbo({ supabase, client, orgId: input.orgId, connectionId: input.connectionId, qboId: input.externalId, entityName: "purchase", operation: null, force: true })
+}
+
+/**
  * Drain the inbound event queue: claim events with a lease, re-fetch each entity from
  * QBO, and reconcile it into Arc. Events stranded in `processing` past their lease are
  * recovered to `retry` first.
  */
-export async function drainQboInboundEvents(input: { limit: number }): Promise<{ processed: number; reconciled: number }> {
+export async function drainQboInboundEvents(input: { limit: number }): Promise<{ processed: number; reconciled: number; ignored: number; errored: number }> {
   const supabase = createServiceSupabaseClient()
   const nowIso = new Date().toISOString()
 
-  await supabase
+  // Local counters ride along with every terminal outcome — "processed" alone
+  // counted dropped work as done, hiding how much inbound was being ignored.
+  let ignored = 0
+  let errored = 0
+  // Per-row trace context, set once the event's connection resolves; null for
+  // events that never matched a connection (nothing to attribute them to).
+  let currentTrace: { orgId: string; connectionId: string; entityName: string | null; externalId: string | null } | null = null
+  const finishEvent = async (
+    eventId: string,
+    status: "reconciled" | "ignored" | "error",
+    processError?: string,
+    attempts?: number,
+  ) => {
+    if (status === "ignored") ignored += 1
+    if (status === "error") errored += 1
+    await markEventProcessed(supabase, eventId, status, processError, attempts)
+    if (currentTrace) {
+      await recordAccountingSyncAttempt({
+        orgId: currentTrace.orgId,
+        connectionId: currentTrace.connectionId,
+        provider: "qbo",
+        entityType: currentTrace.entityName?.toLowerCase() ?? "unknown",
+        entityId: null,
+        externalId: currentTrace.externalId,
+        direction: "inbound",
+        outcome: status === "reconciled" ? "synced" : status === "ignored" ? "skipped" : "error",
+        message: processError ?? null,
+      })
+    }
+  }
+
+  // Retention: the queue table had none, so it grew by one row per change per
+  // connection forever. Terminal rows older than 60 days carry no operational
+  // value (the sync ledger keeps the durable state); deleting a bounded batch
+  // per drain keeps each pass cheap while draining the backlog over time.
+  const retentionCutoff = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString()
+  const { data: expiredRows } = await supabase
     .from("qbo_webhook_events")
-    .update({ process_status: "retry" })
+    .select("id")
+    .in("process_status", ["reconciled", "ignored"])
+    .lt("received_at", retentionCutoff)
+    .limit(500)
+  if (expiredRows && expiredRows.length > 0) {
+    await supabase
+      .from("qbo_webhook_events")
+      .delete()
+      .in("id", expiredRows.map((expired) => expired.id))
+  }
+
+  // Reclaim leases abandoned by a crashed worker — and CHARGE the attempt.
+  // A hard crash (timeout, OOM) bypasses markEventProcessed, so without the
+  // increment a poison event cycled processing→retry forever at the head of
+  // the oldest-first drain, occupying batch slots on every run.
+  const { data: stranded } = await supabase
+    .from("qbo_webhook_events")
+    .select("id, attempts")
     .eq("process_status", "processing")
     .lt("next_attempt_at", nowIso)
+  for (const strandedRow of stranded ?? []) {
+    const attempts = (strandedRow.attempts ?? 0) + 1
+    const exhausted = attempts >= MAX_EVENT_ATTEMPTS
+    await supabase
+      .from("qbo_webhook_events")
+      .update({
+        process_status: exhausted ? "error" : "retry",
+        attempts,
+        ...(exhausted
+          ? { process_error: "Processing crashed repeatedly (lease expired without a result)", processed_at: new Date().toISOString() }
+          : {}),
+      })
+      .eq("id", strandedRow.id)
+      .eq("process_status", "processing")
+  }
 
   const { data: events, error } = await supabase
     .from("qbo_webhook_events")
@@ -1084,13 +1331,14 @@ export async function drainQboInboundEvents(input: { limit: number }): Promise<{
   if (error) throw new Error(`Unable to load inbound accounting events: ${error.message}`)
 
   const rows = (events ?? []) as WebhookEventRow[]
-  if (rows.length === 0) return { processed: 0, reconciled: 0 }
+  if (rows.length === 0) return { processed: 0, reconciled: 0, ignored: 0, errored: 0 }
 
   let reconciled = 0
   let processed = 0
   const clientsByConnectionId = new Map<string, QBOClient | null>()
 
   for (const row of rows) {
+    currentTrace = null
     try {
       // The claim writes a lease into next_attempt_at so a crashed worker's events
       // are recovered by the sweep above instead of stranding in `processing`.
@@ -1111,7 +1359,7 @@ export async function drainQboInboundEvents(input: { limit: number }): Promise<{
       }
 
       if (!row.realm_id || !row.entity_name || !row.entity_qbo_id) {
-        await markEventProcessed(supabase, row.id, "ignored", "Missing webhook context")
+        await finishEvent(row.id, "ignored", "Missing webhook context")
         processed += 1
         continue
       }
@@ -1125,9 +1373,15 @@ export async function drainQboInboundEvents(input: { limit: number }): Promise<{
         .maybeSingle()
 
       if (!connection?.org_id || !connection?.id) {
-        await markEventProcessed(supabase, row.id, "ignored", "No active org connection for realm")
+        await finishEvent(row.id, "ignored", "No active org connection for realm")
         processed += 1
         continue
+      }
+      currentTrace = {
+        orgId: connection.org_id,
+        connectionId: connection.id,
+        entityName: row.entity_name,
+        externalId: row.entity_qbo_id,
       }
 
       // Fails closed: without knowing who owns the ledger this event must not be
@@ -1138,20 +1392,23 @@ export async function drainQboInboundEvents(input: { limit: number }): Promise<{
         ledgerAuthority = await resolveLedgerAuthority(connection.org_id, supabase)
       } catch (authorityError) {
         const message = authorityError instanceof Error ? authorityError.message : "Unable to resolve ledger authority"
-        await markEventProcessed(supabase, row.id, "error", message, row.attempts ?? 0)
+        await finishEvent(row.id, "error", message, row.attempts ?? 0)
         processed += 1
         continue
       }
 
       if (ledgerAuthority === "arc") {
-        await markEventProcessed(supabase, row.id, "ignored", "Arc is authoritative; external changes are drift-only")
+        await finishEvent(row.id, "ignored", "Arc is authoritative; external changes are drift-only")
+        // Activity-only: "books.external_drift_detected" is not a NotificationType,
+        // so a notification channel produced a raw-string-titled notification for
+        // an empty audience. The real user-facing alert is the reconciliation
+        // digest's accounting_reconciliation_drift.
         await recordEvent({
           orgId: connection.org_id,
           eventType: "books.external_drift_detected",
           entityType: "accounting_connection",
           entityId: connection.id,
           payload: { provider: "qbo", entity_name: row.entity_name, external_id: row.entity_qbo_id, operation: row.operation },
-          channel: "notification",
         })
         processed += 1
         continue
@@ -1167,7 +1424,7 @@ export async function drainQboInboundEvents(input: { limit: number }): Promise<{
       }
 
       if (!client) {
-        await markEventProcessed(supabase, row.id, "error", "Unable to initialize QBO client", row.attempts ?? 0)
+        await finishEvent(row.id, "error", "Unable to initialize QBO client", row.attempts ?? 0)
         processed += 1
         continue
       }
@@ -1184,9 +1441,9 @@ export async function drainQboInboundEvents(input: { limit: number }): Promise<{
 
         if (result.reconciled) {
           reconciled += 1
-          await markEventProcessed(supabase, row.id, "reconciled")
+          await finishEvent(row.id, "reconciled")
         } else {
-          await markEventProcessed(supabase, row.id, "ignored", result.reason)
+          await finishEvent(row.id, "ignored", result.reason)
         }
       } else if (entityName === "payment") {
         const normalizedOperation = String(row.operation ?? "").toLowerCase()
@@ -1209,17 +1466,13 @@ export async function drainQboInboundEvents(input: { limit: number }): Promise<{
               .eq("connection_id", connectionId)
               .eq("entity_type", "payment")
               .eq("external_id", row.entity_qbo_id)
-            await markEventProcessed(
-              supabase,
-              row.id,
+            await finishEvent(row.id,
               reversal.reversed > 0 ? "reconciled" : "ignored",
               reversal.reversed > 0 ? undefined : "Deleted QBO payment had no settled Arc payment mapping",
             )
             if (reversal.reversed > 0) reconciled += 1
           } catch (error) {
-            await markEventProcessed(
-              supabase,
-              row.id,
+            await finishEvent(row.id,
               "error",
               error instanceof Error ? error.message : String(error),
               row.attempts ?? 0,
@@ -1262,7 +1515,7 @@ export async function drainQboInboundEvents(input: { limit: number }): Promise<{
         }
 
         if (linkedInvoiceQboIds.length === 0) {
-          await markEventProcessed(supabase, row.id, "ignored", "No linked invoice found for payment")
+          await finishEvent(row.id, "ignored", "No linked invoice found for payment")
           processed += 1
           continue
         }
@@ -1293,9 +1546,9 @@ export async function drainQboInboundEvents(input: { limit: number }): Promise<{
 
         if (reconciledInvoices > 0) {
           reconciled += 1
-          await markEventProcessed(supabase, row.id, "reconciled")
+          await finishEvent(row.id, "reconciled")
         } else {
-          await markEventProcessed(supabase, row.id, "ignored", "Payment event had no local invoice to reconcile")
+          await finishEvent(row.id, "ignored", "Payment event had no local invoice to reconcile")
         }
       } else if (entityName === "purchase" || entityName === "bill") {
         const vendorBillResult =
@@ -1324,9 +1577,9 @@ export async function drainQboInboundEvents(input: { limit: number }): Promise<{
 
         if (result.reconciled) {
           reconciled += 1
-          await markEventProcessed(supabase, row.id, "reconciled")
+          await finishEvent(row.id, "reconciled")
         } else {
-          await markEventProcessed(supabase, row.id, "ignored", result.reason)
+          await finishEvent(row.id, "ignored", result.reason)
         }
       } else if (entityName === "billpayment") {
         const result = await reconcileBillPaymentFromQbo({
@@ -1340,19 +1593,34 @@ export async function drainQboInboundEvents(input: { limit: number }): Promise<{
 
         if (result.reconciled) {
           reconciled += 1
-          await markEventProcessed(supabase, row.id, "reconciled")
+          await finishEvent(row.id, "reconciled")
         } else {
-          await markEventProcessed(supabase, row.id, "ignored", result.reason)
+          await finishEvent(row.id, "ignored", result.reason)
+        }
+      } else if (entityName === "vendorcredit" || entityName === "journalentry") {
+        const result = await reconcileImportedRecordFromQbo({
+          supabase,
+          client,
+          orgId,
+          connectionId,
+          entityName,
+          qboId: row.entity_qbo_id,
+          operation: row.operation,
+        })
+
+        if (result.reconciled) {
+          reconciled += 1
+          await finishEvent(row.id, "reconciled")
+        } else {
+          await finishEvent(row.id, "ignored", result.reason)
         }
       } else {
-        await markEventProcessed(supabase, row.id, "ignored", `Entity ${row.entity_name} not handled`)
+        await finishEvent(row.id, "ignored", `Entity ${row.entity_name} not handled`)
       }
 
       processed += 1
     } catch (eventError) {
-      await markEventProcessed(
-        supabase,
-        row.id,
+      await finishEvent(row.id,
         "error",
         eventError instanceof Error ? eventError.message : "Webhook processing failed",
         row.attempts ?? 0,
@@ -1361,6 +1629,6 @@ export async function drainQboInboundEvents(input: { limit: number }): Promise<{
     }
   }
 
-  logQBO("info", "process_webhooks_complete", { processed, reconciled })
-  return { processed, reconciled }
+  logQBO("info", "process_webhooks_complete", { processed, reconciled, ignored, errored })
+  return { processed, reconciled, ignored, errored }
 }

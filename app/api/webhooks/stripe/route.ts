@@ -346,26 +346,57 @@ export async function POST(request: NextRequest) {
     }
 
     if (domainEvent.type === "payment_failed") {
-      const failedOrgId = orgId ?? (typeof domainEvent.metadata?.org_id === "string" ? domainEvent.metadata.org_id : null)
-      let failedIntents = supabase.from("payment_intents").update({ status: "failed" }).eq("provider_intent_id", domainEvent.provider_payment_id)
-      if (failedOrgId) failedIntents = failedIntents.eq("org_id", failedOrgId)
-      await failedIntents
-      await supabase
-        .from("invoice_payment_reservations")
-        .update({ status: "canceled", updated_at: new Date().toISOString() })
+      // Resolve the owning org before writing anything — same rule as
+      // `charge.succeeded` above: an unscoped service-role UPDATE keyed only on
+      // provider ids is the one shape that could ever cross a tenant boundary.
+      const { data: failedIntentRow } = await supabase
+        .from("payment_intents")
+        .select("org_id")
         .eq("provider_intent_id", domainEvent.provider_payment_id)
-        .eq("status", "active")
-      const { data: failedPayment } = await supabase
-        .from("payments")
-        .update({ status: "failed", updated_at: new Date().toISOString() })
-        .eq("provider_payment_id", domainEvent.provider_payment_id)
-        .select("org_id,invoice_id")
         .maybeSingle()
-      if (failedPayment?.org_id && failedPayment.invoice_id) {
-        await supabase.rpc("recalc_invoice_balance_atomic", {
-          p_org_id: failedPayment.org_id,
-          p_invoice_id: failedPayment.invoice_id,
+      const { data: failedPaymentRow } = await supabase
+        .from("payments")
+        .select("org_id")
+        .eq("provider_payment_id", domainEvent.provider_payment_id)
+        .maybeSingle()
+      const failedOrgId =
+        orgId ??
+        (typeof domainEvent.metadata?.org_id === "string" ? domainEvent.metadata.org_id : null) ??
+        failedIntentRow?.org_id ??
+        failedPaymentRow?.org_id ??
+        null
+      if (!failedOrgId) {
+        logger.warn("stripe.webhook.failed_payment_without_org", {
+          domain: "stripe",
+          integration: "stripe",
+          eventId: event.id,
+          providerPaymentId: domainEvent.provider_payment_id,
         })
+      } else {
+        await supabase
+          .from("payment_intents")
+          .update({ status: "failed" })
+          .eq("org_id", failedOrgId)
+          .eq("provider_intent_id", domainEvent.provider_payment_id)
+        await supabase
+          .from("invoice_payment_reservations")
+          .update({ status: "canceled", updated_at: new Date().toISOString() })
+          .eq("org_id", failedOrgId)
+          .eq("provider_intent_id", domainEvent.provider_payment_id)
+          .eq("status", "active")
+        const { data: failedPayment } = await supabase
+          .from("payments")
+          .update({ status: "failed", updated_at: new Date().toISOString() })
+          .eq("org_id", failedOrgId)
+          .eq("provider_payment_id", domainEvent.provider_payment_id)
+          .select("org_id,invoice_id")
+          .maybeSingle()
+        if (failedPayment?.invoice_id) {
+          await supabase.rpc("recalc_invoice_balance_atomic", {
+            p_org_id: failedOrgId,
+            p_invoice_id: failedPayment.invoice_id,
+          })
+        }
       }
     }
 

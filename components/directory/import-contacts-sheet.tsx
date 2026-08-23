@@ -560,8 +560,8 @@ export function ImportContactsSheet({ open, onOpenChange }: ImportContactsSheetP
                 className={cn(
                   "flex h-14 w-14 items-center justify-center rounded-full",
                   result.contactsCreated + result.companiesCreated > 0
-                    ? "bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15"
-                    : "bg-amber-100 text-amber-600 dark:bg-amber-500/15",
+                    ? "bg-success/10 text-success"
+                    : "bg-warning/10 text-warning",
                 )}
               >
                 {result.contactsCreated + result.companiesCreated > 0 ? (

@@ -15,6 +15,7 @@ export default async function SubPortalDailyLogsPage({ params }: Props) {
   try {
     await assertPortalActionAccess(token, {
       portalType: "sub",
+      requireProject: true,
       requireCompany: true,
       permission: "can_submit_daily_logs",
     })

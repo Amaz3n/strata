@@ -39,9 +39,13 @@ const CONTAINER = "mx-auto w-full max-w-3xl space-y-8 px-5 py-6 lg:px-8 lg:py-8"
 const MIN_PREQUAL_DAYS = 30
 const MAX_PREQUAL_DAYS = 1825
 
-/** Coverage minimums and endorsements only mean something on an insurance certificate. */
-function isInsuranceDoc(code: string) {
-  return code.includes("coi") || code.includes("insurance") || code.includes("umbrella")
+/**
+ * Coverage minimums and endorsements only mean something on an insurance
+ * certificate. The type says which it is — matching on the code is what made a
+ * "professional_license" type ask for its policy limits.
+ */
+function isInsuranceDoc(documentType: ComplianceDocumentType) {
+  return documentType.kind === "insurance"
 }
 
 const ENDORSEMENTS = [
@@ -220,7 +224,7 @@ export function ComplianceSettings({
         ) : (
           requiredDocs.map((type) => {
             const item = byTypeId.get(type.id)
-            const summary = requirementSummary(item, isInsuranceDoc(type.code))
+            const summary = requirementSummary(item, isInsuranceDoc(type))
             return (
               <SettingsField key={type.id} label={type.name} hint={type.description ?? undefined}>
                 <div className="flex items-center justify-between gap-3">
@@ -402,7 +406,7 @@ function RequirementDialog({
   onSave: (item: ComplianceRequirementTemplateItem) => Promise<string | null>
   onRemove: () => Promise<string | null>
 }) {
-  const insurance = isInsuranceDoc(documentType.code)
+  const insurance = isInsuranceDoc(documentType)
   const [coverage, setCoverage] = useState(
     item?.min_coverage_cents ? String(Math.round(item.min_coverage_cents / 100)) : "",
   )

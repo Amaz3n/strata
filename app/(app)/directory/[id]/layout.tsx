@@ -4,24 +4,26 @@ import { connection } from "next/server";
 import { z } from "zod";
 
 import { PageLayout } from "@/components/layout/page-layout";
-import { CompanyAccountHeader } from "@/components/companies/account/company-account-header";
+import { PartyAccountHeader } from "@/components/directory/account/party-account-header";
 import { CompanyAccountHeaderSkeleton } from "@/components/companies/account/company-account-skeleton";
-import type { CompanyTab } from "@/components/companies/account/company-tab-nav";
+import type { PartyTab } from "@/components/directory/account/party-tab-nav";
+import type { DirectoryRoleState } from "@/lib/services/directory";
+import { isCurrentRole } from "@/lib/directory/roles";
 import {
-  loadCompanyAccount,
   loadComplianceStatus,
+  loadDirectoryParty,
   loadPaymentReadiness,
   loadPrequalificationGlance,
   loadVendorIntelligence,
   loadVendorLedger,
 } from "./page-data";
 
-interface CompanyAccountLayoutProps {
+interface PartyAccountLayoutProps {
   params: Promise<{ id: string }>;
   children: ReactNode;
 }
 
-// A fabricated company ID cannot pass authorization or existence checks, so the
+// A fabricated party ID cannot pass authorization or existence checks, so the
 // generic shell is what gets validated; real navigations are checked in dev.
 export const instant = {
   unstable_disableBuildValidation: true,
@@ -32,30 +34,35 @@ export const instant = {
  * shell — chrome, gutters, and the region the tab renders into — paints
  * immediately and survives navigation between tabs.
  */
-async function CompanyAccountHeaderData({
-  params,
-}: Pick<CompanyAccountLayoutProps, "params">) {
+async function PartyAccountHeaderData({ params }: Pick<PartyAccountLayoutProps, "params">) {
   // The ledger's aging math reads today's date.
   await connection();
   const { id } = await params;
   if (!z.string().uuid().safeParse(id).success) notFound();
 
-  const account = await loadCompanyAccount(id).catch(() => null);
-  if (!account) notFound();
-  const { company, posture, canEdit, canArchive } = account;
+  const party = await loadDirectoryParty(id);
+  if (!party) notFound();
+
+  const { capabilities, canEdit, canArchive } = party;
+  const base = `/directory/${id}`;
+  // Payables, commitments, compliance and prequalification are all keyed to a
+  // company — `vendor_bills` and `commitments` have no contact column. Seeded
+  // roles like `vendor` and `consultant` apply to people too, so gating those
+  // tabs on the role alone gave a vendor CONTACT four tabs that each redirected
+  // straight back here. A person's payables live on the company they work for.
+  const isVendorCompany = capabilities.isVendor && party.kind === "company";
 
   const [ledger, complianceStatus, intelligence, paymentReadiness, prequalification] =
     await Promise.all([
-      posture === "vendor" ? loadVendorLedger(id).catch(() => null) : Promise.resolve(null),
-      posture === "vendor" ? loadComplianceStatus(id) : Promise.resolve(null),
-      posture === "vendor"
+      isVendorCompany ? loadVendorLedger(id).catch(() => null) : Promise.resolve(null),
+      isVendorCompany ? loadComplianceStatus(id).catch(() => null) : Promise.resolve(null),
+      isVendorCompany
         ? loadVendorIntelligence(id)
         : Promise.resolve({ scorecard: null, taxReadiness: null }),
-      posture === "vendor" ? loadPaymentReadiness(id) : Promise.resolve(null),
-      posture === "vendor" ? loadPrequalificationGlance(id) : Promise.resolve(null),
+      isVendorCompany ? loadPaymentReadiness(id) : Promise.resolve(null),
+      isVendorCompany ? loadPrequalificationGlance(id) : Promise.resolve(null),
     ]);
 
-  const base = `/directory/${id}`;
   const summary = ledger?.summary.can_view_bills ? ledger.summary : null;
   const taxReadiness = intelligence.taxReadiness;
 
@@ -88,8 +95,11 @@ async function CompanyAccountHeaderData({
       ? `W-9 ${taxReadiness?.w9_status}`
       : undefined;
 
-  const tabs: CompanyTab[] = [{ label: "Overview", href: base, exact: true }];
-  if (posture === "vendor") {
+  // Tabs follow the party's roles, not its kind alone: a company that is only a
+  // client never had a use for Commitments, and a person has an activity trail
+  // and portal access where a company has a ledger.
+  const tabs: PartyTab[] = [{ label: "Overview", href: base, exact: true }];
+  if (isVendorCompany) {
     tabs.push(
       {
         label: "Transactions",
@@ -130,28 +140,43 @@ async function CompanyAccountHeaderData({
       },
     );
   }
-  tabs.push({ label: "Contacts", href: `${base}/contacts` });
+  if (party.kind === "company") {
+    tabs.push({ label: "Contacts", href: `${base}/contacts` });
+  } else {
+    tabs.push({ label: "Activity", href: `${base}/activity` });
+  }
+  tabs.push(
+    { label: "Communications", href: `${base}/communications` },
+    { label: "Access", href: `${base}/access` },
+  );
+
+  const name = party.kind === "company" ? party.company.name : party.contact.full_name;
+  // Same liveness rule the list and capabilities use — a role marked inactive is
+  // history, and showing it as a current chip would contradict the tabs.
+  const roles: DirectoryRoleState[] = party.roles
+    .filter((role) => isCurrentRole(role))
+    .map((role) => ({ key: role.key, label: role.label, status: role.status }));
 
   return (
     <>
       <PageLayout
-        title={company.name}
-        breadcrumbs={[
-          { label: "Directory", href: "/directory" },
-          { label: "Companies", href: "/directory?view=companies" },
-          { label: company.name },
-        ]}
+        title={name}
+        breadcrumbs={[{ label: "Directory", href: "/directory" }, { label: name }]}
         fullBleed
       />
-      <CompanyAccountHeader
-        company={company}
-        posture={posture}
+      <PartyAccountHeader
+        subject={
+          party.kind === "company"
+            ? { kind: "company", company: party.company }
+            : { kind: "contact", contact: party.contact }
+        }
+        roles={roles}
+        isVendor={isVendorCompany}
+        isClient={capabilities.isClient}
         canEdit={canEdit}
         canArchive={canArchive}
-        complianceReady={
-          posture === "vendor" && complianceStatus ? complianceStatus.is_compliant : null
-        }
-        complianceHref={posture === "vendor" ? `${base}/compliance` : null}
+        complianceReady={isVendorCompany && complianceStatus ? complianceStatus.is_compliant : null}
+        complianceHref={isVendorCompany ? `${base}/compliance` : null}
         paymentStatus={paymentReadiness?.status ?? null}
         tabs={tabs}
       />
@@ -159,11 +184,11 @@ async function CompanyAccountHeaderData({
   );
 }
 
-export default function CompanyAccountLayout({ params, children }: CompanyAccountLayoutProps) {
+export default function PartyAccountLayout({ params, children }: PartyAccountLayoutProps) {
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
       <Suspense fallback={<CompanyAccountHeaderSkeleton />}>
-        <CompanyAccountHeaderData params={params} />
+        <PartyAccountHeaderData params={params} />
       </Suspense>
       {/*
         Full-bleed on purpose: a register is the surface, not a card dropped

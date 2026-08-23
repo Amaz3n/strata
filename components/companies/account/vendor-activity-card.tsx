@@ -83,7 +83,7 @@ export function VendorActivityCard({
       ) : null}
 
       {canViewBills ? (
-        <VendorLedgerTable entries={entries} limit={12} showFilters={false} />
+        <VendorLedgerTable entries={entries} limit={12} />
       ) : (
         <EmptyState>Transaction history requires payables access.</EmptyState>
       )}

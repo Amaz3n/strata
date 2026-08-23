@@ -3,18 +3,29 @@
 import Link from "next/link"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { formatDistanceToNow } from "date-fns"
-import { AlertCircle, ArrowUpRight, Check, ExternalLink, Plug, RefreshCcw } from "lucide-react"
+import { AlertCircle, ArrowUpRight, Check, ChevronRight, ExternalLink, Plug, RefreshCcw } from "lucide-react"
 import { toast } from "sonner"
 
 import {
   listAccountingSyncHistoryAction,
   listAccountingSyncQueueAction,
+  resolveAccountingConflictAction,
   syncAllAccountingPendingAction,
   syncAccountingItemAction,
   type AccountingSyncHistoryItem,
   type AccountingSyncEntityType,
   type AccountingSyncQueueItem,
 } from "@/app/(app)/integrations/accounting-sync-actions"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -37,6 +48,17 @@ type Props = {
 }
 
 const SETTINGS_HREF = "/settings?tab=integrations"
+
+/**
+ * Entity types a conflict can actually be resolved for. Payments and inbound
+ * events have no "Arc's version" to re-push, so they keep only Retry.
+ */
+type ResolvableEntityType = "invoice" | "expense" | "bill"
+
+function resolvableEntityType(item: AccountingSyncQueueItem): ResolvableEntityType | null {
+  if (item.status !== "needs_review" && item.status !== "conflict") return null
+  return item.entityType === "invoice" || item.entityType === "expense" || item.entityType === "bill" ? item.entityType : null
+}
 
 // Payments and bill payments are presented together under one "Payments" section.
 const SECTIONS: { key: string; label: string; types: AccountingSyncEntityType[] }[] = [
@@ -69,6 +91,15 @@ export function AccountingSyncSheet({ open, onOpenChange, projectId, projectName
   const [history, setHistory] = useState<AccountingSyncHistoryItem[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
   const [showFailedOnly, setShowFailedOnly] = useState(false)
+  const [truncated, setTruncated] = useState(false)
+  const [ignoredEvents, setIgnoredEvents] = useState<{ count: number; reasons: Array<{ reason: string; count: number }> }>({
+    count: 0,
+    reasons: [],
+  })
+  const [ignoredExpanded, setIgnoredExpanded] = useState(false)
+  const [resolvingId, setResolvingId] = useState<string | null>(null)
+  /** A `take_remote` awaiting confirmation — it overwrites Arc's copy. */
+  const [pendingTakeRemote, setPendingTakeRemote] = useState<AccountingSyncQueueItem | null>(null)
   const [importConnections, setImportConnections] = useState<{ id: string; label: string; company: string | null }[]>([])
   const [importConnectionId, setImportConnectionId] = useState(connectionId ?? "")
   /**
@@ -88,6 +119,8 @@ export function AccountingSyncSheet({ open, onOpenChange, projectId, projectName
       setItems(queue.items)
       setConnected(queue.connected)
       setProvider(queue.provider)
+      setTruncated(queue.truncated)
+      setIgnoredEvents(queue.ignoredEvents)
     } catch (error: any) {
       toast.error("Couldn't load the sync queue", { description: error?.message ?? "Try again." })
     } finally {
@@ -121,20 +154,26 @@ export function AccountingSyncSheet({ open, onOpenChange, projectId, projectName
     if (open) setActiveTab(canImport ? initialTab : initialTab === "import" ? "sync" : initialTab)
   }, [canImport, initialTab, open])
 
-  const failedCount = useMemo(() => items.filter((item) => item.status !== "pending").length, [items])
-  const pendingCount = items.length - failedCount
+  // Three different problems used to be summed into one "failed" number: a push
+  // that errored, a record a person has to resolve, and a genuine Arc/provider
+  // disagreement need different actions, so they get their own counters.
+  const errorCount = useMemo(() => items.filter((item) => item.status === "error").length, [items])
+  const needsReviewCount = useMemo(() => items.filter((item) => item.status === "needs_review").length, [items])
+  const conflictCount = useMemo(() => items.filter((item) => item.status === "conflict").length, [items])
+  const attentionCount = errorCount + needsReviewCount + conflictCount
+  const pendingCount = items.length - attentionCount
   const lastSyncedAt = useMemo(
     () => history.find((entry) => entry.status !== "error" && entry.syncedAt)?.syncedAt ?? null,
     [history],
   )
 
   const healthTone =
-    failedCount > 0
+    attentionCount > 0
       ? "border-destructive/30 bg-destructive/10 text-destructive"
       : pendingCount > 0
         ? "border-warning/30 bg-warning/10 text-warning"
         : "border-success/30 bg-success/10 text-success"
-  const healthLabel = failedCount > 0 ? "Needs attention" : pendingCount > 0 ? "Waiting to sync" : "In sync"
+  const healthLabel = attentionCount > 0 ? "Needs attention" : pendingCount > 0 ? "Waiting to sync" : "In sync"
 
   // Failed rows float to the top within each section so problems surface first.
   const sections = useMemo(
@@ -190,6 +229,29 @@ export function AccountingSyncSheet({ open, onOpenChange, projectId, projectName
       toast.error("Sync failed", { description: error?.message ?? "Try again." })
     } finally {
       setSyncingId(null)
+      await Promise.all([load(), loadHistory()])
+    }
+  }
+
+  const handleResolve = async (item: AccountingSyncQueueItem, resolution: "keep_arc" | "take_remote") => {
+    const entityType = resolvableEntityType(item)
+    if (!entityType || resolvingId) return
+    setResolvingId(item.id)
+    try {
+      const result = await resolveAccountingConflictAction({ entityType, id: item.id, resolution })
+      if (result.resolved) {
+        toast.success(
+          resolution === "keep_arc"
+            ? `Queued Arc's version for ${providerName}`
+            : `Applied the ${providerName} version to Arc`,
+        )
+      } else {
+        toast.error("Couldn't resolve", { description: result.error ?? "Try again." })
+      }
+    } catch (error: any) {
+      toast.error("Couldn't resolve", { description: error?.message ?? "Try again." })
+    } finally {
+      setResolvingId(null)
       await Promise.all([load(), loadHistory()])
     }
   }
@@ -281,22 +343,51 @@ export function AccountingSyncSheet({ open, onOpenChange, projectId, projectName
                   <Badge variant="secondary" className="h-6 rounded-none">
                     {pendingCount} queued
                   </Badge>
-                  {failedCount > 0 ? (
-                    <button type="button" onClick={() => setShowFailedOnly((value) => !value)}>
-                      <Badge
-                        variant="secondary"
-                        className={cn(
-                          "h-6 gap-1 rounded-none border-destructive/30 bg-destructive/10 text-destructive",
-                          showFailedOnly && "ring-1 ring-destructive/40",
-                        )}
-                      >
-                        <AlertCircle className="size-3" />
-                        {failedCount} failed
-                      </Badge>
+                  {attentionCount > 0 ? (
+                    <button type="button" onClick={() => setShowFailedOnly((value) => !value)} className="flex flex-wrap items-center gap-1.5">
+                      {errorCount > 0 ? (
+                        <Badge
+                          variant="secondary"
+                          className={cn(
+                            "h-6 gap-1 rounded-none border-destructive/30 bg-destructive/10 text-destructive",
+                            showFailedOnly && "ring-1 ring-destructive/40",
+                          )}
+                        >
+                          <AlertCircle className="size-3" />
+                          {errorCount} failed
+                        </Badge>
+                      ) : null}
+                      {needsReviewCount > 0 ? (
+                        <Badge
+                          variant="secondary"
+                          className={cn(
+                            "h-6 gap-1 rounded-none border-warning/30 bg-warning/10 text-warning",
+                            showFailedOnly && "ring-1 ring-warning/40",
+                          )}
+                        >
+                          <AlertCircle className="size-3" />
+                          {needsReviewCount} need review
+                        </Badge>
+                      ) : null}
+                      {conflictCount > 0 ? (
+                        <Badge
+                          variant="secondary"
+                          className={cn(
+                            "h-6 gap-1 rounded-none border-warning/30 bg-warning/10 text-warning",
+                            showFailedOnly && "ring-1 ring-warning/40",
+                          )}
+                        >
+                          <AlertCircle className="size-3" />
+                          {conflictCount} in conflict
+                        </Badge>
+                      ) : null}
                     </button>
                   ) : null}
                   {lastSyncedAt ? (
                     <span className="truncate text-muted-foreground">Last synced {formatRelative(lastSyncedAt)}</span>
+                  ) : null}
+                  {truncated ? (
+                    <span className="truncate text-muted-foreground">Showing the most recent 500 per type</span>
                   ) : null}
                 </div>
                 <Button
@@ -309,6 +400,30 @@ export function AccountingSyncSheet({ open, onOpenChange, projectId, projectName
                   Sync now
                 </Button>
               </div>
+              {ignoredEvents.count > 0 ? (
+                <div className="shrink-0 border-b bg-muted/20 px-6 py-2">
+                  <button
+                    type="button"
+                    onClick={() => setIgnoredExpanded((value) => !value)}
+                    className="flex w-full items-center gap-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    <ChevronRight className={cn("size-3 shrink-0 transition-transform", ignoredExpanded && "rotate-90")} />
+                    <span>
+                      {ignoredEvents.count} inbound {ignoredEvents.count === 1 ? "change was" : "changes were"} ignored
+                    </span>
+                  </button>
+                  {ignoredExpanded ? (
+                    <ul className="mt-1.5 space-y-1 pl-[18px]">
+                      {ignoredEvents.reasons.map((entry) => (
+                        <li key={entry.reason} className="flex items-start justify-between gap-3 text-xs text-muted-foreground">
+                          <span className="min-w-0 flex-1">{entry.reason}</span>
+                          <span className="shrink-0 tabular-nums">{entry.count}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </div>
+              ) : null}
               <ScrollArea className="flex-1">
                 {loading && items.length === 0 ? (
                   <ListSkeleton />
@@ -344,6 +459,11 @@ export function AccountingSyncSheet({ open, onOpenChange, projectId, projectName
                               item={item}
                               syncing={syncingId === item.id}
                               disabled={Boolean(syncingId) || syncingAll}
+                              providerName={providerName}
+                              resolving={resolvingId === item.id}
+                              resolveDisabled={Boolean(resolvingId) || syncingAll}
+                              onKeepArc={() => void handleResolve(item, "keep_arc")}
+                              onTakeRemote={() => setPendingTakeRemote(item)}
                               onSync={() => handleSyncOne(item)}
                               onOpen={item.entityType === "invoice" && onOpenInvoice ? () => onOpenInvoice(item.id) : undefined}
                             />
@@ -409,6 +529,30 @@ export function AccountingSyncSheet({ open, onOpenChange, projectId, projectName
           </Tabs>
         )}
       </SheetContent>
+
+      <AlertDialog open={Boolean(pendingTakeRemote)} onOpenChange={(next) => !next && setPendingTakeRemote(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Take {providerName}&rsquo;s version?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This overwrites Arc&rsquo;s copy of {pendingTakeRemote?.label ?? "this record"} with the {providerName}{" "}
+              version. Anything edited in Arc since the two diverged is replaced.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const target = pendingTakeRemote
+                setPendingTakeRemote(null)
+                if (target) void handleResolve(target, "take_remote")
+              }}
+            >
+              Overwrite Arc&rsquo;s copy
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Sheet>
   )
 }
@@ -476,17 +620,28 @@ function SyncRow({
   item,
   syncing,
   disabled,
+  providerName,
+  resolving,
+  resolveDisabled,
+  onKeepArc,
+  onTakeRemote,
   onSync,
   onOpen,
 }: {
   item: AccountingSyncQueueItem
   syncing: boolean
   disabled: boolean
+  providerName: string
+  resolving: boolean
+  resolveDisabled: boolean
+  onKeepArc: () => void
+  onTakeRemote: () => void
   onSync: () => void
   onOpen?: () => void
 }) {
   const failed = item.status !== "pending"
   const lastAttempt = formatRelative(item.lastAttemptAt)
+  const canResolve = resolvableEntityType(item) !== null
 
   return (
     <li className="group flex items-center gap-3 px-6 py-3 transition-colors hover:bg-muted/20">
@@ -518,6 +673,29 @@ function SyncRow({
             <span className="truncate">{lastAttempt ? `Last tried ${lastAttempt}` : "Waiting to sync"}</span>
           )}
         </div>
+        {canResolve ? (
+          <div className="mt-1.5 flex items-center gap-1.5">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={onKeepArc}
+              disabled={resolveDisabled}
+            >
+              {resolving ? <Spinner className="mr-1.5 size-3" /> : null}
+              Keep Arc&rsquo;s version
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs text-muted-foreground"
+              onClick={onTakeRemote}
+              disabled={resolveDisabled}
+            >
+              Take {providerName}&rsquo;s version
+            </Button>
+          </div>
+        ) : null}
       </div>
       <span className="shrink-0 text-sm font-medium tabular-nums">{formatMoney(item.amountCents)}</span>
       <Button

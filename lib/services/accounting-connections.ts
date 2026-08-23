@@ -5,6 +5,7 @@ import { requireOrgContext } from "@/lib/services/context";
 import {
   getProvider,
   isAccountingProviderKey,
+  listProviders,
 } from "@/lib/integrations/accounting/registry";
 import { recordEvent } from "@/lib/services/events";
 import { recordAudit } from "@/lib/services/audit";
@@ -307,15 +308,18 @@ export async function disconnectAccountingConnection(
     throw new Error(
       `Failed to disconnect accounting connection: ${error.message}`,
     );
-  const { error: mappingError, count: removedMappings } = await supabase
+  // Routing mappings are deliberately PRESERVED. Deleting them punished the
+  // most common disconnect — a user fixing an OAuth problem — by erasing every
+  // per-project/community/division route and mapped dimension they configured
+  // by hand, while the reconnect-rebind migration went to great lengths to
+  // preserve sync records, counterparty links, and import claims. A mapping to
+  // a disconnected connection resolves as "no target" (accounting-target.ts)
+  // and revives intact on reconnect.
+  const { count: preservedMappings } = await supabase
     .from("accounting_entity_map")
-    .delete({ count: "exact" })
+    .select("id", { count: "exact", head: true })
     .eq("org_id", resolvedOrgId)
     .eq("connection_id", connectionId);
-  if (mappingError)
-    throw new Error(
-      `Connection was revoked but its routing mappings could not be removed: ${mappingError.message}`,
-    );
   await recordEvent({
     orgId: resolvedOrgId,
     actorId: userId,
@@ -325,7 +329,7 @@ export async function disconnectAccountingConnection(
     payload: {
       provider: connection.provider,
       label: connection.label,
-      removed_routing_mappings: removedMappings ?? 0,
+      preserved_routing_mappings: preservedMappings ?? 0,
     },
     channel: "integration",
   });
@@ -398,4 +402,28 @@ export async function createFileAccountingConnection(input: {
     }),
   ]);
   return { id: data.id, label: data.label };
+}
+
+/**
+ * Provider-owned credential keepalive across every registered adapter, fanned
+ * out under one budget. Lives here (not in its own module) because it is the
+ * natural tail of connection lifecycle management.
+ */
+export async function keepAliveAccountingConnections(limit = 10) {
+  const providers = listProviders().filter((provider) => provider.keepAliveConnections);
+  let remaining = Math.max(0, limit);
+  let scanned = 0;
+  let refreshed = 0;
+  let failed = 0;
+
+  for (const provider of providers) {
+    if (remaining === 0) break;
+    const result = await provider.keepAliveConnections!(remaining);
+    scanned += result.scanned;
+    refreshed += result.refreshed;
+    failed += result.failed;
+    remaining = Math.max(0, remaining - result.scanned);
+  }
+
+  return { scanned, refreshed, failed };
 }

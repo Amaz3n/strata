@@ -16,6 +16,7 @@ import {
   replaceProjectExpenseLines,
   type ProjectExpenseLineInput,
 } from "@/lib/services/cost-plus"
+import { accountingProviderLabel } from "@/components/accounting/provider-label"
 import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 import { getProvider } from "@/lib/integrations/accounting/registry"
 import { markAccountingEntityPending, processAccountingPush } from "@/lib/services/accounting-sync"
@@ -559,9 +560,12 @@ export async function getExpenseAccountingContextAction(projectId?: string) {
         ? await loadProjectBudgetLines(supabase, orgId, projectId)
         : []
       const provider = target ? getProvider(target.connection.provider) : null
+      const providerName = target ? accountingProviderLabel(target.connection.provider, target.connection.label) : null
       if (!target || !provider) {
         return {
           qboConnected: false,
+          accountingProvider: null,
+          accountingProviderName: null,
           expenseAccounts: [],
           paymentAccounts: [],
           apAccounts: [],
@@ -584,6 +588,8 @@ export async function getExpenseAccountingContextAction(projectId?: string) {
 
         return {
           qboConnected: true,
+          accountingProvider: target.connection.provider,
+          accountingProviderName: providerName,
           expenseAccounts,
           paymentAccounts,
           apAccounts,
@@ -597,11 +603,13 @@ export async function getExpenseAccountingContextAction(projectId?: string) {
             creditCardAccountId: typeof settings.default_credit_card_account_id === "string" ? settings.default_credit_card_account_id : "",
             apAccountId: typeof settings.default_ap_account_id === "string" ? settings.default_ap_account_id : "",
           },
-          warning: expenseAccounts.length === 0 ? "QuickBooks returned no expense accounts." : null,
+          warning: expenseAccounts.length === 0 ? `${providerName} returned no expense accounts.` : null,
         }
       } catch (error: any) {
         return {
           qboConnected: true,
+          accountingProvider: target.connection.provider,
+          accountingProviderName: providerName,
           expenseAccounts: [],
           paymentAccounts: [],
           apAccounts: [],
@@ -610,7 +618,7 @@ export async function getExpenseAccountingContextAction(projectId?: string) {
           budgetLines,
           costCodesEnabled,
           defaults: {},
-          warning: error?.message ?? "Unable to load QuickBooks accounting categories.",
+          warning: error?.message ?? `Unable to load ${providerName} accounting categories.`,
         }
       }
 }

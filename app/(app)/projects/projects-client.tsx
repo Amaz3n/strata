@@ -3,6 +3,7 @@
 import { useState, useEffect, type CSSProperties } from "react"
 import { OptimisticLink as Link } from "@/lib/navigation/optimistic-pathname"
 
+import { DEFAULT_ACCOUNTING_PROVIDER_LABEL } from "@/components/accounting/provider-label"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -830,6 +831,8 @@ function ProjectFormSheet({
   // The contact backing the unified "Client" field — also the auto QBO customer name when none is set explicitly.
   const selectedClientContact = clientId ? clientContacts.find((contact) => contact.id === clientId) ?? null : null
   const [qboConnected, setQboConnected] = useState(false)
+  /** Named by the connection itself; the catalog default covers the in-flight probe. */
+  const [providerName, setProviderName] = useState(DEFAULT_ACCOUNTING_PROVIDER_LABEL)
   const [customerPickerOpen, setCustomerPickerOpen] = useState(false)
   const [customerQuery, setCustomerQuery] = useState("")
   const [customerResults, setCustomerResults] = useState<QBOCustomerOption[]>([])
@@ -854,6 +857,7 @@ function ProjectFormSheet({
       .then((result) => {
         if (cancelled) return
         setQboConnected(Boolean(result.connected))
+        setProviderName(result.providerName ?? DEFAULT_ACCOUNTING_PROVIDER_LABEL)
         setCustomerResults(result.customers ?? [])
       })
       .catch(() => {
@@ -909,9 +913,9 @@ function ProjectFormSheet({
       }))
       selectQboCustomer(created)
       setNewCustomer({ name: "", email: "", line1: "", city: "", state: "", postalCode: "" })
-      toast.success(`Created "${created.name}" in QuickBooks`)
+      toast.success(`Created "${created.name}" in ${providerName}`)
     } catch (error: any) {
-      toast.error("Couldn't create customer in QuickBooks", { description: error?.message ?? "Try again." })
+      toast.error(`Couldn't create customer in ${providerName}`, { description: error?.message ?? "Try again." })
     } finally {
       setCreatingCustomer(false)
     }
@@ -1028,7 +1032,7 @@ function ProjectFormSheet({
                 )}
               />
               {/* Client — one field. The contact drives portal invites & signatures; */}
-              {/* the QuickBooks customer (the sync target) is shown beneath as an overridable detail. */}
+              {/* the accounting customer (the sync target) is shown beneath as an overridable detail. */}
               <FormField
                 control={form.control}
                 name="client_id"
@@ -1070,7 +1074,7 @@ function ProjectFormSheet({
                               <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
                                 <Check className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
                                 <span className="truncate">
-                                  Billed in QuickBooks as{" "}
+                                  Billed in {providerName} as{" "}
                                   <span className="font-medium text-foreground">{qboCustomerName || "selected customer"}</span>
                                 </span>
                               </span>
@@ -1100,11 +1104,11 @@ function ProjectFormSheet({
                               <span className="min-w-0 truncate text-xs text-muted-foreground">
                                 {selectedClientContact?.full_name ? (
                                   <>
-                                    Will sync to QuickBooks as{" "}
+                                    Will sync to {providerName} as{" "}
                                     <span className="font-medium text-foreground">&ldquo;{selectedClientContact.full_name}&rdquo;</span>
                                   </>
                                 ) : (
-                                  "Choose the QuickBooks customer to bill"
+                                  `Choose the ${providerName} customer to bill`
                                 )}
                               </span>
                               <PopoverTrigger asChild>
@@ -1193,7 +1197,7 @@ function ProjectFormSheet({
                           ) : (
                             <Command shouldFilter={false}>
                               <CommandInput
-                                placeholder="Search QuickBooks customers…"
+                                placeholder={`Search ${providerName} customers…`}
                                 value={customerQuery}
                                 onValueChange={setCustomerQuery}
                               />
@@ -1204,7 +1208,7 @@ function ProjectFormSheet({
                                   </div>
                                 )}
                                 {!customerSearchLoading && customerResults.length === 0 && (
-                                  <CommandEmpty>No QuickBooks customers found.</CommandEmpty>
+                                  <CommandEmpty>No {providerName} customers found.</CommandEmpty>
                                 )}
                                 {customerResults.length > 0 && (
                                   <CommandGroup>
@@ -1238,7 +1242,7 @@ function ProjectFormSheet({
                     ) : null}
 
                     <p className="text-sm text-muted-foreground">
-                      Used as the default {terms.owner.toLowerCase()} for portal invites and signatures{qboConnected ? ", and as the QuickBooks customer for invoices, payables, and expenses" : ""}. This does not grant portal access.
+                      Used as the default {terms.owner.toLowerCase()} for portal invites and signatures{qboConnected ? `, and as the ${providerName} customer for invoices, payables, and expenses` : ""}. This does not grant portal access.
                     </p>
                     <FormMessage />
                   </FormItem>
@@ -1250,7 +1254,7 @@ function ProjectFormSheet({
                   name="qbo_class_id"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>QuickBooks class</FormLabel>
+                      <FormLabel>{providerName} class</FormLabel>
                       <Select
                         value={field.value ?? "none"}
                         onValueChange={(value) => {

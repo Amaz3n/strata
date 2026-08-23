@@ -16,6 +16,7 @@ export default async function ChangeOrderApprovalPage({ params }: Params) {
   try {
     access = await assertPortalActionAccess(token, {
       portalType: "client",
+      requireProject: true,
       permission: "can_approve_change_orders",
     })
   } catch {

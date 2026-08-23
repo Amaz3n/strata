@@ -1576,7 +1576,7 @@ test("Books migration enforces immutable balanced journals and service-only post
 
 test("POC journals are review-only month-boundary exports", () => {
   const source = fs.readFileSync(
-    path.join(__dirname, "../lib/services/accounting-export.ts"),
+    path.join(__dirname, "../lib/services/financial-exports.ts"),
     "utf8",
   );
   assert.match(source, /row\.as_of < monthStart/);

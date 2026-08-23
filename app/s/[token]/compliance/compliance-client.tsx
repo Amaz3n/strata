@@ -21,6 +21,7 @@ import type {
   ComplianceDocument,
   ComplianceDocumentType,
   ComplianceRequirement,
+  ComplianceRequirementState,
   ComplianceStatusSummary,
 } from "@/lib/types"
 import { ComplianceUploadDialog } from "./upload-dialog"
@@ -34,17 +35,24 @@ interface ComplianceClientProps {
   blocksPayment: boolean
 }
 
-type RequirementState = "met" | "pending" | "deficient" | "expired" | "rejected" | "missing" | "waived"
-
-const STATE_COPY: Record<RequirementState, { label: string; className: string }> = {
+const STATE_COPY: Record<ComplianceRequirementState, { label: string; className: string }> = {
   met: { label: "On file", className: "border-success/30 bg-success/10 text-success" },
+  expiring: { label: "Expiring", className: "border-warning/30 bg-warning/10 text-warning" },
   pending: { label: "Under review", className: "border-primary/30 bg-primary/10 text-primary" },
   deficient: { label: "Needs update", className: "border-warning/30 bg-warning/10 text-warning" },
   expired: { label: "Expired", className: "border-destructive/30 bg-destructive/10 text-destructive" },
-  rejected: { label: "Rejected", className: "border-destructive/30 bg-destructive/10 text-destructive" },
+  rejected: { label: "Sent back", className: "border-destructive/30 bg-destructive/10 text-destructive" },
   missing: { label: "Not provided", className: "border-border bg-muted text-muted-foreground" },
   waived: { label: "Waived", className: "border-border bg-muted text-muted-foreground" },
 }
+
+/** States that stop this vendor being paid. */
+const BLOCKING_STATES = new Set<ComplianceRequirementState>([
+  "missing",
+  "expired",
+  "deficient",
+  "rejected",
+])
 
 function daysUntil(date: string): number {
   const parsed = parseLocalDate(date)
@@ -85,48 +93,32 @@ export function ComplianceClient({
   const [uploadOpen, setUploadOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
 
-  const deficiencyByRequirement = useMemo(() => {
-    const map = new Map<string, string[]>()
-    for (const deficiency of status.deficiencies) {
-      const current = map.get(deficiency.requirement_id) ?? []
-      current.push(deficiency.message)
-      map.set(deficiency.requirement_id, current)
-    }
-    return map
-  }, [status.deficiencies])
-
-  const rows = useMemo(() => {
-    return status.requirements.map((requirement) => {
-      const forType = status.documents.filter(
-        (doc) => doc.document_type_id === requirement.document_type_id,
-      )
-      const approved = forType.find((doc) => doc.status === "approved")
-      const pending = forType.find((doc) => doc.status === "pending_review")
-      const rejected = forType.find((doc) => doc.status === "rejected")
-      const doc = approved ?? pending ?? rejected
-      const deficiencies = deficiencyByRequirement.get(requirement.id) ?? []
-      const expiresIn = approved?.expiry_date ? daysUntil(approved.expiry_date) : null
-
-      let state: RequirementState = "missing"
-      if (requirement.waiver) state = "waived"
-      else if (approved && expiresIn !== null && expiresIn < 0) state = "expired"
-      else if (approved && deficiencies.length > 0) state = "deficient"
-      else if (approved) state = "met"
-      else if (pending) state = "pending"
-      else if (rejected) state = "rejected"
-
-      return { requirement, doc, approved, pending, rejected, deficiencies, expiresIn, state }
-    })
-  }, [status.requirements, status.documents, deficiencyByRequirement])
+  // The verdicts are the server's. Re-deriving them here is how this page and
+  // the builder's own view of the same vendor ended up able to disagree.
+  const rows = useMemo(
+    () =>
+      status.statuses.map((item) => {
+        const approved =
+          item.document && item.document.status === "approved" ? item.document : undefined
+        return {
+          requirement: item.requirement,
+          doc: item.document ?? undefined,
+          approved,
+          rejected:
+            item.document && item.document.status === "rejected" ? item.document : undefined,
+          deficiencies: item.deficiency ? [item.deficiency.message] : [],
+          expiresIn: item.days_until_expiry,
+          state: item.state,
+          history: item.history,
+        }
+      }),
+    [status.statuses],
+  )
 
   const active = rows.filter((row) => row.state !== "waived")
-  const metCount = active.filter((row) => row.state === "met").length
-  const blockingCount = active.filter((row) =>
-    ["missing", "expired", "deficient", "rejected"].includes(row.state),
-  ).length
-  const expiringSoon = active.filter(
-    (row) => row.state === "met" && row.expiresIn !== null && row.expiresIn <= 30,
-  )
+  const metCount = active.filter((row) => row.state === "met" || row.state === "expiring").length
+  const blockingCount = active.filter((row) => BLOCKING_STATES.has(row.state)).length
+  const expiringSoon = active.filter((row) => row.state === "expiring")
 
   const openUpload = (requirement: ComplianceRequirement) => {
     setUploadFor(requirement)
@@ -355,16 +347,32 @@ export function ComplianceClient({
                       : null}
                   </div>
 
-                  {canUpload && state !== "waived" ? (
-                    <Button
-                      size="sm"
-                      variant={state === "met" ? "ghost" : "outline"}
-                      onClick={() => openUpload(requirement)}
-                      className="shrink-0"
-                    >
-                      {state === "met" ? "Replace" : doc ? "Resubmit" : "Upload"}
-                    </Button>
-                  ) : null}
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {doc?.file_id ? (
+                      <Button asChild size="sm" variant="ghost">
+                        <a
+                          href={`/api/portal/s/${token}/compliance/${doc.id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          View
+                        </a>
+                      </Button>
+                    ) : null}
+                    {canUpload && state !== "waived" ? (
+                      <Button
+                        size="sm"
+                        variant={state === "met" ? "ghost" : "outline"}
+                        onClick={() => openUpload(requirement)}
+                      >
+                        {state === "met" || state === "expiring"
+                          ? "Replace"
+                          : doc
+                            ? "Resubmit"
+                            : "Upload"}
+                      </Button>
+                    ) : null}
+                  </div>
                 </div>
               </li>
             )
@@ -391,9 +399,23 @@ export function ComplianceClient({
                       {document.expiry_date ? ` · expires ${formatDay(document.expiry_date)}` : ""}
                     </p>
                   </div>
-                  <span className="shrink-0 text-xs capitalize text-muted-foreground">
-                    {document.status.replaceAll("_", " ")}
-                  </span>
+                  <div className="flex shrink-0 items-center gap-3">
+                    <span className="text-xs capitalize text-muted-foreground">
+                      {document.status.replaceAll("_", " ")}
+                    </span>
+                    {/* Listing a submission without linking to it left a vendor
+                        unable to check which copy the builder actually holds. */}
+                    {document.file_id ? (
+                      <a
+                        href={`/api/portal/s/${token}/compliance/${document.id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-primary underline-offset-2 hover:underline"
+                      >
+                        View
+                      </a>
+                    ) : null}
+                  </div>
                 </li>
               ))}
             </ul>

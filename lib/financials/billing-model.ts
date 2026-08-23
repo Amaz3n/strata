@@ -7,22 +7,25 @@ export type ProjectBillingModel =
   | "cost_plus_gmp"
   | "time_and_materials"
 
-export type FinancialLandingPage = "summary" | "review" | "receivables" | "budget" | "forecast"
 export type OwnerBillingBasis = "draws" | "progress" | "closing" | "costs" | "costs_plus_fee" | "time_materials"
 export type FeePresentation = "embedded" | "separate_total" | "separate_by_code"
 
 export interface ProjectFinancialFeatureConfig {
   billingModel: ProjectBillingModel
-  landingPage: FinancialLandingPage
   showInbox: boolean
   showTime: boolean
   showExpenses: boolean
   showGenerateFromCosts: boolean
   showOpenBook: boolean
   showDraws: boolean
-  showGmpForecast: boolean
   requireCostApproval: boolean
   ownerBillingBasis: OwnerBillingBasis
+  /**
+   * Production discipline: once a baseline is locked, budget line amounts stop
+   * being directly editable — changes route through transfers and VPOs only.
+   * Custom/commercial postures keep the budget a living document.
+   */
+  lockBudgetLinesAfterBaseline: boolean
 }
 
 type BillingContractSource = Partial<
@@ -146,6 +149,8 @@ export function getProjectFinancialFeatureConfig(
   const isCostPlus = billingModel === "cost_plus_percent" || billingModel === "cost_plus_fixed_fee" || billingModel === "cost_plus_gmp"
   const isTimeAndMaterials = billingModel === "time_and_materials"
   const isCostDriven = isCostDrivenBillingModel(billingModel)
+  const lockBudgetLinesAfterBaseline =
+    source != null && "property_type" in source && source.property_type === "production"
 
   if (billingModel === "fixed_price") {
     const isPurchaseAgreement = contract?.contract_type === "purchase_agreement"
@@ -160,63 +165,59 @@ export function getProjectFinancialFeatureConfig(
       source.financial_settings?.fixed_price_billing_basis === "progress"
     return {
       billingModel,
-      landingPage: "summary",
       showInbox: false,
       showTime: false,
       showExpenses: false,
       showGenerateFromCosts: false,
       showOpenBook: false,
       showDraws: !isPurchaseAgreement && !progressBilling && !productionWithoutContract,
-      showGmpForecast: false,
       requireCostApproval: false,
       ownerBillingBasis: isPurchaseAgreement ? "closing" : progressBilling ? "progress" : "draws",
+      lockBudgetLinesAfterBaseline,
     }
   }
 
   if (billingModel === "cost_plus_fixed_fee") {
     return {
       billingModel,
-      landingPage: "summary",
       showInbox: true,
       showTime: true,
       showExpenses: true,
       showGenerateFromCosts: true,
       showOpenBook: shouldExposeOpenBookCostDetail(contract?.open_book),
       showDraws: false,
-      showGmpForecast: false,
       requireCostApproval: contract?.requires_client_cost_approval === true,
       ownerBillingBasis: "costs_plus_fee",
+      lockBudgetLinesAfterBaseline,
     }
   }
 
   if (billingModel === "cost_plus_gmp") {
     return {
       billingModel,
-      landingPage: "summary",
       showInbox: true,
       showTime: true,
       showExpenses: true,
       showGenerateFromCosts: true,
       showOpenBook: shouldExposeOpenBookCostDetail(contract?.open_book),
       showDraws: false,
-      showGmpForecast: true,
       requireCostApproval: contract?.requires_client_cost_approval === true,
       ownerBillingBasis: "costs",
+      lockBudgetLinesAfterBaseline,
     }
   }
 
   return {
     billingModel,
-    landingPage: "summary",
     showInbox: true,
     showTime: true,
     showExpenses: true,
     showGenerateFromCosts: isCostDriven,
     showOpenBook: isCostPlus ? shouldExposeOpenBookCostDetail(contract?.open_book) : false,
     showDraws: false,
-    showGmpForecast: false,
     requireCostApproval: contract?.requires_client_cost_approval === true,
     ownerBillingBasis: isTimeAndMaterials ? "time_materials" : "costs",
+    lockBudgetLinesAfterBaseline,
   }
 }
 

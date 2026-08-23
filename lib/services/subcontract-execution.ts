@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-import { getComplianceRules } from "@/lib/services/compliance"
+import { DEFAULT_COMPLIANCE_RULES, getComplianceRules } from "@/lib/services/compliance"
 import { getCompanyComplianceStatusWithClient } from "@/lib/services/compliance-documents"
 
 /**
@@ -36,16 +36,15 @@ export function isSubcontractExecutionEntityType(
 
 /** Compliance settings must never be the reason a signature flow hard-fails. */
 export async function getSafeSubcontractComplianceRules(orgId: string) {
-  return getComplianceRules(orgId).catch(() => ({
-    require_lien_waiver: false,
-    block_payment_on_missing_docs: true,
-    warn_subcontract_execution_on_missing_docs: true,
-    block_subcontract_execution_on_missing_docs: false,
-  }))
+  return getComplianceRules(orgId).catch(() => DEFAULT_COMPLIANCE_RULES)
 }
 
-/** The vendor whose compliance governs this entity's execution. */
-export async function resolveSubcontractExecutionCompanyId({
+/**
+ * The vendor whose compliance governs this entity's execution, and the job it
+ * is being executed on. The project matters because a project overlay can raise
+ * what this job demands above the vendor's standing requirements.
+ */
+export async function resolveSubcontractExecutionScope({
   supabase,
   orgId,
   sourceEntityType,
@@ -55,23 +54,24 @@ export async function resolveSubcontractExecutionCompanyId({
   orgId: string
   sourceEntityType?: string | null
   sourceEntityId?: string | null
-}): Promise<string | null> {
-  if (!sourceEntityId || !isSubcontractExecutionEntityType(sourceEntityType)) return null
+}): Promise<{ companyId: string | null; projectId: string | null }> {
+  const none = { companyId: null, projectId: null }
+  if (!sourceEntityId || !isSubcontractExecutionEntityType(sourceEntityType)) return none
 
   if (sourceEntityType === "subcontract") {
     const { data, error } = await supabase
       .from("commitments")
-      .select("company_id")
+      .select("company_id, project_id")
       .eq("org_id", orgId)
       .eq("id", sourceEntityId)
       .maybeSingle()
     if (error) throw new Error(`Failed to validate subcontract compliance: ${error.message}`)
-    return data?.company_id ?? null
+    return { companyId: data?.company_id ?? null, projectId: data?.project_id ?? null }
   }
 
   const { data, error } = await supabase
     .from("commitment_change_orders")
-    .select("company_id, commitment:commitments(company_id)")
+    .select("company_id, project_id, commitment:commitments(company_id, project_id)")
     .eq("org_id", orgId)
     .eq("id", sourceEntityId)
     .maybeSingle()
@@ -79,7 +79,10 @@ export async function resolveSubcontractExecutionCompanyId({
     throw new Error(`Failed to validate subcontract change order compliance: ${error.message}`)
   }
   const commitment = Array.isArray(data?.commitment) ? data?.commitment[0] : data?.commitment
-  return data?.company_id ?? commitment?.company_id ?? null
+  return {
+    companyId: data?.company_id ?? commitment?.company_id ?? null,
+    projectId: data?.project_id ?? commitment?.project_id ?? null,
+  }
 }
 
 export async function evaluateSubcontractExecutionCompliance({
@@ -109,7 +112,7 @@ export async function evaluateSubcontractExecutionCompliance({
   }
   if (!applies) return base
 
-  const companyId = await resolveSubcontractExecutionCompanyId({
+  const { companyId, projectId } = await resolveSubcontractExecutionScope({
     supabase,
     orgId,
     sourceEntityType,
@@ -117,7 +120,9 @@ export async function evaluateSubcontractExecutionCompliance({
   })
   if (!companyId) return base
 
-  const status = await getCompanyComplianceStatusWithClient(supabase, orgId, companyId)
+  const status = await getCompanyComplianceStatusWithClient(supabase, orgId, companyId, {
+    projectIds: projectId ? [projectId] : [],
+  })
   return {
     ...base,
     companyId,
@@ -153,7 +158,7 @@ export async function assertSubcontractExecutionCompliance({
   const rules = await getSafeSubcontractComplianceRules(orgId)
   if (!rules.block_subcontract_execution_on_missing_docs) return
 
-  const companyId = await resolveSubcontractExecutionCompanyId({
+  const { companyId, projectId } = await resolveSubcontractExecutionScope({
     supabase,
     orgId,
     sourceEntityType,
@@ -161,7 +166,9 @@ export async function assertSubcontractExecutionCompliance({
   })
   if (!companyId) return
 
-  const status = await getCompanyComplianceStatusWithClient(supabase, orgId, companyId)
+  const status = await getCompanyComplianceStatusWithClient(supabase, orgId, companyId, {
+    projectIds: projectId ? [projectId] : [],
+  })
   if (!status.is_compliant) {
     throw new Error(`Vendor compliance documents are required before ${action}.`)
   }

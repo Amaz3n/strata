@@ -25,6 +25,7 @@ import { requireAuthorization } from "@/lib/services/authorization"
 import { invoiceInputSchema } from "@/lib/validation/invoices"
 import { sendReminderEmail } from "@/lib/services/mailer"
 import { listChangeOrders } from "@/lib/services/change-orders"
+import { getProjectFinancialFeatureConfig, isCostDrivenBillingModel } from "@/lib/financials/billing-model"
 import { listCostPlusTabData, getProjectCostContract, resolveMarkupPercent, calculateMarkupCents } from "@/lib/services/cost-plus"
 import { renderInvoicePdf } from "@/lib/pdfs/invoice"
 import { buildInvoicePdfData } from "@/lib/pdfs/invoice-data"
@@ -32,6 +33,7 @@ import { uploadFilesObject } from "@/lib/storage/files-storage"
 import { createFileRecord } from "@/lib/services/files"
 import { createInitialVersion } from "@/lib/services/file-versions"
 import { attachFile } from "@/lib/services/file-links"
+import { accountingProviderLabel, DEFAULT_ACCOUNTING_PROVIDER_LABEL } from "@/components/accounting/provider-label"
 import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 import { getProvider } from "@/lib/integrations/accounting/registry"
 import { recordEvent } from "@/lib/services/events"
@@ -404,7 +406,24 @@ export async function updateInvoiceNotesAction(invoiceId: string, notes: string)
 export async function manualResyncInvoiceAction(invoiceId: string) {
   return run(async () => {
     if (!invoiceId) throw new Error("Invoice id is required")
-    const { orgId } = await requireOrgContext()
+    const { supabase, orgId, userId } = await requireOrgContext()
+    const { data: invoice } = await supabase
+      .from("invoices")
+      .select("id, project_id")
+      .eq("org_id", orgId)
+      .eq("id", invoiceId)
+      .maybeSingle()
+    if (!invoice) throw new Error("Invoice not found")
+    await requireAuthorization({
+      permission: "invoice.write",
+      userId,
+      orgId,
+      projectId: invoice.project_id ?? undefined,
+      supabase,
+      logDecision: true,
+      resourceType: "invoice",
+      resourceId: invoiceId,
+    })
     await processAccountingPush({ orgId, entityType: "invoice", entityId: invoiceId })
     revalidatePath("/invoices")
   })
@@ -548,6 +567,48 @@ export async function getInvoiceComposerContextAction(projectId?: string | null)
 async function loadInvoiceComposerContext(projectId?: string | null) {
   const { supabase, orgId } = await requireOrgContext()
 
+  // Only offer billing sources the server will actually accept for this project:
+  // draws when the billing model shows a draw schedule, and direct change-order
+  // invoicing only on non-cost-driven models (cost-driven projects bill COs
+  // through the cost ledger and createInvoice rejects them).
+  let showDrawSources = Boolean(projectId)
+  let showChangeOrderSources = Boolean(projectId)
+  if (projectId) {
+    const [{ data: projectRow }, { data: financialSettings }, { data: activeContract }] = await Promise.all([
+      supabase.from("projects").select("id, status, property_type").eq("org_id", orgId).eq("id", projectId).maybeSingle(),
+      supabase
+        .from("project_financial_settings")
+        .select("billing_model, fixed_price_billing_basis")
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .maybeSingle(),
+      supabase
+        .from("contracts")
+        .select("contract_type, fixed_fee_cents, gmp_cents, snapshot, open_book, requires_client_cost_approval")
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .eq("status", "active")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ])
+    if (projectRow) {
+      const featureConfig = getProjectFinancialFeatureConfig({
+        status: projectRow.status ?? undefined,
+        property_type: projectRow.property_type ?? undefined,
+        billing_contract: activeContract ?? null,
+        financial_settings: financialSettings
+          ? {
+              billing_model: financialSettings.billing_model ?? undefined,
+              fixed_price_billing_basis: financialSettings.fixed_price_billing_basis ?? null,
+            }
+          : null,
+      })
+      showDrawSources = featureConfig.showDraws
+      showChangeOrderSources = !isCostDrivenBillingModel(featureConfig.billingModel)
+    }
+  }
+
   let drawRows: Array<{
     id: string
     project_id: string
@@ -559,7 +620,7 @@ async function loadInvoiceComposerContext(projectId?: string | null) {
     status: string
   }> = []
 
-  if (projectId) {
+  if (projectId && showDrawSources) {
     const { data, error: drawError } = await supabase
       .from("draw_schedules")
       .select("id, project_id, draw_number, title, description, amount_cents, due_date, status")
@@ -568,6 +629,7 @@ async function loadInvoiceComposerContext(projectId?: string | null) {
       .in("status", ["pending", "partial"])
       .order("due_date", { ascending: true, nullsFirst: false })
       .order("draw_number", { ascending: true })
+      .limit(100)
 
     if (drawError) {
       console.warn("Failed to load draw schedule context", drawError)
@@ -577,35 +639,44 @@ async function loadInvoiceComposerContext(projectId?: string | null) {
   }
 
   let billedChangeOrderIds = new Set<string>()
-  if (projectId) {
+  if (projectId && showChangeOrderSources) {
+    // The source column is canonical since the invoicing overhaul; the server's
+    // assertSourceNotAlreadyBilled still backstops any legacy metadata-only rows.
     const { data: invoiceRows } = await supabase
       .from("invoices")
-      .select("status, metadata")
+      .select("source_change_order_id")
       .eq("org_id", orgId)
       .eq("project_id", projectId)
       .neq("status", "void")
+      .not("source_change_order_id", "is", null)
 
     billedChangeOrderIds = new Set(
       (invoiceRows ?? [])
-        .map((row: any) => (row.metadata as Record<string, any> | null)?.source_change_order_id)
+        .map((row: any) => row.source_change_order_id)
         .filter((id): id is string => typeof id === "string" && id.length > 0),
     )
   }
 
-  const changeOrders = projectId
-    ? await listChangeOrders({ orgId, projectId })
-        .then((rows) =>
-          rows.filter((co) => {
-            const status = String(co.status ?? "").toLowerCase()
-            return status === "approved" && !billedChangeOrderIds.has(co.id)
-          }),
-        )
-        .catch(() => [])
-    : []
+  const changeOrders =
+    projectId && showChangeOrderSources
+      ? await listChangeOrders({ orgId, projectId })
+          .then((rows) =>
+            rows
+              .filter((co) => {
+                const status = String(co.status ?? "").toLowerCase()
+                return status === "approved" && !billedChangeOrderIds.has(co.id)
+              })
+              .slice(0, 100),
+          )
+          .catch(() => [])
+      : []
 
   // The project's default QBO customer (set in project settings) — used to pre-select the composer's
   // "bill to" picker so invoices and payables attribute to the same customer by default.
   const accountingTarget = await resolveAccountingTarget({ orgId, projectId })
+  const accountingProviderName = accountingTarget
+    ? accountingProviderLabel(accountingTarget.connection.provider, accountingTarget.connection.label)
+    : DEFAULT_ACCOUNTING_PROVIDER_LABEL
   const defaultQboCustomer = accountingTarget?.dimensions.customer?.id
     ? { id: accountingTarget.dimensions.customer.id, name: accountingTarget.dimensions.customer.name ?? "" }
     : null
@@ -641,12 +712,12 @@ async function loadInvoiceComposerContext(projectId?: string | null) {
         qboIncomeAccounts = (await provider.listAccounts({ connectionId: accountingTarget.connection.id, kind: "income" }))
           .map((account) => ({ ...account, name: account.name ?? account.id, fullyQualifiedName: account.fullyQualifiedName ?? undefined }))
         if (qboIncomeAccounts.length === 0) {
-          qboAccountLoadWarning = "QuickBooks returned no income accounts. Check your chart of accounts and default income account."
+          qboAccountLoadWarning = `${accountingProviderName} returned no income accounts. Check your chart of accounts and default income account.`
         }
       }
     } catch (error) {
       console.warn("Unable to load QBO income accounts for invoice composer", error)
-      qboAccountLoadWarning = error instanceof Error ? error.message : "Unable to load QuickBooks income accounts."
+      qboAccountLoadWarning = error instanceof Error ? error.message : `Unable to load ${accountingProviderName} income accounts.`
     }
   }
 
@@ -666,6 +737,8 @@ async function loadInvoiceComposerContext(projectId?: string | null) {
     qboConnected,
     qboIncomeAccounts,
     qboDefaultIncomeAccountId,
+    accountingProvider: accountingTarget?.connection.provider ?? null,
+    accountingProviderName,
     qboDiagnostics: {
       connectionLastError: (qboConnection as any)?.last_error ?? null,
       refreshFailureCount: Number((qboConnection as any)?.refresh_failure_count ?? 0),

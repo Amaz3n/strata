@@ -20,7 +20,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ChevronDown, MoreHorizontal } from "@/components/icons";
-import { formatDate, formatMoneyFromCents } from "@/components/companies/company-detail-ui";
+import {
+  Figure,
+  StatusChip,
+  formatDate,
+  formatMoneyFromCents,
+} from "@/components/companies/company-detail-ui";
 import {
   daysUntil,
   expiryTone,
@@ -72,38 +77,6 @@ function dollarsToCents(value: string): number | null {
   if (!trimmed) return null;
   const parsed = Number(trimmed);
   return Number.isFinite(parsed) ? Math.round(parsed * 100) : null;
-}
-
-function StatusChip({ label, className }: { label: string; className: string }) {
-  return (
-    <span
-      className={cn("inline-flex items-center border px-2 py-0.5 text-xs font-medium", className)}
-    >
-      {label}
-    </span>
-  );
-}
-
-function Figure({
-  label,
-  value,
-  tone,
-  hint,
-}: {
-  label: string;
-  value: string;
-  tone?: string;
-  hint?: string;
-}) {
-  return (
-    <div className="min-w-0">
-      <div className="microlabel">{label}</div>
-      <div className={cn("mt-0.5 font-mono text-sm tabular-nums", tone ?? "text-foreground")}>
-        {value}
-      </div>
-      {hint ? <div className="mt-0.5 text-[11px] text-muted-foreground">{hint}</div> : null}
-    </div>
-  );
 }
 
 const STATE_DOT: Record<RowState, string> = {

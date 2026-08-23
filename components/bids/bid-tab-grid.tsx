@@ -122,6 +122,7 @@ export function BidTabGrid({
               const companyId = submission.invite?.company?.id
               const stats = companyId ? vendorStats[companyId] : undefined
               const prequal = submission.invite?.prequalification_warning
+              const complianceWarning = submission.invite?.compliance_warning
               const isWinner = awarded && submission.is_awarded
               return (
                 <th
@@ -135,14 +136,16 @@ export function BidTabGrid({
                   <div className="flex items-center justify-end gap-1.5">
                     {isWinner ? <Gavel className="h-3.5 w-3.5 text-success" /> : null}
                     <span className="truncate">{submission.invite?.company?.name ?? "Vendor"}</span>
-                    {prequal ? (
+                    {prequal || complianceWarning ? (
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <span>
                             <AlertTriangle className="h-3.5 w-3.5 text-warning" />
                           </span>
                         </TooltipTrigger>
-                        <TooltipContent>{prequal}</TooltipContent>
+                        <TooltipContent>
+                          {[prequal, complianceWarning].filter(Boolean).join(" ")}
+                        </TooltipContent>
                       </Tooltip>
                     ) : null}
                   </div>

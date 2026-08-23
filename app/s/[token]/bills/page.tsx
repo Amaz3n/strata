@@ -28,6 +28,7 @@ export default async function SubBillsPage({ params }: SubBillsPageProps) {
   try {
     access = await assertPortalActionAccess(token, {
       portalType: "sub",
+      requireProject: true,
       requireCompany: true,
       permission: "can_view_bills",
     })

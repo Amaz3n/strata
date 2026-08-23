@@ -1041,7 +1041,7 @@ export function ChangeOrderDetailSheet({
               </div>
             ) : (
               <p className="text-xs text-muted-foreground">
-                Attach an existing or QuickBooks-synced invoice to record that this change order has already been billed.
+                Attach an existing or accounting-synced invoice to record that this change order has already been billed.
               </p>
             )}
           </div>

@@ -11,6 +11,7 @@ import { BILLED_INVOICE_STATUSES, PAYABLE_VENDOR_BILL_STATUSES } from "@/lib/fin
 import { payableOutstandingCents } from "@/lib/financials/payables-rules";
 import { requireOrgContext } from "@/lib/services/context";
 import { applyProjectReportingScope, applyReportingExclusion, getReportingExcludedProjectIds } from "@/lib/services/reporting-scope";
+import { getComplianceHeldPayablesByCompanyWithClient } from "@/lib/services/compliance-documents";
 import { orderPocSnapshotsLatestFirst } from "@/lib/services/poc";
 import { listProjectsWithClient } from "@/lib/services/projects";
 import { listTasksWithClient } from "@/lib/services/tasks";
@@ -244,6 +245,16 @@ export interface ControlTowerData {
     submittals: number;
     changeOrders: number;
     punchItems: number;
+    /** Vendor compliance documents waiting on a decision, org-wide. */
+    complianceReviews: number;
+    /**
+     * Payables the compliance hold is provably stopping: the vendor is short for
+     * that payable's own job, no override was written on the bill, and the
+     * governing policy has the hold at block.
+     */
+    complianceHeldCents: number;
+    /** True when the scan hit a cap, so `complianceHeldCents` is a floor. */
+    complianceHeldCentsTruncated: boolean;
   };
   dueItems: {
     tasks: DueWorkItem[];
@@ -847,7 +858,14 @@ export const getControlTowerMoneyBand = cache(async (orgId?: string): Promise<Co
 /** Open-item head counts. No row ever crosses the wire — the fastest band. */
 export const getControlTowerExceptionsBand = cache(async (orgId?: string) => {
   const ctx = await getControlTowerContext(orgId);
-  const [rfisResult, submittalsResult, changeOrdersResult, punchResult] = await Promise.all([
+  const [
+    rfisResult,
+    submittalsResult,
+    changeOrdersResult,
+    punchResult,
+    complianceReviewsResult,
+    complianceHeldResult,
+  ] = await Promise.all([
     ctx.supabase
       .from("rfis")
       .select("id", { count: "exact", head: true })
@@ -868,6 +886,17 @@ export const getControlTowerExceptionsBand = cache(async (orgId?: string) => {
       .select("id", { count: "exact", head: true })
       .eq("org_id", ctx.orgId)
       .in("status", ["open", "in_progress"]),
+    // A certificate nobody has opened is indistinguishable from a
+    // non-compliant vendor to the payment gate, so it belongs with the other
+    // open work rather than only on the vendor's own tab.
+    ctx.supabase
+      .from("compliance_documents")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", ctx.orgId)
+      .eq("status", "pending_review")
+      .is("revoked_at", null)
+      .is("superseded_by_id", null),
+    getComplianceHeldCents(ctx),
   ]);
 
   const openItems: ControlTowerData["openItems"] = {
@@ -875,9 +904,51 @@ export const getControlTowerExceptionsBand = cache(async (orgId?: string) => {
     submittals: submittalsResult.count ?? 0,
     changeOrders: changeOrdersResult.count ?? 0,
     punchItems: punchResult.count ?? 0,
+    complianceReviews: complianceReviewsResult.count ?? 0,
+    complianceHeldCents: complianceHeldResult.cents,
+    complianceHeldCentsTruncated: complianceHeldResult.truncated,
   };
   return { openItems };
 });
+
+/**
+ * What non-current vendor compliance is holding up, in dollars.
+ *
+ * The exact scan the compliance review queue runs, because there can only be one
+ * definition of "held": a payable counts where the vendor is short for THAT
+ * payable's own job, nobody overrode the hold on that bill, and the governing
+ * policy has the hold at block. This card used to run its own version, which
+ * judged every vendor against the union of every other vendor's project overlays
+ * and never looked at overrides or policy at all.
+ *
+ * Best-effort: this decorates a card. A failure reports zero held rather than
+ * taking the exceptions band down with it — flagged as truncated, so a zero
+ * nobody could establish never renders as an all-clear.
+ */
+async function getComplianceHeldCents(
+  ctx: Awaited<ReturnType<typeof getControlTowerContext>>,
+): Promise<{ cents: number; truncated: boolean }> {
+  const { data: pending } = await ctx.supabase
+    .from("compliance_documents")
+    .select("company_id")
+    .eq("org_id", ctx.orgId)
+    .eq("status", "pending_review")
+    .is("revoked_at", null)
+    .is("superseded_by_id", null);
+
+  const candidateIds = Array.from(
+    new Set((pending ?? []).map((row: { company_id: string }) => row.company_id).filter(Boolean)),
+  );
+  if (candidateIds.length === 0) return { cents: 0, truncated: false };
+
+  const held = await getComplianceHeldPayablesByCompanyWithClient(
+    ctx.supabase,
+    ctx.orgId,
+    candidateIds,
+  ).catch(() => null);
+  if (!held) return { cents: 0, truncated: true };
+  return { cents: held.totalCents, truncated: held.truncated };
+}
 
 export interface ControlTowerScheduleBand {
   schedule: ControlTowerData["schedule"];
@@ -1215,8 +1286,14 @@ export const getControlTowerPortfolioHealth = cache(async (orgId?: string): Prom
         ).size
       : 0;
 
+  // A pending compliance review is a blocker in the literal sense: until it is
+  // decided, the payment hold treats the vendor as non-compliant and their
+  // payables do not move.
   const totalBlockers =
-    exceptions.openItems.rfis + exceptions.openItems.changeOrders + tasksSlice.tasksOverdue;
+    exceptions.openItems.rfis +
+    exceptions.openItems.changeOrders +
+    exceptions.openItems.complianceReviews +
+    tasksSlice.tasksOverdue;
 
   const itemsDueNext7Days =
     tasksSlice.tasksDueThisWeek +

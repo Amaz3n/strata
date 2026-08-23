@@ -42,7 +42,6 @@ interface PeriodCloseWorkflowProps {
   feeSummary?: ProjectFeeBillingSummary | null
   gmpSummary?: ProjectGmpControlSummary | null
   autopilot?: BillingAutopilotState
-  loadErrors?: string[]
 }
 
 const NO_PERIOD = "__none__"
@@ -56,7 +55,6 @@ export function PeriodCloseWorkflow({
   feeSummary = null,
   gmpSummary = null,
   autopilot = { enabled: false, run: null },
-  loadErrors = [],
 }: PeriodCloseWorkflowProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -141,11 +139,6 @@ export function PeriodCloseWorkflow({
 
   return (
     <div className="space-y-5 px-4 py-4 sm:px-6 lg:px-8">
-      {loadErrors.length > 0 ? (
-        <div className="border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900/30 dark:bg-amber-950/35 dark:text-amber-200">
-          {loadErrors.join(" · ")}
-        </div>
-      ) : null}
 
       <div className="flex flex-col gap-3 border bg-background p-4 lg:flex-row lg:items-center lg:justify-between">
         <div>

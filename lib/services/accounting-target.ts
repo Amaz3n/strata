@@ -97,6 +97,11 @@ export async function resolveAccountingTarget(input: { orgId: string; projectId?
   if (connectionError || !connection) throw new Error(connectionError?.message ?? "Accounting connection not found")
 
   const mapped = mapConnection(connection as ConnectionRow)
+  // Routing mappings SURVIVE a disconnect (they are the one thing the user
+  // configured by hand, and reconnect reuses the same connection row) — so a
+  // mapping to a disconnected connection reads as "no target", not as an
+  // unhealthy one. Expired/error connections still resolve, unhealthy.
+  if (mapped.status === "disconnected") return null
   return { connection: mapped, dimensions, resolvedFrom: winner.scope, healthy: mapped.status === "active" }
 }
 

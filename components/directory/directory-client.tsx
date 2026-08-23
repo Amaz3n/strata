@@ -1,27 +1,20 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useTransition,
-  type CSSProperties,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import dynamic from "next/dynamic";
 
-import {
-  archiveCompanyAction,
-  restoreCompanyAction,
-} from "@/app/(app)/companies/actions";
-import {
-  archiveContactAction,
-  restoreContactAction,
-} from "@/app/(app)/contacts/actions";
+import { archiveCompanyAction, restoreCompanyAction } from "@/app/(app)/companies/actions";
+import { archiveContactAction, restoreContactAction } from "@/app/(app)/contacts/actions";
 import { listDirectoryPageAction } from "@/app/(app)/directory/actions";
-import type { Company, ComplianceStatusSummary, Contact, Project } from "@/lib/types";
-import type { DirectoryEntry } from "@/lib/services/directory";
+import type { ComplianceStatusSummary, Project } from "@/lib/types";
+import type {
+  DirectoryEntry,
+  DirectorySortDirection,
+  DirectorySortKey,
+} from "@/lib/services/directory";
+import type { PartyKind, RelationshipType } from "@/lib/directory/roles";
+import type { terminology } from "@/lib/terminology";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -44,82 +37,90 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
 import { ToastAction } from "@/components/ui/toast";
 import { ComplianceAlert } from "@/components/directory/compliance-alert";
 import type { PrequalificationGlance } from "@/lib/services/prequalification";
-import { CompanyForm } from "@/components/companies/company-form";
-import { ContactForm } from "@/components/contacts/contact-form";
-import { ContactDetailSheet } from "@/components/contacts/contact-detail-sheet";
+import { AddToDirectorySheet } from "@/components/directory/add-to-directory-sheet";
 import { PortalInviteDialog } from "@/components/contacts/portal-invite-dialog";
-import { ImportContactsSheet } from "@/components/directory/import-contacts-sheet";
-import {
-  DirectoryTable,
-  type DirectorySortDirection,
-  type DirectorySortKey,
-  type DirectoryView,
-} from "@/components/directory/directory-table";
-import {
-  Building2,
-  Plus,
-  Search,
-  SlidersHorizontal,
-  Upload,
-  User,
-  X,
-} from "@/components/icons";
+
+import { DirectoryTable } from "@/components/directory/directory-table";
+import { Download, Plus, Search, SlidersHorizontal, Upload, X } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 
-import { unwrapAction } from "@/lib/action-result"
+import { unwrapAction } from "@/lib/action-result";
+
+// The CSV wizard is the largest module on this route and most visits never open
+// it, so it stays out of the initial list bundle.
+const ImportContactsSheet = dynamic(() =>
+  import("@/components/directory/import-contacts-sheet").then((m) => m.ImportContactsSheet),
+);
 
 interface DirectoryClientProps {
-  companies: Company[];
-  contacts: Contact[];
   entries: DirectoryEntry[];
+  total: number;
+  pageSize: number;
+  relationshipTypes: RelationshipType[];
   complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>;
   prequalificationByCompanyId?: Record<string, PrequalificationGlance>;
-  complianceWatchCompanies: Company[];
+  complianceWatchCompanies: Array<{ id: string; name: string }>;
+  complianceWatchTruncated: boolean;
+  complianceWatchTotal: number;
+  /** A status read failed. Rows must not render "clear" from missing data. */
+  vendorStatusUnavailable?: boolean;
+  /** Tier vocabulary. The directory names the same table for three postures,
+   *  so the nouns it prints have to come from the choke point. */
+  terms: ReturnType<typeof terminology>;
+  /** Commercial prequalification is division-scoped, so the list says which. */
+  showPrequalTrades?: boolean;
   projects: Project[];
   canCreate: boolean;
   canArchive?: boolean;
-  view: DirectoryView;
+  kind: PartyKind;
   search: string;
-  typeFilter: string;
+  roleFilter: string;
   tradeFilter: string;
   sort: DirectorySortKey;
   direction: DirectorySortDirection;
-  page: number;
-  pageSize: number;
-  total: number;
   trades: string[];
 }
 
+/**
+ * The directory's only navigation axis.
+ *
+ * This used to sit beside a second segmented control of role lenses (Vendors,
+ * Clients, Design, Prospects, All). Two peer tab bars read as equals when they
+ * are not — kind is WHICH LIST you are in, role is a filter on it — and the
+ * 5x3 cross product had states that could never hold a row (a prospect is
+ * never a company). Role now lives with Trade in the filter menu.
+ */
+const KIND_TABS: Array<{ key: PartyKind; label: string }> = [
+  { key: "company", label: "Companies" },
+  { key: "contact", label: "Contacts" },
+];
+
 export function DirectoryClient({
-  companies: initialCompanies,
-  contacts: initialContacts,
   entries: initialEntries,
+  total: initialTotal,
+  pageSize,
+  relationshipTypes,
   complianceStatusByCompanyId,
   prequalificationByCompanyId = {},
   complianceWatchCompanies,
+  complianceWatchTruncated,
+  complianceWatchTotal,
+  vendorStatusUnavailable = false,
+  terms,
+  showPrequalTrades = false,
   projects,
   canCreate,
   canArchive = false,
-  view,
+  kind,
   search,
-  typeFilter,
+  roleFilter,
   tradeFilter,
   sort,
   direction,
-  page: _initialPage,
-  pageSize,
-  total: initialTotal,
   trades,
 }: DirectoryClientProps) {
   const router = useRouter();
@@ -127,50 +128,29 @@ export function DirectoryClient({
   const { toast } = useToast();
   const [isPending, startTransition] = useTransition();
 
-  const [companies, setCompanies] = useState<Company[]>(initialCompanies);
-  const [contacts, setContacts] = useState<Contact[]>(initialContacts);
   const [entries, setEntries] = useState<DirectoryEntry[]>(initialEntries);
-  const [loadedPage, setLoadedPage] = useState(1);
   const [total, setTotal] = useState(initialTotal);
+  const [loadedPage, setLoadedPage] = useState(1);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
 
-  const filterKey = `${view}|${search}|${typeFilter}|${tradeFilter}|${sort}|${direction}`;
+  const filterKey = `${kind}|${search}|${roleFilter}|${tradeFilter}|${sort}|${direction}`;
   const lastFilterKey = useRef(filterKey);
   const generation = useRef(0);
+
   useEffect(() => {
+    // A new server render always resets the loaded window: either the filters
+    // changed, or the same filters were re-fetched and page 1 is authoritative.
     if (lastFilterKey.current !== filterKey) {
       lastFilterKey.current = filterKey;
       generation.current += 1;
-      setCompanies(initialCompanies);
-      setContacts(initialContacts);
-      setEntries(initialEntries);
-      setLoadedPage(1);
-      setTotal(initialTotal);
-      setIsLoadingMore(false);
-    } else {
-      // Same filter key but server props refreshed (router.refresh, navigation back) — sync first page.
-      setCompanies((prev) =>
-        prev.length === 0 || loadedPage === 1 ? initialCompanies : prev,
-      );
-      setContacts((prev) =>
-        prev.length === 0 || loadedPage === 1 ? initialContacts : prev,
-      );
-      setEntries((prev) =>
-        prev.length === 0 || loadedPage === 1 ? initialEntries : prev,
-      );
-      setTotal(initialTotal);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    filterKey,
-    initialCompanies,
-    initialContacts,
-    initialEntries,
-    initialTotal,
-  ]);
+    setEntries(initialEntries);
+    setTotal(initialTotal);
+    setLoadedPage(1);
+    setIsLoadingMore(false);
+  }, [filterKey, initialEntries, initialTotal]);
 
-  const loadedCount = entries.length;
-  const hasMore = loadedCount < total;
+  const hasMore = entries.length < total;
 
   const loadMore = useCallback(async () => {
     if (isLoadingMore || !hasMore) return;
@@ -179,27 +159,22 @@ export function DirectoryClient({
     try {
       const next = loadedPage + 1;
       const result = await listDirectoryPageAction({
-        view,
+        kind,
         page: next,
         pageSize,
         search,
-        type: typeFilter,
+        role: roleFilter,
         trade: tradeFilter,
         sort,
         direction,
       });
       if (fetchGeneration !== generation.current) return;
-      setCompanies((prev) => [...prev, ...result.companies]);
-      setContacts((prev) => [...prev, ...result.contacts]);
       setEntries((prev) => [...prev, ...result.entries]);
       setTotal(result.total);
       setLoadedPage(next);
     } catch (error) {
       if (fetchGeneration !== generation.current) return;
-      toast({
-        title: "Couldn't load more",
-        description: (error as Error).message,
-      });
+      toast({ title: "Couldn't load more", description: (error as Error).message });
     } finally {
       if (fetchGeneration === generation.current) setIsLoadingMore(false);
     }
@@ -208,9 +183,9 @@ export function DirectoryClient({
     isLoadingMore,
     loadedPage,
     pageSize,
-    view,
+    kind,
     search,
-    typeFilter,
+    roleFilter,
     tradeFilter,
     sort,
     direction,
@@ -218,177 +193,82 @@ export function DirectoryClient({
   ]);
 
   const [searchTerm, setSearchTerm] = useState(search);
-  const [companyDialogOpen, setCompanyDialogOpen] = useState(false);
-  const [contactDialogOpen, setContactDialogOpen] = useState(false);
-  const [selectedCompany, setSelectedCompany] = useState<Company | undefined>();
-  const [selectedContact, setSelectedContact] = useState<Contact | undefined>();
-  const [newContactCompanyId, setNewContactCompanyId] = useState<
-    string | undefined
-  >();
-  const [detailContactId, setDetailContactId] = useState<string | undefined>();
-  const [detailContactOpen, setDetailContactOpen] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+  const [addKind, setAddKind] = useState<PartyKind>("company");
   const [importOpen, setImportOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
-  const [inviteContact, setInviteContact] = useState<Contact | undefined>();
-  const [archiveTarget, setArchiveTarget] = useState<
-    | { kind: "company"; id: string; name: string }
-    | { kind: "contact"; id: string; name: string }
-    | null
-  >(null);
+  const [inviteEntry, setInviteEntry] = useState<DirectoryEntry | undefined>();
+  const [archiveTarget, setArchiveTarget] = useState<DirectoryEntry | null>(null);
 
-  const typeOptions = useMemo(() => {
-    if (view === "companies") {
-      return [
-        ["subcontractor", "Subcontractors"],
-        ["supplier", "Suppliers"],
-        ["client", "Clients"],
-        ["architect", "Architects"],
-        ["engineer", "Engineers"],
-        ["other", "Other companies"],
-      ];
-    }
-    if (view === "people") {
-      return [
-        ["internal", "Internal"],
-        ["subcontractor", "Subcontractors"],
-        ["client", "Clients"],
-        ["vendor", "Vendors"],
-        ["consultant", "Consultants"],
-      ];
-    }
-    return [
-      ["subcontractor", "Subcontractors"],
-      ["supplier", "Suppliers / vendors"],
-      ["client", "Clients"],
-      ["architect", "Architects"],
-      ["engineer", "Engineers"],
-      ["consultant", "Consultants"],
-      ["internal", "Internal"],
-      ["other", "Other"],
-    ];
-  }, [view]);
+  // Roles that can actually belong to the kind being listed. `applies_to` is
+  // enforced in the database, so offering a company-only role while listing
+  // contacts would be a filter that can never match.
+  const roleOptions = useMemo(
+    () =>
+      relationshipTypes.filter(
+        (type) => type.applies_to === "both" || type.applies_to === kind,
+      ),
+    [relationshipTypes, kind],
+  );
 
-  const activeFilterCount = [
-    typeFilter !== "all",
-    tradeFilter !== "all",
-  ].filter(Boolean).length;
+  // Trade is a company fact; a person has a title instead.
+  const showTradeFilter = kind === "company" && trades.length > 0;
+  const activeFilterCount = [roleFilter !== "all", tradeFilter !== "all"].filter(Boolean).length;
 
-  const updateParams = (
-    updates: Record<string, string | number | undefined>,
-  ) => {
+  // Same query the server read, handed to the export route.
+  const exportHref = (() => {
+    const params = new URLSearchParams();
+    params.set("kind", kind);
+    if (search) params.set("q", search);
+    if (roleFilter !== "all") params.set("role", roleFilter);
+    if (tradeFilter !== "all") params.set("trade", tradeFilter);
+    params.set("sort", sort);
+    params.set("direction", direction);
+    return `/directory/export?${params.toString()}`;
+  })();
+
+  const updateParams = (updates: Record<string, string | number | undefined>) => {
     const params = new URLSearchParams(searchParams.toString());
     for (const [key, value] of Object.entries(updates)) {
-      if (
-        value === undefined ||
-        value === "" ||
-        value === "all" ||
-        (key === "page" && Number(value) <= 1)
-      ) {
-        params.delete(key);
-      } else {
-        params.set(key, String(value));
-      }
+      if (value === undefined || value === "" || value === "all") params.delete(key);
+      else params.set(key, String(value));
     }
-    params.delete("status");
     const suffix = params.toString();
     router.replace(suffix ? `/directory?${suffix}` : "/directory");
   };
 
-  const openCompanyDetail = (id: string) => {
-    router.push(`/directory/${id}`);
+  const setKind = (nextKind: PartyKind) => {
+    // Role and trade were chosen against the other list's vocabulary; carrying
+    // them over would show an empty list for no visible reason.
+    updateParams({ kind: nextKind, role: undefined, trade: undefined });
   };
 
-  const openContactDetail = (id: string) => {
-    setDetailContactId(id);
-    setDetailContactOpen(true);
+  const openEntry = (entry: DirectoryEntry) => {
+    router.push(`/directory/${entry.id}`);
   };
 
-  const openEditCompany = (company: Company) => {
-    setSelectedCompany(company);
-    setCompanyDialogOpen(true);
+  const openNew = (nextKind: PartyKind) => {
+    setAddKind(nextKind);
+    setAddOpen(true);
   };
 
-  const openEditContact = (contact: Contact) => {
-    setNewContactCompanyId(undefined);
-    setSelectedContact(contact);
-    setDetailContactOpen(false);
-    setContactDialogOpen(true);
-  };
-
-  const openPortalInvite = (contact: Contact) => {
-    setInviteContact(contact);
+  const openInvite = (entry: DirectoryEntry) => {
+    setInviteEntry(entry);
     setInviteOpen(true);
   };
 
-  const setDirectoryView = (nextView: DirectoryView) => {
-    updateParams({
-      view: nextView,
-      type: undefined,
-      trade: undefined,
-      page: undefined,
-    });
-  };
-
-  const resetFilters = () => {
-    updateParams({
-      type: undefined,
-      trade: undefined,
-      page: undefined,
-    });
-  };
-
-  const submitSearch = () => {
-    updateParams({ q: searchTerm.trim() || undefined, page: undefined });
-  };
-
-  const openNewCompany = () => {
-    setSelectedCompany(undefined);
-    setCompanyDialogOpen(true);
-  };
-
-  const openNewContact = (companyId?: string) => {
-    setNewContactCompanyId(companyId);
-    setSelectedContact(undefined);
-    setContactDialogOpen(true);
-  };
-
-  const restoreArchived = async (
-    kind: "company" | "contact",
-    id: string,
-    name: string,
-  ) => {
+  const restoreArchived = async (entry: DirectoryEntry) => {
     try {
-      if (kind === "company") {
-        unwrapAction(await restoreCompanyAction(id));
-      } else {
-        unwrapAction(await restoreContactAction(id));
-      }
+      if (entry.kind === "company") unwrapAction(await restoreCompanyAction(entry.id));
+      else unwrapAction(await restoreContactAction(entry.id));
       router.refresh();
-      toast({ title: `${kind === "company" ? "Company" : "Contact"} restored`, description: name });
-    } catch (error) {
       toast({
-        title: `Unable to restore ${kind}`,
-        description: (error as Error).message,
+        title: `${entry.kind === "company" ? "Company" : "Contact"} restored`,
+        description: entry.name,
       });
+    } catch (error) {
+      toast({ title: "Unable to restore", description: (error as Error).message });
     }
-  };
-
-  const archiveCompany = (companyId: string) => {
-    const company = companies.find((item) => item.id === companyId);
-    setArchiveTarget({
-      kind: "company",
-      id: companyId,
-      name: company?.name ?? "this company",
-    });
-  };
-
-  const archiveContact = (contactId: string) => {
-    const contact = contacts.find((item) => item.id === contactId);
-    setArchiveTarget({
-      kind: "contact",
-      id: contactId,
-      name: contact?.full_name ?? "this contact",
-    });
   };
 
   const confirmArchive = () => {
@@ -397,17 +277,10 @@ export function DirectoryClient({
     setArchiveTarget(null);
     startTransition(async () => {
       try {
-        if (target.kind === "company") {
-          unwrapAction(await archiveCompanyAction(target.id));
-          setCompanies((prev) => prev.filter((c) => c.id !== target.id));
-        } else {
-          unwrapAction(await archiveContactAction(target.id));
-          setContacts((prev) => prev.filter((c) => c.id !== target.id));
-        }
+        if (target.kind === "company") unwrapAction(await archiveCompanyAction(target.id));
+        else unwrapAction(await archiveContactAction(target.id));
         setEntries((prev) =>
-          prev.filter(
-            (entry) => !(entry.type === target.kind && entry.id === target.id),
-          ),
+          prev.filter((entry) => !(entry.kind === target.kind && entry.id === target.id)),
         );
         setTotal((prev) => Math.max(0, prev - 1));
         toast({
@@ -416,73 +289,70 @@ export function DirectoryClient({
           action: (
             <ToastAction
               altText={`Restore ${target.name}`}
-              onClick={() => void restoreArchived(target.kind, target.id, target.name)}
+              onClick={() => void restoreArchived(target)}
             >
               Undo
             </ToastAction>
           ),
         });
       } catch (error) {
-        toast({
-          title: `Unable to archive ${target.kind}`,
-          description: (error as Error).message,
-        });
+        toast({ title: "Unable to archive", description: (error as Error).message });
       }
     });
   };
 
-  const contactFormKey = selectedContact?.id
-    ? `edit-${selectedContact.id}`
-    : `new-${newContactCompanyId ?? "none"}-${contactDialogOpen ? "open" : "closed"}`;
-
-  const viewTabs: Array<{ key: DirectoryView; label: string }> = [
-    { key: "all", label: "All" },
-    { key: "companies", label: "Companies" },
-    { key: "people", label: "People" },
-  ];
-
   const filtersMenu = (
     <DropdownMenuContent align="end" className="w-64">
-      <DropdownMenuLabel>Type</DropdownMenuLabel>
+      <DropdownMenuLabel>Role</DropdownMenuLabel>
       <DropdownMenuRadioGroup
-        value={typeFilter}
-        onValueChange={(value) =>
-          updateParams({ type: value, page: undefined })
-        }
+        value={roleFilter}
+        onValueChange={(value) => updateParams({ role: value })}
       >
-        <DropdownMenuRadioItem value="all">All types</DropdownMenuRadioItem>
-        {typeOptions.map(([value, label]) => (
-          <DropdownMenuRadioItem key={value} value={value}>
-            {label}
+        <DropdownMenuRadioItem value="all">All roles</DropdownMenuRadioItem>
+        {roleOptions.map((type) => (
+          <DropdownMenuRadioItem key={type.key} value={type.key}>
+            {type.label}
           </DropdownMenuRadioItem>
         ))}
       </DropdownMenuRadioGroup>
 
-      <DropdownMenuSeparator />
-      <DropdownMenuLabel>Trade</DropdownMenuLabel>
-      <DropdownMenuRadioGroup
-        value={tradeFilter}
-        onValueChange={(value) =>
-          updateParams({ trade: value, page: undefined })
-        }
-      >
-        <DropdownMenuRadioItem value="all">All trades</DropdownMenuRadioItem>
-        {trades.map((trade) => (
-          <DropdownMenuRadioItem key={trade} value={trade}>
-            {trade}
-          </DropdownMenuRadioItem>
-        ))}
-      </DropdownMenuRadioGroup>
+      {showTradeFilter ? (
+        <>
+          <DropdownMenuSeparator />
+          <DropdownMenuLabel>{terms.trade}</DropdownMenuLabel>
+          <DropdownMenuRadioGroup
+            value={tradeFilter}
+            onValueChange={(value) => updateParams({ trade: value })}
+          >
+            <DropdownMenuRadioItem value="all">All trades</DropdownMenuRadioItem>
+            {trades.map((trade) => (
+              <DropdownMenuRadioItem key={trade} value={trade}>
+                {trade}
+              </DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
+        </>
+      ) : null}
 
       {activeFilterCount > 0 ? (
         <>
           <DropdownMenuSeparator />
-          <DropdownMenuItem onSelect={resetFilters}>
+          <DropdownMenuItem onSelect={() => updateParams({ role: undefined, trade: undefined })}>
             <X className="mr-2 h-4 w-4" />
             Clear filters
           </DropdownMenuItem>
         </>
       ) : null}
+
+      <DropdownMenuSeparator />
+      {/* Exports exactly what these filters select, so the file matches the
+          screen rather than being a second, differently-scoped list. */}
+      <DropdownMenuItem asChild>
+        <a href={exportHref} download>
+          <Download className="mr-2 h-4 w-4" />
+          Export CSV
+        </a>
+      </DropdownMenuItem>
     </DropdownMenuContent>
   );
 
@@ -491,18 +361,12 @@ export function DirectoryClient({
       <DropdownMenuTrigger asChild>
         <Button size="icon" variant="default" className="h-10 w-10 shrink-0">
           <Plus className="h-4 w-4" />
-          <span className="sr-only">Add</span>
+          <span className="sr-only">Add to directory</span>
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuItem onSelect={() => openNewCompany()}>
-          <Building2 className="mr-2 h-4 w-4" />
-          Add company
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => openNewContact()}>
-          <User className="mr-2 h-4 w-4" />
-          Add contact
-        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => openNew("company")}>Add company</DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => openNew("contact")}>Add person</DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={() => setImportOpen(true)}>
           <Upload className="mr-2 h-4 w-4" />
@@ -512,179 +376,95 @@ export function DirectoryClient({
     </DropdownMenu>
   ) : null;
 
-  const typeLabelMap = new Map<string, string>(
-    typeOptions.map(([value, label]) => [value, label]),
+  const submitSearch = () => updateParams({ q: searchTerm.trim() || undefined });
+
+  const searchField = (
+    <div className="relative w-full sm:w-96">
+      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+      <Input
+        value={searchTerm}
+        onChange={(event) => setSearchTerm(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") submitSearch();
+        }}
+        onBlur={submitSearch}
+        placeholder="Search name, company, trade, email, phone…"
+        className="h-10 pl-8"
+        inputMode="search"
+      />
+      {searchTerm ? (
+        <button
+          type="button"
+          onClick={() => {
+            setSearchTerm("");
+            updateParams({ q: undefined });
+          }}
+          aria-label="Clear search"
+          className="absolute right-1.5 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center text-muted-foreground hover:text-foreground"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      ) : null}
+    </div>
   );
-  const activeChips: Array<{ key: string; label: string; onClear: () => void }> = [];
-  if (typeFilter !== "all") {
-    activeChips.push({
-      key: "type",
-      label: typeLabelMap.get(typeFilter) ?? typeFilter,
-      onClear: () => updateParams({ type: undefined, page: undefined }),
-    });
-  }
-  if (tradeFilter !== "all") {
-    activeChips.push({
-      key: "trade",
-      label: tradeFilter,
-      onClear: () => updateParams({ trade: undefined, page: undefined }),
-    });
-  }
+
+  const kindTabs = (
+    <div className="flex shrink-0 border bg-muted/20 p-1">
+      {KIND_TABS.map((tab) => (
+        <button
+          key={tab.key}
+          type="button"
+          onClick={() => setKind(tab.key)}
+          aria-current={kind === tab.key ? "page" : undefined}
+          className={cn(
+            "flex h-8 shrink-0 items-center px-4 text-xs font-medium transition-colors",
+            kind === tab.key
+              ? "bg-primary text-primary-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  );
+
+  const filterButton = (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="outline" size="icon" className="relative h-10 w-10 shrink-0">
+          <SlidersHorizontal className="h-4 w-4" />
+          <span className="sr-only">Filters</span>
+          {activeFilterCount > 0 ? (
+            <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
+              {activeFilterCount}
+            </span>
+          ) : null}
+        </Button>
+      </DropdownMenuTrigger>
+      {filtersMenu}
+    </DropdownMenu>
+  );
 
   return (
     <div className="flex min-h-full flex-col bg-background">
       {/* Mobile header */}
       <div className="shrink-0 border-y bg-background md:hidden">
         <div className="flex items-center gap-2 px-3 pt-3">
-          <div className="relative min-w-0 flex-1">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={searchTerm}
-              onChange={(event) => setSearchTerm(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") submitSearch();
-              }}
-              onBlur={submitSearch}
-              placeholder="Search directory..."
-              className="h-10 pl-8 text-sm"
-              inputMode="search"
-            />
-            {searchTerm ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setSearchTerm("");
-                  updateParams({ q: undefined, page: undefined });
-                }}
-                aria-label="Clear search"
-                className="absolute right-1.5 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center text-muted-foreground active:bg-muted"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            ) : null}
-          </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="outline"
-                size="icon"
-                className="relative h-10 w-10 shrink-0"
-              >
-                <SlidersHorizontal className="h-4 w-4" />
-                <span className="sr-only">Filters</span>
-                {activeFilterCount > 0 ? (
-                  <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
-                    {activeFilterCount}
-                  </span>
-                ) : null}
-              </Button>
-            </DropdownMenuTrigger>
-            {filtersMenu}
-          </DropdownMenu>
+          {searchField}
+          {filterButton}
           {addMenu}
         </div>
-
-        {/* View tabs (segmented) */}
-        <div className="px-3 pt-2.5">
-          <div className="flex w-full border bg-muted/20 p-0.5">
-            {viewTabs.map((tab) => (
-              <button
-                key={tab.key}
-                type="button"
-                onClick={() => setDirectoryView(tab.key)}
-                className={cn(
-                  "flex h-8 flex-1 items-center justify-center px-3 text-xs font-medium transition-colors",
-                  view === tab.key
-                    ? "bg-primary text-primary-foreground shadow-sm"
-                    : "text-muted-foreground active:bg-muted",
-                )}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Active filter chips */}
-        {activeChips.length > 0 ? (
-          <div className="-mx-px flex gap-1.5 overflow-x-auto px-3 py-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            {activeChips.map((chip) => (
-              <button
-                key={chip.key}
-                type="button"
-                onClick={chip.onClear}
-                className="flex shrink-0 items-center gap-1.5 rounded-full border border-primary bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary"
-              >
-                {chip.label}
-                <X className="h-3 w-3" />
-              </button>
-            ))}
-            <button
-              type="button"
-              onClick={resetFilters}
-              className="shrink-0 px-2 py-1.5 text-xs font-medium text-muted-foreground active:text-foreground"
-            >
-              Clear all
-            </button>
-          </div>
-        ) : (
-          <div className="h-3" />
-        )}
+        <div className="px-3 py-2.5">{kindTabs}</div>
       </div>
 
       {/* Desktop header */}
       <div className="hidden shrink-0 border-y bg-background px-4 py-3 md:block">
         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-          <div className="flex min-w-0 flex-1">
-            <div className="flex w-full overflow-x-auto border bg-muted/20 p-1 sm:w-auto">
-              {viewTabs.map((tab) => (
-                <button
-                  key={tab.key}
-                  type="button"
-                  onClick={() => setDirectoryView(tab.key)}
-                  className={cn(
-                    "flex h-8 shrink-0 items-center gap-1.5 px-3 text-xs font-medium transition-colors",
-                    view === tab.key
-                      ? "bg-primary text-primary-foreground shadow-sm"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  <span>{tab.label}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
+          <div className="flex min-w-0 flex-1 items-center">{kindTabs}</div>
           <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center xl:justify-end">
-            <div className="relative w-full sm:w-96">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={searchTerm}
-                onChange={(event) => setSearchTerm(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") submitSearch();
-                }}
-                onBlur={submitSearch}
-                placeholder="Search name, trade, company, email, phone..."
-                className="h-10 pl-8"
-              />
-            </div>
-
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="icon" className="relative h-10 w-10">
-                  <SlidersHorizontal className="h-4 w-4" />
-                  <span className="sr-only">Filters</span>
-                  {activeFilterCount > 0 ? (
-                    <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
-                      {activeFilterCount}
-                    </span>
-                  ) : null}
-                </Button>
-              </DropdownMenuTrigger>
-              {filtersMenu}
-            </DropdownMenu>
-
+            {searchField}
+            {filterButton}
             {addMenu}
           </div>
         </div>
@@ -693,141 +473,66 @@ export function DirectoryClient({
       <ComplianceAlert
         companies={complianceWatchCompanies}
         complianceStatusByCompanyId={complianceStatusByCompanyId}
+        watchTruncated={complianceWatchTruncated}
+        watchTotal={complianceWatchTotal}
+        statusUnavailable={vendorStatusUnavailable}
+        vendorNoun={terms.vendor.toLowerCase()}
+        vendorNounPlural={terms.vendors.toLowerCase()}
       />
 
       <DirectoryTable
-        companies={companies}
-        contacts={contacts}
         entries={entries}
         complianceStatusByCompanyId={complianceStatusByCompanyId}
         prequalificationByCompanyId={prequalificationByCompanyId}
-        view={view}
+        statusUnavailable={vendorStatusUnavailable}
+        tradeLabel={terms.trade}
+        showPrequalTrades={showPrequalTrades}
+        kind={kind}
         sort={sort}
         direction={direction}
         total={total}
-        loadedCount={loadedCount}
         hasMore={hasMore}
         isLoadingMore={isLoadingMore}
         onLoadMore={loadMore}
         onSortChange={(nextSort) => {
-          const nextDirection =
-            sort === nextSort && direction === "asc" ? "desc" : "asc";
-          updateParams({
-            sort: nextSort,
-            direction: nextDirection,
-            page: undefined,
-          });
+          const nextDirection = sort === nextSort && direction === "asc" ? "desc" : "asc";
+          updateParams({ sort: nextSort, direction: nextDirection });
         }}
-        onSelectCompany={openCompanyDetail}
-        onSelectContact={openContactDetail}
-        onEditCompany={canCreate ? openEditCompany : undefined}
-        onEditContact={canCreate ? openEditContact : undefined}
-        onInviteContact={canCreate ? openPortalInvite : undefined}
-        onArchiveCompany={canArchive && !isPending ? archiveCompany : undefined}
-        onArchiveContact={canArchive && !isPending ? archiveContact : undefined}
+        onSelect={openEntry}
+        onInvite={canCreate ? openInvite : undefined}
+        onArchive={canArchive && !isPending ? setArchiveTarget : undefined}
+        hasActiveFilters={activeFilterCount > 0 || search.length > 0}
+        onClearFilters={() => {
+          // The input holds its own state, so clearing the URL alone would
+          // leave stale text sitting above an unfiltered list.
+          setSearchTerm("");
+          updateParams({ role: undefined, trade: undefined, q: undefined });
+        }}
       />
 
-      <Sheet
-        open={companyDialogOpen}
-        onOpenChange={(open) => {
-          setCompanyDialogOpen(open);
-          if (!open) setSelectedCompany(undefined);
-        }}
-      >
-        <SheetContent
-          side="right"
-          mobileFullscreen
-          className="sm:max-w-xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 fast-sheet-animation"
-          style={
-            {
-              animationDuration: "150ms",
-              transitionDuration: "150ms",
-            } as CSSProperties
-          }
-        >
-          <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/30">
-            <SheetTitle className="flex items-center gap-2">
-              <Building2 className="h-4 w-4 text-primary" />
-              {selectedCompany ? "Edit company" : "Create company"}
-            </SheetTitle>
-            <SheetDescription className="text-sm text-muted-foreground">
-              Capture company details, trade, and accounting links.
-            </SheetDescription>
-          </SheetHeader>
-          <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4">
-            <CompanyForm
-              company={selectedCompany}
-              onSubmitted={() => setCompanyDialogOpen(false)}
-              onCancel={() => setCompanyDialogOpen(false)}
-            />
-          </div>
-        </SheetContent>
-      </Sheet>
-
-      <Sheet
-        open={contactDialogOpen}
-        onOpenChange={(open) => {
-          setContactDialogOpen(open);
-          if (!open) {
-            setSelectedContact(undefined);
-            setNewContactCompanyId(undefined);
-          }
-        }}
-      >
-        <SheetContent
-          side="right"
-          mobileFullscreen
-          className="sm:max-w-xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 fast-sheet-animation"
-          style={
-            {
-              animationDuration: "150ms",
-              transitionDuration: "150ms",
-            } as CSSProperties
-          }
-        >
-          <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/30">
-            <SheetTitle className="flex items-center gap-2">
-              <User className="h-4 w-4 text-primary" />
-              {selectedContact ? "Edit contact" : "Create contact"}
-            </SheetTitle>
-            <SheetDescription className="text-sm text-muted-foreground">
-              Add a person and optionally link them to a company.
-            </SheetDescription>
-          </SheetHeader>
-          <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4">
-            <ContactForm
-              key={contactFormKey}
-              contact={selectedContact}
-              companies={companies}
-              defaultPrimaryCompanyId={newContactCompanyId}
-              onSubmitted={() => setContactDialogOpen(false)}
-              onCancel={() => setContactDialogOpen(false)}
-            />
-          </div>
-        </SheetContent>
-      </Sheet>
-
-      <ContactDetailSheet
-        contactId={detailContactId}
-        open={detailContactOpen}
-        onOpenChange={setDetailContactOpen}
-        onEditContact={openEditContact}
-        onInvitePortal={canCreate ? openPortalInvite : undefined}
+      <AddToDirectorySheet
+        open={addOpen}
+        onOpenChange={setAddOpen}
+        kind={addKind}
+        onKindChange={setAddKind}
+        terms={terms}
       />
 
       <PortalInviteDialog
-        contact={inviteContact}
+        contact={
+          inviteEntry?.kind === "contact"
+            ? { id: inviteEntry.id, full_name: inviteEntry.name }
+            : undefined
+        }
         projects={projects}
         open={inviteOpen}
         onOpenChange={(open) => {
           setInviteOpen(open);
-          if (!open) setInviteContact(undefined);
+          if (!open) setInviteEntry(undefined);
         }}
       />
 
-      {canCreate ? (
-        <ImportContactsSheet open={importOpen} onOpenChange={setImportOpen} />
-      ) : null}
+      {canCreate ? <ImportContactsSheet open={importOpen} onOpenChange={setImportOpen} /> : null}
 
       <AlertDialog
         open={Boolean(archiveTarget)}
@@ -841,8 +546,9 @@ export function DirectoryClient({
               Archive {archiveTarget?.kind === "company" ? "company" : "contact"}?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {archiveTarget?.name ?? "This record"} will be hidden from the directory.
-              You can restore it with Undo after archiving.
+              {archiveTarget?.name ?? "This record"} will be hidden from the directory and its
+              roles will end, so it stops appearing as a live vendor or client. Undo restores
+              both.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

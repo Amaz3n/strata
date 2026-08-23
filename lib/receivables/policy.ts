@@ -9,6 +9,8 @@ export interface ReceivablesPosturePolicy {
   workspaceLabel: string
   billingRunLabel: string
   primaryBillingStory: "draw_or_cost" | "progress_application" | "deposit_or_closing"
+  /** Label on the composer's primary send action. */
+  sendActionLabel: string
   approvalMode: ReceivablesApprovalMode
   supportsProgressApplications: boolean
   supportsRetainage: boolean
@@ -25,6 +27,7 @@ const POLICIES: Record<ProjectPosture, ReceivablesPosturePolicy> = {
     workspaceLabel: "Client receivables",
     billingRunLabel: "Build this billing",
     primaryBillingStory: "draw_or_cost",
+    sendActionLabel: "Send invoice",
     approvalMode: "optional_review",
     supportsProgressApplications: false,
     supportsRetainage: true,
@@ -39,6 +42,7 @@ const POLICIES: Record<ProjectPosture, ReceivablesPosturePolicy> = {
     workspaceLabel: "Owner receivables",
     billingRunLabel: "Build this pay application",
     primaryBillingStory: "progress_application",
+    sendActionLabel: "Send owner billing",
     approvalMode: "required_review",
     supportsProgressApplications: true,
     supportsRetainage: true,
@@ -53,6 +57,7 @@ const POLICIES: Record<ProjectPosture, ReceivablesPosturePolicy> = {
     workspaceLabel: "Buyer receivables",
     billingRunLabel: "Build this closing statement",
     primaryBillingStory: "deposit_or_closing",
+    sendActionLabel: "Send buyer invoice",
     approvalMode: "optional_review",
     supportsProgressApplications: false,
     supportsRetainage: false,

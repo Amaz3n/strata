@@ -1,10 +1,11 @@
 "use client"
 
+import Link from "next/link"
 import { Landmark, ShieldCheck } from "lucide-react"
 
-import { CompanyComplianceTab } from "@/components/companies/company-compliance-tab"
 import { CompanyForm } from "@/components/companies/company-form"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import {
   Dialog,
   DialogContent,
@@ -52,6 +53,20 @@ const PAYMENT_STATUS: Record<
     className: "border-destructive/35 bg-destructive/10 text-destructive",
     detail: "The payment relationship was withdrawn and cannot be re-invited until it is restored.",
   },
+}
+
+/** Says what is wrong, not just that something is. */
+function complianceDetail(compliance: NonNullable<VendorPayableProfile["compliance"]>): string {
+  const parts = [
+    compliance.missingCount > 0 ? `${compliance.missingCount} missing` : null,
+    compliance.expiredCount > 0 ? `${compliance.expiredCount} expired` : null,
+    compliance.deficientCount > 0 ? `${compliance.deficientCount} short of the requirement` : null,
+    compliance.pendingCount > 0 ? `${compliance.pendingCount} awaiting review` : null,
+  ].filter(Boolean) as string[]
+  if (parts.length === 0) {
+    return "Everything this vendor owes is on file and current."
+  }
+  return `${parts.join(", ")}.`
 }
 
 function ProfileValue({ label, value }: { label: string; value: string }) {
@@ -131,10 +146,41 @@ export function PayableVendorProfileDialog({
                 <ShieldCheck className="size-4 text-muted-foreground" />
                 <div>
                   <h3 className="text-sm font-semibold">Compliance</h3>
-                  <p className="text-xs text-muted-foreground">Requirements and documents that control approval and payment holds.</p>
+                  <p className="text-xs text-muted-foreground">Whether this vendor can be paid today.</p>
                 </div>
               </div>
-              <CompanyComplianceTab company={company} />
+              {/* The verdict and a way to the record. Editing compliance is the
+                  directory workspace's job — a second full editor here is how the
+                  two drift apart. */}
+              <div className="flex flex-wrap items-center justify-between gap-3 border px-4 py-3">
+                <div className="min-w-0">
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "font-medium",
+                      profile?.compliance == null
+                        ? "border-border bg-muted text-muted-foreground"
+                        : profile.compliance.isCompliant
+                          ? "border-success/35 bg-success/10 text-success"
+                          : "border-destructive/35 bg-destructive/10 text-destructive",
+                    )}
+                  >
+                    {profile?.compliance == null
+                      ? "Compliance unavailable"
+                      : profile.compliance.isCompliant
+                        ? "Compliant"
+                        : "Not compliant"}
+                  </Badge>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    {profile?.compliance == null
+                      ? "The compliance record could not be read just now."
+                      : complianceDetail(profile.compliance)}
+                  </p>
+                </div>
+                <Button asChild variant="outline" size="sm">
+                  <Link href={`/directory/${company.id}/compliance`}>Open compliance</Link>
+                </Button>
+              </div>
             </section>
           </div>
         ) : (

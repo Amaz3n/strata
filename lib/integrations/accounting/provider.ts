@@ -23,11 +23,7 @@ export interface AccountingCounterpartyInput {
 }
 
 export interface AccountingCapabilities {
-  supportsClasses: boolean
-  supportsLocations: boolean
-  supportsDepartments: boolean
   supportsSubCustomers: boolean
-  supportsInvoiceNumberReservation: boolean
   supportsInvoiceDocNumberSync: boolean
   supportsCDC: boolean
   /**
@@ -37,13 +33,11 @@ export interface AccountingCapabilities {
    * which is the check a second adapter has to go edit.
    */
   supportsImport: boolean
-  supportsWebhooks: boolean
   supportsAttachments: boolean
   supportsJournalEntryPush: boolean
   supportsVendorCredits: boolean
   /** Whether a posted bill payment can be reversed when an ACH return lands. */
   supportsBillPaymentVoid: boolean
-  updateConcurrency: "sync_token" | "etag" | "none"
   dimensions: AccountingDimensionKind[]
 }
 
@@ -74,6 +68,12 @@ export interface PushResult {
   docNumber?: string | null
   /** True when there was legitimately nothing to push (e.g. voiding an invoice that never reached the provider). */
   skipped?: boolean
+  /**
+   * True when the push could not run THIS attempt but must run later — e.g. a
+   * concurrent attempt holds the create claim. Unlike `skipped`, the caller
+   * must re-schedule the job; marking it completed loses the push forever.
+   */
+  deferred?: boolean
   raw?: unknown
 }
 
@@ -142,7 +142,18 @@ export interface AccountingProvider {
   /** Poll the provider's change feed for one connection and enqueue changes. Requires capabilities.supportsCDC. */
   ingestChanges?(input: { connectionId: string; lookbackMinutes?: number | null }): Promise<{ scanned: number; inserted: number }>
   /** Drain the provider's inbound event queue, reconciling remote changes into Arc. */
-  drainInboundEvents?(input: { limit: number }): Promise<{ processed: number; reconciled: number }>
+  drainInboundEvents?(input: { limit: number }): Promise<{ processed: number; reconciled: number; ignored?: number; errored?: number }>
+  /**
+   * Resolve a both-sides conflict by taking the provider's copy: re-apply the
+   * remote record over Arc's with the conflict guard released. Only offered on
+   * rows already flagged needs_review/conflict.
+   */
+  resolveConflictTakeRemote?(input: {
+    orgId: string
+    connectionId: string
+    entityType: "invoice" | "project_expense" | "bill"
+    externalId: string
+  }): Promise<{ reconciled: boolean; reason?: string }>
   listDimensionValues(input: { connectionId: string; kind: AccountingDimensionKind }): Promise<AccountingDimensionValue[]>
   listAccounts(input: { connectionId: string; kind: AccountingAccountKind }): Promise<AccountingDimensionValue[]>
   /** Complete active chart used by Books cutover and outbound-mirror mapping. */
@@ -178,5 +189,4 @@ export interface AccountingProvider {
     displayName: string
     projectId?: string
   }): Promise<AccountingDimensionValue>
-  reserveInvoiceNumber?(input: { connectionId: string; orgId: string }): Promise<{ reservedNumber: string; expiresAt: string }>
 }

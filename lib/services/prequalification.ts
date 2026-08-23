@@ -16,6 +16,7 @@ import {
   type PrequalificationTemplate,
 } from "@/lib/validation/prequalification"
 import { getComplianceRules } from "@/lib/services/compliance"
+import { DIRECTORY_READ_PERMISSIONS } from "@/lib/directory/permissions"
 
 const SELECT =
   "id, org_id, company_id, status, requested_by, requested_at, submitted_at, reviewed_by, reviewed_at, expires_at, single_project_limit_cents, aggregate_limit_cents, emr, bonding_single_cents, bonding_aggregate_cents, years_in_business, annual_revenue_cents, largest_project_cents, trades, references_data, questionnaire, template, invited_at, submitted_by_name, submitted_by_email, review_notes, portal_token_id, created_at, updated_at"
@@ -865,7 +866,7 @@ export async function getBidInvitePrequalificationWarnings(
   const uniqueIds = Array.from(new Set(companyIds))
   const { data, error } = await supabase
     .from("prequalifications")
-    .select("company_id, status, expires_at, created_at")
+    .select("company_id, status, expires_at, trades, created_at")
     .eq("org_id", resolvedOrgId)
     .in("company_id", uniqueIds)
     .order("created_at", { ascending: false })
@@ -891,6 +892,12 @@ export async function getBidInvitePrequalificationWarnings(
 export type PrequalificationGlance = {
   status: PrequalificationStatus
   expires_at: string | null
+  /**
+   * The divisions this company prequalified for. Commercial prequalification is
+   * scoped by CSI division — approved for concrete says nothing about approved
+   * for electrical — so a list that shows only "approved" overstates it.
+   */
+  trades: string[]
 }
 
 /**
@@ -903,7 +910,7 @@ export async function getCompaniesPrequalificationSummary(
 ): Promise<Record<string, PrequalificationGlance>> {
   if (companyIds.length === 0) return {}
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "directory.read", "directory.write"], {
+  await requireAnyPermission(DIRECTORY_READ_PERMISSIONS, {
     supabase,
     orgId: resolvedOrgId,
     userId,
@@ -911,7 +918,7 @@ export async function getCompaniesPrequalificationSummary(
 
   const { data, error } = await supabase
     .from("prequalifications")
-    .select("company_id, status, expires_at, created_at")
+    .select("company_id, status, expires_at, trades, created_at")
     .eq("org_id", resolvedOrgId)
     .in("company_id", Array.from(new Set(companyIds)))
     .order("created_at", { ascending: false })
@@ -923,6 +930,7 @@ export async function getCompaniesPrequalificationSummary(
     byCompany[row.company_id] = {
       status: row.status as PrequalificationStatus,
       expires_at: row.expires_at ? String(row.expires_at) : null,
+      trades: Array.isArray(row.trades) ? (row.trades as string[]) : [],
     }
   }
   return byCompany

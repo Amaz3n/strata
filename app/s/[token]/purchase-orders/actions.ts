@@ -9,7 +9,7 @@ import { uploadPortalFile } from "@/lib/services/portal-uploads"
 
 export async function reportPurchaseOrderCompleteAction(token: string, formData: FormData): Promise<ActionResult<{ id: string }>> {
   try {
-    const access = await assertPortalActionAccess(token, { portalType: "sub", requireCompany: true, permission: "can_report_po_completion" })
+    const access = await assertPortalActionAccess(token, { portalType: "sub", requireCompany: true, requireProject: true, permission: "can_report_po_completion" })
     const commitmentId = String(formData.get("commitment_id") ?? "")
     const lineIds = formData.getAll("commitment_line_id").map(String).filter(Boolean)
     const files = formData.getAll("photos").filter((value): value is File => value instanceof File && value.size > 0)

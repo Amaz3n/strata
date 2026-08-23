@@ -73,7 +73,7 @@ export async function GET(
 
   let access
   try {
-    access = await assertPortalActionAccess(token, { permission: "can_view_documents" })
+    access = await assertPortalActionAccess(token, { requireProject: true, permission: "can_view_documents" })
   } catch {
     return NextResponse.json({ error: "Invalid or expired link" }, { status: 401 })
   }

@@ -19,10 +19,12 @@ export async function getPublicInvoiceStatusAction(token: string) {
   const supabase = createServiceSupabaseClient()
   const { data } = await supabase
     .from("invoices")
-    .select("status, balance_due_cents, total_cents")
+    .select("status, balance_due_cents, total_cents, client_visible")
     .eq("token", token)
     .maybeSingle()
-  if (!data) return null
+  // Same gate as createPublicInvoicePaymentIntent: a token is only a credential
+  // for invoices that were actually published, and never for voided ones.
+  if (!data || data.client_visible !== true || data.status === "void") return null
   return {
     status: data.status as string,
     balanceDueCents: data.balance_due_cents ?? data.total_cents ?? 0,

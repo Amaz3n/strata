@@ -137,7 +137,14 @@ export async function evaluateHolds(
     supabase.from("payment_hold_policies").select("conditions,waiver_auto_chase").eq("org_id", resolvedOrgId).eq("project_id", bill.project_id).maybeSingle(),
     supabase.from("payment_hold_policies").select("conditions,waiver_auto_chase").eq("org_id", resolvedOrgId).is("project_id", null).maybeSingle(),
     supabase.from("payment_hold_overrides").select("hold_kind,reason").eq("org_id", resolvedOrgId).eq("bill_id", billId).is("revoked_at", null),
-    companyId ? getCompanyComplianceStatusWithClient(supabase, resolvedOrgId, companyId) : Promise.resolve(null),
+    // Scoped to this payable's project so a project overlay — an owner
+    // mandating higher limits on one job — actually gates the money it was
+    // written to gate.
+    companyId
+      ? getCompanyComplianceStatusWithClient(supabase, resolvedOrgId, companyId, {
+          projectIds: [bill.project_id],
+        })
+      : Promise.resolve(null),
     bill.funding_invoice_id
       ? supabase.from("invoices").select("status").eq("org_id", resolvedOrgId).eq("id", bill.funding_invoice_id).maybeSingle()
       : Promise.resolve({ data: null }),
@@ -145,7 +152,17 @@ export async function evaluateHolds(
     supabase.from("projects").select("require_subtier_waivers").eq("org_id", resolvedOrgId).eq("id", bill.project_id).maybeSingle(),
   ])
   const overrides = Object.fromEntries((overrideRows ?? []).map((row) => [row.hold_kind, row.reason])) as Partial<Record<PaymentHoldKind, string>>
-  const insuranceDocuments = compliance?.documents.filter((document) => isInsuranceDocumentTypeName(document.document_type?.name)) ?? []
+  // The type's own `kind` decides this. Matching on the name meant the seeded
+  // "Umbrella / Excess Liability" type — which contains none of insurance,
+  // certificate or coi — was invisible to the insurance hold entirely, so an
+  // expired umbrella policy never held a payment. The name check remains only
+  // for a legacy type whose kind was never classified.
+  const insuranceDocuments =
+    compliance?.documents.filter((document) => {
+      const type = document.document_type
+      if (type?.kind) return type.kind === "insurance"
+      return isInsuranceDocumentTypeName(type?.name)
+    }) ?? []
   // Read-only, exactly like the waiver claim below: the certificate is read
   // when it is uploaded or approved, never here. Bills whose certificates were
   // never read evaluate on the stored expiry, which is the pre-model behaviour.
@@ -289,7 +306,12 @@ export async function assertBillReleasable(
       throw new Error("Lien waiver required before payment")
     }
     if (companyId) {
-      const compliance = await getCompanyComplianceStatusWithClient(supabase, resolvedOrgId, companyId)
+      const compliance = await getCompanyComplianceStatusWithClient(
+        supabase,
+        resolvedOrgId,
+        companyId,
+        { projectIds: [bill.project_id] },
+      )
       if (!compliance.is_compliant) throw new Error("Compliance documents required before payment")
     }
   }

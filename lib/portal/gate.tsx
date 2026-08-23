@@ -13,12 +13,13 @@ import type {
   ExternalPortalWorkspaceContext,
   PortalAccessToken,
   PortalType,
+  ProjectScopedPortalAccess,
 } from "@/lib/types"
 
-export type PortalGateResult =
+export type PortalGateResult<TAccess extends PortalAccessToken = PortalAccessToken> =
   | {
       status: "ok"
-      access: PortalAccessToken
+      access: TAccess
       workspace: ExternalPortalWorkspaceContext | null
       /** Invite details for the claim-account prompt; null once they have a workspace. */
       claim: { email: string; fullName: string } | null
@@ -26,6 +27,21 @@ export type PortalGateResult =
   | { status: "invalid" }
   | { status: "wrong-portal"; access: PortalAccessToken }
   | { status: "blocked"; element: ReactNode }
+
+interface PortalGateOptions {
+  token: string
+  portalType: PortalType
+  requireCompany?: boolean
+  /**
+   * Reject an access record with no job behind it — a bid-scoped record whose
+   * package has no project yet, or a company-scoped vendor account record. A
+   * portal whose every section reads one project's data sets this; `/s` does
+   * not, because a vendor account link is a real shape there.
+   */
+  requireProject?: boolean
+  /** Shown on the PIN screen before portal data has loaded. */
+  fallbackLabel: string
+}
 
 /**
  * The single entry sequence for every token portal: validate the token, then
@@ -36,20 +52,28 @@ export type PortalGateResult =
  * Returns a discriminated result rather than rendering, so the caller decides
  * between `notFound()` and a setup screen for a misconfigured token.
  */
+export async function resolvePortalGate(
+  options: PortalGateOptions & { requireProject: true },
+): Promise<PortalGateResult<ProjectScopedPortalAccess>>
+export async function resolvePortalGate(
+  options: PortalGateOptions,
+): Promise<PortalGateResult>
 export async function resolvePortalGate({
   token,
   portalType,
   requireCompany = false,
+  requireProject = false,
   fallbackLabel,
-}: {
-  token: string
-  portalType: PortalType
-  requireCompany?: boolean
-  /** Shown on the PIN screen before portal data has loaded. */
-  fallbackLabel: string
-}): Promise<PortalGateResult> {
+}: PortalGateOptions): Promise<PortalGateResult> {
   const access = await validatePortalToken(token)
   if (!access) {
+    return { status: "invalid" }
+  }
+
+  // A link that addresses no job cannot address a project-scoped portal at all,
+  // so it is not a misconfigured link the builder can repair — it is the wrong
+  // link. Failing here keeps every page below free of the null.
+  if (requireProject && access.project_id === null) {
     return { status: "invalid" }
   }
 

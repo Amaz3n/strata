@@ -1,6 +1,7 @@
 import { renderPayApplicationPdf, type PayApplicationPdfData } from "@/lib/pdfs/pay-application"
 import { requireOrgContext } from "@/lib/services/context"
 import { requireProjectPermission } from "@/lib/services/permissions"
+import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 
 const BILLED_DRAW_STATUSES = new Set(["invoiced", "partial", "paid"])
 
@@ -168,13 +169,18 @@ export async function getDrawPayApplicationReport({
     scheduledTotalCents,
   })
 
+  // Entity-map customer, for projects mapped after the cutover where the
+  // legacy projects.qbo_customer_name is null.
+  const accountingCustomerName =
+    (await resolveAccountingTarget({ orgId: resolvedOrgId, projectId }))?.dimensions.customer?.name ?? null
+
   const data: PayApplicationPdfData = {
     applicationNumber,
     applicationDateIso: new Date().toISOString(),
     periodToIso: target.due_date ?? null,
     projectName: project.name ?? "Project",
     propertyDescription: projectLocationText(project.location),
-    ownerName: clientResult.data?.full_name ?? project.qbo_customer_name ?? "Owner",
+    ownerName: clientResult.data?.full_name ?? project.qbo_customer_name ?? accountingCustomerName ?? "Owner",
     contractorName: org?.name ?? "Contractor",
     contractDateIso: contract?.signed_at ?? contract?.effective_date ?? null,
     originalContractCents,

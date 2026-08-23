@@ -504,6 +504,25 @@ html[data-ui-size="comfortable"] {
     }
   }
 
+  /* Route progress uses the Arc mark as identity rather than inventing a fake
+     page layout. The delayed entrance prevents a flash on prefetched routes;
+     the sweep itself includes a quiet pause at the end of every pass. */
+  .arc-loading-presence {
+    opacity: 0;
+    animation: arc-loading-enter 0.18s ease-out 0.25s forwards;
+  }
+
+  @keyframes arc-loading-enter {
+    from {
+      opacity: 0;
+      transform: translateY(2px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
   /* Consumed via animate-[drawing-shimmer…] while drawing tiles load */
   @keyframes drawing-shimmer {
     0% {
@@ -901,9 +920,19 @@ html[data-ui-size="comfortable"] {
     .desk-rise,
     .spectrum-wipe,
     .skeleton-shimmer::after,
+    .arc-loading-presence,
     .receipt-scan-sweep::before,
     .doc-scan-status > span::after {
       animation: none;
+    }
+
+    .arc-loading-presence {
+      opacity: 1;
+      transform: none;
+    }
+
+    .arc-loading-highlight {
+      display: none;
     }
 
     /* Hover still lights the chip, but the band holds mid-crossing. */

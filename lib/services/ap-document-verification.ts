@@ -95,6 +95,20 @@ const coiModelSchema = z.object({
     .boolean()
     .nullable()
     .describe("True only when the certificate states the holder is an additional insured"),
+  primary_noncontributory: z
+    .boolean()
+    .nullable()
+    .describe(
+      "True only when the certificate states the coverage is primary and non-contributory. " +
+        "Null when the wording is absent — never infer it from an additional insured endorsement.",
+    ),
+  waiver_of_subrogation: z
+    .boolean()
+    .nullable()
+    .describe(
+      "True only when the certificate states a waiver of subrogation applies in favor of the holder. " +
+        "Null when the wording is absent.",
+    ),
   certificate_holder: z.string().nullable().describe("The name in the CERTIFICATE HOLDER box"),
   confidence: z.enum(["high", "medium", "low"]),
   notes: z.array(z.string()),
@@ -265,6 +279,8 @@ export async function extractCoiFacts(fileId: string, orgId?: string): Promise<C
       "If it lists several policy lines, report the general liability line, falling back to the",
       "line with the largest each-occurrence limit when there is no general liability line.",
       "Dates are the effective and expiration dates of that same line.",
+      "Endorsements — additional insured, primary and non-contributory, waiver of subrogation —",
+      "are true only where the certificate says so in the checkboxes or the description of operations.",
     ].join(" "),
     files: [input.part],
     orgId: resolvedOrgId,
@@ -315,6 +331,8 @@ export async function extractCoiFacts(fileId: string, orgId?: string): Promise<C
     effective_date: value.effective_date,
     expiry_date: value.expiry_date,
     additional_insured: value.additional_insured,
+    primary_noncontributory: value.primary_noncontributory,
+    waiver_of_subrogation: value.waiver_of_subrogation,
     certificate_holder: cleanCoiText(value.certificate_holder),
     confidence: value.confidence,
     notes: value.notes.map((note) => note.trim()).filter(Boolean).slice(0, 5),

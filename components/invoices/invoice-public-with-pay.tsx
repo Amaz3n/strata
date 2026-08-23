@@ -211,13 +211,13 @@ function ConfirmPaymentForm({
       />
 
       {message && (
-        <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-900 p-3">
+        <div className="flex items-center gap-2 border border-success/20 bg-success/10 p-3 text-sm text-success">
           <CheckCircle2 className="size-4 shrink-0" />
           <span>{message}</span>
         </div>
       )}
       {error && (
-        <div className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 p-3">
+        <div className="border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
           {error}
         </div>
       )}
@@ -280,7 +280,7 @@ function PaymentSection({
   const appearance = useMemo(() => getStripeAppearance(isDark), [isDark])
 
   const totalCents = invoice.totals?.total_cents ?? invoice.total_cents ?? 0
-  const balanceCents = invoice.totals?.balance_due_cents ?? invoice.balance_due_cents ?? totalCents
+  const balanceCents = invoice.balance_due_cents ?? invoice.totals?.balance_due_cents ?? totalCents
   const isPaid = balanceCents <= 0 || invoice.status === "paid" || invoice.status === "void"
   const availableQuotes = useMemo(
     () => [payment.feeQuotes.ach, payment.feeQuotes.card].filter((quote) => quote.enabled),
@@ -437,7 +437,7 @@ function PaymentSection({
                 />
               </div>
               {amountError ? (
-                <p className="text-xs text-red-600 dark:text-red-400">{amountError}</p>
+                <p className="text-xs text-destructive">{amountError}</p>
               ) : (
                 <p className="text-xs text-muted-foreground">Up to {formatMoney(balanceCents)} outstanding.</p>
               )}
@@ -463,7 +463,7 @@ function PaymentSection({
         </div>
       )}
       {intentError && (
-        <div className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 p-3">
+        <div className="border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
           {intentError}
         </div>
       )}
@@ -498,7 +498,7 @@ export function InvoicePublicWithPay({ invoice, payment, receipts, branding, lie
   const [shareUrl, setShareUrl] = useState(fallbackShareUrl)
 
   const totalCents = invoice.totals?.total_cents ?? invoice.total_cents ?? 0
-  const balanceCents = invoice.totals?.balance_due_cents ?? invoice.balance_due_cents ?? totalCents
+  const balanceCents = invoice.balance_due_cents ?? invoice.totals?.balance_due_cents ?? totalCents
   // A voided invoice is canceled, not paid — never show it as settled.
   const isVoid = invoice.status === "void"
   const isPaid = !isVoid && (balanceCents <= 0 || invoice.status === "paid")
@@ -564,7 +564,7 @@ export function InvoicePublicWithPay({ invoice, payment, receipts, branding, lie
             <span className="font-medium">Invoice {arcData.invoiceNumber}</span>
             <Badge
               variant={isPaid ? "default" : isVoid ? "outline" : "secondary"}
-              className={`capitalize ${isPaid ? "bg-green-600 hover:bg-green-600" : isVoid ? "text-muted-foreground" : ""}`}
+              className={`capitalize ${isPaid ? "bg-success hover:bg-success" : isVoid ? "text-muted-foreground" : ""}`}
             >
               {isPaid ? "Paid" : isVoid ? "Canceled" : invoice.status}
             </Badge>
@@ -677,8 +677,8 @@ export function InvoicePublicWithPay({ invoice, payment, receipts, branding, lie
                 ) : isPaid ? (
                   <div className="space-y-4">
                     <div className="flex items-start gap-3">
-                      <div className="flex size-9 shrink-0 items-center justify-center bg-green-100 dark:bg-green-900/40">
-                        <CheckCircle2 className="size-5 text-green-600 dark:text-green-400" />
+                      <div className="flex size-9 shrink-0 items-center justify-center bg-success/15">
+                        <CheckCircle2 className="size-5 text-success" />
                       </div>
                       <div>
                         <h3 className="font-semibold">Payment received</h3>

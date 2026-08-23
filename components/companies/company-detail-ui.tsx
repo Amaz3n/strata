@@ -96,3 +96,37 @@ export function EmptyState({ children }: { children: ReactNode }) {
     </div>
   );
 }
+
+/** The single state word at the top of a record workspace. */
+export function StatusChip({ label, className }: { label: string; className: string }) {
+  return (
+    <span
+      className={cn("inline-flex items-center border px-2 py-0.5 text-xs font-medium", className)}
+    >
+      {label}
+    </span>
+  );
+}
+
+/** One number in a workspace's rollup strip: microlabel, mono value, hint. */
+export function Figure({
+  label,
+  value,
+  tone,
+  hint,
+}: {
+  label: string;
+  value: string;
+  tone?: string;
+  hint?: string;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="microlabel">{label}</div>
+      <div className={cn("mt-0.5 font-mono text-sm tabular-nums", tone ?? "text-foreground")}>
+        {value}
+      </div>
+      {hint ? <div className="mt-0.5 text-[11px] text-muted-foreground">{hint}</div> : null}
+    </div>
+  );
+}

@@ -1,4 +1,5 @@
 import type React from "react"
+import type { CoiExtraction } from "@/lib/payments/ap-verification"
 import type { FileCategory } from "@/lib/validation/files"
 // Core domain types for Arc
 // Following the spec: every tenant-owned row includes org_id
@@ -820,8 +821,11 @@ export const REVIEWER_DEFAULT_PERMISSIONS: Partial<PortalPermissions> = {
   can_submit_time: false,
   can_submit_expenses: false,
   can_submit_daily_logs: false,
-  can_upload_compliance_docs: false,
-  can_upload_subtier_waivers: false,
+  // Uploading your own insurance is what the sub portal is for; the read path
+  // has always defaulted these on, and the three creation paths disagreeing
+  // with it meant identical links behaved differently by origin.
+  can_upload_compliance_docs: true,
+  can_upload_subtier_waivers: true,
   can_view_punch_items: false,
   can_view_purchase_orders: false,
   can_report_po_completion: false,
@@ -830,7 +834,14 @@ export const REVIEWER_DEFAULT_PERMISSIONS: Partial<PortalPermissions> = {
 export interface PortalAccessToken {
   id: string
   org_id: string
-  project_id: string
+  /**
+   * Null for an access record that is not about a single job: a bid-scoped
+   * record whose package has no project yet, or a company-scoped vendor account
+   * record (onboarding, prequalification, compliance). The
+   * `portal_access_tokens_scope_present` check guarantees one of `project_id`,
+   * `scoped_bid_invite_id` or `company_id` is set — never that it is this one.
+   */
+  project_id: string | null
   contact_id?: string | null
   company_id?: string | null      // For sub portals
   scoped_rfi_id?: string | null
@@ -850,6 +861,16 @@ export interface PortalAccessToken {
   paused_at?: string | null
   revoked_at?: string | null
   created_at: string
+}
+
+/**
+ * An access record proven to be scoped to one job. Every project surface under
+ * `/p`, `/r` and the job sections of `/s` needs this shape; ask for it at the
+ * gate (`assertPortalActionAccess({ requireProject: true })`) rather than
+ * re-checking `project_id` in each page, action and route below it.
+ */
+export interface ProjectScopedPortalAccess extends Omit<PortalAccessToken, "project_id"> {
+  project_id: string
 }
 
 export type ProjectAccessStatus = "active" | "paused" | "revoked" | "expired"
@@ -1162,6 +1183,8 @@ export interface Invoice {
   sent_at?: string | null
   sent_to_emails?: string[] | null
   customer_name?: string | null
+  /** How the invoice was generated (manual, draw, change_order, from_costs, fee, pay_application, …). */
+  source_type?: string | null
   product_posture?: import("@/lib/product-tier").ProjectPosture | null
   approval_status?: "not_required" | "draft" | "pending" | "approved" | "rejected"
   delivery_status?: "not_sent" | "queued" | "sending" | "sent" | "delivered" | "bounced" | "failed"
@@ -1961,11 +1984,19 @@ export interface ReviewerPortalData {
 // Compliance Document Types
 export type ComplianceDocumentStatus = "pending_review" | "approved" | "rejected" | "expired"
 
+/**
+ * What shape of document a type is. This decides which fields the upload form
+ * collects and which verification runs — it is never re-derived by matching on
+ * the name or the code, which is what three separate call sites used to do.
+ */
+export type ComplianceDocumentKind = "insurance" | "tax" | "license" | "safety" | "other"
+
 export interface ComplianceDocumentType {
   id: string
   org_id: string
   name: string
   code: string
+  kind: ComplianceDocumentKind
   description?: string | null
   has_expiry: boolean
   expiry_warning_days: number
@@ -1974,7 +2005,12 @@ export interface ComplianceDocumentType {
   created_at: string
 }
 
-export type ComplianceRequirementSource = "org_default" | "company_override"
+/**
+ * Where an effective requirement came from. Resolution runs org default →
+ * vendor override → project overlay, so a later source wins on the same
+ * document type.
+ */
+export type ComplianceRequirementSource = "org_default" | "company_override" | "project_overlay"
 
 export interface ComplianceRequirementWaiver {
   id: string
@@ -2006,6 +2042,9 @@ export interface ComplianceRequirement {
   notes?: string | null
   created_at: string
   created_by?: string | null
+  /** Set when the requirement was raised by a project overlay. */
+  project_id?: string | null
+  project_name?: string | null
 }
 
 export interface ComplianceDocument {
@@ -2026,12 +2065,27 @@ export interface ComplianceDocument {
   additional_insured: boolean
   primary_noncontributory: boolean
   waiver_of_subrogation: boolean
+  license_number?: string | null
+  license_jurisdiction?: string | null
+  license_classification?: string | null
   reviewed_by?: string | null
   reviewed_at?: string | null
   review_notes?: string | null
   rejection_reason?: string | null
+  /** A withdrawn decision. A revoked document satisfies nothing, whatever its status says. */
+  revoked_at?: string | null
+  revoked_by?: string | null
+  revoke_reason?: string | null
+  /** The newer document that replaced this one for the same requirement. */
+  superseded_by_id?: string | null
   submitted_via_portal: boolean
   portal_token_id?: string | null
+  /**
+   * The certificate reading, when one has been produced for this document.
+   * Advisory: it pre-fills the reviewer's form and can contradict the record,
+   * but it never decides compliance on its own.
+   */
+  extraction?: CoiExtraction | null
   created_at: string
   updated_at: string
 }
@@ -2045,16 +2099,46 @@ export interface ComplianceRequirementDeficiency {
   message: string
 }
 
+/**
+ * The resolved verdict for one requirement, computed once on the server so the
+ * builder tab, the vendor portal, and the payment gate cannot drift apart.
+ */
+export type ComplianceRequirementState =
+  | "met"
+  | "pending"
+  | "deficient"
+  | "expiring"
+  | "expired"
+  | "rejected"
+  | "missing"
+  | "waived"
+
+export interface ComplianceRequirementStatus {
+  requirement: ComplianceRequirement
+  state: ComplianceRequirementState
+  /** The document currently answering this requirement, if any. */
+  document: ComplianceDocument | null
+  /** Every submission for this requirement, newest first. */
+  history: ComplianceDocument[]
+  /** Days until the answering document expires; negative once past. */
+  days_until_expiry: number | null
+  deficiency: ComplianceRequirementDeficiency | null
+}
+
 export interface ComplianceStatusSummary {
   company_id: string
   requirements: ComplianceRequirement[]
   documents: ComplianceDocument[]
+  /** Per-requirement verdicts, in requirement order. */
+  statuses: ComplianceRequirementStatus[]
   missing: ComplianceDocumentType[]
   waived: ComplianceRequirement[]
   deficiencies: ComplianceRequirementDeficiency[]
-  expiring_soon: ComplianceDocument[]  // within 30 days
+  /** Inside each document type's own `expiry_warning_days` window. */
+  expiring_soon: ComplianceDocument[]
   expired: ComplianceDocument[]
   pending_review: ComplianceDocument[]
+  rejected: ComplianceDocument[]
   is_compliant: boolean
 }
 

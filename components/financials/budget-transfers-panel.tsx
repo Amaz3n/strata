@@ -8,7 +8,7 @@ import {
   closeBudgetTransferAction,
   createBudgetTransferAction,
   setBudgetLineContingencyAction,
-} from "@/app/(app)/projects/[id]/budget/actions";
+} from "@/app/(app)/projects/[id]/financials/budget/actions";
 import { unwrapAction } from "@/lib/action-result";
 import type { BudgetTransfer } from "@/lib/services/budget-transfers";
 import { Button } from "@/components/ui/button";
@@ -80,7 +80,9 @@ export function BudgetTransfersPanel({
   const router = useRouter();
   const { toast } = useToast();
   const amountCents = Number.isFinite(toCents(amount)) ? toCents(amount) : 0;
-  const net = amountCents > 0 ? 0 : Number.NaN;
+  // A two-line transfer always nets to zero; the panel only needs to know
+  // whether the entered amount is usable.
+  const amountValid = amountCents > 0;
   const contingency = useMemo(
     () =>
       lines
@@ -306,7 +308,7 @@ export function BudgetTransfersPanel({
               <div className="flex justify-between border p-3 text-sm">
                 <span>Net change</span>
                 <span className="tabular-nums">
-                  {Number.isNaN(net) ? "Enter a valid amount" : money(net)}
+                  {amountValid ? money(0) : "Enter a valid amount"}
                 </span>
               </div>
               <div className="space-y-2 border p-3">

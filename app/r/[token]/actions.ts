@@ -20,6 +20,7 @@ import { decideSubmittalReviewStepSchema } from "@/lib/validation/submittals"
 async function assertReviewerRfiAccess(token: string, rfiId: string) {
   const access = await assertPortalActionAccess(token, {
     portalType: "reviewer",
+    requireProject: true,
     permission: "can_view_rfis",
   })
 
@@ -55,6 +56,7 @@ export async function listReviewerRfiResponsesAction(token: string, rfiId: strin
 export async function loadReviewerQueueAction(token: string) {
   const access = await assertPortalActionAccess(token, {
     portalType: "reviewer",
+    requireProject: true,
     permission: "can_view_submittals",
   })
   if (!access.contact_id) return []
@@ -68,6 +70,7 @@ export async function loadReviewerQueueAction(token: string) {
 export async function listReviewerSubmittalItemsAction(token: string, submittalId: string) {
   const access = await assertPortalActionAccess(token, {
     portalType: "reviewer",
+    requireProject: true,
     permission: "can_view_submittals",
   })
   if (!access.contact_id) throw new Error("Access denied")
@@ -91,6 +94,7 @@ export async function listReviewerSubmittalItemsAction(token: string, submittalI
 export async function decideReviewerStepAction(token: string, formData: FormData) {
   const access = await assertPortalActionAccess(token, {
     portalType: "reviewer",
+    requireProject: true,
     permission: "can_review_submittals",
   })
   if (!access.contact_id) throw new Error("Access denied")

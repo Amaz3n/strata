@@ -28,10 +28,15 @@ export async function GET(
 
   try {
     const supabase = createServiceSupabaseClient()
+    // The token is one person's access to one job, so the vendor is told what
+    // THAT job demands — the same terms the builder's tab and the payment gate
+    // read. An account-level link carries no project and asks the standing
+    // question instead.
     const status = await getCompanyComplianceStatusWithClient(
       supabase,
       portalToken.org_id,
-      portalToken.company_id
+      portalToken.company_id,
+      { projectIds: portalToken.project_id ? [portalToken.project_id] : [] }
     )
 
     return NextResponse.json(status)
@@ -71,11 +76,27 @@ export async function POST(
       )
     }
 
-    if (!body.file_id) {
+    if (!body.file_id || typeof body.file_id !== "string") {
       return NextResponse.json({ error: "file_id is required" }, { status: 400 })
     }
 
     const supabase = createServiceSupabaseClient()
+
+    // The file must be one this portal just uploaded. Taking the caller's word
+    // for it would let a vendor attach any file id in the builder's org to
+    // their own compliance record — and now that they can read their documents
+    // back, that would hand them the file's contents.
+    const { data: file } = await supabase
+      .from("files")
+      .select("id, metadata")
+      .eq("org_id", portalToken.org_id)
+      .eq("id", body.file_id)
+      .maybeSingle()
+    const fileMetadata = (file?.metadata ?? {}) as Record<string, unknown>
+    if (!file || fileMetadata.company_id !== portalToken.company_id) {
+      return NextResponse.json({ error: "File not available" }, { status: 404 })
+    }
+
     const document = await uploadComplianceDocumentFromPortal({
       supabase,
       orgId: portalToken.org_id,

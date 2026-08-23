@@ -16,6 +16,7 @@ export async function GET(
   try {
     access = await assertPortalActionAccess(token, {
       portalType: "client",
+      requireProject: true,
       permission: "can_approve_change_orders",
     })
   } catch {

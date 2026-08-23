@@ -12,6 +12,7 @@ export default async function SubtierWaiversPage({ params }: { params: Promise<{
   try {
     access = await assertPortalActionAccess(token, {
       portalType: "sub",
+      requireProject: true,
       requireCompany: true,
       permission: "can_upload_subtier_waivers",
     })

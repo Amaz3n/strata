@@ -2,6 +2,7 @@ import { renderSovPayApplicationPdf, type SovPayAppPdfData, type SovPayAppPdfLin
 import { normalizeRetainageSchedule, resolveRetainageRatePercent } from "@/lib/financials/pay-app-math"
 import { requireOrgContext } from "@/lib/services/context"
 import { requireProjectPermission } from "@/lib/services/permissions"
+import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 import { createFileRecord } from "@/lib/services/files"
 import { attachFile } from "@/lib/services/file-links"
 import { createInitialVersion } from "@/lib/services/file-versions"
@@ -144,6 +145,11 @@ export async function getSovPayApplicationReport({
   const retainageOnStored = Math.min(Number(app.retainage_cents ?? 0), Math.round(storedBalanceCents * (storedRate / 100)))
 
   const metadata = (app.metadata ?? {}) as Record<string, any>
+  // Entity-map customer, for projects mapped after the cutover where the
+  // legacy projects.qbo_customer_name is null.
+  const accountingCustomerName =
+    (await resolveAccountingTarget({ orgId: resolvedOrgId, projectId }))?.dimensions.customer?.name ?? null
+
   const data: SovPayAppPdfData = {
     applicationNumber: Number(app.application_number),
     applicationDateIso: app.submitted_at ?? app.created_at ?? new Date().toISOString(),
@@ -151,7 +157,7 @@ export async function getSovPayApplicationReport({
     periodToIso: app.period_end,
     projectName: project.name ?? "Project",
     propertyDescription: projectLocationText(project.location),
-    ownerName: clientResult.data?.full_name ?? project.qbo_customer_name ?? "Owner",
+    ownerName: clientResult.data?.full_name ?? project.qbo_customer_name ?? accountingCustomerName ?? "Owner",
     contractorName: org?.name ?? "Contractor",
     contractDateIso: contract?.signed_at ?? contract?.effective_date ?? null,
     invoiceNumber: invoiceResult.data?.invoice_number ?? null,

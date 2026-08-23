@@ -32,9 +32,11 @@ export function withArcTransactionMarker(note: string | null | undefined, entity
   return existing.length > 0 ? `${existing} ${marker}` : marker
 }
 
+type QBOAdoptableEntity = "Payment" | "BillPayment" | "Invoice" | "Bill" | "Purchase" | "VendorCredit" | "JournalEntry"
+
 type QBOTransactionFinder = {
   findTransactionByPrivateNote(
-    entity: "Payment" | "BillPayment",
+    entity: QBOAdoptableEntity,
     marker: string,
     opts?: { sinceDate?: string | null },
   ): Promise<{ Id?: string } | null>
@@ -51,7 +53,7 @@ type QBOTransactionFinder = {
  */
 export async function findAlreadyCreatedQBOTransaction(params: {
   client: QBOTransactionFinder
-  entity: "Payment" | "BillPayment"
+  entity: QBOAdoptableEntity
   entityType: string
   entityId: string
   windowDays?: number

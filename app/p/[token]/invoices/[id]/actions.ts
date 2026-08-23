@@ -15,6 +15,7 @@ const createPortalInvoicePaymentIntentInputSchema = z.object({
 export async function getInvoiceForPortalAction(token: string, invoiceId: string) {
   const access = await assertPortalActionAccess(token, {
     portalType: "client",
+    requireProject: true,
     permission: "can_view_invoices",
   })
 
@@ -30,6 +31,7 @@ export async function createPortalInvoicePaymentIntentAction(input: unknown) {
   const parsed = createPortalInvoicePaymentIntentInputSchema.parse(input)
   const access = await assertPortalActionAccess(parsed.portalToken, {
     portalType: "client",
+    requireProject: true,
     permission: "can_pay_invoices",
   })
   if (!access.permissions.can_view_invoices) {

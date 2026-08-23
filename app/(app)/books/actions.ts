@@ -85,7 +85,7 @@ import { requireAuthorization } from "@/lib/services/authorization";
 import { requireOrgContext } from "@/lib/services/context";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { createFilesDownloadUrl } from "@/lib/storage/files-storage";
-import { createPocJournalExport } from "@/lib/services/accounting-export";
+import { createPocJournalExport } from "@/lib/services/financial-exports";
 import {
   createGlAccount,
   setGlAccountActive,

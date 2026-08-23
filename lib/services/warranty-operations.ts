@@ -964,6 +964,17 @@ export async function confirmWarrantyVisitFromPortal({ orgId, companyId, visitId
 }
 
 /**
+ * The job a visit belongs to. A completion photo has to be filed against that
+ * job — never against whatever project the trade's link happened to name, which
+ * for a vendor account link is nothing at all.
+ */
+export async function getWarrantyVisitProjectForCompanyPortal({ orgId, companyId, visitId }: { orgId: string; companyId: string; visitId: string }): Promise<string> {
+  const visit = await loadVisit(createServiceSupabaseClient(), orgId, visitId)
+  if (visit.assignee_kind !== "trade" || visit.assigned_company_id !== companyId) throw new Error("Warranty visit not found")
+  return visit.project_id
+}
+
+/**
  * Trades report the real outcome of their own visit. Internal verification is
  * still what closes the request — `pending_verification` stays set for every
  * portal completion — but recording every trade visit as "needs followup" made

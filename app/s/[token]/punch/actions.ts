@@ -11,6 +11,7 @@ import type { PunchItem } from "@/lib/types"
 export async function listSubPortalPunchItemsAction(token: string): Promise<PunchItem[]> {
   const access = await assertPortalActionAccess(token, {
     portalType: "sub",
+    requireProject: true,
     requireCompany: true,
     permission: "can_view_punch_items",
   })
@@ -29,6 +30,7 @@ export async function completeSubPortalPunchItemAction(
 ): Promise<PunchItem> {
   const access = await assertPortalActionAccess(token, {
     portalType: "sub",
+    requireProject: true,
     requireCompany: true,
     permission: "can_view_punch_items",
   })

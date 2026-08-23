@@ -6,7 +6,7 @@ import { useIsNavigationPending } from "@/lib/navigation/optimistic-pathname"
 import { AppNavigationFallback } from "@/components/layout/app-navigation-fallback"
 
 export function AppPageContent({ children }: { children: React.ReactNode }) {
-  const { fullBleed } = usePageTitle()
+  const { fullBleed, productTier } = usePageTitle()
   const isNavigationPending = useIsNavigationPending()
   // Reserve bottom space on phones so the floating mobile bottom-nav doesn't cover content.
   // On md+ (where the desktop sidebar shows), restore the original padding rules.
@@ -21,7 +21,7 @@ export function AppPageContent({ children }: { children: React.ReactNode }) {
       )}
       style={{ scrollPaddingBottom: "calc(5.5rem + env(safe-area-inset-bottom))" }}
     >
-      {isNavigationPending ? <AppNavigationFallback /> : children}
+      {isNavigationPending ? <AppNavigationFallback tier={productTier} /> : children}
     </div>
   )
 }

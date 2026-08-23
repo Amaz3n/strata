@@ -14,6 +14,18 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { requireAnyPermission } from "@/lib/services/permissions"
+import {
+  assignPartyRoleWithClient,
+  endPartyRolesForPartyWithClient,
+  getPartyRolesWithClient,
+  revivePartyRolesEndedAtWithClient,
+} from "@/lib/services/party-roles"
+import { resolvePartyCapabilities } from "@/lib/directory/roles"
+import {
+  DIRECTORY_READ_PERMISSIONS,
+  DIRECTORY_WRITE_PERMISSIONS,
+} from "@/lib/directory/permissions"
+import { NotFoundError } from "@/lib/not-found-error"
 
 function mapCompany(row: any): Company {
   const metadata = row?.metadata ?? {}
@@ -68,12 +80,35 @@ function mapContact(row: any): Contact {
 
 export async function listContacts(orgId?: string, filters?: ContactFilters): Promise<Contact[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read", "directory.read", "directory.write"], {
+  await requireAnyPermission(DIRECTORY_READ_PERMISSIONS, {
     supabase,
     orgId: resolvedOrgId,
     userId,
   })
   return listContactsWithClient(supabase, resolvedOrgId, filters)
+}
+
+/**
+ * Contacts eligible as invoice recipients: parties whose CURRENT roles carry a
+ * client (receivables) or design relationship. Pure role math — never
+ * `contact_type`, which is a legacy column and not the source of truth.
+ */
+export async function listBillableContacts(orgId?: string): Promise<Contact[]> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(DIRECTORY_READ_PERMISSIONS, {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  })
+  const contacts = await listContactsWithClient(supabase, resolvedOrgId)
+  if (contacts.length === 0) return contacts
+  const roleMap = await getPartyRolesWithClient(supabase, resolvedOrgId, {
+    contactIds: contacts.map((contact) => contact.id),
+  })
+  return contacts.filter((contact) => {
+    const capabilities = resolvePartyCapabilities(roleMap.get(contact.id) ?? [])
+    return capabilities.isClient || capabilities.isDesign
+  })
 }
 
 async function resolveContactIdsForCompany(
@@ -117,7 +152,7 @@ export async function listContactsWithClient(
     `,
     )
     .eq("org_id", orgId)
-    .is("metadata->>archived_at", null)
+    .is("archived_at", null)
     .order("created_at", { ascending: false })
 
   if (parsedFilters.contact_type) {
@@ -143,7 +178,7 @@ export async function listContactsWithClient(
 
 export async function getContact(contactId: string, orgId?: string): Promise<Contact & { company_details: Company[] }> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read", "directory.read", "directory.write"], {
+  await requireAnyPermission(DIRECTORY_READ_PERMISSIONS, {
     supabase,
     orgId: resolvedOrgId,
     userId,
@@ -165,8 +200,11 @@ export async function getContact(contactId: string, orgId?: string): Promise<Con
     .eq("id", contactId)
     .maybeSingle()
 
-  if (error || !data) {
-    throw new Error("Contact not found")
+  if (error) {
+    throw new Error(`Failed to load contact: ${error.message}`)
+  }
+  if (!data) {
+    throw new NotFoundError("Contact not found")
   }
 
   const companyRecords: Company[] =
@@ -201,7 +239,7 @@ function buildContactInsert(input: ContactInput, orgId: string) {
 export async function createContact({ input, orgId }: { input: ContactInput; orgId?: string }): Promise<Contact> {
   const parsed = contactInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "directory.write"], { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(DIRECTORY_WRITE_PERMISSIONS, { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("contacts")
@@ -228,6 +266,8 @@ export async function createContact({ input, orgId }: { input: ContactInput; org
           contact_id: data.id,
           company_id: parsed.primary_company_id,
           relationship: "primary",
+          is_primary: true,
+          title: parsed.role ?? null,
         },
         { onConflict: "contact_id,company_id" },
       )
@@ -236,6 +276,14 @@ export async function createContact({ input, orgId }: { input: ContactInput; org
       throw new Error(`Failed to link contact to primary company: ${linkError.message}`)
     }
   }
+
+  // What this person is to the org is a role. The type column is still written
+  // for readers that have not moved yet; this row is the source of truth.
+  await assignPartyRoleWithClient(supabase, resolvedOrgId, userId, {
+    kind: "contact",
+    partyId: data.id as string,
+    roleKey: parsed.contact_type ?? "subcontractor",
+  })
 
   await recordEvent({
     orgId: resolvedOrgId,
@@ -268,7 +316,7 @@ export async function updateContact({
 }): Promise<Contact> {
   const parsed = contactUpdateSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "directory.write"], { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(DIRECTORY_WRITE_PERMISSIONS, { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: existingError } = await supabase
     .from("contacts")
@@ -337,6 +385,7 @@ export async function updateContact({
           contact_id: data.id,
           company_id: nextPrimaryCompanyId,
           relationship: "primary",
+          is_primary: true,
         },
         { onConflict: "contact_id,company_id" },
       )
@@ -383,7 +432,7 @@ export async function updateContact({
 
 export async function archiveContact(contactId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "directory.write"], { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(DIRECTORY_WRITE_PERMISSIONS, { supabase, orgId: resolvedOrgId, userId })
 
   const [{ count: scheduleCount, error: scheduleError }, { count: taskCount, error: taskError }] = await Promise.all([
     supabase
@@ -406,7 +455,7 @@ export async function archiveContact(contactId: string, orgId?: string) {
 
   const { data: existing, error: existingError } = await supabase
     .from("contacts")
-    .select("id, org_id, full_name, metadata")
+    .select("id, org_id, full_name, archived_at")
     .eq("org_id", resolvedOrgId)
     .eq("id", contactId)
     .maybeSingle()
@@ -415,18 +464,34 @@ export async function archiveContact(contactId: string, orgId?: string) {
     throw new Error("Contact not found")
   }
 
+  const archivedAt = new Date().toISOString()
   const { data, error } = await supabase
     .from("contacts")
-    .update({ metadata: { ...(existing.metadata ?? {}), archived_at: new Date().toISOString() } })
+    .update({ archived_at: archivedAt })
     .eq("org_id", resolvedOrgId)
     .eq("id", contactId)
-    .select("id, org_id, full_name, metadata")
+    .select("id, org_id, full_name, archived_at")
     .maybeSingle()
 
   if (error || !data) {
     throw new Error(`Failed to archive contact: ${error?.message}`)
   }
 
+  // Same rule as companies: the record leaving the list has to take its
+  // relationships with it, or role-based reads keep treating it as live.
+  await endPartyRolesForPartyWithClient(supabase, resolvedOrgId, userId, {
+    kind: "contact",
+    partyId: contactId,
+    endedAt: archivedAt,
+  })
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "contact_archived",
+    entityType: "contact",
+    entityId: data.id as string,
+    payload: { full_name: data.full_name },
+  })
   await recordAudit({
     orgId: resolvedOrgId,
     actorId: userId,
@@ -442,11 +507,11 @@ export async function archiveContact(contactId: string, orgId?: string) {
 
 export async function restoreContact(contactId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "directory.write"], { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(DIRECTORY_WRITE_PERMISSIONS, { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: existingError } = await supabase
     .from("contacts")
-    .select("id, org_id, full_name, metadata")
+    .select("id, org_id, full_name, archived_at")
     .eq("org_id", resolvedOrgId)
     .eq("id", contactId)
     .maybeSingle()
@@ -455,21 +520,34 @@ export async function restoreContact(contactId: string, orgId?: string) {
     throw new Error("Contact not found")
   }
 
-  const metadata = { ...(existing.metadata ?? {}) }
-  delete metadata.archived_at
-
   const { data, error } = await supabase
     .from("contacts")
-    .update({ metadata })
+    .update({ archived_at: null })
     .eq("org_id", resolvedOrgId)
     .eq("id", contactId)
-    .select("id, org_id, full_name, metadata")
+    .select("id, org_id, full_name, archived_at")
     .maybeSingle()
 
   if (error || !data) {
     throw new Error(`Failed to restore contact: ${error?.message}`)
   }
 
+  const archivedAt = existing.archived_at as string | null
+  if (archivedAt) {
+    await revivePartyRolesEndedAtWithClient(supabase, resolvedOrgId, userId, {
+      kind: "contact",
+      partyId: contactId,
+      endedAt: archivedAt,
+    })
+  }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "contact_restored",
+    entityType: "contact",
+    entityId: data.id as string,
+    payload: { full_name: data.full_name },
+  })
   await recordAudit({
     orgId: resolvedOrgId,
     actorId: userId,
@@ -486,7 +564,7 @@ export async function restoreContact(contactId: string, orgId?: string) {
 export async function linkContactToCompany(input: ContactCompanyLinkInput, orgId?: string) {
   const parsed = contactCompanyLinkSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "directory.write"], { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(DIRECTORY_WRITE_PERMISSIONS, { supabase, orgId: resolvedOrgId, userId })
 
   const { error } = await supabase
     .from("contact_company_links")
@@ -515,7 +593,7 @@ export async function linkContactToCompany(input: ContactCompanyLinkInput, orgId
 
 export async function unlinkContactFromCompany({ contactId, companyId, orgId }: { contactId: string; companyId: string; orgId?: string }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "directory.write"], { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(DIRECTORY_WRITE_PERMISSIONS, { supabase, orgId: resolvedOrgId, userId })
 
   const { error } = await supabase
     .from("contact_company_links")
@@ -541,6 +619,15 @@ export async function unlinkContactFromCompany({ contactId, companyId, orgId }: 
   return true
 }
 
+/**
+ * A person's schedule and task assignments, newest first.
+ *
+ * Capped and ordered on purpose: these queries had neither, so a
+ * long-tenured superintendent's activity tab rendered every assignment they
+ * had ever held, in whatever order the database returned them.
+ */
+const CONTACT_ASSIGNMENT_LIMIT = 100
+
 export async function getContactAssignments(contactId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
 
@@ -554,7 +641,9 @@ export async function getContactAssignments(contactId: string, orgId?: string) {
       `,
       )
       .eq("org_id", resolvedOrgId)
-      .eq("contact_id", contactId),
+      .eq("contact_id", contactId)
+      .order("created_at", { ascending: false })
+      .limit(CONTACT_ASSIGNMENT_LIMIT + 1),
     supabase
       .from("task_assignments")
       .select(
@@ -564,7 +653,9 @@ export async function getContactAssignments(contactId: string, orgId?: string) {
       `,
       )
       .eq("org_id", resolvedOrgId)
-      .eq("contact_id", contactId),
+      .eq("contact_id", contactId)
+      .order("created_at", { ascending: false })
+      .limit(CONTACT_ASSIGNMENT_LIMIT + 1),
   ])
 
   if (scheduleAssignments.error) {
@@ -574,11 +665,17 @@ export async function getContactAssignments(contactId: string, orgId?: string) {
     throw new Error(`Failed to load task assignments: ${taskAssignments.error.message}`)
   }
 
+  // One row past the cap is the probe that tells the UI it truncated.
+  const scheduleRows = (scheduleAssignments.data ?? []).slice(0, CONTACT_ASSIGNMENT_LIMIT)
+  const taskRows = (taskAssignments.data ?? []).slice(0, CONTACT_ASSIGNMENT_LIMIT)
+  const scheduleTruncated = (scheduleAssignments.data ?? []).length > CONTACT_ASSIGNMENT_LIMIT
+  const tasksTruncated = (taskAssignments.data ?? []).length > CONTACT_ASSIGNMENT_LIMIT
+
   const projectIds = Array.from(
     new Set(
       [
-        ...(scheduleAssignments.data ?? []).map((row: any) => row.project_id),
-        ...(taskAssignments.data ?? []).map((row: any) =>
+        ...scheduleRows.map((row: any) => row.project_id),
+        ...taskRows.map((row: any) =>
           (Array.isArray(row.tasks) ? row.tasks[0] : row.tasks)?.project_id,
         ),
       ].filter(Boolean),
@@ -606,7 +703,10 @@ export async function getContactAssignments(contactId: string, orgId?: string) {
   }
 
   return {
-    schedule: (scheduleAssignments.data ?? []).map((row: any) => ({
+    limit: CONTACT_ASSIGNMENT_LIMIT,
+    scheduleTruncated,
+    tasksTruncated,
+    schedule: scheduleRows.map((row: any) => ({
       id: row.id,
       project_id: row.project_id,
       schedule_item_id: row.schedule_item_id,
@@ -620,7 +720,7 @@ export async function getContactAssignments(contactId: string, orgId?: string) {
       project: row.project_id ? projectById.get(row.project_id) : undefined,
       schedule_item: Array.isArray(row.schedule_items) ? row.schedule_items[0] : row.schedule_items,
     })),
-    tasks: (taskAssignments.data ?? []).map((row: any) => ({
+    tasks: taskRows.map((row: any) => ({
       id: row.id,
       task_id: row.task_id,
       role: row.role ?? undefined,

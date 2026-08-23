@@ -10,7 +10,8 @@ import {
   getVendorAccountLedger,
   type VendorLedgerEntryKind,
 } from "@/lib/services/vendor-account";
-import { loadCompanyAccount, loadCostCodesEnabledForProjects } from "../page-data";
+import { VendorAccountSummaryStrip } from "@/components/directory/account/vendor-account-summary-strip";
+import { loadVendorCompany, loadCostCodesEnabledForProjects, loadVendorLedger } from "../page-data";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -42,20 +43,31 @@ export default async function CompanyTransactionsPage({ params, searchParams }: 
   await connection();
   const { id } = await params;
   if (!z.string().uuid().safeParse(id).success) notFound();
-  const account = await loadCompanyAccount(id).catch(() => null);
-  if (!account) notFound();
-  if (account.posture !== "vendor") redirect(`/directory/${id}`);
+  const account = await loadVendorCompany(id);
+  // Null means: not a company, or a company with no vendor role.
+  if (!account) redirect(`/directory/${id}`);
 
   const query = (await searchParams) ?? {};
-  const ledger = await getVendorAccountLedger(id, undefined, {
-    kinds: parseKinds(query.kind),
-    statuses: query.status?.split(",").filter(Boolean),
-    projectId: query.project,
-    overdueOnly: query.filter === "overdue",
-    from: query.from,
-    to: query.to,
-    page: Number(query.page) || 1,
-  });
+  const hasFilters = Boolean(
+    query.kind || query.status || query.project || query.filter || query.from || query.to ||
+      (Number(query.page) || 1) > 1,
+  );
+
+  // The layout already built the unfiltered ledger for this company to compute
+  // its tab badges, and `loadVendorLedger` caches it per request. Re-running a
+  // full four-source, 500-row-per-source build for an unfiltered view meant
+  // every visit to this tab paid for the same work twice.
+  const ledger = hasFilters
+    ? await getVendorAccountLedger(id, undefined, {
+        kinds: parseKinds(query.kind),
+        statuses: query.status?.split(",").filter(Boolean),
+        projectId: query.project,
+        overdueOnly: query.filter === "overdue",
+        from: query.from,
+        to: query.to,
+        page: Number(query.page) || 1,
+      })
+    : await loadVendorLedger(id);
 
   // Cost coding is a per-project setting, and this register spans projects, so
   // the rows on this page carry the right answer into the detail workspace.
@@ -66,15 +78,24 @@ export default async function CompanyTransactionsPage({ params, searchParams }: 
   );
 
   return (
-    <VendorTransactionsTable
-      companyId={id}
-      companyName={account.company.name}
-      entries={ledger.entries}
-      pagination={ledger.pagination}
-      facets={ledger.facets}
-      truncated={ledger.truncated}
-      canViewBills={ledger.summary.can_view_bills}
-      costCodesEnabledByProject={costCodesEnabledByProject}
-    />
+    <>
+      <VendorAccountSummaryStrip
+        companyId={id}
+        summary={ledger.summary}
+        accounting={ledger.accounting}
+        books={ledger.books}
+        truncated={ledger.truncated}
+      />
+      <VendorTransactionsTable
+        companyId={id}
+        companyName={account.company.name}
+        entries={ledger.entries}
+        pagination={ledger.pagination}
+        facets={ledger.facets}
+        truncated={ledger.truncated}
+        canViewBills={ledger.summary.can_view_bills}
+        costCodesEnabledByProject={costCodesEnabledByProject}
+      />
+    </>
   );
 }

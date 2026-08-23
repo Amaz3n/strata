@@ -29,8 +29,8 @@ export function InvoiceBottomBar({
       exit={{ y: 100, opacity: 0 }}
       transition={{ type: "spring", stiffness: 400, damping: 25 }}
     >
-      <div className="pointer-events-auto backdrop-filter min-w-[400px] backdrop-blur-lg dark:bg-[#1A1A1A]/80 bg-[#F6F6F3]/80 h-12 justify-between items-center flex px-4 border dark:border-[#2C2C2C] border-[#DCDAD2] rounded-lg">
-        <span className="text-sm text-[#878787]">
+      <div className="pointer-events-auto flex h-12 min-w-[400px] items-center justify-between border bg-background/80 px-4 backdrop-blur-lg">
+        <span className="text-sm text-muted-foreground">
           {selectedCount} selected
         </span>
 

@@ -16,6 +16,7 @@ export default async function RfisPortalPage({ params }: Params) {
   try {
     access = await assertPortalActionAccess(token, {
       portalType: "sub",
+      requireProject: true,
       requireCompany: true,
       permission: "can_view_rfis",
     })

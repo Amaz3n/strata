@@ -44,8 +44,11 @@ test("QBO invoice sync honors the invoice-only switch and inbound ownership", ()
 
   const invoiceSync = adapter.slice(
     adapter.indexOf("export async function syncInvoiceToQBO"),
-    adapter.indexOf("export async function forceSyncInvoiceToQBO"),
+    adapter.indexOf("export async function syncPaymentToQBO"),
   )
+  // A moved or renamed boundary would silently widen the slice to the rest of
+  // the file and make the doesNotMatch assertions below meaningless.
+  assert.ok(invoiceSync.length > 0 && invoiceSync.length < adapter.length, "invoice sync slice boundaries are stale")
   assert.doesNotMatch(invoiceSync, /qbo_sync_status/)
   assert.doesNotMatch(invoiceSync, /qbo_synced_at/)
   assert.match(invoiceSync, /select\("external_id, external_version"\)/)
@@ -70,7 +73,7 @@ test("provider invoice-line links keep item identity separate from account codin
 })
 
 test("invoice-item setup only accepts existing active QBO items", () => {
-  const service = read("lib/services/accounting-invoice-items.ts")
+  const service = read("lib/integrations/accounting/qbo/invoice-items.ts")
   const actions = read("app/(app)/settings/integrations/invoice-item-actions.ts")
 
   assert.match(service, /getInvoiceItemById/)

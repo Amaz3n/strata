@@ -56,6 +56,7 @@ function mapExpense(row: any, url: string | null): MobileExpenseDTO {
     status: row.status ?? "submitted",
     receipt_url: url,
     created_at: row.created_at,
+    accounting_sync_status: row.qbo_sync_status ?? null,
   }
 }
 
@@ -64,7 +65,7 @@ export async function listMobileExpenses(context: MobileOrgContext, projectId: s
   const { data, error } = await context.serviceSupabase
     .from("project_expenses")
     .select(
-      "id, project_id, vendor_name_text, description, expense_date, amount_cents, tax_cents, payment_method, status, receipt_file_id, created_at, " +
+      "id, project_id, vendor_name_text, description, expense_date, amount_cents, tax_cents, payment_method, status, receipt_file_id, created_at, qbo_sync_status, " +
         "receipt:files!project_expenses_receipt_file_id_fkey(id, file_name, storage_path)",
     )
     .eq("org_id", context.orgId)
@@ -122,7 +123,7 @@ export async function createMobileExpense(
   const existing = await context.serviceSupabase
     .from("project_expenses")
     .select(
-      "id, project_id, vendor_name_text, description, expense_date, amount_cents, tax_cents, payment_method, status, created_at, " +
+      "id, project_id, vendor_name_text, description, expense_date, amount_cents, tax_cents, payment_method, status, created_at, qbo_sync_status, " +
         "receipt:files!project_expenses_receipt_file_id_fkey(id, file_name, storage_path)",
     )
     .eq("org_id", context.orgId)
@@ -159,7 +160,7 @@ export async function createMobileExpense(
       status: "submitted",
     })
     .select(
-      "id, project_id, vendor_name_text, description, expense_date, amount_cents, tax_cents, payment_method, status, receipt_file_id, created_at, " +
+      "id, project_id, vendor_name_text, description, expense_date, amount_cents, tax_cents, payment_method, status, receipt_file_id, created_at, qbo_sync_status, " +
         "receipt:files!project_expenses_receipt_file_id_fkey(id, file_name, storage_path)",
     )
     .single()

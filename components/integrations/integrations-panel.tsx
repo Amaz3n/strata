@@ -1,8 +1,9 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import { formatDistanceToNow } from "date-fns"
-import { ChevronRight, Download, FileSpreadsheet, Pencil, Plus, Shield } from "lucide-react"
+import { AlertCircle, ChevronRight, Download, FileSpreadsheet, Pencil, Plus, Shield } from "lucide-react"
 import { toast } from "sonner"
 
 import {
@@ -16,6 +17,7 @@ import {
   type AccountingRoute,
   type IntegrationsOverview,
 } from "@/app/(app)/settings/integrations/actions"
+import { retryFailedAccountingOutboxAction } from "@/app/(app)/integrations/accounting-sync-actions"
 import { unwrapAction } from "@/lib/action-result"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
@@ -29,7 +31,7 @@ import { ACCOUNTING_PROVIDERS, ACCOUNTING_PROVIDER_KEYS, CONNECTABLE_ACCOUNTING_
 import { BATCH_FORMATS, type AccountingBatchFormat } from "@/lib/integrations/accounting/file/formats"
 import type { AccountingBatchSummary } from "@/lib/services/accounting-batches"
 import type { AccountingDimensionKind, AccountingProviderKey } from "@/lib/integrations/accounting/provider"
-import type { AccountingExportKind } from "@/lib/services/accounting-export"
+import type { AccountingExportKind } from "@/lib/services/financial-exports"
 import type { StripeConnectedAccount } from "@/lib/services/stripe-connected-accounts"
 import { AccountingConnectionSheet } from "@/components/integrations/accounting-connection-sheet"
 import { AccountingRoutingDialog } from "@/components/integrations/accounting-routing-dialog"
@@ -42,6 +44,22 @@ import type { ConnectionTone } from "@/components/integrations/connection-status
 interface Props {
   /** Server-rendered seed so the Payments row never flashes empty. */
   initialStripe?: StripeConnectedAccount | null
+}
+
+/**
+ * The OAuth callback redirects back here with an outcome in the query string.
+ * Nothing read them, so a declined or expired authorization simply returned the
+ * user to an unchanged page with no explanation.
+ */
+const OAUTH_ERROR_MESSAGES: Record<string, string> = {
+  qbo_denied: `${ACCOUNTING_PROVIDERS.qbo.name} access was declined, so nothing was connected.`,
+  qbo_invalid: `${ACCOUNTING_PROVIDERS.qbo.name} sent back an incomplete response. Start the connection again.`,
+  qbo_state_mismatch: "That connection request expired or did not match. Start it again from this page.",
+  qbo_failed: `Arc could not finish connecting to ${ACCOUNTING_PROVIDERS.qbo.name}. Try again.`,
+}
+
+const OAUTH_SUCCESS_MESSAGES: Record<string, string> = {
+  qbo_connected: `${ACCOUNTING_PROVIDERS.qbo.name} connected.`,
 }
 
 const EXPORT_KINDS: { kind: AccountingExportKind; label: string }[] = [
@@ -72,6 +90,7 @@ function IntegrationRow({
   logoUrl,
   title,
   subtitle,
+  error,
   meta,
   tone,
   statusLabel,
@@ -81,6 +100,8 @@ function IntegrationRow({
   logoUrl: string | null
   title: string
   subtitle: string
+  /** A broken connection's reason. Replaces the subtitle and is toned as a fault, not a description. */
+  error?: string | null
   meta?: string
   tone: ConnectionTone
   statusLabel: string
@@ -104,7 +125,14 @@ function IntegrationRow({
           <span className="truncate text-sm font-medium">{title}</span>
           <ConnectionStatusBadge tone={tone} label={statusLabel} />
         </div>
-        <p className="mt-0.5 truncate text-xs text-muted-foreground">{subtitle}</p>
+        {error ? (
+          <p className="mt-0.5 flex items-center gap-1 truncate text-xs font-medium text-destructive">
+            <AlertCircle className="size-3 shrink-0" />
+            <span className="truncate">{error}</span>
+          </p>
+        ) : (
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">{subtitle}</p>
+        )}
       </div>
       {meta ? <span className="hidden shrink-0 text-xs tabular-nums text-muted-foreground sm:block">{meta}</span> : null}
       <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
@@ -144,6 +172,11 @@ export function IntegrationsPanel({ initialStripe = null }: Props) {
   const [startDate, setStartDate] = useState(() => `${new Date().getFullYear()}-01-01`)
   const [endDate, setEndDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [exportingKind, setExportingKind] = useState<AccountingExportKind | null>(null)
+  const [retryingFailedJobs, setRetryingFailedJobs] = useState(false)
+
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const oauthOutcomeHandled = useRef(false)
 
   const load = useCallback(async () => {
     setLoadError(null)
@@ -161,6 +194,38 @@ export function IntegrationsPanel({ initialStripe = null }: Props) {
       setBatches([])
     }
   }, [])
+
+  // Report the OAuth outcome once, then strip the params so a refresh does not repeat it.
+  useEffect(() => {
+    if (oauthOutcomeHandled.current) return
+    const errorCode = searchParams.get("error")
+    const successCode = searchParams.get("success")
+    if (!errorCode && !successCode) return
+    oauthOutcomeHandled.current = true
+    if (errorCode) {
+      toast.error("Couldn't connect", { description: OAUTH_ERROR_MESSAGES[errorCode] ?? "The connection did not complete." })
+    } else if (successCode) {
+      toast.success(OAUTH_SUCCESS_MESSAGES[successCode] ?? "Connected.")
+    }
+    const next = new URLSearchParams(searchParams.toString())
+    next.delete("error")
+    next.delete("success")
+    const query = next.toString()
+    router.replace(query ? `/settings?${query}` : "/settings", { scroll: false })
+  }, [router, searchParams])
+
+  const retryFailedJobs = async () => {
+    setRetryingFailedJobs(true)
+    try {
+      const { revived } = await retryFailedAccountingOutboxAction()
+      toast.success(`Revived ${revived} ${revived === 1 ? "job" : "jobs"}`)
+      await load()
+    } catch (error) {
+      toast.error("Couldn't retry", { description: error instanceof Error ? error.message : "Try again." })
+    } finally {
+      setRetryingFailedJobs(false)
+    }
+  }
 
   const createFileConnection = async () => {
     setConnecting(true)
@@ -373,11 +438,13 @@ export function IntegrationsPanel({ initialStripe = null }: Props) {
           <div className="border border-border bg-card">
             <div className="grid grid-cols-2 divide-x divide-border border-b border-border sm:grid-cols-5">
               {[
-                { label: "Waiting", value: syncPosture.pendingCount },
-                { label: "Failed", value: syncPosture.errorCount },
-                { label: "Needs review", value: syncPosture.needsReviewCount },
-                { label: "Conflict", value: syncPosture.conflictCount },
-                { label: "Gave up", value: syncPosture.failedJobCount },
+                { label: "Waiting", value: syncPosture.pendingCount, retryable: false },
+                { label: "Failed", value: syncPosture.errorCount, retryable: false },
+                { label: "Needs review", value: syncPosture.needsReviewCount, retryable: false },
+                { label: "Conflict", value: syncPosture.conflictCount, retryable: false },
+                // Dead-lettered outbox jobs: the only counter with nothing that
+                // could ever move it, until this button.
+                { label: "Gave up", value: syncPosture.failedJobCount, retryable: true },
               ].map((tile) => (
                 <div key={tile.label} className="px-4 py-3">
                   <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{tile.label}</p>
@@ -389,6 +456,17 @@ export function IntegrationsPanel({ initialStripe = null }: Props) {
                   >
                     {tile.value}
                   </p>
+                  {tile.retryable && tile.value > 0 ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="mt-2 h-7 px-2 text-xs"
+                      onClick={() => void retryFailedJobs()}
+                      disabled={retryingFailedJobs}
+                    >
+                      {retryingFailedJobs ? "Retrying…" : "Retry failed"}
+                    </Button>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -640,7 +718,8 @@ function AccountingRow({ connection, onOpen }: { connection: AccountingConnectio
     <IntegrationRow
       logoUrl={provider.logoUrl}
       title={connection.label}
-      subtitle={connection.last_error ? connection.last_error : `${provider.name} · ${companyFile}`}
+      subtitle={`${provider.name} · ${companyFile}`}
+      error={connection.last_error}
       meta={connection.last_sync_at ? `Synced ${formatDistanceToNow(new Date(connection.last_sync_at))} ago` : "Never synced"}
       tone={accountingStatusTone(connection.status)}
       statusLabel={accountingStatusLabel(connection.status)}

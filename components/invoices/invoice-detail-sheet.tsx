@@ -18,6 +18,7 @@ import { Separator } from "@/components/ui/separator"
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
 import { AccountingSyncBadge } from "@/components/accounting/accounting-sync-badge"
+import { accountingProviderLabel, isAccountingProviderKey } from "@/components/accounting/provider-label"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
 import {
   listAttachmentsAction,
@@ -108,9 +109,10 @@ function formatMoneyFromCents(cents?: number | null) {
 function paymentSourceLabel(payment: Payment, ownerLabel = "Client"): string {
   const metaSource = (payment.metadata as Record<string, any> | undefined)?.source
   const hasAllocation = Boolean((payment.metadata as Record<string, any> | undefined)?.payment_allocation_id)
-  if (payment.provider === "qbo") {
-    if (hasAllocation || metaSource === "payment_allocation") return "QuickBooks allocation"
-    return metaSource === "client_deposit" ? `${ownerLabel} deposit · QuickBooks` : "QuickBooks"
+  if (isAccountingProviderKey(payment.provider)) {
+    const providerName = accountingProviderLabel(payment.provider)
+    if (hasAllocation || metaSource === "payment_allocation") return `${providerName} allocation`
+    return metaSource === "client_deposit" ? `${ownerLabel} deposit · ${providerName}` : providerName
   }
   if (payment.provider === "stripe") return "Online payment"
   if (payment.provider === "manual") return "Manual"
@@ -512,7 +514,7 @@ export function InvoiceDetailSheet({
       <SheetContent
         side="right"
         mobileFullscreen
-        className="sm:max-w-xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] overflow-hidden shadow-2xl flex flex-col bg-white dark:bg-[#0C0C0C] gap-0 [&>button]:hidden fast-sheet-animation"
+        className="sm:max-w-xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] overflow-hidden shadow-2xl flex flex-col bg-background gap-0 [&>button]:hidden fast-sheet-animation"
         style={{ animationDuration: "150ms", transitionDuration: "150ms" } as React.CSSProperties}
       >
         <div className="flex-1 overflow-y-auto">
@@ -539,7 +541,7 @@ export function InvoiceDetailSheet({
                       />
                     )}
                     {isClientDeposit && (
-                      <Badge variant="outline" className="border-blue-300 text-blue-700 dark:border-blue-900 dark:text-blue-300">
+                      <Badge variant="outline" className="border-primary/30 text-primary">
                         Client deposit
                       </Badge>
                     )}
@@ -609,8 +611,8 @@ export function InvoiceDetailSheet({
           ) : (
             <div className="px-5 py-5 space-y-4">
             {numberAdjustedByQbo && (
-              <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                Invoice number updated after a QuickBooks conflict
+              <div className="border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-foreground">
+                Invoice number updated after an accounting conflict
                 {previousInvoiceNumber ? ` (previous: ${previousInvoiceNumber}).` : "."}
               </div>
             )}
@@ -763,7 +765,7 @@ export function InvoiceDetailSheet({
               </div>
 
               <div className="flex items-center justify-between">
-                <span className="text-sm text-muted-foreground">QuickBooks sync</span>
+                <span className="text-sm text-muted-foreground">Accounting sync</span>
                 {onManualResync && (
                   <Button size="sm" variant="outline" onClick={onManualResync} disabled={manualResyncing}>
                     <RefreshCw className={`h-4 w-4 mr-2 ${manualResyncing ? "animate-spin" : ""}`} />
@@ -776,13 +778,13 @@ export function InvoiceDetailSheet({
                   {syncLogs.map((log) => (
                     <div key={log.id} className="rounded-md border px-3 py-2 text-sm">
                       <div className="flex items-center justify-between">
-                        <span className="font-medium capitalize">{log.status}</span>
+                        <AccountingSyncBadge status={log.status} error={log.error} />
                         <span className="text-xs text-muted-foreground">
                           {log.last_synced_at ? new Date(log.last_synced_at).toLocaleString() : "—"}
                         </span>
                       </div>
                       {log.qbo_id && (
-                        <p className="text-xs text-muted-foreground mt-1">QBO ID: {log.qbo_id}</p>
+                        <p className="text-xs text-muted-foreground mt-1">Provider ID: {log.qbo_id}</p>
                       )}
                       {log.error && <p className="text-xs text-destructive mt-1">{log.error}</p>}
                     </div>
@@ -883,7 +885,7 @@ export function InvoiceDetailSheet({
                                 className={
                                   waiver.status === "released"
                                     ? "shrink-0 border-success/30 bg-success/10 text-success"
-                                    : "shrink-0 border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300"
+                                    : "shrink-0 border-warning/30 bg-warning/10 text-warning"
                                 }
                               >
                                 {waiver.status === "released" ? "Released" : "Pending payment"}
@@ -1023,7 +1025,7 @@ export function InvoiceDetailSheet({
             <DialogHeader>
               <DialogTitle>Record payment</DialogTitle>
               <DialogDescription>
-                Add a manual payment for {invoice?.invoice_number ?? "this invoice"}. This updates the Arc balance and queues the payment for QuickBooks sync.
+                Add a manual payment for {invoice?.invoice_number ?? "this invoice"}. This updates the Arc balance and queues the payment for accounting sync.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-2">
@@ -1068,7 +1070,7 @@ export function InvoiceDetailSheet({
                   id="invoice-payment-reference"
                   value={paymentReference}
                   onChange={(event) => setPaymentReference(event.target.value)}
-                  placeholder="Check number, note, or QBO payment ref"
+                  placeholder="Check number, note, or payment reference"
                 />
               </div>
             </div>

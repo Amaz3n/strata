@@ -1015,8 +1015,21 @@ export async function listImportableQboRecords({
     )
     const projectNameById = new Map<string, string>()
     if (projectIds.length > 0) {
-      const { data: projectRows } = await supabase.from("projects").select("id, name, qbo_customer_id, qbo_customer_name").eq("org_id", resolvedOrgId).in("id", projectIds)
+      const [{ data: projectRows }, { data: projectMapRows }] = await Promise.all([
+        supabase.from("projects").select("id, name, qbo_customer_id, qbo_customer_name").eq("org_id", resolvedOrgId).in("id", projectIds),
+        // Customer identity lives in the entity map now; the project columns
+        // are pre-cutover fallback only.
+        supabase.from("accounting_entity_map").select("project_id, dimensions").eq("org_id", resolvedOrgId).in("project_id", projectIds),
+      ])
       for (const projectRow of projectRows ?? []) projectNameById.set(projectRow.id, projectRow.name)
+
+      const mappedCustomerByProject = new Map<string, { id: string; name: string | null }>()
+      for (const mapRow of projectMapRows ?? []) {
+        const customer = (mapRow.dimensions as Record<string, { id?: string; name?: string }> | null)?.customer
+        if (mapRow.project_id && customer?.id) {
+          mappedCustomerByProject.set(mapRow.project_id, { id: String(customer.id), name: customer.name ?? null })
+        }
+      }
 
       const projectById = new Map((projectRows ?? []).map((projectRow) => [projectRow.id, projectRow]))
       for (const record of records) {
@@ -1025,7 +1038,10 @@ export async function listImportableQboRecords({
         for (const doc of record.linkedDocs) {
           const billRow = billByQboId.get(doc.qboId)
           const projectRow = billRow?.project_id ? projectById.get(billRow.project_id) : null
-          if (projectRow?.qbo_customer_id) {
+          const mappedCustomer = billRow?.project_id ? mappedCustomerByProject.get(billRow.project_id) : null
+          if (mappedCustomer) {
+            customers.set(mappedCustomer.id, mappedCustomer.name ?? projectRow?.name ?? "Customer")
+          } else if (projectRow?.qbo_customer_id) {
             customers.set(String(projectRow.qbo_customer_id), projectRow.qbo_customer_name ?? projectRow.name)
           }
         }
@@ -1105,8 +1121,18 @@ async function linkSyncRecord(params: {
   if (error) throw new Error(`Failed to save QuickBooks import mapping: ${error.message}`)
 }
 
-/** Clear any "ignored / unmatched" webhook events for this QBO id so it leaves the drift queue. */
-async function markEventsResolved(supabase: ReturnType<typeof createServiceSupabaseClient>, qboId: string, realmId: string) {
+/**
+ * Clear any "ignored / unmatched" webhook events for this QBO id so it leaves
+ * the drift queue. Scoped by entity name: QBO ids are per-entity-type
+ * sequences, so Bill 1042 and Invoice 1042 routinely coexist in one realm —
+ * an unscoped resolve silently discarded the OTHER entity's pending change.
+ */
+async function markEventsResolved(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  qboId: string,
+  realmId: string,
+  entityNames: string[],
+) {
   await supabase
     .from("qbo_webhook_events")
     .update({
@@ -1116,6 +1142,7 @@ async function markEventsResolved(supabase: ReturnType<typeof createServiceSupab
     })
     .eq("realm_id", realmId)
     .eq("entity_qbo_id", qboId)
+    .in("entity_name", entityNames)
     .in("process_status", ["ignored", "pending", "error"])
 }
 
@@ -1397,7 +1424,7 @@ async function importInvoice(ctx: ResolvedContext, client: QBOClient, connection
     externalInvoiceId: qboId,
     lines: linkedLines,
   })
-  await markEventsResolved(supabase, qboId, ctx.externalAccountId)
+  await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["Invoice"])
   await recordEvent({
     orgId,
     actorId: ctx.userId,
@@ -1588,7 +1615,7 @@ async function importExpense(
       entityId: expenseRow.id,
       qboId,
     })
-    await markEventsResolved(supabase, qboId, ctx.externalAccountId)
+    await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["Purchase", "Bill"])
     await recordEvent({
       orgId,
       actorId: ctx.userId,
@@ -1687,7 +1714,7 @@ async function importExpense(
     created += 1
   }
 
-  await markEventsResolved(supabase, qboId, ctx.externalAccountId)
+  await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["Purchase", "Bill"])
   return { skipped: created === 0, entityId: firstEntityId ?? undefined }
 }
 
@@ -1803,7 +1830,7 @@ async function repairExistingExpenseCreditRows(params: {
     repaired += 1
   }
 
-  await markEventsResolved(supabase, qboId, ctx.externalAccountId)
+  await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["Purchase"])
   return { skipped: repaired === 0, entityId: firstEntityId }
 }
 
@@ -1983,7 +2010,7 @@ async function importExpenseCredit(
       pushable: false,
       metadata: { source: "expense_credit" },
     })
-    await markEventsResolved(supabase, qboId, ctx.externalAccountId)
+    await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["Purchase"])
     await recordEvent({
       orgId,
       actorId: ctx.userId,
@@ -2079,7 +2106,7 @@ async function importExpenseCredit(
     created += 1
   }
 
-  await markEventsResolved(supabase, qboId, ctx.externalAccountId)
+  await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["Purchase"])
   return { skipped: created === 0, entityId: firstEntityId ?? undefined }
 }
 
@@ -2276,7 +2303,7 @@ async function importBill(
     .eq("org_id", orgId)
     .eq("id", billRow.id)
   if (completeBillError) throw new Error(`Failed to finalize imported bill: ${completeBillError.message}`)
-  await markEventsResolved(supabase, qboId, ctx.externalAccountId)
+  await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["Bill"])
   await recordEvent({
     orgId,
     actorId: ctx.userId,
@@ -2458,7 +2485,7 @@ async function importVendorCredit(
   if (completeCreditError) {
     throw new Error(`Failed to finalize imported vendor credit: ${completeCreditError.message}`)
   }
-  await markEventsResolved(supabase, qboId, ctx.externalAccountId)
+  await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["VendorCredit"])
   await recordEvent({
     orgId,
     actorId: ctx.userId,
@@ -2636,7 +2663,9 @@ async function importPayment(ctx: ResolvedContext, client: QBOClient, connection
       continue
     }
 
-    const { data: paymentRow, error: paymentError } = await supabase
+    // idempotency_key rides the partial unique index on payments — two
+    // concurrent import runs cannot double-insert the same QBO payment.
+    const { data: insertedRow, error: paymentError } = await supabase
       .from("payments")
       .insert({
         org_id: orgId,
@@ -2651,6 +2680,7 @@ async function importPayment(ctx: ResolvedContext, client: QBOClient, connection
         provider_payment_id: providerPaymentId,
         status: "succeeded",
         received_at: receivedAt ? new Date(receivedAt).toISOString() : nowIso,
+        idempotency_key: `qbo-import:${providerPaymentId}`,
         metadata: {
           imported_from_qbo: true,
           qbo_id: qboId,
@@ -2660,7 +2690,19 @@ async function importPayment(ctx: ResolvedContext, client: QBOClient, connection
       .select("id")
       .single()
 
-    if (paymentError || !paymentRow) throw new Error(paymentError?.message ?? "Failed to record payment")
+    let paymentRow = insertedRow
+    if (paymentError?.code === "23505") {
+      // A concurrent run won the insert — adopt its row.
+      const { data: winner } = await supabase
+        .from("payments")
+        .select("id")
+        .eq("org_id", orgId)
+        .eq("provider", "qbo")
+        .eq("provider_payment_id", providerPaymentId)
+        .maybeSingle()
+      paymentRow = winner ?? null
+    }
+    if (!paymentRow) throw new Error(paymentError?.message ?? "Failed to record payment")
 
     firstEntityId ??= paymentRow.id
 
@@ -2694,7 +2736,7 @@ async function importPayment(ctx: ResolvedContext, client: QBOClient, connection
     created += 1
   }
 
-  await markEventsResolved(supabase, qboId, ctx.externalAccountId)
+  await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["Payment"])
 
   return { skipped: created === 0, entityId: firstEntityId ?? undefined }
 }
@@ -2920,7 +2962,7 @@ async function importBillPayment(ctx: ResolvedContext, client: QBOClient, connec
     }
   }
 
-  await markEventsResolved(supabase, qboId, ctx.externalAccountId)
+  await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["BillPayment"])
 
   return { skipped: !insertedAny, entityId: firstEntityId ?? undefined }
 }
@@ -3086,7 +3128,7 @@ async function importJournalEntry(
     created += 1
   }
 
-  await markEventsResolved(supabase, qboId, ctx.externalAccountId)
+  await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["JournalEntry"])
   return { skipped: created === 0 }
 }
 
@@ -3233,6 +3275,9 @@ async function importClientDeposit(
         provider_payment_id: `qbo_deposit_${qboId}_${line.Id}`,
         status: "succeeded",
         received_at: new Date(depositDate).toISOString(),
+        // Rides the partial unique index on payments.idempotency_key so a
+        // concurrent import run cannot double-insert this deposit.
+        idempotency_key: `qbo-import:qbo_deposit_${qboId}_${line.Id}`,
         metadata: {
           imported_from_qbo: true,
           historical: true,
@@ -3287,7 +3332,7 @@ async function importClientDeposit(
     created += 1
   }
 
-  await markEventsResolved(supabase, qboId, ctx.externalAccountId)
+  await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["JournalEntry"])
   return { skipped: created === 0, entityId: firstEntityId ?? undefined }
 }
 
@@ -3350,7 +3395,7 @@ export async function linkExistingQboImportRecord({
         pushable: false,
         metadata: { origin: "qbo_import_link", ownership: "inbound" },
       })
-      await markEventsResolved(supabase, qboId, connection.external_account_id)
+      await markEventsResolved(supabase, qboId, connection.external_account_id, ["Invoice"])
       await recordEvent({
         orgId: resolvedOrgId,
         actorId: userId,
@@ -3374,7 +3419,7 @@ export async function linkExistingQboImportRecord({
         entityId: data.id,
         qboId,
       })
-      await markEventsResolved(supabase, qboId, connection.external_account_id)
+      await markEventsResolved(supabase, qboId, connection.external_account_id, ["Purchase", "Bill"])
       await recordEvent({
         orgId: resolvedOrgId,
         actorId: userId,
@@ -3397,7 +3442,7 @@ export async function linkExistingQboImportRecord({
       entityId: data.id,
       qboId,
     })
-    await markEventsResolved(supabase, qboId, connection.external_account_id)
+    await markEventsResolved(supabase, qboId, connection.external_account_id, ["Bill"])
     await recordEvent({
       orgId: resolvedOrgId,
       actorId: userId,

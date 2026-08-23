@@ -1,26 +1,18 @@
-import { Skeleton } from "@/components/ui/skeleton"
+import { ArcLoadingMark } from "@/components/brand/arc-loading-mark"
+import type { ProductTier } from "@/lib/product-tier"
 
-export function AppNavigationFallback() {
+export function AppNavigationFallback({ tier = "residential" }: { tier?: ProductTier }) {
   return (
     <div
-      className="flex min-h-full w-full flex-1 flex-col gap-6"
+      className="flex min-h-full w-full flex-1 items-center justify-center"
       data-navigation-pending="true"
+      role="status"
       aria-busy="true"
       aria-label="Loading page"
     >
-      <div className="flex items-center justify-between gap-4">
-        <div className="space-y-2">
-          <Skeleton className="h-8 w-48" />
-          <Skeleton className="h-4 w-72 max-w-[70vw]" />
-        </div>
-        <Skeleton className="h-9 w-28" />
+      <div className="arc-loading-presence flex min-h-56 items-center justify-center">
+        <ArcLoadingMark tier={tier} className="h-16 w-auto sm:h-[4.5rem]" />
       </div>
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {Array.from({ length: 4 }).map((_, index) => (
-          <Skeleton key={index} className="h-28 rounded-xl" />
-        ))}
-      </div>
-      <Skeleton className="min-h-72 flex-1 rounded-xl" />
     </div>
   )
 }

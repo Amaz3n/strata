@@ -48,7 +48,6 @@ interface CloseWorkflowData {
   feeSummary?: ProjectFeeBillingSummary | null
   gmpSummary?: ProjectGmpControlSummary | null
   autopilot?: BillingAutopilotState
-  loadErrors?: string[]
 }
 
 interface ReceivablesTabProps {
@@ -356,7 +355,6 @@ export function ReceivablesTab({
               feeSummary={closeWorkflow.feeSummary}
               gmpSummary={closeWorkflow.gmpSummary}
               autopilot={closeWorkflow.autopilot}
-              loadErrors={closeWorkflow.loadErrors}
             />
           </TabsContent>
         ) : null}

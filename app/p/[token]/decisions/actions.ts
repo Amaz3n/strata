@@ -7,6 +7,7 @@ import { portalDecisionSchema } from "@/lib/validation/decisions"
 export async function loadPortalDecisionsAction(token: string) {
   const access = await assertPortalActionAccess(token, {
     portalType: "client",
+    requireProject: true,
     permission: "can_submit_selections",
   })
   return listDecisionsForPortal(access.org_id, access.project_id, access.contact_id ?? null)
@@ -15,6 +16,7 @@ export async function loadPortalDecisionsAction(token: string) {
 export async function decidePortalDecisionAction(token: string, input: unknown) {
   const access = await assertPortalActionAccess(token, {
     portalType: "client",
+    requireProject: true,
     permission: "can_submit_selections",
   })
   const parsed = portalDecisionSchema.parse(input)

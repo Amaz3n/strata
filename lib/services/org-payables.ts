@@ -425,7 +425,12 @@ export async function loadOrgPayablesDesk(
   ] = await Promise.allSettled([
     listCostCodes(orgId),
     getComplianceRules(orgId),
-    getCompaniesComplianceStatus(companyIds, orgId),
+    // Scoped to the jobs these payables are on: the release gate reads a
+    // vendor against the project overlay, so a chip resolved without it can
+    // read green on a bill the gate will stop.
+    getCompaniesComplianceStatus(companyIds, orgId, {
+      projectIds: [...new Set(bills.map((bill) => bill.project_id).filter(Boolean))],
+    }),
     listCompanyPaymentReadiness(companyIds, orgId),
     pageRunIds.length > 0
       ? supabase

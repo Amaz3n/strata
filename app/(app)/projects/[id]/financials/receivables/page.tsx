@@ -59,7 +59,6 @@ async function FinancialsReceivablesData({ id, periodId }: { id: string; periodI
                 feeSummary: financialsData.feeSummary,
                 gmpSummary: financialsData.gmpSummary,
                 autopilot: financialsData.autopilot,
-                loadErrors: financialsData.loadErrors,
               }
             : null
         }
@@ -75,7 +74,7 @@ async function FinancialsReceivablesData({ id, periodId }: { id: string; periodI
         contract={contract}
         scheduleItems={scheduleItems}
         builderInfo={builderInfo}
-        loadErrors={receivablesData.errors}
+        loadErrors={[...financialsData.loadErrors, ...receivablesData.errors]}
       />
     </PageLayout>
   )

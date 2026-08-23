@@ -43,9 +43,8 @@ export type NotificationType =
   | "lien_waiver_signed"
   | "team_member_invited"
   | "team_member_joined"
-  | "compliance_item_created"
-  | "compliance_item_due"
-  | "compliance_item_overdue"
+  | "compliance_document_submitted"
+  | "compliance_document_expiring"
   | "prequalification_submitted"
   | "prequalification_expiring"
   | "punch_item_created"
@@ -144,6 +143,9 @@ export type NotificationType =
   | "vendor_credit_applied"
   | "vendor_payout_destination_changed"
   | "accounting_reconciliation_drift"
+  | "accounting_connection_expired"
+  | "accounting_push_dead_lettered"
+  | "accounting_sync_needs_review"
 
 /**
  * The order groups appear in Settings → Notifications, and the header each one
@@ -248,10 +250,34 @@ export const EMAIL_NOTIFICATION_TYPES = [
     description: "Email me when Arc detects a new accounting connection or ledger discrepancy.",
   },
   {
+    key: "accounting_connection_expired",
+    category: "accounting",
+    label: "Accounting connection needs re-authorization",
+    description: "Email me the moment the accounting connection stops syncing and needs to be reconnected.",
+  },
+  {
+    key: "accounting_push_dead_lettered",
+    category: "accounting",
+    label: "Accounting sync gave up on a transaction",
+    description: "Email me when a transaction could not be posted to the accounting system and will not retry on its own.",
+  },
+  {
     key: "prequalification_submitted",
     category: "compliance",
     label: "Prequalification submitted",
     description: "Email me when a vendor returns a prequalification package I asked for.",
+  },
+  {
+    key: "compliance_document_submitted",
+    category: "compliance",
+    label: "Compliance document submitted",
+    description: "Email me when a vendor sends in a certificate or form that needs my review.",
+  },
+  {
+    key: "compliance_document_expiring",
+    category: "compliance",
+    label: "Compliance expiring",
+    description: "Email me when a vendor's insurance or license is about to lapse.",
   },
   {
     key: "vendor_payment_relationship_claimed",

@@ -5,6 +5,8 @@ import { getProvider } from "@/lib/integrations/accounting/registry"
 import type { PushResult } from "@/lib/integrations/accounting/provider"
 import { accountingPushBlockReason } from "@/lib/services/accounting-rules"
 import { isExternalLedgerAuthoritative } from "@/lib/services/books/authority"
+import { recordEvent } from "@/lib/services/events"
+import { recordAccountingSyncAttempt } from "@/lib/services/accounting-sync-attempts"
 
 export type AccountingPushEntityType = "invoice" | "payment" | "project_expense" | "vendor_bill" | "bill_payment"
 
@@ -252,28 +254,57 @@ export async function processAccountingPush(input: { orgId: string; entityType: 
   if (!target.healthy) throw new Error(`Accounting connection ${target.connection.label} is ${target.connection.status}`)
   const provider = getProvider(target.connection.provider)
   const connectionId = target.connection.id
-  if (input.entityType === "invoice") return provider.pushInvoice({ orgId: input.orgId, connectionId, invoiceId: input.entityId })
-  if (input.entityType === "payment") return provider.pushPayment({ orgId: input.orgId, connectionId, paymentId: input.entityId })
-  if (input.entityType === "project_expense") return provider.pushExpense({ orgId: input.orgId, connectionId, expenseId: input.entityId })
-  if (input.entityType === "vendor_bill") {
-    if (billContext?.ledgerType === "vendor_credit") {
-      if (!provider.capabilities.supportsVendorCredits || !provider.pushVendorCredit) {
-        throw new Error(`${target.connection.label} does not support vendor credits`)
+  const dispatch = (): Promise<PushResult> => {
+    if (input.entityType === "invoice") return provider.pushInvoice({ orgId: input.orgId, connectionId, invoiceId: input.entityId })
+    if (input.entityType === "payment") return provider.pushPayment({ orgId: input.orgId, connectionId, paymentId: input.entityId })
+    if (input.entityType === "project_expense") return provider.pushExpense({ orgId: input.orgId, connectionId, expenseId: input.entityId })
+    if (input.entityType === "vendor_bill") {
+      if (billContext?.ledgerType === "vendor_credit") {
+        if (!provider.capabilities.supportsVendorCredits || !provider.pushVendorCredit) {
+          throw new Error(`${target.connection.label} does not support vendor credits`)
+        }
+        return provider.pushVendorCredit({ orgId: input.orgId, connectionId, creditId: input.entityId })
       }
-      return provider.pushVendorCredit({ orgId: input.orgId, connectionId, creditId: input.entityId })
+      return provider.pushVendorBill({ orgId: input.orgId, connectionId, billId: input.entityId })
     }
-    return provider.pushVendorBill({ orgId: input.orgId, connectionId, billId: input.entityId })
+    return provider.pushBillPayment({ orgId: input.orgId, connectionId, paymentId: input.entityId })
   }
-  return provider.pushBillPayment({ orgId: input.orgId, connectionId, paymentId: input.entityId })
+
+  // Every attempt leaves a trace row — the sync record only keeps the LAST
+  // state, which is why "why did this post twice at 03:14" was unanswerable.
+  const traceBase = {
+    orgId: input.orgId,
+    connectionId,
+    provider: target.connection.provider,
+    entityType: billContext ? billContext.ledgerType : input.entityType,
+    entityId: input.entityId,
+    direction: "outbound" as const,
+  }
+  try {
+    const result = await dispatch()
+    await recordAccountingSyncAttempt({
+      ...traceBase,
+      externalId: result.externalId,
+      outcome: result.deferred ? "deferred" : result.skipped ? "skipped" : "synced",
+    })
+    return result
+  } catch (error) {
+    await recordAccountingSyncAttempt({
+      ...traceBase,
+      outcome: "error",
+      message: error instanceof Error ? error.message : String(error),
+    })
+    throw error
+  }
 }
 
 /**
  * A push that has run out of retries.
  *
- * The outbox marked the job `failed` and stopped, which was the end of it: no
- * event, no notification, and no per-row trace. The transaction's badge kept
- * saying "not synced", which is also what a job that has not run yet says, so
- * a permanent failure and a thirty-second wait looked identical.
+ * The outbox marks the job `failed` and stops — so this is the moment a human
+ * inherits the problem, and the moment they get told: the sync row flips to a
+ * terminal error AND an `accounting_push_dead_lettered` notification goes to
+ * the people who keep the books tied out.
  */
 export async function markAccountingPushExhausted(input: {
   orgId: string
@@ -294,6 +325,17 @@ export async function markAccountingPushExhausted(input: {
     target.connection.provider,
     `Sync gave up after repeated failures and will not retry on its own: ${input.message}`,
   )
+  await recordEvent({
+    orgId: input.orgId,
+    eventType: "accounting_push_dead_lettered",
+    entityType: ledgerType,
+    entityId: input.entityId,
+    payload: { provider: target.connection.provider, message: input.message },
+    channel: "notification",
+  }).catch(() => {
+    // The sync row already carries the terminal state; a failed notification
+    // must not fail the marking itself.
+  })
 }
 
 /**
@@ -315,14 +357,25 @@ export async function markAccountingPushPermanentlyFailed(input: {
   const projectId = billContext ? billContext.projectId : await resolveProjectId(input.orgId, input.entityType, input.entityId)
   const target = await resolveAccountingTarget({ orgId: input.orgId, projectId })
   if (!target) return
+  const ledgerType = billContext ? billContext.ledgerType : input.entityType
   await markAccountingSyncNeedsReview(
     input.orgId,
-    billContext ? billContext.ledgerType : input.entityType,
+    ledgerType,
     input.entityId,
     target.connection.id,
     target.connection.provider,
     input.message,
   )
+  await recordEvent({
+    orgId: input.orgId,
+    eventType: "accounting_push_dead_lettered",
+    entityType: ledgerType,
+    entityId: input.entityId,
+    payload: { provider: target.connection.provider, message: input.message, permanent: true },
+    channel: "notification",
+  }).catch(() => {
+    // See markAccountingPushExhausted: notify best-effort, never fail the mark.
+  })
 }
 
 export interface AccountingSyncPosture {

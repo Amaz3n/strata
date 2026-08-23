@@ -9,6 +9,7 @@ import { portalSubmittalItemSchema } from "@/lib/validation/submittals"
 export async function loadSubmittalsAction(token: string) {
   const access = await assertPortalActionAccess(token, {
     portalType: "sub",
+    requireProject: true,
     requireCompany: true,
     permission: "can_view_submittals",
   })
@@ -48,6 +49,7 @@ async function assertSubmittalInPortalScope(
 export async function listSubPortalSubmittalItemsAction(token: string, submittalId: string) {
   const access = await assertPortalActionAccess(token, {
     portalType: "sub",
+    requireProject: true,
     requireCompany: true,
     permission: "can_view_submittals",
   })
@@ -58,6 +60,7 @@ export async function listSubPortalSubmittalItemsAction(token: string, submittal
 export async function submitSubPortalSubmittalItemAction(token: string, formData: FormData) {
   const access = await assertPortalActionAccess(token, {
     portalType: "sub",
+    requireProject: true,
     requireCompany: true,
     permission: "can_submit_submittals",
   })

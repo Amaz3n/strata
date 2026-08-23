@@ -5,6 +5,7 @@ import {
   sendComplianceAutopilotEmail,
 } from "@/lib/services/mailer"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { normalizeComplianceRequirementDefaults } from "@/lib/services/compliance"
 import { expireProjectOwnComplianceDocuments } from "@/lib/services/project-own-compliance"
 import { expirePrequalificationsWithClient } from "@/lib/services/prequalification"
 
@@ -12,10 +13,29 @@ const appBaseUrl =
   process.env.NEXT_PUBLIC_APP_URL ||
   (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "")
 
-const EXPIRY_REMINDER_DAYS = new Set([30, 14, 3])
 const DAY_MS = 24 * 60 * 60 * 1000
 
-type ReminderKind = "missing" | "expiring" | "expired"
+/**
+ * When to speak up before a document lapses, as a fraction of the type's own
+ * warning window. A type configured for 30 days is chased at 30, 14 and 3; one
+ * configured for 90 is chased at 90, 42 and 9. `expiry_warning_days` was stored,
+ * validated and described to the user, and until now read by nothing.
+ */
+function expiryReminderDays(warningDays: number): number[] {
+  const window = warningDays > 0 ? warningDays : 30
+  return Array.from(
+    new Set([window, Math.round(window * 0.45), Math.max(1, Math.round(window * 0.1))]),
+  ).sort((a, b) => b - a)
+}
+
+/**
+ * Once a document is actually expired the fixed weekly bucket meant a vendor
+ * who ignored the run-up was chased once and then left alone. These are days
+ * past expiry at which the chase repeats, escalating in tone.
+ */
+const OVERDUE_ESCALATION_DAYS = [1, 7, 14, 30, 60]
+
+type ReminderKind = "missing" | "expiring" | "expired" | "rejected" | "escalation"
 
 interface OrgRow {
   id: string
@@ -40,6 +60,7 @@ interface RequirementRow {
     name: string
     code: string
     has_expiry: boolean
+    expiry_warning_days?: number | null
   } | null
 }
 
@@ -49,6 +70,9 @@ interface ComplianceDocumentRow {
   document_type_id: string
   status: string
   expiry_date?: string | null
+  rejection_reason?: string | null
+  revoked_at?: string | null
+  superseded_by_id?: string | null
   created_at: string
 }
 
@@ -73,8 +97,9 @@ interface PendingGroup {
   items: Array<{
     deliveryId: string
     documentName: string
-    reminderKind: ReminderKind
+    reminderKind: "missing" | "expiring" | "expired" | "rejected"
     expiryDate: string | null
+    rejectionReason: string | null
   }>
 }
 
@@ -108,9 +133,26 @@ function weekKey(date: Date) {
   return `${date.getUTCFullYear()}-W${String(week).padStart(2, "0")}`
 }
 
+/**
+ * An org-default requirement has no row of its own, so it carries a synthetic
+ * id that is not a uuid and must never be written to a uuid column.
+ */
+function isSyntheticRequirementId(id: string): boolean {
+  return id.startsWith("org-default:")
+}
+
+/**
+ * The document currently answering each requirement.
+ *
+ * Withdrawn and superseded submissions are dropped first: taking the newest row
+ * regardless meant a revoked certificate silently suppressed the chase for the
+ * requirement it no longer satisfies, and a rejected-but-superseded one chased
+ * a vendor for paperwork they had already replaced.
+ */
 function latestDocumentsByCompanyAndType(rows: ComplianceDocumentRow[]) {
   const latest = new Map<string, ComplianceDocumentRow>()
   for (const row of rows) {
+    if (row.revoked_at || row.superseded_by_id) continue
     const key = `${row.company_id}:${row.document_type_id}`
     const current = latest.get(key)
     if (!current || new Date(row.created_at) > new Date(current.created_at)) {
@@ -153,7 +195,13 @@ function buildReminder({
   requirement: RequirementRow
   document?: ComplianceDocumentRow
   today: Date
-}): { kind: ReminderKind; bucket: string; days?: number | null; expiryDate?: string | null } | null {
+}): {
+  kind: ReminderKind
+  bucket: string
+  days?: number | null
+  expiryDate?: string | null
+  rejectionReason?: string | null
+} | null {
   const docType = requirement.compliance_document_types
   if (!docType) return null
 
@@ -162,8 +210,21 @@ function buildReminder({
     return { kind: "missing", bucket, days: null, expiryDate: null }
   }
 
-  if (document.status === "pending_review" || document.status === "submitted") {
+  if (document.status === "pending_review") {
     return null
+  }
+
+  // A rejection used to produce no chase at all: the vendor was told nothing
+  // and the autopilot only knew missing and expiring, so a returned certificate
+  // was invisible from both sides until someone opened the portal.
+  if (document.status === "rejected") {
+    return {
+      kind: "rejected",
+      bucket: `rejected:${document.id}:${weekKey(today)}`,
+      days: null,
+      expiryDate: document.expiry_date ?? null,
+      rejectionReason: document.rejection_reason ?? null,
+    }
   }
 
   if (document.status !== "approved") {
@@ -175,14 +236,19 @@ function buildReminder({
 
   const days = daysUntil(document.expiry_date, today)
   if (days < 0) {
+    // Escalate on a schedule rather than once per calendar week, so ignoring
+    // the run-up no longer buys silence.
+    const daysOverdue = Math.abs(days)
+    const step = OVERDUE_ESCALATION_DAYS.filter((mark) => mark <= daysOverdue).pop()
+    if (step === undefined) return null
     return {
-      kind: "expired",
-      bucket: `expired:${weekKey(today)}`,
+      kind: daysOverdue >= 14 ? "escalation" : "expired",
+      bucket: `expired:${step}:${document.expiry_date}`,
       days,
       expiryDate: document.expiry_date,
     }
   }
-  if (EXPIRY_REMINDER_DAYS.has(days)) {
+  if (expiryReminderDays(docType.expiry_warning_days ?? 30).includes(days)) {
     return {
       kind: "expiring",
       bucket: `expiring:${days}:${document.expiry_date}`,
@@ -193,6 +259,122 @@ function buildReminder({
   return null
 }
 
+/**
+ * Every requirement the org actually enforces, per vendor.
+ *
+ * This used to read `company_compliance_requirements` alone, which is only one
+ * of the three layers `resolveEffectiveRequirements` merges. A vendor whose
+ * obligations came from the org template — the common case, and the shape of
+ * the seeded W-9 default — failed the payment hold but was never chased,
+ * because the autopilot could not see the requirement at all.
+ *
+ * Project overlays are deliberately not applied here: a chase email is about
+ * the vendor's standing relationship with the builder, not about one job, and
+ * a vendor cannot act on "this is required on Maple Street" from an inbox.
+ */
+async function resolveOrgRequirementRows(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  orgId: string,
+): Promise<RequirementRow[]> {
+  const [companyRowsResult, orgRow, documentTypesResult, vendorRoleResult, vendorCompaniesResult] =
+    await Promise.all([
+    supabase
+      .from("company_compliance_requirements")
+      .select(
+        `
+        id, org_id, company_id, document_type_id, is_required,
+        companies(id, name, email),
+        compliance_document_types(id, name, code, has_expiry, expiry_warning_days)
+      `,
+      )
+      .eq("org_id", orgId)
+      .eq("is_required", true),
+    supabase.from("orgs").select("default_compliance_requirements").eq("id", orgId).maybeSingle(),
+    supabase
+      .from("compliance_document_types")
+      .select("id, name, code, has_expiry, expiry_warning_days")
+      .eq("org_id", orgId)
+      .eq("is_active", true),
+    // Org defaults apply to vendors, not to clients or to the hidden shim
+    // company that carries the builder's own project documents.
+    //
+    // Which companies are vendors is a role question, asked of the same view the
+    // directory list and the compliance watch list read. It used to be inferred
+    // from `company_type` by excluding client/architect/engineer — so a company
+    // made a vendor by a commitment or a bill (which never touch that column)
+    // silently missed every default requirement, and a company whose type still
+    // said "subcontractor" long after that role ended kept collecting them.
+    supabase
+      .from("directory_entries")
+      .select("id")
+      .eq("org_id", orgId)
+      .eq("kind", "company")
+      .is("archived_at", null)
+      .overlaps("role_categories", ["vendor"]),
+    supabase.from("companies").select("id, name, email, metadata").eq("org_id", orgId),
+  ])
+
+  if (companyRowsResult.error) throw companyRowsResult.error
+  if (documentTypesResult.error) throw documentTypesResult.error
+  if (vendorRoleResult.error) throw vendorRoleResult.error
+  if (vendorCompaniesResult.error) throw vendorCompaniesResult.error
+
+  const explicit = ((companyRowsResult.data ?? []) as unknown as Array<
+    Omit<RequirementRow, "companies" | "compliance_document_types"> & {
+      companies?: RequirementRow["companies"] | RequirementRow["companies"][]
+      compliance_document_types?:
+        | RequirementRow["compliance_document_types"]
+        | RequirementRow["compliance_document_types"][]
+    }
+  >).map((row) => ({
+    ...row,
+    companies: firstRelation(row.companies),
+    compliance_document_types: firstRelation(row.compliance_document_types),
+  }))
+
+  const defaults = normalizeComplianceRequirementDefaults(
+    (orgRow.data as any)?.default_compliance_requirements,
+  )
+  if (defaults.length === 0) return explicit
+
+  const typesById = new Map(
+    (documentTypesResult.data ?? []).map((type: any) => [type.id as string, type]),
+  )
+  const vendorCompanyIds = new Set(
+    ((vendorRoleResult.data ?? []) as Array<{ id: string }>).map((row) => row.id),
+  )
+  const vendors = (vendorCompaniesResult.data ?? []).filter((company: any) => {
+    if (!vendorCompanyIds.has(company.id as string)) return false
+    // The builder's own shim company holds project documents, not vendor ones.
+    return (company.metadata ?? {}).system_role !== "org_self"
+  })
+
+  const covered = new Set(explicit.map((row) => `${row.company_id}:${row.document_type_id}`))
+  const rows: RequirementRow[] = [...explicit]
+
+  for (const company of vendors) {
+    for (const template of defaults) {
+      const key = `${company.id}:${template.document_type_id}`
+      if (covered.has(key)) continue
+      const documentType = typesById.get(template.document_type_id)
+      if (!documentType) continue
+      rows.push({
+        // A synthetic id: the org default has no row of its own, and the
+        // delivery record stores `requirement_id` for provenance only.
+        id: `org-default:${company.id}:${template.document_type_id}`,
+        org_id: orgId,
+        company_id: company.id,
+        document_type_id: template.document_type_id,
+        is_required: true,
+        companies: { id: company.id, name: company.name, email: company.email },
+        compliance_document_types: documentType,
+      })
+    }
+  }
+
+  return rows
+}
+
 async function createDeliveryIfNeeded(args: {
   supabase: ReturnType<typeof createServiceSupabaseClient>
   orgId: string
@@ -201,6 +383,8 @@ async function createDeliveryIfNeeded(args: {
   document?: ComplianceDocumentRow
   reminder: NonNullable<ReturnType<typeof buildReminder>>
   recipient: ReturnType<typeof recipientForCompany>
+  /** Keys already delivered for this org, loaded once per run. */
+  alreadyDelivered: Set<string>
 }) {
   const idempotencyKey = [
     "compliance",
@@ -210,17 +394,12 @@ async function createDeliveryIfNeeded(args: {
     args.reminder.bucket,
   ].join(":")
 
-  const { data: existing, error: existingError } = await args.supabase
-    .from("compliance_autopilot_deliveries")
-    .select("id")
-    .eq("org_id", args.orgId)
-    .eq("idempotency_key", idempotencyKey)
-    .maybeSingle()
-
-  if (existingError) {
-    throw new Error(`Failed to check compliance delivery: ${existingError.message}`)
-  }
-  if (existing) return null
+  // Checked against a set loaded once per org rather than a query per
+  // requirement. Now that org defaults are resolved per vendor, a mid-sized
+  // builder can reach several hundred requirements in a run, and this used to
+  // be a sequential round-trip for every one of them.
+  if (args.alreadyDelivered.has(idempotencyKey)) return null
+  args.alreadyDelivered.add(idempotencyKey)
 
   const docType = args.requirement.compliance_document_types
   const company = args.requirement.companies
@@ -232,7 +411,10 @@ async function createDeliveryIfNeeded(args: {
       company_id: args.requirement.company_id,
       contact_id: args.recipient?.contactId ?? null,
       document_type_id: args.requirement.document_type_id,
-      requirement_id: args.requirement.id,
+      // An org-default requirement has no row of its own, and this column is a
+      // uuid with a foreign key to `company_compliance_requirements` — writing
+      // the synthetic id would abort the insert and fail the whole org's run.
+      requirement_id: isSyntheticRequirementId(args.requirement.id) ? null : args.requirement.id,
       document_id: args.document?.id ?? null,
       reminder_kind: args.reminder.kind,
       reminder_bucket: args.reminder.bucket,
@@ -316,32 +498,7 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
           payload: { count: ownDocumentsExpired },
         }).catch(() => null)
       }
-      const { data: requirements, error: requirementsError } = await supabase
-        .from("company_compliance_requirements")
-        .select(
-          `
-          id, org_id, company_id, document_type_id, is_required,
-          companies(id, name, email),
-          compliance_document_types(id, name, code, has_expiry)
-        `,
-        )
-        .eq("org_id", org.id)
-        .eq("is_required", true)
-
-      if (requirementsError) throw requirementsError
-
-      const requirementRows = ((requirements ?? []) as unknown as Array<
-        Omit<RequirementRow, "companies" | "compliance_document_types"> & {
-          companies?: RequirementRow["companies"] | RequirementRow["companies"][]
-          compliance_document_types?:
-            | RequirementRow["compliance_document_types"]
-            | RequirementRow["compliance_document_types"][]
-        }
-      >).map((row) => ({
-        ...row,
-        companies: firstRelation(row.companies),
-        compliance_document_types: firstRelation(row.compliance_document_types),
-      }))
+      const requirementRows = await resolveOrgRequirementRows(supabase, org.id)
       metrics.requirements += requirementRows.length
       const companyIds = Array.from(new Set(requirementRows.map((row) => row.company_id)))
 
@@ -351,7 +508,10 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
           .update({
             status: "completed",
             completed_at: new Date().toISOString(),
-            metrics: { requirements: 0, issues: { missing: 0, expiring: 0, expired: 0 } },
+            metrics: {
+              requirements: 0,
+              issues: { missing: 0, expiring: 0, expired: 0, rejected: 0, escalation: 0 },
+            },
           })
           .eq("id", run.id)
         continue
@@ -360,7 +520,9 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
       const [documentsResult, waiversResult, contactsResult] = await Promise.all([
         supabase
           .from("compliance_documents")
-          .select("id, company_id, document_type_id, status, expiry_date, created_at")
+          .select(
+            "id, company_id, document_type_id, status, expiry_date, rejection_reason, revoked_at, superseded_by_id, created_at",
+          )
           .eq("org_id", org.id)
           .in("company_id", companyIds),
         supabase
@@ -396,10 +558,23 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
         ])
       }
 
+      // Every reminder this org has already sent, in one read. The per-vendor
+      // check that replaced it was a round-trip per requirement, and resolving
+      // org defaults multiplies requirements by the whole vendor list.
+      const { data: deliveredRows } = await supabase
+        .from("compliance_autopilot_deliveries")
+        .select("idempotency_key")
+        .eq("org_id", org.id)
+      const alreadyDelivered = new Set(
+        (deliveredRows ?? []).map((row: { idempotency_key: string }) => row.idempotency_key),
+      )
+
       const issueCounts: Record<ReminderKind, number> = {
         missing: 0,
         expiring: 0,
         expired: 0,
+        rejected: 0,
+        escalation: 0,
       }
       const pendingByCompany = new Map<string, PendingGroup>()
 
@@ -424,10 +599,34 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
           document,
           reminder,
           recipient,
+          alreadyDelivered,
         })
 
         if (!deliveryId) continue
         metrics.remindersCreated += 1
+
+        // The builder side of the same reminder. `compliance_document_expiring`
+        // is on the email allowlist and a user can switch it on in settings, so
+        // it has to actually be emitted — the vendor being chased is no use to
+        // the person who has to stop paying them.
+        if (reminder.kind === "expiring" || reminder.kind === "escalation") {
+          await recordEvent({
+            orgId: org.id,
+            eventType: "compliance_document_expiring",
+            entityType: "company",
+            entityId: requirement.company_id,
+            channel: "notification",
+            payload: {
+              company_id: requirement.company_id,
+              company_name: requirement.companies?.name ?? null,
+              document_name: requirement.compliance_document_types?.name ?? null,
+              document_type_id: requirement.document_type_id,
+              expiry_date: reminder.expiryDate ?? null,
+              days_until_expiry: reminder.days ?? null,
+              blocks_payment: reminder.kind === "escalation",
+            },
+          }).catch(() => null)
+        }
 
         if (!recipient?.email || !requirement.compliance_document_types || !requirement.companies) {
           metrics.skipped += 1
@@ -443,8 +642,12 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
         group.items.push({
           deliveryId,
           documentName: requirement.compliance_document_types.name,
-          reminderKind: reminder.kind,
+          // An escalation is still an expired document to the vendor reading
+          // the email; the distinction is in how often we say it, not in what
+          // they have to do about it.
+          reminderKind: reminder.kind === "escalation" ? "expired" : reminder.kind,
           expiryDate: reminder.expiryDate ?? null,
+          rejectionReason: reminder.rejectionReason ?? null,
         })
         pendingByCompany.set(requirement.company_id, group)
       }
@@ -504,7 +707,12 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
         }
       }
 
-      const issueTotal = issueCounts.missing + issueCounts.expiring + issueCounts.expired
+      const issueTotal =
+        issueCounts.missing +
+        issueCounts.expiring +
+        issueCounts.expired +
+        issueCounts.rejected +
+        issueCounts.escalation
       if (issueTotal > 0 && today.getUTCDay() === 1) {
         await recordEvent({
           orgId: org.id,
@@ -516,7 +724,8 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
             message: `${issueTotal} compliance ${issueTotal === 1 ? "item needs" : "items need"} attention`,
             missing: issueCounts.missing,
             expiring: issueCounts.expiring,
-            expired: issueCounts.expired,
+            expired: issueCounts.expired + issueCounts.escalation,
+            rejected: issueCounts.rejected,
           },
         }).catch(() => null)
         metrics.digests += 1

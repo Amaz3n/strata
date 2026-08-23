@@ -4,6 +4,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { requireAuthorization } from "@/lib/services/authorization"
+import { ensureVendorRoleWithClient, resolveProjectVendorRole } from "@/lib/services/party-roles"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import {
   bucketCommitmentChangeOrderRows,
@@ -243,25 +244,11 @@ async function ensureProjectVendorForCommitment({
   }
   if ((existing ?? []).length > 0) return
 
-  const { data: company, error: companyError } = await supabase
-    .from("companies")
-    .select("company_type")
-    .eq("org_id", orgId)
-    .eq("id", companyId)
-    .maybeSingle()
-
-  if (companyError) {
-    throw new Error(`Failed to load commitment company: ${companyError.message}`)
-  }
-
-  const companyType = (company?.company_type ?? "subcontractor") as string
-  const role =
-    companyType === "supplier" ||
-    companyType === "client" ||
-    companyType === "architect" ||
-    companyType === "engineer"
-      ? companyType
-      : "subcontractor"
+  // The roster role comes from the party's roles, not `company_type`. A company
+  // that became a vendor through `ensureVendorRoleWithClient` never had its type
+  // column touched, so reading it here produced a roster entry that disagreed
+  // with the directory about what this company is.
+  const role = await resolveProjectVendorRole(supabase, orgId, companyId)
 
   const { error } = await supabase.from("project_vendors").insert({
     org_id: orgId,
@@ -477,6 +464,12 @@ export async function createCommitment({ input, orgId }: { input: CommitmentInpu
     companyId: parsed.company_id,
     scope: parsed.scope,
   })
+
+  // If this org's money runs through a company, that company is a vendor —
+  // whatever its type column says. Recording it here is what lets the account
+  // shell resolve tabs from roles alone instead of inferring "vendor" from the
+  // absence of architect/engineer, which is what it used to have to do.
+  await ensureVendorRoleWithClient(supabase, resolvedOrgId, parsed.company_id, userId)
 
   await recordEvent({
     orgId: resolvedOrgId,

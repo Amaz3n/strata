@@ -12,7 +12,7 @@ import {
 } from "@/lib/services/commitments";
 import { listCostCodes } from "@/lib/services/cost-codes";
 import { listProjects } from "@/lib/services/projects";
-import { loadCompanyAccount } from "../page-data";
+import { loadVendorCompany } from "../page-data";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -49,9 +49,9 @@ function parseFlag(value?: string): CommitmentRegisterFlag | undefined {
 export default async function CompanyCommitmentsPage({ params, searchParams }: PageProps) {
   const { id } = await params;
   if (!z.string().uuid().safeParse(id).success) notFound();
-  const account = await loadCompanyAccount(id).catch(() => null);
-  if (!account) notFound();
-  if (account.posture !== "vendor") redirect(`/directory/${id}`);
+  const account = await loadVendorCompany(id);
+  // Null means: not a company, or a company with no vendor role.
+  if (!account) redirect(`/directory/${id}`);
 
   const query = (await searchParams) ?? {};
 

@@ -6,11 +6,12 @@ import { uploadPortalFile } from "@/lib/services/portal-uploads"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { listRfisForPortal, createPortalRfi, addPortalRfiResponse, listRfiThread } from "@/lib/services/rfis"
 import { portalRfiInputSchema, rfiResponseInputSchema } from "@/lib/validation/rfis"
-import type { Rfi, RfiThread } from "@/lib/types"
+import type { ProjectScopedPortalAccess, Rfi, RfiThread } from "@/lib/types"
 
 export async function loadRfisAction(token: string) {
   const access = await assertPortalActionAccess(token, {
     portalType: "sub",
+    requireProject: true,
     requireCompany: true,
     permission: "can_view_rfis",
   })
@@ -27,10 +28,7 @@ export async function loadRfisAction(token: string) {
  * below goes through this — the token scopes the project, the company scopes the
  * row, and drafts are never visible outside the builder.
  */
-async function requireRfiInScope(
-  access: Awaited<ReturnType<typeof assertPortalActionAccess>>,
-  rfiId: string,
-) {
+async function requireRfiInScope(access: ProjectScopedPortalAccess, rfiId: string) {
   const supabase = createServiceSupabaseClient()
   const { data: rfi } = await supabase
     .from("rfis")
@@ -58,6 +56,7 @@ export async function loadSubPortalRfiThreadAction(
   try {
     const access = await assertPortalActionAccess(token, {
       portalType: "sub",
+      requireProject: true,
       requireCompany: true,
       permission: "can_view_rfis",
     })
@@ -75,6 +74,7 @@ export async function createSubPortalRfiAction(
   try {
     const access = await assertPortalActionAccess(token, {
       portalType: "sub",
+      requireProject: true,
       requireCompany: true,
       permission: "can_respond_rfis",
     })
@@ -122,6 +122,7 @@ export async function addSubPortalRfiResponseAction(
   try {
     const access = await assertPortalActionAccess(token, {
       portalType: "sub",
+      requireProject: true,
       requireCompany: true,
       permission: "can_respond_rfis",
     })

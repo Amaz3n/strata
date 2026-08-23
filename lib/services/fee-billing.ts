@@ -9,6 +9,7 @@ import { recordEvent } from "@/lib/services/events"
 import { createInvoice, getInvoiceWithLines } from "@/lib/services/invoices"
 import { getNextInvoiceNumber, markReservationUsed } from "@/lib/services/invoice-numbers"
 import { getProjectJobCostActualsByCostCode } from "@/lib/services/job-cost-actuals"
+import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 import { applyRetainageToInvoice } from "@/lib/services/retainage"
 
 export type FeeScheduleStatus = "draft" | "active" | "closed" | "voided"
@@ -199,10 +200,20 @@ async function loadProjectFeeContext(args: { supabase: SupabaseClient; orgId: st
   const fixedFeeCents =
     Number(contract?.fixed_fee_cents ?? contract?.snapshot?.fixed_fee_cents ?? settings?.metadata?.fixed_fee_cents ?? 0) || 0
 
+  // Customer identity lives in the entity map now; projects.qbo_customer_* is
+  // only written by pre-cutover data. Without this, fee invoices for any
+  // project mapped after the cutover carried no customer name.
+  const accountingTarget = await resolveAccountingTarget({ orgId: args.orgId, projectId: args.projectId })
+  const accountingCustomer = accountingTarget?.dimensions.customer ?? null
+
   return {
     settings,
     contract,
-    project: projectResult.data,
+    project: {
+      ...projectResult.data,
+      qbo_customer_id: accountingCustomer?.id ?? projectResult.data.qbo_customer_id,
+      qbo_customer_name: accountingCustomer?.name ?? projectResult.data.qbo_customer_name,
+    },
     billingModel: settings?.billing_model ?? contract?.snapshot?.billing_model ?? null,
     fixedFeeCents,
   }

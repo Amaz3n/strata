@@ -199,6 +199,8 @@ export interface MobileExpenseDTO {
   status: string
   receipt_url: string | null
   created_at: string
+  /** See MobilePayableDTO.accounting_sync_status. */
+  accounting_sync_status: string | null
 }
 
 export interface MobileReceiptScanDTO {
@@ -385,6 +387,13 @@ export interface MobilePayableDTO {
   document: MobilePayableDocumentDTO | null
   commitment: MobilePayableCommitmentDTO | null
   over_budget: boolean
+  /**
+   * Accounting-sync state ("pending" | "synced" | "error" | "needs_review" |
+   * null when the org has no accounting connection). A super approving in the
+   * field could not previously see that the post to the accounting system
+   * failed — the field was simply absent from the contract.
+   */
+  accounting_sync_status: string | null
 }
 
 export interface MobilePayableCodingSummaryDTO {

@@ -8,6 +8,7 @@ import { deleteFilesObjects, uploadFilesObject } from "@/lib/storage/files-stora
 export async function loadPunchItemsAction(token: string) {
   const access = await assertPortalActionAccess(token, {
     portalType: "client",
+    requireProject: true,
     permission: "can_create_punch_items",
   })
   return listPunchItems(access.org_id, access.project_id)
@@ -22,6 +23,7 @@ export async function createPunchItemAction(input: {
 }) {
   const access = await assertPortalActionAccess(input.token, {
     portalType: "client",
+    requireProject: true,
     permission: "can_create_punch_items",
   })
 
@@ -71,6 +73,7 @@ export async function uploadPunchItemAttachmentAction({
 }) {
   const access = await assertPortalActionAccess(token, {
     portalType: "client",
+    requireProject: true,
     permission: "can_create_punch_items",
   })
 
@@ -200,6 +203,7 @@ export async function listPunchItemAttachmentsAction({
 }): Promise<PunchItemAttachment[]> {
   const access = await assertPortalActionAccess(token, {
     portalType: "client",
+    requireProject: true,
     permission: "can_create_punch_items",
   })
 
@@ -251,6 +255,7 @@ export async function detachPunchItemAttachmentAction({
 }): Promise<void> {
   const access = await assertPortalActionAccess(token, {
     portalType: "client",
+    requireProject: true,
     permission: "can_create_punch_items",
   })
 

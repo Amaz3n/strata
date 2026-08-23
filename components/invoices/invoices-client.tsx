@@ -1,7 +1,7 @@
 "use client"
 
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { addDays, format, parseISO } from "date-fns"
+import { addDays, format } from "date-fns"
 import { toast } from "sonner"
 import { AnimatePresence } from "framer-motion"
 
@@ -9,6 +9,21 @@ import { useRouter, useSearchParams } from "next/navigation"
 
 import type { Contact, CostCode, Invoice, Project } from "@/lib/types"
 import type { OwnerBillingPackageSummary } from "@/lib/services/owner-billing-packages"
+import type { InvoiceArSummary } from "@/lib/services/invoices"
+import {
+  OPEN_STATUSES,
+  balanceCentsOf,
+  customerNameOf,
+  daysPastDue,
+  displayStatusKey,
+  invoiceReleaseDescription,
+  parseDateOnly,
+  resolveStatusKey,
+  startOfToday,
+  totalCentsOf,
+  type InvoiceStatusKey,
+} from "@/components/invoices/workspace/receivables-filters"
+import { STATUS_LABELS, formatMoneyFromCents, invoiceStatusBadge } from "@/components/invoices/workspace/invoice-ui"
 import {
   deleteInvoiceAction,
   generateInvoiceLinkAction,
@@ -32,6 +47,7 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { AccountingSyncBadge } from "@/components/accounting/accounting-sync-badge"
+import { cn } from "@/lib/utils"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -70,104 +86,8 @@ import { ChevronDown, ChevronUp, Repeat, X } from "lucide-react"
 import { InvoiceBottomBar } from "@/components/invoices/invoice-bottom-bar"
 import { AccountingSyncSheet } from "@/components/integrations/accounting-sync-sheet"
 
-type StatusKey = "draft" | "saved" | "sent" | "partial" | "paid" | "overdue" | "void"
-type StatusFilter = StatusKey | "all"
+type StatusFilter = InvoiceStatusKey | "all"
 type DueFilter = "any" | "due_soon" | "overdue" | "no_due"
-
-const statusLabels: Record<StatusKey, string> = {
-  draft: "Draft",
-  saved: "Saved",
-  sent: "Sent",
-  partial: "Partial",
-  paid: "Paid",
-  overdue: "Overdue",
-  void: "Void",
-}
-
-const statusStyles: Record<StatusKey, string> = {
-  draft: "bg-muted text-muted-foreground border-muted",
-  saved: "bg-muted text-muted-foreground border-muted",
-  sent: "bg-primary/10 text-primary border-primary/30",
-  partial: "bg-warning/15 text-warning border-warning/30",
-  paid: "bg-success/20 text-success border-success/30",
-  overdue: "bg-destructive/20 text-destructive border-destructive/30",
-  void: "bg-muted text-muted-foreground border-muted",
-}
-
-function formatMoneyFromCents(cents?: number | null) {
-  const dollars = (cents ?? 0) / 100
-  return dollars.toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-  })
-}
-
-function resolveStatusKey(status?: string | null): StatusKey {
-  if (!status) return "draft"
-  const allowed: StatusKey[] = ["draft", "saved", "sent", "partial", "paid", "overdue", "void"]
-  return allowed.includes(status as StatusKey) ? (status as StatusKey) : "draft"
-}
-
-function balanceCentsOf(invoice: Invoice): number {
-  return (
-    invoice.balance_due_cents ??
-    invoice.totals?.balance_due_cents ??
-    invoice.total_cents ??
-    invoice.totals?.total_cents ??
-    0
-  )
-}
-
-function totalCentsOf(invoice: Invoice): number {
-  return invoice.total_cents ?? invoice.totals?.total_cents ?? 0
-}
-
-function customerNameOf(invoice: Invoice): string {
-  return (
-    invoice.customer_name ??
-    (invoice.metadata as Record<string, any> | undefined)?.customer_name ??
-    invoice.sent_to_emails?.[0] ??
-    ""
-  )
-}
-
-function startOfToday(): Date {
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  return today
-}
-
-/**
- * Invoice dates are date-only strings ("yyyy-MM-dd"). `new Date(str)` parses them as UTC
- * midnight, which shifts them a day early for anyone west of UTC — parseISO keeps them local.
- */
-function parseDateOnly(value: string): Date {
-  const date = parseISO(value)
-  date.setHours(0, 0, 0, 0)
-  return date
-}
-
-function daysPastDue(invoice: Invoice): number {
-  if (!invoice.due_date) return 0
-  const due = parseDateOnly(invoice.due_date)
-  const diff = startOfToday().getTime() - due.getTime()
-  return diff > 0 ? Math.floor(diff / (1000 * 60 * 60 * 24)) : 0
-}
-
-/**
- * Single source of truth for "overdue" in this view: a sent/partial invoice with an
- * outstanding balance past its due date shows as overdue even if the stored status
- * hasn't been rolled forward yet.
- */
-function displayStatusKey(invoice: Invoice): StatusKey {
-  const base = resolveStatusKey(invoice.status)
-  if ((base === "sent" || base === "partial") && balanceCentsOf(invoice) > 0 && daysPastDue(invoice) > 0) {
-    return "overdue"
-  }
-  return base
-}
-
-const OPEN_STATUSES: StatusKey[] = ["sent", "partial", "overdue"]
 
 const INVOICE_PAGE_SIZE = 100
 
@@ -175,18 +95,14 @@ const AGING_BUCKET_LABELS = ["1–30 days", "31–60 days", "61–90 days", "90+
 
 type AgingBucket = 0 | 1 | 2 | 3
 
+// Bucket edges must match the canonical ladder in lib/services/reports/aging.ts
+// (1–30 / 31–60 / 61–90 / 90+), which also feeds getProjectInvoiceArSummary.
 function agingBucketOf(days: number): AgingBucket | null {
   if (days <= 0) return null
   if (days <= 30) return 0
   if (days <= 60) return 1
   if (days <= 90) return 2
   return 3
-}
-
-export interface InvoiceArSummary {
-  outstandingCents: number
-  overdueCents: number
-  buckets: [number, number, number, number]
 }
 
 type SortKey = "number" | "customer" | "issue_date" | "due_date" | "amount" | "balance" | "status"
@@ -245,7 +161,7 @@ function BackupPackageBadge({
 
 interface InvoicesClientProps {
   invoices: Invoice[]
-  /** The single project this workbench is scoped to (composer + QBO sheet context). */
+  /** The single project this workbench is scoped to (composer + accounting sync sheet context). */
   projects: Project[]
   initialOpenInvoiceId?: string
   onInitialOpenInvoiceHandled?: () => void
@@ -317,9 +233,7 @@ export function InvoicesClient({
   const [packageActionInvoiceId, setPackageActionInvoiceId] = useState<string | null>(null)
   const [packageActionKind, setPackageActionKind] = useState<"generate" | "share" | null>(null)
   const lastAutoOpenedInvoiceId = useRef<string | undefined>(undefined)
-  const invoiceReleaseDescription = enableApprovedCostsSource
-    ? "linked draws, billable costs, or retainage"
-    : "linked draws, change orders, or retainage"
+  const releaseDescription = invoiceReleaseDescription(Boolean(enableApprovedCostsSource))
 
   // Navigate to (or open) an invoice in the workspace via the ?invoice URL param.
   const goToInvoice = useCallback(
@@ -481,7 +395,7 @@ export function InvoicesClient({
   const activeFilterChips = useMemo(() => {
     const chips: Array<{ key: string; label: string; clear: () => void }> = []
     if (statusFilter !== "all") {
-      chips.push({ key: "status", label: statusLabels[statusFilter], clear: () => setStatusFilter("all") })
+      chips.push({ key: "status", label: STATUS_LABELS[statusFilter], clear: () => setStatusFilter("all") })
     }
     if (dueFilter !== "any") {
       const dueLabels: Record<Exclude<DueFilter, "any">, string> = {
@@ -525,8 +439,14 @@ export function InvoicesClient({
   const visibleIds = useMemo(() => filtered.map((item) => item.id), [filtered])
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.includes(id))
   const someVisibleSelected = visibleIds.some((id) => selectedIds.includes(id)) && !allVisibleSelected
-  const qboPendingCount = useMemo(() => items.filter((item) => item.qbo_sync_status === "pending").length, [items])
-  const qboErrorCount = useMemo(() => items.filter((item) => item.qbo_sync_status === "error").length, [items])
+  const syncPendingCount = useMemo(() => items.filter((item) => item.qbo_sync_status === "pending").length, [items])
+  // Matches the sync sheet: anything that stopped and needs a person, not just
+  // hard errors. Counting "error" alone hid every needs-review and conflict row.
+  const syncAttentionCount = useMemo(
+    () => items.filter((item) => item.qbo_sync_status === "error" || item.qbo_sync_status === "needs_review").length,
+    [items],
+  )
+  const syncQueueLabel = `Accounting sync: ${syncPendingCount} waiting, ${syncAttentionCount} needing attention`
   const packageByInvoiceId = useMemo(() => {
     return new Map(packageSummaries.map((summary) => [summary.invoice_id, summary]))
   }, [packageSummaries])
@@ -678,7 +598,7 @@ export function InvoicesClient({
         invoice.invoice_number ?? "",
         invoice.title ?? "",
         customerNameOf(invoice),
-        statusLabels[displayStatusKey(invoice)],
+        STATUS_LABELS[displayStatusKey(invoice)],
         invoice.issue_date ?? "",
         invoice.due_date ?? "",
         (totalCentsOf(invoice) / 100).toFixed(2),
@@ -951,9 +871,9 @@ export function InvoicesClient({
                       <DropdownMenuSubContent className="w-56" sideOffset={8}>
                         <DropdownMenuRadioGroup value={statusFilter} onValueChange={(value) => setStatusFilter(value as StatusFilter)}>
                           <DropdownMenuRadioItem value="all">Any status</DropdownMenuRadioItem>
-                          {(["draft", "saved", "sent", "partial", "paid", "overdue", "void"] as StatusKey[]).map((status) => (
+                          {(["draft", "saved", "sent", "partial", "paid", "overdue", "void"] as InvoiceStatusKey[]).map((status) => (
                             <DropdownMenuRadioItem key={status} value={status}>
-                              {statusLabels[status]}
+                              {STATUS_LABELS[status]}
                             </DropdownMenuRadioItem>
                           ))}
                         </DropdownMenuRadioGroup>
@@ -1005,13 +925,18 @@ export function InvoicesClient({
               size="icon"
               onClick={() => setQueueOpen(true)}
               className="relative h-9 w-9 shrink-0 bg-background"
-              title={`QuickBooks: ${qboPendingCount} waiting, ${qboErrorCount} failed`}
-              aria-label={`Open QuickBooks sheet. ${qboPendingCount} waiting, ${qboErrorCount} failed`}
+              title={syncQueueLabel}
+              aria-label={`Open the accounting sync queue. ${syncQueueLabel}`}
             >
               <RefreshCcw className="h-4 w-4" />
-              {(qboPendingCount > 0 || qboErrorCount > 0) && (
-                <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground">
-                  {qboPendingCount + qboErrorCount}
+              {syncPendingCount + syncAttentionCount > 0 && (
+                <span
+                  className={cn(
+                    "absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-medium",
+                    syncAttentionCount > 0 ? "bg-destructive text-destructive-foreground" : "bg-primary text-primary-foreground",
+                  )}
+                >
+                  {syncPendingCount + syncAttentionCount}
                 </span>
               )}
             </Button>
@@ -1209,9 +1134,7 @@ export function InvoicesClient({
                     )}
                     <TableCell className="px-4 py-4 text-center">
                       <div className="flex items-center justify-center gap-2">
-                        <Badge variant="secondary" className={`capitalize border ${statusStyles[displayStatusKey(invoice)]}`}>
-                          {statusLabels[displayStatusKey(invoice)]}
-                        </Badge>
+                        {invoiceStatusBadge(invoice)}
                         <AccountingSyncBadge
                           status={invoice.qbo_sync_status}
                           syncedAt={invoice.qbo_synced_at ?? undefined}
@@ -1526,7 +1449,7 @@ export function InvoicesClient({
           <AlertDialogHeader>
             <AlertDialogTitle>Void invoice?</AlertDialogTitle>
             <AlertDialogDescription>
-              This cancels {voidingInvoice?.invoice_number ?? "this invoice"} and releases {invoiceReleaseDescription} so they can be invoiced again.
+              This cancels {voidingInvoice?.invoice_number ?? "this invoice"} and releases {releaseDescription} so they can be invoiced again.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1590,7 +1513,7 @@ export function InvoicesClient({
           <DialogHeader>
             <DialogTitle>Move invoice to another project</DialogTitle>
             <DialogDescription>
-              Move {movingInvoice?.invoice_number ?? "this invoice"} to a different project. Any {invoiceReleaseDescription}
+              Move {movingInvoice?.invoice_number ?? "this invoice"} to a different project. Any {releaseDescription}
               linked to the current project will be released so they can be billed again.
             </DialogDescription>
           </DialogHeader>

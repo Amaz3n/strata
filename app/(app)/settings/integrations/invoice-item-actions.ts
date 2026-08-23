@@ -7,7 +7,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import {
   getAccountingInvoiceItemConfiguration,
   updateAccountingInvoiceItemConfiguration,
-} from "@/lib/services/accounting-invoice-items"
+} from "@/lib/integrations/accounting/qbo/invoice-items"
 import { requirePermission } from "@/lib/services/permissions"
 import { updateAccountingConnectionSettings } from "@/lib/services/accounting-connections"
 import { recordEvent } from "@/lib/services/events"

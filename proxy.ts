@@ -22,11 +22,7 @@ const PUBLIC_API_ROUTES = [
   "/api/accounting/process-changes",
   "/api/accounting/process-inbound",
   "/api/accounting/process-outbox",
-  // Legacy QBO route aliases and Intuit webhook endpoint. Keep the aliases
-  // public while older deployments may still invoke them.
-  "/api/qbo/process-cdc",
-  "/api/qbo/process-webhooks",
-  "/api/qbo/process-outbox",
+  // Intuit webhook endpoint — Intuit authenticates via signature, not a session.
   "/api/qbo/payment-webhook",
   // Codex review callback — no user session cookie; it self-authenticates via
   // CODEX_REVIEW_CALLBACK_SECRET. Without this, GitHub receives a 307 to sign-in.

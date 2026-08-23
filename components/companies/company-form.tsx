@@ -74,6 +74,14 @@ interface CompanyFormProps {
 
 const PAYMENT_TERMS = ["Due on receipt", "Net 7", "Net 15", "Net 30", "Net 45", "Net 60", "Net 90"] as const
 
+/** Vendor-link state, which is not the same vocabulary as a transaction's sync status. */
+const VENDOR_LINK_STATUS_LABELS: Record<string, string> = {
+  linked: "Linked",
+  created: "Created",
+  needs_review: "Needs review",
+  error: "Link error",
+}
+
 export function CompanyForm({ company, initialName, onSubmitted, onCancel, payablesMode = false }: CompanyFormProps) {
   const [isPending, startTransition] = useTransition()
   const [isAccountingPending, startAccountingTransition] = useTransition()
@@ -377,8 +385,17 @@ export function CompanyForm({ company, initialName, onSubmitted, onCancel, payab
               </div>
             </div>
             {formState.qbo_vendor_id ? (
-              <div className="shrink-0 rounded-md border bg-background px-2 py-1 text-[11px] font-medium text-muted-foreground">
-                Linked
+              <div
+                className={cn(
+                  "shrink-0 border px-2 py-1 text-[11px] font-medium",
+                  formState.qbo_vendor_sync_status === "error"
+                    ? "border-destructive/30 bg-destructive/10 text-destructive"
+                    : formState.qbo_vendor_sync_status === "needs_review"
+                      ? "border-warning/30 bg-warning/10 text-warning"
+                      : "border-border bg-background text-muted-foreground",
+                )}
+              >
+                {VENDOR_LINK_STATUS_LABELS[formState.qbo_vendor_sync_status] ?? "Linked"}
               </div>
             ) : null}
           </div>

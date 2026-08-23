@@ -73,7 +73,7 @@ const READ_ONLY_PERMISSIONS: Partial<PortalPermissions> = {
   can_submit_invoices: false,
   can_submit_time: false,
   can_submit_expenses: false,
-  can_upload_compliance_docs: false,
+  can_upload_compliance_docs: true,
 }
 
 /**

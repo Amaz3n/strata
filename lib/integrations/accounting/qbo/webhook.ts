@@ -41,6 +41,12 @@ export type IntuitWebhookEntityEvent = {
   lastUpdated: string
 }
 
+/** ISO-normalize a provider timestamp, or pass it through when unparseable. */
+export function normalizeEventTimestamp(raw: string): string {
+  const parsed = new Date(raw)
+  return Number.isNaN(parsed.getTime()) ? raw : parsed.toISOString()
+}
+
 export function extractIntuitEventIds(payload: unknown): string[] {
   return extractIntuitEntityEvents(payload).map((event) => event.eventId)
 }
@@ -57,8 +63,13 @@ export function extractIntuitEntityEvents(payload: unknown): IntuitWebhookEntity
       const entityName = entity.name ?? "unknown-entity"
       const operation = entity.operation ?? "unknown-op"
       const lastUpdated = entity.lastUpdated ?? "unknown-time"
+      // The timestamp inside the event id is NORMALIZED to ISO. Intuit writes
+      // the same instant differently in webhook payloads (offset form) and CDC
+      // metadata (Z form); dedupe across the two feeds only works if both mint
+      // the same id for the same change.
+      const idTimestamp = lastUpdated === "unknown-time" ? lastUpdated : normalizeEventTimestamp(lastUpdated)
       events.push({
-        eventId: `${realmId}:${entityName}:${entityId}:${operation}:${lastUpdated}`,
+        eventId: `${realmId}:${entityName}:${entityId}:${operation}:${idTimestamp}`,
         realmId,
         entityName,
         entityId,

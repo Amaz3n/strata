@@ -62,21 +62,6 @@ export function payableTypeBadge(bill: VendorBillSummary) {
   )
 }
 
-export function vendorLinkBadge(bill: VendorBillSummary, providerLabel = "QBO") {
-  if (bill.qbo_vendor_id) {
-    return (
-      <Badge variant="outline" className="border-success/20 bg-success/10 text-[10px] font-bold uppercase text-success">
-        {providerLabel} linked
-      </Badge>
-    )
-  }
-  return (
-    <Badge variant="outline" className="border-warning/20 bg-warning/10 text-[10px] font-bold uppercase text-warning">
-      {providerLabel} needed
-    </Badge>
-  )
-}
-
 /** A bare `YYYY-MM-DD`, printed short. The year only appears when it is not this one. */
 export function formatDay(date: string) {
   const parsed = new Date(`${date}T00:00:00`)
