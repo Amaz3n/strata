@@ -136,7 +136,9 @@ test("mobile payable routes exist and are reachable through the proxy", () => {
     )
   }
   // The proxy matches by prefix, which is what makes one mobile entry enough.
-  assert.match(proxy, /PUBLIC_API_ROUTES\.some\(route => pathname\.startsWith\(route\)\)/)
+  // Tolerates either arrow-parameter style so reformatting the proxy cannot
+  // fail this on spelling while the behaviour it guards is intact.
+  assert.match(proxy, /PUBLIC_API_ROUTES\.some\(\(?route\)? => pathname\.startsWith\(route\)\)/)
 })
 
 test("bill approval delegates to the one status service and guards concurrency", () => {

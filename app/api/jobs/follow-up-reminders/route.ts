@@ -15,6 +15,20 @@ const APP_URL = (process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com").rep
 // The app serves a single locale (Naples, FL); show the builder's local time in reminders.
 const DISPLAY_TIME_ZONE = "America/New_York"
 const BATCH_LIMIT = 200
+const DELIVERY_CONCURRENCY = 8
+const JOB_BUDGET_MS = 100_000
+
+async function forEachConcurrent<T>(items: T[], worker: (item: T) => Promise<void>) {
+  let cursor = 0
+  const workers = Array.from({ length: Math.min(DELIVERY_CONCURRENCY, items.length) }, async () => {
+    while (cursor < items.length) {
+      const item = items[cursor]
+      cursor += 1
+      await worker(item)
+    }
+  })
+  await Promise.all(workers)
+}
 
 function jobsiteLabel(location: any): string | null {
   if (!location || typeof location !== "object") return null
@@ -29,6 +43,7 @@ async function run(request: NextRequest) {
 
   const supabase = createServiceSupabaseClient()
   const nowIso = new Date().toISOString()
+  const deadlineMs = Date.now() + JOB_BUDGET_MS
 
   const { data: due, error } = await supabase
     .from("prospects")
@@ -52,11 +67,15 @@ async function run(request: NextRequest) {
   let sent = 0
   let skipped = 0
 
-  for (const row of (due ?? []) as any[]) {
+  await forEachConcurrent((due ?? []) as any[], async (row) => {
+    if (Date.now() >= deadlineMs) {
+      skipped += 1
+      return
+    }
     const user = row.reminder_user as { full_name?: string | null; email?: string | null } | null
     if (!user?.email) {
       skipped += 1
-      continue
+      return
     }
 
     const org = row.org as { name?: string | null; slug?: string | null; logo_url?: string | null } | null
@@ -98,18 +117,18 @@ async function run(request: NextRequest) {
 
     if (!ok) {
       skipped += 1
-      continue
+      return
     }
 
     // Mark as notified only after a successful send so failures retry next sweep.
     await supabase.from("prospects").update({ next_follow_up_notified_at: nowIso }).eq("id", row.id)
     sent += 1
-  }
+  })
 
   const [expiry, trialAlerts, overdueOps] = await Promise.all([
     sweepExpiringEstimates(supabase, nowIso),
     sweepTrialEndingAlerts(supabase, nowIso),
-    sweepOverdueOperationalItems(supabase, nowIso),
+    sweepOverdueOperationalItems(supabase, nowIso, deadlineMs),
   ])
 
   return NextResponse.json({ ok: true, candidates: due?.length ?? 0, sent, skipped, expiry, trialAlerts, overdueOps })
@@ -127,19 +146,26 @@ async function run(request: NextRequest) {
 async function sweepOverdueOperationalItems(
   supabase: ReturnType<typeof createServiceSupabaseClient>,
   nowIso: string,
+  deadlineMs: number,
 ) {
   const today = nowIso.slice(0, 10)
   const results = { rfis: 0, submittals: 0, decisions: 0, skipped: 0 }
 
   type OrgInfo = { name?: string | null; slug?: string | null; logo_url?: string | null }
-  const orgCache = new Map<string, OrgInfo>()
+  const orgCache = new Map<string, Promise<OrgInfo>>()
   const loadOrg = async (orgId: string): Promise<OrgInfo> => {
     const cached = orgCache.get(orgId)
     if (cached) return cached
-    const { data } = await supabase.from("orgs").select("name, slug, logo_url").eq("id", orgId).maybeSingle()
-    const org: OrgInfo = data ?? {}
-    orgCache.set(orgId, org)
-    return org
+    const pending = Promise.resolve(
+      supabase
+        .from("orgs")
+        .select("name, slug, logo_url")
+        .eq("id", orgId)
+        .maybeSingle(),
+    )
+      .then(({ data }) => (data ?? {}) as OrgInfo)
+    orgCache.set(orgId, pending)
+    return pending
   }
 
   // --- RFIs ---
@@ -152,16 +178,20 @@ async function sweepOverdueOperationalItems(
     .is("overdue_notified_at", null)
     .limit(BATCH_LIMIT)
 
-  for (const rfi of (overdueRfis ?? []) as any[]) {
+  await forEachConcurrent((overdueRfis ?? []) as any[], async (rfi) => {
+    if (Date.now() >= deadlineMs) {
+      results.skipped += 1
+      return
+    }
     const userId = rfi.assigned_to ?? rfi.submitted_by
     if (!userId) {
       results.skipped += 1
-      continue
+      return
     }
     const { data: user } = await supabase.from("app_users").select("email, full_name").eq("id", userId).maybeSingle()
     if (!user?.email) {
       results.skipped += 1
-      continue
+      return
     }
     const org = await loadOrg(rfi.org_id)
     const project = Array.isArray(rfi.project) ? rfi.project[0] : rfi.project
@@ -184,11 +214,11 @@ async function sweepOverdueOperationalItems(
     })
     if (!ok) {
       results.skipped += 1
-      continue
+      return
     }
     await supabase.from("rfis").update({ overdue_notified_at: nowIso }).eq("id", rfi.id)
     results.rfis += 1
-  }
+  })
 
   // --- Submittals ---
   const { data: overdueSubmittals } = await supabase
@@ -201,10 +231,14 @@ async function sweepOverdueOperationalItems(
     .is("overdue_notified_at", null)
     .limit(BATCH_LIMIT)
 
-  for (const submittal of (overdueSubmittals ?? []) as any[]) {
+  await forEachConcurrent((overdueSubmittals ?? []) as any[], async (submittal) => {
+    if (Date.now() >= deadlineMs) {
+      results.skipped += 1
+      return
+    }
     if (!submittal.assigned_company_id) {
       results.skipped += 1
-      continue
+      return
     }
     const { data: contacts } = await supabase
       .from("contacts")
@@ -216,7 +250,7 @@ async function sweepOverdueOperationalItems(
     const recipients = (contacts ?? []).map((c: any) => c.email as string)
     if (recipients.length === 0) {
       results.skipped += 1
-      continue
+      return
     }
     const org = await loadOrg(submittal.org_id)
     const project = Array.isArray(submittal.project) ? submittal.project[0] : submittal.project
@@ -239,11 +273,11 @@ async function sweepOverdueOperationalItems(
     })
     if (!ok) {
       results.skipped += 1
-      continue
+      return
     }
     await supabase.from("submittals").update({ overdue_notified_at: nowIso }).eq("id", submittal.id)
     results.submittals += 1
-  }
+  })
 
   // --- Decisions ---
   const { data: overdueDecisions } = await supabase
@@ -255,12 +289,16 @@ async function sweepOverdueOperationalItems(
     .is("overdue_notified_at", null)
     .limit(BATCH_LIMIT)
 
-  for (const decision of (overdueDecisions ?? []) as any[]) {
+  await forEachConcurrent((overdueDecisions ?? []) as any[], async (decision) => {
+    if (Date.now() >= deadlineMs) {
+      results.skipped += 1
+      return
+    }
     const project = Array.isArray(decision.project) ? decision.project[0] : decision.project
     const contactId = decision.notify_contact_id ?? project?.client_id
     if (!contactId) {
       results.skipped += 1
-      continue
+      return
     }
     const { data: contact } = await supabase
       .from("contacts")
@@ -269,7 +307,7 @@ async function sweepOverdueOperationalItems(
       .maybeSingle()
     if (!contact?.email) {
       results.skipped += 1
-      continue
+      return
     }
     const org = await loadOrg(decision.org_id)
     const portalLink = await ensurePortalLink({
@@ -302,11 +340,11 @@ async function sweepOverdueOperationalItems(
     })
     if (!ok) {
       results.skipped += 1
-      continue
+      return
     }
     await supabase.from("decisions").update({ overdue_notified_at: nowIso }).eq("id", decision.id)
     results.decisions += 1
-  }
+  })
 
   return results
 }

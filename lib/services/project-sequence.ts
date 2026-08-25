@@ -8,6 +8,12 @@ interface InsertWithProjectNumberRetryArgs {
   numberColumn: string
   /** Postgres function that atomically allocates the next number, taking p_project_id. */
   rpcName: string
+  /**
+   * Columns the sequence restarts on beyond project_id — meetings number per
+   * (project, series). Each entry filters the fallback lookup and is passed to
+   * the RPC as `p_<column>`, the same convention as `p_project_id`.
+   */
+  sequenceScope?: Record<string, string | number>
   /** Unique constraint name whose violation triggers a re-allocation retry. */
   conflictConstraint: string
   projectId: string
@@ -19,17 +25,21 @@ interface InsertWithProjectNumberRetryArgs {
 
 async function resolveNextNumber(
   supabase: SupabaseClient,
-  { table, numberColumn, rpcName, projectId }: Pick<InsertWithProjectNumberRetryArgs, "table" | "numberColumn" | "rpcName" | "projectId">,
+  { table, numberColumn, rpcName, projectId, sequenceScope }: Pick<InsertWithProjectNumberRetryArgs, "table" | "numberColumn" | "rpcName" | "projectId" | "sequenceScope">,
 ): Promise<number> {
-  const { data: nextFromRpc, error: rpcError } = await supabase.rpc(rpcName, { p_project_id: projectId })
+  const scope = Object.entries(sequenceScope ?? {})
+  const rpcArgs: Record<string, unknown> = { p_project_id: projectId }
+  for (const [column, value] of scope) rpcArgs[`p_${column}`] = value
+
+  const { data: nextFromRpc, error: rpcError } = await supabase.rpc(rpcName, rpcArgs)
   if (!rpcError && typeof nextFromRpc === "number" && nextFromRpc > 0) {
     return nextFromRpc
   }
 
-  const { data: last } = await supabase
-    .from(table)
-    .select(numberColumn)
-    .eq("project_id", projectId)
+  let query = supabase.from(table).select(numberColumn).eq("project_id", projectId)
+  for (const [column, value] of scope) query = query.eq(column, value)
+
+  const { data: last } = await query
     .order(numberColumn, { ascending: false })
     .limit(1)
     .maybeSingle<Record<string, number>>()
@@ -52,6 +62,7 @@ export async function insertWithProjectNumberRetry<T>({
   table,
   numberColumn,
   rpcName,
+  sequenceScope,
   conflictConstraint,
   projectId,
   payload,
@@ -62,7 +73,7 @@ export async function insertWithProjectNumberRetry<T>({
   let attempt = 0
   while (attempt < INSERT_RETRY_LIMIT) {
     const number =
-      explicitNumber ?? (await resolveNextNumber(supabase, { table, numberColumn, rpcName, projectId }))
+      explicitNumber ?? (await resolveNextNumber(supabase, { table, numberColumn, rpcName, projectId, sequenceScope }))
     const insertPayload = { ...payload, [numberColumn]: number }
 
     const { data, error } = await supabase.from(table).insert(insertPayload).select(select).single()

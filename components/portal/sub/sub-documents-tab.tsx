@@ -11,9 +11,7 @@ import { FILE_CATEGORIES } from "@/components/files/types"
 import type { FileCategory } from "@/components/files/types"
 import type { FileMetadata } from "@/lib/types"
 import { PortalDrawingsSection } from "@/components/portal/portal-drawings"
-import { logPortalFileAccessClientAction } from "@/app/(app)/documents/actions"
-
-import { unwrapAction } from "@/lib/action-result"
+import { logPortalFileAccess } from "@/lib/portal/file-access-log"
 
 interface SubDocumentsTabProps {
   files: FileMetadata[]
@@ -154,7 +152,7 @@ export function SubDocumentsTab({
                       variant="ghost"
                       onClick={() => {
                         if (portalToken) {
-                          logPortalFileAccessClientAction(file.id, portalToken, "view")
+                          logPortalFileAccess(file.id, portalToken, "view")
                         }
                       }}
                       asChild
@@ -170,7 +168,7 @@ export function SubDocumentsTab({
                       variant="ghost"
                       onClick={() => {
                         if (portalToken) {
-                          logPortalFileAccessClientAction(file.id, portalToken, "download")
+                          logPortalFileAccess(file.id, portalToken, "download")
                         }
                       }}
                       asChild

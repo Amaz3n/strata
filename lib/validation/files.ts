@@ -36,7 +36,9 @@ export const fileInputSchema = z.object({
   visibility: z.enum(["private", "public"]).default("public"),
   // Phase 1 additions
   category: fileCategorySchema.optional(),
-  folder_path: z.string().optional(),
+  // `undefined` lets the category default pick a folder; `null` means the caller
+  // explicitly chose the root and must not be redirected into a default folder.
+  folder_path: z.string().nullable().optional(),
   description: z.string().optional(),
   tags: z.array(z.string()).optional(),
   source: fileSourceSchema.optional(),
@@ -85,6 +87,43 @@ export const fileListFiltersSchema = z.object({
 })
 
 export type FileListFilters = z.infer<typeof fileListFiltersSchema>
+
+// Schema for the browser-driven upload endpoints (presigned URL, direct POST,
+// multipart create). All three take the same request shape.
+export const projectUploadRequestSchema = z.object({
+  projectId: z.string().uuid(),
+  fileName: z.string().min(1).max(255),
+  contentType: z.string().min(1).max(255).optional(),
+  fileSize: z.number().int().nonnegative().optional(),
+})
+
+export type ProjectUploadRequest = z.infer<typeof projectUploadRequestSchema>
+
+export const fileAccessActionSchema = z.enum(["view", "download", "share", "unshare", "print"])
+
+export type FileAccessAction = z.infer<typeof fileAccessActionSchema>
+
+/**
+ * Access-event metadata is written from public portal requests, so it is an
+ * explicit allowlist rather than an open record.
+ */
+export const fileAccessMetadataSchema = z
+  .object({
+    source: z.string().min(1).max(64).optional(),
+    version_id: z.string().uuid().optional(),
+  })
+  .strict()
+
+export type FileAccessMetadata = z.infer<typeof fileAccessMetadataSchema>
+
+export const portalFileAccessLogSchema = z.object({
+  fileId: z.string().uuid(),
+  portalToken: z.string().min(1).max(512),
+  action: fileAccessActionSchema,
+  metadata: fileAccessMetadataSchema.default({}),
+})
+
+export type PortalFileAccessLogInput = z.infer<typeof portalFileAccessLogSchema>
 
 // Schema for file links (attachments)
 export const fileLinkInputSchema = z.object({

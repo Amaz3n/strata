@@ -14,15 +14,26 @@ function daysLeft(date: string) {
 export function TrialStatusBanner({ access }: { access: OrgAccessState }) {
   const storageKey = useMemo(() => `arc-trial-banner:${access.trialEndsAt ?? "unknown"}`, [access.trialEndsAt])
   const [dismissed, setDismissed] = useState(false)
+  const [remainingDays, setRemainingDays] = useState<number | null>(null)
 
   useEffect(() => {
     setDismissed(sessionStorage.getItem(storageKey) === "dismissed")
-  }, [storageKey])
+    setRemainingDays(access.trialEndsAt ? daysLeft(access.trialEndsAt) : null)
+  }, [access.trialEndsAt, storageKey])
 
-  if (access.status !== "trialing" || !access.trialEndsAt || dismissed) return null
+  // `Date.now()` cannot run while Next.js prerenders the client component.
+  // Waiting for the browser preserves the cached App Shell instead of forcing
+  // every authenticated route to abandon its partial prerender.
+  if (
+    access.status !== "trialing" ||
+    !access.trialEndsAt ||
+    dismissed ||
+    remainingDays === null
+  ) {
+    return null
+  }
 
-  const left = daysLeft(access.trialEndsAt)
-  const label = `Trial - ${left} day${left === 1 ? "" : "s"} left`
+  const label = `Trial - ${remainingDays} day${remainingDays === 1 ? "" : "s"} left`
 
   return (
     <div className="border-b bg-muted/35 px-4 py-2 text-sm text-muted-foreground">

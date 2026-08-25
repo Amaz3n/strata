@@ -17,6 +17,7 @@ import {
   type WaiverVerification,
 } from "@/lib/payments/ap-verification"
 import { runAiObject } from "@/lib/services/ai/gateway"
+import { parseDate } from "@/lib/services/import-parsers"
 import { loadStoredFileForModel } from "@/lib/services/ai/stored-file-input"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
@@ -64,10 +65,10 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
  * rule, so a bad scan can neither release a payment nor stop one.
  */
 
-const coiIsoDate = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "Dates must be YYYY-MM-DD")
-  .nullable()
+// No `.regex()`: the Google adapter drops `pattern` from the schema it sends,
+// so the constraint would only ever fire client-side as a rejected object.
+// The format is requested in the description and normalised by `parseDate`.
+const coiIsoDate = z.string().describe("Date as YYYY-MM-DD, or null if not printed").nullable()
 
 /**
  * The model reads, code counts. Limits come back as the number printed on the
@@ -289,7 +290,11 @@ export async function extractCoiFacts(fileId: string, orgId?: string): Promise<C
     // The one thing arithmetic can settle: a policy cannot expire before it
     // begins. Everything else on an ACORD form is prose the model must read.
     verify: (value) => {
-      if (value.effective_date && value.expiry_date && value.effective_date > value.expiry_date) {
+      const effective = parseDate(value.effective_date)
+      const expiry = parseDate(value.expiry_date)
+      if (value.effective_date && !effective) return { ok: false, message: "The effective date is not a readable date" }
+      if (value.expiry_date && !expiry) return { ok: false, message: "The expiration date is not a readable date" }
+      if (effective && expiry && effective > expiry) {
         return { ok: false, message: "The effective date is after the expiration date" }
       }
       return { ok: true }
@@ -328,8 +333,8 @@ export async function extractCoiFacts(fileId: string, orgId?: string): Promise<C
     policy_type: value.policy_type,
     each_occurrence_cents: toLimitCents(value.each_occurrence),
     aggregate_cents: toLimitCents(value.aggregate),
-    effective_date: value.effective_date,
-    expiry_date: value.expiry_date,
+    effective_date: parseDate(value.effective_date),
+    expiry_date: parseDate(value.expiry_date),
     additional_insured: value.additional_insured,
     primary_noncontributory: value.primary_noncontributory,
     waiver_of_subrogation: value.waiver_of_subrogation,

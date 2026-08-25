@@ -18,7 +18,7 @@ import {
   deleteProjectVendorBillAction,
 } from "@/app/(app)/projects/[id]/payables/actions"
 import { getProjectAccountingCustomerPreviewAction } from "@/app/(app)/projects/actions"
-import { listProjectsAction } from "@/app/(app)/projects/actions"
+import { listProjectBillingOptionsAction } from "@/app/(app)/projects/actions"
 
 import { cn } from "@/lib/utils"
 import { getPayableSyncBlockReason, isVendorCredit } from "@/lib/financials/payables-rules"
@@ -160,16 +160,10 @@ export function ProjectPayablesClient({
 
   useEffect(() => {
     let cancelled = false
-    listProjectsAction()
+    listProjectBillingOptionsAction()
       .then((rows) => {
         if (cancelled) return
-        setProjects(
-          (rows ?? []).map((project: any) => ({
-            id: project.id,
-            name: project.name,
-            billingModel: project.financial_settings?.billing_model ?? "fixed_price",
-          })),
-        )
+        setProjects(rows ?? [])
       })
       .catch(() => {})
     return () => {

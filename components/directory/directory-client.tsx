@@ -1,19 +1,31 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import Link from "next/link";
+import {
+  Suspense,
+  use,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 
 import { archiveCompanyAction, restoreCompanyAction } from "@/app/(app)/companies/actions";
 import { archiveContactAction, restoreContactAction } from "@/app/(app)/contacts/actions";
-import { listDirectoryPageAction } from "@/app/(app)/directory/actions";
-import type { ComplianceStatusSummary, Project } from "@/lib/types";
+import type { ProjectNavigationItem } from "@/lib/types";
 import type {
   DirectoryEntry,
+  DirectoryPageResult,
+  DirectoryPageWindow,
   DirectorySortDirection,
   DirectorySortKey,
 } from "@/lib/services/directory";
 import type { PartyKind, RelationshipType } from "@/lib/directory/roles";
+import type { DirectoryVendorData } from "@/lib/directory/vendor-data";
 import type { terminology } from "@/lib/terminology";
 import {
   AlertDialog,
@@ -39,16 +51,16 @@ import {
 import { Input } from "@/components/ui/input";
 import { ToastAction } from "@/components/ui/toast";
 import { ComplianceAlert } from "@/components/directory/compliance-alert";
-import type { PrequalificationGlance } from "@/lib/services/prequalification";
 import { AddToDirectorySheet } from "@/components/directory/add-to-directory-sheet";
 import { PortalInviteDialog } from "@/components/contacts/portal-invite-dialog";
 
 import { DirectoryTable } from "@/components/directory/directory-table";
-import { Download, Plus, Search, SlidersHorizontal, Upload, X } from "@/components/icons";
+import { Download, Loader2, Plus, Search, SlidersHorizontal, Upload, X } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 
 import { unwrapAction } from "@/lib/action-result";
+import { useOptimisticNavigate } from "@/lib/navigation/optimistic-pathname";
 
 // The CSV wizard is the largest module on this route and most visits never open
 // it, so it stays out of the initial list bundle.
@@ -61,19 +73,15 @@ interface DirectoryClientProps {
   total: number;
   pageSize: number;
   relationshipTypes: RelationshipType[];
-  complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>;
-  prequalificationByCompanyId?: Record<string, PrequalificationGlance>;
-  complianceWatchCompanies: Array<{ id: string; name: string }>;
-  complianceWatchTruncated: boolean;
-  complianceWatchTotal: number;
-  /** A status read failed. Rows must not render "clear" from missing data. */
-  vendorStatusUnavailable?: boolean;
+  /** First-page windows already paid for by the initial authenticated request. */
+  initialPageCache: Record<string, DirectoryPageWindow>;
+  /** Company-only decoration. It streams after rows and is never requested for Contacts. */
+  vendorData?: Promise<DirectoryVendorData>;
   /** Tier vocabulary. The directory names the same table for three postures,
    *  so the nouns it prints have to come from the choke point. */
   terms: ReturnType<typeof terminology>;
   /** Commercial prequalification is division-scoped, so the list says which. */
   showPrequalTrades?: boolean;
-  projects: Project[];
   canCreate: boolean;
   canArchive?: boolean;
   kind: PartyKind;
@@ -99,20 +107,59 @@ const KIND_TABS: Array<{ key: PartyKind; label: string }> = [
   { key: "contact", label: "Contacts" },
 ];
 
+function directoryPageKey(
+  kind: PartyKind,
+  search: string,
+  role: string,
+  trade: string,
+  sort: DirectorySortKey,
+  direction: DirectorySortDirection,
+) {
+  return [kind, search, role, trade, sort, direction].join("|");
+}
+
+function PendingComplianceAlert() {
+  return (
+    <div
+      role="status"
+      className="flex shrink-0 items-center gap-2 border-b bg-muted/20 px-4 py-2 text-xs text-muted-foreground"
+    >
+      <Loader2 className="size-3.5 animate-spin" />
+      Checking vendor compliance…
+    </div>
+  );
+}
+
+function DeferredComplianceAlert({
+  vendorData,
+  terms,
+}: {
+  vendorData: Promise<DirectoryVendorData>;
+  terms: ReturnType<typeof terminology>;
+}) {
+  const data = use(vendorData);
+  return (
+    <ComplianceAlert
+      companies={data.complianceWatchCompanies}
+      complianceStatusByCompanyId={data.complianceStatusByCompanyId}
+      watchTruncated={data.complianceWatchTruncated}
+      watchTotal={data.complianceWatchTotal}
+      statusUnavailable={data.statusUnavailable}
+      vendorNoun={terms.vendor.toLowerCase()}
+      vendorNounPlural={terms.vendors.toLowerCase()}
+    />
+  );
+}
+
 export function DirectoryClient({
   entries: initialEntries,
   total: initialTotal,
   pageSize,
   relationshipTypes,
-  complianceStatusByCompanyId,
-  prequalificationByCompanyId = {},
-  complianceWatchCompanies,
-  complianceWatchTruncated,
-  complianceWatchTotal,
-  vendorStatusUnavailable = false,
+  initialPageCache,
+  vendorData,
   terms,
   showPrequalTrades = false,
-  projects,
   canCreate,
   canArchive = false,
   kind,
@@ -124,18 +171,25 @@ export function DirectoryClient({
   trades,
 }: DirectoryClientProps) {
   const router = useRouter();
+  const navigate = useOptimisticNavigate();
   const searchParams = useSearchParams();
   const { toast } = useToast();
-  const [isPending, startTransition] = useTransition();
+  const [isArchivePending, startArchiveTransition] = useTransition();
+  const [isNavigationPending, startNavigation] = useTransition();
 
   const [entries, setEntries] = useState<DirectoryEntry[]>(initialEntries);
   const [total, setTotal] = useState(initialTotal);
   const [loadedPage, setLoadedPage] = useState(1);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [activeKind, setActiveKind] = useState(kind);
+  const [activeRoleFilter, setActiveRoleFilter] = useState(roleFilter);
+  const [activeTradeFilter, setActiveTradeFilter] = useState(tradeFilter);
+  const pageCache = useRef(new Map<string, DirectoryPageWindow>(Object.entries(initialPageCache)));
 
   const filterKey = `${kind}|${search}|${roleFilter}|${tradeFilter}|${sort}|${direction}`;
   const lastFilterKey = useRef(filterKey);
   const generation = useRef(0);
+  const loadMoreController = useRef<AbortController | null>(null);
 
   useEffect(() => {
     // A new server render always resets the loaded window: either the filters
@@ -143,12 +197,20 @@ export function DirectoryClient({
     if (lastFilterKey.current !== filterKey) {
       lastFilterKey.current = filterKey;
       generation.current += 1;
+      loadMoreController.current?.abort();
+      loadMoreController.current = null;
     }
     setEntries(initialEntries);
     setTotal(initialTotal);
     setLoadedPage(1);
     setIsLoadingMore(false);
-  }, [filterKey, initialEntries, initialTotal]);
+    setActiveKind(kind);
+    setActiveRoleFilter(roleFilter);
+    setActiveTradeFilter(tradeFilter);
+    for (const [key, page] of Object.entries(initialPageCache)) {
+      pageCache.current.set(key, page);
+    }
+  }, [filterKey, initialEntries, initialPageCache, initialTotal, kind, roleFilter, tradeFilter]);
 
   const hasMore = entries.length < total;
 
@@ -156,26 +218,41 @@ export function DirectoryClient({
     if (isLoadingMore || !hasMore) return;
     setIsLoadingMore(true);
     const fetchGeneration = generation.current;
+    const controller = new AbortController();
+    loadMoreController.current?.abort();
+    loadMoreController.current = controller;
     try {
       const next = loadedPage + 1;
-      const result = await listDirectoryPageAction({
-        kind,
-        page: next,
-        pageSize,
-        search,
-        role: roleFilter,
-        trade: tradeFilter,
+      const params = new URLSearchParams({
+        kind: activeKind,
+        page: String(next),
+        pageSize: String(pageSize),
         sort,
         direction,
       });
+      if (search) params.set("q", search);
+      if (activeRoleFilter !== "all") params.set("role", activeRoleFilter);
+      if (activeTradeFilter !== "all") params.set("trade", activeTradeFilter);
+      const response = await fetch(`/api/directory?${params.toString()}`, {
+        method: "GET",
+        signal: controller.signal,
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) throw new Error("The next directory page could not be loaded.");
+      const result = (await response.json()) as Pick<
+        DirectoryPageResult,
+        "entries" | "total" | "page" | "pageSize"
+      >;
       if (fetchGeneration !== generation.current) return;
       setEntries((prev) => [...prev, ...result.entries]);
       setTotal(result.total);
       setLoadedPage(next);
     } catch (error) {
       if (fetchGeneration !== generation.current) return;
+      if ((error as Error).name === "AbortError") return;
       toast({ title: "Couldn't load more", description: (error as Error).message });
     } finally {
+      if (loadMoreController.current === controller) loadMoreController.current = null;
       if (fetchGeneration === generation.current) setIsLoadingMore(false);
     }
   }, [
@@ -183,10 +260,10 @@ export function DirectoryClient({
     isLoadingMore,
     loadedPage,
     pageSize,
-    kind,
+    activeKind,
     search,
-    roleFilter,
-    tradeFilter,
+    activeRoleFilter,
+    activeTradeFilter,
     sort,
     direction,
     toast,
@@ -198,7 +275,25 @@ export function DirectoryClient({
   const [importOpen, setImportOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteEntry, setInviteEntry] = useState<DirectoryEntry | undefined>();
+  const [inviteProjects, setInviteProjects] = useState<
+    Array<Pick<ProjectNavigationItem, "id" | "name">> | undefined
+  >();
+  const [projectsError, setProjectsError] = useState<string>();
+  const [isLoadingProjects, setIsLoadingProjects] = useState(false);
+  const projectsController = useRef<AbortController | null>(null);
   const [archiveTarget, setArchiveTarget] = useState<DirectoryEntry | null>(null);
+  const pendingNavigationHref = useRef<string | null>(null);
+
+  useEffect(() => {
+    setSearchTerm(search);
+  }, [search]);
+
+  useEffect(() => {
+    return () => {
+      loadMoreController.current?.abort();
+      projectsController.current?.abort();
+    };
+  }, []);
 
   // Roles that can actually belong to the kind being listed. `applies_to` is
   // enforced in the database, so offering a company-only role while listing
@@ -206,45 +301,115 @@ export function DirectoryClient({
   const roleOptions = useMemo(
     () =>
       relationshipTypes.filter(
-        (type) => type.applies_to === "both" || type.applies_to === kind,
+        (type) => type.applies_to === "both" || type.applies_to === activeKind,
       ),
-    [relationshipTypes, kind],
+    [activeKind, relationshipTypes],
   );
 
   // Trade is a company fact; a person has a title instead.
-  const showTradeFilter = kind === "company" && trades.length > 0;
-  const activeFilterCount = [roleFilter !== "all", tradeFilter !== "all"].filter(Boolean).length;
+  const showTradeFilter = activeKind === "company" && trades.length > 0;
+  const activeFilterCount = [
+    activeRoleFilter !== "all",
+    activeTradeFilter !== "all",
+  ].filter(Boolean).length;
 
   // Same query the server read, handed to the export route.
   const exportHref = (() => {
     const params = new URLSearchParams();
-    params.set("kind", kind);
+    params.set("kind", activeKind);
     if (search) params.set("q", search);
-    if (roleFilter !== "all") params.set("role", roleFilter);
-    if (tradeFilter !== "all") params.set("trade", tradeFilter);
+    if (activeRoleFilter !== "all") params.set("role", activeRoleFilter);
+    if (activeTradeFilter !== "all") params.set("trade", activeTradeFilter);
     params.set("sort", sort);
     params.set("direction", direction);
     return `/directory/export?${params.toString()}`;
   })();
 
-  const updateParams = (updates: Record<string, string | number | undefined>) => {
-    const params = new URLSearchParams(searchParams.toString());
-    for (const [key, value] of Object.entries(updates)) {
-      if (value === undefined || value === "" || value === "all") params.delete(key);
-      else params.set(key, String(value));
-    }
-    const suffix = params.toString();
-    router.replace(suffix ? `/directory?${suffix}` : "/directory");
-  };
+  const serializedSearchParams = searchParams.toString();
+  const currentHref = serializedSearchParams
+    ? `/directory?${serializedSearchParams}`
+    : "/directory";
 
-  const setKind = (nextKind: PartyKind) => {
-    // Role and trade were chosen against the other list's vocabulary; carrying
-    // them over would show an empty list for no visible reason.
-    updateParams({ kind: nextKind, role: undefined, trade: undefined });
-  };
+  useEffect(() => {
+    if (pendingNavigationHref.current === currentHref) {
+      pendingNavigationHref.current = null;
+    }
+  }, [currentHref]);
+
+  const buildHref = useCallback(
+    (updates: Record<string, string | number | undefined>) => {
+      const params = new URLSearchParams(serializedSearchParams);
+      for (const [key, value] of Object.entries(updates)) {
+        if (value === undefined || value === "" || value === "all") params.delete(key);
+        else params.set(key, String(value));
+      }
+      const suffix = params.toString();
+      return suffix ? `/directory?${suffix}` : "/directory";
+    },
+    [serializedSearchParams],
+  );
+
+  const navigateHref = useCallback(
+    (href: string) => {
+      if (href === currentHref || pendingNavigationHref.current === href) return;
+      pendingNavigationHref.current = href;
+      startNavigation(() => {
+        router.replace(href, { scroll: false });
+      });
+    },
+    [currentHref, router],
+  );
+
+  const updateParams = useCallback(
+    (updates: Record<string, string | number | undefined>) => {
+      navigateHref(buildHref(updates));
+    },
+    [buildHref, navigateHref],
+  );
+
+  const kindHref = useCallback(
+    (nextKind: PartyKind) =>
+      buildHref({ kind: nextKind, role: undefined, trade: undefined }),
+    [buildHref],
+  );
+
+  const setKind = useCallback(
+    (nextKind: PartyKind) => {
+      if (nextKind === activeKind) return;
+      // Role and trade were chosen against the other list's vocabulary;
+      // carrying them over would show an empty list for no visible reason.
+      const href = kindHref(nextKind);
+      const cacheKey = directoryPageKey(
+        nextKind,
+        search,
+        "all",
+        "all",
+        sort,
+        direction,
+      );
+      const cached = pageCache.current.get(cacheKey);
+      if (!cached) {
+        navigateHref(href);
+        return;
+      }
+
+      generation.current += 1;
+      loadMoreController.current?.abort();
+      loadMoreController.current = null;
+      setActiveKind(nextKind);
+      setActiveRoleFilter("all");
+      setActiveTradeFilter("all");
+      setEntries(cached.entries);
+      setTotal(cached.total);
+      setLoadedPage(1);
+      setIsLoadingMore(false);
+      window.history.replaceState(null, "", href);
+    },
+    [activeKind, direction, kindHref, navigateHref, search, sort],
+  );
 
   const openEntry = (entry: DirectoryEntry) => {
-    router.push(`/directory/${entry.id}`);
+    navigate(`/directory/${entry.id}`);
   };
 
   const openNew = (nextKind: PartyKind) => {
@@ -252,9 +417,38 @@ export function DirectoryClient({
     setAddOpen(true);
   };
 
+  const loadInviteProjects = useCallback(async () => {
+    if (inviteProjects || projectsController.current) return;
+    const controller = new AbortController();
+    projectsController.current = controller;
+    setIsLoadingProjects(true);
+    setProjectsError(undefined);
+    try {
+      const response = await fetch("/api/projects", {
+        signal: controller.signal,
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) throw new Error("Projects could not be loaded.");
+      const payload = (await response.json()) as {
+        projects?: Array<Pick<ProjectNavigationItem, "id" | "name">>;
+      };
+      setInviteProjects(payload.projects ?? []);
+    } catch (error) {
+      if ((error as Error).name !== "AbortError") {
+        setProjectsError((error as Error).message);
+      }
+    } finally {
+      if (projectsController.current === controller) {
+        projectsController.current = null;
+        setIsLoadingProjects(false);
+      }
+    }
+  }, [inviteProjects]);
+
   const openInvite = (entry: DirectoryEntry) => {
     setInviteEntry(entry);
     setInviteOpen(true);
+    void loadInviteProjects();
   };
 
   const restoreArchived = async (entry: DirectoryEntry) => {
@@ -275,7 +469,7 @@ export function DirectoryClient({
     if (!archiveTarget) return;
     const target = archiveTarget;
     setArchiveTarget(null);
-    startTransition(async () => {
+    startArchiveTransition(async () => {
       try {
         if (target.kind === "company") unwrapAction(await archiveCompanyAction(target.id));
         else unwrapAction(await archiveContactAction(target.id));
@@ -305,7 +499,7 @@ export function DirectoryClient({
     <DropdownMenuContent align="end" className="w-64">
       <DropdownMenuLabel>Role</DropdownMenuLabel>
       <DropdownMenuRadioGroup
-        value={roleFilter}
+        value={activeRoleFilter}
         onValueChange={(value) => updateParams({ role: value })}
       >
         <DropdownMenuRadioItem value="all">All roles</DropdownMenuRadioItem>
@@ -321,7 +515,7 @@ export function DirectoryClient({
           <DropdownMenuSeparator />
           <DropdownMenuLabel>{terms.trade}</DropdownMenuLabel>
           <DropdownMenuRadioGroup
-            value={tradeFilter}
+            value={activeTradeFilter}
             onValueChange={(value) => updateParams({ trade: value })}
           >
             <DropdownMenuRadioItem value="all">All trades</DropdownMenuRadioItem>
@@ -410,22 +604,41 @@ export function DirectoryClient({
 
   const kindTabs = (
     <div className="flex shrink-0 border bg-muted/20 p-1">
-      {KIND_TABS.map((tab) => (
-        <button
-          key={tab.key}
-          type="button"
-          onClick={() => setKind(tab.key)}
-          aria-current={kind === tab.key ? "page" : undefined}
-          className={cn(
-            "flex h-8 shrink-0 items-center px-4 text-xs font-medium transition-colors",
-            kind === tab.key
-              ? "bg-primary text-primary-foreground shadow-sm"
-              : "text-muted-foreground hover:text-foreground",
-          )}
-        >
-          {tab.label}
-        </button>
-      ))}
+      {KIND_TABS.map((tab) => {
+        const href = kindHref(tab.key);
+        const cached = pageCache.current.has(
+          directoryPageKey(tab.key, search, "all", "all", sort, direction),
+        );
+        return (
+          <Link
+            key={tab.key}
+            href={href}
+            replace
+            scroll={false}
+            prefetch={false}
+            onMouseEnter={() => {
+              if (tab.key !== activeKind && !cached) router.prefetch(href);
+            }}
+            onFocus={() => {
+              if (tab.key !== activeKind && !cached) router.prefetch(href);
+            }}
+            onClick={(event) => {
+              if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+              event.preventDefault();
+              setKind(tab.key);
+            }}
+            aria-current={activeKind === tab.key ? "page" : undefined}
+            className={cn(
+              "flex h-8 shrink-0 items-center px-4 text-xs font-medium transition-colors",
+              activeKind === tab.key
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {tab.label}
+          </Link>
+        );
+      })}
     </div>
   );
 
@@ -447,7 +660,11 @@ export function DirectoryClient({
   );
 
   return (
-    <div className="flex min-h-full flex-col bg-background">
+    <div
+      data-instant-shell="directory"
+      aria-busy={isNavigationPending || undefined}
+      className="flex min-h-full flex-col bg-background"
+    >
       {/* Mobile header */}
       <div className="shrink-0 border-y bg-background md:hidden">
         <div className="flex items-center gap-2 px-3 pt-3">
@@ -470,29 +687,25 @@ export function DirectoryClient({
         </div>
       </div>
 
-      <ComplianceAlert
-        companies={complianceWatchCompanies}
-        complianceStatusByCompanyId={complianceStatusByCompanyId}
-        watchTruncated={complianceWatchTruncated}
-        watchTotal={complianceWatchTotal}
-        statusUnavailable={vendorStatusUnavailable}
-        vendorNoun={terms.vendor.toLowerCase()}
-        vendorNounPlural={terms.vendors.toLowerCase()}
-      />
+      {activeKind === "company" && vendorData ? (
+        <Suspense fallback={<PendingComplianceAlert />}>
+          <DeferredComplianceAlert vendorData={vendorData} terms={terms} />
+        </Suspense>
+      ) : null}
 
       <DirectoryTable
         entries={entries}
-        complianceStatusByCompanyId={complianceStatusByCompanyId}
-        prequalificationByCompanyId={prequalificationByCompanyId}
-        statusUnavailable={vendorStatusUnavailable}
+        vendorData={vendorData}
         tradeLabel={terms.trade}
         showPrequalTrades={showPrequalTrades}
-        kind={kind}
+        kind={activeKind}
         sort={sort}
         direction={direction}
         total={total}
         hasMore={hasMore}
         isLoadingMore={isLoadingMore}
+        isRefreshing={isNavigationPending}
+        refreshingLabel={`Loading ${activeKind === "company" ? "companies" : "contacts"}…`}
         onLoadMore={loadMore}
         onSortChange={(nextSort) => {
           const nextDirection = sort === nextSort && direction === "asc" ? "desc" : "asc";
@@ -500,7 +713,7 @@ export function DirectoryClient({
         }}
         onSelect={openEntry}
         onInvite={canCreate ? openInvite : undefined}
-        onArchive={canArchive && !isPending ? setArchiveTarget : undefined}
+        onArchive={canArchive && !isArchivePending ? setArchiveTarget : undefined}
         hasActiveFilters={activeFilterCount > 0 || search.length > 0}
         onClearFilters={() => {
           // The input holds its own state, so clearing the URL alone would
@@ -524,7 +737,10 @@ export function DirectoryClient({
             ? { id: inviteEntry.id, full_name: inviteEntry.name }
             : undefined
         }
-        projects={projects}
+        projects={inviteProjects ?? []}
+        projectsLoading={isLoadingProjects}
+        projectsError={projectsError}
+        onRetryProjects={() => void loadInviteProjects()}
         open={inviteOpen}
         onOpenChange={(open) => {
           setInviteOpen(open);
@@ -552,9 +768,9 @@ export function DirectoryClient({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={isArchivePending}>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              disabled={isPending}
+              disabled={isArchivePending}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={confirmArchive}
             >

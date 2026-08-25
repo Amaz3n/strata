@@ -284,12 +284,15 @@ export function buildProjectNavGroups({
   section,
   project,
   reviewBadgeCount,
+  correspondenceBadgeCount,
   orgTier = "residential",
 }: {
   projectId: string
   section: ProjectSection
   project?: Project | ProjectNavigationItem
   reviewBadgeCount?: number
+  /** Filed mail nobody has ruled on. The only signal that the log has work in it. */
+  correspondenceBadgeCount?: number
   orgTier?: ProductTier
 }): ProjectNavGroup[] {
   const base = `/projects/${projectId}`
@@ -381,6 +384,7 @@ export function buildProjectNavGroups({
       title: "Correspondence",
       url: url("/correspondence"),
       isActive: section === "correspondence",
+      badge: visibleBadge(correspondenceBadgeCount),
       requiredAny: ["correspondence.read"],
     },
     config?.showTime === false

@@ -411,9 +411,11 @@ Ownership:
   the community (`sales.manage`); the plan library is read-only for it, and the
   rule that silently discarded one caller's price is gone.
 
-Still open after this pass: the iOS superintendent experience, escrow/title and
-settlement-statement documents, an agreement template/addenda library, and every
-QA-org acceptance scenario below — none of which this pass touched.
+Still open after this pass: QA-org acceptance and release hardening for the
+implemented iOS superintendent experience, escrow/title and settlement-statement
+documents, and an agreement template/addenda library. The native app now includes
+My Houses, daily logs, tasks, punch, documents, and their mobile API flows; those
+surfaces are no longer accurately described as missing implementation.
 
 **Execution order:** 08 and 01 start in parallel (08 is platform work everything
 financial rides on; do the interface extraction + multi-connection before 04/06 post

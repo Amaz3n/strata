@@ -22,12 +22,6 @@ export interface FileLinkWithFile extends FileLink {
   file: FileWithUrls
 }
 
-export interface FileLinkSummary {
-  file_id: string
-  entity_type: string
-  count: number
-}
-
 function mapFileLink(row: any): FileLink {
   return {
     id: row.id,
@@ -213,51 +207,6 @@ export async function attachFileWithServiceRole(input: {
 }
 
 /**
- * Detach a file from an entity
- */
-export async function detachFile(
-  fileId: string,
-  entityType: string,
-  entityId: string,
-  orgId?: string
-): Promise<void> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("docs.upload", { supabase, orgId: resolvedOrgId, userId })
-
-  const { data: existing, error: fetchError } = await supabase
-    .from("file_links")
-    .select("*")
-    .eq("org_id", resolvedOrgId)
-    .eq("file_id", fileId)
-    .eq("entity_type", entityType)
-    .eq("entity_id", entityId)
-    .single()
-
-  if (fetchError) {
-    if (fetchError.code === "PGRST116") return // Link doesn't exist, nothing to do
-    throw new Error(`Failed to find file link: ${fetchError.message}`)
-  }
-
-  const { error } = await supabase
-    .from("file_links")
-    .delete()
-    .eq("id", existing.id)
-
-  if (error) {
-    throw new Error(`Failed to detach file: ${error.message}`)
-  }
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "delete",
-    entityType: "file_link",
-    entityId: existing.id,
-    before: existing,
-  })
-}
-
-/**
  * Detach a file link by ID
  */
 export async function detachFileById(linkId: string, orgId?: string): Promise<void> {
@@ -368,47 +317,6 @@ export async function listFileLinks(fileId: string, orgId?: string): Promise<Fil
   }
 
   return (data ?? []).map(mapFileLink)
-}
-
-/**
- * Summarize links for a set of files
- */
-export async function listFileLinkSummary(
-  fileIds: string[],
-  orgId?: string
-): Promise<FileLinkSummary[]> {
-  if (fileIds.length === 0) return []
-
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("docs.read", { supabase, orgId: resolvedOrgId, userId })
-
-  const { data, error } = await supabase
-    .from("file_links")
-    .select("file_id, entity_type")
-    .eq("org_id", resolvedOrgId)
-    .in("file_id", fileIds)
-
-  if (error) {
-    throw new Error(`Failed to list file link summary: ${error.message}`)
-  }
-
-  const summary = new Map<string, Map<string, number>>()
-  for (const row of data ?? []) {
-    const fileId = row.file_id as string
-    const entityType = row.entity_type as string
-    if (!summary.has(fileId)) summary.set(fileId, new Map())
-    const fileMap = summary.get(fileId)!
-    fileMap.set(entityType, (fileMap.get(entityType) ?? 0) + 1)
-  }
-
-  const results: FileLinkSummary[] = []
-  for (const [fileId, fileMap] of summary.entries()) {
-    for (const [entityType, count] of fileMap.entries()) {
-      results.push({ file_id: fileId, entity_type: entityType, count })
-    }
-  }
-
-  return results
 }
 
 /**

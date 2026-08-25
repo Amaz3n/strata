@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 
 import { requireOrgMembership } from "@/lib/auth/context"
+import { requirePermission, requireProjectPermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { downloadFilesObject, getFilesObjectStream, uploadFilesObject } from "@/lib/storage/files-storage"
 
@@ -82,7 +83,16 @@ export async function GET(req: Request, { params }: { params: Promise<{ fileId: 
     }
 
     try {
-      await requireOrgMembership(file.org_id)
+      const context = await requireOrgMembership(file.org_id)
+      if (file.project_id) {
+        await requireProjectPermission(context.user.id, file.project_id, "docs.read")
+      } else {
+        await requirePermission("docs.read", {
+          supabase: context.supabase,
+          orgId: context.orgId,
+          userId: context.user.id,
+        })
+      }
     } catch {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }

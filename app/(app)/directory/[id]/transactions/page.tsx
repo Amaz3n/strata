@@ -1,8 +1,8 @@
-// Request-scoped account data; the instant shell is the layout's.
-export const instant = false;
+// Browser-private account data; runtime-prefetched by the bounded tab strip.
+export const instant = true;
 
 import { notFound, redirect } from "next/navigation";
-import { connection } from "next/server";
+import { Suspense } from "react";
 import { z } from "zod";
 
 import { VendorTransactionsTable } from "@/components/companies/account/vendor-transactions-table";
@@ -11,19 +11,27 @@ import {
   type VendorLedgerEntryKind,
 } from "@/lib/services/vendor-account";
 import { VendorAccountSummaryStrip } from "@/components/directory/account/vendor-account-summary-strip";
-import { loadVendorCompany, loadCostCodesEnabledForProjects, loadVendorLedger } from "../page-data";
+import { CompanyTabSkeleton } from "@/components/companies/account/company-account-skeleton";
+import {
+  loadCostCodesEnabledForProjects,
+  loadVendorCompanyHeader,
+  loadVendorLedger,
+  registerDirectoryTabCache,
+} from "../page-data";
+
+type TransactionSearch = {
+  kind?: string;
+  status?: string;
+  project?: string;
+  filter?: string;
+  from?: string;
+  to?: string;
+  page?: string;
+};
 
 interface PageProps {
   params: Promise<{ id: string }>;
-  searchParams?: Promise<{
-    kind?: string;
-    status?: string;
-    project?: string;
-    filter?: string;
-    from?: string;
-    to?: string;
-    page?: string;
-  }>;
+  searchParams?: Promise<TransactionSearch>;
 }
 
 const KINDS: VendorLedgerEntryKind[] = ["bill", "vendor_credit", "payment", "expense"];
@@ -38,16 +46,32 @@ function parseKinds(value?: string): VendorLedgerEntryKind[] | undefined {
   return parsed.length > 0 ? parsed : undefined;
 }
 
-export default async function CompanyTransactionsPage({ params, searchParams }: PageProps) {
-  // Aging is relative to today, so render at request time.
-  await connection();
+export default function CompanyTransactionsPage(props: PageProps) {
+  return (
+    <Suspense fallback={<CompanyTabSkeleton rows={8} flush summaryFigures={4} />}>
+      <CompanyTransactionsData {...props} />
+    </Suspense>
+  );
+}
+
+async function CompanyTransactionsData({ params, searchParams }: PageProps) {
   const { id } = await params;
   if (!z.string().uuid().safeParse(id).success) notFound();
-  const account = await loadVendorCompany(id);
-  // Null means: not a company, or a company with no vendor role.
-  if (!account) redirect(`/directory/${id}`);
-
   const query = (await searchParams) ?? {};
+
+  return <CompanyTransactionsContent id={id} query={query} />;
+}
+
+async function CompanyTransactionsContent({
+  id,
+  query,
+}: {
+  id: string;
+  query: TransactionSearch;
+}) {
+  "use cache: private";
+  registerDirectoryTabCache(id, "transactions");
+
   const hasFilters = Boolean(
     query.kind || query.status || query.project || query.filter || query.from || query.to ||
       (Number(query.page) || 1) > 1,
@@ -57,8 +81,9 @@ export default async function CompanyTransactionsPage({ params, searchParams }: 
   // its tab badges, and `loadVendorLedger` caches it per request. Re-running a
   // full four-source, 500-row-per-source build for an unfiltered view meant
   // every visit to this tab paid for the same work twice.
-  const ledger = hasFilters
-    ? await getVendorAccountLedger(id, undefined, {
+  const accountPromise = loadVendorCompanyHeader(id);
+  const ledgerPromise = hasFilters
+    ? getVendorAccountLedger(id, undefined, {
         kinds: parseKinds(query.kind),
         statuses: query.status?.split(",").filter(Boolean),
         projectId: query.project,
@@ -67,7 +92,10 @@ export default async function CompanyTransactionsPage({ params, searchParams }: 
         to: query.to,
         page: Number(query.page) || 1,
       })
-    : await loadVendorLedger(id);
+    : loadVendorLedger(id);
+  const [account, ledger] = await Promise.all([accountPromise, ledgerPromise]);
+  // Null means: not a company, or a company with no vendor role.
+  if (!account) redirect(`/directory/${id}`);
 
   // Cost coding is a per-project setting, and this register spans projects, so
   // the rows on this page carry the right answer into the detail workspace.
@@ -88,7 +116,7 @@ export default async function CompanyTransactionsPage({ params, searchParams }: 
       />
       <VendorTransactionsTable
         companyId={id}
-        companyName={account.company.name}
+        companyName={account.name}
         entries={ledger.entries}
         pagination={ledger.pagination}
         facets={ledger.facets}

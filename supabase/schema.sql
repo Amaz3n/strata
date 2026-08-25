@@ -97,9 +97,12 @@ BEGIN
 END;
 ' LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION public.is_org_member(check_org_id uuid) RETURNS boolean AS ' select exists (select 1 from memberships m where m.org_id=check_org_id and m.user_id=auth.uid() and m.status=''active''); ' LANGUAGE sql STABLE;
+-- SECURITY DEFINER is load-bearing, not decoration: ~209 RLS policies call this
+-- helper, and memberships itself carries RLS. Without the definer rights the
+-- helper is evaluated as the caller and re-enters that policy per row.
+CREATE OR REPLACE FUNCTION public.is_org_member(check_org_id uuid) RETURNS boolean AS ' select exists (select 1 from memberships m where m.org_id=check_org_id and m.user_id=auth.uid() and m.status=''active''); ' LANGUAGE sql STABLE SECURITY DEFINER SET search_path TO 'public';
 
-CREATE OR REPLACE FUNCTION public.is_project_member(check_project_id uuid) RETURNS boolean AS ' select exists (select 1 from project_members pm join projects p on p.id=pm.project_id where pm.project_id=check_project_id and pm.user_id=auth.uid() and pm.status=''active'' and pm.org_id=p.org_id); ' LANGUAGE sql STABLE;
+CREATE OR REPLACE FUNCTION public.is_project_member(check_project_id uuid) RETURNS boolean AS ' select exists (select 1 from project_members pm join projects p on p.id=pm.project_id where pm.project_id=check_project_id and pm.user_id=auth.uid() and pm.status=''active'' and pm.org_id=p.org_id); ' LANGUAGE sql STABLE SECURITY DEFINER SET search_path TO 'public';
 
 CREATE OR REPLACE FUNCTION public.max(citext) RETURNS citext AS 'aggregate_dummy' LANGUAGE internal IMMUTABLE;
 CREATE OR REPLACE FUNCTION public.min(citext) RETURNS citext AS 'aggregate_dummy' LANGUAGE internal IMMUTABLE;

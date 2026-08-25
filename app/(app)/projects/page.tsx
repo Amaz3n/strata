@@ -6,24 +6,22 @@ import { Skeleton } from "@/components/ui/skeleton"
 
 import { requireOrgContext } from "@/lib/services/context"
 
-import { unwrapAction } from "@/lib/action-result"
 import { resolveProductionDeskScope } from "@/lib/services/production-desk-scope"
 import { terminology } from "@/lib/terminology"
 
 
 async function ProjectsData({ communityId }: { communityId?: string }) {
   const { orgId, productTier } = await requireOrgContext()
-  const [allProjects, clientContacts, allScheduleSummaries, scope] = await Promise.all([
+  const [allProjects, clientContacts, scope] = await Promise.all([
     listProjectsAction(),
     listProjectClientContactsAction(),
-    listProjectScheduleSummariesAction(),
     resolveProductionDeskScope({ communityId }),
   ])
   const allowed = scope.projectIds === null ? null : new Set(scope.projectIds)
   const projects = allowed ? allProjects.filter((project) => allowed.has(project.id)) : allProjects
-  const scheduleSummaries = Object.fromEntries(
-    Object.entries(allScheduleSummaries).filter(([projectId]) => !allowed || allowed.has(projectId)),
-  )
+  // Scoped to the rows actually on screen. Scanning every schedule item in the
+  // org and discarding most of them made a one-community desk pay for all of them.
+  const scheduleSummaries = await listProjectScheduleSummariesAction(projects.map((project) => project.id))
 
   return (
     <ProjectsClient

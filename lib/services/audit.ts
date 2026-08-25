@@ -1,3 +1,4 @@
+import { afterResponse } from "@/lib/observability/after-response"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
 import { requireAuthorization } from "@/lib/services/authorization"
@@ -129,23 +130,17 @@ export async function recordAudit(input: AuditInput) {
     }
 
     // Keep the unified search index in sync as a side effect of audited
-    // mutations. Best-effort: a failure here must never break the audit path.
+    // mutations. Best-effort and nothing in the response reads it, so it runs
+    // after the response rather than inside every write.
     if (input.entityId) {
       const searchType = mapAuditEntityTypeToSearchType(input.entityType)
       if (searchType) {
-        try {
-          await enqueueReindex(
-            {
-              orgId: resolvedOrgId,
-              entityType: searchType,
-              entityId: input.entityId,
-              op: input.action === "delete" ? "delete" : "upsert",
-            },
-            supabase,
-          )
-        } catch (reindexError) {
-          console.error("Unable to enqueue search reindex", reindexError)
-        }
+        const orgId = resolvedOrgId
+        const entityId = input.entityId
+        const op = input.action === "delete" ? "delete" : "upsert"
+        afterResponse("audit.reindex_failed", () =>
+          enqueueReindex({ orgId, entityType: searchType, entityId, op }, supabase),
+        )
       }
     }
   } catch (error) {

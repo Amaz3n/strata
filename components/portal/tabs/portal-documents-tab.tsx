@@ -7,10 +7,8 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { FILE_CATEGORIES } from "@/components/files/types"
 import { PortalDrawingsSection } from "@/components/portal/portal-drawings"
-import { logPortalFileAccessClientAction } from "@/app/(app)/documents/actions"
+import { logPortalFileAccess } from "@/lib/portal/file-access-log"
 import type { ClientPortalData } from "@/lib/types"
-
-import { unwrapAction } from "@/lib/action-result"
 
 interface PortalDocumentsTabProps {
   data: ClientPortalData
@@ -51,7 +49,7 @@ export function PortalDocumentsTab({ data, token, canDownload = true }: PortalDo
                     <Button
                       size="icon"
                       variant="ghost"
-                      onClick={() => logPortalFileAccessClientAction(file.id, token, "view")}
+                      onClick={() => logPortalFileAccess(file.id, token, "view")}
                       asChild
                     >
                       <a href={file.url} target="_blank" rel="noopener noreferrer" aria-label={`View ${file.file_name}`}>
@@ -62,7 +60,7 @@ export function PortalDocumentsTab({ data, token, canDownload = true }: PortalDo
                       <Button
                         size="icon"
                         variant="ghost"
-                        onClick={() => logPortalFileAccessClientAction(file.id, token, "download")}
+                        onClick={() => logPortalFileAccess(file.id, token, "download")}
                         asChild
                       >
                         <a href={`${file.url}?download=1`} download={file.file_name} aria-label={`Download ${file.file_name}`}>

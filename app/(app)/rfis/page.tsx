@@ -2,7 +2,7 @@ import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { RfisClient } from "@/components/rfis/rfis-client"
 import { listRfisAction } from "./actions"
-import { listProjectsAction } from "@/app/(app)/projects/actions"
+import { listProjectSummariesAction } from "@/app/(app)/projects/actions"
 import { listCompaniesAction } from "@/app/(app)/companies/actions"
 import { listContactsAction } from "@/app/(app)/contacts/actions"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -14,7 +14,7 @@ import { unwrapAction } from "@/lib/action-result"
 async function RfisData() {
   const [rfis, projects, companies, contacts] = await Promise.all([
     listRfisAction(),
-    listProjectsAction(),
+    listProjectSummariesAction(),
     listCompaniesAction(),
     listContactsAction(),
   ])

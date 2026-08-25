@@ -44,6 +44,7 @@ import {
 } from "@/components/ui/attachment"
 import { uploadDocumentFileDirect } from "@/lib/services/files-client"
 import type { FileCategory } from "@/components/files/types"
+import { formatFileSize } from "./format"
 
 interface UploadQueueItem {
   id: string
@@ -89,13 +90,6 @@ function normalizeFolderPath(value?: string | null): string {
   return normalized === "/" ? "" : normalized
 }
 
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`
-}
-
 function FileTypeIcon({ file }: { file: File }) {
   const extension = file.name.toLowerCase().split(".").pop()
   const className = "h-4 w-4"
@@ -114,7 +108,6 @@ function ImageThumb({ file }: { file: File }) {
     return () => URL.revokeObjectURL(objectUrl)
   }, [file])
   if (!url) return <ImageIcon className="h-4 w-4" />
-  // eslint-disable-next-line @next/next/no-img-element
   return <img src={url} alt="" />
 }
 
@@ -312,7 +305,7 @@ export function UploadDialog({
       <SheetContent className="w-full gap-0 overflow-hidden p-0 sm:max-w-2xl" mobileFullscreen>
         <SheetHeader className="border-b px-6 py-5">
           <div className="flex items-start gap-3 pr-8">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center bg-primary/10 text-primary">
               <HardDriveUpload className="h-5 w-5" />
             </div>
             <div className="min-w-0">
@@ -347,13 +340,13 @@ export function UploadDialog({
               onDrop={handleDrop}
               disabled={isUploading}
               className={cn(
-                "group flex min-h-48 w-full flex-col items-center justify-center rounded-lg border border-dashed bg-muted/20 px-6 py-8 text-center transition",
+                "group flex min-h-48 w-full flex-col items-center justify-center border border-dashed bg-muted/20 px-6 py-8 text-center transition",
                 "hover:border-primary/60 hover:bg-primary/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 isDraggingOver && "border-primary bg-primary/[0.06]",
                 isUploading && "cursor-not-allowed opacity-70"
               )}
             >
-              <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-lg border bg-background shadow-sm transition group-hover:scale-105">
+              <div className="mb-4 flex h-14 w-14 items-center justify-center border bg-background shadow-sm transition group-hover:scale-105">
                 <Upload className="h-6 w-6 text-primary" />
               </div>
               <div className="text-sm font-semibold">
@@ -363,13 +356,13 @@ export function UploadDialog({
             </button>
 
             {queue.length > 0 && (
-              <div className="rounded-lg border bg-background">
+              <div className="border bg-background">
                 <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
                   <div>
                     <div className="text-sm font-semibold">
                       {queue.length} file{queue.length === 1 ? "" : "s"} selected
                     </div>
-                    <div className="text-xs text-muted-foreground">
+                    <div className="text-xs tabular-nums text-muted-foreground">
                       {formatFileSize(totalSize)}
                       {successCount > 0 ? ` · ${successCount} uploaded` : ""}
                       {errorCount > 0 ? ` · ${errorCount} failed` : ""}
@@ -393,9 +386,9 @@ export function UploadDialog({
                       <span className="font-medium">Uploading</span>
                       <span className="text-muted-foreground">{overallProgress}%</span>
                     </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-muted">
+                    <div className="h-2 overflow-hidden bg-muted">
                       <div
-                        className="h-full rounded-full bg-primary transition-[width]"
+                        className="h-full bg-primary transition-[width]"
                         style={{ width: `${Math.max(3, overallProgress)}%` }}
                       />
                     </div>
@@ -477,7 +470,7 @@ export function UploadDialog({
             )}
 
             {queue.length > 0 && !allComplete && (
-              <div className="grid gap-3 rounded-lg border bg-muted/20 p-4 sm:grid-cols-2">
+              <div className="grid gap-3 border bg-muted/20 p-4 sm:grid-cols-2">
                   <div className="space-y-2">
                     <Label htmlFor="category">Category</Label>
                     <Select
@@ -520,7 +513,7 @@ export function UploadDialog({
         </div>
 
         <SheetFooter className="border-t bg-background px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="text-xs text-muted-foreground">
+          <div className="text-xs tabular-nums text-muted-foreground">
             {queue.length > 0
               ? `${queuedCount} queued · ${formatFileSize(totalSize)} total`
               : `Destination: ${destinationLabel}`}

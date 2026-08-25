@@ -15,6 +15,7 @@ import { SignatureCapture } from "./components/signature-capture"
 import { SigningHeader } from "./components/signing-header"
 import { SuccessScreen } from "./components/success-screen"
 import { isFieldComplete, isRequiredField, type SigningField } from "./components/types"
+import { configurePdfWorker } from "@/lib/pdf/worker"
 
 interface DocumentSigningClientProps {
   token: string
@@ -72,7 +73,7 @@ export function DocumentSigningClient({
     const loadPdf = async () => {
       try {
         const { Document, Page, pdfjs } = await import("react-pdf")
-        pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs"
+        configurePdfWorker()
         setPDFComponents({ Document, Page })
       } catch (error) {
         console.error("Failed to load PDF renderer", error)

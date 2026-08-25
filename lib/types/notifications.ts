@@ -32,6 +32,7 @@ export type NotificationType =
   | "selection_cutoff_missed"
   | "selection_cutoff_changed"
   | "portal_message"
+  | "project_email_change_trigger"
   | "file_created"
   | "file_archived"
   | "file_deleted"
@@ -473,6 +474,12 @@ export const EMAIL_NOTIFICATION_TYPES = [
     label: "Vendor is ready for Arc Pay",
     description:
       "Email me when a vendor finishes verification and their bills can be paid through Arc Pay — or when they lose that status.",
+  },
+  {
+    key: "project_email_change_trigger",
+    category: "project",
+    label: "Email may be a change",
+    description: "Email me when filed project mail looks like a scope, cost, or schedule change.",
   },
   {
     key: "change_event_rfq_invite",

@@ -445,7 +445,7 @@ export function ProspectDetailSheet({
   async function handleCopyLink(estimateId: string) {
     setCopyingId(estimateId)
     try {
-      const result = await getEstimateShareLinkAction(estimateId)
+      const result = unwrapAction(await getEstimateShareLinkAction(estimateId))
       await copyToClipboard(result.url)
       toast({ title: "Review link copied" })
     } catch (error) {
@@ -458,7 +458,7 @@ export function ProspectDetailSheet({
   async function handleOpenBuilderSigning(estimateId: string) {
     setSigningId(estimateId)
     try {
-      const result = await getEstimateBuilderSigningLinkAction(estimateId)
+      const result = unwrapAction(await getEstimateBuilderSigningLinkAction(estimateId))
       if (!result.url) {
         throw new Error("Signing link was not returned.")
       }
@@ -479,7 +479,7 @@ export function ProspectDetailSheet({
     setOpeningReviseId(estimateId)
     try {
       await ensureCreateData()
-      const initial = await getEstimateForEditAction(estimateId)
+      const initial = unwrapAction(await getEstimateForEditAction(estimateId))
       setReviseTarget({ estimateId, initial, changes: initial.decision_note })
       setReviseOpen(true)
     } catch (error) {

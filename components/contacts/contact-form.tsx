@@ -16,18 +16,12 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import type { Company, Contact } from "@/lib/types"
+import { RoleSelect } from "@/components/directory/role-select"
 import { createContactAction, updateContactAction } from "@/app/(app)/contacts/actions"
+import { cn } from "@/lib/utils"
 import { useToast } from "@/hooks/use-toast"
 
 import { unwrapAction } from "@/lib/action-result"
-
-const CONTACT_TYPES: { label: string; value: Contact["contact_type"] }[] = [
-  { label: "Internal", value: "internal" },
-  { label: "Subcontractor", value: "subcontractor" },
-  { label: "Client", value: "client" },
-  { label: "Vendor", value: "vendor" },
-  { label: "Consultant", value: "consultant" },
-]
 
 interface ContactFormProps {
   contact?: Contact
@@ -44,7 +38,7 @@ function getInitialFormState(contact?: Contact, defaultPrimaryCompanyId?: string
     phone: contact?.phone ?? "",
     address: contact?.address?.formatted ?? "",
     role: contact?.role ?? "",
-    contact_type: contact?.contact_type ?? "subcontractor",
+    role_key: "subcontractor",
     primary_company_id: contact?.primary_company_id ?? defaultPrimaryCompanyId ?? "none",
     has_portal_access: contact?.has_portal_access ?? false,
     notes: contact?.notes ?? "",
@@ -78,6 +72,9 @@ export function ContactForm({
     event.preventDefault()
     const payload = {
       ...formState,
+      // Only a create picks a role; an existing party's roles are a set, and
+      // the account's role manager owns it.
+      role_key: contact ? undefined : formState.role_key,
       email: formState.email || undefined,
       phone: formState.phone || undefined,
       address: formState.address || undefined,
@@ -109,26 +106,22 @@ export function ContactForm({
   return (
     <form className="flex h-full flex-col" onSubmit={handleSubmit}>
       <div className="flex-1 space-y-5 overflow-y-auto pr-1">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className={cn("grid grid-cols-1 gap-4", !contact && "md:grid-cols-2")}>
           <div className="space-y-2">
             <Label>Name</Label>
             <Input value={formState.full_name} onChange={(e) => setField("full_name", e.target.value)} required placeholder="Jane Doe" />
           </div>
-        <div className="space-y-2">
-          <Label>Type</Label>
-          <Select value={formState.contact_type} onValueChange={(value) => setField("contact_type", value)}>
-            <SelectTrigger className="w-full">
-              <SelectValue placeholder="Select type" />
-            </SelectTrigger>
-            <SelectContent>
-              {CONTACT_TYPES.map((type) => (
-                <SelectItem key={type.value} value={type.value}>
-                  {type.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+          {contact ? null : (
+            <div className="space-y-2">
+              <Label>Role</Label>
+              <RoleSelect
+                kind="contact"
+                value={formState.role_key}
+                onChange={(value) => setField("role_key", value)}
+                disabled={isPending}
+              />
+            </div>
+          )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -141,7 +134,7 @@ export function ContactForm({
           <Input value={formState.phone} onChange={(e) => setField("phone", e.target.value)} placeholder="(555) 555-5555" />
         </div>
         <div className="space-y-2">
-          <Label>Role</Label>
+          <Label>Title</Label>
           <Input value={formState.role} onChange={(e) => setField("role", e.target.value)} placeholder="Project Manager" />
         </div>
       </div>

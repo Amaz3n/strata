@@ -1,12 +1,17 @@
-// Request-scoped account data; the instant shell is the layout's.
-export const instant = false;
+// Browser-private account data; runtime-prefetched by the bounded tab strip.
+export const instant = true;
 
 import { notFound, redirect } from "next/navigation";
-import { connection } from "next/server";
+import { Suspense } from "react";
 import { z } from "zod";
 
 import { ContactActivity } from "@/components/directory/account/contact-activity";
-import { loadContactAssignments, loadDirectoryParty } from "../page-data";
+import { CompanyTabSkeleton } from "@/components/companies/account/company-account-skeleton";
+import {
+  loadContactAssignments,
+  loadDirectoryPartyHeader,
+  registerDirectoryTabCache,
+} from "../page-data";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -16,13 +21,26 @@ interface PageProps {
  * A company does not hold assignments — its people do — so this tab exists only
  * for a party that is a person, and a company id lands back on the overview.
  */
-export default async function PartyActivityPage({ params }: PageProps) {
-  // A task is overdue relative to today, so render at request time.
-  await connection();
+export default function PartyActivityPage(props: PageProps) {
+  return (
+    <Suspense fallback={<CompanyTabSkeleton rows={6} flush />}>
+      <PartyActivityData {...props} />
+    </Suspense>
+  );
+}
+
+async function PartyActivityData({ params }: PageProps) {
   const { id } = await params;
   if (!z.string().uuid().safeParse(id).success) notFound();
 
-  const party = await loadDirectoryParty(id);
+  return <PartyActivityContent id={id} />;
+}
+
+async function PartyActivityContent({ id }: { id: string }) {
+  "use cache: private";
+  registerDirectoryTabCache(id, "activity");
+
+  const party = await loadDirectoryPartyHeader(id);
   if (!party) notFound();
   if (party.kind !== "contact") redirect(`/directory/${id}`);
 

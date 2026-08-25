@@ -2,7 +2,7 @@ import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { SubmittalsClient } from "@/components/submittals/submittals-client"
 import { listSubmittalsAction } from "./actions"
-import { listProjectsAction } from "@/app/(app)/projects/actions"
+import { listProjectSummariesAction } from "@/app/(app)/projects/actions"
 import { listCompaniesAction } from "@/app/(app)/companies/actions"
 import { Skeleton } from "@/components/ui/skeleton"
 
@@ -13,7 +13,7 @@ import { unwrapAction } from "@/lib/action-result"
 async function SubmittalsData() {
   const [submittals, projects, companies] = await Promise.all([
     listSubmittalsAction(),
-    listProjectsAction(),
+    listProjectSummariesAction(),
     listCompaniesAction(),
   ])
 

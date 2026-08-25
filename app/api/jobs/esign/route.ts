@@ -221,7 +221,10 @@ async function handler(request: NextRequest) {
 
   try {
     const reminders = await sendAutomaticReminders(supabase)
-    return NextResponse.json({ expired: envelopes.length, reminders })
+    return NextResponse.json(
+      { ok: reminders.failed === 0, expired: envelopes.length, reminders },
+      { status: reminders.failed === 0 ? 200 : 207 },
+    )
   } catch (reminderError: any) {
     return NextResponse.json(
       { expired: envelopes.length, reminder_error: reminderError?.message ?? "Reminder job failed" },

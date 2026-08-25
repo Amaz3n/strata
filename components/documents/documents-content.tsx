@@ -1,8 +1,10 @@
 "use client"
 
 import { useMemo } from "react"
-import { cn } from "@/lib/utils"
-import { useDocuments, buildFolderTree } from "./documents-context"
+import { AlertTriangle } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { useDocuments } from "./documents-context"
+import { useVisibleDocuments } from "./use-visible-documents"
 import { DocumentsFileTable } from "./documents-table"
 import type { DocumentTableItem } from "./documents-table"
 
@@ -14,7 +16,8 @@ interface DocumentsContentProps {
   onShareFolder?: (path: string) => void
   onDeleteFolder?: (path: string) => void
   onUploadClick: () => void
-  onDropOnFolder: (path: string, files?: File[]) => void
+  /** External OS files dropped onto a folder row. Internal moves go through dnd-kit. */
+  onUploadToFolder: (path: string, files: File[]) => void
   selectedFileIds: Set<string>
   selectedFolderPaths: Set<string>
   onFileSelectionChange: (fileId: string, selected: boolean) => void
@@ -29,8 +32,6 @@ interface DocumentsContentProps {
   onUploadNewVersion: (fileId: string) => void
   onSendForSignature?: (fileId: string) => void
   onOpenProperties: (fileId: string) => void
-  onFileDragStart: (fileId: string, event: React.DragEvent<HTMLDivElement>) => void
-  onFileDragEnd: (fileId: string) => void
 }
 
 export function DocumentsContent({
@@ -41,7 +42,7 @@ export function DocumentsContent({
   onShareFolder,
   onDeleteFolder,
   onUploadClick,
-  onDropOnFolder,
+  onUploadToFolder,
   selectedFileIds,
   selectedFolderPaths,
   onFileSelectionChange,
@@ -56,94 +57,24 @@ export function DocumentsContent({
   onUploadNewVersion,
   onSendForSignature,
   onOpenProperties,
-  onFileDragStart,
-  onFileDragEnd,
 }: DocumentsContentProps) {
   const {
-    files,
-    folders,
-    folderItemCounts,
-    currentPath,
-    quickFilter,
-    searchQuery,
     isLoading,
     isLoadingMore,
     hasMore,
     loadMore,
+    totalCount,
+    error,
+    refreshFiles,
   } = useDocuments()
 
-  const folderTree = useMemo(
-    () => buildFolderTree(folders, files, folderItemCounts),
-    [folders, files, folderItemCounts]
-  )
-
-  const currentFolders = useMemo(() => {
-    if (!currentPath) {
-      return folderTree.map((node) => ({
-        type: "folder" as const,
-        path: node.path,
-        name: node.name,
-        itemCount: node.itemCount,
-      }))
-    }
-
-    const findNode = (
-      nodes: typeof folderTree,
-      targetPath: string
-    ): (typeof folderTree)[0] | null => {
-      for (const node of nodes) {
-        if (node.path === targetPath) return node
-        const found = findNode(node.children, targetPath)
-        if (found) return found
-      }
-      return null
-    }
-
-    const currentNode = findNode(folderTree, currentPath)
-    if (!currentNode) return []
-
-    return currentNode.children.map((node) => ({
-      type: "folder" as const,
-      path: node.path,
-      name: node.name,
-      itemCount: node.itemCount,
-    }))
-  }, [folderTree, currentPath])
-
-  const filteredFiles = useMemo(() => {
-    // Files are now server-filtered by quickFilter and searchQuery
-    // We only need to filter by currentPath if we are not in a search/global view
-    let result = files
-
-    if (currentPath && !searchQuery) {
-      const normalizedPath = currentPath.replace(/\/+/g, "/")
-      result = result.filter((file) => {
-        const filePath = file.folder_path
-          ? file.folder_path.startsWith("/")
-            ? file.folder_path
-            : `/${file.folder_path}`
-          : ""
-        return filePath === normalizedPath
-      })
-    } else if (!currentPath && !searchQuery && quickFilter === "all") {
-      result = result.filter((file) => !file.folder_path || file.folder_path === "/")
-    }
-
-    return result
-  }, [files, currentPath, searchQuery, quickFilter])
+  const { currentFolders, filteredFiles, showFolders, hasFilters } = useVisibleDocuments()
 
   const documentItems: DocumentTableItem[] = useMemo(() => {
     const items: DocumentTableItem[] = []
 
-    if (quickFilter === "all" && (!searchQuery || currentPath)) {
-      items.push(
-        ...currentFolders.map((folder) => ({
-          type: "folder" as const,
-          path: folder.path,
-          name: folder.name,
-          itemCount: folder.itemCount,
-        }))
-      )
+    if (showFolders) {
+      items.push(...currentFolders)
     }
 
     items.push(
@@ -154,7 +85,7 @@ export function DocumentsContent({
     )
 
     return items
-  }, [currentFolders, filteredFiles, searchQuery, currentPath, quickFilter])
+  }, [currentFolders, filteredFiles, showFolders])
 
   const visibleFileIds = useMemo(
     () => filteredFiles.map((file) => file.id),
@@ -169,10 +100,33 @@ export function DocumentsContent({
   const allVisibleSelected =
     visibleFileIds.length > 0 && selectedVisibleCount === visibleFileIds.length
 
-  const hasFilters = quickFilter !== "all" || Boolean(searchQuery) || Boolean(currentPath)
+  if (error && filteredFiles.length === 0) {
+    return (
+      <div className="flex min-h-[320px] flex-col items-center justify-center gap-3 p-8 text-center">
+        <AlertTriangle className="h-8 w-8 text-destructive" />
+        <div className="space-y-1">
+          <p className="text-sm font-medium">Could not load documents</p>
+          <p className="max-w-sm text-sm text-muted-foreground">{error}</p>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => refreshFiles()}>
+          Try again
+        </Button>
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-col min-h-full">
+      {error ? (
+        <div className="flex items-center justify-between gap-3 border-b border-destructive/30 bg-destructive/5 px-4 py-2">
+          <p className="text-sm text-destructive">
+            {error} — showing the last loaded results.
+          </p>
+          <Button variant="outline" size="sm" onClick={() => refreshFiles()}>
+            Retry
+          </Button>
+        </div>
+      ) : null}
       <div className="flex-1 min-h-0">
         <DocumentsFileTable
           items={documentItems}
@@ -191,7 +145,7 @@ export function DocumentsContent({
           onShareFolder={onShareFolder}
           onDeleteFolder={onDeleteFolder}
           onUploadClick={onUploadClick}
-          onDropOnFolder={onDropOnFolder}
+          onUploadToFolder={onUploadToFolder}
           onRenameFile={onRenameFile}
           onMoveFile={onMoveFile}
           onDeleteFile={onDeleteFile}
@@ -201,24 +155,17 @@ export function DocumentsContent({
           onUploadNewVersion={onUploadNewVersion}
           onSendForSignature={onSendForSignature}
           onOpenProperties={onOpenProperties}
-          onFileDragStart={onFileDragStart}
-          onFileDragEnd={onFileDragEnd}
           hasFilters={hasFilters}
         />
         
         {hasMore && (
-          <div className="flex justify-center p-4 border-t">
-            <button
-              type="button"
-              onClick={loadMore}
-              disabled={isLoadingMore}
-              className={cn(
-                "px-4 py-2 text-sm font-medium rounded-md border",
-                "hover:bg-muted transition-colors disabled:opacity-50",
-              )}
-            >
+          <div className="flex items-center justify-center gap-3 border-t p-4">
+            <span className="text-xs text-muted-foreground tabular-nums">
+              Showing {filteredFiles.length} of {totalCount}
+            </span>
+            <Button variant="outline" size="sm" onClick={loadMore} disabled={isLoadingMore}>
               {isLoadingMore ? "Loading more..." : "Load more"}
-            </button>
+            </Button>
           </div>
         )}
       </div>

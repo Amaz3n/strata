@@ -311,6 +311,25 @@ export interface MobileRfiDTO {
   created_at: string
 }
 
+/**
+ * Filed project mail, newest first. Read-only on mobile: ruling on a message and
+ * linking it to a record are workbench decisions, and the field needs to see
+ * what a vendor sent, not to reclassify it from a truck.
+ */
+export interface MobileCorrespondenceDTO {
+  id: string
+  thread_id: string
+  direction: "inbound" | "outbound"
+  subject: string
+  from_address: string
+  to_addresses: string[]
+  preview: string | null
+  classification: string
+  needs_review: boolean
+  attachment_count: number
+  occurred_at: string
+}
+
 export interface MobileTeamMemberDTO {
   id: string
   name: string

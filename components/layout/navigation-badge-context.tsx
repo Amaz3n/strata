@@ -15,6 +15,7 @@ export interface NavigationBadgeValues {
   myWorkBadgeCount: number
   readyToBillBadgeCount: number
   projectReviewBadgeCounts: Record<string, number>
+  projectCorrespondenceBadgeCounts: Record<string, number>
   whatsNewUnreadCount: number
 }
 
@@ -23,6 +24,7 @@ export const EMPTY_NAVIGATION_BADGES: NavigationBadgeValues = {
   myWorkBadgeCount: 0,
   readyToBillBadgeCount: 0,
   projectReviewBadgeCounts: {},
+  projectCorrespondenceBadgeCounts: {},
   whatsNewUnreadCount: 0,
 }
 

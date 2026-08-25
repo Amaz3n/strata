@@ -670,8 +670,12 @@ async function processOutboxQueue(request: NextRequest) {
   const drawings = await runDrawingsPipeline({ deadlineMs: Date.now() + 120_000 })
 
   const reap = { requeued: reapRow?.requeued ?? 0, exhausted: reapRow?.exhausted ?? 0 }
+  const incomplete = failed > 0 || drawings.failed > 0
   return NextResponse.json(
-    isDev ? { processed, failed, failures, ...reap, drawings } : { processed, failed, ...reap, drawings },
+    isDev
+      ? { ok: !incomplete, processed, failed, failures, ...reap, drawings }
+      : { ok: !incomplete, processed, failed, ...reap, drawings },
+    { status: incomplete ? 207 : 200 },
   )
 }
 

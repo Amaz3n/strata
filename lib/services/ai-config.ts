@@ -150,31 +150,53 @@ export interface AiModelCatalogEntry {
  * plus the obvious step up on each provider. Operators add anything else from
  * the platform page, and an unknown model is a first-class citizen — it simply
  * reports `null` cost until a price is recorded for it. We never invent a price.
+ *
+ * Rates verified against provider documentation 23 Aug 2026. Two of them expire:
+ * see the promo note on the 3.6/3.7 Flash rows.
  */
 export const AI_MODEL_CATALOG: AiModelCatalogEntry[] = [
-  // Google — native provider, best price/performance on document + drawing vision.
+  // Google — native provider, strongest on drawing and dense-image work.
   //
-  // The 3.x entries carry NULL pricing on purpose: no published rate has been
-  // recorded for them here, and inventing one would make the spend dashboard
-  // confidently wrong. They report "unpriced" until a real rate is entered,
-  // which is the same rule every other unknown model gets.
-  { provider: "google", model: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite", inputPerMTokUsd: null, outputPerMTokUsd: null, vision: true, tier: "fast" },
-  { provider: "google", model: "gemini-3.5-flash", label: "Gemini 3.5 Flash", inputPerMTokUsd: null, outputPerMTokUsd: null, vision: true, tier: "standard" },
-  { provider: "google", model: "gemini-3.6-flash", label: "Gemini 3.6 Flash", inputPerMTokUsd: null, outputPerMTokUsd: null, vision: true, tier: "heavy" },
+  // Google's list is NOT monotonic by version. `gemini-3.5-flash` costs double
+  // what the newer `gemini-3.6-flash` costs on both input and output, so there
+  // is no workload where 3.5 Flash is the right pick. It stays listed only so
+  // historical `ai_usage_events` rows can still be priced.
   { provider: "google", model: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite", inputPerMTokUsd: 0.1, outputPerMTokUsd: 0.4, vision: true, tier: "fast" },
+  { provider: "google", model: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite", inputPerMTokUsd: 0.25, outputPerMTokUsd: 1.5, vision: true, tier: "fast" },
+  { provider: "google", model: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash Lite", inputPerMTokUsd: 0.3, outputPerMTokUsd: 2.5, vision: true, tier: "fast" },
+  // PROMO: 3.6 and 3.7 Flash are $0.75/$3.75 through 31 Dec 2026, then revert to
+  // $1.50/$7.50 — at which point they cost the same as 3.5 Flash and this whole
+  // routing matrix is worth re-running. Diary it. 3.7 is the default of the two:
+  // same price, newer, and ~370 t/s against 3.6's ~210.
+  { provider: "google", model: "gemini-3.6-flash", label: "Gemini 3.6 Flash", inputPerMTokUsd: 0.75, outputPerMTokUsd: 3.75, vision: true, tier: "standard" },
+  { provider: "google", model: "gemini-3.7-flash", label: "Gemini 3.7 Flash", inputPerMTokUsd: 0.75, outputPerMTokUsd: 3.75, vision: true, tier: "standard" },
+  { provider: "google", model: "gemini-3.5-flash", label: "Gemini 3.5 Flash (costs 2x 3.6)", inputPerMTokUsd: 1.5, outputPerMTokUsd: 9, vision: true, tier: "standard" },
   // Retained for orgs whose key predates the cutoff — `gemini-2.5-flash` is
   // closed to new API keys ("no longer available to new users"), and the Pro
   // models need paid quota. Selectable, but no longer a default.
   { provider: "google", model: "gemini-2.5-flash", label: "Gemini 2.5 Flash (legacy keys)", inputPerMTokUsd: 0.3, outputPerMTokUsd: 2.5, vision: true, tier: "standard" },
   { provider: "google", model: "gemini-2.5-pro", label: "Gemini 2.5 Pro (paid quota)", inputPerMTokUsd: 1.25, outputPerMTokUsd: 10, vision: true, tier: "heavy" },
 
-  // OpenAI — native provider; owns transcription.
-  { provider: "openai", model: "gpt-4.1-mini", label: "GPT-4.1 mini", inputPerMTokUsd: 0.4, outputPerMTokUsd: 1.6, vision: true, tier: "fast" },
-  { provider: "openai", model: "gpt-4.1", label: "GPT-4.1", inputPerMTokUsd: 2, outputPerMTokUsd: 8, vision: true, tier: "standard" },
-  // Whisper bills per minute of audio, not per token, so a token-based estimate
-  // would be fiction. Transcription rows carry latency and status; their cost
+  // OpenAI — native provider; owns transcription, and is the first rung of any
+  // feature whose output is a schema. `generateObject` on this provider sends a
+  // strict `json_schema` response format that constrains DECODING, including
+  // `pattern` and `format`. The Google adapter forwards a smaller subset of
+  // JSON Schema (no `pattern`, `minimum`, `additionalProperties`), so a Zod
+  // constraint outside that subset only ever fires client-side as a rejected
+  // object. Model-facing schemas therefore avoid those keywords entirely.
+  { provider: "openai", model: "gpt-5-nano", label: "GPT-5 nano", inputPerMTokUsd: 0.05, outputPerMTokUsd: 0.4, vision: true, tier: "fast" },
+  { provider: "openai", model: "gpt-5.6-luna", label: "GPT-5.6 Luna", inputPerMTokUsd: 0.2, outputPerMTokUsd: 1.2, vision: true, tier: "fast" },
+  { provider: "openai", model: "gpt-5-mini", label: "GPT-5 mini", inputPerMTokUsd: 0.25, outputPerMTokUsd: 2, vision: true, tier: "standard" },
+  { provider: "openai", model: "gpt-5.6-terra", label: "GPT-5.6 Terra", inputPerMTokUsd: 2, outputPerMTokUsd: 12, vision: true, tier: "heavy" },
+  // PROMO: Sol's $4/$20 runs through 21 Nov 2026; the post-promo rate is not
+  // published. Selectable, not a default — Terra is the heavy rung.
+  { provider: "openai", model: "gpt-5.6-sol", label: "GPT-5.6 Sol (promo to 21 Nov 2026)", inputPerMTokUsd: 4, outputPerMTokUsd: 20, vision: true, tier: "heavy" },
+  // Transcription bills per MINUTE of audio, not per token, so a token-based
+  // estimate would be fiction. These rows carry latency and status; their cost
   // reads "unpriced" until someone records a rate they actually want summed.
-  { provider: "openai", model: "whisper-1", label: "Whisper", inputPerMTokUsd: null, outputPerMTokUsd: null, vision: false, tier: "fast" },
+  // For reference: gpt-4o-mini-transcribe $0.003/min, gpt-transcribe $0.0045/min.
+  { provider: "openai", model: "gpt-4o-mini-transcribe", label: "GPT-4o mini Transcribe", inputPerMTokUsd: null, outputPerMTokUsd: null, vision: false, tier: "fast" },
+  { provider: "openai", model: "gpt-transcribe", label: "GPT Transcribe", inputPerMTokUsd: null, outputPerMTokUsd: null, vision: false, tier: "standard" },
 
   // Embeddings. Output tokens are always zero, so only the input rate is real.
   // `text-embedding-3-small` is the only entry at the 1536 dimensions the
@@ -224,25 +246,36 @@ export function supportsPdfInput(provider: AiProvider): boolean {
  * `standard`, and only a document that fails deterministic verification twice
  * reaches `heavy`.
  *
- * WHY THE 3.x LINE. These defaults sat on `gemini-2.5-flash` and
- * `gemini-2.5-pro` and both were dead ends for any recent key: 2.5-flash is
- * closed to new API keys ("no longer available to new users") and the Pro models
- * need paid quota that a standard key does not have. The result was worse than a
- * bad default — the fast tier would hiccup, escalation would climb into two
- * models that could not run at all, and the whole call failed. Escalation is
- * only worth having if the rungs above actually hold weight.
+ * WHY THE LADDER CROSSES PROVIDERS. It used to be Gemini on all three rungs,
+ * and production showed why that is not an escalation ladder: of the first 102
+ * logged extraction calls only 22 succeeded, and 55 of the 80 failures were the
+ * same `no_object_generated` on every rung. The root cause was a `.regex()` on
+ * the date fields that the Google adapter never forwards (see the catalog
+ * note) — fixed in the schemas — but the lesson stands: a fault that is
+ * provider-shaped cannot be escalated around by climbing further into the same
+ * provider. Every rung just fails again, more expensively.
  *
- * The ladder is lite -> flash -> newest flash, which is a real capability
- * progression that runs on every key. An operator with paid quota can point
- * `heavy` at a Pro model from the AI console's routing matrix; that is exactly
- * what the per-tier override is for, and it is the right place for a choice that
- * depends on someone's billing plan rather than on Arc.
+ * So the rungs alternate vendors. Any feature whose output is a schema starts
+ * on OpenAI, where `generateObject` constrains decoding, and escalates into
+ * Gemini or a larger OpenAI model. Features whose difficulty is visual rather
+ * than structural (`drawings_vision`) stay on Gemini, which reads dense sheets
+ * better. Where a user is waiting on a long answer (`meeting_minutes`), the
+ * rung they hit is the fastest model, not the cheapest.
+ *
+ * An operator can still point any rung anywhere from the AI console's routing
+ * matrix; that is what the per-tier override is for, and it is the right place
+ * for a choice that depends on someone's billing plan rather than on Arc.
  */
 export const AI_FEATURE_TIER_DEFAULTS: Record<AiFeature, Record<AiTier, { provider: AiProvider; model: string }>> = {
+  // Assistant chat streams tool calls under a 10 s per-step budget, so time to
+  // first token is the felt metric. The base tier is `standard`, which is the
+  // rung users actually hit; 3.7 Flash is the same price as 3.6 and nearly
+  // twice as fast. Heavy crosses to OpenAI for tool-calling depth — the
+  // harness never escalates on its own, so it is reachable only by override.
   search: {
     fast: { provider: "google", model: "gemini-3.1-flash-lite" },
-    standard: { provider: "google", model: "gemini-3.5-flash" },
-    heavy: { provider: "google", model: "gemini-3.6-flash" },
+    standard: { provider: "google", model: "gemini-3.7-flash" },
+    heavy: { provider: "openai", model: "gpt-5.6-terra" },
   },
   // Every tier is the same model on purpose. Embeddings have nothing to
   // escalate TO: the vector column is fixed at 1536 dimensions, so a "better"
@@ -253,30 +286,51 @@ export const AI_FEATURE_TIER_DEFAULTS: Record<AiFeature, Record<AiTier, { provid
     standard: { provider: "openai", model: "text-embedding-3-small" },
     heavy: { provider: "openai", model: "text-embedding-3-small" },
   },
+  // The workload that pays for this file. Starts on OpenAI because strict
+  // decoding holds the nested provenance schema exactly, with native PDF input
+  // at the cheapest credible rate. Standard crosses to Gemini (fastest reader at
+  // the price, and native PDF text is not billed). Heavy is Terra, not Sol:
+  // this rung fires only after both cheaper rungs failed arithmetic verify, Sol
+  // is twice Terra's price and slower, and Sol's rate is a promo.
   document_extraction: {
-    fast: { provider: "google", model: "gemini-3.1-flash-lite" },
-    standard: { provider: "google", model: "gemini-3.5-flash" },
-    heavy: { provider: "google", model: "gemini-3.6-flash" },
+    fast: { provider: "openai", model: "gpt-5.6-luna" },
+    standard: { provider: "google", model: "gemini-3.7-flash" },
+    heavy: { provider: "openai", model: "gpt-5.6-terra" },
   },
+  // Stays on Gemini end to end: what makes a sheet hard here is reading dense
+  // linework, not returning a shape, and Gemini is the stronger reader. Cost is
+  // dominated by input image tokens, so the cheap input rate is what matters.
+  // The wrapper does not escalate by default, so standard and heavy are
+  // override targets rather than rungs that fire.
   drawings_vision: {
     fast: { provider: "google", model: "gemini-3.1-flash-lite" },
-    standard: { provider: "google", model: "gemini-3.5-flash" },
-    heavy: { provider: "google", model: "gemini-3.6-flash" },
+    standard: { provider: "google", model: "gemini-3.7-flash" },
+    heavy: { provider: "google", model: "gemini-3.7-flash" },
   },
+  // Short text in, one nullable enum out. The cheapest model that can be held
+  // to a fixed set of values wins, and strict decoding is exactly how you hold
+  // it there. The caller never escalates; the upper rungs are override targets.
   spec_classification: {
-    fast: { provider: "google", model: "gemini-3.1-flash-lite" },
-    standard: { provider: "google", model: "gemini-3.1-flash-lite" },
-    heavy: { provider: "google", model: "gemini-3.5-flash" },
+    fast: { provider: "openai", model: "gpt-5-nano" },
+    standard: { provider: "openai", model: "gpt-5.6-luna" },
+    heavy: { provider: "google", model: "gemini-3.7-flash" },
   },
+  // Billed per minute, so tier is about accuracy, not tokens. `whisper-1` is
+  // retired: it is legacy, and costs twice what the better mini model does.
+  // Transcription never escalates; heavy is the Gemini audio path by override.
   transcription: {
-    fast: { provider: "openai", model: "whisper-1" },
-    standard: { provider: "openai", model: "whisper-1" },
-    heavy: { provider: "google", model: "gemini-3.5-flash" },
+    fast: { provider: "openai", model: "gpt-4o-mini-transcribe" },
+    standard: { provider: "openai", model: "gpt-transcribe" },
+    heavy: { provider: "google", model: "gemini-3.7-flash" },
   },
+  // Long transcript in, up to 250 structured items out, with a user waiting on
+  // a 90 s timeout. Output tokens per second is the binding constraint, not
+  // price, so the base tier (`standard`) is 3.7 Flash at ~370 t/s. Luna is the
+  // strict-decoding fallback for the uuid/date formats; Terra is the ceiling.
   meeting_minutes: {
-    fast: { provider: "google", model: "gemini-3.1-flash-lite" },
-    standard: { provider: "google", model: "gemini-3.5-flash" },
-    heavy: { provider: "google", model: "gemini-3.6-flash" },
+    fast: { provider: "openai", model: "gpt-5.6-luna" },
+    standard: { provider: "google", model: "gemini-3.7-flash" },
+    heavy: { provider: "openai", model: "gpt-5.6-terra" },
   },
 }
 
@@ -662,11 +716,20 @@ export async function clearPlatformAiFeatureDefaultConfig({
   const featureRecord = toRecord(features[feature])
   const tiers = toRecord(featureRecord.tiers)
 
+  // Clearing must be symmetric with reading. `parsePlatformAiConfigValue` serves
+  // the legacy untiered entries AS the base tier, so clearing the base tier has
+  // to remove them too — otherwise the console's Reset button is a silent no-op:
+  // the tier entry goes, the untiered shadow immediately takes its place, and
+  // the cell still reads "Override" after a successful-looking save.
+  const clearsUntiered = !tier || tier === AI_FEATURE_BASE_TIER[feature]
+
   if (tier) {
     delete tiers[tier]
   } else {
-    // Clearing a feature clears every tier plus the legacy untiered entry.
     for (const key of Object.keys(tiers)) delete tiers[key]
+  }
+
+  if (clearsUntiered) {
     delete featureRecord.provider
     delete featureRecord.model
   }
@@ -689,7 +752,8 @@ export async function clearPlatformAiFeatureDefaultConfig({
     delete nextValue.features
   }
 
-  if (feature === "search" && !tier) {
+  // The root-level pair is the oldest shape of all and means "search, base tier".
+  if (feature === "search" && clearsUntiered) {
     delete nextValue.provider
     delete nextValue.model
     delete nextValue.ai_search_provider

@@ -7,22 +7,27 @@ import { cn } from "@/lib/utils";
  */
 export function CompanyAccountHeaderSkeleton() {
   return (
-    <section className="shrink-0 border-b bg-card">
-      <div className="w-full px-4 pt-4 sm:px-6">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex min-w-0 items-center gap-3">
-            <Skeleton className="h-9 w-9 shrink-0" />
-            <div className="min-w-0 space-y-1.5">
-              <Skeleton className="h-5 w-48" />
-              <Skeleton className="h-3 w-64" />
+    <section className="shrink-0 border-b bg-background">
+      <div className="flex min-h-[4.75rem] w-full items-center justify-between gap-4 px-4 py-3 sm:px-6">
+        <div className="flex min-w-0 items-center gap-3.5">
+          <Skeleton className="h-10 w-10 shrink-0" />
+          <div className="min-w-0 space-y-1.5">
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-2.5 w-20" />
+              <Skeleton className="h-px w-5" />
             </div>
+            <Skeleton className="h-5 w-56" />
+            <Skeleton className="h-3 w-64" />
           </div>
-          <Skeleton className="h-8 w-24 shrink-0" />
+        </div>
+        <div className="flex gap-1.5">
+          <Skeleton className="hidden h-8 w-24 shrink-0 sm:block" />
+          <Skeleton className="h-8 w-8 shrink-0" />
         </div>
       </div>
-      <div className="mt-3 flex gap-4 px-4 sm:px-6">
-        {[64, 84, 88, 104, 76].map((width) => (
-          <Skeleton key={width} className="mb-2.5 h-4" style={{ width }} />
+      <div className="flex gap-0.5 border-t bg-muted/[0.22] px-3 py-1.5 sm:px-5">
+        {[72, 92, 96, 112, 84].map((width) => (
+          <Skeleton key={width} className="h-8" style={{ width }} />
         ))}
       </div>
     </section>
@@ -46,7 +51,10 @@ export function CompanyTabSkeleton({
   summaryFigures?: number;
 }) {
   return (
-    <div className={cn(flush ? "flex min-h-0 flex-1 flex-col" : "px-4 py-6 sm:px-6")}>
+    <div
+      data-company-tab-skeleton=""
+      className={cn(flush ? "flex min-h-0 flex-1 flex-col" : "px-4 py-6 sm:px-6")}
+    >
       {summaryFigures > 0 ? (
         <div className="flex flex-wrap gap-x-8 gap-y-3 border-b px-4 py-3 sm:px-6">
           {Array.from({ length: summaryFigures }).map((_, index) => (

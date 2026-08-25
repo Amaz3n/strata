@@ -11,15 +11,19 @@ import {
   type ReactNode,
 } from "react"
 import { usePathname, useSearchParams } from "next/navigation"
-import { listFilesAction, getFileCountsAction, listChildFoldersAction, listProjectFolderPermissionsAction } from "@/app/(app)/documents/actions"
-import { listDrawingSetsAction, listDrawingSheetsWithUrlsAction } from "@/app/(app)/drawings/actions"
+import { toast } from "sonner"
+import {
+  listFilesAction,
+  listChildFoldersAction,
+  listProjectFolderPermissionsAction,
+  loadDocumentsViewAction,
+} from "@/app/(app)/documents/actions"
 import type { FileWithUrls, ProjectFolderPermissions } from "@/app/(app)/documents/types"
-import type { DrawingSet, DrawingSheet } from "@/app/(app)/drawings/types"
-import type { DocumentsContextValue, QuickFilter, RefreshFilesOptions, ViewMode, FolderNode } from "./types"
-
-import { unwrapAction } from "@/lib/action-result"
+import type { DocumentsContextValue, QuickFilter, RefreshFilesOptions, FolderNode } from "./types"
 
 const DocumentsContext = createContext<DocumentsContextValue | null>(null)
+
+const SEARCH_DEBOUNCE_MS = 250
 
 export function useDocuments() {
   const context = useContext(DocumentsContext)
@@ -27,6 +31,36 @@ export function useDocuments() {
     throw new Error("useDocuments must be used within a DocumentsProvider")
   }
   return context
+}
+
+/**
+ * Local-immediate search input backed by a debounced commit to the context.
+ *
+ * The context stores only the committed query, so typing re-renders the input
+ * that owns this hook rather than every document consumer.
+ */
+export function useDocumentsSearchInput() {
+  const { searchQuery, setSearchQuery } = useDocuments()
+  const [value, setValue] = useState(searchQuery)
+  const lastCommittedRef = useRef(searchQuery)
+
+  // Adopt external resets (e.g. "clear filters") without fighting local typing.
+  useEffect(() => {
+    if (searchQuery === lastCommittedRef.current) return
+    lastCommittedRef.current = searchQuery
+    setValue(searchQuery)
+  }, [searchQuery])
+
+  useEffect(() => {
+    if (value === lastCommittedRef.current) return
+    const timeout = window.setTimeout(() => {
+      lastCommittedRef.current = value
+      setSearchQuery(value)
+    }, SEARCH_DEBOUNCE_MS)
+    return () => window.clearTimeout(timeout)
+  }, [value, setSearchQuery])
+
+  return [value, setValue] as const
 }
 
 interface DocumentsProviderProps {
@@ -37,34 +71,36 @@ interface DocumentsProviderProps {
   initialFolders: string[]
   initialFolderCounts?: Record<string, number>
   initialFolderPermissions?: ProjectFolderPermissions[]
-  initialSets: DrawingSet[]
   initialPath?: string
-  initialSetId?: string
   initialTotalCount?: number
   initialHasMore?: boolean
 }
 
 const EXPANDED_FOLDERS_KEY = "documents-expanded-folders"
-const VIEW_MODE_KEY = "documents-view-mode"
 const SORT_KEY = "documents-sort"
 const DIRECTION_KEY = "documents-direction"
-const DOCS_DEBUG_FLAG = "__ARC_DOCS_DEBUG__"
+
+type SortField = "name" | "workflow" | "updated_at" | "created_at" | "size"
+type SortDirection = "asc" | "desc"
+
+const SORT_FIELDS: SortField[] = ["name", "workflow", "updated_at", "created_at", "size"]
+
+function readStoredSort(): SortField {
+  if (typeof window === "undefined") return "created_at"
+  const stored = localStorage.getItem(SORT_KEY)
+  return SORT_FIELDS.includes(stored as SortField) ? (stored as SortField) : "created_at"
+}
+
+function readStoredDirection(): SortDirection {
+  if (typeof window === "undefined") return "desc"
+  const stored = localStorage.getItem(DIRECTION_KEY)
+  return stored === "asc" || stored === "desc" ? stored : "desc"
+}
 
 interface FileViewCacheEntry {
   files: FileWithUrls[]
   totalCount: number
   hasMore: boolean
-}
-
-function isDocsDebugEnabled(): boolean {
-  if (typeof window === "undefined") return false
-  return Boolean((window as any)[DOCS_DEBUG_FLAG])
-}
-
-function docsDebugLog(...args: unknown[]) {
-  if (process.env.NODE_ENV !== "production" && isDocsDebugEnabled()) {
-    console.debug("[documents-debug]", ...args)
-  }
 }
 
 function normalizeDocsPath(value?: string | null): string {
@@ -99,7 +135,7 @@ function buildFileViewCacheKey({
 }
 
 function getCategoryFilter(quickFilter: QuickFilter) {
-  if (quickFilter === "all" || quickFilter === "drawings" || quickFilter === "expiring" || quickFilter === "trash") {
+  if (quickFilter === "all" || quickFilter === "expiring" || quickFilter === "trash") {
     return undefined
   }
   return quickFilter
@@ -122,16 +158,13 @@ export function DocumentsProvider({
   initialFolders,
   initialFolderCounts = {},
   initialFolderPermissions = [],
-  initialSets,
   initialPath = "",
-  initialSetId,
   initialTotalCount = 0,
   initialHasMore = false,
 }: DocumentsProviderProps) {
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const basePath = useMemo(() => {
-    // Stage 1 updated routes to /projects/[id]/documents
     const match = pathname.match(/^(\/projects\/[^/]+\/documents)/)
     return match?.[1] ?? pathname
   }, [pathname])
@@ -139,44 +172,25 @@ export function DocumentsProvider({
 
   // Data state
   const [files, setFiles] = useState<FileWithUrls[]>(initialFiles)
-  const [drawingSets, setDrawingSets] = useState<DrawingSet[]>(initialSets)
   const [folders, setFolders] = useState<string[]>(initialFolders)
   const [folderItemCounts, setFolderItemCounts] = useState<Record<string, number>>(initialFolderCounts)
   const [folderPermissions, setFolderPermissions] = useState<ProjectFolderPermissions[]>(initialFolderPermissions)
   const [counts, setCounts] = useState<Record<string, number>>(initialCounts)
-  const [sheetsBySetId, setSheetsBySetId] = useState<Record<string, DrawingSheet[]>>({})
   const [totalCount, setTotalCount] = useState<number>(initialTotalCount)
   const [hasMore, setHasMore] = useState<boolean>(initialHasMore)
   const fileViewCacheRef = useRef<Map<string, FileViewCacheEntry>>(new Map())
   const initialCacheSeededRef = useRef(false)
   const fileRefreshRequestRef = useRef(0)
 
-  // Filter state
+  // Filter state. searchQuery is the committed query — live input state lives in
+  // whichever component owns the search box (see useDocumentsSearchInput).
   const [currentPath, setCurrentPathState] = useState<string>(initialNormalizedPath)
   const [quickFilter, setQuickFilter] = useState<QuickFilter>("all")
   const [searchQuery, setSearchQuery] = useState<string>("")
-  const [committedSearchQuery, setCommittedSearchQuery] = useState<string>("")
-  const [selectedDrawingSetId, setSelectedDrawingSetId] = useState<string | null>(initialSetId ?? null)
-  const [selectedDrawingSetTitle, setSelectedDrawingSetTitle] = useState<string | null>(() => {
-    if (initialSetId) {
-      const set = initialSets.find((s) => s.id === initialSetId)
-      return set?.title ?? null
-    }
-    return null
-  })
-  const [viewMode, setViewMode] = useState<ViewMode>(() => {
-    if (typeof window === "undefined") return "list"
-    return (localStorage.getItem(VIEW_MODE_KEY) as ViewMode) || "list"
-  })
+  const [error, setError] = useState<string | null>(null)
 
-  const [sort, setSort] = useState<"name" | "workflow" | "updated_at" | "created_at" | "size">(() => {
-    if (typeof window === "undefined") return "created_at"
-    return (localStorage.getItem(SORT_KEY) as any) || "created_at"
-  })
-  const [direction, setDirection] = useState<"asc" | "desc">(() => {
-    if (typeof window === "undefined") return "desc"
-    return (localStorage.getItem(DIRECTION_KEY) as any) || "desc"
-  })
+  const [sort, setSort] = useState<SortField>(readStoredSort)
+  const [direction, setDirection] = useState<SortDirection>(readStoredDirection)
 
   useEffect(() => {
     if (initialCacheSeededRef.current) return
@@ -200,7 +214,7 @@ export function DocumentsProvider({
       const key = buildFileViewCacheKey({
         path,
         quickFilter: nextQuickFilter,
-        searchQuery: committedSearchQuery,
+        searchQuery,
         sort,
         direction,
       })
@@ -211,7 +225,7 @@ export function DocumentsProvider({
       setHasMore(cached.hasMore)
       return true
     },
-    [committedSearchQuery, direction, quickFilter, sort],
+    [searchQuery, direction, quickFilter, sort],
   )
 
   // UI state
@@ -225,34 +239,22 @@ export function DocumentsProvider({
     }
   })
 
-  const [expandedDrawingSets, setExpandedDrawingSets] = useState<Set<string>>(new Set())
   const [isLoading, setIsLoading] = useState(false)
   const [isLoadingMore, setIsLoadingMore] = useState(false)
-  const [isUploading, setIsUploading] = useState(false)
-  const loadingSheetsSetIdsRef = useRef<Set<string>>(new Set())
   const loadingFolderPathsRef = useRef<Set<string>>(new Set())
-  const syncedUrlStateRef = useRef(`${initialSetId ?? ""}|${initialNormalizedPath}`)
-
-  const setSelectedDrawingSet = useCallback((id: string | null, title?: string | null) => {
-    setSelectedDrawingSetId(id)
-    setSelectedDrawingSetTitle(title ?? null)
-  }, [])
+  const syncedUrlStateRef = useRef(initialNormalizedPath)
 
   const pushDocsState = useCallback(
-    (nextPath: string | null, nextSetId: string | null, nextSort?: string, nextDirection?: string) => {
+    (nextPath: string | null, nextSort?: string, nextDirection?: string) => {
       const params = new URLSearchParams(searchParams.toString())
       params.delete("path")
-      params.delete("set")
       params.delete("sort")
       params.delete("direction")
-      
+
       if (nextPath) {
         params.set("path", normalizeDocsPath(nextPath))
       }
-      if (nextSetId) {
-        params.set("set", nextSetId)
-      }
-      
+
       const s = nextSort ?? sort
       const d = nextDirection ?? direction
       if (s !== "created_at") params.set("sort", s)
@@ -270,40 +272,31 @@ export function DocumentsProvider({
   )
 
   const navigateToRoot = useCallback(() => {
-    pushDocsState(null, null)
+    pushDocsState(null)
     hydrateFilesFromCache("", "all")
     setCurrentPathState("")
-    setSelectedDrawingSet(null, null)
     setQuickFilter("all")
-  }, [hydrateFilesFromCache, pushDocsState, setSelectedDrawingSet])
+  }, [hydrateFilesFromCache, pushDocsState])
 
   const navigateToFolder = useCallback((path: string) => {
     const normalizedPath = normalizeDocsPath(path)
-    pushDocsState(normalizedPath || null, null)
+    pushDocsState(normalizedPath || null)
     hydrateFilesFromCache(normalizedPath, "all")
     setCurrentPathState(normalizedPath)
-    setSelectedDrawingSet(null, null)
     setQuickFilter("all")
-  }, [hydrateFilesFromCache, pushDocsState, setSelectedDrawingSet])
+  }, [hydrateFilesFromCache, pushDocsState])
 
-  const navigateToDrawingSet = useCallback((id: string, title: string) => {
-    pushDocsState(null, id)
-    setSelectedDrawingSet(id, title)
-    setCurrentPathState("")
-    setQuickFilter("drawings")
-  }, [pushDocsState, setSelectedDrawingSet])
-
-  const updateSort = useCallback((newSort: typeof sort) => {
+  const updateSort = useCallback((newSort: SortField) => {
     setSort(newSort)
-    pushDocsState(currentPath, selectedDrawingSetId, newSort, direction)
-  }, [currentPath, selectedDrawingSetId, direction, pushDocsState])
+    pushDocsState(currentPath, newSort, direction)
+  }, [currentPath, direction, pushDocsState])
 
-  const updateDirection = useCallback((newDirection: typeof direction) => {
+  const updateDirection = useCallback((newDirection: SortDirection) => {
     setDirection(newDirection)
-    pushDocsState(currentPath, selectedDrawingSetId, sort, newDirection)
-  }, [currentPath, selectedDrawingSetId, sort, pushDocsState])
+    pushDocsState(currentPath, sort, newDirection)
+  }, [currentPath, sort, pushDocsState])
 
-  const toggleSort = useCallback((nextSort: typeof sort) => {
+  const toggleSort = useCallback((nextSort: SortField) => {
     const nextDirection =
       sort === nextSort
         ? direction === "asc"
@@ -315,8 +308,8 @@ export function DocumentsProvider({
 
     setSort(nextSort)
     setDirection(nextDirection)
-    pushDocsState(currentPath, selectedDrawingSetId, nextSort, nextDirection)
-  }, [currentPath, selectedDrawingSetId, sort, direction, pushDocsState])
+    pushDocsState(currentPath, nextSort, nextDirection)
+  }, [currentPath, sort, direction, pushDocsState])
 
   const setCurrentPath = useCallback(
     (path: string) => {
@@ -352,45 +345,6 @@ export function DocumentsProvider({
     [project.id]
   )
 
-  // Drawing set expansion
-  const toggleDrawingSetExpanded = useCallback((setId: string) => {
-    setExpandedDrawingSets((prev) => {
-      const next = new Set(prev)
-      if (next.has(setId)) {
-        next.delete(setId)
-      } else {
-        next.add(setId)
-      }
-      return next
-    })
-  }, [])
-
-  // Load sheets for a drawing set
-  const loadSheetsForSet = useCallback(
-    async (setId: string) => {
-      if (sheetsBySetId[setId]) return
-      if (loadingSheetsSetIdsRef.current.has(setId)) return
-
-      loadingSheetsSetIdsRef.current.add(setId)
-
-      try {
-        const sheets = await listDrawingSheetsWithUrlsAction({
-          project_id: project.id,
-          drawing_set_id: setId,
-          limit: 500,
-        })
-        setSheetsBySetId((prev) => ({ ...prev, [setId]: sheets }))
-      } catch (error) {
-        console.error("Failed to load sheets for set:", error)
-        // Avoid infinite loading state in the accordion row.
-        setSheetsBySetId((prev) => ({ ...prev, [setId]: [] }))
-      } finally {
-        loadingSheetsSetIdsRef.current.delete(setId)
-      }
-    },
-    [project.id, sheetsBySetId]
-  )
-
   const pageSize = 100
 
   const loadFolderChildren = useCallback(async (path?: string) => {
@@ -420,6 +374,7 @@ export function DocumentsProvider({
       })
     } catch (error) {
       console.error("Failed to load folder children:", error)
+      toast.error("Could not load folders")
     } finally {
       loadingFolderPathsRef.current.delete(cacheKey)
     }
@@ -427,30 +382,26 @@ export function DocumentsProvider({
 
   // Refresh functions
   const refreshFiles = useCallback(async (options: RefreshFilesOptions = {}) => {
-    if (quickFilter === "drawings") return
-    const searchFilter = committedSearchQuery.trim()
+    const searchFilter = searchQuery.trim()
     const includeMetadata = options.includeMetadata ?? true
     const isTrashView = quickFilter === "trash"
     const isFilteredView = quickFilter !== "all"
     const dueRange = getExpiringDueRange(quickFilter)
     const requestId = fileRefreshRequestRef.current + 1
     fileRefreshRequestRef.current = requestId
-    const startedAt = performance.now()
-    docsDebugLog("refreshFiles:start", {
-      projectId: project.id,
-      quickFilter,
-      searchQuery: searchFilter,
-      currentPath,
-      sort,
-      direction,
-      includeMetadata,
-    })
     setIsLoading(true)
+    setError(null)
+    // A mutation invalidates every cached view, not just the one being refreshed.
+    if (options.invalidateCache) {
+      fileViewCacheRef.current.clear()
+    }
     try {
       const shouldLoadFolders = includeMetadata && !searchFilter
-      const [filesData, countsData, permsData, childFolders] = await Promise.all([
-        listFilesAction({
-          project_id: project.id,
+      // ONE action, not four: the app router queues a client's server actions
+      // serially, so a Promise.all here would cost four sequential round trips.
+      const view = await loadDocumentsViewAction({
+        projectId: project.id,
+        filters: {
           category: getCategoryFilter(quickFilter),
           folder_path: currentPath || undefined,
           root_only: isTrashView || isFilteredView || currentPath || searchFilter ? undefined : true,
@@ -462,13 +413,11 @@ export function DocumentsProvider({
           direction,
           limit: pageSize,
           offset: 0,
-        }),
-        includeMetadata ? getFileCountsAction(project.id) : Promise.resolve(null),
-        includeMetadata ? listProjectFolderPermissionsAction(project.id) : Promise.resolve(null),
-        shouldLoadFolders
-          ? listChildFoldersAction(project.id, currentPath || undefined)
-          : Promise.resolve([]),
-      ])
+        },
+        includeMetadata,
+        includeChildFolders: shouldLoadFolders,
+        childFolderPath: currentPath || undefined,
+      })
       if (requestId !== fileRefreshRequestRef.current) return
       const cacheKey = buildFileViewCacheKey({
         path: currentPath,
@@ -478,16 +427,17 @@ export function DocumentsProvider({
         direction,
       })
       fileViewCacheRef.current.set(cacheKey, {
-        files: filesData.data,
-        totalCount: filesData.count,
-        hasMore: filesData.hasMore,
+        files: view.files,
+        totalCount: view.totalCount,
+        hasMore: view.hasMore,
       })
-      setFiles(filesData.data)
-      setTotalCount(filesData.count)
-      setHasMore(filesData.hasMore)
-      if (countsData) setCounts(countsData)
-      if (permsData) setFolderPermissions(permsData)
-      if (shouldLoadFolders) {
+      setFiles(view.files)
+      setTotalCount(view.totalCount)
+      setHasMore(view.hasMore)
+      if (view.counts) setCounts(view.counts)
+      if (view.folderPermissions) setFolderPermissions(view.folderPermissions)
+      if (view.childFolders) {
+        const childFolders = view.childFolders
         setFolderItemCounts((prev) => {
           const next = { ...prev }
           for (const folder of childFolders) {
@@ -506,22 +456,17 @@ export function DocumentsProvider({
           return Array.from(next).sort()
         })
       }
-      docsDebugLog("refreshFiles:success", {
-        files: filesData.data.length,
-        total: filesData.count,
-        hasMore: filesData.hasMore,
-        folders: childFolders.length,
-        elapsedMs: Math.round(performance.now() - startedAt),
-      })
     } catch (error) {
       console.error("Failed to refresh files:", error)
-      docsDebugLog("refreshFiles:error", error)
+      if (requestId === fileRefreshRequestRef.current) {
+        setError(error instanceof Error ? error.message : "Could not load documents")
+      }
     } finally {
       if (requestId === fileRefreshRequestRef.current) {
         setIsLoading(false)
       }
     }
-  }, [project.id, quickFilter, committedSearchQuery, currentPath, sort, direction])
+  }, [project.id, quickFilter, searchQuery, currentPath, sort, direction])
 
   const refreshFolderPermissions = useCallback(async () => {
     try {
@@ -533,8 +478,8 @@ export function DocumentsProvider({
   }, [project.id])
 
   const loadMore = useCallback(async () => {
-    if (quickFilter === "drawings" || !hasMore || isLoadingMore) return
-    
+    if (!hasMore || isLoadingMore) return
+
     setIsLoadingMore(true)
     try {
       const dueRange = getExpiringDueRange(quickFilter)
@@ -542,8 +487,8 @@ export function DocumentsProvider({
         project_id: project.id,
         category: getCategoryFilter(quickFilter),
         folder_path: currentPath || undefined,
-        root_only: quickFilter !== "all" || currentPath || committedSearchQuery ? undefined : true,
-        search: committedSearchQuery || undefined,
+        root_only: quickFilter !== "all" || currentPath || searchQuery ? undefined : true,
+        search: searchQuery || undefined,
         include_archived: quickFilter === "trash",
         archived_only: quickFilter === "trash",
         ...dueRange,
@@ -558,7 +503,7 @@ export function DocumentsProvider({
         const cacheKey = buildFileViewCacheKey({
           path: currentPath,
           quickFilter,
-          searchQuery: committedSearchQuery,
+          searchQuery,
           sort,
           direction,
         })
@@ -573,66 +518,27 @@ export function DocumentsProvider({
       setTotalCount(filesData.count)
     } catch (error) {
       console.error("Failed to load more files:", error)
+      toast.error("Could not load more documents")
     } finally {
       setIsLoadingMore(false)
     }
-  }, [project.id, quickFilter, hasMore, isLoadingMore, currentPath, committedSearchQuery, sort, direction, files.length])
-
-  const refreshDrawingSets = useCallback(async () => {
-    try {
-      const sets = await listDrawingSetsAction({ project_id: project.id })
-      setDrawingSets(sets)
-    } catch (error) {
-      console.error("Failed to refresh drawing sets:", error)
-    }
-  }, [project.id])
-
-  // Files/folders are fetched server-side for initial load, and refreshed explicitly
-  // after mutations (upload/move/rename/delete) to avoid action polling loops.
-  useEffect(() => {
-    const timeout = window.setTimeout(() => {
-      setCommittedSearchQuery(searchQuery.trim())
-    }, 250)
-    return () => window.clearTimeout(timeout)
-  }, [searchQuery])
+  }, [project.id, quickFilter, hasMore, isLoadingMore, currentPath, searchQuery, sort, direction, files.length])
 
   const urlPath = useMemo(() => normalizeDocsPath(searchParams.get("path")), [searchParams])
-  const urlSetId = searchParams.get("set")
-  const urlSort = searchParams.get("sort") as typeof sort | null
-  const urlDirection = searchParams.get("direction") as typeof direction | null
-  const urlStateKey = `${urlSetId ?? ""}|${urlPath}|${urlSort ?? ""}|${urlDirection ?? ""}`
+  const urlSort = searchParams.get("sort")
+  const urlDirection = searchParams.get("direction")
+  const urlStateKey = `${urlPath}|${urlSort ?? ""}|${urlDirection ?? ""}`
 
   useEffect(() => {
     if (syncedUrlStateRef.current === urlStateKey) return
     syncedUrlStateRef.current = urlStateKey
 
-    if (urlSort) setSort(urlSort)
-    if (urlDirection) setDirection(urlDirection)
+    if (urlSort && SORT_FIELDS.includes(urlSort as SortField)) setSort(urlSort as SortField)
+    if (urlDirection === "asc" || urlDirection === "desc") setDirection(urlDirection)
 
-    if (urlSetId) {
-      const set = drawingSets.find((row) => row.id === urlSetId)
-      setSelectedDrawingSet(urlSetId, set?.title ?? null)
-      setCurrentPathState("")
-      setQuickFilter("drawings")
-      return
-    }
-
-    setSelectedDrawingSet(null, null)
     setCurrentPathState(urlPath)
-    setQuickFilter((prev) => (prev === "drawings" || Boolean(urlPath) ? "all" : prev))
-  }, [drawingSets, setSelectedDrawingSet, urlPath, urlSetId, urlSort, urlDirection, urlStateKey])
-
-  useEffect(() => {
-    if (!selectedDrawingSetId) return
-    const set = drawingSets.find((row) => row.id === selectedDrawingSetId)
-    if (!set || set.title === selectedDrawingSetTitle) return
-    setSelectedDrawingSetTitle(set.title)
-  }, [drawingSets, selectedDrawingSetId, selectedDrawingSetTitle])
-
-  useEffect(() => {
-    if (typeof window === "undefined") return
-    localStorage.setItem(VIEW_MODE_KEY, viewMode)
-  }, [viewMode])
+    if (urlPath) setQuickFilter("all")
+  }, [urlPath, urlSort, urlDirection, urlStateKey])
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -644,15 +550,23 @@ export function DocumentsProvider({
     localStorage.setItem(DIRECTION_KEY, direction)
   }, [direction])
 
-  // Trigger refresh when filters change, except for initial mount if we already have initialFiles
+  // Files/folders are fetched server-side for initial load, and refreshed explicitly
+  // after mutations (upload/move/rename/delete) to avoid action polling loops.
+  // Depend on the filter values themselves so revalidation cannot be silently lost
+  // by a change to how refreshFiles is memoized.
+  const refreshFilesRef = useRef(refreshFiles)
+  useEffect(() => {
+    refreshFilesRef.current = refreshFiles
+  }, [refreshFiles])
+
   const isFirstMountRef = useRef(true)
   useEffect(() => {
     if (isFirstMountRef.current) {
       isFirstMountRef.current = false
       return
     }
-    refreshFiles({ includeMetadata: !committedSearchQuery })
-  }, [committedSearchQuery, refreshFiles])
+    void refreshFilesRef.current({ includeMetadata: !searchQuery })
+  }, [searchQuery, quickFilter, currentPath, sort, direction])
 
   // Auto-expand parent folders when navigating to a path
   useEffect(() => {
@@ -682,49 +596,11 @@ export function DocumentsProvider({
     }
   }, [currentPath])
 
-  useEffect(() => {
-    docsDebugLog("state", {
-      quickFilter,
-      currentPath,
-      searchQuery,
-      selectedDrawingSetId,
-      files: files.length,
-      folders: folders.length,
-      drawingSets: drawingSets.length,
-      isLoading,
-      isLoadingMore,
-      isUploading,
-      totalCount,
-      hasMore,
-    })
-  }, [
-    quickFilter,
-    currentPath,
-    searchQuery,
-    selectedDrawingSetId,
-    files.length,
-    folders.length,
-    drawingSets.length,
-    isLoading,
-    isLoadingMore,
-    isUploading,
-    totalCount,
-    hasMore,
-  ])
-
-  // When quickFilter changes away from drawings, clear drawing-set context.
-  useEffect(() => {
-    if (quickFilter === "drawings") return
-    if (!selectedDrawingSetId && !selectedDrawingSetTitle) return
-    setSelectedDrawingSet(null, null)
-  }, [quickFilter, selectedDrawingSetId, selectedDrawingSetTitle, setSelectedDrawingSet])
-
   const contextValue: DocumentsContextValue = useMemo(
     () => ({
       projectId: project.id,
       projectName: project.name,
       files,
-      drawingSets,
       folders,
       folderItemCounts,
       folderPermissions,
@@ -734,40 +610,28 @@ export function DocumentsProvider({
       currentPath,
       quickFilter,
       searchQuery,
-      viewMode,
       sort,
       direction,
+      error,
       setCurrentPath,
       setQuickFilter,
       setSearchQuery,
-      setViewMode,
       setSort: updateSort,
       setDirection: updateDirection,
       toggleSort,
-      setSelectedDrawingSet,
       navigateToRoot,
       navigateToFolder,
-      navigateToDrawingSet,
       loadFolderChildren,
       refreshFiles,
       loadMore,
-      refreshDrawingSets,
       refreshFolderPermissions,
       isLoading,
       isLoadingMore,
-      isUploading,
       expandedFolders,
       toggleFolderExpanded,
-      expandedDrawingSets,
-      toggleDrawingSetExpanded,
-      sheetsBySetId,
-      loadSheetsForSet,
-      selectedDrawingSetId,
-      selectedDrawingSetTitle,
     }),
     [
       files,
-      drawingSets,
       folders,
       folderItemCounts,
       folderPermissions,
@@ -777,36 +641,25 @@ export function DocumentsProvider({
       currentPath,
       quickFilter,
       searchQuery,
-      viewMode,
       sort,
       direction,
+      error,
       isLoading,
       isLoadingMore,
-      isUploading,
       expandedFolders,
-      expandedDrawingSets,
-      sheetsBySetId,
       refreshFiles,
       loadMore,
-      refreshDrawingSets,
       refreshFolderPermissions,
       setCurrentPath,
       setQuickFilter,
       setSearchQuery,
-      setViewMode,
       updateSort,
       updateDirection,
       toggleSort,
-      setSelectedDrawingSet,
       navigateToRoot,
       navigateToFolder,
-      navigateToDrawingSet,
       loadFolderChildren,
       toggleFolderExpanded,
-      toggleDrawingSetExpanded,
-      loadSheetsForSet,
-      selectedDrawingSetId,
-      selectedDrawingSetTitle,
       project.id,
       project.name,
     ]

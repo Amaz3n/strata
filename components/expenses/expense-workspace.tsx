@@ -247,7 +247,10 @@ export function ExpenseWorkspace({
           setAttachments([])
           return
         }
-        const downloadUrl = await getFileDownloadUrlAction(file.id).catch(() => `/api/files/${file.id}/raw`)
+        const downloadUrlResult = await getFileDownloadUrlAction(file.id)
+        const downloadUrl = downloadUrlResult.success
+          ? downloadUrlResult.data
+          : `/api/files/${file.id}/raw`
         setAttachments([
           {
             id: file.id,

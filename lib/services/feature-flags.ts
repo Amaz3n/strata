@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { getFeatureFlagDefinition } from "@/lib/feature-flags/registry"
 
 type IsFeatureEnabledInput = {
   supabase: SupabaseClient<any, "public", any>
@@ -8,6 +9,12 @@ type IsFeatureEnabledInput = {
 }
 
 export async function isFeatureEnabledForOrg(input: IsFeatureEnabledInput) {
+  const definition = getFeatureFlagDefinition(input.flagKey)
+  if (!definition) {
+    console.error(`Rejected unregistered feature flag ${input.flagKey}`)
+    return false
+  }
+  const defaultEnabled = input.defaultEnabled ?? definition.defaultEnabled
   const { data, error } = await input.supabase
     .from("feature_flags")
     .select("enabled, expires_at")
@@ -19,15 +26,15 @@ export async function isFeatureEnabledForOrg(input: IsFeatureEnabledInput) {
 
   if (error) {
     console.error(`Failed to load feature flag ${input.flagKey}:`, error.message)
-    return input.defaultEnabled ?? true
+    return defaultEnabled
   }
 
   if (!data) {
-    return input.defaultEnabled ?? true
+    return defaultEnabled
   }
 
   if (data.expires_at && new Date(data.expires_at) <= new Date()) {
-    return input.defaultEnabled ?? true
+    return defaultEnabled
   }
 
   return data.enabled !== false

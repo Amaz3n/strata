@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { sendReminderEmail, sendReminderSMS } from "@/lib/services/mailer"
-import { generateSignedPayLink } from "@/lib/services/payments"
+import { createPersistedPayLink } from "@/lib/services/payments"
 import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
 import { withCronRun } from "@/lib/services/job-runs"
 
@@ -44,6 +44,7 @@ async function handler(request: NextRequest) {
   const now = new Date()
   const today = now.toISOString().split("T")[0]
   let sentCount = 0
+  let failedCount = 0
 
   for (const r of reminders) {
     const reminder = r as any
@@ -80,11 +81,13 @@ async function handler(request: NextRequest) {
       let payLink: string | undefined
 
       try {
-        const signed = generateSignedPayLink({
+        const signed = await createPersistedPayLink({
+          supabase,
           orgId: reminder.org_id,
           projectId: reminder.invoice.project_id,
           invoiceId: reminder.invoice.id,
-          expiresInHours: 72,
+          expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+          metadata: { source: "invoice_reminder", reminder_id: reminder.id },
         })
         payLink = signed.url
       } catch {
@@ -132,6 +135,7 @@ async function handler(request: NextRequest) {
 
       sentCount += 1
     } catch (err) {
+      failedCount += 1
       await supabase.from("reminder_deliveries").insert({
         org_id: reminder.org_id,
         reminder_id: reminder.id,
@@ -143,7 +147,10 @@ async function handler(request: NextRequest) {
     }
   }
 
-  return NextResponse.json({ processed: reminders.length, sent: sentCount })
+  return NextResponse.json(
+    { ok: failedCount === 0, processed: reminders.length, sent: sentCount, failed: failedCount },
+    { status: failedCount === 0 ? 200 : 207 },
+  )
 }
 
 export const POST = withCronRun("reminders", handler)

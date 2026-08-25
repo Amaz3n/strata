@@ -1,20 +1,11 @@
 "use client"
 
-import { useState, useEffect, useMemo, useCallback, useTransition } from "react"
+import { useState, useEffect, useMemo, useCallback, useRef, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { toast } from "sonner"
 
-import type {
-  Project,
-  Contact,
-  ProjectAccessPerson,
-  Proposal,
-  Contract,
-  DrawSchedule,
-  Company,
-  ProjectVendor,
-} from "@/lib/types"
+import type { Project, ProjectAccessPerson } from "@/lib/types"
 import type { ProjectInput } from "@/lib/validation/projects"
 import {
   loadProjectAccessRosterAction,
@@ -25,11 +16,14 @@ import {
   setPortalTokenRequireAccountAction,
   removePortalTokenPinAction,
 } from "@/app/(app)/sharing/actions"
-import { getProjectSettingsAction, updateProjectSettingsAction } from "@/app/(app)/projects/[id]/actions"
-import type { ProjectTeamMember } from "@/app/(app)/projects/[id]/actions"
+import {
+  getProjectOverviewCatalogsAction,
+  getProjectSettingsAction,
+  updateProjectSettingsAction,
+  type ProjectOverviewCatalogs,
+} from "@/app/(app)/projects/[id]/actions"
 
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from "@/components/ui/dropdown-menu"
@@ -40,7 +34,6 @@ import { getProjectPosture } from "@/lib/product-tier"
 import { ProjectInviteForm } from "@/components/sharing/project-invite-form"
 import { ProjectAccessRoster } from "@/components/sharing/project-access-roster"
 import { ProjectSettingsSheet } from "@/components/projects/project-settings-sheet"
-import { ContractDetailSheet } from "@/components/contracts/contract-detail-sheet"
 import { ManageTeamSheet } from "@/components/projects/manage-team-sheet"
 
 import {
@@ -48,41 +41,51 @@ import {
   MoreHorizontal,
   Settings,
   Users,
-  Link2,
-  User,
-  ShieldCheck,
   MapPin,
 } from "@/components/icons"
-import { cn } from "@/lib/utils"
 
 import { unwrapAction } from "@/lib/action-result"
 
 interface ProjectOverviewActionsProps {
   project: Project
-  contacts: Contact[]
-  companies: Company[]
-  team: ProjectTeamMember[]
-  projectVendors: ProjectVendor[]
-  proposals: Proposal[]
-  contract: Contract | null
-  draws: DrawSchedule[]
-  scheduleItemCount: number
 }
 
-export function ProjectOverviewActions({
-  project,
-  contacts,
-  companies,
-  team,
-  projectVendors,
-  proposals,
-  contract,
-  draws,
-  scheduleItemCount,
-}: ProjectOverviewActionsProps) {
+/**
+ * The identity band: the one part of the overview that must be on screen the
+ * instant the route resolves. It reads nothing but the project row.
+ *
+ * The three sheets behind it need org-wide catalogs (every contact, every
+ * company, the project team, its vendors, its contract). Those load on pointer
+ * intent and are awaited on open — never on the render path.
+ */
+export function ProjectOverviewActions({ project }: ProjectOverviewActionsProps) {
   const router = useRouter()
   const { productTier } = usePageTitle()
   const posture = getProjectPosture(project.property_type, productTier)
+
+  const [catalogs, setCatalogs] = useState<ProjectOverviewCatalogs | null>(null)
+  const [catalogsError, setCatalogsError] = useState<string | null>(null)
+  const catalogRequest = useRef<Promise<ProjectOverviewCatalogs> | null>(null)
+
+  // One in-flight request no matter how many triggers fire: hovering Share, then
+  // opening the menu, then opening Manage team must not queue three loads.
+  const warmCatalogs = useCallback(() => {
+    if (catalogRequest.current) return catalogRequest.current
+    const request = getProjectOverviewCatalogsAction(project.id)
+    catalogRequest.current = request
+    request.then(
+      (loaded) => {
+        setCatalogs(loaded)
+        setCatalogsError(null)
+      },
+      (error) => {
+        console.error("Failed to load project catalogs", error)
+        catalogRequest.current = null
+        setCatalogsError("Couldn't load contacts and companies.")
+      },
+    )
+    return request
+  }, [project.id])
 
   // The header renders from the light `project` prop; the settings sheet needs the full project
   // (financial_settings + billing_contract), which we lazy-load when the sheet opens.
@@ -90,7 +93,6 @@ export function ProjectOverviewActions({
   const [settingsLoading, startSettingsLoad] = useTransition()
   const [sharingSheetOpen, setSharingSheetOpen] = useState(false)
   const [settingsSheetOpen, setSettingsSheetOpen] = useState(false)
-  const [contractSheetOpen, setContractSheetOpen] = useState(false)
   const [manageTeamOpen, setManageTeamOpen] = useState(false)
 
   const [roster, setRoster] = useState<ProjectAccessPerson[]>([])
@@ -175,7 +177,7 @@ export function ProjectOverviewActions({
   const openSettings = () => {
     startSettingsLoad(async () => {
       try {
-        const full = await getProjectSettingsAction(project.id)
+        const [full] = await Promise.all([getProjectSettingsAction(project.id), warmCatalogs()])
         if (!full) {
           toast.error("Could not load project settings")
           return
@@ -197,7 +199,7 @@ export function ProjectOverviewActions({
 
   return (
     <>
-      <header className="border-b">
+      <header className="border-b" data-instant-shell="project-overview">
         <div className="px-5 sm:px-8 lg:px-12 py-5 flex items-center gap-4">
           <ProjectAvatar projectId={project.id} size="xl" className="h-12 w-12" />
 
@@ -219,9 +221,21 @@ export function ProjectOverviewActions({
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            <Sheet open={sharingSheetOpen} onOpenChange={setSharingSheetOpen}>
+            <Sheet
+              open={sharingSheetOpen}
+              onOpenChange={(open) => {
+                if (open) void warmCatalogs()
+                setSharingSheetOpen(open)
+              }}
+            >
               <SheetTrigger asChild>
-                <Button variant="outline" size="sm" className="gap-1.5 h-9 px-3 text-xs font-medium">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5 h-9 px-3 text-xs font-medium"
+                  onPointerEnter={() => void warmCatalogs()}
+                  onFocus={() => void warmCatalogs()}
+                >
                   <Share2 className="h-3.5 w-3.5" />
                   <span className="hidden sm:inline">Share</span>
                 </Button>
@@ -246,15 +260,21 @@ export function ProjectOverviewActions({
                   <ScrollArea className="min-h-0 flex-1 overflow-x-hidden">
                     <div className="space-y-4 overflow-hidden p-4 sm:p-5">
                       <div className="border border-border bg-card p-5">
-                        <ProjectInviteForm
-                          projectId={project.id}
-                          project={project}
-                          posture={posture}
-                          contacts={contacts}
-                          projectVendors={projectVendors}
-                          onCreated={handleTokenCreated}
-                          enabled={sharingSheetOpen}
-                        />
+                        {catalogsError ? (
+                          <CatalogError message={catalogsError} onRetry={warmCatalogs} />
+                        ) : catalogs ? (
+                          <ProjectInviteForm
+                            projectId={project.id}
+                            project={project}
+                            posture={posture}
+                            contacts={catalogs.contacts}
+                            projectVendors={catalogs.projectVendors}
+                            onCreated={handleTokenCreated}
+                            enabled={sharingSheetOpen}
+                          />
+                        ) : (
+                          <CatalogSkeleton rows={3} />
+                        )}
                       </div>
 
                       <div className="space-y-2">
@@ -303,9 +323,15 @@ export function ProjectOverviewActions({
               </SheetContent>
             </Sheet>
 
-            <DropdownMenu>
+            <DropdownMenu onOpenChange={(open) => { if (open) void warmCatalogs() }}>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="icon" className="h-9 w-9">
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-9 w-9"
+                  onPointerEnter={() => void warmCatalogs()}
+                  onFocus={() => void warmCatalogs()}
+                >
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
@@ -320,6 +346,7 @@ export function ProjectOverviewActions({
                 <DropdownMenuItem
                   onSelect={(e) => {
                     e.preventDefault()
+                    void warmCatalogs()
                     setManageTeamOpen(true)
                   }}
                 >
@@ -339,23 +366,44 @@ export function ProjectOverviewActions({
       {settingsProject ? (
         <ProjectSettingsSheet
           project={settingsProject}
-          contract={contract}
-          contacts={contacts}
+          contract={catalogs?.contract ?? null}
+          contacts={catalogs?.contacts ?? []}
           open={settingsSheetOpen}
           onOpenChange={setSettingsSheetOpen}
           onSave={handleSaveProject}
         />
       ) : null}
-      <ContractDetailSheet contract={contract} open={contractSheetOpen} onOpenChange={setContractSheetOpen} />
       <ManageTeamSheet
         projectId={project.id}
         open={manageTeamOpen}
         onOpenChange={setManageTeamOpen}
-        team={team}
-        contacts={contacts}
-        companies={companies}
-        projectVendors={projectVendors}
+        team={catalogs?.team ?? []}
+        contacts={catalogs?.contacts ?? []}
+        companies={catalogs?.companies ?? []}
+        projectVendors={catalogs?.projectVendors ?? []}
+        isLoading={manageTeamOpen && !catalogs}
       />
     </>
+  )
+}
+
+function CatalogSkeleton({ rows }: { rows: number }) {
+  return (
+    <div className="space-y-2" aria-hidden>
+      {Array.from({ length: rows }).map((_, row) => (
+        <div key={row} className="h-9 animate-pulse border border-border bg-muted/40" />
+      ))}
+    </div>
+  )
+}
+
+function CatalogError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="border border-destructive/20 bg-destructive/5 p-3 text-sm text-destructive">
+      <p>{message}</p>
+      <Button variant="outline" size="sm" className="mt-2" onClick={onRetry}>
+        Try again
+      </Button>
+    </div>
   )
 }

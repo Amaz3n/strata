@@ -1,7 +1,14 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { createServerClient } from "@supabase/ssr"
+import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { normalizeInternalReturnPath } from "@/lib/auth/return-path"
+import {
+  MFA_GATE_COOKIE,
+  MFA_GATE_TTL_SECONDS,
+  signMfaGateCookie,
+  verifyMfaGateCookie,
+} from "@/lib/auth/mfa-gate-cookie"
 
 const AUTH_ROUTES = ["/auth/signin", "/auth/signup", "/auth/forgot-password", "/auth/accept-invite"]
 const PUBLIC_ROUTES = ["/proposal", "/e/", "/i/", "/p/", "/s/", "/r/", "/b/", "/d/", "/f/", "/access", "/terms", "/privacy", "/esign-terms"]
@@ -93,6 +100,10 @@ const PUBLIC_FILE_EXTENSIONS = [
   ".map",
   ".css",
   ".js",
+  // ES-module assets. pdf.js ships its worker as .mjs and fetches it directly;
+  // without this it is answered with a sign-in redirect, and the empty MIME type
+  // fails the worker with "'' is not a valid JavaScript MIME type".
+  ".mjs",
   ".woff",
   ".woff2",
   ".ttf",
@@ -114,7 +125,9 @@ function isBlockedHiddenPath(pathname: string) {
 }
 
 export async function proxy(request: NextRequest) {
-  if (isBlockedHiddenPath(request.nextUrl.pathname)) {
+  const pathname = request.nextUrl.pathname
+
+  if (isBlockedHiddenPath(pathname)) {
     return new NextResponse(null, {
       status: 404,
       headers: {
@@ -124,9 +137,18 @@ export async function proxy(request: NextRequest) {
     })
   }
 
+  // Static assets and the self-authenticating API routes below (cron secrets,
+  // webhook signatures, portal path tokens, mobile bearer tokens) never read the
+  // session cookie. Leaving before the client is built stops them paying for a
+  // Supabase construction and a claims verification they then ignore.
+  if (
+    PUBLIC_FILE_EXTENSIONS.some((extension) => pathname.endsWith(extension)) ||
+    PUBLIC_API_ROUTES.some((route) => pathname.startsWith(route))
+  ) {
+    return NextResponse.next()
+  }
+
   const requestHeaders = new Headers(request.headers)
-  requestHeaders.set("x-pathname", request.nextUrl.pathname)
-  requestHeaders.set("x-search", request.nextUrl.search)
 
   let response = NextResponse.next({
     request: {
@@ -157,8 +179,9 @@ export async function proxy(request: NextRequest) {
           requestHeaders.set("cookie", request.cookies.toString())
 
           // Recreate the pass-through response so Server Components receive
-          // refreshed tokens during this same request, while preserving Arc's
-          // pathname/search headers used by the app shell.
+          // refreshed tokens during this same request. Note this REBINDS
+          // `response` — anything written to the old object is lost, so cookies
+          // must always be set on `response` as read at the point of use.
           response = NextResponse.next({
             request: {
               headers: requestHeaders,
@@ -177,37 +200,39 @@ export async function proxy(request: NextRequest) {
   // never slower than the getUser() round-trip this replaced. Expired tokens
   // still refresh here, writing the new cookies onto the response.
   const { data: claimsData } = await supabase.auth.getClaims()
-  const user = claimsData?.claims ?? null
+  const claims = claimsData?.claims ?? null
 
-  const pathname = request.nextUrl.pathname
   const isAuthRoute = pathname.startsWith("/auth")
   const isPublicRoute = PUBLIC_ROUTES.some(route => pathname.startsWith(route))
-  const isPublicApiRoute = PUBLIC_API_ROUTES.some(route => pathname.startsWith(route))
-  const isPublicFile = PUBLIC_FILE_EXTENSIONS.some((extension) => pathname.endsWith(extension))
-
-  if (isPublicFile) {
-    return response
-  }
 
   // Basic authentication checks only - keep proxy lightweight
-  if (!user && !isAuthRoute && !isPublicRoute && !isPublicApiRoute) {
+  if (!claims && !isAuthRoute && !isPublicRoute) {
     const redirectUrl = new URL("/auth/signin", request.url)
     redirectUrl.searchParams.set("next", `${request.nextUrl.pathname}${request.nextUrl.search}`)
     return withSupabaseCookies(response, NextResponse.redirect(redirectUrl))
   }
 
-  if (user && !isAuthRoute && !isPublicRoute && !isPublicApiRoute) {
-    const { data: assuranceData, error: assuranceError } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
-    if (!assuranceError) {
-      const requiresMfa = assuranceData?.nextLevel === "aal2" && assuranceData?.currentLevel !== "aal2"
-      if (requiresMfa) {
-        const redirectUrl = new URL("/auth/mfa", request.url)
-        return withSupabaseCookies(response, NextResponse.redirect(redirectUrl))
-      }
+  if (claims && !isAuthRoute && !isPublicRoute && claims.aal !== "aal2") {
+    const gate = await resolveMfaGate(request, supabase, claims)
+    if (gate.stepUp) {
+      return withSupabaseCookies(response, NextResponse.redirect(new URL("/auth/mfa", request.url)))
+    }
+    // Read `response` here, not before the await: a token refresh during the
+    // lookup above rebinds it, and a cookie set on the old object never ships.
+    if (gate.proof) {
+      response.cookies.set({
+        name: MFA_GATE_COOKIE,
+        value: gate.proof,
+        httpOnly: true,
+        secure: true,
+        sameSite: "lax",
+        path: "/",
+        maxAge: MFA_GATE_TTL_SECONDS,
+      })
     }
   }
 
-  if (user && AUTH_ROUTES.includes(pathname)) {
+  if (claims && AUTH_ROUTES.includes(pathname)) {
     const redirectUrl = new URL(normalizeInternalReturnPath(request.nextUrl.searchParams.get("next")), request.url)
     return withSupabaseCookies(response, NextResponse.redirect(redirectUrl))
   }
@@ -217,6 +242,50 @@ export async function proxy(request: NextRequest) {
   return response
 }
 
+
+/**
+ * Decide whether this aal1 session must step up to aal2.
+ *
+ * Supabase's assurance-level helper reads `getSession().user.factors`, which is
+ * client-controlled cookie storage — trusting it would let anyone strip their
+ * factors and skip the challenge. The Auth server is the only authority, so the
+ * first request in a window pays that round-trip and returns `proof`: a signed
+ * "this user has no verified factor" the caller stores. Later navigations verify
+ * that signature locally instead of asking again, which is what stops a non-MFA
+ * user — permanently aal1, so permanently taking this branch — from paying a
+ * GoTrue call on every single request.
+ *
+ * Returns the proof rather than writing it, because the caller's response object
+ * can be rebound by a token refresh while this runs.
+ */
+async function resolveMfaGate(
+  request: NextRequest,
+  supabase: SupabaseClient,
+  claims: { sub?: unknown; session_id?: unknown },
+): Promise<{ stepUp: boolean; proof?: string }> {
+  const sub = typeof claims.sub === "string" ? claims.sub : null
+  const sessionId = typeof claims.session_id === "string" ? claims.session_id : null
+  const identity = sub && sessionId ? { sub, sessionId } : null
+
+  if (identity && (await verifyMfaGateCookie(request.cookies.get(MFA_GATE_COOKIE)?.value, identity))) {
+    return { stepUp: false }
+  }
+
+  const {
+    data: { user: verifiedUser },
+    error: verifiedUserError,
+  } = await supabase.auth.getUser()
+
+  // A failed lookup is not proof of absence — leave the session alone rather
+  // than either challenging or exempting it on a network error.
+  if (verifiedUserError) return { stepUp: false }
+
+  if ((verifiedUser?.factors ?? []).some((factor) => factor.status === "verified")) {
+    return { stepUp: true }
+  }
+
+  return { stepUp: false, proof: identity ? (await signMfaGateCookie(identity)) ?? undefined : undefined }
+}
 
 function requireEnv(value: string | undefined, name: string) {
   if (!value) throw new Error(`Missing required environment variable ${name}`)

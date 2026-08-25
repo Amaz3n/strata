@@ -31,11 +31,10 @@ import type { LucideIcon } from "@/components/icons"
 import { useMobileAction } from "@/components/layout/mobile-action-context"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import type { User } from "@/lib/types"
+import type { ProjectNavigationItem, User } from "@/lib/types"
 import type { ProductTier } from "@/lib/product-tier"
 import { terminology } from "@/lib/terminology"
 import { cn } from "@/lib/utils"
-import { useSidebarProjects } from "./use-sidebar-projects"
 import { useNavigationBadges } from "./navigation-badge-context"
 import {
   buildProjectNavGroups,
@@ -47,6 +46,8 @@ import {
 
 interface MobileBottomNavProps {
   user?: User | null
+  /** Loaded by the layout's cached chrome context, not fetched after hydration. */
+  projects: ProjectNavigationItem[]
   canAccessPlatform?: boolean
   permissions?: string[]
   productTier?: ProductTier
@@ -99,6 +100,7 @@ function toMobileNavItem(item: ProjectNavItem): NavItem | null {
 
 export function MobileBottomNav({
   user,
+  projects,
   canAccessPlatform,
   permissions = [],
   productTier = "residential",
@@ -112,6 +114,7 @@ export function MobileBottomNav({
     myWorkBadgeCount,
     readyToBillBadgeCount,
     projectReviewBadgeCounts,
+    projectCorrespondenceBadgeCounts,
     whatsNewUnreadCount,
   } = useNavigationBadges()
   const pathname = useOptimisticPathname()
@@ -122,7 +125,6 @@ export function MobileBottomNav({
   const [immersive, setImmersive] = useState(false)
   const [effectiveUnreadCount, setEffectiveUnreadCount] = useState(whatsNewUnreadCount)
   const [signingOut, startSignOut] = useTransition()
-  const { projects } = useSidebarProjects()
 
   const projectId = getProjectIdFromPath(pathname)
   const isProject = Boolean(projectId)
@@ -185,6 +187,7 @@ export function MobileBottomNav({
           section,
           project: currentProject,
           reviewBadgeCount: projectReviewBadgeCounts[projectId],
+          correspondenceBadgeCount: projectCorrespondenceBadgeCounts[projectId],
           orgTier: productTier,
         })[0]?.items ?? []
       const closeItem = projectItems.find((item) => item.title === "Close")
@@ -340,7 +343,7 @@ export function MobileBottomNav({
       },
     ]
     return { primary: workspacePrimary, menuSections: workspaceMenu }
-  }, [pathname, projectId, isProject, section, currentProject, projectReviewBadgeCounts, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, productTier, showProductionNavigation, showPipelineNavigation, showPurchasingNavigation, booksEnabled])
+  }, [pathname, projectId, isProject, section, currentProject, projectReviewBadgeCounts, projectCorrespondenceBadgeCounts, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, productTier, showProductionNavigation, showPipelineNavigation, showPurchasingNavigation, booksEnabled])
 
   const visiblePrimary = useMemo(
     () =>

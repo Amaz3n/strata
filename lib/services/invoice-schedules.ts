@@ -338,6 +338,30 @@ export async function runDueInvoiceSchedules(today = new Date()): Promise<Schedu
   // Sequential on purpose: per-org invoice numbers derive from the latest inserted row.
   for (const row of due ?? []) {
     try {
+      const originalNextRunOn = row.next_run_on
+      const nextRunOn = format(
+        advanceRunDate(row, new Date(`${originalNextRunOn}T00:00:00`)),
+        "yyyy-MM-dd",
+      )
+      const claimTimestamp = new Date().toISOString()
+      const { data: claimed, error: claimError } = await serviceClient
+        .from("invoice_schedules")
+        .update({ next_run_on: nextRunOn, updated_at: claimTimestamp })
+        .eq("id", row.id)
+        .eq("next_run_on", originalNextRunOn)
+        .eq("active", true)
+        .select("id")
+
+      if (claimError) throw new Error(`Failed to claim invoice schedule: ${claimError.message}`)
+      if (!claimed?.length) {
+        results.push({
+          scheduleId: row.id,
+          status: "failed",
+          error: "Schedule was already claimed by a concurrent run",
+        })
+        continue
+      }
+
       const template = (row.template ?? {}) as Record<string, any>
       const invoiceNumber = await nextLocalInvoiceNumber(serviceClient, row.org_id, row.project_id)
       const termsDays = Number(template.payment_terms_days ?? 15)
@@ -357,25 +381,42 @@ export async function runDueInvoiceSchedules(today = new Date()): Promise<Schedu
       })
 
       const scheduleOrg = Array.isArray(row.org) ? row.org[0] : row.org
-      const invoice = await createInvoice({
-        input,
-        context: {
-          supabase: serviceClient,
-          orgId: row.org_id,
-          userId: row.created_by,
-          productTier: normalizeProductTier(scheduleOrg?.product_tier),
-        },
-      })
+      let invoice
+      try {
+        invoice = await createInvoice({
+          input,
+          context: {
+            supabase: serviceClient,
+            orgId: row.org_id,
+            userId: row.created_by,
+            productTier: normalizeProductTier(scheduleOrg?.product_tier),
+          },
+        })
+      } catch (createError) {
+        const { error: rollbackError } = await serviceClient
+          .from("invoice_schedules")
+          .update({ next_run_on: originalNextRunOn, updated_at: new Date().toISOString() })
+          .eq("id", row.id)
+          .eq("next_run_on", nextRunOn)
 
-      await serviceClient
+        if (rollbackError) {
+          console.error("[invoice-schedules] Failed to release schedule claim", row.id, rollbackError)
+        }
+        throw createError
+      }
+
+      const { error: finalizeError } = await serviceClient
         .from("invoice_schedules")
         .update({
           last_run_at: new Date().toISOString(),
           last_invoice_id: invoice.id,
-          next_run_on: format(advanceRunDate(row, new Date(`${row.next_run_on}T00:00:00`)), "yyyy-MM-dd"),
           updated_at: new Date().toISOString(),
         })
         .eq("id", row.id)
+
+      if (finalizeError) {
+        throw new Error(`Invoice ${invoice.id} was created but the schedule metadata update failed: ${finalizeError.message}`)
+      }
 
       await recordEvent({
         orgId: row.org_id,

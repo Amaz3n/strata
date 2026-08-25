@@ -26,6 +26,7 @@ then the reference docs below.
 | [`books-revenue-recognition.md`](books-revenue-recognition.md) | Arc Books' full contract-lifecycle entry set, traced from the posting rules, with a worked percentage-of-completion example. **Carries the construction-CPA sign-off block that gates any org leaving `shadow` mode.** Read before changing anything in `lib/services/books/posting-rules.ts`. |
 | [`mobile-api-v1.openapi.yaml`](mobile-api-v1.openapi.yaml) | Mobile API contract. Enforced by `pnpm test:mobile`. |
 | [`report-export-api.md`](report-export-api.md) | Report export route contract. |
+| [`repository-health.md`](repository-health.md) | Continuous reachability, deletion, dependency, and plan-lifecycle rules. |
 | [`takeoff-model.md`](takeoff-model.md) | The quantity model: reporting unit vs measured unit, axis factors, what counts and what deliberately does not, count by example. Read before touching `lib/drawings/measure.ts` or `lib/services/takeoff*.ts`. |
 | [`takeoff-reanchor-design.md`](takeoff-reanchor-design.md) | Revision re-anchoring state machine. Referenced from `lib/services/takeoff-reanchor.ts`. |
 | [`takeoff-vector-spike.md`](takeoff-vector-spike.md) | Vector-extraction spike verdict. Referenced from `lib/drawings/vector-snap.ts`. |

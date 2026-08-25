@@ -109,24 +109,23 @@ async function enqueueProductionScheduleChange(input: {
 async function loadDependencies(
   supabase: SupabaseClient,
   orgId: string,
-  projectId?: string,
+  projectIds?: string[],
 ) {
-  let query = supabase
-    .from("schedule_dependencies")
-    .select("item_id, depends_on_item_id, dependency_type, lag_days")
-    .eq("org_id", orgId);
-
-  if (projectId) {
-    query = query.eq("project_id", projectId);
+  if (projectIds?.length === 0) return {};
+  const rows: Array<{ item_id: string; depends_on_item_id: string }> = [];
+  for (let from = 0; ; from += 1000) {
+    let query = supabase
+      .from("schedule_dependencies")
+      .select("item_id, depends_on_item_id, dependency_type, lag_days")
+      .eq("org_id", orgId);
+    if (projectIds) query = query.in("project_id", projectIds);
+    const { data, error } = await query.order("id").range(from, from + 999);
+    if (error) throw new Error(`Failed to load schedule dependencies: ${error.message}`);
+    rows.push(...(data ?? []));
+    if ((data?.length ?? 0) < 1000) break;
   }
 
-  const { data, error } = await query;
-
-  if (error) {
-    throw new Error(`Failed to load schedule dependencies: ${error.message}`);
-  }
-
-  return (data ?? []).reduce<Record<string, string[]>>((acc, dep) => {
+  return rows.reduce<Record<string, string[]>>((acc, dep) => {
     if (!acc[dep.item_id]) acc[dep.item_id] = [];
     acc[dep.item_id].push(dep.depends_on_item_id);
     return acc;
@@ -161,6 +160,7 @@ async function loadDependencyDetails(
 
 export async function listScheduleItems(
   orgId?: string,
+  projectIds?: string[],
 ): Promise<ScheduleItem[]> {
   const {
     supabase,
@@ -172,35 +172,40 @@ export async function listScheduleItems(
     orgId: resolvedOrgId,
     userId,
   });
-  return listScheduleItemsWithClient(supabase, resolvedOrgId);
+  return listScheduleItemsWithClient(supabase, resolvedOrgId, projectIds);
 }
 
 export async function listScheduleItemsWithClient(
   supabase: SupabaseClient,
   orgId: string,
+  projectIds?: string[],
 ): Promise<ScheduleItem[]> {
-  const dependencyMap = await loadDependencies(supabase, orgId);
-
-  const { data, error } = await supabase
-    .from("schedule_items")
-    .select(
-      `
+  if (projectIds?.length === 0) return [];
+  const dependencyMap = await loadDependencies(supabase, orgId, projectIds);
+  const rows: any[] = [];
+  for (let from = 0; ; from += 1000) {
+    let query = supabase
+      .from("schedule_items")
+      .select(`
       id, org_id, project_id, name, item_type, status, start_date, end_date,
       progress, assigned_to, metadata, created_at, updated_at,
       phase, trade, location, planned_hours, actual_hours,
       constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
       cost_code_id, budget_cents, actual_cost_cents
-    `,
-    )
-    .eq("org_id", orgId)
-    .order("sort_order", { ascending: true })
-    .order("start_date", { ascending: true, nullsFirst: false });
-
-  if (error) {
-    throw new Error(`Failed to list schedule items: ${error.message}`);
+    `)
+      .eq("org_id", orgId);
+    if (projectIds) query = query.in("project_id", projectIds);
+    const { data, error } = await query
+      .order("sort_order", { ascending: true })
+      .order("start_date", { ascending: true, nullsFirst: false })
+      .order("id", { ascending: true })
+      .range(from, from + 999);
+    if (error) throw new Error(`Failed to list schedule items: ${error.message}`);
+    rows.push(...(data ?? []));
+    if ((data?.length ?? 0) < 1000) break;
   }
 
-  return (data ?? []).map((row) => mapScheduleItem(row, dependencyMap));
+  return rows.map((row) => mapScheduleItem(row, dependencyMap));
 }
 
 export async function listProjectScheduleItemsWithClient(
@@ -208,7 +213,7 @@ export async function listProjectScheduleItemsWithClient(
   orgId: string,
   projectId: string,
 ): Promise<ScheduleItem[]> {
-  const dependencyMap = await loadDependencies(supabase, orgId, projectId);
+  const dependencyMap = await loadDependencies(supabase, orgId, [projectId]);
 
   const { data, error } = await supabase
     .from("schedule_items")
@@ -238,6 +243,7 @@ export async function listProjectScheduleItemsWithClient(
 // with missing/zero duration fall back to a weight of one day so they still contribute.
 export async function getProjectScheduleSummaries(
   orgId?: string,
+  projectIds?: string[],
 ): Promise<Record<string, ProjectScheduleSummary>> {
   const {
     supabase,
@@ -249,20 +255,44 @@ export async function getProjectScheduleSummaries(
     orgId: resolvedOrgId,
     userId,
   });
-  return getProjectScheduleSummariesWithClient(supabase, resolvedOrgId);
+  return getProjectScheduleSummariesWithClient(supabase, resolvedOrgId, projectIds);
 }
+
+/**
+ * One page of the org-wide schedule scan. PostgREST caps a response at the
+ * project's `db-max-rows` (1000 by default), so a single unpaged select would
+ * silently drop every item past that ceiling and report a confidently wrong
+ * percentage for the projects that fell off the end.
+ */
+const SCHEDULE_SUMMARY_PAGE_SIZE = 1000;
+/** Hard stop so a runaway org cannot page forever. 200k items is far past any real schedule. */
+const SCHEDULE_SUMMARY_MAX_PAGES = 200;
 
 export async function getProjectScheduleSummariesWithClient(
   supabase: SupabaseClient,
   orgId: string,
+  projectIds?: string[],
 ): Promise<Record<string, ProjectScheduleSummary>> {
-  const { data, error } = await supabase
-    .from("schedule_items")
-    .select("project_id, status, start_date, end_date, progress")
-    .eq("org_id", orgId);
+  if (projectIds?.length === 0) return {};
 
-  if (error) {
-    throw new Error(`Failed to load schedule summaries: ${error.message}`);
+  const data: Array<Record<string, unknown>> = [];
+  for (let page = 0; page < SCHEDULE_SUMMARY_MAX_PAGES; page += 1) {
+    const from = page * SCHEDULE_SUMMARY_PAGE_SIZE;
+    let query = supabase
+      .from("schedule_items")
+      .select("project_id, status, start_date, end_date, progress")
+      .eq("org_id", orgId);
+    if (projectIds) query = query.in("project_id", projectIds);
+    const { data: rows, error } = await query
+      .order("id", { ascending: true })
+      .range(from, from + SCHEDULE_SUMMARY_PAGE_SIZE - 1);
+
+    if (error) {
+      throw new Error(`Failed to load schedule summaries: ${error.message}`);
+    }
+
+    data.push(...(rows ?? []));
+    if ((rows?.length ?? 0) < SCHEDULE_SUMMARY_PAGE_SIZE) break;
   }
 
   type Acc = {
@@ -273,7 +303,7 @@ export async function getProjectScheduleSummariesWithClient(
   const byProject = new Map<string, Acc>();
   const DAY_MS = 24 * 60 * 60 * 1000;
 
-  for (const row of data ?? []) {
+  for (const row of data) {
     const projectId = row.project_id as string | null;
     if (!projectId) continue;
     const status = (row.status as string) ?? "planned";
@@ -342,7 +372,7 @@ export async function listScheduleItemsByProject(
     userId,
   } = await requireOrgContext(orgId);
   await requireProjectPermission(userId, projectId, "schedule.read");
-  const dependencyMap = await loadDependencies(supabase, resolvedOrgId);
+  const dependencyMap = await loadDependencies(supabase, resolvedOrgId, [projectId]);
 
   const { data, error } = await supabase
     .from("schedule_items")

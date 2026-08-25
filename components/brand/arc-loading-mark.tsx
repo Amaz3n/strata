@@ -18,7 +18,7 @@ const TIER_LIGHT: Record<ProductTier, string> = {
 
 /** A quiet, branded live-progress mark based on the arc-website footer sweep. */
 export function ArcLoadingMark({
-  tier = "residential",
+  tier,
   className,
 }: {
   tier?: ProductTier
@@ -27,7 +27,12 @@ export function ArcLoadingMark({
   const id = useId().replace(/:/g, "")
   const shimmerId = `arc-loading-shimmer-${id}`
   const glowId = `arc-loading-glow-${id}`
-  const light = TIER_LIGHT[tier]
+  // Explicit data wins. Without it the mark inherits the tier the authenticated
+  // chrome publishes, so a fallback deep in the tree never flashes the wrong
+  // product color; residential only applies before any org tier has resolved.
+  const light = tier
+    ? TIER_LIGHT[tier]
+    : "var(--arc-loading-light, var(--tier-residential-light))"
 
   return (
     <svg

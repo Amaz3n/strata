@@ -7,6 +7,8 @@ export interface NavigationBadgeCounts {
   myWorkBadgeCount: number
   readyToBillBadgeCount: number
   projectReviewBadgeCounts: Record<string, number>
+  /** Filed mail nobody has ruled on yet, per project. */
+  projectCorrespondenceBadgeCounts: Record<string, number>
 }
 
 const EMPTY_COUNTS: NavigationBadgeCounts = {
@@ -14,6 +16,7 @@ const EMPTY_COUNTS: NavigationBadgeCounts = {
   myWorkBadgeCount: 0,
   readyToBillBadgeCount: 0,
   projectReviewBadgeCounts: {},
+  projectCorrespondenceBadgeCounts: {},
 }
 
 type ProjectRow = { project_id?: string | null }
@@ -258,21 +261,58 @@ async function getAssignedTaskDueSoonCount(ctx: OrgServiceContext) {
   }).length
 }
 
+/**
+ * Filed mail nobody has ruled on, per project. The badge is the only thing that
+ * tells anyone the log has work in it — before this, an AI-classified change
+ * trigger sat unread until someone happened to open the tab.
+ *
+ * The query lives here rather than in the correspondence service so the app
+ * shell does not pull the whole workbench onto its critical path.
+ */
+async function getCorrespondenceReviewCounts(ctx: OrgServiceContext): Promise<Record<string, number>> {
+  // RLS already hides mail from anyone without `correspondence.read`; this only
+  // skips the query for roles that can never see the log.
+  if (!(await hasPermission("correspondence.read", ctx).catch(() => false))) return {}
+
+  const { data, error } = await ctx.supabase
+    .from("project_emails")
+    .select("project_id")
+    .eq("org_id", ctx.orgId)
+    .is("archived_at", null)
+    .neq("classified_by", "user")
+    .limit(5_000)
+  if (error) return {}
+
+  const counts: Record<string, number> = {}
+  for (const row of data ?? []) {
+    const projectId = String(row.project_id)
+    counts[projectId] = (counts[projectId] ?? 0) + 1
+  }
+  return counts
+}
+
 export async function getNavigationBadgeCounts(): Promise<NavigationBadgeCounts> {
   try {
     const ctx = await requireOrgContext()
-    const [projectReviewBadgeCounts, readyToBillBadgeCount, dueSoonTaskCount, pipelineBadgeCount] =
-      await Promise.all([
-        getProjectFinancialReviewBadgeCounts(ctx),
-        getReadyToBillBadgeCount(ctx),
-        getAssignedTaskDueSoonCount(ctx),
-        getPipelineBadgeCount(ctx),
-      ])
+    const [
+      projectReviewBadgeCounts,
+      readyToBillBadgeCount,
+      dueSoonTaskCount,
+      pipelineBadgeCount,
+      projectCorrespondenceBadgeCounts,
+    ] = await Promise.all([
+      getProjectFinancialReviewBadgeCounts(ctx),
+      getReadyToBillBadgeCount(ctx),
+      getAssignedTaskDueSoonCount(ctx),
+      getPipelineBadgeCount(ctx),
+      getCorrespondenceReviewCounts(ctx).catch(() => ({})),
+    ])
     const reviewCount = Object.values(projectReviewBadgeCounts).reduce((sum, count) => sum + count, 0)
 
     return {
       pipelineBadgeCount,
       projectReviewBadgeCounts,
+      projectCorrespondenceBadgeCounts,
       readyToBillBadgeCount,
       myWorkBadgeCount: reviewCount + dueSoonTaskCount,
     }

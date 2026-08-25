@@ -1,16 +1,17 @@
-// Request-scoped account data; the instant shell is the layout's.
-export const instant = false;
+// Browser-private account data; runtime-prefetched by the bounded tab strip.
+export const instant = true;
 
 import { notFound } from "next/navigation";
-import { connection } from "next/server";
+import { Suspense } from "react";
 import { z } from "zod";
 
 import {
   CompanyAccessRoster,
   ContactAccessPanel,
 } from "@/components/directory/account/party-access";
+import { CompanyTabSkeleton } from "@/components/companies/account/company-account-skeleton";
 import { listCompanyContactAccess, listContactAccess } from "@/lib/services/portal-access";
-import { loadDirectoryParty } from "../page-data";
+import { loadDirectoryParty, registerDirectoryTabCache } from "../page-data";
 import { getOrgProductTier } from "@/lib/services/context";
 import { terminology } from "@/lib/terminology";
 
@@ -25,11 +26,24 @@ interface PageProps {
  * the link is a field on their record, so a company shows a roster of its
  * people and a person shows their own way in.
  */
-export default async function PartyAccessPage({ params }: PageProps) {
-  // An expired token is expired relative to now, so render at request time.
-  await connection();
+export default function PartyAccessPage(props: PageProps) {
+  return (
+    <Suspense fallback={<CompanyTabSkeleton rows={6} flush />}>
+      <PartyAccessData {...props} />
+    </Suspense>
+  );
+}
+
+async function PartyAccessData({ params }: PageProps) {
   const { id } = await params;
   if (!z.string().uuid().safeParse(id).success) notFound();
+
+  return <PartyAccessContent id={id} />;
+}
+
+async function PartyAccessContent({ id }: { id: string }) {
+  "use cache: private";
+  registerDirectoryTabCache(id, "access");
 
   const [party, productTier] = await Promise.all([
     loadDirectoryParty(id),

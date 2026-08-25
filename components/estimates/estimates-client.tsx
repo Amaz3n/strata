@@ -139,7 +139,7 @@ export function EstimatesClient({
   async function handleCountersign(estimate: Estimate & { recipient_name?: string | null }) {
     setCountersigningId(estimate.id)
     try {
-      const result = await getEstimateBuilderSigningLinkAction(estimate.id)
+      const result = unwrapAction(await getEstimateBuilderSigningLinkAction(estimate.id))
       if (!result.url) {
         throw new Error("Signing link was not returned.")
       }
@@ -178,7 +178,7 @@ export function EstimatesClient({
 
   async function handleCopyLink(estimateId: string) {
     try {
-      const result = await getEstimateShareLinkAction(estimateId)
+      const result = unwrapAction(await getEstimateShareLinkAction(estimateId))
       await copyToClipboard(result.url)
       toast.success("Review link copied")
     } catch (error: any) {

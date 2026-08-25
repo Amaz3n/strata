@@ -210,11 +210,20 @@ export function generateSignedPayLink(params: {
   projectId: string;
   invoiceId: string;
   expiresInHours?: number;
+  expiresAt?: string;
+  nonce?: string;
 }) {
   const secret = ensureLinkSecret();
-  const nonce = randomBytes(16).toString("hex");
-  const exp =
-    Math.floor(Date.now() / 1000) + (params.expiresInHours ?? 72) * 3600;
+  const nonce = params.nonce ?? randomBytes(16).toString("hex");
+  const requestedExpiry = params.expiresAt
+    ? new Date(params.expiresAt).getTime()
+    : Date.now() + (params.expiresInHours ?? 72) * 3600 * 1000;
+  if (!Number.isFinite(requestedExpiry) || requestedExpiry <= Date.now()) {
+    throw new Error("Payment link expiration must be in the future");
+  }
+  // Signed tokens carry whole seconds. Truncating never extends the caller's
+  // requested deadline; the persisted row below uses this same timestamp.
+  const exp = Math.floor(requestedExpiry / 1000);
 
   const payload: PayLinkPayload = {
     org_id: params.orgId,
@@ -230,7 +239,7 @@ export function generateSignedPayLink(params: {
     .digest("base64url");
   const token = `${payloadStr}.${signature}`;
   const url = `${PAY_PATH}/${token}`;
-  return { url, token };
+  return { url, token, payload, expiresAt: new Date(exp * 1000).toISOString() };
 }
 
 export function validateSignedPayLink(token: string): PayLinkPayload | null {
@@ -266,22 +275,60 @@ export function validateSignedPayLink(token: string): PayLinkPayload | null {
   }
 }
 
-async function rotatePayLinkNonce(invoiceId: string, orgId: string) {
-  const supabase = createServiceSupabaseClient();
-  const { data: link } = await supabase
-    .from("payment_links")
-    .select("id, used_count")
-    .eq("invoice_id", invoiceId)
-    .eq("org_id", orgId)
-    .maybeSingle();
+export async function createPersistedPayLink(input: {
+  supabase: ReturnType<typeof createServiceSupabaseClient>;
+  orgId: string;
+  projectId: string;
+  invoiceId: string;
+  expiresAt?: string | null;
+  maxUses?: number | null;
+  metadata?: Record<string, unknown>;
+}) {
+  let token: string;
+  let url: string;
+  let nonce: string;
+  let expiresAt = input.expiresAt ?? null;
 
-  if (!link) return;
-  const nextUsed = (link.used_count ?? 0) + 1;
-  const newNonce = randomBytes(16).toString("hex");
-  await supabase
+  if (LINK_SECRET) {
+    const signed = generateSignedPayLink({
+      orgId: input.orgId,
+      projectId: input.projectId,
+      invoiceId: input.invoiceId,
+      expiresAt: input.expiresAt ?? undefined,
+      expiresInHours: input.expiresAt ? undefined : 72,
+    });
+    token = signed.token;
+    url = signed.url;
+    nonce = signed.payload.nonce;
+    expiresAt = signed.expiresAt;
+  } else {
+    token = generateToken();
+    url = `${PAY_PATH}/${token}`;
+    nonce = generateToken();
+  }
+
+  const { data: linkRow, error: linkError } = await input.supabase
     .from("payment_links")
-    .update({ nonce: newNonce, used_count: nextUsed })
-    .eq("id", link.id);
+    .insert({
+      org_id: input.orgId,
+      invoice_id: input.invoiceId,
+      token_hash: hashToken(token),
+      nonce,
+      expires_at: expiresAt,
+      max_uses: input.maxUses ?? null,
+      metadata: {
+        ...(input.metadata ?? {}),
+        token_format: LINK_SECRET ? "signed_v1" : "opaque_v1",
+      },
+    })
+    .select("*")
+    .single();
+
+  if (linkError || !linkRow) {
+    throw new Error(`Failed to create payment link: ${linkError?.message}`);
+  }
+
+  return { url, token, link: mapPaymentLink(linkRow) };
 }
 
 async function getInvoiceTotals(
@@ -643,70 +690,22 @@ export async function generatePayLink(
     throw new Error("Invoice not found for pay link generation");
   }
 
-  // Prefer signed HMAC link when secret is configured; fall back to hashed token if not.
-  if (LINK_SECRET) {
-    const { url, token } = generateSignedPayLink({
-      orgId: resolvedOrgId,
-      projectId: invoice.project_id,
-      invoiceId: parsed.invoice_id,
-      expiresInHours: parsed.expires_at
-        ? Math.max(
-            1,
-            Math.floor(
-              (new Date(parsed.expires_at).getTime() - Date.now()) / 3600000,
-            ),
-          )
-        : 72,
-    });
-    return { url, token };
-  }
-
-  const token = generateToken();
-  const token_hash = hashToken(token);
-  const nonce = generateToken();
-
-  const payload = {
-    org_id: resolvedOrgId,
-    invoice_id: parsed.invoice_id,
-    token_hash,
-    nonce,
-    expires_at: parsed.expires_at ?? null,
-    max_uses: parsed.max_uses ?? null,
+  return createPersistedPayLink({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: invoice.project_id,
+    invoiceId: parsed.invoice_id,
+    expiresAt: parsed.expires_at ?? null,
+    maxUses: parsed.max_uses ?? null,
     metadata: parsed.metadata ?? {},
-  };
-
-  const { data: linkRow, error: linkError } = await supabase
-    .from("payment_links")
-    .insert(payload)
-    .select("*")
-    .single();
-
-  if (linkError || !linkRow) {
-    throw new Error(`Failed to create payment link: ${linkError?.message}`);
-  }
-
-  const url = `${PAY_PATH}/${token}`;
-  return { url, token, link: mapPaymentLink(linkRow) };
+  });
 }
 
 export async function validatePayLinkToken(token: string) {
-  // If token is HMAC-signed, validate without DB lookup.
+  // A signature protects the payload in transit; the persisted row is what
+  // makes expiration, max uses, and revocation authoritative.
   const signedPayload = validateSignedPayLink(token);
-  if (signedPayload) {
-    return {
-      link: {
-        id: "",
-        org_id: signedPayload.org_id,
-        invoice_id: signedPayload.invoice_id,
-      } as PaymentLink,
-      invoice: {
-        id: signedPayload.invoice_id,
-        org_id: signedPayload.org_id,
-        project_id: signedPayload.project_id,
-      } as Invoice,
-      signed: true as const,
-    };
-  }
+  if (token.includes(".") && !signedPayload) return null;
 
   const token_hash = hashToken(token);
   const supabase = createServiceSupabaseClient();
@@ -719,6 +718,15 @@ export async function validatePayLinkToken(token: string) {
     .maybeSingle();
 
   if (error || !data) return null;
+  if (
+    signedPayload &&
+    (data.org_id !== signedPayload.org_id ||
+      data.invoice_id !== signedPayload.invoice_id ||
+      data.nonce !== signedPayload.nonce ||
+      data.invoice?.project_id !== signedPayload.project_id)
+  ) {
+    return null;
+  }
   if (data.expires_at && new Date(data.expires_at).getTime() < Date.now())
     return null;
   if (
@@ -731,6 +739,7 @@ export async function validatePayLinkToken(token: string) {
   return {
     link: mapPaymentLink(data),
     invoice: data.invoice as Invoice,
+    signed: Boolean(signedPayload),
   };
 }
 
@@ -1166,9 +1175,6 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
         .update({ used_count: nextUsed })
         .eq("id", paymentLinkId);
     }
-  } else if (paymentSettled && parsed.pay_link_token) {
-    // HMAC-signed link path: rotate nonce to prevent replay when possible.
-    await rotatePayLinkNonce(invoiceId, resolvedOrgId);
   }
 
   if (paymentSettled) {

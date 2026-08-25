@@ -71,7 +71,7 @@ export async function getSovPayApplicationReport({
       .eq("contract_id", app.contract_id),
     supabase
       .from("projects")
-      .select("name, location, client_id, qbo_customer_name")
+      .select("name, location, client_id")
       .eq("org_id", resolvedOrgId)
       .eq("id", projectId)
       .maybeSingle(),
@@ -145,8 +145,7 @@ export async function getSovPayApplicationReport({
   const retainageOnStored = Math.min(Number(app.retainage_cents ?? 0), Math.round(storedBalanceCents * (storedRate / 100)))
 
   const metadata = (app.metadata ?? {}) as Record<string, any>
-  // Entity-map customer, for projects mapped after the cutover where the
-  // legacy projects.qbo_customer_name is null.
+  // Accounting customer identity lives in the provider-neutral entity map.
   const accountingCustomerName =
     (await resolveAccountingTarget({ orgId: resolvedOrgId, projectId }))?.dimensions.customer?.name ?? null
 
@@ -157,7 +156,7 @@ export async function getSovPayApplicationReport({
     periodToIso: app.period_end,
     projectName: project.name ?? "Project",
     propertyDescription: projectLocationText(project.location),
-    ownerName: clientResult.data?.full_name ?? project.qbo_customer_name ?? accountingCustomerName ?? "Owner",
+    ownerName: clientResult.data?.full_name ?? accountingCustomerName ?? "Owner",
     contractorName: org?.name ?? "Contractor",
     contractDateIso: contract?.signed_at ?? contract?.effective_date ?? null,
     invoiceNumber: invoiceResult.data?.invoice_number ?? null,

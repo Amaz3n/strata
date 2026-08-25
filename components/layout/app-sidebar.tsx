@@ -53,10 +53,9 @@ import {
   SidebarRail,
   SidebarSeparator,
 } from "@/components/ui/sidebar"
-import type { User } from "@/lib/types"
+import type { ProjectNavigationItem, User } from "@/lib/types"
 import type { ProductTier } from "@/lib/product-tier"
 import { terminology } from "@/lib/terminology"
-import { useSidebarProjects } from "./use-sidebar-projects"
 import { useNavigationBadges } from "./navigation-badge-context"
 import {
   buildProjectNavGroups,
@@ -69,6 +68,8 @@ import {
 
 interface AppSidebarProps {
   user?: User | null
+  /** Loaded by the layout's cached chrome context, not fetched after hydration. */
+  projects: ProjectNavigationItem[]
   canAccessPlatform?: boolean
   permissions?: string[]
   productTier?: ProductTier
@@ -365,6 +366,7 @@ function buildWorkspaceGroups(
 
 export function AppSidebar({
   user,
+  projects,
   canAccessPlatform,
   permissions = [],
   productTier = "residential",
@@ -379,6 +381,7 @@ export function AppSidebar({
     myWorkBadgeCount,
     readyToBillBadgeCount,
     projectReviewBadgeCounts,
+    projectCorrespondenceBadgeCounts,
     whatsNewUnreadCount,
   } = useNavigationBadges()
   const pathname = useOptimisticPathname()
@@ -390,7 +393,6 @@ export function AppSidebar({
   const isProject = Boolean(projectId)
   const section = getProjectSection(pathname)
   const permissionSet = useMemo(() => new Set(permissions), [permissions])
-  const { projects } = useSidebarProjects()
   const currentProject = useMemo(
     () => projects.find((project) => project.id === projectId),
     [projects, projectId],
@@ -430,6 +432,7 @@ export function AppSidebar({
           section,
           project: currentProject,
           reviewBadgeCount: projectReviewBadgeCounts[projectId],
+          correspondenceBadgeCount: projectCorrespondenceBadgeCounts[projectId],
           orgTier: productTier,
         }),
         permissionSet,
@@ -443,7 +446,7 @@ export function AppSidebar({
       ...group,
       items: group.items.filter((item) => item.title !== "Books" || booksEnabled),
     })).filter((group) => group.items.length > 0)
-  }, [isSettings, isProject, projectId, section, currentProject, pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, permissionSet, projectReviewBadgeCounts, productTier, showProductionNavigation, showPurchasingNavigation, showPipelineNavigation, booksEnabled])
+  }, [isSettings, isProject, projectId, section, currentProject, pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, permissionSet, projectReviewBadgeCounts, projectCorrespondenceBadgeCounts, productTier, showProductionNavigation, showPurchasingNavigation, showPipelineNavigation, booksEnabled])
 
   const navMain = navGroups.map((group) => ({
     ...group,
@@ -509,7 +512,7 @@ export function AppSidebar({
                   <ArrowLeft className="size-4" />
                 </OptimisticLink>
                 <div className="min-w-0 flex-1">
-                  <SidebarProjectSwitcher projectId={projectId ?? undefined} />
+                  <SidebarProjectSwitcher projectId={projectId ?? undefined} projects={projects} />
                 </div>
               </div>
             ) : (

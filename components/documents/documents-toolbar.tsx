@@ -1,6 +1,5 @@
 "use client"
 
-import { useRef } from "react"
 import {
   Search,
   X,
@@ -30,8 +29,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { useDocuments } from "./documents-context"
-import { QUICK_FILTER_CONFIG } from "./types"
+import { useDocuments, useDocumentsSearchInput } from "./documents-context"
+import { QUICK_FILTER_CONFIG, type QuickFilter } from "./types"
 
 interface DocumentsToolbarProps {
   onUploadClick: () => void
@@ -47,9 +46,6 @@ interface DocumentsToolbarProps {
   onRenameSelectedFolder?: () => void
   onShareSelectedFolder?: () => void
   onDeleteSelectedFolder?: () => void
-  onDropToFolderPath: (path: string) => void
-  onDropToRoot: () => void
-  isDraggingFiles: boolean
   isDownloadingSelected?: boolean
   explorerOpen?: boolean
   onToggleExplorer?: () => void
@@ -69,22 +65,13 @@ export function DocumentsToolbar({
   onRenameSelectedFolder,
   onShareSelectedFolder,
   onDeleteSelectedFolder,
-  onDropToFolderPath,
-  onDropToRoot,
-  isDraggingFiles,
   isDownloadingSelected = false,
   explorerOpen = false,
   onToggleExplorer,
 }: DocumentsToolbarProps) {
-  const {
-    searchQuery,
-    setSearchQuery,
-    isUploading,
-    quickFilter,
-    setQuickFilter,
-  } = useDocuments()
+  const { quickFilter, setQuickFilter } = useDocuments()
+  const [searchInput, setSearchInput] = useDocumentsSearchInput()
 
-  const searchInputRef = useRef<HTMLInputElement>(null)
   const hasFolderSelection = selectedFolderCount > 0
   const isTrashView = quickFilter === "trash"
 
@@ -200,16 +187,15 @@ export function DocumentsToolbar({
           <div className="relative w-full max-w-[300px]">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
             <Input
-              ref={searchInputRef}
               placeholder="Search documents..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
               className="h-8 pl-8 text-sm"
             />
-            {searchQuery && (
+            {searchInput && (
               <button
                 type="button"
-                onClick={() => setSearchQuery("")}
+                onClick={() => setSearchInput("")}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
               >
                 <X className="h-3 w-3" />
@@ -233,8 +219,7 @@ export function DocumentsToolbar({
             <DropdownMenuContent align="start" className="w-48">
               <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">Filter documents</DropdownMenuLabel>
               <DropdownMenuSeparator />
-              {(Object.entries(QUICK_FILTER_CONFIG) as [any, any][])
-                .filter(([key]) => key !== "drawings")
+              {(Object.entries(QUICK_FILTER_CONFIG) as [QuickFilter, { label: string; icon: string }][])
                 .map(([key, config]) => (
                   <DropdownMenuCheckboxItem
                     key={key}
@@ -260,9 +245,9 @@ export function DocumentsToolbar({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-44">
-            <DropdownMenuItem onClick={onUploadClick} disabled={isUploading}>
+            <DropdownMenuItem onClick={onUploadClick}>
               <Upload className="h-4 w-4 mr-2" />
-              {isUploading ? "Uploading..." : "Upload files"}
+              Upload files
             </DropdownMenuItem>
             <DropdownMenuItem onClick={onCreateFolderClick}>
               <FolderPlus className="h-4 w-4 mr-2" />

@@ -4,64 +4,16 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import type { OrgServiceContext } from "@/lib/services/context"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { authorize, listAllPermissionKeys, requireAuthorization } from "@/lib/services/authorization"
+import {
+  authorize,
+  getEffectiveOrgPermissions,
+  listAllPermissionKeys,
+  requireAuthorization,
+} from "@/lib/services/authorization"
 import { isPlatformAdminId } from "@/lib/auth/platform"
-
-type PermissionRow = { role?: { permissions?: { permission_key: string }[] } }
-type MembershipPermissionRow = PermissionRow & { id?: string }
 
 interface PermissionContext extends OrgServiceContext {
   supabase: SupabaseClient
-}
-
-function normalizePermissionRow(row?: any) {
-  const role = Array.isArray(row?.role) ? row.role[0] : row?.role
-  return role?.permissions?.map((perm: any) => perm.permission_key) ?? []
-}
-
-async function fetchPermissions({ supabase, orgId, userId }: { supabase: SupabaseClient; orgId: string; userId: string }) {
-  const { data, error } = await supabase
-    .from("memberships")
-    .select("id, role:roles!inner(permissions:role_permissions(permission_key))")
-    .eq("org_id", orgId)
-    .eq("user_id", userId)
-    .eq("status", "active")
-    .order("created_at", { ascending: true })
-
-  if (error) {
-    throw new Error(`Unable to load permissions: ${error.message}`)
-  }
-
-  const rows = (Array.isArray(data) ? data : data ? [data] : []) as MembershipPermissionRow[]
-  const rolePermissions = rows.flatMap((row) => normalizePermissionRow(row))
-  const membershipIds = rows.map((row) => row.id).filter((id): id is string => Boolean(id))
-
-  if (membershipIds.length === 0) {
-    return []
-  }
-
-  const { data: overrides, error: overrideError } = await supabase
-    .from("membership_permission_overrides")
-    .select("permission_key, effect")
-    .in("membership_id", membershipIds)
-
-  if (overrideError) {
-    const message = String(overrideError.message ?? "")
-    if (!message.includes("membership_permission_overrides")) {
-      throw new Error(`Unable to load permission overrides: ${overrideError.message}`)
-    }
-  }
-
-  const grants = (overrides ?? [])
-    .filter((row: any) => row.effect === "grant")
-    .map((row: any) => row.permission_key as string)
-  const denies = new Set(
-    (overrides ?? [])
-      .filter((row: any) => row.effect === "deny")
-      .map((row: any) => row.permission_key as string),
-  )
-
-  return Array.from(new Set([...rolePermissions, ...grants])).filter((permission) => !denies.has(permission))
 }
 
 async function resolveContext(ctx?: Partial<PermissionContext>): Promise<PermissionContext> {
@@ -74,9 +26,10 @@ async function resolveContext(ctx?: Partial<PermissionContext>): Promise<Permiss
 }
 
 // Request-cached: effective permissions are looked up by the layout, pages, and
-// individual permission checks within one render; they always resolve through
-// the service client, so the ignored per-caller supabase arg is not part of the key.
-const getUserPermissionsCached = cache(async (userId: string, orgId: string) => {
+// individual permission checks within one render. The lookup always resolves
+// through the service client — RLS hides role_permissions from user sessions —
+// so there is no caller-supplied client to key on.
+export const getUserPermissions = cache(async (userId: string, orgId: string) => {
   if (isPlatformAdminId(userId, undefined)) {
     const client = createServiceSupabaseClient()
     return ["*", ...(await listAllPermissionKeys(client))]
@@ -95,49 +48,55 @@ const getUserPermissionsCached = cache(async (userId: string, orgId: string) => 
     return ["*", ...(await listAllPermissionKeys(client))]
   }
 
-  return fetchPermissions({ supabase: client, orgId, userId })
+  return getEffectiveOrgPermissions(orgId, userId)
 })
-
-export async function getUserPermissions(userId: string, orgId: string, _supabase?: SupabaseClient) {
-  return getUserPermissionsCached(userId, orgId)
-}
 
 export async function getCurrentUserPermissions(orgId?: string) {
   const ctx = await requireOrgContext(orgId, { allowLocked: true })
-  const permissions = await getUserPermissions(ctx.userId, ctx.orgId, ctx.supabase)
+  const permissions = await getUserPermissions(ctx.userId, ctx.orgId)
   return { permissions, orgId: ctx.orgId, userId: ctx.userId }
 }
 
-export async function hasPermission(permission: string, ctx?: Partial<PermissionContext>) {
+/**
+ * One decision, with auditing as an explicit choice rather than a default.
+ *
+ * Probes (`hasPermission`) answer "should this surface render?" and run dozens
+ * of times per page; auditing them buried the real access events under identical
+ * allow rows and inflated the deny counter the RBAC evidence job watches with
+ * hidden-button noise. Gates (`requirePermission`) are the access events, and
+ * they still write every time.
+ */
+async function decide(permission: string, ctx: Partial<PermissionContext> | undefined, audit: boolean) {
   if (ctx?.userId) {
-    const decision = await authorize({
+    return authorize({
       permission,
       userId: ctx.userId,
       orgId: ctx.orgId,
       supabase: ctx.supabase,
-      logDecision: true,
+      logDecision: audit,
     })
-    return decision.allowed
   }
 
   const resolved = await resolveContext(ctx)
-  const decision = await authorize({
+  return authorize({
     permission,
     userId: resolved.userId,
     orgId: resolved.orgId,
     supabase: resolved.supabase,
-    logDecision: true,
+    logDecision: audit,
   })
-  return decision.allowed
+}
+
+export async function hasPermission(permission: string, ctx?: Partial<PermissionContext>) {
+  return (await decide(permission, ctx, false)).allowed
 }
 
 export async function hasAnyPermission(permissionsToCheck: string[], ctx?: Partial<PermissionContext>) {
-  for (const permission of permissionsToCheck) {
-    if (await hasPermission(permission, ctx)) {
-      return true
-    }
-  }
-  return false
+  if (permissionsToCheck.length === 0) return false
+  // Every branch resolves against the same request-cached membership rows, so
+  // checking them together costs one round of lookups instead of one per miss.
+  const decisions = await Promise.all(permissionsToCheck.map((permission) => decide(permission, ctx, false)))
+  return decisions.some((decision) => decision.allowed)
 }
 
 export async function requirePermission(permission: string, ctx?: Partial<PermissionContext>) {
@@ -163,11 +122,16 @@ export async function requirePermission(permission: string, ctx?: Partial<Permis
 }
 
 export async function requireAnyPermission(permissionsToCheck: string[], ctx?: Partial<PermissionContext>) {
-  for (const permission of permissionsToCheck) {
-    if (await hasPermission(permission, ctx)) {
-      return
-    }
+  if (permissionsToCheck.length > 0) {
+    const decisions = await Promise.all(permissionsToCheck.map((permission) => decide(permission, ctx, false)))
+    if (decisions.some((decision) => decision.allowed)) return
+
+    // This is a gate, so the refusal belongs in the audit trail. Re-deciding the
+    // first candidate costs nothing (the membership lookups it needs are already
+    // request-cached) and records why the caller was turned away.
+    await decide(permissionsToCheck[0], ctx, true)
   }
+
   throw new Error(`Missing permission: ${permissionsToCheck.join(" or ")}`)
 }
 
@@ -177,7 +141,6 @@ export async function hasProjectPermission(userId: string, projectId: string, pe
     userId,
     projectId,
     supabase: createServiceSupabaseClient(),
-    logDecision: true,
   })
   return decision.allowed
 }

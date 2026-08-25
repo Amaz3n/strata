@@ -28,7 +28,13 @@ const websiteSchema = z.preprocess((value) => {
 
 export const companyInputSchema = z.object({
   name: z.string().min(2, "Company name is required"),
-  company_type: companyTypeEnum,
+  /**
+   * The role this company is being recorded as. `company_type` is derived from
+   * it for the readers that have not moved off the column yet, so callers send
+   * one or the other and never both.
+   */
+  role_key: z.string().min(1).optional(),
+  company_type: companyTypeEnum.optional(),
   trade: z.string().optional(),
   phone: z.string().optional(),
   email: z.string().email().optional(),

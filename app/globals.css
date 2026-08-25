@@ -366,6 +366,32 @@ html[data-ui-size="comfortable"] {
     animation-delay: calc(var(--desk-stagger, 0) * 80ms);
   }
 
+  /* Switching tabs inside an account. The header, tab strip and scroll position
+     stay put — only the panel below them is new — so this is deliberately much
+     shorter and flatter than .desk-rise: it reads as the same surface changing
+     its contents, not as a page arriving. Keyed on the pathname so re-rendering
+     the same tab does not replay it. */
+  @keyframes tab-panel-in {
+    from {
+      opacity: 0;
+      transform: translateY(3px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .tab-panel-in {
+    animation: tab-panel-in 0.16s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .tab-panel-in {
+      animation: none;
+    }
+  }
+
   /* Success check — fade + rotate + blur + bob, with the tick drawing itself.
      Expressive zone only (portals, auth): it is a one-shot mark that a
      terminal, consequential thing succeeded, so it must not render on a
@@ -505,11 +531,13 @@ html[data-ui-size="comfortable"] {
   }
 
   /* Route progress uses the Arc mark as identity rather than inventing a fake
-     page layout. The delayed entrance prevents a flash on prefetched routes;
-     the sweep itself includes a quiet pause at the end of every pass. */
+     page layout. The flash on prefetched routes is prevented upstream by
+     `DelayedLoadingStatus`, which withholds the mark and its announcement
+     together — so this only has to run the entrance once mounted. The sweep
+     itself includes a quiet pause at the end of every pass. */
   .arc-loading-presence {
     opacity: 0;
-    animation: arc-loading-enter 0.18s ease-out 0.25s forwards;
+    animation: arc-loading-enter 0.18s cubic-bezier(0.23, 1, 0.32, 1) forwards;
   }
 
   @keyframes arc-loading-enter {

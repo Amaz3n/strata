@@ -1,26 +1,48 @@
-// Request-scoped account data; the instant shell is the layout's.
-export const instant = false;
+// Browser-private account data; runtime-prefetched by the bounded tab strip.
+export const instant = true;
 
 import { notFound, redirect } from "next/navigation";
+import { Suspense } from "react";
 import { z } from "zod";
 
 import { ComplianceWorkspace } from "@/components/companies/account/compliance-workspace";
+import { CompanyTabSkeleton } from "@/components/companies/account/company-account-skeleton";
 import {
   getComplianceHeldPayables,
   listComplianceDocumentTypes,
 } from "@/lib/services/compliance-documents";
 import { getComplianceRules } from "@/lib/services/compliance";
 import { getCurrentUserPermissions } from "@/lib/services/permissions";
-import { loadVendorCompany, loadComplianceStatus } from "../page-data";
+import {
+  loadVendorCompanyHeader,
+  loadComplianceStatus,
+  registerDirectoryTabCache,
+} from "../page-data";
 
 interface PageProps {
   params: Promise<{ id: string }>;
 }
 
-export default async function CompanyCompliancePage({ params }: PageProps) {
+export default function CompanyCompliancePage(props: PageProps) {
+  return (
+    <Suspense fallback={<CompanyTabSkeleton rows={7} flush />}>
+      <CompanyComplianceData {...props} />
+    </Suspense>
+  );
+}
+
+async function CompanyComplianceData({ params }: PageProps) {
   const { id } = await params;
   if (!z.string().uuid().safeParse(id).success) notFound();
-  const account = await loadVendorCompany(id);
+
+  return <CompanyComplianceContent id={id} />;
+}
+
+async function CompanyComplianceContent({ id }: { id: string }) {
+  "use cache: private";
+  registerDirectoryTabCache(id, "compliance");
+
+  const account = await loadVendorCompanyHeader(id);
   // Null means: not a company, or a company with no vendor role.
   if (!account) redirect(`/directory/${id}`);
 
@@ -41,7 +63,7 @@ export default async function CompanyCompliancePage({ params }: PageProps) {
   return (
     <ComplianceWorkspace
       companyId={id}
-      companyName={account.company.name}
+      companyName={account.name}
       status={status}
       documentTypes={documentTypes}
       heldCents={held.heldCents}

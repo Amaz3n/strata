@@ -17,7 +17,7 @@ import { fetchPayablesTabDataAction } from "@/app/(app)/projects/[id]/financials
 import { getPayablesAccountingContextAction } from "@/app/(app)/projects/[id]/payables/actions"
 import { getInvoiceDetailAction } from "@/app/(app)/invoices/actions"
 import { unwrapAction } from "@/lib/action-result"
-import { listProjectsAction } from "@/app/(app)/projects/actions"
+import { listProjectBillingOptionsAction } from "@/app/(app)/projects/actions"
 import type {
   Invoice,
   InvoiceLienWaiver,
@@ -132,16 +132,11 @@ export function ReviewDetailOverlays({
         const [bundle, accounting, projectRows] = await Promise.all([
           fetchPayablesTabDataAction(forProjectId),
           getPayablesAccountingContextAction(forProjectId),
-          listProjectsAction(),
+          listProjectBillingOptionsAction(),
         ])
         setPayables(bundle)
         setPayablesAccounting(accounting)
-        const mapped: ProjectOption[] = (projectRows ?? []).map((project: any) => ({
-          id: project.id,
-          name: project.name,
-          billingModel: project.financial_settings?.billing_model ?? "fixed_price",
-        }))
-        setProjects(mapped)
+        setProjects(projectRows ?? [])
       } catch (error: any) {
         toast.error("Could not open bill", { description: error?.message })
         closeAll()

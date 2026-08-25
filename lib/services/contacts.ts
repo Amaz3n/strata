@@ -1,10 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-import type { Company, Contact, ContactCompanyLink } from "@/lib/types"
+import type { Company, Contact, ContactCompanyLink, ContactType } from "@/lib/types"
 import {
   contactCompanyLinkSchema,
   contactFiltersSchema,
   contactInputSchema,
+  contactTypeEnum,
   contactUpdateSchema,
   type ContactCompanyLinkInput,
   type ContactFilters,
@@ -216,7 +217,25 @@ export async function getContact(contactId: string, orgId?: string): Promise<Con
   }
 }
 
-function buildContactInsert(input: ContactInput, orgId: string) {
+/**
+ * The role a create is recording, and the legacy column that has to keep
+ * agreeing with it.
+ *
+ * `party_roles` is the source of truth, but `contacts.contact_type` is still
+ * read until its gated drop. Its CHECK accepts every seeded person role except
+ * `other`, so a role it cannot express — `other`, or one an org added itself —
+ * writes null rather than a neighbouring value that would read as a lie.
+ */
+function resolveContactRole(input: ContactInput): {
+  roleKey: string
+  legacyType: ContactType | null
+} {
+  const roleKey = input.role_key ?? input.contact_type ?? "subcontractor"
+  const legacy = contactTypeEnum.safeParse(roleKey)
+  return { roleKey, legacyType: legacy.success ? legacy.data : null }
+}
+
+function buildContactInsert(input: ContactInput, orgId: string, legacyType: ContactType | null) {
   return {
     org_id: orgId,
     primary_company_id: input.primary_company_id ?? null,
@@ -225,7 +244,7 @@ function buildContactInsert(input: ContactInput, orgId: string) {
     phone: input.phone ?? null,
     address: input.address ? { formatted: input.address } : null,
     role: input.role ?? null,
-    contact_type: input.contact_type ?? "subcontractor",
+    contact_type: legacyType,
     external_crm_id: input.external_crm_id ?? null,
     crm_source: input.crm_source ?? null,
     metadata: {
@@ -241,9 +260,10 @@ export async function createContact({ input, orgId }: { input: ContactInput; org
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAnyPermission(DIRECTORY_WRITE_PERMISSIONS, { supabase, orgId: resolvedOrgId, userId })
 
+  const { roleKey, legacyType } = resolveContactRole(parsed)
   const { data, error } = await supabase
     .from("contacts")
-    .insert(buildContactInsert(parsed, resolvedOrgId))
+    .insert(buildContactInsert(parsed, resolvedOrgId, legacyType))
     .select(
       `
       id, org_id, full_name, email, phone, address, role, contact_type, primary_company_id, external_crm_id, crm_source, metadata, created_at, updated_at,
@@ -282,7 +302,7 @@ export async function createContact({ input, orgId }: { input: ContactInput; org
   await assignPartyRoleWithClient(supabase, resolvedOrgId, userId, {
     kind: "contact",
     partyId: data.id as string,
-    roleKey: parsed.contact_type ?? "subcontractor",
+    roleKey,
   })
 
   await recordEvent({

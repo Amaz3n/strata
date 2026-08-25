@@ -1,7 +1,7 @@
 /**
  * One directory party's message log, across every project.
  *
- * `lib/services/project-email-ingest.ts` answers "what mail does this project
+ * `lib/services/correspondence.ts` answers "what mail does this project
  * hold"; this answers "what mail have we exchanged with this person or
  * company", which is the question the directory has never been able to answer.
  * It reads the same `project_emails` rows through the same vocabulary
@@ -135,6 +135,8 @@ export async function listPartyCorrespondence(input: {
     .select(EMAIL_SELECT)
     .eq("org_id", orgId)
     .eq(input.kind === "company" ? "company_id" : "contact_id", input.partyId)
+    // Unfiled mail is not part of the record this party is judged on.
+    .is("archived_at", null)
     // Same ordering key as the project log: `received_at` is always stamped,
     // so it totally orders the page, while `sent_at` can be null.
     .order("received_at", { ascending: false, nullsFirst: false })

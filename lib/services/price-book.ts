@@ -99,6 +99,7 @@ export const PRICE_BOOK_ROW_CAP = 20_000
 const HISTORY_LIMIT = 200
 const COVERAGE_GAP_DETAIL_LIMIT = 100
 const IMPORT_KEY_LOOKUP_CHUNK = 200
+const COST_CODE_LOOKUP_CHUNK = 200
 const EMPTY_UUID = "00000000-0000-0000-0000-000000000000"
 
 type OrgSupabase = Awaited<ReturnType<typeof requireOrgContext>>["supabase"]
@@ -525,11 +526,13 @@ export async function getPriceBookHealth(filters: { divisionId?: string } = {}, 
     asOfDate: today,
   })
   const gapCostCodeIds = Array.from(new Set(gaps.map((gap) => gap.costCodeId)))
-  const { data: costCodeRows, error: costCodeError } = gapCostCodeIds.length
-    ? await supabase.from("cost_codes").select("id,code,name").eq("org_id", resolvedOrgId).in("id", gapCostCodeIds.slice(0, 1000))
-    : { data: [], error: null }
-  if (costCodeError) throw new Error(`Failed to label price-book coverage gaps: ${costCodeError.message}`)
-  const costCodeById = new Map((costCodeRows ?? []).map((row) => [String(row.id), row]))
+  const costCodeRows: Array<{ id: string; code: string; name: string }> = []
+  for (const batch of chunk(gapCostCodeIds, COST_CODE_LOOKUP_CHUNK)) {
+    const { data, error } = await supabase.from("cost_codes").select("id,code,name").eq("org_id", resolvedOrgId).in("id", batch)
+    if (error) throw new Error(`Failed to label price-book coverage gaps: ${error.message}`)
+    costCodeRows.push(...(data ?? []))
+  }
+  const costCodeById = new Map(costCodeRows.map((row) => [row.id, row]))
   const communityById = new Map(communities.map((community) => [community.id, community.name]))
 
   return {
@@ -541,8 +544,8 @@ export async function getPriceBookHealth(filters: { divisionId?: string } = {}, 
       communityId: gap.communityId,
       communityName: communityById.get(gap.communityId) ?? "Community",
       costCodeId: gap.costCodeId,
-      costCodeCode: String(costCodeById.get(gap.costCodeId)?.code ?? ""),
-      costCodeName: String(costCodeById.get(gap.costCodeId)?.name ?? "Uncoded"),
+      costCodeCode: costCodeById.get(gap.costCodeId)?.code ?? "",
+      costCodeName: costCodeById.get(gap.costCodeId)?.name ?? "Uncoded",
     })),
     leadDays: settings.expiring_agreement_lead_days,
   }

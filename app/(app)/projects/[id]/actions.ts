@@ -9,8 +9,8 @@ import { recordAudit } from "@/lib/services/audit"
 import type {
   Company,
   Contact,
+  Contract,
   Project,
-  Proposal,
   Task,
   ScheduleItem,
   DailyLog,
@@ -161,16 +161,6 @@ export interface TeamDirectoryEntry {
   project_role_label?: string
   status?: string
   is_current_user?: boolean
-}
-
-export interface ProjectActivity {
-  id: string
-  event_type: string
-  entity_type: string
-  entity_id: string
-  payload: Record<string, any>
-  created_at: string
-  actor_name?: string
 }
 
 const EXTERNAL_PROJECT_ROLE_KEYS = new Set(["client", "project_client", "portal_client", "sub", "portal_sub"])
@@ -338,6 +328,33 @@ export async function getProjectVendorsAction(projectId: string): Promise<Projec
       return listProjectVendors(projectId)
 }
 
+export interface ProjectOverviewCatalogs {
+  contacts: Contact[]
+  companies: Company[]
+  team: ProjectTeamMember[]
+  projectVendors: ProjectVendor[]
+  contract: Contract | null
+}
+
+/**
+ * Everything the overview's Share / Manage team / Project settings sheets need.
+ *
+ * These are org-wide catalogs — every contact and every company — and all three
+ * sheets start closed. Loading them with the page made every project switch pay
+ * for four reads nobody had asked to see yet. The header now warms this on
+ * pointer intent and awaits it on open.
+ */
+export async function getProjectOverviewCatalogsAction(projectId: string): Promise<ProjectOverviewCatalogs> {
+  const [contacts, companies, team, projectVendors, contract] = await Promise.all([
+    getClientContactsAction(),
+    getOrgCompaniesAction(),
+    getProjectTeamAction(projectId),
+    getProjectVendorsAction(projectId),
+    getProjectContract(projectId),
+  ])
+  return { contacts, companies, team, projectVendors, contract }
+}
+
 export async function addProjectVendorAction(projectId: string, input: ProjectVendorInput) {
   return run(async () => {
       await addProjectVendor({ input })
@@ -435,26 +452,6 @@ export async function updateProjectVendorAction(
 
 export async function getProjectContractAction(projectId: string) {
       return getProjectContract(projectId)
-}
-
-export async function listProjectProposalsAction(projectId: string): Promise<Proposal[]> {
-      const { supabase, orgId } = await requireOrgContext()
-
-      const { data, error } = await supabase
-        .from("proposals")
-        .select(
-          "id, org_id, project_id, estimate_id, recipient_contact_id, number, title, summary, terms, status, total_cents, token_hash, valid_until, sent_at, accepted_at, signature_required, created_at, updated_at",
-        )
-        .eq("org_id", orgId)
-        .eq("project_id", projectId)
-        .order("created_at", { ascending: false })
-
-      if (error) {
-        console.error("Failed to list proposals", error.message)
-        return []
-      }
-
-      return (data ?? []) as Proposal[]
 }
 
 export async function getProjectApprovedChangeOrderTotalAction(projectId: string): Promise<number> {
@@ -2632,33 +2629,6 @@ export async function removeProjectMemberAction(projectId: string, memberId: str
 
       revalidatePath(`/projects/${projectId}`)
   })
-}
-
-export async function getProjectActivityAction(projectId: string): Promise<ProjectActivity[]> {
-      const { supabase, orgId } = await requireOrgContext()
-
-      // Get events related to this project
-      const { data, error } = await supabase
-        .from("events")
-        .select("id, event_type, entity_type, entity_id, payload, created_at")
-        .eq("org_id", orgId)
-        .or(`entity_id.eq.${projectId},payload->>project_id.eq.${projectId}`)
-        .order("created_at", { ascending: false })
-        .limit(20)
-
-      if (error) {
-        console.error("Failed to fetch activity:", error.message)
-        return []
-      }
-
-      return (data ?? []).map(row => ({
-        id: row.id,
-        event_type: row.event_type,
-        entity_type: row.entity_type ?? "",
-        entity_id: row.entity_id ?? "",
-        payload: row.payload ?? {},
-        created_at: row.created_at,
-      }))
 }
 
 // ============================================

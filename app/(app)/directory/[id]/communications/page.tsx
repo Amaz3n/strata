@@ -1,16 +1,18 @@
-// Request-scoped account data; the instant shell is the layout's.
-export const instant = false;
+// Browser-private account data; runtime-prefetched by the bounded tab strip.
+export const instant = true;
 
 import { notFound } from "next/navigation";
+import { Suspense } from "react";
 import { z } from "zod";
 
 import { PartyCorrespondenceLog } from "@/components/directory/account/party-correspondence-log";
+import { CompanyTabSkeleton } from "@/components/companies/account/company-account-skeleton";
 import {
   PARTY_CORRESPONDENCE_LIMIT,
   listPartyCorrespondence,
 } from "@/lib/services/party-correspondence";
 import { hasPermission } from "@/lib/services/permissions";
-import { loadDirectoryParty } from "../page-data";
+import { loadDirectoryPartyHeader, registerDirectoryTabCache } from "../page-data";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -24,12 +26,27 @@ interface PageProps {
  * The tab is on every party, but the mail is gated on `correspondence.read` —
  * so a reader without it is told so rather than dropped on an error page.
  */
-export default async function PartyCommunicationsPage({ params }: PageProps) {
+export default function PartyCommunicationsPage(props: PageProps) {
+  return (
+    <Suspense fallback={<CompanyTabSkeleton rows={6} flush />}>
+      <PartyCommunicationsData {...props} />
+    </Suspense>
+  );
+}
+
+async function PartyCommunicationsData({ params }: PageProps) {
   const { id } = await params;
   if (!z.string().uuid().safeParse(id).success) notFound();
 
+  return <PartyCommunicationsContent id={id} />;
+}
+
+async function PartyCommunicationsContent({ id }: { id: string }) {
+  "use cache: private";
+  registerDirectoryTabCache(id, "communications");
+
   const [party, canRead] = await Promise.all([
-    loadDirectoryParty(id),
+    loadDirectoryPartyHeader(id),
     hasPermission("correspondence.read"),
   ]);
   if (!party) notFound();

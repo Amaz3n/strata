@@ -41,7 +41,6 @@ const TOKEN_RULES = [
  * Delete a path from this list when you clean the file. NEVER add one.
  */
 const GRANDFATHERED = [
-  "app/(app)/documents/documents-client.tsx",
   "app/(app)/drawings/debug/page.tsx",
   "app/(app)/projects/\\[id\\]/reports/page.tsx",
   "app/(app)/projects/\\[id\\]/safety/safety-client.tsx",
@@ -64,10 +63,6 @@ const GRANDFATHERED = [
   "components/daily-logs/quick-log-entry.tsx",
   "components/dashboard/onboarding-checklist.tsx",
   "components/decisions/decisions-client.tsx",
-  "components/documents/documents-explorer.tsx",
-  "components/documents/documents-mobile-layout.tsx",
-  "components/documents/documents-table.tsx",
-  "components/documents/file-properties-panel.tsx",
   "components/drawings/create-from-drawing-dialog.tsx",
   "components/drawings/drawing-pin-layer.tsx",
   "components/drawings/drawing-viewer.tsx",
@@ -79,7 +74,6 @@ const GRANDFATHERED = [
   "components/estimates/estimate-create-sheet.tsx",
   "components/estimates/estimates-client.tsx",
   "components/expenses/expense-form.tsx",
-  "components/files/file-viewer.tsx",
   "components/financials/billing-autopilot-panel.tsx",
   "components/financials/payables-tab.tsx",
   "components/financials/period-close-workflow.tsx",

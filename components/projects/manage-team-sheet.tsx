@@ -71,6 +71,8 @@ export interface ManageTeamSheetProps {
   contacts: Contact[]
   companies: Company[]
   projectVendors: ProjectVendor[]
+  /** True while the org directory catalogs this sheet renders are still loading. */
+  isLoading?: boolean
 }
 
 type ViewMode = "team" | "directory"
@@ -101,6 +103,7 @@ export function ManageTeamSheet({
   contacts,
   companies,
   projectVendors,
+  isLoading = false,
 }: ManageTeamSheetProps) {
   // View state
   const [viewMode, setViewMode] = useState<ViewMode>("team")
@@ -444,7 +447,13 @@ export function ManageTeamSheet({
 
         {/* Content */}
         <ScrollArea className="flex-1">
-          {viewMode === "team" ? (
+          {isLoading ? (
+            <div className="space-y-2 p-3" aria-hidden>
+              {Array.from({ length: 6 }).map((_, row) => (
+                <div key={row} className="h-14 animate-pulse border border-border bg-muted/40" />
+              ))}
+            </div>
+          ) : viewMode === "team" ? (
             <div className="p-3">
               {filteredTeam.length === 0 ? (
                 <EmptyState

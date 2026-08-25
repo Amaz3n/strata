@@ -18,11 +18,14 @@ import {
   OverviewRow,
 } from "@/components/overview/primitives"
 import { cn } from "@/lib/utils"
-import type { AttentionItem, HealthCounts } from "@/app/(app)/projects/[id]/overview-actions"
+import type { AttentionItem } from "@/lib/services/project-overview"
 
 interface ProjectOverviewBlockersProps {
   items: AttentionItem[]
-  health: HealthCounts
+  /** Percent of the adjusted budget already spent; null without a budget. */
+  budgetVariancePercent: number | null
+  /** True when more items matched than this band shows. */
+  truncated: boolean
   projectId: string
 }
 
@@ -87,15 +90,16 @@ function groupOf(item: BlockerItem): GroupKey {
 
 export function ProjectOverviewBlockers({
   items,
-  health,
+  budgetVariancePercent,
+  truncated,
   projectId,
 }: ProjectOverviewBlockersProps) {
   const budgetBlocker: BlockerItem | null =
-    health.financial.budgetVariancePercent > 100
+    budgetVariancePercent !== null && budgetVariancePercent > 100
       ? {
           id: "budget",
           type: "task",
-          title: `Budget at ${health.financial.budgetVariancePercent}% of plan`,
+          title: `Budget at ${budgetVariancePercent}% of plan`,
           reason: "overdue",
           dueDate: null,
           link: `/projects/${projectId}/financials`,
@@ -178,6 +182,14 @@ export function ProjectOverviewBlockers({
                 </ul>
               </div>
             ))}
+            {truncated && (
+              <p className="text-xs text-muted-foreground">
+                Showing the {allItems.length} most urgent.{" "}
+                <a href={`/projects/${projectId}/tasks`} className="underline underline-offset-2 hover:text-foreground">
+                  See everything open
+                </a>
+              </p>
+            )}
           </div>
         )}
       </BandBody>

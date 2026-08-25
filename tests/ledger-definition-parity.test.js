@@ -146,7 +146,7 @@ test("every money surface reads the ledger status sets rather than re-declaring 
     "lib/services/weekly-executive-snapshot.ts",
     "lib/services/reports/cash-flow-forecast.ts",
     "lib/services/reports/project-profitability.ts",
-    "app/(app)/projects/[id]/overview-actions.ts",
+    "lib/services/project-overview.ts",
   ]) {
     assert.match(read(file), /@\/lib\/financials\/ledger-status/, `${file} must import the shared status sets`)
   }
@@ -163,9 +163,12 @@ test("every money surface reads the ledger status sets rather than re-declaring 
   assert.doesNotMatch(profitability, /\["draft", "saved", "void"\]/)
   assert.match(profitability, /resolveRevisedContractCents/)
 
-  // The project overview no longer derives "Billed" from invoice lines.
-  const overview = read("app/(app)/projects/[id]/overview-actions.ts")
-  assert.match(overview, /getProjectPocPosition/)
+  // The project overview states the same "Billed" the budget tab does: invoice
+  // TOTALS in the billed set, resolved through the shared rule. Cost-coded
+  // invoice LINES are a different number whenever an invoice carries tax.
+  const overview = read("lib/services/project-overview.ts")
+  assert.match(overview, /resolveBilledCents/)
+  assert.match(overview, /BILLED_INVOICE_STATUSES/)
   assert.doesNotMatch(overview, /unit_price_cents/)
 })
 

@@ -18,6 +18,7 @@ export type RateLimitAction =
   | "external_signin"
   | "external_claim"
   | "external_reset_request"
+  | "password_reset_request"
   | "portal_pin"
   | "account_lookup"
   | "password_setup"
@@ -31,6 +32,7 @@ const RULES: Record<RateLimitAction, RateLimitRule> = {
   external_signin: { limit: 10, windowSeconds: 15 * 60 },
   external_claim: { limit: 10, windowSeconds: 15 * 60 },
   external_reset_request: { limit: 5, windowSeconds: 60 * 60 },
+  password_reset_request: { limit: 5, windowSeconds: 60 * 60 },
   portal_pin: { limit: 20, windowSeconds: 15 * 60 },
   account_lookup: { limit: 20, windowSeconds: 15 * 60 },
   password_setup: { limit: 5, windowSeconds: 60 * 60 },

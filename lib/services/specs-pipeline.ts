@@ -16,7 +16,18 @@ import { extractSubmittalRegisterDrafts } from "@/lib/services/submittal-registe
 export const SPEC_PIPELINE_JOB_TYPES = ["process_spec_upload", "extract_submittal_register"] as const
 const MAX_RETRIES = 3
 const STALE_MINUTES = 5
-const headingSchema = z.object({ section_number: z.string().regex(/^\d{2} \d{2} \d{2}$/), title: z.string().min(1).max(300) })
+// No `.regex()` on the section number: the Google adapter drops `pattern`
+// from the schema it sends, so it only ever fired client-side as a rejected
+// object. The shape is described to the model and normalised below instead.
+const headingSchema = z.object({
+  section_number: z.string().describe("Six-digit CSI MasterFormat number as 'NN NN NN'"),
+  title: z.string().min(1).max(300),
+})
+
+function normalizeSectionNumber(value: string): string | null {
+  const digits = value.replace(/\D/g, "")
+  return digits.length === 6 ? `${digits.slice(0, 2)} ${digits.slice(2, 4)} ${digits.slice(4)}` : null
+}
 
 type ClaimedJob = { job_id: number; org_id: string; job_type: string; payload: Record<string, unknown>; retry_count: number }
 type Boundary = { sectionNumber: string; title: string; pageIndex: number }
@@ -53,7 +64,9 @@ async function classifyAmbiguousPage(lines: string[], supabase: SupabaseClient) 
     // Only ambiguous pages reach here; escalating every one would undo the gate.
     allowEscalation: false,
   })
-  return result.ok ? result.object.heading : null
+  if (!result.ok || !result.object.heading) return null
+  const sectionNumber = normalizeSectionNumber(result.object.heading.section_number)
+  return sectionNumber ? { section_number: sectionNumber, title: result.object.heading.title } : null
 }
 
 async function ensureSectionFile(input: { supabase: SupabaseClient; orgId: string; projectId: string; uploadId: string; sectionNumber: string; title: string; bytes: Buffer; actorId: string | null }) {

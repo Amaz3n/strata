@@ -517,6 +517,21 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { description: Project not found }
+  /projects/{projectId}/correspondence:
+    get:
+      summary: List a project's filed correspondence, newest first
+      description: >
+        Read-only. Ruling on a classification and linking a message to a record
+        are workbench decisions; the field needs to see what a vendor sent.
+        Requires `correspondence.read` on the project.
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200": { description: Correspondence }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Project not found }
   /projects/{projectId}/team:
     get:
       summary: List a project's active team members

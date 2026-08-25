@@ -1,22 +1,40 @@
-// Request-scoped account data; the instant shell is the layout's.
-export const instant = false;
+// Browser-private account data; runtime-prefetched by the bounded tab strip.
+export const instant = true;
 
 import { notFound, redirect } from "next/navigation";
+import { Suspense } from "react";
 import { z } from "zod";
 
 import { PrequalificationWorkspace } from "@/components/companies/account/prequalification-workspace";
+import { CompanyTabSkeleton } from "@/components/companies/account/company-account-skeleton";
 import { listComplianceDocumentTypes } from "@/lib/services/compliance-documents";
 import { getPrequalificationPackage } from "@/lib/services/prequalification";
-import { loadVendorCompany } from "../page-data";
+import { loadVendorCompanyHeader, registerDirectoryTabCache } from "../page-data";
 
 interface PageProps {
   params: Promise<{ id: string }>;
 }
 
-export default async function CompanyPrequalificationPage({ params }: PageProps) {
+export default function CompanyPrequalificationPage(props: PageProps) {
+  return (
+    <Suspense fallback={<CompanyTabSkeleton rows={7} flush />}>
+      <CompanyPrequalificationData {...props} />
+    </Suspense>
+  );
+}
+
+async function CompanyPrequalificationData({ params }: PageProps) {
   const { id } = await params;
   if (!z.string().uuid().safeParse(id).success) notFound();
-  const account = await loadVendorCompany(id);
+
+  return <CompanyPrequalificationContent id={id} />;
+}
+
+async function CompanyPrequalificationContent({ id }: { id: string }) {
+  "use cache: private";
+  registerDirectoryTabCache(id, "prequalification");
+
+  const account = await loadVendorCompanyHeader(id);
   // Null means: not a company, or a company with no vendor role.
   if (!account) redirect(`/directory/${id}`);
 
@@ -30,7 +48,7 @@ export default async function CompanyPrequalificationPage({ params }: PageProps)
   return (
     <PrequalificationWorkspace
       companyId={id}
-      companyName={account.company.name}
+      companyName={account.name}
       data={data}
       documentTypes={documentTypes}
       canEdit={account.canEdit}

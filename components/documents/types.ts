@@ -1,11 +1,7 @@
 import type { FileWithUrls, ProjectFolderPermissions } from "@/app/(app)/documents/types"
-import type { DrawingSet, DrawingSheet } from "@/app/(app)/drawings/types"
-
-export type ViewMode = "grid" | "list"
 
 export type QuickFilter =
   | "all"
-  | "drawings"
   | "plans"
   | "photos"
   | "contracts"
@@ -20,13 +16,9 @@ export type QuickFilter =
 
 export interface RefreshFilesOptions {
   includeMetadata?: boolean
+  /** Clear every cached folder/filter view — use after a mutation changes server data. */
+  invalidateCache?: boolean
 }
-
-export type DocumentItem =
-  | { type: "file"; data: FileWithUrls }
-  | { type: "sheet"; data: DrawingSheet; setTitle: string }
-  | { type: "folder"; path: string; name: string; itemCount: number }
-  | { type: "drawing-set"; data: DrawingSet }
 
 export interface FolderNode {
   name: string
@@ -42,7 +34,6 @@ export interface DocumentsContextValue {
 
   // Data
   files: FileWithUrls[]
-  drawingSets: DrawingSet[]
   folders: string[]
   folderItemCounts: Record<string, number>
   folderPermissions: ProjectFolderPermissions[]
@@ -52,48 +43,37 @@ export interface DocumentsContextValue {
 
   // Filters
   currentPath: string
-  quickFilter: QuickFilter
+  /** The committed search query. Live input state belongs to the search box itself. */
   searchQuery: string
-  viewMode: ViewMode
+  quickFilter: QuickFilter
   sort: "name" | "workflow" | "updated_at" | "created_at" | "size"
   direction: "asc" | "desc"
+  /** Set when the file list failed to load; null while healthy. */
+  error: string | null
 
   // Navigation
   setCurrentPath: (path: string) => void
   setQuickFilter: (filter: QuickFilter) => void
   setSearchQuery: (query: string) => void
-  setViewMode: (mode: ViewMode) => void
   setSort: (sort: "name" | "workflow" | "updated_at" | "created_at" | "size") => void
   setDirection: (direction: "asc" | "desc") => void
   toggleSort: (sort: "name" | "workflow" | "updated_at" | "created_at" | "size") => void
-  setSelectedDrawingSet: (id: string | null, title?: string | null) => void
   navigateToRoot: () => void
   navigateToFolder: (path: string) => void
-  navigateToDrawingSet: (id: string, title: string) => void
   loadFolderChildren: (path?: string) => Promise<void>
 
   // Actions
   refreshFiles: (options?: RefreshFilesOptions) => Promise<void>
   loadMore: () => Promise<void>
-  refreshDrawingSets: () => Promise<void>
   refreshFolderPermissions: () => Promise<void>
 
   // Loading states
   isLoading: boolean
   isLoadingMore: boolean
-  isUploading: boolean
 
   // Expanded state for sidebar
   expandedFolders: Set<string>
   toggleFolderExpanded: (path: string) => void
-  expandedDrawingSets: Set<string>
-  toggleDrawingSetExpanded: (setId: string) => void
-
-  // Drawing set sheets
-  sheetsBySetId: Record<string, DrawingSheet[]>
-  loadSheetsForSet: (setId: string) => Promise<void>
-  selectedDrawingSetId: string | null
-  selectedDrawingSetTitle: string | null
 }
 
 export interface UnifiedDocumentsLayoutProps {
@@ -103,9 +83,7 @@ export interface UnifiedDocumentsLayoutProps {
   initialFolders: string[]
   initialFolderCounts?: Record<string, number>
   initialFolderPermissions?: ProjectFolderPermissions[]
-  initialSets: DrawingSet[]
   initialPath?: string
-  initialSetId?: string
   initialTotalCount?: number
   initialHasMore?: boolean
 }
@@ -115,7 +93,6 @@ export const QUICK_FILTER_CONFIG: Record<
   { label: string; icon: string }
 > = {
   all: { label: "All", icon: "FileText" },
-  drawings: { label: "Drawings", icon: "Layers" },
   plans: { label: "Plans", icon: "Map" },
   photos: { label: "Photos", icon: "Image" },
   contracts: { label: "Contracts", icon: "FileSignature" },

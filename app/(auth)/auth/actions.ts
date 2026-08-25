@@ -1,5 +1,6 @@
 "use server"
 
+import { refresh } from "next/cache"
 import { cookies, headers } from "next/headers"
 import { createHash, randomBytes } from "node:crypto"
 import { redirect } from "next/navigation"
@@ -373,6 +374,10 @@ export async function signOutAction() {
   const supabase = await createServerSupabaseClient()
   await supabase.auth.signOut()
   await clearOrgCookie()
+  // The chrome context is a private cache living in this browser's memory. Only
+  // a revalidation call from a Server Action clears it, so without this the
+  // signed-out tab could still render the previous user's sidebar.
+  refresh()
   redirect("/auth/signin")
 }
 
@@ -441,6 +446,7 @@ export async function requestPasswordResetAction(_prevState: AuthState, formData
   const genericMessage = "If an account exists for that email, we sent a password reset link."
 
   try {
+    await enforceAuthRateLimit("password_reset_request", email)
     const { data, error } = await serviceClient.auth.admin.generateLink({
       type: "recovery",
       email,

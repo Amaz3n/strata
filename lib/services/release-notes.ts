@@ -1,5 +1,6 @@
 import { cache } from "react"
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { connection } from "next/server"
 
 import { requireOrgMembership } from "@/lib/auth/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -315,6 +316,10 @@ async function fetchViews(context: ReleaseNotesContext, releaseNoteIds: string[]
 }
 
 export async function getReleaseNotesOverview(limit = 50): Promise<ReleaseNotesOverview> {
+  // Publication and expiry are relative to the current time. Explicitly enter
+  // request time before reading the clock so Cache Components do not attempt to
+  // evaluate this shell decoration while prerendering the authenticated layout.
+  await connection()
   const context = await getReleaseNotesContext()
   const rows = await fetchVisibleReleaseNotes(context, limit)
   const views = await fetchViews(context, rows.map((note) => note.id))

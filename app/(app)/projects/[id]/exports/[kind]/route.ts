@@ -6,6 +6,7 @@ import { renderIncidentPdf } from "@/lib/pdfs/incident-pdf"
 import { renderInspectionPdf } from "@/lib/pdfs/inspection-pdf"
 import { renderPunchListPdf } from "@/lib/pdfs/punch-list-pdf"
 import { renderContingencyUsagePdf } from "@/lib/pdfs/contingency-usage-pdf"
+import { renderCorrespondencePdf } from "@/lib/pdfs/correspondence-pdf"
 import { renderRfiPdf } from "@/lib/pdfs/rfi-pdf"
 import { renderSubmittalPdf } from "@/lib/pdfs/submittal-pdf"
 import { renderSubmittalRegisterPdf } from "@/lib/pdfs/submittal-register-pdf"
@@ -17,6 +18,8 @@ import { listSafetyIncidents } from "@/lib/services/safety"
 import { listRfiResponses, listRfis } from "@/lib/services/rfis"
 import { listSubmittalItems, listSubmittalReviewSteps, listSubmittals } from "@/lib/services/submittals"
 import { getContingencyUsageReport } from "@/lib/services/reports/contingency-usage"
+import { getCorrespondenceExport, getCorrespondenceMessageExport } from "@/lib/services/reports/correspondence-log"
+import { parseCorrespondenceSearchParams } from "@/lib/validation/correspondence"
 import { toCsv } from "@/lib/services/reports/csv"
 import { downloadFilesObject } from "@/lib/storage/files-storage"
 
@@ -36,7 +39,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { id: projectId, kind } = await params
     const entityId = request.nextUrl.searchParams.get("id")
     const { supabase, orgId, userId } = await requireOrgContext()
-    await requireProjectPermission(userId, projectId, "report.read")
+    // The correspondence packet is gated on the log's own permission inside the
+    // report service — reaching mail through the export route must not be a
+    // cheaper read than the log itself.
+    if (kind !== "correspondence") await requireProjectPermission(userId, projectId, "report.read")
     const [{ data: project }, { data: org }] = await Promise.all([
       supabase.from("projects").select("name").eq("org_id", orgId).eq("id", projectId).single(),
       supabase.from("orgs").select("name, address, document_numbering").eq("id", orgId).single(),
@@ -271,6 +277,57 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         items: filtered.map((item, index) => ({ number: index + 1, title: item.title, description: item.description, location: item.location, status: item.status, company: item.assigned_company_name, dueDate: item.due_date })),
       })
       return pdfResponse(pdf, companyName ? `punch-list-${companyName.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.pdf` : "punch-list.pdf")
+    }
+
+    if (kind === "correspondence") {
+      const query = request.nextUrl.searchParams
+      const emailId = query.get("email")
+      const threadId = query.get("thread")
+      const report = emailId
+        ? await getCorrespondenceMessageExport({ projectId, emailId }, orgId)
+        : await getCorrespondenceExport(
+            {
+              threadId,
+              filters: parseCorrespondenceSearchParams(projectId, Object.fromEntries(query.entries())),
+            },
+            orgId,
+          )
+      const stamp = new Date(report.generated_at).toISOString().slice(0, 10)
+      if ((query.get("format") ?? "pdf") === "csv") {
+        const csv = toCsv(report.messages, [
+          { key: "occurred_at", header: "Date" },
+          { key: "direction", header: "Direction" },
+          { key: "from_address", header: "From" },
+          { key: "to_addresses", header: "To" },
+          { key: "cc_addresses", header: "Cc" },
+          { key: "subject", header: "Subject" },
+          { key: "classification", header: "Classification" },
+          { key: "ruled_by", header: "Classified" },
+          { key: "links", header: "Linked to" },
+          { key: "attachments", header: "Attachments" },
+          { key: "body", header: "Message" },
+        ])
+        return new NextResponse(csv, { headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="correspondence-${stamp}.csv"`, "Cache-Control": "private, no-store" } })
+      }
+      const pdf = await renderCorrespondencePdf({
+        header: { ...baseHeader, title: "Correspondence", date: new Date(report.generated_at).toLocaleDateString() },
+        scope: report.scope,
+        messages: report.messages.map((message) => ({
+          date: new Date(message.occurred_at).toLocaleString(),
+          direction: message.direction,
+          from: message.from_address,
+          to: message.to_addresses,
+          cc: message.cc_addresses || null,
+          subject: message.subject,
+          classification: message.classification,
+          ruledBy: message.ruled_by,
+          links: message.links || null,
+          attachments: message.attachments || null,
+          body: message.body,
+        })),
+        truncatedNote: report.truncated_note,
+      })
+      return pdfResponse(pdf, `correspondence-${stamp}.pdf`)
     }
 
     return NextResponse.json({ error: "Unknown export type" }, { status: 404 })

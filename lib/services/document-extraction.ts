@@ -11,6 +11,7 @@ import {
 } from "@/lib/ai/field-provenance"
 import { reconcileInvoice, reconcilePayApplication, toCents } from "@/lib/financials/invoice-reconcile"
 import { runAiObject, type AiFilePart } from "@/lib/services/ai/gateway"
+import { parseDate } from "@/lib/services/import-parsers"
 import { loadVendorExtractionHints } from "@/lib/services/vendor-extraction-memory"
 import {
   detectDuplicateSuspicion,
@@ -59,14 +60,17 @@ const MAX_EXTRACTED_LINES = 200
 // ---------------------------------------------------------------------------
 // Model-facing schemas
 //
-// Deliberately plain: no z.preprocess, no coercion, no aliases. Structured
-// output guarantees the shape, so anything clever here is a smell.
+// Deliberately plain: no z.preprocess, no coercion, no aliases, and no
+// string constraints the provider cannot enforce. The AI SDK's Google adapter
+// forwards only a subset of JSON Schema (`enum`, `format`, `minLength`,
+// nullability) and silently drops `pattern`, so a `.regex()` here never reaches
+// Gemini — the model answers in whatever date format it likes and Zod rejects
+// the whole object client-side as `no_object_generated`. That was 55 of the
+// first 80 production extraction failures. Formats are asked for in the
+// description and normalised by `parseDate` after the parse instead.
 // ---------------------------------------------------------------------------
 
-const isoDate = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "Dates must be YYYY-MM-DD")
-  .nullable()
+const isoDate = z.string().describe("Date as YYYY-MM-DD, or null if not printed").nullable()
 
 const confidence = z.enum(["high", "medium", "low"])
 
@@ -575,7 +579,7 @@ export async function extractPayableInvoiceFromFile(
     billNumber: value.bill_number,
     companyId: vendorId,
     totalCents,
-    billDate: value.bill_date,
+    billDate: parseDate(value.bill_date),
     recentBills: expectations.recentBills,
   })
 
@@ -604,8 +608,8 @@ export async function extractPayableInvoiceFromFile(
     vendorId,
     vendorName: cleanText(value.vendor_name),
     billNumber: cleanText(value.bill_number, 120),
-    billDate: value.bill_date,
-    dueDate: value.due_date,
+    billDate: parseDate(value.bill_date),
+    dueDate: parseDate(value.due_date),
     totalDollars: value.total,
     subtotalDollars: value.subtotal,
     taxDollars: value.tax,
@@ -618,8 +622,8 @@ export async function extractPayableInvoiceFromFile(
       value.document_type === "pay_application" && app
         ? {
             applicationNumber: cleanText(app.application_number, 60),
-            periodFrom: app.period_from,
-            periodTo: app.period_to,
+            periodFrom: parseDate(app.period_from),
+            periodTo: parseDate(app.period_to),
             previousCompletedDollars: app.previous_completed,
             thisPeriodDollars: app.this_period,
             materialsStoredDollars: app.materials_stored,
@@ -671,7 +675,7 @@ export async function extractExpenseReceiptFromFile(
   const value = result.object
   return {
     vendorName: cleanText(value.vendor_name),
-    expenseDate: value.expense_date,
+    expenseDate: parseDate(value.expense_date),
     totalDollars: value.total,
     taxDollars: value.tax,
     paymentMethod: value.payment_method,

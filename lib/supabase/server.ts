@@ -1,3 +1,7 @@
+// This module holds the service-role key. `server-only` makes an accidental
+// import from a client component a build error rather than a runtime surprise.
+import "server-only"
+
 import { cache } from "react"
 import { cookies, headers } from "next/headers"
 import { unstable_rethrow } from "next/navigation"

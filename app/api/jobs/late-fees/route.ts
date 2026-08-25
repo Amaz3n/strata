@@ -19,6 +19,7 @@ async function handler(request: NextRequest) {
 
   const now = new Date()
   let applied = 0
+  const failures: Array<{ invoice_id: string; rule_id: string; amount_cents: number; error: string }> = []
 
   for (const rule of rules) {
     let query = supabase
@@ -85,11 +86,28 @@ async function handler(request: NextRequest) {
         p_days_overdue: daysOverdue,
       })
 
-      if (!applyError) applied += 1
+      if (applyError) {
+        failures.push({
+          invoice_id: invoice.id,
+          rule_id: rule.id,
+          amount_cents: feeAmountCents,
+          error: applyError.message,
+        })
+        console.error("[late-fees] apply failed", {
+          invoiceId: invoice.id,
+          ruleId: rule.id,
+          error: applyError.message,
+        })
+      } else {
+        applied += 1
+      }
     }
   }
 
-  return NextResponse.json({ applied })
+  return NextResponse.json(
+    { applied, failed: failures.length, failures },
+    { status: failures.length > 0 ? 207 : 200 },
+  )
 }
 
 export const POST = withCronRun("late-fees", handler)

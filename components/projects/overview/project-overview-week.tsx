@@ -15,11 +15,12 @@ import {
   OverviewRow,
 } from "@/components/overview/primitives"
 import { cn } from "@/lib/utils"
-import type { ComingUpItem } from "@/app/(app)/projects/[id]/overview-actions"
+import type { ComingUpItem } from "@/lib/services/project-overview"
 
 interface ProjectOverviewWeekProps {
   items: ComingUpItem[]
-  projectId: string
+  /** True when more dated rows matched than this band shows. */
+  truncated: boolean
 }
 
 interface DayGroup {
@@ -64,15 +65,14 @@ function groupByDay(items: ComingUpItem[]): DayGroup[] {
   })
 }
 
-export function ProjectOverviewWeek({ items, projectId: _ }: ProjectOverviewWeekProps) {
-  const visible = items.slice(0, 12)
-  const groups = groupByDay(visible)
-  const milestoneCount = visible.filter((i) => i.type === "milestone").length
-  const drawCount = visible.filter((i) => i.type === "draw").length
+export function ProjectOverviewWeek({ items, truncated }: ProjectOverviewWeekProps) {
+  const groups = groupByDay(items)
+  const milestoneCount = items.filter((i) => i.type === "milestone").length
+  const drawCount = items.filter((i) => i.type === "draw").length
 
   return (
     <section>
-      <BandHeader title="This week" count={visible.length > 0 ? `${visible.length} ahead` : null}>
+      <BandHeader title="This week" count={items.length > 0 ? `${items.length} ahead` : null}>
         {milestoneCount > 0 && (
           <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-foreground bg-foreground/[0.07] px-2 py-0.5 rounded-sm">
             <Flag className="h-2.5 w-2.5" strokeWidth={2.5} />
@@ -169,6 +169,11 @@ export function ProjectOverviewWeek({ items, projectId: _ }: ProjectOverviewWeek
                 </ul>
               </div>
             ))}
+            {truncated && (
+              <p className="text-xs text-muted-foreground">
+                Showing the next {items.length}. More is dated this week.
+              </p>
+            )}
           </div>
         )}
       </BandBody>

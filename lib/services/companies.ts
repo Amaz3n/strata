@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-import type { Company, Contact } from "@/lib/types"
-import { companyFiltersSchema, companyInputSchema, companyUpdateSchema, type CompanyFilters, type CompanyInput } from "@/lib/validation/companies"
+import type { Company, CompanyType, Contact } from "@/lib/types"
+import { companyFiltersSchema, companyInputSchema, companyTypeEnum, companyUpdateSchema, type CompanyFilters, type CompanyInput } from "@/lib/validation/companies"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
@@ -322,7 +322,9 @@ export async function getCompany(companyId: string, orgId?: string): Promise<Com
     userId,
   })
 
-  const { data, error } = await supabase
+  // None of these reads depends on another. Starting them together removes two
+  // full database round trips from the cold directory-detail path.
+  const companyQuery = supabase
     .from("companies")
     .select(
       `
@@ -342,14 +344,7 @@ export async function getCompany(companyId: string, orgId?: string): Promise<Com
     .eq("id", companyId)
     .maybeSingle()
 
-  if (error) {
-    throw new Error(`Failed to load company: ${error.message}`)
-  }
-  if (!data) {
-    throw new NotFoundError("Company not found")
-  }
-
-  const primaryContactQuery = await supabase
+  const primaryContactQuery = supabase
     .from("contacts")
     .select(
       "id, org_id, full_name, email, phone, role, contact_type, primary_company_id, metadata, created_at, updated_at",
@@ -357,8 +352,22 @@ export async function getCompany(companyId: string, orgId?: string): Promise<Com
     .eq("org_id", resolvedOrgId)
     .eq("primary_company_id", companyId)
 
-  if (primaryContactQuery.error) {
-    throw new Error(`Failed to load company contacts: ${primaryContactQuery.error.message}`)
+  const [companyResult, primaryContactsResult, accountingLinks] = await Promise.all([
+    companyQuery,
+    primaryContactQuery,
+    getCompanyAccountingLinks(supabase, resolvedOrgId, [companyId]),
+  ])
+  const { data, error } = companyResult
+
+  if (error) {
+    throw new Error(`Failed to load company: ${error.message}`)
+  }
+  if (!data) {
+    throw new NotFoundError("Company not found")
+  }
+
+  if (primaryContactsResult.error) {
+    throw new Error(`Failed to load company contacts: ${primaryContactsResult.error.message}`)
   }
 
   const contacts =
@@ -369,7 +378,7 @@ export async function getCompany(companyId: string, orgId?: string): Promise<Com
           relationship: link.relationship,
         }),
       ) ?? []),
-      ...(primaryContactQuery.data ?? []).map((row: any) => mapContact(row)),
+      ...(primaryContactsResult.data ?? []).map((row: any) => mapContact(row)),
     ]
 
   const deduped = new Map<string, Contact>()
@@ -379,7 +388,6 @@ export async function getCompany(companyId: string, orgId?: string): Promise<Com
     }
   }
 
-  const accountingLinks = await getCompanyAccountingLinks(supabase, resolvedOrgId, [companyId])
   return {
     ...mapCompany(data, accountingLinks.get(companyId)),
     contacts: Array.from(deduped.values()),
@@ -679,11 +687,27 @@ export async function getVendorPayableProfile(
   }
 }
 
-function buildCompanyInsert(input: CompanyInput, orgId: string) {
+/**
+ * The role a create is recording, and the legacy column that has to keep
+ * agreeing with it.
+ *
+ * `party_roles` is the source of truth, but `companies.company_type` is still
+ * read in a dozen places until its gated drop, and its CHECK only allows the
+ * six original values. A role outside that set — `prospect`, `buyer`, or
+ * anything an org added itself — lands on `other`, which is the honest answer
+ * for a column that cannot express it.
+ */
+function resolveCompanyRole(input: CompanyInput): { roleKey: string; legacyType: CompanyType } {
+  const roleKey = input.role_key ?? input.company_type ?? "subcontractor"
+  const legacy = companyTypeEnum.safeParse(roleKey)
+  return { roleKey, legacyType: legacy.success ? legacy.data : "other" }
+}
+
+function buildCompanyInsert(input: CompanyInput, orgId: string, legacyType: CompanyType) {
   return {
     org_id: orgId,
     name: input.name,
-    company_type: input.company_type,
+    company_type: legacyType,
     phone: input.phone ?? null,
     email: input.email ?? null,
     website: input.website ?? null,
@@ -710,16 +734,17 @@ export async function createCompany({ input, orgId }: { input: CompanyInput; org
   const parsed = companyInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAnyPermission(DIRECTORY_WRITE_PERMISSIONS, { supabase, orgId: resolvedOrgId, userId })
+  const { roleKey, legacyType } = resolveCompanyRole(parsed)
   const classification = await resolveDirectoryCompanyClassification(
     supabase,
     resolvedOrgId,
-    parsed.company_type,
+    legacyType,
     parsed.trade,
   )
 
   const { data, error } = await supabase
     .from("companies")
-    .insert({ ...buildCompanyInsert(parsed, resolvedOrgId), ...classification })
+    .insert({ ...buildCompanyInsert(parsed, resolvedOrgId, legacyType), ...classification })
     .select(
       "id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, tax_id_last4, tax_entity_type, is_1099_eligible, w9_file_id, w9_received_at, metadata, created_at, updated_at, contact_company_links(count)",
     )
@@ -752,7 +777,7 @@ export async function createCompany({ input, orgId }: { input: CompanyInput; org
   await assignPartyRoleWithClient(supabase, resolvedOrgId, userId, {
     kind: "company",
     partyId: data.id as string,
-    roleKey: parsed.company_type,
+    roleKey,
     status: "active",
   })
 

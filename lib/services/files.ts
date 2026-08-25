@@ -1,11 +1,16 @@
+import { createHash } from "node:crypto"
+import type { SupabaseClient } from "@supabase/supabase-js"
+
 import type { FileCategory, FileSource } from "@/lib/validation/files"
 import type { FileInput, FileUpdate, FileListFilters } from "@/lib/validation/files"
 import { fileInputSchema, fileUpdateSchema, fileListFiltersSchema } from "@/lib/validation/files"
+import { validateDocumentUpload } from "@/lib/files/content-policy"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission, requireProjectPermission } from "@/lib/services/permissions"
-import { createFilesDownloadUrl, deleteFilesObjects } from "@/lib/storage/files-storage"
+import { createFilesDownloadUrl, deleteFilesObjects, ensureOrgScopedPath, uploadFilesObject } from "@/lib/storage/files-storage"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
+import { createInitialVersion } from "./file-versions"
 import { triggerFileIndexing } from "./files-indexing"
 import { findFileIdsBySourceSearch, listFileSourceContexts } from "./file-source-contexts"
 
@@ -132,6 +137,24 @@ export interface FileTimelineEvent {
 
 export function buildInternalFileUrl(fileId: string): string {
   return `/api/files/${fileId}/raw`
+}
+
+/** The one place that decides which URL a file previews and downloads from. */
+function buildFileUrls(file: FileRecord): FileWithUrls {
+  const internalUrl = buildInternalFileUrl(file.id)
+  const previewUrl = file.preview_thumbnail_path ? `/api/files/${file.id}/preview` : undefined
+
+  return {
+    ...file,
+    download_url: internalUrl,
+    thumbnail_url:
+      previewUrl ??
+      (needsGeneratedImagePreview(file.mime_type, file.file_name, file.storage_path)
+        ? `/api/files/${file.id}/preview`
+        : canUseOriginalAsImagePreview(file.mime_type)
+          ? internalUrl
+          : undefined),
+  }
 }
 
 const DEFAULT_FOLDER_BY_CATEGORY: Record<FileCategory, string> = {
@@ -507,11 +530,13 @@ export async function createFileRecord(
   const parsed = fileInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission(options.authorizationPermission ?? "docs.upload", { supabase, orgId: resolvedOrgId, userId })
-  const normalizedFolderPath = normalizeFolderPath(parsed.folder_path)
   const defaultFolderPath = parsed.project_id
     ? getDefaultFolderForCategory(parsed.category)
     : undefined
-  const resolvedFolderPath = normalizedFolderPath ?? defaultFolderPath
+  const resolvedFolderPath =
+    parsed.folder_path === null
+      ? undefined
+      : normalizeFolderPath(parsed.folder_path) ?? defaultFolderPath
   const folderPermissionDefaults =
     parsed.project_id && resolvedFolderPath
       ? await getFolderPermissionDefaults(parsed.project_id, resolvedFolderPath, resolvedOrgId)
@@ -585,6 +610,638 @@ export async function createFileRecord(
 
     return mapFile(data)
     }
+
+// ============================================================================
+// Uploads
+// ============================================================================
+
+/** Hard cap so a runaway selection cannot fan out into an unbounded batch. */
+export const MAX_BULK_FILE_OPERATION = 500
+
+/**
+ * The single storage-path recipe for uploaded documents:
+ * `<org>/<project|general>/[segments…]/<timestamp>_<sanitized name>`.
+ */
+export function buildFilesStoragePath({
+  orgId,
+  projectId,
+  fileName,
+  segments = [],
+}: {
+  orgId: string
+  projectId?: string | null
+  fileName: string
+  segments?: string[]
+}): string {
+  const safeName = fileName.replace(/[^a-zA-Z0-9.-]/g, "_")
+  return [orgId, projectId || "general", ...segments, `${Date.now()}_${safeName}`].join("/")
+}
+
+/** Classify an upload when the caller did not pick a category. */
+export function inferFileCategory(fileName: string, mimeType?: string): FileCategory {
+  const lowerName = fileName.toLowerCase()
+
+  if (mimeType?.startsWith("image/")) return "photos"
+  if (lowerName.includes("plan") || lowerName.includes("drawing") || lowerName.includes("dwg")) return "plans"
+  if (lowerName.includes("contract") || lowerName.includes("agreement")) return "contracts"
+  if (lowerName.includes("permit") || lowerName.includes("approval")) return "permits"
+  if (lowerName.includes("submittal") || lowerName.includes("spec")) return "submittals"
+  if (lowerName.includes("rfi") || lowerName.includes("request")) return "rfis"
+  if (lowerName.includes("safety") || lowerName.includes("msds")) return "safety"
+  if (lowerName.includes("invoice") || lowerName.includes("payment") || lowerName.includes("budget")) return "financials"
+
+  return "other"
+}
+
+export type UploadPreparationStatus = 400 | 403 | 404
+
+/** Carries the HTTP status the browser-facing upload routes should return. */
+export class UploadPreparationError extends Error {
+  readonly status: UploadPreparationStatus
+
+  constructor(message: string, status: UploadPreparationStatus) {
+    super(message)
+    this.name = "UploadPreparationError"
+    this.status = status
+  }
+}
+
+export interface PreparedProjectUpload {
+  orgId: string
+  projectId: string
+  storagePath: string
+  contentType: string
+}
+
+/**
+ * Shared preamble for the browser upload endpoints: content policy, project
+ * upload permission, org-scoped project check, and the storage path.
+ */
+export async function prepareProjectDocumentUpload(input: {
+  projectId: string
+  fileName: string
+  contentType?: string
+  fileSize?: number
+}): Promise<PreparedProjectUpload> {
+  const { supabase, orgId, userId } = await requireOrgContext()
+
+  let upload: ReturnType<typeof validateDocumentUpload>
+  try {
+    upload = validateDocumentUpload({
+      fileName: input.fileName,
+      contentType: input.contentType,
+      sizeBytes: input.fileSize,
+    })
+  } catch (error) {
+    throw new UploadPreparationError(
+      error instanceof Error ? error.message : "Upload is not allowed.",
+      400,
+    )
+  }
+
+  try {
+    await requireProjectPermission(userId, input.projectId, "docs.upload")
+  } catch {
+    throw new UploadPreparationError("Forbidden", 403)
+  }
+
+  const { data: project, error: projectError } = await supabase
+    .from("projects")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("id", input.projectId)
+    .maybeSingle()
+
+  if (projectError || !project) {
+    throw new UploadPreparationError("Project not found.", 404)
+  }
+
+  return {
+    orgId,
+    projectId: input.projectId,
+    contentType: upload.contentType,
+    storagePath: buildFilesStoragePath({
+      orgId,
+      projectId: input.projectId,
+      fileName: input.fileName,
+      segments: ["documents", "uploads"],
+    }),
+  }
+}
+
+function splitFileName(fileName: string): { stem: string; extension: string } {
+  const dotIndex = fileName.lastIndexOf(".")
+  if (dotIndex <= 0) return { stem: fileName, extension: "" }
+  return { stem: fileName.slice(0, dotIndex), extension: fileName.slice(dotIndex) }
+}
+
+function folderScopeLabel(folderPath?: string | null): string {
+  return folderPath && folderPath !== "/" ? folderPath : "Project root"
+}
+
+/**
+ * `undefined` folder means "let the category pick"; an explicit `"/"` or `null`
+ * means the caller chose the root and must not be redirected.
+ */
+function resolveUploadFolderPath({
+  folderPath,
+  projectId,
+  category,
+}: {
+  folderPath?: string | null
+  projectId?: string | null
+  category?: FileCategory
+}): string | undefined {
+  if (folderPath === undefined) {
+    return projectId ? getDefaultFolderForCategory(category) : undefined
+  }
+  const normalized = normalizeFolderPath(folderPath)
+  return normalized === "/" ? undefined : normalized
+}
+
+async function assertNoDuplicateFile({
+  supabase,
+  orgId,
+  projectId,
+  folderPath,
+  checksum,
+}: {
+  supabase: SupabaseClient
+  orgId: string
+  projectId?: string | null
+  folderPath?: string | null
+  checksum?: string | null
+}): Promise<void> {
+  if (!checksum) return
+
+  let query = supabase
+    .from("files")
+    .select("id, file_name")
+    .eq("org_id", orgId)
+    .eq("checksum", checksum)
+    .is("archived_at", null)
+    .limit(1)
+
+  query = projectId ? query.eq("project_id", projectId) : query.is("project_id", null)
+  query = folderPath ? query.eq("folder_path", folderPath) : query.is("folder_path", null)
+
+  const { data, error } = await query.maybeSingle()
+  if (error && error.code !== "PGRST116") {
+    throw new Error(`Failed to check duplicate files: ${error.message}`)
+  }
+  if (data?.id) {
+    throw new Error(
+      `Duplicate upload blocked: ${data.file_name} already exists in ${folderScopeLabel(folderPath)}.`,
+    )
+  }
+}
+
+/** Bounded: only names sharing the candidate's stem can collide with it. */
+const MAX_NAME_COLLISION_CANDIDATES = 500
+
+async function resolveUniqueFileName({
+  supabase,
+  orgId,
+  projectId,
+  folderPath,
+  fileName,
+}: {
+  supabase: SupabaseClient
+  orgId: string
+  projectId?: string | null
+  folderPath?: string | null
+  fileName: string
+}): Promise<string> {
+  const { stem, extension } = splitFileName(fileName)
+
+  let query = supabase
+    .from("files")
+    .select("file_name")
+    .eq("org_id", orgId)
+    .is("archived_at", null)
+    .ilike("file_name", `${stem}%`)
+    .limit(MAX_NAME_COLLISION_CANDIDATES)
+
+  query = projectId ? query.eq("project_id", projectId) : query.is("project_id", null)
+  query = folderPath ? query.eq("folder_path", folderPath) : query.is("folder_path", null)
+
+  const { data, error } = await query
+  if (error) {
+    throw new Error(`Failed to check file name collisions: ${error.message}`)
+  }
+
+  const rows = data ?? []
+  const existingNames = new Set(rows.map((row) => String(row.file_name).toLowerCase()))
+  if (!existingNames.has(fileName.toLowerCase())) return fileName
+
+  // The prefix scan is capped, so a full page cannot prove the next sequential
+  // name is free — fall back to a suffix that cannot collide.
+  if (rows.length >= MAX_NAME_COLLISION_CANDIDATES) {
+    return `${stem} (${Date.now()})${extension}`
+  }
+
+  let index = 2
+  let candidate = `${stem} (${index})${extension}`
+  while (existingNames.has(candidate.toLowerCase())) {
+    index += 1
+    candidate = `${stem} (${index})${extension}`
+  }
+  return candidate
+}
+
+async function resolveUploadFileName(params: {
+  supabase: SupabaseClient
+  orgId: string
+  projectId?: string | null
+  folderPath?: string | null
+  fileName: string
+  checksum?: string | null
+}): Promise<string> {
+  const [, resolvedFileName] = await Promise.all([
+    assertNoDuplicateFile(params),
+    resolveUniqueFileName(params),
+  ])
+  return resolvedFileName
+}
+
+interface PersistUploadedFileInput {
+  orgId: string
+  projectId?: string
+  storagePath: string
+  fileName: string
+  mimeType: string
+  sizeBytes?: number
+  checksum?: string
+  category: FileCategory
+  folderPath?: string
+  visibility: "public" | "private"
+  description?: string
+  tags: string[]
+  shareWithClients?: boolean
+  shareWithSubs?: boolean
+}
+
+async function persistUploadedFile(input: PersistUploadedFileInput): Promise<FileWithUrls> {
+  const record = await createFileRecord(
+    {
+      project_id: input.projectId,
+      file_name: input.fileName,
+      storage_path: input.storagePath,
+      mime_type: input.mimeType,
+      size_bytes: input.sizeBytes,
+      checksum: input.checksum,
+      visibility: input.visibility,
+      category: input.category,
+      folder_path: input.folderPath ?? null,
+      description: input.description,
+      tags: input.tags,
+      source: "upload",
+      share_with_clients: input.shareWithClients,
+      share_with_subs: input.shareWithSubs,
+    },
+    input.orgId,
+  )
+
+  await createInitialVersion(
+    {
+      fileId: record.id,
+      storagePath: input.storagePath,
+      fileName: input.fileName,
+      mimeType: input.mimeType,
+      sizeBytes: input.sizeBytes,
+      checksum: input.checksum,
+    },
+    input.orgId,
+  )
+
+  return buildFileUrls(record)
+}
+
+export interface CreateFileFromUploadInput {
+  file: File
+  projectId?: string | null
+  category?: FileCategory
+  visibility?: "public" | "private"
+  description?: string | null
+  /** Omit to take the category default; `"/"` or `null` pins the file to the root. */
+  folderPath?: string | null
+  tags?: string[]
+  shareWithClients?: boolean
+  shareWithSubs?: boolean
+}
+
+/**
+ * Server-side upload: the bytes arrive with the request, so permission is
+ * checked before anything reaches storage and an orphaned object is removed if
+ * the record cannot be written.
+ */
+export async function createFileFromUpload(
+  input: CreateFileFromUploadInput,
+  orgId?: string,
+): Promise<FileWithUrls> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const projectId = input.projectId || undefined
+
+  if (projectId) {
+    await requireProjectPermission(userId, projectId, "docs.upload")
+    const { data: project, error: projectError } = await supabase
+      .from("projects")
+      .select("id")
+      .eq("org_id", resolvedOrgId)
+      .eq("id", projectId)
+      .maybeSingle()
+
+    if (projectError || !project) {
+      throw new Error("Invalid project scope for upload")
+    }
+  } else {
+    await requirePermission("docs.upload", { supabase, orgId: resolvedOrgId, userId })
+  }
+
+  const bytes = Buffer.from(await input.file.arrayBuffer())
+  const checksum = createHash("sha256").update(bytes).digest("hex")
+  const mimeType = input.file.type || "application/octet-stream"
+  const category = input.category ?? inferFileCategory(input.file.name, input.file.type)
+  const folderPath = resolveUploadFolderPath({ folderPath: input.folderPath, projectId, category })
+
+  const fileName = await resolveUploadFileName({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId,
+    folderPath,
+    fileName: input.file.name,
+    checksum,
+  })
+
+  const storagePath = buildFilesStoragePath({ orgId: resolvedOrgId, projectId, fileName })
+  await uploadFilesObject({
+    supabase,
+    orgId: resolvedOrgId,
+    path: storagePath,
+    bytes,
+    contentType: mimeType,
+    upsert: false,
+  })
+
+  try {
+    return await persistUploadedFile({
+      orgId: resolvedOrgId,
+      projectId,
+      storagePath,
+      fileName,
+      mimeType,
+      sizeBytes: input.file.size,
+      checksum,
+      category,
+      folderPath,
+      visibility: input.visibility === "private" ? "private" : "public",
+      description: input.description || undefined,
+      tags: input.tags ?? [],
+      shareWithClients: input.shareWithClients,
+      shareWithSubs: input.shareWithSubs,
+    })
+  } catch (error) {
+    await discardUploadedObject(supabase, resolvedOrgId, storagePath)
+    throw error
+  }
+}
+
+export interface FinalizeUploadedFileInput {
+  projectId?: string
+  fileName: string
+  storagePath: string
+  fileSize: number
+  mimeType?: string
+  checksum?: string | null
+  category?: FileCategory
+  visibility?: "public" | "private"
+  /** Omit to take the category default; `"/"` or `null` pins the file to the root. */
+  folderPath?: string | null
+  description?: string | null
+  tags?: string[]
+  shareWithClients?: boolean
+  shareWithSubs?: boolean
+}
+
+/**
+ * Record a file the browser already pushed straight to object storage. The
+ * object is discarded if the record cannot be written.
+ */
+export async function finalizeDirectUpload(
+  input: FinalizeUploadedFileInput,
+  orgId?: string,
+): Promise<FileWithUrls> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  if (!input.fileName || !input.storagePath) {
+    throw new Error("Missing uploaded file metadata")
+  }
+
+  const projectId = input.projectId || undefined
+  if (projectId) {
+    await requireProjectPermission(userId, projectId, "docs.upload")
+    const { data: project, error: projectError } = await supabase
+      .from("projects")
+      .select("id")
+      .eq("org_id", resolvedOrgId)
+      .eq("id", projectId)
+      .maybeSingle()
+
+    if (projectError || !project) {
+      throw new Error("Invalid project scope for upload")
+    }
+  } else {
+    await requirePermission("docs.upload", { supabase, orgId: resolvedOrgId, userId })
+  }
+
+  const storagePath = ensureOrgScopedPath(resolvedOrgId, input.storagePath)
+  const allowedPrefixes = projectId
+    ? [
+        `${resolvedOrgId}/${projectId}/documents/uploads/`,
+        `${resolvedOrgId}/${projectId}/drawings/uploads/`,
+        `${resolvedOrgId}/${projectId}/drawings/sets/`,
+      ]
+    : [`${resolvedOrgId}/general/documents/uploads/`]
+
+  if (!allowedPrefixes.some((prefix) => storagePath.startsWith(prefix))) {
+    throw new Error("Invalid upload path for project scope")
+  }
+
+  const mimeType = input.mimeType || "application/octet-stream"
+  const category = input.category ?? inferFileCategory(input.fileName, input.mimeType)
+  const folderPath = resolveUploadFolderPath({ folderPath: input.folderPath, projectId, category })
+
+  try {
+    const fileName = await resolveUploadFileName({
+      supabase,
+      orgId: resolvedOrgId,
+      projectId,
+      folderPath,
+      fileName: input.fileName,
+      checksum: input.checksum,
+    })
+
+    return await persistUploadedFile({
+      orgId: resolvedOrgId,
+      projectId,
+      storagePath,
+      fileName,
+      mimeType,
+      sizeBytes: input.fileSize,
+      checksum: input.checksum ?? undefined,
+      category,
+      folderPath,
+      visibility: input.visibility === "private" ? "private" : "public",
+      description: input.description || undefined,
+      tags: input.tags ?? [],
+      shareWithClients: input.shareWithClients,
+      shareWithSubs: input.shareWithSubs,
+    })
+  } catch (error) {
+    await discardUploadedObject(supabase, resolvedOrgId, storagePath)
+    throw error
+  }
+}
+
+async function discardUploadedObject(supabase: SupabaseClient, orgId: string, storagePath: string) {
+  await deleteFilesObjects({ supabase, orgId, paths: [storagePath] }).catch((cleanupError) => {
+    console.warn("[files] Failed to clean up orphaned upload object", cleanupError)
+  })
+}
+
+/**
+ * Move a batch of files into a folder, optionally adopting that folder's
+ * sharing defaults. Derives context once and writes one update per distinct
+ * sharing outcome instead of a per-file round trip.
+ */
+export async function moveFilesToFolder(
+  fileIds: string[],
+  folderPath: string | null,
+  applyFolderDefaults: boolean = true,
+  orgId?: string,
+): Promise<{ movedFiles: number; projectIds: string[] }> {
+  const uniqueIds = Array.from(new Set(fileIds)).filter(Boolean)
+  if (uniqueIds.length === 0) return { movedFiles: 0, projectIds: [] }
+  if (uniqueIds.length > MAX_BULK_FILE_OPERATION) {
+    throw new Error(`Select at most ${MAX_BULK_FILE_OPERATION} files to move at once.`)
+  }
+
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.upload", { supabase, orgId: resolvedOrgId, userId })
+
+  const targetFolder =
+    folderPath && folderPath.trim().length > 0 ? normalizeFolderPath(folderPath) ?? null : null
+
+  const { data: existingRows, error: existingError } = await supabase
+    .from("files")
+    .select("id, project_id, file_name, folder_path, share_with_clients, share_with_subs")
+    .eq("org_id", resolvedOrgId)
+    .in("id", uniqueIds)
+
+  if (existingError) {
+    throw new Error(`Failed to load files to move: ${existingError.message}`)
+  }
+
+  const allRows = existingRows ?? []
+
+  // A file already in the destination is not a move. Dropping it, rather than
+  // writing an identical row, is what keeps a redundant move from reporting
+  // success and emitting an audit + event per file for a change that did not
+  // happen. Every caller benefits — drag, the move dialog, mobile and the API.
+  const existing = allRows.filter((row) => (row.folder_path ?? null) !== targetFolder)
+  if (existing.length === 0) return { movedFiles: 0, projectIds: [] }
+
+  const projectIds = Array.from(
+    new Set(
+      existing
+        .map((row) => row.project_id)
+        .filter((value): value is string => typeof value === "string"),
+    ),
+  )
+
+  const defaultsByProject = new Map<string, { share_with_clients: boolean; share_with_subs: boolean }>()
+  if (applyFolderDefaults && targetFolder && targetFolder !== "/" && projectIds.length > 0) {
+    const { data: permissionRows, error: permissionError } = await supabase
+      .from("project_file_folder_permissions")
+      .select("project_id, share_with_clients, share_with_subs")
+      .eq("org_id", resolvedOrgId)
+      .eq("path", targetFolder)
+      .in("project_id", projectIds)
+
+    if (permissionError && permissionError.code !== "42P01") {
+      throw new Error(`Failed to resolve folder defaults: ${permissionError.message}`)
+    }
+
+    for (const row of permissionRows ?? []) {
+      defaultsByProject.set(row.project_id as string, {
+        share_with_clients: row.share_with_clients ?? false,
+        share_with_subs: row.share_with_subs ?? false,
+      })
+    }
+  }
+
+  // One update per distinct sharing outcome — normally a single round trip.
+  const groups = new Map<string, { shareWithClients?: boolean; shareWithSubs?: boolean; ids: string[] }>()
+  for (const row of existing) {
+    const defaults =
+      applyFolderDefaults && targetFolder && row.project_id
+        ? defaultsByProject.get(row.project_id as string) ?? {
+            share_with_clients: false,
+            share_with_subs: false,
+          }
+        : undefined
+    const key = defaults ? `${defaults.share_with_clients}:${defaults.share_with_subs}` : "keep"
+    const group = groups.get(key) ?? {
+      shareWithClients: defaults?.share_with_clients,
+      shareWithSubs: defaults?.share_with_subs,
+      ids: [],
+    }
+    group.ids.push(row.id as string)
+    groups.set(key, group)
+  }
+
+  for (const group of groups.values()) {
+    const updates: Record<string, string | boolean | null> = { folder_path: targetFolder }
+    if (group.shareWithClients !== undefined) updates.share_with_clients = group.shareWithClients
+    if (group.shareWithSubs !== undefined) updates.share_with_subs = group.shareWithSubs
+
+    const { error: updateError } = await supabase
+      .from("files")
+      .update(updates)
+      .eq("org_id", resolvedOrgId)
+      .in("id", group.ids)
+
+    if (updateError) {
+      throw new Error(`Failed to move files: ${updateError.message}`)
+    }
+  }
+
+  if (targetFolder && targetFolder !== "/") {
+    for (const projectId of projectIds) {
+      await createProjectFolder(projectId, targetFolder, resolvedOrgId)
+    }
+  }
+
+  for (let index = 0; index < existing.length; index += 25) {
+    await Promise.all(
+      existing.slice(index, index + 25).map((row) =>
+        recordAudit({
+          orgId: resolvedOrgId,
+          actorId: userId,
+          action: "update",
+          entityType: "file",
+          entityId: row.id as string,
+          before: { id: row.id, file_name: row.file_name, folder_path: row.folder_path },
+          after: { id: row.id, file_name: row.file_name, folder_path: targetFolder },
+          source: "bulk_move",
+        }),
+      ),
+    )
+  }
+
+  return { movedFiles: existing.length, projectIds }
+}
+
 /**
  * Update file metadata
  */
@@ -894,25 +1551,66 @@ export async function listFilesWithUrls(
     return {} as Record<string, FileSourceContext[]>
   })
 
-  const dataWithUrls = result.data.map((file) => {
-    const internalUrl = buildInternalFileUrl(file.id)
-    const previewUrl = file.preview_thumbnail_path ? `/api/files/${file.id}/preview` : undefined
-
-    return {
-      ...file,
-      source_contexts: sourceContextsByFileId[file.id] ?? [],
-      download_url: internalUrl,
-      thumbnail_url:
-        previewUrl ??
-        (needsGeneratedImagePreview(file.mime_type, file.file_name, file.storage_path)
-          ? `/api/files/${file.id}/preview`
-          : canUseOriginalAsImagePreview(file.mime_type)
-            ? internalUrl
-            : undefined),
-    }
-  })
+  const dataWithUrls = result.data.map((file) => ({
+    ...buildFileUrls(file),
+    source_contexts: sourceContextsByFileId[file.id] ?? [],
+  }))
 
   return { data: dataWithUrls, count: result.count, hasMore: result.hasMore }
+}
+
+export interface LoadDocumentsViewInput {
+  projectId: string
+  /** File list filters. `project_id` is taken from `projectId`, never from here. */
+  filters?: Omit<Partial<FileListFilters>, "project_id">
+  /** Category counts and folder sharing defaults — skipped while a search is active. */
+  includeMetadata?: boolean
+  /** Immediate child folders of `childFolderPath` — skipped while a search is active. */
+  includeChildFolders?: boolean
+  childFolderPath?: string
+}
+
+export interface DocumentsView {
+  files: FileWithUrls[]
+  totalCount: number
+  hasMore: boolean
+  /** null when the caller asked to skip metadata — distinct from "no counts". */
+  counts: Record<string, number> | null
+  folderPermissions: ProjectFolderPermissions[] | null
+  childFolders: FolderChild[] | null
+}
+
+/**
+ * Everything the documents browser needs for one folder view, in one request.
+ *
+ * A client component's server-action calls are queued one at a time by the app
+ * router, so four "parallel" actions are four sequential round trips that each
+ * re-pay the org/permission scaffolding. Fanning out here keeps it to one
+ * request, where React `cache()` dedupes that scaffolding across the branches.
+ */
+export async function loadDocumentsView(
+  input: LoadDocumentsViewInput,
+  orgId?: string,
+): Promise<DocumentsView> {
+  const { projectId, filters = {}, includeMetadata = true, includeChildFolders = true } = input
+
+  const [files, counts, folderPermissions, childFolders] = await Promise.all([
+    listFilesWithUrls({ ...filters, project_id: projectId }, orgId),
+    includeMetadata ? getFileCounts(projectId, orgId) : Promise.resolve(null),
+    includeMetadata ? listProjectFolderPermissions(projectId, orgId) : Promise.resolve(null),
+    includeChildFolders
+      ? listChildFolders(projectId, input.childFolderPath, orgId)
+      : Promise.resolve(null),
+  ])
+
+  return {
+    files: files.data,
+    totalCount: files.count,
+    hasMore: files.hasMore,
+    counts,
+    folderPermissions,
+    childFolders,
+  }
 }
 
 /**

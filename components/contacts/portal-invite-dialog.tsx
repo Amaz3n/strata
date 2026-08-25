@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import type { Contact, Project } from "@/lib/types"
 import { sendPortalInviteAction } from "@/app/(app)/contacts/actions"
 import { useToast } from "@/hooks/use-toast"
+import { Loader2 } from "@/components/icons"
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -17,12 +18,23 @@ interface PortalInviteDialogProps {
   /** Narrowed to what the dialog actually shows, so a list row that holds only
    *  an id and a name can invite without loading the whole contact. */
   contact?: Pick<Contact, "id" | "full_name">
-  projects: Project[]
+  projects: Array<Pick<Project, "id" | "name">>
+  projectsLoading?: boolean
+  projectsError?: string
+  onRetryProjects?: () => void
   open: boolean
   onOpenChange: (open: boolean) => void
 }
 
-export function PortalInviteDialog({ contact, projects, open, onOpenChange }: PortalInviteDialogProps) {
+export function PortalInviteDialog({
+  contact,
+  projects,
+  projectsLoading = false,
+  projectsError,
+  onRetryProjects,
+  open,
+  onOpenChange,
+}: PortalInviteDialogProps) {
   const [projectId, setProjectId] = useState<string>("")
   const [portalType, setPortalType] = useState<"client" | "sub">("sub")
   const [isPending, startTransition] = useTransition()
@@ -60,8 +72,10 @@ export function PortalInviteDialog({ contact, projects, open, onOpenChange }: Po
           <div className="space-y-2">
             <Label>Project</Label>
             <Select value={projectId} onValueChange={setProjectId}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select a project" />
+              <SelectTrigger disabled={projectsLoading || Boolean(projectsError)}>
+                <SelectValue
+                  placeholder={projectsLoading ? "Loading projects…" : "Select a project"}
+                />
               </SelectTrigger>
               <SelectContent>
                 {projects.map((project) => (
@@ -71,6 +85,23 @@ export function PortalInviteDialog({ contact, projects, open, onOpenChange }: Po
                 ))}
               </SelectContent>
             </Select>
+            {projectsLoading ? (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 className="size-3.5 animate-spin" />
+                Loading projects…
+              </div>
+            ) : projectsError ? (
+              <div className="flex items-center justify-between gap-3 text-xs text-destructive">
+                <span>{projectsError}</span>
+                {onRetryProjects ? (
+                  <Button type="button" size="sm" variant="outline" onClick={onRetryProjects}>
+                    Retry
+                  </Button>
+                ) : null}
+              </div>
+            ) : projects.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No available projects.</p>
+            ) : null}
           </div>
           <div className="space-y-2">
             <Label>Portal type</Label>
@@ -88,7 +119,10 @@ export function PortalInviteDialog({ contact, projects, open, onOpenChange }: Po
             <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={isPending}>
               Cancel
             </Button>
-            <Button onClick={onSend} disabled={isPending || !projectId}>
+            <Button
+              onClick={onSend}
+              disabled={isPending || projectsLoading || Boolean(projectsError) || !projectId}
+            >
               {isPending ? "Sending..." : "Send invite"}
             </Button>
           </div>
@@ -97,7 +131,6 @@ export function PortalInviteDialog({ contact, projects, open, onOpenChange }: Po
     </Dialog>
   )
 }
-
 
 
 

@@ -14,7 +14,10 @@ async function handle(request: NextRequest) {
     const results = await runDueInvoiceSchedules()
     const created = results.filter((result) => result.status === "created").length
     const failed = results.filter((result) => result.status === "failed")
-    return NextResponse.json({ ok: true, created, failed: failed.length, results })
+    return NextResponse.json(
+      { ok: failed.length === 0, created, failed: failed.length, results },
+      { status: failed.length === 0 ? 200 : 207 },
+    )
   } catch (error) {
     console.error("[invoice-schedules] Cron run failed", error)
     return NextResponse.json(

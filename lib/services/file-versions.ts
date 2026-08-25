@@ -169,40 +169,6 @@ export async function listVersions(fileId: string, orgId?: string): Promise<File
 }
 
 /**
- * Get a specific version
- */
-export async function getVersion(versionId: string, orgId?: string): Promise<FileVersion | null> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("docs.read", { supabase, orgId: resolvedOrgId, userId })
-
-  const { data, error } = await supabase
-    .from("doc_versions")
-    .select(`
-      id, org_id, file_id, version_number, label, notes,
-      storage_path, file_name, mime_type, size_bytes, checksum,
-      created_by, created_at,
-      app_users!doc_versions_created_by_fkey(full_name, avatar_url)
-    `)
-    .eq("org_id", resolvedOrgId)
-    .eq("id", versionId)
-    .single()
-
-  if (error) {
-    if (error.code === "PGRST116") return null
-    throw new Error(`Failed to get version: ${error.message}`)
-  }
-
-  // Get the file to check if this is current
-  const { data: file } = await supabase
-    .from("files")
-    .select("current_version_id")
-    .eq("id", data.file_id)
-    .single()
-
-  return mapVersion(data, file?.current_version_id)
-}
-
-/**
  * Create a new version of a file (upload new blob, update file to point to it)
  */
 export async function createVersion(
@@ -716,24 +682,4 @@ export async function hasVersions(fileId: string, orgId?: string): Promise<boole
   }
 
   return (count ?? 0) > 0
-}
-
-/**
- * Get version count for a file
- */
-export async function getVersionCount(fileId: string, orgId?: string): Promise<number> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("docs.read", { supabase, orgId: resolvedOrgId, userId })
-
-  const { count, error } = await supabase
-    .from("doc_versions")
-    .select("id", { count: "exact", head: true })
-    .eq("org_id", resolvedOrgId)
-    .eq("file_id", fileId)
-
-  if (error) {
-    throw new Error(`Failed to get version count: ${error.message}`)
-  }
-
-  return count ?? 0
 }

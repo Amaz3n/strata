@@ -4,22 +4,26 @@ import { PageLayout } from "@/components/layout/page-layout";
 import { getCurrentUserPermissions } from "@/lib/services/permissions";
 import { getCompaniesComplianceStatus } from "@/lib/services/compliance-documents";
 import { getCompaniesPrequalificationSummary } from "@/lib/services/prequalification";
-import { listProjects } from "@/lib/services/projects";
 import type { PartyKind } from "@/lib/directory/roles";
 import { canEditDirectory } from "@/lib/directory/permissions";
+import type { DirectoryVendorData } from "@/lib/directory/vendor-data";
 import { terminology } from "@/lib/terminology";
 import { DirectoryClient } from "@/components/directory/directory-client";
 import {
   listComplianceWatchCompanies,
-  listDirectoryPage,
-  listDirectoryTrades,
+  listDirectoryInitialPages,
+  type DirectoryPageWindow,
   type DirectorySortDirection,
   type DirectorySortKey,
 } from "@/lib/services/directory";
 
-import { requireOrgContext } from "@/lib/services/context";
+import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context";
 
 const PAGE_SIZE = 25;
+
+// This page owns a useful shell and keeps runtime data behind Suspense, so
+// Next.js 16.3 can validate and prefetch it as an Instant Navigation target.
+export const instant = true;
 
 interface DirectoryPageProps {
   searchParams: Promise<{
@@ -45,9 +49,64 @@ function resolveDirection(value?: string): DirectorySortDirection {
   return value === "desc" ? "desc" : "asc";
 }
 
+async function loadVendorData(
+  directoryPagePromise: Promise<DirectoryPageWindow>,
+  context: OrgServiceContext,
+): Promise<DirectoryVendorData> {
+  // The watch list starts alongside the core rows, but none of this work gates
+  // the toolbar or table. The client consumes this promise in small Suspense
+  // boundaries and treats pending/failed data as unknown, never as all-clear.
+  const watchPromise = listComplianceWatchCompanies(200, context).then(
+    (value) => ({ ok: true as const, value }),
+    () => ({
+      ok: false as const,
+      value: {
+        companies: [] as Array<{ id: string; name: string }>,
+        total: 0,
+        truncated: false,
+      },
+    }),
+  );
+  const [directoryPage, watchResult] = await Promise.all([
+    directoryPagePromise,
+    watchPromise,
+  ]);
+
+  const companyIdsOnPage = directoryPage.entries
+    .filter((entry) => entry.kind === "company" && entry.role_categories.includes("vendor"))
+    .map((entry) => entry.id);
+  const statusCompanyIds = Array.from(
+    new Set([
+      ...watchResult.value.companies.map((company) => company.id),
+      ...companyIdsOnPage,
+    ]),
+  );
+
+  const [complianceResult, prequalificationResult] = await Promise.all([
+    getCompaniesComplianceStatus(statusCompanyIds, context.orgId).then(
+      (value) => ({ ok: true as const, value }),
+      () => ({ ok: false as const, value: {} }),
+    ),
+    getCompaniesPrequalificationSummary(statusCompanyIds, context.orgId).then(
+      (value) => ({ ok: true as const, value }),
+      () => ({ ok: false as const, value: {} }),
+    ),
+  ]);
+
+  return {
+    complianceStatusByCompanyId: complianceResult.value,
+    prequalificationByCompanyId: prequalificationResult.value,
+    complianceWatchCompanies: watchResult.value.companies,
+    complianceWatchTruncated: watchResult.value.truncated,
+    complianceWatchTotal: watchResult.value.total,
+    statusUnavailable:
+      !watchResult.ok || !complianceResult.ok || !prequalificationResult.ok,
+  };
+}
+
 async function DirectoryData({ searchParams }: DirectoryPageProps) {
-  const { orgId, productTier } = await requireOrgContext();
-  const resolved = await searchParams;
+  const [context, resolved] = await Promise.all([requireOrgContext(), searchParams]);
+  const { orgId, productTier } = context;
 
   const kind = resolveKind(resolved?.kind);
   const search = typeof resolved?.q === "string" ? resolved.q.trim() : "";
@@ -56,53 +115,57 @@ async function DirectoryData({ searchParams }: DirectoryPageProps) {
   const sort = resolveSort(resolved?.sort);
   const direction = resolveDirection(resolved?.direction);
 
-  const [directoryPage, trades, permissionResult, projects, watchList] =
-    await Promise.all([
-      listDirectoryPage({
-        kind,
-        page: 1,
-        pageSize: PAGE_SIZE,
-        search,
-        role: roleFilter,
-        trade: tradeFilter,
-        sort,
-        direction,
-      }),
-      listDirectoryTrades(),
-      getCurrentUserPermissions(),
-      listProjects().catch(() => []),
-      listComplianceWatchCompanies().catch(() => ({
-        companies: [] as Array<{ id: string; name: string }>,
-        total: 0,
-        truncated: false,
-      })),
-    ]);
+  const sharedInput = {
+    page: 1,
+    pageSize: PAGE_SIZE,
+    search,
+    sort,
+    direction,
+  } as const;
+  const initialPagesPromise = listDirectoryInitialPages(
+    {
+      company: {
+        ...sharedInput,
+        kind: "company",
+        role: kind === "company" ? roleFilter : "all",
+        trade: kind === "company" ? tradeFilter : "all",
+      },
+      contact: {
+        ...sharedInput,
+        kind: "contact",
+        role: kind === "contact" ? roleFilter : "all",
+        trade: "all",
+      },
+    },
+    context,
+  );
+  const companyPagePromise = initialPagesPromise.then((pages) => pages.company);
+  const vendorData = loadVendorData(companyPagePromise, context);
+  const [initialPages, permissionResult] = await Promise.all([
+    initialPagesPromise,
+    getCurrentUserPermissions(orgId),
+  ]);
+  const directoryPage = initialPages[kind];
+
+  const currentPageKey = [
+    kind,
+    search,
+    roleFilter,
+    tradeFilter,
+    sort,
+    direction,
+  ].join("|");
+  const alternateKind: PartyKind = kind === "company" ? "contact" : "company";
+  const alternatePageKey = [
+    alternateKind,
+    search,
+    "all",
+    "all",
+    sort,
+    direction,
+  ].join("|");
 
   const canEdit = canEditDirectory(permissionResult?.permissions ?? []);
-
-  // Status decorates vendor companies only, and only the ones actually on this
-  // page plus the banner's watch list — the page used to load every
-  // subcontractor and supplier in the org unpaginated just to feed the banner.
-  const companyIdsOnPage = directoryPage.entries
-    .filter((entry) => entry.kind === "company" && entry.role_categories.includes("vendor"))
-    .map((entry) => entry.id);
-  const statusCompanyIds = Array.from(
-    new Set([...watchList.companies.map((company) => company.id), ...companyIdsOnPage]),
-  );
-
-  // A failed status read must not render as "everyone is compliant". The client
-  // shows an unavailable state instead, because on this surface silence is
-  // indistinguishable from an all-clear — and an all-clear releases payment.
-  const [complianceResult, prequalificationResult] = await Promise.all([
-    getCompaniesComplianceStatus(statusCompanyIds).then(
-      (value) => ({ ok: true as const, value }),
-      () => ({ ok: false as const, value: {} }),
-    ),
-    getCompaniesPrequalificationSummary(statusCompanyIds).then(
-      (value) => ({ ok: true as const, value }),
-      () => ({ ok: false as const, value: {} }),
-    ),
-  ]);
 
   return (
     <DirectoryClient
@@ -110,14 +173,12 @@ async function DirectoryData({ searchParams }: DirectoryPageProps) {
       entries={directoryPage.entries}
       total={directoryPage.total}
       pageSize={directoryPage.pageSize}
-      relationshipTypes={directoryPage.relationshipTypes}
-      complianceStatusByCompanyId={complianceResult.value}
-      prequalificationByCompanyId={prequalificationResult.value}
-      vendorStatusUnavailable={!complianceResult.ok || !prequalificationResult.ok}
-      complianceWatchCompanies={watchList.companies}
-      complianceWatchTruncated={watchList.truncated}
-      complianceWatchTotal={watchList.total}
-      projects={projects}
+      relationshipTypes={initialPages.relationshipTypes}
+      initialPageCache={{
+        [currentPageKey]: directoryPage,
+        [alternatePageKey]: initialPages[alternateKind],
+      }}
+      vendorData={vendorData}
       terms={terminology(productTier)}
       showPrequalTrades={productTier === "commercial"}
       canCreate={canEdit}
@@ -128,14 +189,17 @@ async function DirectoryData({ searchParams }: DirectoryPageProps) {
       tradeFilter={tradeFilter}
       sort={sort}
       direction={direction}
-      trades={trades}
+      trades={initialPages.trades}
     />
   );
 }
 
 function DirectorySkeleton() {
   return (
-    <div className="flex min-h-full flex-col bg-background">
+    <div
+      data-instant-shell="directory"
+      className="flex min-h-full flex-col bg-background"
+    >
       <div className="flex shrink-0 items-center justify-between border-y px-4 py-3">
         <Skeleton className="h-10 w-96" />
         <Skeleton className="h-10 w-10" />

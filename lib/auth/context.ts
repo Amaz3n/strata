@@ -3,7 +3,7 @@ import "server-only"
 import { cache } from "react"
 import { cacheLife } from "next/cache"
 import { cookies } from "next/headers"
-import { connection } from "next/server"
+import { after, connection } from "next/server"
 import type { SupabaseClient, User } from "@supabase/supabase-js"
 import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server"
 import { isPlatformAdminUser } from "@/lib/auth/platform"
@@ -26,24 +26,6 @@ export interface AuthContext {
   membership: OrgMembership | null
 }
 
-/**
- * Supabase Auth checks the current time while recovering a cookie-backed
- * session. Keep that request-only work in a private cache scope so Cache
- * Components can include the resolved session in runtime prefetches without
- * ever sharing it through the server cache.
- */
-async function getValidatedUser(): Promise<User | null> {
-  "use cache: private"
-  cacheLife("seconds")
-
-  const supabase = await createServerSupabaseClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
-  return user
-}
-
 async function getPreferredOrgId(supabase: SupabaseClient, userId?: string | null) {
   const cookieStore = await cookies()
   const cookieOrgId = cookieStore.get("org_id")?.value
@@ -62,6 +44,39 @@ async function getPreferredOrgId(supabase: SupabaseClient, userId?: string | nul
     console.error("Unable to resolve default org with service role", error)
     return null
   }
+}
+
+/**
+ * Recover every serializable identity fact inside one private cache scope.
+ *
+ * Supabase Auth checks the clock while reading and validating its cookie-backed
+ * session, and authenticated PostgREST requests obtain their token through the
+ * same recovery path. Keeping only `getUser()` in the cache was therefore not
+ * enough: the preferred-org and membership queries immediately below it still
+ * called Auth's internal `getSession()` outside the scope during prerendering.
+ * That produced both the unstable `Date.now()` insight and the insecure-user
+ * warning even though Arc itself never trusted the session user.
+ *
+ * The Supabase client stays local to this function; only plain user/membership
+ * data crosses the cache boundary. The profile is browser-private, never shared
+ * server-side, and has the App Shell lifetime configured in next.config.mjs.
+ */
+async function loadAuthenticatedIdentity(): Promise<{
+  user: User | null
+  orgId: string | null
+  membership: OrgMembership | null
+}> {
+  "use cache: private"
+  cacheLife("session")
+
+  const supabase = await createServerSupabaseClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  const orgId = user ? await getPreferredOrgId(supabase, user.id) : null
+  const membership = user && orgId ? await fetchMembership(supabase, orgId, user.id) : null
+
+  return { user, orgId, membership }
 }
 
 async function fetchFirstMembershipOrg(client: SupabaseClient, userId: string) {
@@ -92,6 +107,7 @@ async function fetchMembership(
     .select("id, org_id, role_id, status, last_active_at, roles:roles!inner(key), orgs:orgs!inner(product_tier)")
     .eq("org_id", orgId)
     .eq("user_id", userId)
+    .eq("status", "active")
     .maybeSingle()
 
   if (error) {
@@ -121,6 +137,7 @@ async function fetchMembershipWithServiceRole(orgId: string, userId: string): Pr
     .select("id, org_id, role_id, status, last_active_at, roles:roles!inner(key), orgs:orgs!inner(product_tier)")
     .eq("org_id", orgId)
     .eq("user_id", userId)
+    .eq("status", "active")
     .maybeSingle()
 
   if (error || !data) return null
@@ -143,13 +160,15 @@ async function fetchMembershipWithServiceRole(orgId: string, userId: string): Pr
 export const hasActivePlatformMembership = cache(async (userId: string) => {
   try {
     const supabase = createServiceSupabaseClient()
-    const nowIso = new Date().toISOString()
     const { data, error } = await supabase
       .from("platform_memberships")
       .select("id")
       .eq("user_id", userId)
       .eq("status", "active")
-      .or(`expires_at.is.null,expires_at.gt.${nowIso}`)
+      // Expiry is compared against Postgres' clock ("now" is a timestamptz
+      // literal) so this stays callable from prerendered and cached scopes,
+      // which cannot read a JS clock.
+      .or("expires_at.is.null,expires_at.gt.now")
       .limit(1)
       .maybeSingle()
 
@@ -165,40 +184,48 @@ export const hasActivePlatformMembership = cache(async (userId: string) => {
   }
 })
 
-async function touchMembershipActivity(orgId: string, userId: string, lastActiveAt?: string | null) {
-  const now = new Date()
-  if (lastActiveAt) {
-    const last = new Date(lastActiveAt)
-    if (!Number.isNaN(last.getTime()) && now.getTime() - last.getTime() < 15 * 60 * 1000) {
-      return
+/**
+ * Last-active is telemetry, so it runs in `after()`: off the render's critical
+ * path, and — because requireOrgMembership() is on the path of every page — out
+ * of the prerender, where reading the clock to throttle the write would fail.
+ */
+function touchMembershipActivity(orgId: string, userId: string, lastActiveAt?: string | null) {
+  after(async () => {
+    const now = new Date()
+    if (lastActiveAt) {
+      const last = new Date(lastActiveAt)
+      if (!Number.isNaN(last.getTime()) && now.getTime() - last.getTime() < 15 * 60 * 1000) {
+        return
+      }
     }
-  }
 
-  try {
-    const supabase = createServiceSupabaseClient()
-    await supabase
-      .from("memberships")
-      .update({ last_active_at: now.toISOString() })
-      .eq("org_id", orgId)
-      .eq("user_id", userId)
-  } catch (error) {
-    console.error("Failed to update last active timestamp", error)
-  }
+    try {
+      const supabase = createServiceSupabaseClient()
+      await supabase
+        .from("memberships")
+        .update({ last_active_at: now.toISOString() })
+        .eq("org_id", orgId)
+        .eq("user_id", userId)
+    } catch (error) {
+      console.error("Failed to update last active timestamp", error)
+    }
+  })
 }
 
 // Request-cached: getUser() is a network call to Supabase Auth and every service
 // re-resolves this context; without the cache a single page render repeats the
 // whole chain dozens of times.
 export const getAuthContext = cache(async (): Promise<AuthContext> => {
-  const [supabase, user] = await Promise.all([
-    createServerSupabaseClient(),
-    getValidatedUser(),
-  ])
+  // Resolve identity first so callers already inside a private cache keep
+  // Supabase's session recovery (and its token-expiry clock) in that scope.
+  // Uncached render entry points must establish request time before calling
+  // this function; the app chrome does that in getAppChromeContext(). Keeping
+  // connection() out of this shared helper is essential because project and
+  // directory read models legitimately call it from `use cache: private`.
+  const identity = await loadAuthenticatedIdentity()
+  const supabase = await createServerSupabaseClient()
 
-  const orgId = user ? await getPreferredOrgId(supabase, user.id) : null
-  const membership = user && orgId ? await fetchMembership(supabase, orgId, user.id) : null
-
-  return { supabase, user, orgId, membership }
+  return { supabase, ...identity }
 })
 
 export async function requireAuth(): Promise<AuthContext & { user: User }> {
@@ -219,8 +246,26 @@ export const requireOrgMembership = cache(async (
   orgId?: string,
 ): Promise<AuthContext & { user: User; orgId: string; membership: OrgMembership }> => {
   const context = await requireAuth()
-  const isPlatformAdmin =
-    isPlatformAdminUser(context.user) || (await hasActivePlatformMembership(context.user.id))
+
+  // Authorization must not trust the session-lifetime identity cache above.
+  // Re-read through the privileged client once per request so a suspension or
+  // revocation takes effect on the next request even if the browser still has
+  // an active Supabase session and a cached app shell.
+  //
+  // The platform-membership probe and that membership re-read are keyed on the
+  // same already-known (user, org) pair and neither decides the other, so they
+  // travel together instead of costing two serial round trips on every
+  // authenticated request. A configured superadmin still short-circuits both:
+  // that check is a local env lookup, and neither answer would be used.
+  const ambientOrgId = orgId ?? context.orgId
+  const isSuperAdmin = isPlatformAdminUser(context.user)
+  const [isPlatformOperator, ambientMembership]: [boolean, OrgMembership | null] = isSuperAdmin
+    ? [true, null]
+    : await Promise.all([
+        hasActivePlatformMembership(context.user.id),
+        ambientOrgId ? fetchMembershipWithServiceRole(ambientOrgId, context.user.id) : null,
+      ])
+  const isPlatformAdmin = isSuperAdmin || isPlatformOperator
 
   // Platform admin: allow bypassing membership, use service client, and pick any org.
   if (isPlatformAdmin) {
@@ -282,25 +327,23 @@ export const requireOrgMembership = cache(async (
     }
   }
 
-  let resolvedOrgId =
-    orgId ?? context.orgId ?? (await getPreferredOrgId(context.supabase, context.user.id))
+  let resolvedOrgId = ambientOrgId
+  let membership = ambientMembership
 
-  let membership =
-    resolvedOrgId && context.membership && context.membership.org_id === resolvedOrgId
-      ? context.membership
-      : resolvedOrgId
-        ? await fetchMembership(context.supabase, resolvedOrgId, context.user.id)
-        : null
+  // An explicit organization is an authorization boundary (for example, a
+  // file's owning org). Never satisfy that check with membership in a
+  // different organization. Only ambient cookie resolution may fall back.
+  if (!membership && orgId) {
+    throw new Error("You no longer have access to this organization")
+  }
 
-  // If we couldn't resolve membership (bad/missing cookie), fall back to first active org.
+  // If an ambient cookie points at a revoked/missing membership, resolve a
+  // different active organization without consulting that stale cookie again.
   if (!membership) {
-    resolvedOrgId = await getPreferredOrgId(context.supabase, context.user.id)
+    const serviceClient = createServiceSupabaseClient()
+    resolvedOrgId = await fetchFirstMembershipOrg(serviceClient, context.user.id)
     if (resolvedOrgId) {
-      membership = await fetchMembership(context.supabase, resolvedOrgId, context.user.id)
-      // Final fallback: service role to bypass RLS if anon query fails.
-      if (!membership) {
-        membership = await fetchMembershipWithServiceRole(resolvedOrgId, context.user.id)
-      }
+      membership = await fetchMembershipWithServiceRole(resolvedOrgId, context.user.id)
     }
   }
 
@@ -323,7 +366,7 @@ export const requireOrgMembership = cache(async (
   }
 
   if (membership.status === "active") {
-    await touchMembershipActivity(resolvedOrgId, context.user.id, membership.last_active_at)
+    touchMembershipActivity(resolvedOrgId, context.user.id, membership.last_active_at)
   }
 
   return { ...context, orgId: resolvedOrgId, membership }

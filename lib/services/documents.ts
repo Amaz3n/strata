@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, randomUUID } from "crypto"
+import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
@@ -11,12 +12,40 @@ import {
   documentSigningGroupInputSchema,
 } from "@/lib/validation/documents"
 
+/** Lists are capped from day one; 400-lot orgs are the design case. */
+const DEFAULT_DOCUMENT_PAGE_SIZE = 100
+const MAX_DOCUMENT_PAGE_SIZE = 200
+
 function requireDocumentSigningSecret() {
   const secret = process.env.DOCUMENT_SIGNING_SECRET
   if (!secret) {
     throw new Error("Missing DOCUMENT_SIGNING_SECRET environment variable")
   }
   return secret
+}
+
+async function assertBelongsToOrg(
+  supabase: SupabaseClient,
+  orgId: string,
+  table: "files" | "projects" | "prospects",
+  id: string | null | undefined,
+  label: string,
+): Promise<void> {
+  if (!id) return
+
+  const { data, error } = await supabase
+    .from(table)
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("id", id)
+    .maybeSingle()
+
+  if (error) {
+    throw new Error(`Failed to verify ${label.toLowerCase()}: ${error.message}`)
+  }
+  if (!data) {
+    throw new Error(`${label} not found in this organization`)
+  }
 }
 
 export async function createDocument(
@@ -46,6 +75,14 @@ export async function createDocument(
   const parsed = documentCreateInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission(options.authorizationPermission ?? "project.manage", { supabase, orgId: resolvedOrgId, userId })
+
+  // Every foreign key on the row is caller-supplied, so each one is proven to
+  // belong to this org before it is written — RLS cannot infer the link.
+  await Promise.all([
+    assertBelongsToOrg(supabase, resolvedOrgId, "files", parsed.source_file_id, "Source file"),
+    assertBelongsToOrg(supabase, resolvedOrgId, "projects", parsed.project_id, "Project"),
+    assertBelongsToOrg(supabase, resolvedOrgId, "prospects", parsed.prospect_id, "Prospect"),
+  ])
 
   const { data: document, error } = await supabase
     .from("documents")
@@ -92,29 +129,42 @@ export async function createDocument(
 export async function listDocuments({
   projectId,
   orgId,
+  limit = DEFAULT_DOCUMENT_PAGE_SIZE,
+  offset = 0,
 }: {
   projectId?: string
   orgId?: string
+  limit?: number
+  offset?: number
 }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
 
+  const pageSize = Math.min(Math.max(limit, 1), MAX_DOCUMENT_PAGE_SIZE)
+  const pageOffset = Math.max(offset, 0)
+
   let query = supabase
     .from("documents")
-    .select("*")
+    .select("*", { count: "exact" })
     .eq("org_id", resolvedOrgId)
     .order("created_at", { ascending: false })
+    .range(pageOffset, pageOffset + pageSize - 1)
 
   if (projectId) {
     query = query.eq("project_id", projectId)
   }
 
-  const { data, error } = await query
+  const { data, count, error } = await query
   if (error) {
     throw new Error(`Failed to list documents: ${error.message}`)
   }
 
-  return data ?? []
+  const rows = data ?? []
+  return {
+    data: rows,
+    count: count ?? rows.length,
+    hasMore: pageOffset + rows.length < (count ?? rows.length),
+  }
 }
 
 export async function createDocumentSigningRequest(

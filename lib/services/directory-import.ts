@@ -182,7 +182,9 @@ async function resolveCompanies(
       return {
         org_id: orgId,
         name: parsed.data.name,
-        company_type: parsed.data.company_type,
+        // Normalized upstream, so the fallback is unreachable; it exists because
+        // the column is what the role assignment below reads back.
+        company_type: parsed.data.company_type ?? "other",
         phone: parsed.data.phone ?? null,
         email: parsed.data.email ?? null,
         website: parsed.data.website ?? null,

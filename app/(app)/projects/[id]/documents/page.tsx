@@ -3,14 +3,8 @@ import { Suspense } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
 import { PageLayout } from "@/components/layout/page-layout"
 import { getProjectAction } from "../actions"
-import {
-  listFilesAction,
-  getFileCountsAction,
-  listChildFoldersAction,
-} from "@/app/(app)/documents/actions"
+import { loadDocumentsViewAction } from "@/app/(app)/documents/actions"
 import { UnifiedDocumentsLayout } from "@/components/documents"
-
-import { unwrapAction } from "@/lib/action-result"
 
 interface ProjectFilesPageProps {
   params: Promise<{ id: string }>
@@ -21,9 +15,7 @@ export const instant = true
 
 export default function ProjectFilesPage({ params, searchParams }: ProjectFilesPageProps) {
   return (
-    <PageLayout
-      title="Documents"
-    >
+    <PageLayout title="Documents" fullBleed>
       <Suspense
         fallback={
           <div data-instant-shell="project-documents" className="p-6 space-y-4">
@@ -58,33 +50,31 @@ async function ProjectFilesData({
 
   const normalizedPath = query.path?.trim() ? query.path : undefined
 
-  const [filesResult, counts, folders] = await Promise.all([
-    listFilesAction({
-      project_id: id,
+  const view = await loadDocumentsViewAction({
+    projectId: id,
+    filters: {
       folder_path: normalizedPath,
       root_only: normalizedPath ? undefined : true,
       limit: 100,
       offset: 0,
-    }),
-    getFileCountsAction(id),
-    listChildFoldersAction(id, normalizedPath),
-  ])
+    },
+    childFolderPath: normalizedPath,
+  })
+  const folders = view.childFolders ?? []
 
   return (
-    <div className="-m-4 -mt-6 h-[calc(100vh-3.5rem)]">
-      <UnifiedDocumentsLayout
-        project={{ id: project.id, name: project.name }}
-        initialFiles={filesResult.data}
-        initialTotalCount={filesResult.count}
-        initialHasMore={filesResult.hasMore}
-        initialCounts={counts}
-        initialFolders={folders.map((folder) => folder.path)}
-        initialFolderCounts={Object.fromEntries(
-          folders.map((folder) => [folder.path, folder.itemCount])
-        )}
-        initialSets={[]}
-        initialPath={query.path}
-      />
-    </div>
+    <UnifiedDocumentsLayout
+      project={{ id: project.id, name: project.name }}
+      initialFiles={view.files}
+      initialTotalCount={view.totalCount}
+      initialHasMore={view.hasMore}
+      initialCounts={view.counts ?? {}}
+      initialFolders={folders.map((folder) => folder.path)}
+      initialFolderCounts={Object.fromEntries(
+        folders.map((folder) => [folder.path, folder.itemCount])
+      )}
+      initialFolderPermissions={view.folderPermissions ?? []}
+      initialPath={query.path}
+    />
   )
 }

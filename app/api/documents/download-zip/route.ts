@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 
 import { requireOrgContext } from "@/lib/services/context"
+import { requirePermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { downloadFilesObject } from "@/lib/storage/files-storage"
 
@@ -153,7 +154,12 @@ function buildDisposition(filename: string) {
 
 export async function POST(request: Request) {
   try {
-    const { supabase, orgId } = await requireOrgContext()
+    const { supabase, orgId, userId } = await requireOrgContext()
+    try {
+      await requirePermission("docs.download", { supabase, orgId, userId })
+    } catch {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+    }
     const body = await request.json()
     const fileIds = Array.isArray(body?.fileIds)
       ? Array.from(new Set(body.fileIds.filter((id: unknown): id is string => typeof id === "string" && id.length > 0)))

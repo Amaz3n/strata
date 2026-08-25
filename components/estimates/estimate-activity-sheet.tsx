@@ -59,6 +59,7 @@ export function EstimateActivitySheet({ estimate, open, onOpenChange }: Props) {
     let active = true
     setLoading(true)
     listEstimateCommentsAction(estimate.id)
+      .then(unwrapAction)
       .then((data) => {
         if (active) setComments(data as Comment[])
       })
@@ -76,7 +77,7 @@ export function EstimateActivitySheet({ estimate, open, onOpenChange }: Props) {
     startTransition(async () => {
       try {
         unwrapAction(await addEstimateCommentAction(estimate.id, reply.trim()))
-        const data = await listEstimateCommentsAction(estimate.id)
+        const data = unwrapAction(await listEstimateCommentsAction(estimate.id))
         setComments(data as Comment[])
         setReply("")
         toast.success("Reply added")

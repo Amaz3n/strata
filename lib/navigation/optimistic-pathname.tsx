@@ -34,7 +34,6 @@ export function OptimisticPathProvider({ children }: { children: React.ReactNode
   const router = useRouter()
   const [isPending, startTransition] = React.useTransition()
   const [optimisticPath, setOptimisticPath] = React.useOptimistic(pathname)
-
   const navigate = React.useCallback(
     (href: string, options?: { replace?: boolean }) => {
       startTransition(() => {
@@ -85,6 +84,22 @@ export function useIsNavigationPending(): boolean {
 type OptimisticLinkProps = Omit<React.AnchorHTMLAttributes<HTMLAnchorElement>, "href"> &
   Omit<LinkProps, "href"> & {
     href: string
+    /**
+     * Upgrade this link from an App Shell prefetch to a full one — shell plus
+     * the per-link runtime data behind it — the first time the user shows
+     * intent (hover, focus, or the touch that precedes a tap).
+     *
+     * This exists for lists. Under Partial Prefetching every visible link to
+     * the same route shares one App Shell, so a 25-row register costs a single
+     * shell prefetch — but the runtime data that actually makes a destination
+     * instant is per-link, and 25 of those on viewport entry is 25 server
+     * renders for one row the user will open. Intent is the cheap signal that
+     * says which row that is.
+     *
+     * Bounded links that ARE the hot path — a tab strip — should just pass
+     * `prefetch` directly and be ready before any pointer arrives.
+     */
+    prefetchOnIntent?: boolean
   }
 
 function isPlainLeftClick(e: React.MouseEvent<HTMLAnchorElement>) {
@@ -99,15 +114,49 @@ function isPlainLeftClick(e: React.MouseEvent<HTMLAnchorElement>) {
 }
 
 export const OptimisticLink = React.forwardRef<HTMLAnchorElement, OptimisticLinkProps>(
-  function OptimisticLink({ href, onClick, target, replace, prefetch = true, ...rest }, ref) {
+  function OptimisticLink(
+    {
+      href,
+      onClick,
+      onPointerEnter,
+      onFocus,
+      onTouchStart,
+      target,
+      replace,
+      prefetch = true,
+      prefetchOnIntent = false,
+      ...rest
+    },
+    ref,
+  ) {
     const ctx = React.useContext(OptimisticPathContext)
+    const [intent, setIntent] = React.useState(false)
+    // `<Link>` attaches its prefetch through a callback ref keyed on the
+    // resolved fetch strategy, so flipping this value re-registers the link and
+    // issues the fuller prefetch. Once warmed it stays warmed — re-arming on
+    // every pointer pass would re-request a destination that is already here.
+    const resolvedPrefetch = prefetchOnIntent && !intent ? "auto" : prefetch
+    const markIntent = prefetchOnIntent && !intent ? () => setIntent(true) : undefined
+
     return (
       <Link
         ref={ref}
         href={href}
         target={target}
         replace={replace}
-        prefetch={prefetch}
+        prefetch={resolvedPrefetch}
+        onPointerEnter={(e) => {
+          onPointerEnter?.(e)
+          markIntent?.()
+        }}
+        onFocus={(e) => {
+          onFocus?.(e)
+          markIntent?.()
+        }}
+        onTouchStart={(e) => {
+          onTouchStart?.(e)
+          markIntent?.()
+        }}
         onClick={(e) => {
           onClick?.(e)
           if (!ctx || target === "_blank" || !isPlainLeftClick(e)) return

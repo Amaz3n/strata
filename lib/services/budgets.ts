@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { z } from "zod"
 
 import { BILLED_INVOICE_STATUSES, PAYABLE_VENDOR_BILL_STATUSES } from "@/lib/financials/ledger-status"
+import { withSpan } from "@/lib/observability/spans"
 
 import { listEntityAuditTrail, recordAudit } from "@/lib/services/audit"
 import { requireAuthorization } from "@/lib/services/authorization"
@@ -693,6 +694,13 @@ export interface BudgetWithActuals {
   cost_type_breakdown: BudgetCostTypeBreakdownRow[]
 }
 
+/**
+ * The heaviest read in Arc: two dependent query phases, roughly twenty round
+ * trips. Both phases are spanned separately so the next optimisation is chosen
+ * from measurement rather than from guessing — the obvious candidate is folding
+ * each phase-1 id lookup into its phase-2 line query as an `!inner` embed, which
+ * would collapse the two phases into one.
+ */
 async function getBudgetWithActualsInternal(
   supabase: SupabaseClient,
   projectId: string,
@@ -715,7 +723,7 @@ async function getBudgetWithActualsInternal(
     approvedCommitmentChangeOrderIds,
     pendingCommitmentChangeOrderIds,
     pendingPrimeChangeOrderIds,
-  ] = await Promise.all([
+  ] = await withSpan("budget.reconstruct.parents", {}, () => Promise.all([
     supabase
       .from("project_financial_settings")
       .select("cost_codes_enabled")
@@ -822,7 +830,7 @@ async function getBudgetWithActualsInternal(
         .in("lifecycle", ["draft", "pricing", "proposed"]),
       "pending prime change orders",
     ),
-  ])
+  ]))
 
   const orgCostCodesDefault = await getOrgCostCodesEnabled(supabase, orgId)
   const costCodesEnabled = resolveCostCodesEnabled(settingsResult.data?.cost_codes_enabled, orgCostCodesDefault)
@@ -855,7 +863,7 @@ async function getBudgetWithActualsInternal(
     pendingCommitmentCoLinesResult,
     pendingPrimeChangeOrderLinesResult,
     coLinesResult,
-  ] = await Promise.all([
+  ] = await withSpan("budget.reconstruct.lines", {}, () => Promise.all([
     commitmentIds.length === 0
       ? { data: [], error: null }
       : supabase
@@ -913,7 +921,7 @@ async function getBudgetWithActualsInternal(
           .select("cost_code_id, budget_line_id, unit_cost_cents, quantity, metadata")
           .eq("org_id", orgId)
           .in("change_order_id", changeOrderIds),
-  ])
+  ]))
 
   const { data: commitments, error: commitmentsError } = commitmentsResult
   if (commitmentsError) {
@@ -1715,9 +1723,9 @@ export async function listBudgetBucketTransactions(
   const billLines = billLinesResult.data ?? []
   const billIds = Array.from(new Set(billLines.map((line: { bill_id: string }) => line.bill_id).filter(Boolean)))
   const { data: bills } = billIds.length
-    ? await supabase
+      ? await supabase
         .from("vendor_bills")
-        .select("id, bill_number, qbo_vendor_name, company:companies!vendor_bills_company_id_fkey(name)")
+        .select("id, bill_number, company:companies!vendor_bills_company_id_fkey(name)")
         .eq("org_id", resolvedOrgId)
         .in("id", billIds)
     : { data: [] }
@@ -1738,7 +1746,7 @@ export async function listBudgetBucketTransactions(
     if (sourceType === "vendor_bill_line") {
       const line = billLineById.get(entry.source_id as string) as { bill_id?: string; description?: string | null } | undefined
       const bill = line?.bill_id ? billById.get(line.bill_id) : undefined
-      const vendor = firstOf(bill?.company)?.name ?? bill?.qbo_vendor_name ?? "Vendor bill"
+      const vendor = firstOf(bill?.company)?.name ?? "Vendor bill"
       label = bill?.bill_number ? `${vendor} · ${bill.bill_number}` : vendor
       detail = line?.description ?? null
     } else if (sourceType === "project_expense") {

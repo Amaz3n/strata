@@ -220,6 +220,20 @@ export async function createFilesDownloadUrl(params: {
   path: string
   fileName?: string
   expiresIn?: number
+  /**
+   * Overrides the content type R2 reports. Worth setting when the caller knows
+   * the real type and the stored one may be wrong or generic: a PDF served as
+   * `application/octet-stream` is downloaded by the browser rather than read.
+   */
+  contentType?: string
+  /**
+   * Overrides the cache policy R2 reports. Objects predating the current upload
+   * path carry no `Cache-Control` at all, so a reader re-fetches every byte
+   * range it already has; setting it here fixes those without rewriting them.
+   * Only safe because a storage path is immutable — a new version is a new
+   * object, never a rewrite of this one.
+   */
+  cacheControl?: string
 }): Promise<{ storagePath: string; downloadUrl: string; provider: FilesStorageProvider }> {
   const { supabase: _supabase, orgId } = params
   const provider = getFilesStorageProvider()
@@ -234,6 +248,8 @@ export async function createFilesDownloadUrl(params: {
     Bucket: R2_BUCKET,
     Key: normalizeKey(storagePath),
     ResponseContentDisposition: params.fileName ? buildContentDisposition(params.fileName) : undefined,
+    ResponseContentType: params.contentType,
+    ResponseCacheControl: params.cacheControl,
   })
   const downloadUrl = await getSignedUrl(client, command, {
     expiresIn: params.expiresIn ?? 600,

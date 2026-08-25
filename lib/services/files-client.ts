@@ -104,6 +104,7 @@ export async function uploadDocumentFileDirect(
             projectId: options.projectId,
             fileName: file.name,
             contentType,
+            fileSize: file.size,
           },
           resumeKey: `arc-doc-upload:${options.projectId}:${file.name}:${file.size}:${file.lastModified}`,
           onProgress: options.onProgress,
@@ -136,6 +137,7 @@ async function uploadSinglePart(
       projectId: options.projectId,
       fileName: file.name,
       contentType,
+      fileSize: file.size,
     }),
   })
 

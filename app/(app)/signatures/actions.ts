@@ -14,7 +14,7 @@ import {
   resolveEnvelopeLifecycleStatus,
   type UnifiedSignableEntityType,
 } from "@/lib/esign/unified-contracts"
-import { createDocument, listDocuments, createDocumentSigningRequest, createDocumentSigningGroup } from "@/lib/services/documents"
+import { createDocument, createDocumentSigningRequest, createDocumentSigningGroup } from "@/lib/services/documents"
 import {
   createEnvelopeSigningRequests,
   ensureDraftEnvelopeForDocument,
@@ -260,10 +260,6 @@ async function sendSignerRequestEmail(input: {
     html,
     from: getOrgSenderEmail(org?.slug, org?.name),
   })
-}
-
-export async function listDocumentsAction(projectId?: string) {
-      return listDocuments({ projectId })
 }
 
 export async function createDocumentAction(input: {

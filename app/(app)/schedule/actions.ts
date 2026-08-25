@@ -23,8 +23,8 @@ async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   }
 }
 
-export async function listScheduleItemsAction() {
-      return listScheduleItems()
+export async function listScheduleItemsAction(projectIds?: string[]) {
+      return listScheduleItems(undefined, projectIds)
 }
 
 export async function listDependenciesForProjectsAction(projectIds: string[]): Promise<ScheduleDependency[]> {

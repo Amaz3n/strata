@@ -20,7 +20,7 @@ import { parseDate } from "@/components/schedule/types"
 import { cn } from "@/lib/utils"
 import type { Project, ScheduleItem } from "@/lib/types"
 
-import { listProjectsAction } from "../projects/actions"
+import { listProjectSummariesAction } from "../projects/actions"
 import { listScheduleItemsAction } from "./actions"
 import { GanttScrollArea } from "./gantt-scroll-area"
 import { DeskScopeFilters } from "@/components/production/desk-scope-filters"
@@ -55,6 +55,7 @@ const ITEM_H = 46
 const PROJECT_BAR_H = 22
 const ITEM_BAR_H = 28
 const MILESTONE = 16
+const PORTFOLIO_DETAIL_ITEM_LIMIT = 12
 
 // Pixels per day per zoom. Day is roomy like the project Gantt; Month is a
 // portfolio overview. Default Week keeps individual weeks legible.
@@ -615,7 +616,8 @@ function ProjectGanttRow({
           <div className="pg-track" style={{ height: ITEM_H }} />
         </div>
       ) : (
-        row.items.map((item) => {
+        <>
+        {row.items.slice(0, PORTFOLIO_DETAIL_ITEM_LIMIT).map((item) => {
           const needsAction =
             isOpen(item) &&
             (item.status === "blocked" ||
@@ -656,7 +658,22 @@ function ProjectGanttRow({
               </Link>
             </div>
           )
-        })
+        })}
+        {row.items.length > PORTFOLIO_DETAIL_ITEM_LIMIT ? (
+          <div className={cn("grid", LABEL_COL)}>
+            <div className="pg-label gantt-sidebar-row pl-6 text-[11px] text-muted-foreground" style={{ height: ITEM_H }}>
+              {row.items.length - PORTFOLIO_DETAIL_ITEM_LIMIT} more schedule items
+            </div>
+            <Link
+              href={`/projects/${row.project.id}/schedule`}
+              className="pg-track flex items-center px-4 text-xs font-medium text-primary underline-offset-4 hover:underline"
+              style={{ height: ITEM_H }}
+            >
+              Open the full project schedule
+            </Link>
+          </div>
+        ) : null}
+        </>
       )}
     </details>
   )
@@ -683,10 +700,10 @@ export default async function SchedulePage({
   const { zoom: zoomParam, community } = await searchParams
   const zoom: Zoom = zoomParam === "day" || zoomParam === "month" ? zoomParam : "week"
 
-  const [allProjects, allItems, scope] = await Promise.all([
-    listProjectsAction(),
-    listScheduleItemsAction(),
-    resolveProductionDeskScope({ communityId: community }),
+  const scope = await resolveProductionDeskScope({ communityId: community })
+  const [allProjects, allItems] = await Promise.all([
+    listProjectSummariesAction(),
+    listScheduleItemsAction(scope.projectIds ?? undefined),
   ])
   const allowedProjectIds = scope.projectIds === null ? null : new Set(scope.projectIds)
   const projects = allowedProjectIds

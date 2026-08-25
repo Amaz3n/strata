@@ -30,6 +30,7 @@ async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   try {
     return { success: true, data: await fn() }
   } catch (error) {
+    console.error("[estimates.action]", error)
     return actionError(error)
   }
 }
@@ -148,11 +149,11 @@ export async function sendEstimateAction(estimateId: string, message?: string) {
 }
 
 export async function getEstimateShareLinkAction(estimateId: string) {
-      return getEstimateShareLink({ estimateId })
+  return run(() => getEstimateShareLink({ estimateId }))
 }
 
 export async function getEstimateBuilderSigningLinkAction(estimateId: string) {
-      return getEstimateBuilderSigningLink({ estimateId })
+  return run(() => getEstimateBuilderSigningLink({ estimateId }))
 }
 
 export async function reviseEstimateAction(estimateId: string) {
@@ -181,6 +182,7 @@ export async function createEstimateVersionAction(estimateId: string, input: unk
 
 /** Loads an estimate plus its line items so the builder can revise it in the estimate sheet. */
 export async function getEstimateForEditAction(estimateId: string) {
+  return run(async () => {
       const { supabase, orgId } = await requireOrgContext()
       const { data, error } = await supabase
         .from("estimates")
@@ -249,10 +251,11 @@ export async function getEstimateForEditAction(estimateId: string) {
           metadata: (item.metadata as Record<string, any> | null) ?? undefined,
         })),
       }
+  })
 }
 
 export async function listEstimateCommentsAction(estimateId: string) {
-      return listEstimateComments(estimateId)
+  return run(() => listEstimateComments(estimateId))
 }
 
 export async function addEstimateCommentAction(estimateId: string, body: string) {
@@ -263,6 +266,7 @@ export async function addEstimateCommentAction(estimateId: string, body: string)
 }
 
 export async function countersignEstimateAction(estimateId: string, signerName?: string) {
+  return run(async () => {
       const result = await countersignEstimate({ estimateId, signerName })
       revalidatePath("/estimates")
       revalidatePath("/pipeline")
@@ -270,4 +274,5 @@ export async function countersignEstimateAction(estimateId: string, signerName?:
         revalidatePath("/signatures")
       }
       return result
+  })
 }

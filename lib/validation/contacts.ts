@@ -2,7 +2,17 @@ import { z } from "zod"
 
 import type { ContactType } from "@/lib/types"
 
-export const contactTypeEnum = z.enum(["internal", "subcontractor", "client", "vendor", "consultant"]) satisfies z.ZodType<ContactType>
+export const contactTypeEnum = z.enum([
+  "internal",
+  "subcontractor",
+  "client",
+  "vendor",
+  "consultant",
+  "prospect",
+  "buyer",
+  "homeowner",
+  "agent",
+]) satisfies z.ZodType<ContactType>
 
 export const contactInputSchema = z.object({
   full_name: z.string().min(2, "Full name is required"),
@@ -10,7 +20,13 @@ export const contactInputSchema = z.object({
   phone: z.string().optional(),
   address: z.string().max(400).optional(),
   role: z.string().optional(),
-  contact_type: contactTypeEnum.default("subcontractor"),
+  /**
+   * The role this person is being recorded as. `contact_type` is derived from
+   * it for the readers that have not moved off the column yet, so callers send
+   * one or the other and never both.
+   */
+  role_key: z.string().min(1).optional(),
+  contact_type: contactTypeEnum.optional(),
   primary_company_id: z.string().uuid().optional(),
   has_portal_access: z.boolean().optional(),
   preferred_contact_method: z.enum(["phone", "email", "text"]).optional(),

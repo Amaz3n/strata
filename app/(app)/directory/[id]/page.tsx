@@ -1,10 +1,9 @@
-// Request-scoped account data; the instant shell is the layout's.
-export const instant = false;
+// Identity lives in the instant layout; overview data streams independently.
+export const instant = true;
 
 import { notFound } from "next/navigation";
-import { connection } from "next/server";
 import Link from "next/link";
-import type { ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 import { z } from "zod";
 
 import { EmptyState, Section, formatDate } from "@/components/companies/company-detail-ui";
@@ -12,15 +11,15 @@ import { VendorActivityCard } from "@/components/companies/account/vendor-activi
 import { VendorPaymentMethodRow } from "@/components/companies/account/vendor-payment-method-row";
 import { ClientReceivablesTable } from "@/components/companies/account/client-receivables-table";
 import { PartyFinancialActivity } from "@/components/financial-parties/party-financial-activity";
-import { PartyRolesEditor } from "@/components/directory/account/party-roles-editor";
 import { VendorTaxReadinessCard } from "@/components/directory/account/vendor-tax-readiness-card";
-import { listRelationshipTypes } from "@/lib/services/party-roles";
+import { CompanyTabSkeleton } from "@/components/companies/account/company-account-skeleton";
 import { ArrowUpRight, Building2 } from "@/components/icons";
 import {
   loadClientReceivables,
   loadContactReceivables,
   loadDirectoryParty,
   loadPaymentReadiness,
+  registerDirectoryTabCache,
   loadVendorIntelligence,
   loadVendorLedger,
 } from "./page-data";
@@ -95,31 +94,29 @@ function NotesSection({
   );
 }
 
-export default async function PartyOverviewPage({ params }: PageProps) {
-  // Aging is relative to today, so render at request time.
-  await connection();
+export default function PartyOverviewPage(props: PageProps) {
+  return (
+    <Suspense fallback={<CompanyTabSkeleton rows={6} />}>
+      <PartyOverviewData params={props.params} />
+    </Suspense>
+  );
+}
+
+async function PartyOverviewData({ params }: PageProps) {
   const { id } = await params;
   if (!z.string().uuid().safeParse(id).success) notFound();
-  // The org's role vocabulary does not depend on which party this is, so it
-  // loads alongside rather than after.
-  const relationshipTypesPromise = listRelationshipTypes().catch(() => []);
+
+  return <PartyOverviewContent id={id} />;
+}
+
+async function PartyOverviewContent({ id }: { id: string }) {
+  "use cache: private";
+  registerDirectoryTabCache(id, "overview");
+
   const party = await loadDirectoryParty(id);
   if (!party) notFound();
 
-  const { capabilities, canEdit, roles } = party;
-  const relationshipTypes = await relationshipTypesPromise;
-
-  const rolesSection = (stagger: number) => (
-    <Section title="Roles" stagger={stagger}>
-      <PartyRolesEditor
-        partyId={id}
-        kind={party.kind}
-        roles={roles}
-        relationshipTypes={relationshipTypes}
-        canEdit={canEdit}
-      />
-    </Section>
-  );
+  const { capabilities, canEdit } = party;
 
   // ── Person ───────────────────────────────────────────────────────────────
   if (party.kind === "contact") {
@@ -194,8 +191,7 @@ export default async function PartyOverviewPage({ params }: PageProps) {
         </div>
 
         <div className="flex flex-col gap-5">
-          {rolesSection(2)}
-          <Section title="Details" stagger={3}>
+          <Section title="Details" stagger={2}>
             <div className="px-4 py-2">
               <FactRow
                 label="Email"
@@ -280,8 +276,7 @@ export default async function PartyOverviewPage({ params }: PageProps) {
       </div>
 
       <div className="flex flex-col gap-5">
-        {rolesSection(2)}
-        <Section title="Details" stagger={3}>
+        <Section title="Details" stagger={2}>
           <div className="px-4 py-2">
             <FactRow
               label="Phone"

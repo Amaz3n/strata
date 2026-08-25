@@ -2,32 +2,54 @@ import { notFound } from "next/navigation"
 
 import { PageLayout } from "@/components/layout/page-layout"
 import { CorrespondenceClient } from "@/components/correspondence/correspondence-client"
-import { hasPermission } from "@/lib/services/permissions"
+import { hasProjectPermission } from "@/lib/services/permissions"
+import { requireOrgContext } from "@/lib/services/context"
 import {
   getProjectCorrespondenceInbox,
-  listProjectCorrespondence,
-} from "@/lib/services/project-email-ingest"
+  listArchivedCorrespondence,
+  listCorrespondenceThreads,
+} from "@/lib/services/correspondence"
+import {
+  CORRESPONDENCE_PAGE_SIZE,
+  parseCorrespondenceSearchParams,
+} from "@/lib/validation/correspondence"
 import { getProjectAction } from "../actions"
 
 interface CorrespondencePageProps {
   params: Promise<{ id: string }>
-  searchParams: Promise<{ q?: string; classification?: string; direction?: string; email?: string }>
+  searchParams: Promise<Record<string, string | string[] | undefined>>
+}
+
+function single(value: string | string[] | undefined) {
+  const raw = Array.isArray(value) ? value[0] : value
+  return raw?.trim() || null
 }
 
 export default async function CorrespondencePage({ params, searchParams }: CorrespondencePageProps) {
-  const { id } = await params
-  const filters = await searchParams
+  const [{ id }, query] = await Promise.all([params, searchParams])
+  const filters = parseCorrespondenceSearchParams(id, query)
+  const showArchived = single(query.view) === "archived"
 
-  const [project, list, inbox, canWrite, canWriteChangeEvents] = await Promise.all([
+  const { userId } = await requireOrgContext()
+  const [project, threads, archived, inbox, canWrite] = await Promise.all([
     getProjectAction(id),
-    listProjectCorrespondence(id, {
-      search: filters.q,
-      classification: filters.classification,
-      direction: filters.direction,
-    }),
+    // The archived view is a different query over the same log, so only the one
+    // being looked at is loaded.
+    showArchived
+      ? Promise.resolve(null)
+      : listCorrespondenceThreads(filters),
+    showArchived
+      ? listArchivedCorrespondence({
+          projectId: id,
+          search: filters.search,
+          page: filters.page,
+          pageSize: CORRESPONDENCE_PAGE_SIZE,
+        })
+      : Promise.resolve(null),
     getProjectCorrespondenceInbox(id),
-    hasPermission("correspondence.write"),
-    hasPermission("change_events.write"),
+    // Project-scoped, not org-scoped: a role that cannot act on this project
+    // must not be shown buttons whose action will refuse them.
+    hasProjectPermission(userId, id, "correspondence.write"),
   ])
   if (!project) notFound()
 
@@ -40,11 +62,13 @@ export default async function CorrespondencePage({ params, searchParams }: Corre
       <CorrespondenceClient
         projectId={id}
         inbox={inbox}
-        emails={list.emails}
-        truncated={list.truncated}
-        limit={list.limit}
+        threads={threads}
+        archived={archived}
+        filters={filters}
+        showArchived={showArchived}
+        openEmailId={single(query.email)}
+        openThreadId={single(query.thread)}
         canWrite={canWrite}
-        canWriteChangeEvents={canWriteChangeEvents}
       />
     </>
   )

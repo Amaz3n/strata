@@ -1,39 +1,20 @@
-import { NextRequest, NextResponse } from "next/server"
-import { logPortalFileAccessAction } from "@/app/(app)/documents/actions"
-import { assertPortalActionAccess } from "@/lib/services/portal-access"
+import { NextResponse, type NextRequest } from "next/server"
+import { ZodError } from "zod"
+
+import { recordPortalFileAccess } from "@/lib/services/file-access-events"
+import { portalFileAccessLogSchema } from "@/lib/validation/files"
 
 export async function POST(request: NextRequest) {
   try {
-    const { fileId, portalToken, action, metadata } = await request.json()
-
-    if (!fileId || !portalToken || !action) {
-      return NextResponse.json(
-        { error: "Missing required fields: fileId, portalToken, action" },
-        { status: 400 }
-      )
-    }
-
-    // Validate action type
-    const validActions = ["view", "download", "share", "unshare", "print"]
-    if (!validActions.includes(action)) {
-      return NextResponse.json(
-        { error: "Invalid action type" },
-        { status: 400 }
-      )
-    }
-
-    const access = await assertPortalActionAccess(portalToken, { permission: "can_view_documents" })
-
-    await logPortalFileAccessAction(fileId, access.id, action, metadata || {})
+    const parsed = portalFileAccessLogSchema.parse(await request.json())
+    await recordPortalFileAccess(parsed)
 
     return NextResponse.json({ success: true })
-  } catch (error: any) {
+  } catch (error) {
+    if (error instanceof ZodError) {
+      return NextResponse.json({ error: "Invalid file access payload" }, { status: 400 })
+    }
     console.error("Portal file access logging error:", error)
-    return NextResponse.json(
-      { error: "Failed to log file access" },
-      { status: 500 }
-    )
+    return NextResponse.json({ error: "Failed to log file access" }, { status: 500 })
   }
 }
-
-

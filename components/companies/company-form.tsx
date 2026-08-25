@@ -20,6 +20,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import type { Company } from "@/lib/types"
+import { RoleSelect } from "@/components/directory/role-select"
 import {
   createCompanyAction,
   createAccountingVendorForCompanyAction,
@@ -31,14 +32,19 @@ import { useToast } from "@/hooks/use-toast"
 
 import { unwrapAction } from "@/lib/action-result"
 
-const COMPANY_TYPES: { label: string; value: Company["company_type"] }[] = [
-  { label: "Subcontractor", value: "subcontractor" },
-  { label: "Supplier", value: "supplier" },
-  { label: "Client", value: "client" },
-  { label: "Architect", value: "architect" },
-  { label: "Engineer", value: "engineer" },
-  { label: "Other", value: "other" },
-]
+/**
+ * Legacy `company_type` values. Not a picker any more — what a company is to
+ * the org is its roles — but companies imported before the enum existed hold a
+ * trade string in the column, and this is what tells the two apart.
+ */
+const LEGACY_COMPANY_TYPES = new Set<string>([
+  "subcontractor",
+  "supplier",
+  "client",
+  "architect",
+  "engineer",
+  "other",
+])
 
 const TRADES = [
   "General",
@@ -87,12 +93,13 @@ export function CompanyForm({ company, initialName, onSubmitted, onCancel, payab
   const [isAccountingPending, startAccountingTransition] = useTransition()
   const { toast } = useToast()
   const router = useRouter()
-  const allowedTypes = new Set(COMPANY_TYPES.map((type) => type.value))
-  const fallbackTrade = company?.trade ?? (company && !allowedTypes.has(company.company_type) ? company.company_type : undefined)
+  const fallbackTrade =
+    company?.trade ??
+    (company && !LEGACY_COMPANY_TYPES.has(company.company_type) ? company.company_type : undefined)
 
   const [formState, setFormState] = useState({
     name: company?.name ?? initialName ?? "",
-    company_type: (company?.company_type && allowedTypes.has(company.company_type)) ? company.company_type : "subcontractor",
+    role_key: "subcontractor",
     trade: fallbackTrade ?? "none",
     phone: company?.phone ?? "",
     email: company?.email ?? "",
@@ -151,6 +158,9 @@ export function CompanyForm({ company, initialName, onSubmitted, onCancel, payab
       : ""
     const payload = {
       ...formState,
+      // Only a create picks a role; an existing party's roles are a set, and
+      // the account's role manager owns it.
+      role_key: company ? undefined : formState.role_key,
       trade: formState.trade === "none" ? undefined : formState.trade,
       phone: formState.phone || undefined,
       email: formState.email || undefined,
@@ -265,7 +275,7 @@ export function CompanyForm({ company, initialName, onSubmitted, onCancel, payab
             <p className="mt-1 text-xs text-muted-foreground">Identity, contact information, and the defaults used on new payables.</p>
           </div>
         ) : null}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className={cn("grid grid-cols-1 gap-4", !company && "md:grid-cols-2")}>
           <div className="space-y-2">
             <Label htmlFor="name">Name</Label>
             <Input
@@ -276,21 +286,17 @@ export function CompanyForm({ company, initialName, onSubmitted, onCancel, payab
             placeholder="ABC Plumbing LLC"
           />
         </div>
-        <div className="space-y-2">
-          <Label>Type</Label>
-          <Select value={formState.company_type} onValueChange={(value) => setField("company_type", value)}>
-            <SelectTrigger className="w-full">
-              <SelectValue placeholder="Select type" />
-            </SelectTrigger>
-            <SelectContent>
-              {COMPANY_TYPES.map((type) => (
-                <SelectItem key={type.value} value={type.value}>
-                  {type.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+        {company ? null : (
+          <div className="space-y-2">
+            <Label>Role</Label>
+            <RoleSelect
+              kind="company"
+              value={formState.role_key}
+              onChange={(value) => setField("role_key", value)}
+              disabled={isPending}
+            />
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

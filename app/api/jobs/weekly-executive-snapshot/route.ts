@@ -220,14 +220,17 @@ async function executeSnapshotJob(request: NextRequest) {
     }
   }
 
-  return NextResponse.json({
-    ok: true,
-    week_start: weekStart,
-    recipients: eligiblePairs.length,
-    sent,
-    failed,
-    failures: process.env.NODE_ENV === "production" ? undefined : failures,
-  })
+  return NextResponse.json(
+    {
+      ok: failed === 0,
+      week_start: weekStart,
+      recipients: eligiblePairs.length,
+      sent,
+      failed,
+      failures: process.env.NODE_ENV === "production" ? undefined : failures,
+    },
+    { status: failed === 0 ? 200 : 207 },
+  )
 }
 
 export const GET = withCronRun("weekly-executive-snapshot", executeSnapshotJob)

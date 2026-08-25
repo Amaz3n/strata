@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { Suspense, use, useEffect, useRef, useState } from "react";
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -28,6 +28,8 @@ import type {
 } from "@/lib/services/directory";
 import { roleStatusLabel } from "@/lib/directory/roles";
 import type { PrequalificationGlance } from "@/lib/services/prequalification";
+import type { DirectoryVendorData } from "@/lib/directory/vendor-data";
+import { OptimisticLink } from "@/lib/navigation/optimistic-pathname";
 import { cn } from "@/lib/utils";
 import { initialsFor } from "@/lib/directory/initials";
 import {
@@ -45,10 +47,8 @@ import {
 
 interface DirectoryTableProps {
   entries: DirectoryEntry[];
-  complianceStatusByCompanyId?: Record<string, ComplianceStatusSummary>;
-  /** Status could not be read; rows show "unknown" rather than staying blank,
-   *  because a blank row here reads as a vendor in good standing. */
-  statusUnavailable?: boolean;
+  /** Company-only status arrives after rows through a narrow Suspense consumer. */
+  vendorData?: Promise<DirectoryVendorData>;
   /** Tier vocabulary for the secondary column: Trade, or Division commercially. */
   tradeLabel?: string;
   /** Commercial orgs show the CSI divisions a prequalification actually covers. */
@@ -56,7 +56,6 @@ interface DirectoryTableProps {
   /** Drives the empty state's copy and its way out of a filtered-to-nothing list. */
   hasActiveFilters?: boolean;
   onClearFilters?: () => void;
-  prequalificationByCompanyId?: Record<string, PrequalificationGlance>;
   /** Which party kind is listed; decides the secondary column and its label. */
   kind: "company" | "contact";
   sort: DirectorySortKey;
@@ -64,6 +63,8 @@ interface DirectoryTableProps {
   total: number;
   hasMore: boolean;
   isLoadingMore: boolean;
+  isRefreshing?: boolean;
+  refreshingLabel?: string;
   onLoadMore: () => void;
   onSortChange: (sort: DirectorySortKey) => void;
   /** Opens the party's account, which is where editing lives. */
@@ -181,6 +182,70 @@ function PrequalFlag({
     <span className={cn("inline-flex items-center gap-1 text-[11px] font-medium", tone)}>
       {label}
     </span>
+  );
+}
+
+function PendingVendorSignals() {
+  return (
+    <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+      <Loader2 className="size-3 animate-spin" />
+      Checking status…
+    </span>
+  );
+}
+
+function VendorSignals({
+  companyId,
+  vendorData,
+  showPrequalTrades,
+}: {
+  companyId: string;
+  vendorData: Promise<DirectoryVendorData>;
+  showPrequalTrades: boolean;
+}) {
+  const data = use(vendorData);
+  if (data.statusUnavailable) {
+    return <span className="text-[11px] text-muted-foreground">Status unavailable</span>;
+  }
+
+  const compliance = data.complianceStatusByCompanyId[companyId];
+  const prequal = data.prequalificationByCompanyId[companyId];
+  if (!compliance && !prequal) return null;
+
+  return (
+    <>
+      <ComplianceFlag status={compliance} />
+      <PrequalFlag glance={prequal} showTrades={showPrequalTrades} />
+    </>
+  );
+}
+
+function DeferredVendorSignals({
+  entry,
+  vendorData,
+  showPrequalTrades,
+}: {
+  entry: DirectoryEntry;
+  vendorData?: Promise<DirectoryVendorData>;
+  showPrequalTrades: boolean;
+}) {
+  if (
+    entry.kind !== "company" ||
+    !entry.role_categories.includes("vendor") ||
+    !vendorData
+  ) {
+    return null;
+  }
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-x-3">
+      <Suspense fallback={<PendingVendorSignals />}>
+        <VendorSignals
+          companyId={entry.id}
+          vendorData={vendorData}
+          showPrequalTrades={showPrequalTrades}
+        />
+      </Suspense>
+    </div>
   );
 }
 
@@ -309,6 +374,94 @@ function EntryAvatar({ entry }: { entry: DirectoryEntry }) {
   );
 }
 
+/**
+ * One register row.
+ *
+ * It is its own component so the "this row is where the pointer is" state stays
+ * local. Under Partial Prefetching every row shares a single App Shell prefetch
+ * for `/directory/[id]`, but the runtime data that decides whether the account
+ * opens instantly is per-party — prefetching that for 25 rows on viewport entry
+ * would be 25 server renders to open one. Hover or focus anywhere on the row
+ * upgrades that row's link to a full prefetch, and it stays upgraded.
+ */
+function DirectoryTableRow({
+  entry,
+  vendorData,
+  showPrequalTrades,
+  onSelect,
+  onInvite,
+  onArchive,
+}: {
+  entry: DirectoryEntry;
+  vendorData?: Promise<DirectoryVendorData>;
+  showPrequalTrades: boolean;
+  onSelect: (entry: DirectoryEntry) => void;
+  onInvite?: (entry: DirectoryEntry) => void;
+  onArchive?: (entry: DirectoryEntry) => void;
+}) {
+  const [warmed, setWarmed] = useState(false);
+  const warm = () => setWarmed(true);
+
+  return (
+    <TableRow
+      className="group cursor-pointer align-middle hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+      // The row is the primary navigation of this page, so it has to
+      // be reachable without a mouse. A div-role row gets neither
+      // focus nor Enter for free.
+      tabIndex={0}
+      role="link"
+      aria-label={entry.name}
+      onMouseEnter={warm}
+      onFocus={warm}
+      onClick={() => onSelect(entry)}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect(entry);
+        }
+      }}
+    >
+      <TableCell className="pl-4">
+        <OptimisticLink
+          href={`/directory/${entry.id}`}
+          prefetch={warmed ? true : "auto"}
+          onClick={(event) => event.stopPropagation()}
+          className="flex min-w-0 items-center gap-3"
+        >
+          <EntryAvatar entry={entry} />
+          <div className="min-w-0">
+            <div className="truncate font-medium text-foreground">{entry.name}</div>
+            {entry.primary_company_name ? (
+              <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                {entry.primary_company_name}
+              </div>
+            ) : null}
+            {/* Exception reporting: a vendor in good standing says
+                nothing, so this costs no row height when all is well
+                and needs no column of its own. */}
+            <DeferredVendorSignals
+              entry={entry}
+              vendorData={vendorData}
+              showPrequalTrades={showPrequalTrades}
+            />
+          </div>
+        </OptimisticLink>
+      </TableCell>
+      <TableCell>
+        <RoleChips roles={entry.roles} />
+      </TableCell>
+      <TableCell className="text-sm text-muted-foreground">{entry.detail || "—"}</TableCell>
+      <TableCell>
+        <ContactMethods email={entry.email} phone={entry.phone} />
+      </TableCell>
+      <TableCell className="pr-4 text-right" onClick={(event) => event.stopPropagation()}>
+        <EntryActions entry={entry} onInvite={onInvite} onArchive={onArchive} />
+      </TableCell>
+    </TableRow>
+  );
+}
+
 function EntryActions({
   entry,
   onInvite,
@@ -350,17 +503,17 @@ function EntryActions({
 
 export function DirectoryTable({
   entries,
-  complianceStatusByCompanyId = {},
-  statusUnavailable = false,
+  vendorData,
   tradeLabel = "Trade",
   showPrequalTrades = false,
-  prequalificationByCompanyId = {},
   kind,
   sort,
   direction,
   total,
   hasMore,
   isLoadingMore,
+  isRefreshing = false,
+  refreshingLabel = "Refreshing directory…",
   onLoadMore,
   onSortChange,
   onSelect,
@@ -396,7 +549,19 @@ export function DirectoryTable({
   );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+    <div
+      className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
+      data-directory-kind={kind}
+    >
+      {isRefreshing ? (
+        <div
+          role="status"
+          className="pointer-events-none absolute inset-x-0 top-0 z-30 flex h-7 items-center justify-center gap-2 border-b bg-background/90 text-[11px] font-medium text-muted-foreground backdrop-blur-sm"
+        >
+          <Loader2 className="size-3 animate-spin" />
+          {refreshingLabel}
+        </div>
+      ) : null}
       {/* Mobile list */}
       <div ref={mobileScrollRef} className="min-h-0 flex-1 overflow-auto md:hidden">
         {entries.length === 0 ? (
@@ -405,16 +570,12 @@ export function DirectoryTable({
           <>
             <ul className="divide-y">
               {entries.map((entry) => {
-                const compliance =
-                  entry.kind === "company" ? complianceStatusByCompanyId[entry.id] : undefined;
-                const prequal =
-                  entry.kind === "company" ? prequalificationByCompanyId[entry.id] : undefined;
                 const meta = [entry.detail, entry.primary_company_name].filter(Boolean);
                 return (
                   <li key={`${entry.kind}-${entry.id}`} className="flex items-stretch">
-                    <button
-                      type="button"
-                      onClick={() => onSelect(entry)}
+                    <OptimisticLink
+                      href={`/directory/${entry.id}`}
+                      prefetchOnIntent
                       className="flex min-w-0 flex-1 items-center gap-3 px-3 py-3 text-left active:bg-muted/60"
                     >
                       <EntryAvatar entry={entry} />
@@ -430,14 +591,13 @@ export function DirectoryTable({
                         <div className="mt-1.5">
                           <RoleChips roles={entry.roles} />
                         </div>
-                        {compliance || prequal ? (
-                          <div className="mt-1.5 flex flex-wrap items-center gap-x-3">
-                            <ComplianceFlag status={compliance} />
-                            <PrequalFlag glance={prequal} showTrades={showPrequalTrades} />
-                          </div>
-                        ) : null}
+                        <DeferredVendorSignals
+                          entry={entry}
+                          vendorData={vendorData}
+                          showPrequalTrades={showPrequalTrades}
+                        />
                       </div>
-                    </button>
+                    </OptimisticLink>
                     <div className="flex items-center pr-1">
                       <EntryActions
                         entry={entry}
@@ -495,78 +655,17 @@ export function DirectoryTable({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {entries.map((entry) => {
-              const compliance =
-                entry.kind === "company" ? complianceStatusByCompanyId[entry.id] : undefined;
-              const prequal =
-                entry.kind === "company" ? prequalificationByCompanyId[entry.id] : undefined;
-              return (
-                <TableRow
-                  key={`${entry.kind}-${entry.id}`}
-                  className="group cursor-pointer align-middle hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-                  // The row is the primary navigation of this page, so it has to
-                  // be reachable without a mouse. A div-role row gets neither
-                  // focus nor Enter for free.
-                  tabIndex={0}
-                  role="link"
-                  aria-label={entry.name}
-                  onClick={() => onSelect(entry)}
-                  onKeyDown={(event) => {
-                    if (event.target !== event.currentTarget) return;
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      onSelect(entry);
-                    }
-                  }}
-                >
-                  <TableCell className="pl-4">
-                    <div className="flex min-w-0 items-center gap-3">
-                      <EntryAvatar entry={entry} />
-                      <div className="min-w-0">
-                        <div className="truncate font-medium text-foreground">{entry.name}</div>
-                        {entry.primary_company_name ? (
-                          <div className="mt-0.5 truncate text-xs text-muted-foreground">
-                            {entry.primary_company_name}
-                          </div>
-                        ) : null}
-                        {/* Exception reporting: a vendor in good standing says
-                            nothing, so this costs no row height when all is well
-                            and needs no column of its own. */}
-                        {statusUnavailable && entry.kind === "company" ? (
-                          <div className="mt-1 text-xs text-muted-foreground">
-                            Compliance status unavailable
-                          </div>
-                        ) : compliance || prequal ? (
-                          <div className="mt-1 flex flex-wrap items-center gap-x-3">
-                            <ComplianceFlag status={compliance} />
-                            <PrequalFlag glance={prequal} showTrades={showPrequalTrades} />
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <RoleChips roles={entry.roles} />
-                  </TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
-                    {entry.detail || "—"}
-                  </TableCell>
-                  <TableCell>
-                    <ContactMethods email={entry.email} phone={entry.phone} />
-                  </TableCell>
-                  <TableCell
-                    className="pr-4 text-right"
-                    onClick={(event) => event.stopPropagation()}
-                  >
-                    <EntryActions
-                      entry={entry}
-                      onInvite={onInvite}
-                      onArchive={onArchive}
-                    />
-                  </TableCell>
-                </TableRow>
-              );
-            })}
+            {entries.map((entry) => (
+              <DirectoryTableRow
+                key={`${entry.kind}-${entry.id}`}
+                entry={entry}
+                vendorData={vendorData}
+                showPrequalTrades={showPrequalTrades}
+                onSelect={onSelect}
+                onInvite={onInvite}
+                onArchive={onArchive}
+              />
+            ))}
             {entries.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={5} className="h-56 p-0">

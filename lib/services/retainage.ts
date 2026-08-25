@@ -2,7 +2,6 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { createInvoice } from "@/lib/services/invoices"
 import { requireAuthorization } from "@/lib/services/authorization"
 
 /**
@@ -293,76 +292,6 @@ export async function applyRetainageToInvoice({
   })
 }
 
-export async function createInvoiceWithRetainage({
-  contract_id,
-  project_id,
-  invoice_number,
-  retainage_percent,
-  base_lines,
-  tax_rate = 0,
-  orgId,
-}: {
-  contract_id: string
-  project_id: string
-  invoice_number: string
-  retainage_percent: number
-  base_lines: {
-    description: string
-    quantity: number
-    unit_cost: number
-    unit?: string
-    taxable?: boolean
-    cost_code_id?: string
-  }[]
-  tax_rate?: number
-  orgId?: string
-}) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAuthorization({
-    permission: "invoice.write",
-    userId,
-    orgId: resolvedOrgId,
-    projectId: project_id,
-    supabase,
-    logDecision: true,
-    resourceType: "project",
-    resourceId: project_id,
-  })
-
-  const invoice = await createInvoice({
-    input: {
-      project_id,
-      invoice_number,
-      title: `Invoice ${invoice_number}`,
-      status: "sent",
-      issue_date: new Date().toISOString().split("T")[0],
-      due_date: undefined,
-      notes: undefined,
-      client_visible: true,
-      tax_rate,
-      lines: base_lines.map((line) => ({
-        cost_code_id: line.cost_code_id,
-        description: line.description,
-        quantity: line.quantity,
-        unit: line.unit ?? "unit",
-        unit_cost: line.unit_cost,
-        taxable: line.taxable ?? true,
-      })),
-    },
-    orgId: resolvedOrgId,
-  })
-
-  const { data: retainageRow } = await supabase
-    .from("retainage")
-    .select("amount_cents")
-    .eq("org_id", resolvedOrgId)
-    .eq("invoice_id", invoice.id)
-    .maybeSingle()
-  const retainageAmount = Number(retainageRow?.amount_cents ?? 0)
-
-  return { invoice, retainage_amount_cents: retainageAmount }
-}
-
 export async function releaseRetainageForContract({
   contract_id,
   orgId,
@@ -411,7 +340,6 @@ export async function releaseRetainageForContract({
 
   return { released: (held ?? []).length }
 }
-
 
 
 

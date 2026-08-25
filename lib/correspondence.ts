@@ -1,7 +1,7 @@
 /**
  * Shared vocabulary for the project correspondence log. Kept out of
- * `lib/services/project-email-ingest.ts` so client components can import the
- * labels without pulling the server-only ingest pipeline into the bundle.
+ * `lib/services/correspondence.ts` so client components can import the labels
+ * without pulling the server-only service into the bundle.
  */
 
 export const CORRESPONDENCE_CLASSIFICATIONS = [
@@ -17,7 +17,12 @@ export type CorrespondenceClassification = (typeof CORRESPONDENCE_CLASSIFICATION
 
 export type CorrespondenceDirection = "inbound" | "outbound"
 
-export type CorrespondenceClassifiedBy = "ai" | "user"
+/**
+ * `system` is the state a message is filed in — nobody has ruled on it yet.
+ * Without it there was no way to tell an untouched message from one a person
+ * had confirmed, which is exactly the distinction the triage queue runs on.
+ */
+export type CorrespondenceClassifiedBy = "ai" | "user" | "system"
 
 /**
  * `correspondence` is the schema value for a formal notice — a letter that
@@ -46,27 +51,82 @@ export function isCorrespondenceClassification(value: string): value is Correspo
   return (CORRESPONDENCE_CLASSIFICATIONS as readonly string[]).includes(value)
 }
 
-/** Entity types a filed email can be linked to, and where that entity lives. */
-export const LINKED_ENTITY_LABELS: Record<string, string> = {
+/**
+ * Where an attachment belongs in the project's documents once the message it
+ * arrived on has been classified. Everything used to land as `other` in one
+ * `/correspondence` folder, so a shop drawing emailed by a sub never reached
+ * the module that needed it.
+ */
+export const CLASSIFICATION_FILE_CATEGORIES: Record<CorrespondenceClassification, string | null> = {
+  general: null,
+  correspondence: null,
+  rfi_related: "rfis",
+  co_trigger: null,
+  bill: "financials",
+  submittal_related: "submittals",
+}
+
+/** Records a filed message can be attached to, and where each one lives. */
+export const LINKABLE_ENTITY_TYPES = ["change_event", "rfi", "submittal", "vendor_bill"] as const
+
+export type LinkableEntityType = (typeof LINKABLE_ENTITY_TYPES)[number]
+
+export const LINKABLE_ENTITY_LABELS: Record<LinkableEntityType, string> = {
   change_event: "Change event",
+  rfi: "RFI",
+  submittal: "Submittal",
+  vendor_bill: "Bill",
+}
+
+/** The permission that governs reading the records of each kind. */
+export const LINKABLE_ENTITY_PERMISSIONS: Record<LinkableEntityType, string> = {
+  change_event: "change_events.read",
+  rfi: "rfi.read",
+  submittal: "submittal.read",
+  vendor_bill: "bill.read",
+}
+
+export function isLinkableEntityType(value: string): value is LinkableEntityType {
+  return (LINKABLE_ENTITY_TYPES as readonly string[]).includes(value)
 }
 
 /**
- * Only `change_event` gets a link, because it is the only thing the ingest
- * pipeline ever links an email to. The fragment matches the row id rendered by
- * `ChangeEventsClient`, so the destination scrolls to the event itself.
+ * The classification a link of this kind implies. Linking an email to an RFI
+ * says what the email is about more precisely than the model's guess did, so
+ * the link carries the classification with it.
  */
+export const LINK_IMPLIED_CLASSIFICATION: Record<LinkableEntityType, CorrespondenceClassification> = {
+  change_event: "co_trigger",
+  rfi: "rfi_related",
+  submittal: "submittal_related",
+  vendor_bill: "bill",
+}
+
 export function linkedEntityHref(
   projectId: string,
   entityType: string | null,
   entityId: string | null,
 ): string | null {
-  if (!entityType || !entityId) return null
-  if (entityType !== "change_event") return null
-  return `/projects/${projectId}/change-orders#ce-${entityId}`
+  if (!entityType || !entityId || !isLinkableEntityType(entityType)) return null
+  switch (entityType) {
+    case "change_event":
+      return `/projects/${projectId}/change-orders?event=${entityId}`
+    case "rfi":
+      return `/projects/${projectId}/rfis?rfi=${entityId}`
+    case "submittal":
+      return `/projects/${projectId}/submittals?submittal=${entityId}`
+    case "vendor_bill":
+      return `/projects/${projectId}/financials/payables?bill=${entityId}`
+  }
 }
 
 export function linkedEntityLabel(entityType: string | null): string | null {
   if (!entityType) return null
-  return LINKED_ENTITY_LABELS[entityType] ?? entityType.replaceAll("_", " ")
+  if (isLinkableEntityType(entityType)) return LINKABLE_ENTITY_LABELS[entityType]
+  return entityType.replaceAll("_", " ")
+}
+
+/** Strips reply/forward prefixes so a subject can be compared across a thread. */
+export function normalizeSubject(subject: string): string {
+  return subject.replace(/^((re|fwd?)\s*:\s*)+/i, "").trim().toLowerCase()
 }

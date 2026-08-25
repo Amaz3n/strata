@@ -9,6 +9,19 @@ import { withSentryConfig } from "@sentry/nextjs"
 // which pegs every core and never finishes compiling a route. Pin it.
 const projectRoot = dirname(fileURLToPath(import.meta.url))
 const exhaustiveInstantValidation = process.env.NEXT_EXHAUSTIVE_INSTANT_VALIDATION === "true"
+const isDevelopment = process.env.NODE_ENV === "development"
+
+// CI fails the build on any route that would block a navigation. Development
+// validates every Page and Default segment and reports each blocker as a dev
+// overlay insight — that is where a `[id]` route gets checked against a REAL id,
+// which a build-time walk with a fabricated id cannot do. Deploys validate only
+// the segments that explicitly export `instant`, keeping the expensive graph
+// walk off Vercel's deployment-critical path.
+const instantValidationLevel = exhaustiveInstantValidation
+  ? "experimental-error"
+  : isDevelopment
+    ? "warning"
+    : "experimental-manual-error"
 
 /** @type {import('next').NextConfig} */
 const securityHeaders = [
@@ -40,6 +53,31 @@ const nextConfig = {
   // the client router fetches, so visible destinations are ready on click.
   cacheComponents: true,
   partialPrefetching: true,
+  // Two lifetimes, both deliberate.
+  //
+  // `session` is the one that decides whether ANY authenticated UI can be
+  // prefetched. Content only reaches a route's App Shell when its `stale` is at
+  // least 5 minutes, and it is dropped from prerenders entirely when `expire` is
+  // under 5 minutes. The `seconds` preset (expire: 1 minute) fails that second
+  // test, so every read downstream of the session — which is all of them —
+  // became a dynamic hole resolved after the click.
+  //
+  // The trade: a validated session object is trusted in ONE browser for up to 10
+  // minutes, re-checked against Supabase every minute. Private caches live in
+  // browser memory only, never on the server, and never survive a reload.
+  //
+  // What bounds the staleness is NOT RLS — services read through the service
+  // role, so most queries never evaluate a policy. It is that org membership is
+  // re-read outside this cache on every request (lib/auth/context.ts), so a
+  // revoked member loses access immediately even while their cached identity
+  // chrome is still warm.
+  cacheLife: {
+    session: {
+      stale: 600, // 10 minutes — over the 5 minute App Shell threshold
+      revalidate: 60, // re-check the session every minute
+      expire: 3600,
+    },
+  },
   turbopack: {
     root: projectRoot,
   },
@@ -74,15 +112,14 @@ const nextConfig = {
   // Server Actions configuration
   experimental: {
     cachedNavigations: true,
-    // Normal deploys validate the layouts and pages that explicitly own an
-    // Instant Navigation contract. CI opts into the exhaustive mode, which
-    // validates every Page and Default segment without putting that expensive
-    // graph walk on Vercel's deployment-critical path.
     instantInsights: {
-      validationLevel: exhaustiveInstantValidation
-        ? "experimental-error"
-        : "experimental-manual-error",
+      validationLevel: instantValidationLevel,
     },
+    // `instant()` in the Playwright suite drives the same testing API the
+    // Navigation Inspector uses. `next dev` exposes it automatically; `next start`
+    // does not without this, and playwright.config.ts runs against a production
+    // build — so every instant() assertion was scoping to nothing.
+    exposeTestingApiInProductionBuild: true,
     proxyClientMaxBodySize: '250mb',
     serverActions: {
       bodySizeLimit: '100mb',

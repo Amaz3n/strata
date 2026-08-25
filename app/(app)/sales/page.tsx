@@ -3,12 +3,12 @@ import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { DealBoard } from "@/components/sales/deal-board"
 import { NewInquirySheet } from "@/components/sales/new-inquiry-sheet"
+import { SalesBoardSkeleton } from "@/components/sales/deal-board-skeleton"
 import { isDealView, type DealView } from "@/lib/sales/board"
 import { isDealFilter, type DealFilter } from "@/lib/sales/next-action"
 import { getAmbientDeskContext } from "@/lib/services/desk-context"
 import { listLostReasons, listSalesDeals } from "@/lib/services/sales-deals"
 import { listTeamMembers } from "@/lib/services/team"
-import { SalesBoardSkeleton } from "./loading"
 
 
 /** 400-lot communities are the design case; the board never streams unbounded. */

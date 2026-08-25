@@ -65,6 +65,17 @@ const Plan3dViewer = dynamic(
 
 type Surface = "review" | "walk"
 
+/**
+ * How hard the panel watches a queued interpretation.
+ *
+ * `router.refresh()` re-runs the entire server tree and every query behind it,
+ * so the wait is metered: interpretation usually lands inside a minute, and a
+ * job still queued after that is not one more second of work away.
+ */
+const POLL_INITIAL_MS = 15_000
+const POLL_MAX_MS = 60_000
+const POLL_BACKOFF = 1.5
+
 export interface Plan3dPanelProps {
   /** Which house this model belongs to — a plan edition, or a project. */
   target: FloorplanTarget
@@ -163,12 +174,45 @@ export function Plan3dPanel({ target, title, status, canWrite, planId, blockedRe
     }
   }, [documentKey, hasDocument, target])
 
-  // While the job is queued, the panel would otherwise sit on "Reading the
-  // floorplan sheets" until someone reloaded by hand.
+  /**
+   * Watch a queued job until it lands — otherwise the panel would sit on
+   * "Reading the floorplan sheets" until someone reloaded by hand.
+   *
+   * Only while `processing`: draft, published and failed are terminal, and the
+   * status sync above tears this down the moment the job reaches one. Only
+   * while the tab is in front of someone, so a forgotten background tab costs
+   * the database nothing — and returning to it refreshes at once, which is the
+   * moment the answer is most likely already waiting.
+   */
   useEffect(() => {
     if (record?.status !== "processing") return
-    const id = window.setInterval(() => router.refresh(), 5000)
-    return () => window.clearInterval(id)
+
+    let timer: number | undefined
+    let delay = POLL_INITIAL_MS
+
+    const stop = () => {
+      if (timer !== undefined) window.clearTimeout(timer)
+      timer = undefined
+    }
+
+    const poll = () => {
+      stop()
+      router.refresh()
+      delay = Math.min(delay * POLL_BACKOFF, POLL_MAX_MS)
+      timer = window.setTimeout(poll, delay)
+    }
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") poll()
+      else stop()
+    }
+
+    if (document.visibilityState === "visible") timer = window.setTimeout(poll, delay)
+    document.addEventListener("visibilitychange", onVisibilityChange)
+    return () => {
+      stop()
+      document.removeEventListener("visibilitychange", onVisibilityChange)
+    }
   }, [record?.status, router])
 
   const levels = useMemo(() => model?.levels ?? [], [model])

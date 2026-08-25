@@ -1,20 +1,17 @@
 "use client"
 
-import { useMemo } from "react"
+import { useEffect, useMemo } from "react"
 import { cn } from "@/lib/utils"
 import {
   ChevronRight,
   FileText,
   FolderClosed,
   FolderOpen,
-  Users,
-  HardHat,
   MoreHorizontal,
   Pencil,
   ShieldCheck,
   Trash2,
 } from "lucide-react"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
@@ -24,8 +21,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import type { ProjectFolderPermissions } from "@/app/(app)/documents/types"
 import type { FolderNode } from "./types"
 import { buildFolderTree, useDocuments } from "./documents-context"
+import { useFolderDropTarget } from "./documents-dnd"
+import { FileSharingBadges, getFolderSharingState } from "./file-badges"
 interface DocumentsExplorerProps {
   className?: string
   onRenameFolder?: (path: string) => void
@@ -41,6 +41,7 @@ export function DocumentsExplorer({
 }: DocumentsExplorerProps) {
   const {
     files,
+    totalCount,
     folders,
     folderItemCounts,
     folderPermissions,
@@ -57,6 +58,10 @@ export function DocumentsExplorer({
     [folders, files, folderItemCounts],
   )
 
+  // The tree is the only surface that can reach every folder at once, so it is
+  // also the only way to drag a file sideways or all the way back to the root.
+  const rootDrop = useFolderDropTarget("tree", "")
+
   return (
     <div className={cn("flex h-full min-h-0 flex-col", className)}>
       <div className="flex h-10 items-center border-b bg-muted/40 px-4">
@@ -70,18 +75,22 @@ export function DocumentsExplorer({
           <section className="space-y-1.5">
             <button
               type="button"
+              ref={rootDrop.setNodeRef}
               onClick={navigateToRoot}
               className={cn(
-                "flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm transition-colors",
+                "flex w-full items-center gap-2 px-2.5 py-2 text-left text-sm transition-colors duration-150",
                 !currentPath
                   ? "bg-primary/10 text-primary"
-                  : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                  : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                rootDrop.isBlocked && "opacity-40",
+                rootDrop.isOver &&
+                  "bg-primary/15 text-primary ring-1 ring-inset ring-primary hover:bg-primary/15 hover:text-primary",
               )}
             >
               <FileText className="h-4 w-4 shrink-0" />
               <span className="truncate">All Files</span>
               <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">
-                {files.length}
+                {totalCount}
               </span>
             </button>
 
@@ -131,7 +140,7 @@ function FolderTreeNode({
   depth: number
   currentPath: string
   expandedFolders: Set<string>
-  folderPermissions: any[]
+  folderPermissions: ProjectFolderPermissions[]
   onLoadChildren: (path?: string) => Promise<void>
   onToggle: (path: string) => void
   onNavigate: (path: string) => void
@@ -145,13 +154,28 @@ function FolderTreeNode({
 
   const permissions = getFolderSharingState(folderPermissions, node.path)
   const hasSharingDefault = permissions.share_with_clients || permissions.share_with_subs
+  const { setNodeRef, isOver, isBlocked } = useFolderDropTarget("tree", node.path)
+
+  // Spring-loaded folders: resting on a collapsed node with files in hand opens
+  // it, so a drag can reach a folder that was not already on screen.
+  useEffect(() => {
+    if (!isOver || !hasChildren || isExpanded) return
+    const timer = window.setTimeout(() => {
+      void onLoadChildren(node.path)
+      onToggle(node.path)
+    }, 600)
+    return () => window.clearTimeout(timer)
+  }, [isOver, hasChildren, isExpanded, node.path, onLoadChildren, onToggle])
 
   return (
     <div className="space-y-0.5">
       <div
+        ref={setNodeRef}
         className={cn(
-          "group flex items-center gap-1.5 rounded-md transition-colors",
-          isActive ? "bg-primary/10 text-primary" : "hover:bg-muted/60"
+          "group flex items-center gap-1.5 transition-colors duration-150",
+          isActive ? "bg-primary/10 text-primary" : "hover:bg-muted/60",
+          isBlocked && "opacity-40",
+          isOver && "bg-primary/15 text-primary ring-1 ring-inset ring-primary hover:bg-primary/15",
         )}
         style={{ paddingLeft: `${depth * 14 + 8}px` }}
       >
@@ -189,18 +213,21 @@ function FolderTreeNode({
           )}
           <span className="truncate text-sm">{node.name}</span>
           {hasSharingDefault && (
-            <div className="ml-auto flex items-center gap-0.5 pr-1 opacity-60 group-hover:opacity-100 transition-opacity">
-              {permissions.share_with_clients && (
-                <div title={permissions.inherited ? "Client sharing inherited" : "Shared with clients"}>
-                  <Users className="h-3 w-3 text-blue-500" />
-                </div>
-              )}
-              {permissions.share_with_subs && (
-                <div title={permissions.inherited ? "Subcontractor sharing inherited" : "Shared with subs"}>
-                  <HardHat className="h-3 w-3 text-indigo-500" />
-                </div>
-              )}
-            </div>
+            <span className="ml-auto flex items-center gap-0.5 pr-1 opacity-60 transition-opacity group-hover:opacity-100">
+              <FileSharingBadges
+                variant="icon"
+                clients={permissions.share_with_clients}
+                subs={permissions.share_with_subs}
+                tooltips={{
+                  clients: permissions.inherited
+                    ? "Client sharing inherited"
+                    : "Shared with clients",
+                  subs: permissions.inherited
+                    ? "Subcontractor sharing inherited"
+                    : "Shared with subs",
+                }}
+              />
+            </span>
           )}
         </button>
 
@@ -260,29 +287,4 @@ function FolderTreeNode({
       )}
     </div>
   )
-}
-
-function getFolderSharingState(
-  folderPermissions: Array<{ path: string; share_with_clients: boolean; share_with_subs: boolean }>,
-  path: string,
-) {
-  const normalizedPath = path.replace(/\/+/g, "/").replace(/\/$/, "")
-  let bestMatch: { share_with_clients: boolean; share_with_subs: boolean; inherited: boolean } | null = null
-  let bestMatchLength = -1
-
-  for (const permission of folderPermissions) {
-    const permissionPath = permission.path.replace(/\/+/g, "/").replace(/\/$/, "")
-    const applies =
-      normalizedPath === permissionPath ||
-      normalizedPath.startsWith(`${permissionPath}/`)
-    if (!applies || permissionPath.length <= bestMatchLength) continue
-    bestMatchLength = permissionPath.length
-    bestMatch = {
-      share_with_clients: permission.share_with_clients,
-      share_with_subs: permission.share_with_subs,
-      inherited: normalizedPath !== permissionPath,
-    }
-  }
-
-  return bestMatch ?? { share_with_clients: false, share_with_subs: false, inherited: false }
 }

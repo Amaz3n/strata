@@ -2,10 +2,13 @@
 
 import { useState, useCallback, useEffect, useRef, type ReactNode } from "react"
 import { createPortal } from "react-dom"
+import dynamic from "next/dynamic"
 import Image from "next/image"
+import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import { useHydrated } from "@/hooks/use-hydrated"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { PDF_WORKER_SRC } from "@/lib/pdf/worker-src"
 import {
   X,
   ChevronLeft,
@@ -18,9 +21,9 @@ import {
   Maximize2,
   Minimize2,
   FileText,
-  Loader2,
   History,
   MoreHorizontal,
+  Printer,
 } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import {
@@ -30,6 +33,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { Skeleton } from "@/components/ui/skeleton"
+import {
+  INITIAL_PDF_STATUS,
+  PdfSkeleton,
+  clampPdfScale,
+  type PdfViewerStatus,
+  type PdfZoom,
+} from "./pdf-chrome"
 import {
   type FileWithDetails,
   isBrowserRenderableImage,
@@ -42,6 +53,100 @@ import {
   formatFileSize,
 } from "./types"
 import { VersionHistoryPanel, type FileVersionInfo } from "./version-history-panel"
+
+/**
+ * react-pdf and pdf.js are ~1MB of the client bundle plus two stylesheets. They
+ * load only once a PDF is actually on screen — this component is mounted by
+ * every attachment list in the app.
+ *
+ * The `import()` has to stay written out inline here. `ssr: false` is applied by
+ * a compile-time transform that only recognises a literal dynamic import, so
+ * hoisting the import into a helper silently loses the exclusion — pdf.js then
+ * runs during server rendering and dies on `DOMMatrix is not defined`, which
+ * surfaces much later as a worker that was never configured.
+ */
+const PdfViewer = dynamic(() => import("./pdf-viewer").then((mod) => mod.PdfViewer), {
+  ssr: false,
+  loading: () => <PdfSkeleton />,
+})
+
+/**
+ * Pull the PDF stack into cache before anyone asks for it.
+ *
+ * Left alone, the first PDF a user opens pays for ~1MB of viewer chunk plus the
+ * worker before a single page can render, so it feels markedly slower than
+ * every PDF opened after it. A surface that expects PDFs — the documents page —
+ * calls this while the browser is idle, which makes the first open cost the
+ * same as the rest.
+ *
+ * Safe to call repeatedly: the module import is memoized by the bundler, and
+ * the worker request is answered from the HTTP cache.
+ */
+export function preloadPdfViewer(): void {
+  // Spelled out again rather than shared with the `dynamic()` call above: both
+  // resolve to the same chunk, so this warms exactly what opening a PDF needs,
+  // and neither one stops being a literal import the compiler can see.
+  void import("./pdf-viewer").catch(() => {
+    // A failed prefetch is not a failure: opening a PDF retries the import and
+    // surfaces the error there, where there is somewhere to show it.
+  })
+  void fetch(PDF_WORKER_SRC, { credentials: "same-origin" }).catch(() => {})
+}
+
+const FIT_WIDTH: PdfZoom = { kind: "fit-width" }
+const FIT_PAGE: PdfZoom = { kind: "fit-page" }
+const ZOOM_PRESETS = [0.5, 0.75, 1, 1.5, 2, 4]
+
+const FOCUSABLE_SELECTOR =
+  'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),video[controls],audio[controls],[tabindex]:not([tabindex="-1"])'
+
+/**
+ * Print without a round trip through the Downloads folder. The file is fetched
+ * to a blob and handed to a hidden same-origin iframe: pointing an iframe at
+ * the file route directly cannot work, because the app sends
+ * `X-Frame-Options: DENY` on every response.
+ */
+async function printFromUrl(url: string, fileName: string): Promise<void> {
+  try {
+    const response = await fetch(url, { credentials: "same-origin" })
+    if (!response.ok) throw new Error(`Print request failed (${response.status})`)
+    const blobUrl = URL.createObjectURL(await response.blob())
+
+    const frame = document.createElement("iframe")
+    frame.title = fileName
+    frame.setAttribute("aria-hidden", "true")
+    frame.style.cssText =
+      "position:fixed;right:0;bottom:0;width:1px;height:1px;opacity:0;border:0;"
+
+    const cleanup = () => {
+      URL.revokeObjectURL(blobUrl)
+      frame.remove()
+    }
+
+    frame.onload = () => {
+      const frameWindow = frame.contentWindow
+      if (!frameWindow) {
+        cleanup()
+        toast.error("Could not open the print dialog")
+        return
+      }
+      frameWindow.focus()
+      frameWindow.print()
+      // The print dialog is modal but asynchronous; the frame has to outlive it.
+      window.setTimeout(cleanup, 60_000)
+    }
+    frame.onerror = cleanup
+
+    frame.src = blobUrl
+    document.body.appendChild(frame)
+  } catch (error) {
+    console.error("Failed to print file", error)
+    // Last resort: hand it to the browser's own viewer, which can print it.
+    if (!window.open(url, "_blank", "noopener,noreferrer")) {
+      toast.error("Could not open this file for printing")
+    }
+  }
+}
 
 interface FileViewerProps {
   file: FileWithDetails | null
@@ -92,21 +197,14 @@ export function FileViewer({
   const [isLoading, setIsLoading] = useState(true)
   const [currentIndex, setCurrentIndex] = useState(0)
   const [imageDimensions, setImageDimensions] = useState<{ width: number; height: number } | null>(null)
-  const [pdfPageCount, setPdfPageCount] = useState(0)
-  const [activePdfPage, setActivePdfPage] = useState(1)
-  const [pdfLoadFailed, setPdfLoadFailed] = useState(false)
   const [imageLoadFailed, setImageLoadFailed] = useState(false)
   const [wordLoadFailed, setWordLoadFailed] = useState(false)
   const [wordHtml, setWordHtml] = useState<string | null>(null)
-  const [pdfViewportWidth, setPdfViewportWidth] = useState(0)
-  const [pdfComponents, setPdfComponents] = useState<{
-    Document: any
-    Page: any
-    pdfjs: any
-  } | null>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
+  const [pdfZoom, setPdfZoom] = useState<PdfZoom>(FIT_WIDTH)
+  const [pdfRotation, setPdfRotation] = useState(0)
+  const [pdfStatus, setPdfStatus] = useState<PdfViewerStatus>(INITIAL_PDF_STATUS)
+  const dialogRef = useRef<HTMLDivElement>(null)
   const imageRef = useRef<HTMLImageElement>(null)
-  const pdfViewportRef = useRef<HTMLDivElement>(null)
   const gestureRef = useRef({
     startTouches: [] as Array<{ x: number; y: number }>,
     startZoom: 1,
@@ -131,7 +229,6 @@ export function FileViewer({
   const currentFileId = currentFile?.id
   const currentFileIsPdf = currentFile ? isPdfFile(currentFile.mime_type) : false
   const currentFileIsWord = currentFile ? isWordPreviewable(currentFile.mime_type, currentFile.file_name) : false
-  const currentPdfUrl = currentFile ? (currentFile.download_url ?? `/api/files/${currentFile.id}/raw`) : null
   const currentFileHasGeneratedImagePreview =
     Boolean(currentFile?.thumbnail_url) &&
     currentFile?.thumbnail_url !== currentFile?.download_url
@@ -149,31 +246,6 @@ export function FileViewer({
         ? currentFile.thumbnail_url
         : currentFile.download_url
       : undefined
-
-  useEffect(() => {
-    if (!open || !currentFileIsPdf) return
-    let cancelled = false
-
-    const loadPdfComponents = async () => {
-      try {
-        const { Document, Page, pdfjs } = await import("react-pdf")
-        if (cancelled) return
-        pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs"
-        setPdfComponents({ Document, Page, pdfjs })
-      } catch (error) {
-        console.error("Failed to load PDF components", error)
-        if (!cancelled) {
-          setPdfLoadFailed(true)
-          setIsLoading(false)
-        }
-      }
-    }
-
-    void loadPdfComponents()
-    return () => {
-      cancelled = true
-    }
-  }, [open, currentFileIsPdf])
 
   // Fetch the Word preview HTML and render it via srcDoc. Fetching (rather than
   // pointing an iframe at the route URL) sidesteps the global X-Frame-Options: DENY
@@ -229,37 +301,17 @@ export function FileViewer({
     setSwipeX(0)
     setIsLoading(true)
     setImageDimensions(null)
-    setPdfPageCount(0)
-    setActivePdfPage(1)
-    setPdfLoadFailed(false)
     setImageLoadFailed(false)
     setWordLoadFailed(false)
     setWordHtml(null)
+    setPdfZoom(FIT_WIDTH)
+    setPdfRotation(0)
+    setPdfStatus(INITIAL_PDF_STATUS)
 
     if (hasFileList && derivedIndexFromFile >= 0) {
       setCurrentIndex(derivedIndexFromFile)
     }
   }, [currentFileId, derivedIndexFromFile, hasFileList])
-
-  useEffect(() => {
-    if (!open || !currentFileIsPdf) return
-    const viewport = pdfViewportRef.current
-    if (!viewport) return
-
-    const updateWidth = () => {
-      setPdfViewportWidth(viewport.clientWidth)
-    }
-    updateWidth()
-
-    const observer = new ResizeObserver(() => updateWidth())
-    observer.observe(viewport)
-    return () => observer.disconnect()
-  }, [open, currentFileIsPdf, showVersions])
-
-  useEffect(() => {
-    if (!currentFileIsPdf || pdfPageCount <= 0) return
-    setIsLoading(true)
-  }, [activePdfPage, currentFileIsPdf, pdfPageCount])
 
   const hasMultiple = files.length > 1
   const canPrev = hasMultiple && clampedIndex > 0
@@ -385,42 +437,168 @@ export function FileViewer({
     }
   }, [open, currentImageSrc])
 
-  // Keyboard navigation
+  /**
+   * PDFs and images answer the same four verbs, but a PDF's "zoom" is a page
+   * width the viewer derives from its own viewport, so it reports back the
+   * scale it actually landed on and the chrome drives it from there.
+   */
+  const handlePdfStatus = useCallback((next: PdfViewerStatus) => {
+    setPdfStatus((prev) =>
+      prev.state === next.state &&
+      prev.pageCount === next.pageCount &&
+      prev.activePage === next.activePage &&
+      prev.effectiveScale === next.effectiveScale
+        ? prev
+        : next
+    )
+  }, [])
+
+  const handleZoomIn = useCallback(() => {
+    if (currentFileIsPdf) {
+      setPdfZoom({ kind: "scale", value: clampPdfScale(pdfStatus.effectiveScale * 1.25) })
+    } else {
+      setZoom((z) => Math.min(z + 0.25, 5))
+    }
+  }, [currentFileIsPdf, pdfStatus.effectiveScale])
+
+  const handleZoomOut = useCallback(() => {
+    if (currentFileIsPdf) {
+      setPdfZoom({ kind: "scale", value: clampPdfScale(pdfStatus.effectiveScale / 1.25) })
+    } else {
+      setZoom((z) => Math.max(z - 0.25, 0.25))
+    }
+  }, [currentFileIsPdf, pdfStatus.effectiveScale])
+
+  const handleZoomReset = useCallback(() => {
+    if (currentFileIsPdf) {
+      setPdfZoom(FIT_WIDTH)
+      setPdfRotation(0)
+    } else {
+      setZoom(1)
+      setRotation(0)
+      setPan({ x: 0, y: 0 })
+    }
+  }, [currentFileIsPdf])
+
+  const handleRotate = useCallback(() => {
+    if (currentFileIsPdf) {
+      setPdfRotation((r) => (r + 90) % 360)
+    } else {
+      setRotation((r) => (r + 90) % 360)
+    }
+  }, [currentFileIsPdf])
+
+  const handleDownloadCurrent = useCallback(() => {
+    if (currentFile && onDownload) onDownload(currentFile)
+  }, [currentFile, onDownload])
+
+  // Print what is on screen, not what is in storage: a HEIC previews through a
+  // generated JPEG, and the browser cannot render the original at all.
+  const printableUrl = currentFileIsPdf
+    ? currentFile?.download_url ?? null
+    : currentFileIsImage
+      ? currentImageSrc ?? null
+      : null
+
+  const handlePrint = useCallback(() => {
+    if (!printableUrl || !currentFile) return
+    void printFromUrl(printableUrl, currentFile.file_name)
+  }, [printableUrl, currentFile])
+
+  // Keyboard: navigation, view controls, and the modal's focus loop.
   useEffect(() => {
     if (!open) return
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      switch (e.key) {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target
+      const inEditableField =
+        target instanceof HTMLElement &&
+        (target.isContentEditable ||
+          target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT")
+
+      if (event.key === "Escape") {
+        onOpenChange(false)
+        return
+      }
+      if (inEditableField) return
+
+      const root = dialogRef.current
+      if (event.key === "Tab" && root) {
+        const active = document.activeElement
+        // A menu or dialog portalled outside the viewer manages its own focus.
+        if (!(active instanceof HTMLElement) || !root.contains(active)) return
+        const focusable = Array.from(
+          root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
+        ).filter((el) => el.offsetWidth > 0 || el.offsetHeight > 0 || el === active)
+        if (focusable.length === 0) return
+        const first = focusable[0]
+        const last = focusable[focusable.length - 1]
+        if (event.shiftKey && (active === first || active === root)) {
+          event.preventDefault()
+          last.focus()
+        } else if (!event.shiftKey && active === last) {
+          event.preventDefault()
+          first.focus()
+        }
+        return
+      }
+
+      // Leave browser and OS chords alone — Ctrl/Cmd+F must reach the text layer.
+      if (event.metaKey || event.ctrlKey || event.altKey) return
+
+      switch (event.key) {
         case "ArrowLeft":
           handlePrev()
           break
         case "ArrowRight":
           handleNext()
           break
-        case "Escape":
-          onOpenChange(false)
-          break
         case "+":
         case "=":
-          setZoom((z) => Math.min(z + 0.25, 5))
+          event.preventDefault()
+          handleZoomIn()
           break
         case "-":
-          setZoom((z) => Math.max(z - 0.25, 0.25))
+          event.preventDefault()
+          handleZoomOut()
           break
         case "r":
-          setRotation((r) => (r + 90) % 360)
+        case "R":
+          handleRotate()
           break
         case "0":
-          setZoom(1)
-          setRotation(0)
-          setPan({ x: 0, y: 0 })
+          handleZoomReset()
           break
       }
     }
 
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [open, handlePrev, handleNext, onOpenChange])
+  }, [
+    open,
+    handlePrev,
+    handleNext,
+    handleZoomIn,
+    handleZoomOut,
+    handleRotate,
+    handleZoomReset,
+    onOpenChange,
+  ])
+
+  // Focus moves into the viewer on open and back where it came from on close.
+  useEffect(() => {
+    if (!open) return
+    const previouslyFocused =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null
+    dialogRef.current?.focus()
+    return () => {
+      if (previouslyFocused && document.contains(previouslyFocused)) {
+        previouslyFocused.focus()
+      }
+    }
+  }, [open])
 
   // Touch gesture handlers (pinch zoom, pan, swipe between files, double-tap)
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
@@ -526,21 +704,30 @@ export function FileViewer({
 
   const isImage = currentFileIsImage
   const isHeic = currentFileIsHeic
-  const isPdf = isPdfFile(currentFile.mime_type)
+  const isPdf = currentFileIsPdf
   const isVideo = isVideoFile(currentFile.mime_type)
   const isAudio = isAudioFile(currentFile.mime_type)
-  const isWord = isWordPreviewable(currentFile.mime_type, currentFile.file_name)
-  const activePdfPageClamped = Math.min(Math.max(activePdfPage, 1), Math.max(pdfPageCount, 1))
-  const pdfPageWidth = pdfViewportWidth > 0
-    ? Math.max(280, Math.min(1200, pdfViewportWidth - 48))
-    : 900
-  const PdfDocument = pdfComponents?.Document
-  const PdfPage = pdfComponents?.Page
-  const showPdfThumbnails =
-    isPdf && !pdfLoadFailed && Boolean(currentPdfUrl) && Boolean(PdfDocument && PdfPage) && pdfPageCount > 1
-  const pdfThumbnailWidth = 88
+  const isWord = currentFileIsWord
 
-  const hasBottomStrip = showPdfThumbnails || hasMultiple
+  // One URL, one gate. `download_url` is optional on the shape callers hand us
+  // (attachment lists and portal galleries build it themselves), so a missing
+  // one is a real state — and it lands in the unavailable card below rather
+  // than rendering an empty frame.
+  const previewUrl = currentFile.download_url ?? null
+  const canZoom = isImage || isPdf
+  const zoomPercent = isPdf
+    ? Math.round(pdfStatus.effectiveScale * 100)
+    : Math.round(zoom * 100)
+
+  const showPdfRail = isPdf && pdfStatus.state === "ready" && pdfStatus.pageCount > 1
+  const showFileStrip = hasMultiple && !showPdfRail
+
+  const showUnavailable =
+    (isImage && (imageLoadFailed || !currentImageSrc)) ||
+    (isWord && wordLoadFailed) ||
+    (isPdf && !previewUrl) ||
+    ((isVideo || isAudio) && !previewUrl) ||
+    (!isImage && !isPdf && !isVideo && !isAudio && !isWord)
 
   // Portalled to the body so the viewer escapes whatever opened it: rendered
   // inline it sat earlier in the DOM than a drawer's portal (and inside vaul's
@@ -550,17 +737,21 @@ export function FileViewer({
   // `pointer-events: none` on the body, hence pointer-events-auto.
   return createPortal(
     <div
-      className="pointer-events-auto fixed inset-0 z-50 flex bg-neutral-900"
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={currentFile.file_name}
+      tabIndex={-1}
+      className="pointer-events-auto fixed inset-0 z-50 flex bg-sidebar outline-none"
       onClick={handleBackdropClick}
     >
       {/* Main viewer column */}
       <div
-        ref={containerRef}
         className="relative flex-1 flex flex-col min-w-0"
         onClick={(e) => e.stopPropagation()}
       >
         {/* TOP-LEFT: identity + navigation */}
-        <div className="absolute left-3 sm:left-4 top-[calc(0.75rem+env(safe-area-inset-top))] z-30 flex max-w-[calc(100%-9.5rem)] items-center gap-1 rounded-xl border bg-background/95 p-1 shadow-lg backdrop-blur-md sm:max-w-[460px]">
+        <div className="absolute left-3 sm:left-4 top-[calc(0.75rem+env(safe-area-inset-top))] z-30 flex max-w-[calc(100%-9.5rem)] items-center gap-1 border bg-background/95 p-1 shadow-lg backdrop-blur-md sm:max-w-[460px]">
           {hasMultiple && (
             <>
               <Button
@@ -590,9 +781,8 @@ export function FileViewer({
             </>
           )}
           <div className="flex h-9 min-w-0 items-center gap-2 px-1">
-            <span className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted text-muted-foreground">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden bg-muted text-muted-foreground">
               {isImage && currentFile.thumbnail_url ? (
-                // eslint-disable-next-line @next/next/no-img-element
                 <img src={currentFile.thumbnail_url} alt="" className="h-full w-full object-cover" />
               ) : (
                 <FileText className="h-3.5 w-3.5" />
@@ -606,8 +796,8 @@ export function FileViewer({
                   <span> · {imageDimensions.width} × {imageDimensions.height}</span>
                 )}
                 {hasMultiple && <span> · {clampedIndex + 1} of {files.length}</span>}
-                {isPdf && pdfPageCount > 0 && (
-                  <span> · Page {activePdfPageClamped} of {pdfPageCount}</span>
+                {isPdf && pdfStatus.pageCount > 0 && (
+                  <span> · Page {pdfStatus.activePage} of {pdfStatus.pageCount}</span>
                 )}
               </p>
             </div>
@@ -617,7 +807,7 @@ export function FileViewer({
         {/* TOP-RIGHT: view + actions */}
         <div className="absolute right-3 sm:right-4 top-[calc(0.75rem+env(safe-area-inset-top))] z-30 flex items-center gap-2">
           {/* Mobile: compact pill */}
-          <div className="flex items-center gap-0.5 rounded-xl border bg-background/95 p-1 shadow-lg backdrop-blur-md md:hidden">
+          <div className="flex items-center gap-0.5 border bg-background/95 p-1 shadow-lg backdrop-blur-md md:hidden">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon" className="h-9 w-9" aria-label="More options">
@@ -625,20 +815,31 @@ export function FileViewer({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-52">
-                {isImage && (
+                {canZoom && (
                   <>
-                    <DropdownMenuItem onClick={() => setZoom((z) => Math.min(z + 0.25, 5))}>
+                    <DropdownMenuItem onClick={handleZoomIn}>
                       <ZoomIn className="mr-2 h-4 w-4" />
                       Zoom in
                     </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setZoom((z) => Math.max(z - 0.25, 0.25))}>
+                    <DropdownMenuItem onClick={handleZoomOut}>
                       <ZoomOut className="mr-2 h-4 w-4" />
                       Zoom out
                     </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => { setZoom(1); setRotation(0) }}>
-                      Reset ({Math.round(zoom * 100)}%)
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setRotation((r) => (r + 90) % 360)}>
+                    {isPdf ? (
+                      <>
+                        <DropdownMenuItem onClick={() => setPdfZoom(FIT_WIDTH)}>
+                          Fit width ({zoomPercent}%)
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => setPdfZoom(FIT_PAGE)}>
+                          Fit page
+                        </DropdownMenuItem>
+                      </>
+                    ) : (
+                      <DropdownMenuItem onClick={handleZoomReset}>
+                        Reset ({zoomPercent}%)
+                      </DropdownMenuItem>
+                    )}
+                    <DropdownMenuItem onClick={handleRotate}>
                       <RotateCw className="mr-2 h-4 w-4" />
                       Rotate
                     </DropdownMenuItem>
@@ -664,14 +865,18 @@ export function FileViewer({
                     {showVersions ? "Hide versions" : "Version history"}
                   </DropdownMenuItem>
                 )}
+                {(printableUrl || onDownload) && <DropdownMenuSeparator />}
+                {printableUrl && (
+                  <DropdownMenuItem onClick={handlePrint}>
+                    <Printer className="mr-2 h-4 w-4" />
+                    Print
+                  </DropdownMenuItem>
+                )}
                 {onDownload && (
-                  <>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem onClick={() => onDownload(currentFile)}>
-                      <Download className="mr-2 h-4 w-4" />
-                      Download
-                    </DropdownMenuItem>
-                  </>
+                  <DropdownMenuItem onClick={handleDownloadCurrent}>
+                    <Download className="mr-2 h-4 w-4" />
+                    Download
+                  </DropdownMenuItem>
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
@@ -686,31 +891,65 @@ export function FileViewer({
             </Button>
           </div>
 
-          {/* Desktop: zoom pill (images) */}
-          {isImage && (
-            <div className="hidden items-center gap-0.5 rounded-xl border bg-background/95 p-1 shadow-lg backdrop-blur-md md:flex">
+          {/* Desktop: zoom pill */}
+          {canZoom && (
+            <div className="hidden items-center gap-0.5 border bg-background/95 p-1 shadow-lg backdrop-blur-md md:flex">
               <Button
                 variant="ghost"
                 size="icon"
                 className="h-9 w-9"
-                onClick={() => setZoom((z) => Math.max(z - 0.25, 0.25))}
-                title="Zoom out"
+                onClick={handleZoomOut}
+                title="Zoom out (−)"
+                aria-label="Zoom out"
               >
                 <ZoomOut className="h-4 w-4" />
               </Button>
-              <button
-                onClick={() => { setZoom(1); setRotation(0) }}
-                className="w-11 text-center font-mono text-xs tabular-nums text-muted-foreground transition-colors hover:text-foreground"
-                title="Reset zoom"
-              >
-                {Math.round(zoom * 100)}%
-              </button>
+              {isPdf ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      className="w-14 text-center font-mono text-xs tabular-nums text-muted-foreground transition-colors hover:text-foreground"
+                      title="Zoom level"
+                      aria-label={`Zoom level, ${zoomPercent} percent`}
+                    >
+                      {zoomPercent}%
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-44">
+                    <DropdownMenuItem onClick={() => setPdfZoom(FIT_WIDTH)}>
+                      Fit width
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setPdfZoom(FIT_PAGE)}>
+                      Fit page
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    {ZOOM_PRESETS.map((preset) => (
+                      <DropdownMenuItem
+                        key={preset}
+                        onClick={() => setPdfZoom({ kind: "scale", value: preset })}
+                      >
+                        <span className="tabular-nums">{Math.round(preset * 100)}%</span>
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : (
+                <button
+                  onClick={handleZoomReset}
+                  className="w-14 text-center font-mono text-xs tabular-nums text-muted-foreground transition-colors hover:text-foreground"
+                  title="Reset zoom (0)"
+                  aria-label={`Reset zoom, currently ${zoomPercent} percent`}
+                >
+                  {zoomPercent}%
+                </button>
+              )}
               <Button
                 variant="ghost"
                 size="icon"
                 className="h-9 w-9"
-                onClick={() => setZoom((z) => Math.min(z + 0.25, 5))}
-                title="Zoom in"
+                onClick={handleZoomIn}
+                title="Zoom in (+)"
+                aria-label="Zoom in"
               >
                 <ZoomIn className="h-4 w-4" />
               </Button>
@@ -718,14 +957,15 @@ export function FileViewer({
           )}
 
           {/* Desktop: actions pill */}
-          <div className="hidden items-center gap-0.5 rounded-xl border bg-background/95 p-1 shadow-lg backdrop-blur-md md:flex">
-            {isImage && (
+          <div className="hidden items-center gap-0.5 border bg-background/95 p-1 shadow-lg backdrop-blur-md md:flex">
+            {canZoom && (
               <Button
                 variant="ghost"
                 size="icon"
                 className="h-9 w-9"
-                onClick={() => setRotation((r) => (r + 90) % 360)}
-                title="Rotate"
+                onClick={handleRotate}
+                title="Rotate (R)"
+                aria-label="Rotate"
               >
                 <RotateCw className="h-4 w-4" />
               </Button>
@@ -737,6 +977,7 @@ export function FileViewer({
                 className="h-9 w-9"
                 onClick={toggleDetails}
                 title="Details"
+                aria-label="Details"
               >
                 <Info className="h-4 w-4" />
               </Button>
@@ -748,8 +989,21 @@ export function FileViewer({
                 className="h-9 w-9"
                 onClick={toggleVersions}
                 title="Version history"
+                aria-label="Version history"
               >
                 <History className="h-4 w-4" />
+              </Button>
+            )}
+            {printableUrl && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-9 w-9"
+                onClick={handlePrint}
+                title="Print"
+                aria-label="Print"
+              >
+                <Printer className="h-4 w-4" />
               </Button>
             )}
             {onDownload && (
@@ -757,8 +1011,9 @@ export function FileViewer({
                 variant="ghost"
                 size="icon"
                 className="h-9 w-9"
-                onClick={() => onDownload(currentFile)}
+                onClick={handleDownloadCurrent}
                 title="Download"
+                aria-label="Download"
               >
                 <Download className="h-4 w-4" />
               </Button>
@@ -769,6 +1024,7 @@ export function FileViewer({
               className="h-9 w-9"
               onClick={toggleFullscreen}
               title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+              aria-label={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
             >
               {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
             </Button>
@@ -779,6 +1035,7 @@ export function FileViewer({
               className="h-9 w-9"
               onClick={() => onOpenChange(false)}
               title="Close (Esc)"
+              aria-label="Close"
             >
               <X className="h-4 w-4" />
             </Button>
@@ -790,15 +1047,9 @@ export function FileViewer({
           className={cn(
             "flex-1 flex items-center justify-center overflow-hidden relative",
             "pt-[calc(4.5rem+env(safe-area-inset-top))]",
-            hasBottomStrip ? "pb-28 sm:pb-32" : "pb-[max(env(safe-area-inset-bottom),1rem)]"
+            showFileStrip ? "pb-28 sm:pb-32" : "pb-[max(env(safe-area-inset-bottom),1rem)]"
           )}
         >
-          {isLoading && (
-            <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
-              <Loader2 className="h-8 w-8 animate-spin text-white/60" />
-            </div>
-          )}
-
           {isImage && currentImageSrc && !imageLoadFailed && (
             <div
               className="absolute inset-0 flex items-center justify-center touch-none select-none"
@@ -807,6 +1058,11 @@ export function FileViewer({
               onTouchEnd={handleTouchEnd}
               onTouchCancel={handleTouchEnd}
             >
+              {isLoading && (
+                <div className="absolute inset-0 flex items-center justify-center p-8">
+                  <Skeleton className="h-full w-full max-w-3xl" />
+                </div>
+              )}
               <div
                 className={cn(
                   "flex items-center justify-center w-full h-full",
@@ -817,7 +1073,6 @@ export function FileViewer({
                   transform: `translate3d(${swipeX + pan.x}px, ${pan.y}px, 0) scale(${zoom}) rotate(${rotation}deg)`,
                 }}
               >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   ref={imageRef}
                   src={currentImageSrc}
@@ -834,56 +1089,35 @@ export function FileViewer({
             </div>
           )}
 
-          {isPdf && currentFile.download_url && (
-            <div ref={pdfViewportRef} className="h-full w-full overflow-auto bg-zinc-950/40">
-              {!pdfLoadFailed && currentPdfUrl && PdfDocument && PdfPage ? (
-                <PdfDocument
-                  key={currentFile.id}
-                  file={currentPdfUrl}
-                  onLoadSuccess={(info: { numPages: number }) => {
-                    setPdfPageCount(info.numPages)
-                    setActivePdfPage((prev) => Math.min(Math.max(prev, 1), Math.max(info.numPages, 1)))
-                    setPdfLoadFailed(false)
-                  }}
-                  onLoadError={(error: unknown) => {
-                    console.error("Failed to load PDF", error)
-                    setPdfLoadFailed(true)
-                    setIsLoading(false)
-                  }}
-                >
-                  <div className="flex min-h-full items-start justify-center p-4">
-                    <PdfPage
-                      pageNumber={activePdfPageClamped}
-                      width={pdfPageWidth}
-                      renderTextLayer={false}
-                      renderAnnotationLayer={false}
-                      onRenderSuccess={() => setIsLoading(false)}
-                      className={cn("rounded-md shadow-2xl", isLoading && "opacity-0")}
-                    />
-                  </div>
-                </PdfDocument>
-              ) : !pdfLoadFailed && currentPdfUrl ? (
-                <div className="h-full w-full" />
-              ) : (
-                <iframe
-                  src={`${currentFile.download_url}#toolbar=0&navpanes=0`}
-                  className={cn("w-full h-full bg-white", isLoading && "opacity-0")}
-                  onLoad={() => setIsLoading(false)}
-                  title={currentFile.file_name}
-                />
-              )}
+          {isPdf && previewUrl && (
+            <div className="relative h-full w-full bg-sidebar">
+              <PdfViewer
+                key={currentFile.id}
+                url={previewUrl}
+                fileId={currentFile.id}
+                fileName={currentFile.file_name}
+                zoom={pdfZoom}
+                rotation={pdfRotation}
+                onStatusChange={handlePdfStatus}
+                onDownload={onDownload ? handleDownloadCurrent : undefined}
+              />
             </div>
           )}
 
-          {isVideo && currentFile.download_url && (
+          {isVideo && previewUrl && (
             <div className="absolute inset-0 flex items-center justify-center px-3 sm:px-6">
+              {isLoading && (
+                <div className="absolute inset-0 flex items-center justify-center p-8">
+                  <Skeleton className="h-full w-full max-w-3xl" />
+                </div>
+              )}
               <video
                 key={currentFile.id}
-                src={currentFile.download_url}
+                src={previewUrl}
                 controls
                 playsInline
                 preload="metadata"
-                className={cn("max-h-full max-w-full rounded-md shadow-2xl", isLoading && "opacity-0")}
+                className={cn("max-h-full max-w-full shadow-2xl", isLoading && "opacity-0")}
                 onLoadedMetadata={() => setIsLoading(false)}
                 onCanPlay={() => setIsLoading(false)}
                 onError={() => setIsLoading(false)}
@@ -891,11 +1125,11 @@ export function FileViewer({
             </div>
           )}
 
-          {isAudio && currentFile.download_url && (
+          {isAudio && previewUrl && (
             <div className="absolute inset-0 flex items-center justify-center px-4">
-              <div className="w-full max-w-xl rounded-2xl border bg-background/95 p-6 shadow-2xl backdrop-blur-md">
+              <div className="w-full max-w-xl border bg-background/95 p-6 shadow-2xl backdrop-blur-md">
                 <div className="mb-4 flex items-center gap-3">
-                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+                  <span className="flex h-11 w-11 shrink-0 items-center justify-center bg-muted text-muted-foreground">
                     <FileText className="h-5 w-5" />
                   </span>
                   <div className="min-w-0">
@@ -905,7 +1139,7 @@ export function FileViewer({
                 </div>
                 <audio
                   key={currentFile.id}
-                  src={currentFile.download_url}
+                  src={previewUrl}
                   controls
                   preload="metadata"
                   className="w-full"
@@ -917,25 +1151,29 @@ export function FileViewer({
             </div>
           )}
 
-          {isWord && !wordLoadFailed && wordHtml && (
-            <div className="h-full w-full overflow-hidden bg-zinc-950/40">
-              <iframe
-                key={currentFile.id}
-                srcDoc={wordHtml}
-                sandbox=""
-                referrerPolicy="no-referrer"
-                className="h-full w-full border-0 bg-[#f1f5f9]"
-                onLoad={() => setIsLoading(false)}
-                title={currentFile.file_name}
-              />
+          {isWord && !wordLoadFailed && (
+            <div className="h-full w-full overflow-hidden bg-sidebar">
+              {wordHtml ? (
+                <iframe
+                  key={currentFile.id}
+                  srcDoc={wordHtml}
+                  sandbox=""
+                  referrerPolicy="no-referrer"
+                  className="h-full w-full border-0 bg-muted"
+                  onLoad={() => setIsLoading(false)}
+                  title={currentFile.file_name}
+                />
+              ) : (
+                <div className="flex h-full w-full items-start justify-center p-6">
+                  <Skeleton className="h-full w-full max-w-[820px]" />
+                </div>
+              )}
             </div>
           )}
 
-          {((isImage && imageLoadFailed) ||
-            (isWord && wordLoadFailed) ||
-            (!isImage && !isPdf && !isVideo && !isAudio && !isWord)) && (
-            <div className="mx-4 flex max-w-sm flex-col items-center justify-center gap-4 rounded-2xl border bg-background/95 px-8 py-10 text-center shadow-xl backdrop-blur-md">
-              <span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+          {showUnavailable && (
+            <div className="mx-4 flex max-w-sm flex-col items-center justify-center gap-4 border bg-background/95 px-8 py-10 text-center shadow-xl backdrop-blur-md">
+              <span className="flex h-16 w-16 items-center justify-center bg-muted text-muted-foreground">
                 <FileText className="h-8 w-8" />
               </span>
               <div>
@@ -949,12 +1187,14 @@ export function FileViewer({
                       : "HEIC preview is still processing. The original file is downloadable now."
                     : isWord
                     ? "We couldn't render a preview for this document. The original file is still downloadable."
+                    : !previewUrl && (isPdf || isImage || isVideo || isAudio)
+                    ? "This file has no preview link. Open it from Documents, or download the original."
                     : "Preview not available for this file type"}
                 </p>
                 {onDownload && (
                   <Button
                     className="mt-4"
-                    onClick={() => onDownload(currentFile)}
+                    onClick={handleDownloadCurrent}
                   >
                     <Download className="mr-2 h-4 w-4" />
                     Download to view
@@ -965,66 +1205,11 @@ export function FileViewer({
           )}
         </div>
 
-        {/* BOTTOM STRIP */}
-        {hasBottomStrip && (
+        {/* BOTTOM STRIP — sibling files. A multi-page PDF renders its own page
+            rail inside the viewer, where it can share the one pdf.js document. */}
+        {showFileStrip && (
           <div className="absolute inset-x-0 bottom-[max(env(safe-area-inset-bottom),0.75rem)] z-20 flex justify-center px-3">
-            <div className="max-w-full overflow-hidden rounded-xl border bg-background/95 p-1.5 shadow-lg backdrop-blur-md">
-            {showPdfThumbnails && currentPdfUrl && PdfDocument && PdfPage ? (
-              <PdfDocument
-                key={`${currentFile.id}-thumbs`}
-                file={currentPdfUrl}
-                loading={null}
-                noData={null}
-                error={null}
-              >
-                <div className="flex items-center gap-2 overflow-x-auto p-1">
-                  {Array.from({ length: pdfPageCount }).map((_, pageIndex) => {
-                    const pageNumber = pageIndex + 1
-                    const active = pageNumber === activePdfPageClamped
-                    return (
-                      <button
-                        key={`pdf-page-${pageNumber}`}
-                        onClick={() => setActivePdfPage(pageNumber)}
-                        aria-label={`Go to page ${pageNumber}`}
-                        className={cn(
-                          "group relative shrink-0 rounded-md overflow-hidden transition-all",
-                          active
-                            ? "ring-2 ring-primary shadow-md"
-                            : "opacity-70 hover:opacity-100 ring-1 ring-border"
-                        )}
-                      >
-                        <div className="bg-white">
-                          <PdfPage
-                            pageNumber={pageNumber}
-                            width={pdfThumbnailWidth}
-                            renderTextLayer={false}
-                            renderAnnotationLayer={false}
-                            loading={
-                              <div className="h-[114px] w-[88px] animate-pulse bg-zinc-200" />
-                            }
-                            error={
-                              <div className="flex h-[114px] w-[88px] items-center justify-center bg-zinc-200 text-[10px] font-medium text-zinc-600">
-                                {pageNumber}
-                              </div>
-                            }
-                          />
-                        </div>
-                        <span
-                          className={cn(
-                            "absolute bottom-1 right-1 text-[10px] font-medium px-1.5 py-0.5 rounded tabular-nums",
-                            active
-                              ? "bg-primary text-primary-foreground"
-                              : "bg-black/70 text-white/90"
-                          )}
-                        >
-                          {pageNumber}
-                        </span>
-                      </button>
-                    )
-                  })}
-                </div>
-              </PdfDocument>
-            ) : hasMultiple ? (
+            <div className="max-w-full overflow-hidden border bg-background/95 p-1.5 shadow-lg backdrop-blur-md">
               <div className="flex items-center gap-1.5 overflow-x-auto p-1">
                 {files.map((f, index) => {
                   const active = index === clampedIndex
@@ -1033,12 +1218,13 @@ export function FileViewer({
                       key={f.id}
                       onClick={() => handleSelectFile(index)}
                       className={cn(
-                        "relative h-14 w-14 shrink-0 rounded-md overflow-hidden transition-all",
+                        "relative h-14 w-14 shrink-0 overflow-hidden transition-all",
                         active
                           ? "ring-2 ring-primary shadow-md"
                           : "opacity-70 hover:opacity-100 ring-1 ring-border"
                       )}
                       aria-label={f.file_name}
+                      aria-current={active ? "true" : undefined}
                     >
                       {isImageFile(f.mime_type) && f.thumbnail_url ? (
                         <Image
@@ -1057,7 +1243,6 @@ export function FileViewer({
                   )
                 })}
               </div>
-            ) : null}
             </div>
           </div>
         )}

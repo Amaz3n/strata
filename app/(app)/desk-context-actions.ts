@@ -1,5 +1,6 @@
 "use server"
 
+import { refresh } from "next/cache"
 import { cookies } from "next/headers"
 import { z } from "zod"
 
@@ -49,6 +50,7 @@ export async function setDeskScopeAction(input: DeskScopeInput): Promise<ActionR
       if (!community) throw new Error("Community is not available to this membership.")
       writeDivision(cookieStore, community.divisionId)
       cookieStore.set(COMMUNITY_CONTEXT_COOKIE, community.id, COOKIE_OPTIONS)
+      refresh()
       return { success: true, data: null }
     }
 
@@ -57,6 +59,9 @@ export async function setDeskScopeAction(input: DeskScopeInput): Promise<ActionR
     }
     writeDivision(cookieStore, divisionId ?? null)
     cookieStore.set(COMMUNITY_CONTEXT_COOKIE, COMMUNITY_CONTEXT_ALL, COOKIE_OPTIONS)
+    // Ambient scope is part of the privately cached chrome. The cookie write
+    // alone leaves that cache holding the previous division's nav.
+    refresh()
     return { success: true, data: null }
   } catch (error) {
     return actionError(error)

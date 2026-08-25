@@ -62,12 +62,24 @@ function unique(values: string[]) {
   return Array.from(new Set(values))
 }
 
+/**
+ * Postgres' undefined_table. The optional RBAC tables below are tolerated when
+ * they have not been migrated yet — but only on this exact code. Matching the
+ * table name inside the error message instead treated any failure that happened
+ * to mention the table as "not there yet", which on a permission-override read
+ * fails OPEN: a transient error would silently drop a user's explicit denies.
+ */
+const UNDEFINED_TABLE = "42P01"
+
+// The catalog TTLs are measured with performance.now(): a monotonic timer is what
+// an in-process cache actually wants, and unlike the wall clock it can be read
+// while a page prerenders -- hasPermission() runs on every render.
 const permissionCatalogCache = new Map<string, { exists: boolean; expiresAt: number }>()
 let allPermissionCatalogCache: { permissions: string[]; expiresAt: number } | null = null
 const PERMISSION_CACHE_TTL_MS = 60 * 1000
 
 async function permissionExists(supabase: SupabaseClient, permission: string) {
-  const now = Date.now()
+  const now = performance.now()
   const cached = permissionCatalogCache.get(permission)
   if (cached && cached.expiresAt > now) {
     return cached.exists
@@ -89,7 +101,7 @@ async function permissionExists(supabase: SupabaseClient, permission: string) {
 }
 
 export async function listAllPermissionKeys(supabase: SupabaseClient = createServiceSupabaseClient()) {
-  const now = Date.now()
+  const now = performance.now()
   if (allPermissionCatalogCache && allPermissionCatalogCache.expiresAt > now) {
     return allPermissionCatalogCache.permissions
   }
@@ -131,15 +143,18 @@ async function fetchOrgPermissions({
   })[]
   const permissions = unique(rows.flatMap((row) => normalizePermissionRow(row)))
   const membershipIds = rows.map((row) => row.id).filter((id): id is string => Boolean(id))
-  const overrides = await fetchMembershipPermissionOverrides({ supabase, membershipIds })
   // 'assigned' on any active membership row restricts this user to explicit
   // project_members rows even when their org role grants project.read/manage.
   const assignedOnly = rows.some((row) => row.project_scope === "assigned")
   const divisionAssignedOnly =
     !permissions.includes("org.admin") && rows.some((row) => row.division_scope === "assigned")
-  const divisionIds = divisionAssignedOnly
-    ? await fetchMembershipDivisionIds({ supabase, membershipIds })
-    : []
+  // Both reads take the same membership ids and neither feeds the other. The
+  // division read stays conditional -- an org-wide user must not pay for a query
+  // whose answer they do not use -- it just no longer waits on the overrides.
+  const [overrides, divisionIds] = await Promise.all([
+    fetchMembershipPermissionOverrides({ supabase, membershipIds }),
+    divisionAssignedOnly ? fetchMembershipDivisionIds({ supabase, membershipIds }) : [],
+  ])
 
   return {
     permissions,
@@ -165,8 +180,7 @@ async function fetchMembershipDivisionIds({
     .select("division_id")
     .in("membership_id", membershipIds)
   if (error) {
-    const message = String(error.message ?? "")
-    if (message.includes("membership_divisions")) return []
+    if (error.code === UNDEFINED_TABLE) return []
     throw new Error(`Unable to load division scope: ${error.message}`)
   }
   return unique((data ?? []).map((row) => row.division_id as string).filter(Boolean))
@@ -189,8 +203,7 @@ async function fetchMembershipPermissionOverrides({
     .in("membership_id", membershipIds)
 
   if (error) {
-    const message = String(error.message ?? "")
-    if (message.includes("membership_permission_overrides")) {
+    if (error.code === UNDEFINED_TABLE) {
       return { grants: [] as string[], denies: [] as string[] }
     }
     throw new Error(`Unable to load permission overrides: ${error.message}`)
@@ -258,6 +271,46 @@ const fetchProjectOrgIdCached = cache((projectId: string) =>
   fetchProjectOrgId({ supabase: createServiceSupabaseClient(), projectId }),
 )
 
+/**
+ * A project's permissions plus the org they belong to, as one awaitable.
+ *
+ * Exists so `authorize()` can start the project, org and platform scopes in the
+ * same tick. The org fallback is the only genuinely serial step in the project
+ * branch — it needs the project_members read to come back empty first — and it
+ * belongs next to the read that usually makes it unnecessary. An explicit
+ * `orgIdHint` skips it outright, exactly as the caller's `??` chain used to.
+ */
+async function resolveProjectScope({
+  projectId,
+  userId,
+  orgIdHint,
+}: {
+  projectId: string
+  userId: string
+  orgIdHint?: string
+}) {
+  const result = await fetchProjectPermissionsCached(projectId, userId)
+  const orgId = orgIdHint ?? result.orgId ?? (await fetchProjectOrgIdCached(projectId))
+  return { ...result, orgId }
+}
+
+/**
+ * The permission keys a user effectively holds in an org: role grants plus
+ * explicit grants, minus explicit denies.
+ *
+ * This is the same membership read `authorize()` performs, so asking for the
+ * list on a page that also ran a permission gate is free. It exists so callers
+ * that need the whole set (feature menus, AI tool filtering, approver matching)
+ * do not maintain a second, subtly different implementation of what a
+ * permission is — the divergence risk on a security path is the point.
+ */
+export async function getEffectiveOrgPermissions(orgId: string, userId: string) {
+  const result = await fetchOrgPermissionsCached(orgId, userId)
+  if (!result.hasMembership) return []
+  const denied = new Set(result.denies)
+  return unique([...result.permissions, ...result.grants]).filter((permission) => !denied.has(permission))
+}
+
 export async function getDivisionAccessForUser({
   orgId,
   userId,
@@ -316,14 +369,14 @@ export async function getDivisionScopedProjectIds({
 }
 
 async function fetchPlatformPermissions({ supabase, userId }: { supabase: SupabaseClient; userId: string }) {
-  const nowIso = new Date().toISOString()
-
   const { data, error } = await supabase
     .from("platform_memberships")
     .select("role:roles!inner(permissions:role_permissions(permission_key))")
     .eq("user_id", userId)
     .eq("status", "active")
-    .or(`expires_at.is.null,expires_at.gt.${nowIso}`)
+    // Expiry is Postgres' to evaluate ("now" is a timestamptz literal); permission
+    // loading is on the render path of every page and cannot read a JS clock.
+    .or("expires_at.is.null,expires_at.gt.now")
 
   if (error) {
     throw new Error(`Unable to load platform permissions: ${error.message}`)
@@ -362,16 +415,56 @@ async function logAuthorizationDecision(
   }
 }
 
+/**
+ * Fingerprints already written during this request.
+ *
+ * React cache() scopes the Set to one render pass. A page gates dozens of
+ * affordances against the same few permissions, and writing an identical row per
+ * gate is what grew this table to many times the size of the business data it
+ * describes. Outside a request scope (workers, scripts) cache() simply does not
+ * memoize, so those callers log every decision — the safe direction.
+ */
+const requestAuditKeys = cache(() => new Set<string>())
+
+function auditFingerprint(input: AuthorizeInput, decision: AuthorizationDecision) {
+  return [
+    input.userId,
+    decision.orgId ?? "",
+    decision.projectId ?? "",
+    input.permission,
+    decision.allowed ? "allow" : "deny",
+    decision.reasonCode,
+    input.resourceType ?? "",
+    input.resourceId ?? "",
+  ].join("|")
+}
+
 // Keep this shared service independent of App Router-only request APIs. It is
 // imported by server actions, route handlers, workers, and other entry points;
 // importing next/server's after() here makes the entire module unusable from a
-// Pages Router-compatible bundle. Audit writes remain best-effort and
-// non-blocking for every caller.
-function scheduleAuthorizationAudit(
+// Pages Router-compatible bundle.
+function auditAuthorizationDecision(
   supabase: SupabaseClient,
   input: AuthorizeInput,
   decision: AuthorizationDecision,
 ) {
+  try {
+    const seen = requestAuditKeys()
+    const fingerprint = auditFingerprint(input, decision)
+    if (seen.has(fingerprint)) return
+    seen.add(fingerprint)
+  } catch {
+    // No request scope to dedupe against — fall through and write.
+  }
+
+  if (!decision.allowed) {
+    // A denial is the row this log exists for, and the only kind the RBAC
+    // evidence job reads. The caller is about to throw or hide a surface
+    // anyway, so paying for the write here buys durability a floating promise
+    // cannot: on serverless it can be frozen the moment the response returns.
+    return logAuthorizationDecision(supabase, input, decision)
+  }
+
   void logAuthorizationDecision(supabase, input, decision)
 }
 
@@ -405,7 +498,7 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     }
 
     if (input.logDecision) {
-      scheduleAuthorizationAudit(catalogSupabase, input, decision)
+      await auditAuthorizationDecision(catalogSupabase, input, decision)
     }
 
     return decision
@@ -424,7 +517,7 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     }
 
     if (input.logDecision) {
-      scheduleAuthorizationAudit(catalogSupabase, input, decision)
+      await auditAuthorizationDecision(catalogSupabase, input, decision)
     }
 
     return decision
@@ -442,17 +535,32 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
   let divisionAssignedOnly = false
   let divisionIds: string[] = []
 
-  if (input.projectId) {
-    const projectResult = await fetchProjectPermissionsCached(input.projectId, input.userId)
+  // The three scopes are read together because none of them is an input to
+  // another: project membership is keyed on (projectId, userId), platform
+  // membership on userId alone, and the org read only has to wait when the
+  // caller did not name an org and the project has to supply one. Every branch
+  // below issues exactly the queries the serial version issued -- the org read
+  // is still skipped when there is no org to read, and still keyed on
+  // input.orgId whenever the caller supplied one.
+  const [projectScope, callerOrgResult, platformResult] = await Promise.all([
+    input.projectId
+      ? resolveProjectScope({ projectId: input.projectId, userId: input.userId, orgIdHint: input.orgId })
+      : null,
+    input.orgId ? fetchOrgPermissionsCached(input.orgId, input.userId) : null,
+    fetchPlatformPermissionsCached(input.userId),
+  ])
 
+  if (projectScope) {
     scopesEvaluated.push("project")
-    hasProjectMembership = projectResult.hasMembership
-    resolvedOrgId = resolvedOrgId ?? projectResult.orgId ?? (await fetchProjectOrgIdCached(input.projectId))
-    permissionSet.push(...projectResult.permissions)
+    hasProjectMembership = projectScope.hasMembership
+    resolvedOrgId = resolvedOrgId ?? projectScope.orgId
+    permissionSet.push(...projectScope.permissions)
   }
 
-  if (resolvedOrgId) {
-    const orgResult = await fetchOrgPermissionsCached(resolvedOrgId, input.userId)
+  const orgResult =
+    callerOrgResult ?? (resolvedOrgId ? await fetchOrgPermissionsCached(resolvedOrgId, input.userId) : null)
+
+  if (orgResult) {
     scopesEvaluated.push("org")
     hasOrgMembership = orgResult.hasMembership
     orgAssignedOnly = orgResult.assignedOnly
@@ -464,7 +572,6 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     deniedPermissions.push(...orgResult.denies)
   }
 
-  const platformResult = await fetchPlatformPermissionsCached(input.userId)
   if (platformResult.hasMembership) {
     scopesEvaluated.push("platform")
     permissionSet.push(...platformResult.permissions)
@@ -512,7 +619,7 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
   }
 
   if (input.logDecision) {
-    scheduleAuthorizationAudit(supabase, input, decision)
+    await auditAuthorizationDecision(supabase, input, decision)
   }
 
   return decision

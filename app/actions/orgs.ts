@@ -1,5 +1,6 @@
 "use server"
 
+import { refresh } from "next/cache"
 import { cookies } from "next/headers"
 
 import { requireAuth } from "@/lib/auth/context"
@@ -98,6 +99,7 @@ export async function switchOrgAction(orgId: string) {
   } else {
     await requirePermission("platform.org.access", { userId: user.id })
     await setPlatformOrgContext(orgId, "Platform operator switched org context from org switcher.")
+    refresh()
     return
   }
 
@@ -110,6 +112,10 @@ export async function switchOrgAction(orgId: string) {
     sameSite: "lax",
     maxAge: 60 * 60 * 24 * 30,
   })
+  // Every chrome value — permissions, tier, ambient scope, the project list — is
+  // org-scoped and privately cached in the browser. Writing the cookie does not
+  // invalidate that cache; only a revalidation call from a Server Action does.
+  refresh()
 }
 
 export async function getOnboardingStateAction() {

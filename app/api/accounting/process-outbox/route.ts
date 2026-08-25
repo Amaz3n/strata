@@ -165,7 +165,10 @@ async function processAccountingOutbox(request: NextRequest) {
     }
   }
 
-  return NextResponse.json({ processed, failed, keepalive, recoveredStale })
+  return NextResponse.json(
+    { ok: failed === 0, processed, failed, keepalive, recoveredStale },
+    { status: failed === 0 ? 200 : 207 },
+  )
 }
 
 export const GET = withCronRun("accounting-process-outbox", processAccountingOutbox)

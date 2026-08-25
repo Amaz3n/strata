@@ -20,9 +20,17 @@ export const createPublicInvoicePaymentIntentInputSchema = z.object({
 
 export const generatePayLinkInputSchema = z.object({
   invoice_id: z.string().uuid("Invoice is required"),
-  expires_at: z.string().optional(),
+  expires_at: z.string().datetime({ offset: true }).optional(),
   max_uses: z.number().int().min(1).optional(),
   metadata: z.record(z.any()).optional(),
+}).superRefine((value, ctx) => {
+  if (value.expires_at && new Date(value.expires_at).getTime() <= Date.now()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["expires_at"],
+      message: "Expiration must be in the future",
+    })
+  }
 })
 
 export const recordPaymentInputSchema = z.object({
@@ -77,6 +85,5 @@ export type CreatePublicInvoicePaymentIntentInput = z.infer<typeof createPublicI
 export type GeneratePayLinkInput = z.infer<typeof generatePayLinkInputSchema>
 export type RecordPaymentInput = z.infer<typeof recordPaymentInputSchema>
 export type ReceivePaymentInput = z.infer<typeof receivePaymentInputSchema>
-
 
 

@@ -1,10 +1,12 @@
-// Request-scoped account data; the instant shell is the layout's.
-export const instant = false;
+// Browser-private account data; runtime-prefetched by the bounded tab strip.
+export const instant = true;
 
 import { notFound, redirect } from "next/navigation";
+import { Suspense } from "react";
 import { z } from "zod";
 
 import { CommitmentRegister } from "@/components/companies/account/commitment-register";
+import { CompanyTabSkeleton } from "@/components/companies/account/company-account-skeleton";
 import {
   getCompanyCommitmentRegister,
   type CommitmentRegisterFlag,
@@ -12,17 +14,19 @@ import {
 } from "@/lib/services/commitments";
 import { listCostCodes } from "@/lib/services/cost-codes";
 import { listProjects } from "@/lib/services/projects";
-import { loadVendorCompany } from "../page-data";
+import { loadVendorCompanyHeader, registerDirectoryTabCache } from "../page-data";
+
+type CommitmentSearch = {
+  type?: string;
+  status?: string;
+  project?: string;
+  flag?: string;
+  page?: string;
+};
 
 interface PageProps {
   params: Promise<{ id: string }>;
-  searchParams?: Promise<{
-    type?: string;
-    status?: string;
-    project?: string;
-    flag?: string;
-    page?: string;
-  }>;
+  searchParams?: Promise<CommitmentSearch>;
 }
 
 const TYPES: CommitmentType[] = ["subcontract", "purchase_order"];
@@ -46,14 +50,35 @@ function parseFlag(value?: string): CommitmentRegisterFlag | undefined {
     : undefined;
 }
 
-export default async function CompanyCommitmentsPage({ params, searchParams }: PageProps) {
+export default function CompanyCommitmentsPage(props: PageProps) {
+  return (
+    <Suspense fallback={<CompanyTabSkeleton rows={8} flush summaryFigures={4} />}>
+      <CompanyCommitmentsData {...props} />
+    </Suspense>
+  );
+}
+
+async function CompanyCommitmentsData({ params, searchParams }: PageProps) {
   const { id } = await params;
   if (!z.string().uuid().safeParse(id).success) notFound();
-  const account = await loadVendorCompany(id);
+  const query = (await searchParams) ?? {};
+
+  return <CompanyCommitmentsContent id={id} query={query} />;
+}
+
+async function CompanyCommitmentsContent({
+  id,
+  query,
+}: {
+  id: string;
+  query: CommitmentSearch;
+}) {
+  "use cache: private";
+  registerDirectoryTabCache(id, "commitments");
+
+  const account = await loadVendorCompanyHeader(id);
   // Null means: not a company, or a company with no vendor role.
   if (!account) redirect(`/directory/${id}`);
-
-  const query = (await searchParams) ?? {};
 
   // Projects and cost codes only feed the create dialog, so a failure there must
   // not take the register down with it.
@@ -72,7 +97,7 @@ export default async function CompanyCommitmentsPage({ params, searchParams }: P
   return (
     <CommitmentRegister
       companyId={id}
-      companyName={account.company.name}
+      companyName={account.name}
       rows={register.rows}
       rollup={register.rollup}
       exceptions={register.exceptions}

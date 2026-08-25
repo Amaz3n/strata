@@ -461,7 +461,11 @@ RFIs     Submittals  Dailies  Photos    Closeout
 ## Performance Considerations
 
 ### Indexing Strategy
-- **Foreign Keys**: All foreign keys automatically indexed
+- **Foreign Keys**: Indexed explicitly in the migration that creates them.
+  Postgres does NOT index a foreign key for you — it only indexes the primary
+  key and unique constraints. An unindexed FK makes every lookup and every
+  cascading delete on the parent a sequential scan, and the database advisor
+  reports it (`unindexed_foreign_keys`).
 - **Composite Indexes**: Multi-column indexes for common query patterns
 - **Partial Indexes**: Conditional indexes for active records
 - **GIN Indexes**: JSONB and text search indexes

@@ -37,41 +37,11 @@ import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { useToast } from "@/hooks/use-toast"
 import type { FeatureFlag, FeatureFlagOrganization } from "@/lib/services/admin"
+import { FEATURE_FLAG_DEFINITIONS } from "@/lib/feature-flags/registry"
 
 import { unwrapAction } from "@/lib/action-result"
 
-const FLAG_PRESETS = [
-  {
-    key: "fintech_ap_payments",
-    label: "Fintech AP Payments",
-    description: "Allow this organization to execute approved electronic vendor payment runs when the platform payment gate is also enabled.",
-    config: { rail: "ach", provider: "stripe" },
-  },
-  {
-    key: "billing_autopilot",
-    label: "Arc Autopilot",
-    description: "Experimental billing analysis and review workspace.",
-    config: { experimental: true, mode: "review_only" },
-  },
-  {
-    key: "ai_search_enabled",
-    label: "AI Search",
-    description: "Master switch for conversational AI search.",
-    config: {},
-  },
-  {
-    key: "ai_search_planner_v2",
-    label: "AI Search Planner v2",
-    description: "Enable the second-generation AI search planner.",
-    config: {},
-  },
-  {
-    key: "beta_features",
-    label: "Beta Features",
-    description: "General access to experimental Arc capabilities.",
-    config: {},
-  },
-] as const
+const FLAG_PRESETS = Object.values(FEATURE_FLAG_DEFINITIONS)
 
 type FlagForm = {
   flagId?: string
@@ -117,7 +87,7 @@ export function FeatureFlagsTable({
     setForm({
       orgId: organizations[0]?.id ?? "",
       flagKey: preset.key,
-      enabled: preset.key === "billing_autopilot" ? false : true,
+      enabled: preset.defaultEnabled,
       configText: JSON.stringify(preset.config, null, 2),
       expiresAt: "",
     })
@@ -136,15 +106,12 @@ export function FeatureFlagsTable({
 
   function applyPreset(key: string) {
     if (!form) return
-    if (key === "__custom") {
-      setForm({ ...form, flagKey: "", configText: "{}" })
-      return
-    }
     const preset = FLAG_PRESETS.find((item) => item.key === key)
     if (!preset) return
     setForm({
       ...form,
       flagKey: preset.key,
+      enabled: preset.defaultEnabled,
       configText: JSON.stringify(preset.config, null, 2),
     })
   }
@@ -305,10 +272,17 @@ export function FeatureFlagsTable({
                   <Switch
                     checked={flag.enabled}
                     onCheckedChange={() => handleToggle(flag)}
-                    disabled={isPending && busyKey === flag.id}
+                    disabled={!FEATURE_FLAG_DEFINITIONS[flag.flagKey as keyof typeof FEATURE_FLAG_DEFINITIONS] || (isPending && busyKey === flag.id)}
                     aria-label={`Toggle ${flag.flagKey}`}
                   />
-                  <Button type="button" variant="outline" size="icon" onClick={() => openEdit(flag)} aria-label={`Edit ${flag.flagKey}`}>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    onClick={() => openEdit(flag)}
+                    disabled={!FEATURE_FLAG_DEFINITIONS[flag.flagKey as keyof typeof FEATURE_FLAG_DEFINITIONS]}
+                    aria-label={`Edit ${flag.flagKey}`}
+                  >
                     <Pencil className="h-4 w-4" />
                   </Button>
                   <Button
@@ -377,7 +351,7 @@ export function FeatureFlagsTable({
               {!form.flagId ? (
                 <div className="space-y-2">
                   <Label>Preset</Label>
-                  <Select value={FLAG_PRESETS.some((item) => item.key === form.flagKey) ? form.flagKey : "__custom"} onValueChange={applyPreset}>
+                  <Select value={form.flagKey} onValueChange={applyPreset}>
                     <SelectTrigger className="w-full">
                       <SelectValue />
                     </SelectTrigger>
@@ -385,7 +359,6 @@ export function FeatureFlagsTable({
                       {FLAG_PRESETS.map((preset) => (
                         <SelectItem key={preset.key} value={preset.key}>{preset.label}</SelectItem>
                       ))}
-                      <SelectItem value="__custom">Custom flag</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -396,10 +369,11 @@ export function FeatureFlagsTable({
                 <Input
                   id="flag-key"
                   value={form.flagKey}
-                  onChange={(event) => setForm({ ...form, flagKey: event.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "_") })}
-                  placeholder="billing_autopilot"
+                  readOnly
                 />
-                <p className="text-xs text-muted-foreground">Lowercase letters, numbers, and underscores only.</p>
+                <p className="text-xs text-muted-foreground">
+                  Keys are registered in code with an owner, safe default, review date, and deletion condition.
+                </p>
               </div>
 
               <div className="space-y-2">
@@ -479,7 +453,7 @@ export function FeatureFlagsTable({
 }
 
 function getFeatureDescription(flagKey: string) {
-  return FLAG_PRESETS.find((preset) => preset.key === flagKey)?.description ?? "Custom organization feature flag."
+  return FLAG_PRESETS.find((preset) => preset.key === flagKey)?.description ?? "Unregistered legacy flag; runtime ignores it. Delete or migrate it."
 }
 
 function toDateTimeLocal(value: string | null) {

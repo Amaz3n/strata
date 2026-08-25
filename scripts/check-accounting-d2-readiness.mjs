@@ -33,9 +33,29 @@ function walk(directory) {
   })
 }
 
-function enclosingStatement(node) {
+/**
+ * Return only the fluent PostgREST query rooted at `.from(...)`.
+ *
+ * Using the enclosing variable declaration made sibling queries in one
+ * `Promise.all` contaminate each other: a legacy token selected from one table
+ * was falsely attributed to every other table in the declaration. Wrappers
+ * such as `withSpan(() => Promise.all(...))` then changed the count without
+ * changing a single database dependency.
+ */
+function enclosingQuery(node) {
   let current = node
-  while (current.parent && !ts.isStatement(current) && !ts.isVariableDeclaration(current)) current = current.parent
+  while (current.parent) {
+    const parent = current.parent
+    if (ts.isPropertyAccessExpression(parent) && parent.expression === current) {
+      current = parent
+      continue
+    }
+    if (ts.isCallExpression(parent) && parent.expression === current) {
+      current = parent
+      continue
+    }
+    break
+  }
   return current
 }
 
@@ -66,11 +86,11 @@ for (const sourceRoot of sourceRoots) {
     const visit = (node) => {
       const table = tableFromCall(node)
       if (table) {
-        const statement = enclosingStatement(node)
-        const statementText = statement.getText(sourceFile)
-        const columns = dropSet[table].filter((column) => new RegExp(`\\b${column}\\b`).test(statementText))
+        const query = enclosingQuery(node)
+        const queryText = query.getText(sourceFile)
+        const columns = dropSet[table].filter((column) => new RegExp(`\\b${column}\\b`).test(queryText))
         if (columns.length > 0) {
-          const line = sourceFile.getLineAndCharacterOfPosition(statement.getStart(sourceFile)).line + 1
+          const line = sourceFile.getLineAndCharacterOfPosition(query.getStart(sourceFile)).line + 1
           findings.push({ file: relativePath, line, table, columns: columns.sort() })
         }
       }

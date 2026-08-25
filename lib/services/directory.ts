@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { cacheLife, cacheTag } from "next/cache"
 
 import type {
   PartyKind,
@@ -8,8 +9,10 @@ import type {
 } from "@/lib/directory/roles"
 import { DIRECTORY_READ_PERMISSIONS as READ_PERMISSIONS } from "@/lib/directory/permissions"
 import { requireOrgContext } from "@/lib/services/context"
+import type { OrgServiceContext } from "@/lib/services/context"
 import { requireAnyPermission } from "@/lib/services/permissions"
 import { listRelationshipTypesWithClient } from "@/lib/services/party-roles"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 export type DirectorySortKey = "name" | "detail" | "recent"
 export type DirectorySortDirection = "asc" | "desc"
@@ -74,6 +77,19 @@ export interface DirectoryPageResult {
   pageSize: number
   /** The org's role vocabulary, so the list can label chips without a second load. */
   relationshipTypes: RelationshipType[]
+}
+
+export interface DirectoryInitialPageResult extends DirectoryPageResult {
+  trades: string[]
+}
+
+export type DirectoryPageWindow = Omit<DirectoryPageResult, "relationshipTypes">
+
+export interface DirectoryInitialPagesResult {
+  company: DirectoryPageWindow
+  contact: DirectoryPageWindow
+  relationshipTypes: RelationshipType[]
+  trades: string[]
 }
 
 interface DirectoryEntryRow {
@@ -202,22 +218,10 @@ async function listDirectoryPageWithClient(
   }
 }
 
-export async function listDirectoryPage(input: DirectoryPageInput): Promise<DirectoryPageResult> {
-  const { supabase, orgId, userId } = await requireOrgContext()
-  await requireAnyPermission(READ_PERMISSIONS, { supabase, orgId, userId })
-
-  const [result, relationshipTypes] = await Promise.all([
-    listDirectoryPageWithClient(supabase, orgId, input),
-    listRelationshipTypesWithClient(supabase, orgId),
-  ])
-
-  return { ...result, relationshipTypes }
-}
-
-export async function listDirectoryTrades(): Promise<string[]> {
-  const { supabase, orgId, userId } = await requireOrgContext()
-  await requireAnyPermission(READ_PERMISSIONS, { supabase, orgId, userId })
-
+async function listDirectoryTradesWithClient(
+  supabase: SupabaseClient,
+  orgId: string,
+): Promise<string[]> {
   const { data, error } = await supabase
     .from("directory_trades")
     .select("name")
@@ -232,6 +236,122 @@ export async function listDirectoryTrades(): Promise<string[]> {
 }
 
 /**
+ * Org-owned lookup vocabulary changes rarely and contains no user data. The
+ * caller still passes the normal directory permission gate before reaching
+ * this cache; the service client only makes the cached entry independent of a
+ * request-scoped Supabase client. `orgId` is part of the cache key and tag, so
+ * data can never cross organizations.
+ */
+async function getCachedDirectoryVocabulary(orgId: string): Promise<{
+  relationshipTypes: RelationshipType[]
+  trades: string[]
+}> {
+  "use cache"
+  cacheLife({ stale: 300, revalidate: 900, expire: 3600 })
+  cacheTag("directory-vocabulary", `directory-vocabulary:${orgId}`)
+
+  const supabase = createServiceSupabaseClient()
+  const [relationshipTypes, trades] = await Promise.all([
+    listRelationshipTypesWithClient(supabase, orgId),
+    listDirectoryTradesWithClient(supabase, orgId),
+  ])
+  return { relationshipTypes, trades }
+}
+
+export async function listDirectoryPage(input: DirectoryPageInput): Promise<DirectoryPageResult> {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requireAnyPermission(READ_PERMISSIONS, { supabase, orgId, userId })
+
+  const [result, vocabulary] = await Promise.all([
+    listDirectoryPageWithClient(supabase, orgId, input),
+    getCachedDirectoryVocabulary(orgId),
+  ])
+
+  return { ...result, relationshipTypes: vocabulary.relationshipTypes }
+}
+
+/**
+ * The account header only needs the same compact identity already used by the
+ * list. Avoid loading contacts, accounting links and edit-only fields before a
+ * destination can show its name and tabs.
+ */
+export async function getDirectoryEntry(
+  entryId: string,
+  context?: OrgServiceContext,
+): Promise<DirectoryEntry | null> {
+  const { supabase, orgId, userId } = context ?? (await requireOrgContext())
+  await requireAnyPermission(READ_PERMISSIONS, { supabase, orgId, userId })
+
+  const { data, error } = await supabase
+    .from("directory_entries")
+    .select(ENTRY_COLUMNS)
+    .eq("org_id", orgId)
+    .eq("id", entryId)
+    .maybeSingle()
+
+  if (error) throw new Error(`Failed to load directory identity: ${error.message}`)
+  return data ? mapEntry(data as DirectoryEntryRow) : null
+}
+
+/**
+ * First-page path used by the RSC. It resolves auth and the directory read gate
+ * once, starts the row query and cached vocabulary together, and returns every
+ * lookup needed by the toolbar without a second service orchestration pass.
+ */
+export async function listDirectoryInitialPage(
+  input: DirectoryPageInput,
+  context?: OrgServiceContext,
+): Promise<DirectoryInitialPageResult> {
+  const { supabase, orgId, userId } = context ?? (await requireOrgContext())
+  await requireAnyPermission(READ_PERMISSIONS, { supabase, orgId, userId })
+
+  const [result, vocabulary] = await Promise.all([
+    listDirectoryPageWithClient(supabase, orgId, input),
+    getCachedDirectoryVocabulary(orgId),
+  ])
+
+  return {
+    ...result,
+    relationshipTypes: vocabulary.relationshipTypes,
+    trades: vocabulary.trades,
+  }
+}
+
+/**
+ * Load both kind tabs behind one context and permission check. The two row
+ * queries run together, so the inactive tab costs one cheap database query on
+ * the initial request instead of a complete authenticated RSC navigation when
+ * somebody switches tabs.
+ */
+export async function listDirectoryInitialPages(
+  inputs: Record<PartyKind, DirectoryPageInput>,
+  context?: OrgServiceContext,
+): Promise<DirectoryInitialPagesResult> {
+  const { supabase, orgId, userId } = context ?? (await requireOrgContext())
+  await requireAnyPermission(READ_PERMISSIONS, { supabase, orgId, userId })
+
+  const [company, contact, vocabulary] = await Promise.all([
+    listDirectoryPageWithClient(supabase, orgId, inputs.company),
+    listDirectoryPageWithClient(supabase, orgId, inputs.contact),
+    getCachedDirectoryVocabulary(orgId),
+  ])
+
+  return {
+    company,
+    contact,
+    relationshipTypes: vocabulary.relationshipTypes,
+    trades: vocabulary.trades,
+  }
+}
+
+export async function listDirectoryTrades(): Promise<string[]> {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requireAnyPermission(READ_PERMISSIONS, { supabase, orgId, userId })
+
+  return (await getCachedDirectoryVocabulary(orgId)).trades
+}
+
+/**
  * Companies the compliance banner watches: vendor-role, unarchived, capped.
  *
  * The list page used to load EVERY subcontractor and EVERY supplier unpaginated
@@ -239,12 +359,15 @@ export async function listDirectoryTrades(): Promise<string[]> {
  * paginated view, and the cap is surfaced so a truncated banner never reads as
  * an all-clear.
  */
-export async function listComplianceWatchCompanies(limit = 200): Promise<{
+export async function listComplianceWatchCompanies(
+  limit = 200,
+  context?: OrgServiceContext,
+): Promise<{
   companies: Array<{ id: string; name: string }>
   total: number
   truncated: boolean
 }> {
-  const { supabase, orgId, userId } = await requireOrgContext()
+  const { supabase, orgId, userId } = context ?? (await requireOrgContext())
   await requireAnyPermission(READ_PERMISSIONS, { supabase, orgId, userId })
 
   const { data, error, count } = await supabase

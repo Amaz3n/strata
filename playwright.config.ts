@@ -2,6 +2,9 @@ import { defineConfig, devices } from "@playwright/test"
 
 const port = Number(process.env.PLAYWRIGHT_PORT ?? 3100)
 const localBaseURL = `http://127.0.0.1:${port}`
+const webServerCommand = process.env.PLAYWRIGHT_SKIP_BUILD
+  ? `pnpm start --port ${port}`
+  : `pnpm build && pnpm start --port ${port}`
 
 export default defineConfig({
   testDir: "./e2e",
@@ -24,7 +27,7 @@ export default defineConfig({
     : {
         // Automatic Link prefetching is production-only. Running instant()
         // against next dev would validate a mode users never receive.
-        command: `pnpm build && pnpm start --port ${port}`,
+        command: webServerCommand,
         url: localBaseURL,
         reuseExistingServer: false,
         // CI deliberately performs exhaustive validation across hundreds of

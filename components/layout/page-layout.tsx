@@ -11,22 +11,37 @@ interface PageLayoutProps {
   fullBleed?: boolean
 }
 
+/**
+ * Header state is published before paint, not after it.
+ *
+ * A page's title and breadcrumbs live in the header, which sits above the route
+ * that owns them, so they travel up through context. With `useEffect` that
+ * happened in a commit *after* the browser had already painted the new page —
+ * one frame of the previous page's breadcrumb sitting over the new page's
+ * content on every navigation. `useLayoutEffect` runs synchronously before
+ * paint, so the header and the content it labels change in the same frame.
+ *
+ * There is no layout phase on the server, so it falls back to `useEffect`
+ * during SSR, where the warning would be noise and the effect never runs.
+ */
+const useHeaderEffect = typeof window === "undefined" ? React.useEffect : React.useLayoutEffect
+
 function PageLayoutInner({ children, title, breadcrumbs, fullBleed }: PageLayoutProps) {
   const { setTitle, setBreadcrumbs, setFullBleed } = usePageTitle()
 
-  React.useEffect(() => {
+  useHeaderEffect(() => {
     if (title) {
       setTitle(title)
     }
   }, [title, setTitle])
 
-  React.useEffect(() => {
+  useHeaderEffect(() => {
     if (breadcrumbs) {
       setBreadcrumbs(breadcrumbs)
     }
   }, [breadcrumbs, setBreadcrumbs])
 
-  React.useEffect(() => {
+  useHeaderEffect(() => {
     setFullBleed(Boolean(fullBleed))
     return () => setFullBleed(false)
   }, [fullBleed, setFullBleed])

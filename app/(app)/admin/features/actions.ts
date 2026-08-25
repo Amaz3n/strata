@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 import { z } from "zod"
+import { FEATURE_FLAG_KEYS } from "@/lib/feature-flags/registry"
 
 import {
   createFeatureFlag,
@@ -26,7 +27,7 @@ async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
 
 const featureFlagSchema = z.object({
   orgId: z.string().uuid(),
-  flagKey: z.string().trim().min(1).max(100).regex(/^[a-z][a-z0-9_]*$/, "Use lowercase letters, numbers, and underscores"),
+  flagKey: z.enum(FEATURE_FLAG_KEYS as [string, ...string[]]),
   enabled: z.boolean(),
   config: z.record(z.unknown()).default({}),
   expiresAt: z.string().datetime().nullable().default(null),
@@ -54,7 +55,7 @@ export async function toggleFeatureFlag(flagId: string, orgId: string, flagKey: 
       const parsed = z.object({
         flagId: z.string().uuid(),
         orgId: z.string().uuid(),
-        flagKey: z.string().trim().min(1),
+        flagKey: z.enum(FEATURE_FLAG_KEYS as [string, ...string[]]),
         enabled: z.boolean(),
       }).parse({ flagId, orgId, flagKey, enabled })
       await toggleFeatureFlagFromService(parsed.flagId, parsed.orgId, parsed.enabled, user.id)

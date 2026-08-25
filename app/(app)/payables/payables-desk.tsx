@@ -5,7 +5,7 @@ import * as React from "react"
 import { toast } from "sonner"
 
 import { getOrgPayableContextAction } from "./actions"
-import { listProjectsAction } from "@/app/(app)/projects/actions"
+import { listProjectBillingOptionsAction } from "@/app/(app)/projects/actions"
 import {
   getPayablesAccountingContextAction,
   getPayablesAccountingSyncStatesAction,
@@ -509,17 +509,10 @@ export function PayablesDesk({
 
   React.useEffect(() => {
     let cancelled = false
-    listProjectsAction()
+    listProjectBillingOptionsAction()
       .then((rows) => {
         if (cancelled) return
-        setProjects(
-          (rows ?? []).map((project: any) => ({
-            id: project.id,
-            name: project.name,
-            billingModel:
-              project.financial_settings?.billing_model ?? "fixed_price",
-          })),
-        )
+        setProjects(rows ?? [])
       })
       .catch(() => {})
     return () => {

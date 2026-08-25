@@ -109,7 +109,22 @@ export type ComplianceRequirementTemplateItem = {
   notes?: string
 }
 
-export type ContactType = "internal" | "subcontractor" | "client" | "vendor" | "consultant"
+/**
+ * Mirrors the `contacts_contact_type_check` constraint. Legacy: what a person
+ * is to the org is their roles (`party_roles`), and this column is dropped by a
+ * later gated migration. Kept in sync with the constraint so a role that the
+ * database would accept is not narrowed away on the way in.
+ */
+export type ContactType =
+  | "internal"
+  | "subcontractor"
+  | "client"
+  | "vendor"
+  | "consultant"
+  | "prospect"
+  | "buyer"
+  | "homeowner"
+  | "agent"
 
 export interface Contact {
   id: string

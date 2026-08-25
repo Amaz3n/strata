@@ -1,9 +1,11 @@
 import { z } from "zod"
 
+import type { SupabaseClient } from "@supabase/supabase-js"
+
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
-import { getBudgetWithActualsForService } from "@/lib/services/budgets"
+import { getBudgetWithActuals, getBudgetWithActualsForService, type BudgetWithActuals } from "@/lib/services/budgets"
 import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
 import {
   resolveBilledCents,
@@ -29,29 +31,38 @@ const projectSnapshotSchema = z.object({
  * billed fallbacks, so a snapshot and the report could report different
  * over/under positions for the same project on the same day — and `inputsHash`
  * silently attested to whichever ran last.
+ *
+ * The budget arrives as a promise the caller already started, so the three cheap
+ * reads here overlap with the expensive reconstruction instead of queueing
+ * behind it, and so an authorized reader can hand in the request-cached
+ * reconstruction the budget tab already paid for.
  */
-export async function resolveProjectPocInputs(projectId: string, orgId: string) {
-  const service = createServiceSupabaseClient()
+async function resolvePocInputs(
+  client: SupabaseClient,
+  projectId: string,
+  orgId: string,
+  budgetPromise: Promise<BudgetWithActuals | null>,
+) {
   const [projectResult, changeOrdersResult, invoicesResult, budget] = await Promise.all([
-    service
+    client
       .from("projects")
       .select("id, org_id, billing_contract, total_contract_value_cents")
       .eq("org_id", orgId)
       .eq("id", projectId)
       .single(),
-    service
+    client
       .from("change_orders")
       .select("total_cents")
       .eq("org_id", orgId)
       .eq("project_id", projectId)
       .eq("status", "approved"),
-    service
+    client
       .from("invoices")
       .select("total_cents")
       .eq("org_id", orgId)
       .eq("project_id", projectId)
       .in("status", [...BILLED_INVOICE_STATUSES]),
-    getBudgetWithActualsForService(projectId, orgId),
+    budgetPromise,
   ])
   if (projectResult.error) throw new Error(`Failed to load POC project: ${projectResult.error.message}`)
   if (changeOrdersResult.error) throw new Error(`Failed to load POC change orders: ${changeOrdersResult.error.message}`)
@@ -87,6 +98,12 @@ export async function resolveProjectPocInputs(projectId: string, orgId: string) 
     eacCents,
     billedCents,
   }
+}
+
+/** Trusted worker entry point: service client, no request cache, no permission gate. */
+export async function resolveProjectPocInputs(projectId: string, orgId: string) {
+  const service = createServiceSupabaseClient()
+  return resolvePocInputs(service, projectId, orgId, getBudgetWithActualsForService(projectId, orgId))
 }
 
 export async function computeProjectPocForProject(projectId: string, orgId: string) {
@@ -125,7 +142,18 @@ export async function getProjectPocPosition(projectId: string, orgId?: string) {
       resourceId: projectId,
     }),
   ])
-  return computeProjectPocForProject(projectId, context.orgId)
+  // Reads through the request-cached, RLS-scoped reconstruction rather than the
+  // service one. The budget tab renders this position alongside the budget table
+  // in a single render; going through the service client rebuilt the entire
+  // budget a second time — ~21 queries — for a position that needs exactly the
+  // summary the tab already had.
+  const inputs = await resolvePocInputs(
+    context.supabase,
+    projectId,
+    context.orgId,
+    getBudgetWithActuals(projectId, context.orgId),
+  )
+  return inputs ? computeProjectPoc(inputs) : null
 }
 
 const pocSnapshotPositionSchema = z.object({

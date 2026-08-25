@@ -30,6 +30,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from "@/components/icons"
+import { configurePdfWorker } from "@/lib/pdf/worker"
 
 export type ESignFieldDraft = {
   id: string
@@ -158,7 +159,7 @@ export function ESignDocumentViewer({
     const loadPdf = async () => {
       try {
         const { Document, Page, pdfjs } = await import("react-pdf")
-        pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs"
+        configurePdfWorker()
         setPDFComponents({ Document, Page, pdfjs })
       } catch (error) {
         console.error("Failed to load PDF components", error)

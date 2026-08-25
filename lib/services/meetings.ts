@@ -8,6 +8,7 @@ import { createFileShareLink } from "@/lib/services/file-share-links"
 import { persistGeneratedProjectPdf } from "@/lib/services/generated-project-pdfs"
 import { escapeHtml, getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
 import { requirePermission } from "@/lib/services/permissions"
+import { insertWithProjectNumberRetry } from "@/lib/services/project-sequence"
 import { createTask } from "@/lib/services/tasks"
 import { createMeetingSchema, meetingAttendeeSchema, meetingItemSchema, updateMeetingAttendeeSchema, updateMeetingItemSchema, updateMeetingSchema, type CreateMeetingInput, type MeetingAttendeeInput, type MeetingItemInput, type UpdateMeetingInput } from "@/lib/validation/meetings"
 
@@ -149,14 +150,22 @@ export async function createNextMeeting(input: CreateMeetingInput, orgId?: strin
   const parsed = createMeetingSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("meeting.write", { supabase, orgId: resolvedOrgId, userId })
-  const { data: nextNumber, error: numberError } = await supabase.rpc("next_meeting_number", { p_project_id: parsed.project_id, p_series: parsed.series })
-  if (numberError || typeof nextNumber !== "number") throw new Error(`Failed to allocate meeting number: ${numberError?.message}`)
   const { data: previous } = await supabase.from("meetings").select("id").eq("org_id", resolvedOrgId).eq("project_id", parsed.project_id).eq("series", parsed.series).eq("status", "finalized").order("meeting_number", { ascending: false }).limit(1).maybeSingle()
-  const { data: meeting, error } = await supabase.from("meetings").insert({
-    org_id: resolvedOrgId, project_id: parsed.project_id, meeting_number: nextNumber, series: parsed.series,
-    title: parsed.title, held_at: parsed.held_at ?? null, location: parsed.location ?? null,
-  }).select(MEETING_SELECT).single()
-  if (error || !meeting) throw new Error(`Failed to create meeting: ${error?.message}`)
+  const { data: meeting } = await insertWithProjectNumberRetry<Meeting>({
+    supabase,
+    table: "meetings",
+    numberColumn: "meeting_number",
+    rpcName: "next_meeting_number",
+    sequenceScope: { series: parsed.series },
+    conflictConstraint: "meetings_project_id_series_meeting_number_key",
+    projectId: parsed.project_id,
+    payload: {
+      org_id: resolvedOrgId, project_id: parsed.project_id, series: parsed.series,
+      title: parsed.title, held_at: parsed.held_at ?? null, location: parsed.location ?? null,
+    },
+    select: MEETING_SELECT,
+    entityLabel: "meeting",
+  })
   if (previous) {
     const { data: openItems } = await supabase.from("meeting_items").select(ITEM_SELECT).eq("org_id", resolvedOrgId).eq("meeting_id", previous.id).eq("status", "open").order("sort_order")
     if (openItems?.length) {

@@ -1,13 +1,13 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useCallback, useMemo, useState } from "react"
 import { usePathname, useSearchParams } from "next/navigation"
 import {
   ChevronsUpDown,
   Loader2,
   Search,
 } from "@/components/icons"
-import { useOptimisticNavigate, useIsNavigationPending } from "@/lib/navigation/optimistic-pathname"
+import { OptimisticLink, useIsNavigationPending } from "@/lib/navigation/optimistic-pathname"
 import { ProjectAvatar } from "@/components/ui/project-avatar"
 import { Input } from "@/components/ui/input"
 
@@ -24,11 +24,9 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar"
-import { Skeleton } from "@/components/ui/skeleton"
 import type { ProjectNavigationItem } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { useHydrated } from "@/hooks/use-hydrated"
-import { useSidebarProjects } from "./use-sidebar-projects"
 
 function isArchived(status?: ProjectNavigationItem["status"]) {
   return status === "completed" || status === "cancelled"
@@ -40,6 +38,13 @@ function formatProjectStatus(status?: ProjectNavigationItem["status"]) {
 
 interface SidebarProjectSwitcherProps {
   projectId?: string
+  /**
+   * Rendered by the server from the layout's cached chrome context. It used to be
+   * a client fetch to /api/projects on mount: a round trip that could not start
+   * until hydration finished and could not be prefetched at all, so the switcher
+   * showed a skeleton on every fresh page load.
+   */
+  projects: ProjectNavigationItem[]
 }
 
 function getProjectIdFromPath(pathname: string): string | null {
@@ -47,17 +52,19 @@ function getProjectIdFromPath(pathname: string): string | null {
   return match?.[1] ?? null
 }
 
-export function SidebarProjectSwitcher({ projectId }: SidebarProjectSwitcherProps) {
+export function SidebarProjectSwitcher({ projectId, projects }: SidebarProjectSwitcherProps) {
   const { isMobile, state } = useSidebar()
-  const navigate = useOptimisticNavigate()
   const isPending = useIsNavigationPending()
   const pathname = usePathname()
   const searchParams = useSearchParams()
-  const { projects, isLoading, loadError } = useSidebarProjects()
   const hydrated = useHydrated()
   const pathProjectId = getProjectIdFromPath(pathname)
   const resolvedProjectId = projectId ?? pathProjectId ?? undefined
   const [query, setQuery] = useState("")
+  // Which destinations have been shown intent. A `<Link prefetch>` costs a server
+  // invocation per link, so warming all forty on menu open would cost far more
+  // than the one switch it saves.
+  const [warmed, setWarmed] = useState<ReadonlySet<string>>(() => new Set())
 
   const sortedProjects = useMemo(() => {
     const term = query.trim().toLowerCase()
@@ -74,27 +81,30 @@ export function SidebarProjectSwitcher({ projectId }: SidebarProjectSwitcherProp
 
   const currentProject = projects.find((p) => p.id === resolvedProjectId)
 
-  const handleSelect = (targetProjectId: string) => {
-    if (targetProjectId === resolvedProjectId) return
-    const nextPath = pathProjectId
-      ? pathname.replace(`/projects/${pathProjectId}`, `/projects/${targetProjectId}`)
-      : `/projects/${targetProjectId}`
-    const search = searchParams.toString()
-    navigate(search ? `${nextPath}?${search}` : nextPath)
+  // The destination for a switch keeps the tab you are on: /projects/A/schedule
+  // becomes /projects/B/schedule, not /projects/B.
+  const hrefFor = useCallback(
+    (targetProjectId: string) => {
+      const nextPath = pathProjectId
+        ? pathname.replace(`/projects/${pathProjectId}`, `/projects/${targetProjectId}`)
+        : `/projects/${targetProjectId}`
+      const search = searchParams.toString()
+      return search ? `${nextPath}?${search}` : nextPath
+    },
+    [pathProjectId, pathname, searchParams],
+  )
+
+  // `prefetch` on a Link means the App Shell PLUS this link's URL data resolved
+  // ahead of the click. /projects/[id] is entirely params-dependent, so the
+  // shared shell carries nothing about the project — resolving `params.id` early
+  // is what lets the cached project identity render on the click instead of a
+  // round trip later. Keyboard users reach this through onFocus.
+  const handleIntent = (targetProjectId: string) => {
+    if (targetProjectId === resolvedProjectId || warmed.has(targetProjectId)) return
+    setWarmed((previous) => new Set(previous).add(targetProjectId))
   }
 
   const renderCurrent = () => {
-    if (isLoading) {
-      return (
-        <>
-          <Skeleton className="size-6 shrink-0 rounded-none" />
-          {state !== "collapsed" && (
-            <Skeleton className="h-4 w-28" />
-          )}
-        </>
-      )
-    }
-
     if (!currentProject) {
       return (
         <>
@@ -175,13 +185,7 @@ export function SidebarProjectSwitcher({ projectId }: SidebarProjectSwitcherProp
               </div>
             </div>
 
-            {loadError && (
-              <div className="px-2 py-3 text-xs whitespace-pre-wrap text-destructive">
-                {loadError}
-              </div>
-            )}
-
-            {!loadError && !isLoading && sortedProjects.length === 0 && (
+            {sortedProjects.length === 0 && (
               <div className="px-2 py-3 text-sm text-muted-foreground">No projects found.</div>
             )}
 
@@ -192,13 +196,19 @@ export function SidebarProjectSwitcher({ projectId }: SidebarProjectSwitcherProp
                 return (
                   <DropdownMenuItem
                     key={project.id}
-                    className={cn(
-                      "project-avatar-host group min-w-0 gap-3 rounded-none border border-transparent px-2.5 py-2.5 transition-colors",
-                      "hover:bg-accent/40",
-                      isCurrent && "border-primary/60 bg-primary/10 hover:bg-primary/15"
-                    )}
-                    onSelect={() => handleSelect(project.id)}
+                    asChild
+                    onPointerEnter={() => handleIntent(project.id)}
+                    onFocus={() => handleIntent(project.id)}
                   >
+                    <OptimisticLink
+                      href={hrefFor(project.id)}
+                      prefetch={warmed.has(project.id)}
+                      className={cn(
+                        "project-avatar-host group flex min-w-0 items-center gap-3 rounded-none border border-transparent px-2.5 py-2.5 transition-colors",
+                        "hover:bg-accent/40",
+                        isCurrent && "border-primary/60 bg-primary/10 hover:bg-primary/15"
+                      )}
+                    >
                     <ProjectAvatar
                       projectId={project.id}
                       size="md"
@@ -212,6 +222,7 @@ export function SidebarProjectSwitcher({ projectId }: SidebarProjectSwitcherProp
                         {formatProjectStatus(project.status)}
                       </div>
                     </div>
+                    </OptimisticLink>
                   </DropdownMenuItem>
                 )
               })}

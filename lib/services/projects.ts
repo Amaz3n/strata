@@ -1,3 +1,4 @@
+import { cacheLife } from "next/cache"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import type { Contract, Project, ProjectNavigationItem } from "@/lib/types"
@@ -6,7 +7,7 @@ import { projectUpdateSchema } from "@/lib/validation/projects"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
-import { hasPermission, requirePermission } from "@/lib/services/permissions"
+import { hasPermission, requirePermission, requireProjectPermission } from "@/lib/services/permissions"
 import {
   defaultFeePresentationForBillingModel,
   normalizeFeePresentation,
@@ -183,6 +184,15 @@ function mapProjectBillingContract(row: any): Contract {
   }
 }
 
+/** Header fields only: no contract snapshot, no financial settings, no accounting map. */
+const PROJECT_IDENTITY_SELECT = `
+  id, org_id, name, status, phase, start_date, end_date, location, client_id, prospect_id,
+  property_type, project_type, division_id, superintendent_id, description, total_value,
+  retainage_percent, total_contract_value_cents, excluded_from_reporting, is_public_work,
+  require_subtier_waivers, created_at, updated_at,
+  project_module_overrides(module_key, enabled)
+`
+
 const PROJECT_SELECT = `
   id, org_id, name, status, phase, start_date, end_date, location, client_id, prospect_id, property_type, project_type, division_id, superintendent_id, description, total_value, retainage_percent, total_contract_value_cents, excluded_from_reporting, is_public_work, require_subtier_waivers, created_at, updated_at,
   project_financial_settings(id, org_id, project_id, billing_model, fixed_price_billing_basis, paid_costs_required, proof_required, client_cost_approval_required, open_book_required, cost_codes_enabled, setup_completed_at, metadata),
@@ -205,6 +215,47 @@ async function loadProjectAccountingDimensions(supabase: SupabaseClient, orgId: 
 async function mapProjectsWithAccounting(supabase: SupabaseClient, orgId: string, rows: any[]) {
   const dimensions = await loadProjectAccountingDimensions(supabase, orgId, rows.map((row) => row.id))
   return rows.map((row) => mapProject(row, dimensions.get(row.id)))
+}
+
+async function resolveVisibleProjectIds(input: {
+  supabase: SupabaseClient
+  orgId: string
+  userId: string
+  includePrecon: boolean
+}): Promise<string[] | null> {
+  const divisionProjectIds = await getDivisionScopedProjectIds(input)
+  if (divisionProjectIds?.length === 0) return []
+
+  const { data: scopeRows } = await input.supabase
+    .from("memberships")
+    .select("project_scope")
+    .eq("org_id", input.orgId)
+    .eq("user_id", input.userId)
+    .eq("status", "active")
+  const assignedOnly = (scopeRows ?? []).some(
+    (row) => (row as { project_scope?: string }).project_scope === "assigned",
+  )
+  const canSeeAllProjects =
+    !assignedOnly &&
+    ((await hasPermission("project.read", input)) ||
+      (await hasPermission("project.manage", input)))
+
+  if (canSeeAllProjects) return divisionProjectIds
+
+  let membersQuery = input.supabase
+    .from("project_members")
+    .select("project_id, project:projects!inner(id, phase)")
+    .eq("org_id", input.orgId)
+    .eq("user_id", input.userId)
+    .eq("status", "active")
+  if (!input.includePrecon) membersQuery = membersQuery.eq("project.phase", "delivery")
+  const { data, error } = await membersQuery
+  if (error) throw new Error(`Failed to resolve assigned projects: ${error.message}`)
+
+  const divisionSet = divisionProjectIds ? new Set(divisionProjectIds) : null
+  return (data ?? [])
+    .map((row) => row.project_id as string | null)
+    .filter((id): id is string => id !== null && (!divisionSet || divisionSet.has(id)))
 }
 
 async function saveProjectAccountingDimensions(params: {
@@ -267,47 +318,90 @@ export async function listProjects(
 ): Promise<Project[]> {
   const { supabase, orgId: resolvedOrgId, userId } = context || await requireOrgContext(orgId)
   const includePrecon = options?.includePrecon ?? false
-  const divisionProjectIds = await getDivisionScopedProjectIds({ orgId: resolvedOrgId, userId, supabase })
-  if (divisionProjectIds?.length === 0) return []
+  const visibleProjectIds = await resolveVisibleProjectIds({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    includePrecon,
+  })
+  if (visibleProjectIds?.length === 0) return []
+  return listProjectsWithClient(supabase, resolvedOrgId, visibleProjectIds, { includePrecon })
+}
 
-  // Members scoped to "assigned" only see projects they explicitly belong to,
-  // regardless of an org-level project.read/manage grant.
-  const { data: scopeRows } = await supabase
-    .from("memberships")
-    .select("project_scope")
+export async function listProjectSummaries(
+  orgId?: string,
+  context?: OrgServiceContext,
+  options?: { includePrecon?: boolean },
+): Promise<Project[]> {
+  const { supabase, orgId: resolvedOrgId, userId } = context || await requireOrgContext(orgId)
+  const includePrecon = options?.includePrecon ?? false
+  const visibleProjectIds = await resolveVisibleProjectIds({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    includePrecon,
+  })
+  if (visibleProjectIds?.length === 0) return []
+
+  let query = supabase
+    .from("projects")
+    .select(PROJECT_IDENTITY_SELECT)
     .eq("org_id", resolvedOrgId)
-    .eq("user_id", userId)
-    .eq("status", "active")
-  const assignedOnly = (scopeRows ?? []).some((row) => (row as { project_scope?: string }).project_scope === "assigned")
+    .order("created_at", { ascending: false })
+  if (!includePrecon) query = query.eq("phase", "delivery")
+  if (visibleProjectIds) query = query.in("id", visibleProjectIds)
+  const { data, error } = await query
+  if (error) throw new Error(`Failed to list project summaries: ${error.message}`)
+  return (data ?? []).map((row) => mapProject(row))
+}
 
-  const canSeeAllProjects =
-    !assignedOnly &&
-    ((await hasPermission("project.read", { supabase, orgId: resolvedOrgId, userId })) ||
-      (await hasPermission("project.manage", { supabase, orgId: resolvedOrgId, userId })))
+export interface ProjectBillingOption {
+  id: string
+  name: string
+  billingModel: ProjectBillingModel
+}
 
-  if (canSeeAllProjects) {
-    return listProjectsWithClient(supabase, resolvedOrgId, divisionProjectIds, { includePrecon })
-  }
+export async function listProjectBillingOptions(
+  orgId?: string,
+  context?: OrgServiceContext,
+): Promise<ProjectBillingOption[]> {
+  const { supabase, orgId: resolvedOrgId, userId } = context || await requireOrgContext(orgId)
+  const visibleProjectIds = await resolveVisibleProjectIds({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    includePrecon: false,
+  })
+  if (visibleProjectIds?.length === 0) return []
 
-  let membersQuery = supabase
-    .from("project_members")
-    .select(`
-      project:projects!inner(${PROJECT_SELECT})
-    `)
+  let query = supabase
+    .from("projects")
+    .select("id, name, project_financial_settings(billing_model)")
     .eq("org_id", resolvedOrgId)
-    .eq("user_id", userId)
-    .eq("status", "active")
-  if (!includePrecon) membersQuery = membersQuery.eq("project.phase", "delivery")
-  const { data, error } = await membersQuery
+    .eq("phase", "delivery")
+    .order("name")
+  if (visibleProjectIds) query = query.in("id", visibleProjectIds)
+  const { data, error } = await query
+  if (error) throw new Error(`Failed to list project billing options: ${error.message}`)
 
-  if (error) {
-    throw new Error(`Failed to list assigned projects: ${error.message}`)
-  }
-
-  const rows = (data ?? [])
-    .map((row: any) => (Array.isArray(row.project) ? row.project[0] : row.project))
-    .filter((row) => Boolean(row) && (!divisionProjectIds || divisionProjectIds.includes(row.id)))
-  return mapProjectsWithAccounting(supabase, resolvedOrgId, rows)
+  return (data ?? []).map((row) => {
+    const settings = Array.isArray(row.project_financial_settings)
+      ? row.project_financial_settings[0]
+      : row.project_financial_settings
+    const rawBillingModel = settings?.billing_model
+    const billingModel: ProjectBillingModel =
+      rawBillingModel === "cost_plus_percent" ||
+      rawBillingModel === "cost_plus_fixed_fee" ||
+      rawBillingModel === "cost_plus_gmp" ||
+      rawBillingModel === "time_and_materials"
+        ? rawBillingModel
+        : "fixed_price"
+    return {
+      id: row.id,
+      name: row.name,
+      billingModel,
+    }
+  })
 }
 
 export async function listProjectsWithClient(
@@ -330,6 +424,45 @@ export async function listProjectsWithClient(
   }
 
   return mapProjectsWithAccounting(supabase, orgId, data ?? [])
+}
+
+/**
+ * The identity of one project: everything a header renders, and nothing else.
+ *
+ * Privately cached so it can ride along with a runtime prefetch. `/projects/[id]`
+ * is entirely params-dependent, so the route's shared App Shell carries nothing
+ * project-specific — a `<Link prefetch>` resolves `params.id` before the click,
+ * and this is the only read on the page that can already be resolved by then.
+ * That is what makes the name of the project you clicked appear on the click
+ * rather than a round trip later.
+ *
+ * Browser memory only, never the server cache, gone on reload. Every mutation
+ * that renames or re-scopes a project already calls `revalidatePath`, which
+ * clears the client cache outright.
+ */
+export async function getProjectIdentity(projectId: string): Promise<Project | null> {
+  "use cache: private"
+  cacheLife("session")
+
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requireProjectPermission(userId, projectId, "project.read")
+
+  const { data, error } = await supabase
+    .from("projects")
+    .select(PROJECT_IDENTITY_SELECT)
+    .eq("org_id", orgId)
+    .eq("id", projectId)
+    .maybeSingle()
+
+  // No row here is expected (e.g. a platform admin whose active org differs from
+  // the project's org) — return null quietly. Only log genuine query failures.
+  if (error) {
+    console.error("Failed to fetch project identity:", error.message)
+    return null
+  }
+  if (!data) return null
+
+  return mapProject(data)
 }
 
 export async function listProjectNavigationItemsWithClient(

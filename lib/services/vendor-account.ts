@@ -216,23 +216,25 @@ export async function getVendorAccountLedger(
   })
 
   // Money answers to bill.read; directory access alone yields an empty account.
-  let canViewBills = true
-  try {
-    await requireAuthorization({
-      permission: "bill.read",
-      userId,
-      orgId: resolvedOrgId,
-      supabase,
-      resourceType: "directory",
-      resourceId: "vendor_account_ledger",
-    })
-  } catch {
-    canViewBills = false
-  }
+  // Identity decoration is independent, so overlap it with authorization rather
+  // than paying for another full network round before starting the ledger.
+  const canViewBillsPromise = requireAuthorization({
+    permission: "bill.read",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    resourceType: "directory",
+    resourceId: "vendor_account_ledger",
+  })
+    .then(() => true)
+    .catch(() => false)
 
-  const [accounting, books] = await Promise.all([
-    loadAccountingIdentity(supabase, resolvedOrgId, companyId),
-    loadBooksContext(resolvedOrgId),
+  const [canViewBills, [accounting, books]] = await Promise.all([
+    canViewBillsPromise,
+    Promise.all([
+      loadAccountingIdentity(supabase, resolvedOrgId, companyId),
+      loadBooksContext(resolvedOrgId),
+    ]),
   ])
 
   if (!canViewBills) {
@@ -251,7 +253,7 @@ export async function getVendorAccountLedger(
     supabase
       .from("vendor_bills")
       .select(
-        "id, project_id, bill_number, status, bill_date, due_date, total_cents, paid_cents, retainage_cents, commitment_id, metadata, created_at, file_id, qbo_id, project:projects(name), commitment:commitments(title)",
+        "id, project_id, bill_number, status, bill_date, due_date, total_cents, paid_cents, retainage_cents, commitment_id, metadata, created_at, file_id, project:projects(name), commitment:commitments(title)",
       )
       .eq("org_id", resolvedOrgId)
       .eq("company_id", companyId)
@@ -277,19 +279,31 @@ export async function getVendorAccountLedger(
   const expenses = expensesResult.data ?? []
 
   const billIds = bills.map((bill) => bill.id)
-  const paymentsResult = billIds.length
-    ? await supabase
-        .from("payments")
-        .select("id, bill_id, amount_cents, method, reference, received_at, status, created_at")
-        .eq("org_id", resolvedOrgId)
-        .in("bill_id", billIds)
-        .not("status", "in", "(canceled,refunded,failed)")
-        .order("received_at", { ascending: false, nullsFirst: false })
-        .limit(LEDGER_SOURCE_LIMIT)
-    : { data: [], error: null }
+  const [paymentsResult, ownershipResult] = billIds.length
+    ? await Promise.all([
+        supabase
+          .from("payments")
+          .select("id, bill_id, amount_cents, method, reference, received_at, status, created_at")
+          .eq("org_id", resolvedOrgId)
+          .in("bill_id", billIds)
+          .not("status", "in", "(canceled,refunded,failed)")
+          .order("received_at", { ascending: false, nullsFirst: false })
+          .limit(LEDGER_SOURCE_LIMIT),
+        supabase
+          .from("accounting_sync_records")
+          .select("entity_id")
+          .eq("org_id", resolvedOrgId)
+          .in("entity_type", ["bill", "vendor_credit"])
+          .in("entity_id", billIds)
+          .not("external_id", "is", null),
+      ])
+    : [{ data: [], error: null }, { data: [], error: null }]
   if (paymentsResult.error)
     throw new Error(`Failed to load vendor payments: ${paymentsResult.error.message}`)
+  if (ownershipResult.error)
+    throw new Error(`Failed to load accounting ownership: ${ownershipResult.error.message}`)
   const payments = paymentsResult.data ?? []
+  const externallyOwnedBillIds = new Set((ownershipResult.data ?? []).map((row) => row.entity_id))
 
   const billById = new Map(bills.map((bill) => [bill.id, bill]))
   const projectName = (row: { project?: { name?: string } | { name?: string }[] | null }) => {
@@ -341,7 +355,7 @@ export async function getVendorAccountLedger(
       attachment_file_id: (bill.file_id as string | null) ?? null,
       delete_blocked_reason: (paymentCountByBillId.get(bill.id) ?? 0) > 0
         ? "it has recorded payments"
-        : bill.qbo_id
+        : externallyOwnedBillIds.has(bill.id)
           ? "the accounting provider owns this record"
           : null,
     })

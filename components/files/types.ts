@@ -1,15 +1,9 @@
 // File management types
 
-export type FileCategory =
-  | "plans"
-  | "contracts"
-  | "permits"
-  | "submittals"
-  | "photos"
-  | "rfis"
-  | "safety"
-  | "financials"
-  | "other"
+// The category enum has one source of truth: the Zod schema the services and
+// actions validate against. Re-exported here so UI types cannot drift from it.
+export type { FileCategory } from "@/lib/validation/files"
+import type { FileCategory } from "@/lib/validation/files"
 
 export interface FileWithDetails {
   id: string

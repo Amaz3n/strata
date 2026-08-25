@@ -4,9 +4,7 @@ import { useMemo, useState } from "react"
 import {
   Activity,
   AlertCircle,
-  CheckCircle2,
   ChevronRight,
-  Clock,
   Download,
   Eye,
   FilePlus2,
@@ -14,9 +12,7 @@ import {
   FolderInput,
   FolderOpen,
   FolderPlus,
-  HardHat,
   Info,
-  Lock,
   MoreVertical,
   Pencil,
   Plus,
@@ -25,11 +21,9 @@ import {
   Trash2,
   Undo2,
   Upload,
-  Users,
   X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -39,9 +33,17 @@ import {
   DrawerTitle,
 } from "@/components/ui/drawer"
 import type { FileTimelineEvent, FileWithUrls } from "@/app/(app)/documents/types"
-import { useDocuments, buildFolderTree } from "./documents-context"
+import { useDocuments, useDocumentsSearchInput } from "./documents-context"
+import { useVisibleDocuments } from "./use-visible-documents"
 import { FilePropertiesPanel } from "./file-properties-panel"
-import { getFileIcon, formatFileSize, formatDate } from "./documents-table"
+import { FileThumbnail } from "./file-type-icon"
+import {
+  FileSharingBadges,
+  FileSignatureBadge,
+  FileStatusBadge,
+  FileVersionBadge,
+} from "./file-badges"
+import { formatFileSize, formatRelativeDate } from "./format"
 import { QUICK_FILTER_CONFIG, type QuickFilter } from "./types"
 
 interface DocumentsMobileLayoutProps {
@@ -84,8 +86,7 @@ function categoryLabel(category?: string | null): string | null {
   return QUICK_FILTER_CONFIG[category as QuickFilter]?.label ?? category
 }
 
-const FILTER_CHIPS = (Object.entries(QUICK_FILTER_CONFIG) as [QuickFilter, { label: string }][])
-  .filter(([key]) => key !== "drawings")
+const FILTER_CHIPS = Object.entries(QUICK_FILTER_CONFIG) as [QuickFilter, { label: string }][]
 
 export function DocumentsMobileLayout({
   onFileClick,
@@ -111,77 +112,25 @@ export function DocumentsMobileLayout({
   onRefreshTimeline,
 }: DocumentsMobileLayoutProps) {
   const {
-    files,
-    folders,
-    folderItemCounts,
     currentPath,
     setCurrentPath,
-    searchQuery,
-    setSearchQuery,
     quickFilter,
     setQuickFilter,
     isLoading,
     isLoadingMore,
     hasMore,
     loadMore,
+    totalCount,
+    error,
+    refreshFiles,
   } = useDocuments()
+  const [searchInput, setSearchInput] = useDocumentsSearchInput()
 
   const [newOpen, setNewOpen] = useState(false)
   const [actionsFile, setActionsFile] = useState<FileWithUrls | null>(null)
 
-  const folderTree = useMemo(
-    () => buildFolderTree(folders, files, folderItemCounts),
-    [folders, files, folderItemCounts]
-  )
-
-  const currentFolders = useMemo(() => {
-    const toItem = (node: { path: string; name: string; itemCount: number }) => ({
-      path: node.path,
-      name: node.name,
-      itemCount: node.itemCount,
-    })
-
-    if (!currentPath) {
-      return folderTree.map(toItem)
-    }
-
-    const findNode = (
-      nodes: typeof folderTree,
-      target: string,
-    ): (typeof folderTree)[number] | null => {
-      for (const node of nodes) {
-        if (node.path === target) return node
-        const found = findNode(node.children, target)
-        if (found) return found
-      }
-      return null
-    }
-
-    const node = findNode(folderTree, currentPath)
-    return node ? node.children.map(toItem) : []
-  }, [folderTree, currentPath])
-
-  const filteredFiles = useMemo(() => {
-    let result = files
-    if (currentPath && !searchQuery) {
-      const normalizedPath = currentPath.replace(/\/+/g, "/")
-      result = result.filter((file) => {
-        const filePath = file.folder_path
-          ? file.folder_path.startsWith("/")
-            ? file.folder_path
-            : `/${file.folder_path}`
-          : ""
-        return filePath === normalizedPath
-      })
-    } else if (!currentPath && !searchQuery && quickFilter === "all") {
-      result = result.filter((file) => !file.folder_path || file.folder_path === "/")
-    }
-    return result
-  }, [files, currentPath, searchQuery, quickFilter])
-
-  const showFolders = quickFilter === "all" && (!searchQuery || Boolean(currentPath))
+  const { currentFolders, filteredFiles, showFolders, hasFilters } = useVisibleDocuments()
   const visibleFolderCount = showFolders ? currentFolders.length : 0
-  const hasFilters = quickFilter !== "all" || Boolean(searchQuery) || Boolean(currentPath)
 
   const goUp = () => {
     const parts = currentPath.split("/").filter(Boolean)
@@ -197,14 +146,14 @@ export function DocumentsMobileLayout({
   return (
     <div className="flex h-full flex-col bg-background">
       {/* Header */}
-      <div className="sticky top-0 z-10 shrink-0 border-b bg-background/95 backdrop-blur-sm">
+      <div className="sticky top-0 z-10 shrink-0 border-b bg-background">
         <div className="flex items-center gap-2 px-3 pt-3">
           {currentPath ? (
             <button
               type="button"
               onClick={goUp}
               aria-label="Go up one folder"
-              className="-ml-1 flex h-10 w-9 shrink-0 items-center justify-center rounded-md text-muted-foreground active:bg-muted"
+              className="-ml-1 flex h-10 w-9 shrink-0 items-center justify-center text-muted-foreground active:bg-muted"
             >
               <ChevronRight className="h-5 w-5 rotate-180" />
             </button>
@@ -213,17 +162,17 @@ export function DocumentsMobileLayout({
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               placeholder="Search documents..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
               className="h-10 pl-9 pr-9 text-sm"
               inputMode="search"
             />
-            {searchQuery ? (
+            {searchInput ? (
               <button
                 type="button"
-                onClick={() => setSearchQuery("")}
+                onClick={() => setSearchInput("")}
                 aria-label="Clear search"
-                className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground active:bg-muted"
+                className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center text-muted-foreground active:bg-muted"
               >
                 <X className="h-4 w-4" />
               </button>
@@ -264,7 +213,18 @@ export function DocumentsMobileLayout({
 
       {/* Scrollable content */}
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-24">
-        {isLoading && currentFolders.length === 0 && filteredFiles.length === 0 ? (
+        {error && filteredFiles.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
+            <AlertCircle className="h-7 w-7 text-destructive" />
+            <div className="space-y-1">
+              <p className="text-sm font-medium">Could not load documents</p>
+              <p className="text-sm text-muted-foreground">{error}</p>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => refreshFiles()}>
+              Try again
+            </Button>
+          </div>
+        ) : isLoading && currentFolders.length === 0 && filteredFiles.length === 0 ? (
           <MobileSkeleton />
         ) : isEmpty ? (
           <EmptyState hasFilters={hasFilters} onUploadClick={onUploadClick} />
@@ -292,7 +252,10 @@ export function DocumentsMobileLayout({
         )}
 
         {hasMore ? (
-          <div className="flex justify-center p-4">
+          <div className="flex flex-col items-center gap-2 p-4">
+            <span className="text-xs text-muted-foreground tabular-nums">
+              Showing {filteredFiles.length} of {totalCount}
+            </span>
             <Button
               variant="outline"
               size="sm"
@@ -417,8 +380,8 @@ function FolderRow({
         onClick={onOpen}
         className="flex w-full items-center gap-3 px-3 py-3 text-left active:bg-muted/60"
       >
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amber-100/80 dark:bg-amber-950/30">
-          <FolderOpen className="h-5 w-5 text-amber-600 dark:text-amber-500" />
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center bg-muted">
+          <FolderOpen className="h-5 w-5 text-muted-foreground" />
         </div>
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium">{name}</p>
@@ -441,14 +404,10 @@ function FileRow({
   onOpen: () => void
   onActions: () => void
 }) {
-  const Icon = getFileIcon(file.mime_type ?? undefined)
-  const isImage = file.mime_type?.startsWith("image/")
-  const thumbnailUrl = file.thumbnail_url ?? (isImage ? file.download_url : undefined)
-
   const meta = [
     categoryLabel(file.category),
     formatFileSize(file.size_bytes),
-    formatDate(file.updated_at ?? file.created_at),
+    formatRelativeDate(file.updated_at ?? file.created_at),
   ].filter(Boolean)
 
   const showStatus = Boolean(file.status) && file.status !== "draft"
@@ -462,40 +421,29 @@ function FileRow({
         onClick={onOpen}
         className="flex min-w-0 flex-1 items-center gap-3 py-3 pl-3 text-left active:bg-muted/60"
       >
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted">
-          {isImage && thumbnailUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={thumbnailUrl}
-              alt={file.file_name}
-              className="h-full w-full object-cover"
-              loading="lazy"
-            />
-          ) : (
-            <Icon className="h-5 w-5 text-muted-foreground" />
-          )}
-        </div>
+        <FileThumbnail
+          fileName={file.file_name}
+          mimeType={file.mime_type}
+          thumbnailUrl={file.thumbnail_url}
+          className="h-10 w-10"
+          iconClassName="h-5 w-5"
+        />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium">{file.file_name}</p>
           <div className="flex items-center gap-1.5">
-            <p className="truncate text-xs text-muted-foreground">{meta.join(" · ")}</p>
-            <ShareIcon
+            <p className="truncate text-xs tabular-nums text-muted-foreground">{meta.join(" · ")}</p>
+            <FileSharingBadges
+              variant="icon"
               clients={Boolean(file.share_with_clients)}
               subs={Boolean(file.share_with_subs)}
             />
           </div>
           {hasWorkflowBadge ? (
             <div className="mt-1 flex flex-wrap items-center gap-1">
-              <StatusBadge status={file.status} />
-              <SignatureBadge status={file.signature_status} />
-              {showSuperseded ? (
-                <Badge
-                  variant="secondary"
-                  className="h-4 px-1 py-0 text-[10px] font-normal text-muted-foreground"
-                >
-                  <Clock className="mr-1 h-2.5 w-2.5" />
-                  Superseded
-                </Badge>
+              <FileStatusBadge status={file.status} />
+              <FileSignatureBadge status={file.signature_status} />
+              {showSuperseded && file.version_number ? (
+                <FileVersionBadge versionNumber={file.version_number} isCurrent={false} />
               ) : null}
             </div>
           ) : null}
@@ -510,71 +458,6 @@ function FileRow({
         <MoreVertical className="h-5 w-5" />
       </button>
     </li>
-  )
-}
-
-function StatusBadge({ status }: { status?: string | null }) {
-  if (!status || status === "draft") return null
-  return (
-    <Badge
-      variant="outline"
-      className={cn(
-        "h-4 px-1 py-0 text-[10px] font-normal capitalize",
-        status === "approved" &&
-          "border-emerald-200 bg-emerald-50 text-emerald-600 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-400",
-        status === "in_review" &&
-          "border-blue-200 bg-blue-50 text-blue-600 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-400",
-        status === "submitted" &&
-          "border-amber-200 bg-amber-50 text-amber-600 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-400",
-        (status === "rejected" || status === "resubmit_required") &&
-          "border-rose-200 bg-rose-50 text-rose-600 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-400",
-      )}
-    >
-      {status === "approved" && <CheckCircle2 className="mr-1 h-2.5 w-2.5" />}
-      {status === "in_review" && <Eye className="mr-1 h-2.5 w-2.5" />}
-      {status === "submitted" && <Upload className="mr-1 h-2.5 w-2.5" />}
-      {(status === "rejected" || status === "resubmit_required") && (
-        <AlertCircle className="mr-1 h-2.5 w-2.5" />
-      )}
-      {status.replace(/_/g, " ")}
-    </Badge>
-  )
-}
-
-function SignatureBadge({ status }: { status?: string | null }) {
-  if (!status) return null
-  return (
-    <Badge
-      variant="outline"
-      className={cn(
-        "h-4 px-1 py-0 text-[10px] font-normal capitalize",
-        status === "signed" &&
-          "border-emerald-200 bg-emerald-50 text-emerald-600 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-400",
-        status === "sent" &&
-          "border-blue-200 bg-blue-50 text-blue-600 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-400",
-        (status === "voided" || status === "expired") &&
-          "border-muted-foreground/30 bg-muted/30 text-muted-foreground",
-      )}
-    >
-      <FileSignature className="mr-1 h-2.5 w-2.5" />
-      {status}
-    </Badge>
-  )
-}
-
-function ShareIcon({ clients, subs }: { clients: boolean; subs: boolean }) {
-  if (!clients && !subs) {
-    return <Lock className="h-3 w-3 shrink-0 text-muted-foreground/60" aria-label="Private" />
-  }
-  return (
-    <span className="flex shrink-0 items-center gap-1">
-      {clients ? (
-        <Users className="h-3 w-3 text-blue-600 dark:text-blue-400" aria-label="Shared with clients" />
-      ) : null}
-      {subs ? (
-        <HardHat className="h-3 w-3 text-indigo-600 dark:text-indigo-400" aria-label="Shared with subs" />
-      ) : null}
-    </span>
   )
 }
 
@@ -679,7 +562,7 @@ function ActionItem({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex items-center gap-3 rounded-lg px-3 py-3 text-left text-sm font-medium active:bg-muted",
+        "flex items-center gap-3 px-3 py-3 text-left text-sm font-medium active:bg-muted",
         destructive ? "text-destructive" : "text-foreground",
       )}
     >
@@ -698,10 +581,10 @@ function MobileSkeleton() {
     <ul className="divide-y">
       {Array.from({ length: 8 }).map((_, i) => (
         <li key={i} className="flex items-center gap-3 px-3 py-3">
-          <div className="h-10 w-10 shrink-0 animate-pulse rounded-lg bg-muted" />
+          <div className="h-10 w-10 shrink-0 animate-pulse bg-muted" />
           <div className="flex-1 space-y-2">
-            <div className="h-3.5 w-2/3 animate-pulse rounded bg-muted" />
-            <div className="h-3 w-1/3 animate-pulse rounded bg-muted" />
+            <div className="h-3.5 w-2/3 animate-pulse bg-muted" />
+            <div className="h-3 w-1/3 animate-pulse bg-muted" />
           </div>
         </li>
       ))}

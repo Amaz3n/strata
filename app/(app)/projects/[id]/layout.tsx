@@ -3,7 +3,7 @@ import { notFound } from "next/navigation"
 import { Suspense } from "react"
 
 import { ProjectContextSetter } from "@/components/layout/project-context-setter"
-import { getProjectAction } from "./actions"
+import { getProjectIdentity } from "@/lib/services/projects"
 
 import { unwrapAction } from "@/lib/action-result"
 import { requireOrgContext } from "@/lib/services/context"
@@ -24,7 +24,7 @@ export const instant = {
 async function ProjectContext({ params }: Pick<ProjectLayoutProps, "params">) {
   const { id } = await params
   const [project, { productTier }] = await Promise.all([
-    getProjectAction(id),
+    getProjectIdentity(id),
     requireOrgContext(),
   ])
   if (!project) notFound()

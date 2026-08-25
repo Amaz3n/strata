@@ -1,57 +1,61 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
+import {
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
 import { toast } from "sonner";
-import { Check, Copy, FileCheck2, FolderClosed, History, Link2, Loader2, Search, Sparkles, UploadCloud, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { usePageTitle } from "@/components/layout/page-title-context";
-import { useProductTerminology } from "@/components/layout/use-product-terminology";
 import { FileDropOverlay } from "@/components/files/file-drop-overlay";
-import { FileViewer } from "@/components/files/file-viewer";
+import { FileViewer, preloadPdfViewer } from "@/components/files/file-viewer";
 import { downloadUrlToFile, getDownloadFileName } from "@/components/files/download";
-import { DrawingViewer, type SaveMarkupInput } from "@/components/drawings/drawing-viewer";
-import { CreateFromDrawingDialog } from "@/components/drawings/create-from-drawing-dialog";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Switch } from "@/components/ui/switch";
-import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { DocumentsProvider, useDocuments } from "./documents-context";
+import {
+  DRAG_OVERLAY_STYLE,
+  DocumentsDragProvider,
+  FileDragChip,
+  FolderDropDock,
+  IDLE_DOCUMENTS_DRAG,
+  documentsCollisionDetection,
+  documentsDragAnnouncements,
+  documentsDragInstructions,
+  folderLabel,
+  followPointerModifier,
+  normalizeDropPath,
+  parseDocumentsDropId,
+  readFileDragPayload,
+  type DocumentsDragState,
+  type FileDragPayload,
+} from "./documents-dnd";
 import { DocumentsExplorer } from "./documents-explorer";
 import { DocumentsToolbar } from "./documents-toolbar";
 import { DocumentsContent } from "./documents-content";
 import { DocumentsMobileLayout } from "./documents-mobile-layout";
-import { formatFileSize } from "./documents-table";
 import { FilePropertiesPanel } from "./file-properties-panel";
 import { UploadDialog } from "./upload-dialog";
+import { CreateFolderDialog } from "./dialogs/create-folder-dialog";
+import { DeleteFilesDialog } from "./dialogs/delete-files-dialog";
+import { FileShareDialog } from "./dialogs/file-share-dialog";
+import { mapVersion, type FileVersionInfo } from "./dialogs/file-versions";
+import { FolderDeleteDialog } from "./dialogs/folder-delete-dialog";
+import { normalizeFolderPath } from "./dialogs/folder-path";
+import { FolderRenameDialog } from "./dialogs/folder-rename-dialog";
+import { FolderShareDialog, type FolderShareTarget } from "./dialogs/folder-share-dialog";
+import { MoveFilesDialog } from "./dialogs/move-files-dialog";
+import { RenameFileDialog } from "./dialogs/rename-file-dialog";
+import { VersionUploadDialog } from "./dialogs/version-upload-dialog";
 import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard";
 import type { UnifiedDocumentsLayoutProps } from "./types";
 import { isBrowserRenderableImage, isWordPreviewable, type FileWithDetails } from "@/components/files/types";
@@ -65,104 +69,21 @@ import {
   updateFileVersionAction,
   deleteFileVersionAction,
   getVersionDownloadUrlAction,
-  updateFileAction,
   createFolderAction,
-  renameFolderAction,
-  deleteFolderAction,
-  updateFolderPermissionsAction,
   bulkMoveFilesAction,
-  bulkDeleteFilesAction,
   listFileTimelineAction,
-  createFileShareLinkAction,
-  listFileShareLinksAction,
-  revokeFileShareLinkAction,
-  suggestFileNameAction,
 } from "@/app/(app)/documents/actions";
-import type { FileShareLink } from "@/app/(app)/documents/types";
 import type {
-  FileVersion,
   FileWithUrls,
   FileTimelineEvent,
 } from "@/app/(app)/documents/types";
-import {
-  getSheetDownloadUrlAction,
-  getSheetOptimizedImageUrlsAction,
-  listDrawingMarkupsAction,
-  listDrawingPinsWithEntitiesAction,
-  createDrawingMarkupAction,
-  deleteDrawingMarkupAction,
-  createDrawingPinAction,
-  createTaskFromDrawingAction,
-  createRfiFromDrawingAction,
-  createPunchItemFromDrawingAction,
-} from "@/app/(app)/drawings/actions";
-import type {
-  DrawingSheet,
-  DrawingMarkup,
-  DrawingPin,
-} from "@/app/(app)/drawings/types";
 import { uploadDocumentFileDirect } from "@/lib/services/files-client";
 
 import { unwrapAction } from "@/lib/action-result"
 
-function dispatchNavRefresh() {
-  window.dispatchEvent(new CustomEvent("docs-nav-refresh"));
-}
-
-interface FileVersionInfo {
-  id: string;
-  version_number: number;
-  label?: string;
-  notes?: string;
-  file_name?: string;
-  mime_type?: string;
-  size_bytes?: number;
-  creator_name?: string;
-  created_at: string;
-  is_current: boolean;
-}
-
-function mapVersion(version: FileVersion): FileVersionInfo {
-  return {
-    id: version.id,
-    version_number: version.version_number,
-    label: version.label ?? undefined,
-    notes: version.notes ?? undefined,
-    file_name: version.file_name ?? undefined,
-    mime_type: version.mime_type ?? undefined,
-    size_bytes: version.size_bytes ?? undefined,
-    creator_name: version.creator_name ?? undefined,
-    created_at: version.created_at,
-    is_current: version.is_current,
-  };
-}
-
-function normalizeFolderPath(path: string): string | null {
-  const trimmed = path.trim();
-  if (!trimmed) return null;
-  const withLeadingSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
-  const normalized = withLeadingSlash.replace(/\/+/g, "/");
-  if (normalized === "/") return null;
-  return normalized.replace(/\/$/, "");
-}
-
-function formatVersionDate(value?: string | null) {
-  if (!value) return "-";
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  }).format(new Date(value));
-}
-
 const EXPLORER_OPEN_STORAGE_KEY = "documents-explorer-open";
-function shareSummary(withClients: boolean, withSubs: boolean, owners: string): string {
-  const ownerLabel = owners.toLowerCase();
-  if (withClients && withSubs) return `Visible to your team, ${ownerLabel}, and subcontractors.`;
-  if (withClients) return `Visible to your team and ${ownerLabel}.`;
-  if (withSubs) return "Visible to your team and subcontractors.";
-  return "Visible to your internal team only.";
-}
+
+const DRAG_OVERLAY_MODIFIERS = [followPointerModifier];
 
 export function UnifiedDocumentsLayout(props: UnifiedDocumentsLayoutProps) {
   return (
@@ -174,9 +95,8 @@ export function UnifiedDocumentsLayout(props: UnifiedDocumentsLayoutProps) {
       initialCounts={props.initialCounts}
       initialFolders={props.initialFolders}
       initialFolderCounts={props.initialFolderCounts}
-      initialSets={props.initialSets}
+      initialFolderPermissions={props.initialFolderPermissions}
       initialPath={props.initialPath}
-      initialSetId={props.initialSetId}
     >
       <UnifiedDocumentsLayoutInner />
     </DocumentsProvider>
@@ -184,24 +104,18 @@ export function UnifiedDocumentsLayout(props: UnifiedDocumentsLayoutProps) {
 }
 
 function UnifiedDocumentsLayoutInner() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const isMobile = useIsMobile();
-  const ENABLE_TILES_AUTH =
-    process.env.NEXT_PUBLIC_DRAWINGS_TILES_SECURE === "true";
   const {
     projectId,
     projectName,
     files,
-    folders,
     folderPermissions,
     currentPath,
     setCurrentPath,
     refreshFiles,
-    refreshFolderPermissions,
   } = useDocuments();
   const { setBreadcrumbs } = usePageTitle();
-  const terms = useProductTerminology();
   const requestedFileId = searchParams.get("fileId");
   const highlightedFileId = searchParams.get("highlight");
 
@@ -210,14 +124,8 @@ function UnifiedDocumentsLayoutInner() {
 
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
-  const versionFileInputRef = useRef<HTMLInputElement>(null);
   const [versionDialogOpen, setVersionDialogOpen] = useState(false);
   const [versionTargetFile, setVersionTargetFile] = useState<FileWithUrls | null>(null);
-  const [versionUploadFile, setVersionUploadFile] = useState<File | null>(null);
-  const [versionLabel, setVersionLabel] = useState("");
-  const [versionNotes, setVersionNotes] = useState("");
-  const [isUploadingVersion, setIsUploadingVersion] = useState(false);
-  const [isLoadingVersionHistory, setIsLoadingVersionHistory] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerFile, setViewerFile] = useState<FileWithDetails | null>(null);
   const [versionsByFile, setVersionsByFile] = useState<
@@ -233,59 +141,45 @@ function UnifiedDocumentsLayoutInner() {
   );
   const [propertiesFileId, setPropertiesFileId] = useState<string | null>(null);
   const [isDownloadingSelected, setIsDownloadingSelected] = useState(false);
-  const [draggedFileId, setDraggedFileId] = useState<string | null>(null);
-  const [isDraggingDocumentFile, setIsDraggingDocumentFile] = useState(false);
   const [isDirectUploading, setIsDirectUploading] = useState(false);
 
+  const [activeDrag, setActiveDrag] = useState<{
+    payload: FileDragPayload;
+    originPaths: string[];
+  } | null>(null);
+  const [overFolderPath, setOverFolderPath] = useState<string | null>(null);
+
+  const dragSensors = useSensors(
+    // 4px of travel before the drag arms: below that the gesture is still a
+    // click, which is what keeps row clicks, checkboxes and the row menu working.
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor),
+  );
+
   const [createFolderDialogOpen, setCreateFolderDialogOpen] = useState(false);
-  const [newFolderPath, setNewFolderPath] = useState("");
-  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [createFolderInitialPath, setCreateFolderInitialPath] = useState("");
 
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
-  const [renameFile, setRenameFile] = useState<FileWithUrls | null>(null);
-  const [renameValue, setRenameValue] = useState("");
-  const [isRenaming, setIsRenaming] = useState(false);
-  const [isSuggestingRename, setIsSuggestingRename] = useState(false);
+  const [renameTargetFile, setRenameTargetFile] = useState<FileWithUrls | null>(null);
 
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
-  const [shareFile, setShareFile] = useState<FileWithUrls | null>(null);
-  const [shareWithClients, setShareWithClients] = useState(false);
-  const [shareWithSubs, setShareWithSubs] = useState(false);
-  const [isSavingShare, setIsSavingShare] = useState(false);
-  const [shareLinks, setShareLinks] = useState<FileShareLink[]>([]);
-  const [shareLinksLoading, setShareLinksLoading] = useState(false);
-  const [shareLinkExpiry, setShareLinkExpiry] = useState<"7d" | "30d" | "never">("30d");
-  const [shareLinkAllowDownload, setShareLinkAllowDownload] = useState(true);
-  const [shareLinkLabel, setShareLinkLabel] = useState("");
-  const [isCreatingShareLink, setIsCreatingShareLink] = useState(false);
-  const [revokingShareLinkId, setRevokingShareLinkId] = useState<string | null>(null);
-  const [copiedShareLinkId, setCopiedShareLinkId] = useState<string | null>(null);
+  const [shareTargetFile, setShareTargetFile] = useState<FileWithUrls | null>(null);
 
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
-  const [moveTargetFolder, setMoveTargetFolder] = useState("");
-  const [moveSearchQuery, setMoveSearchQuery] = useState("");
   const [moveFileIds, setMoveFileIds] = useState<string[]>([]);
   const [isMoving, setIsMoving] = useState(false);
 
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteFileIds, setDeleteFileIds] = useState<string[]>([]);
-  const [isDeleting, setIsDeleting] = useState(false);
 
   const [folderRenameOpen, setFolderRenameOpen] = useState(false);
   const [folderRenamePath, setFolderRenamePath] = useState("");
-  const [folderRenameValue, setFolderRenameValue] = useState("");
-  const [isRenamingFolder, setIsRenamingFolder] = useState(false);
 
   const [folderDeleteOpen, setFolderDeleteOpen] = useState(false);
   const [folderDeletePath, setFolderDeletePath] = useState("");
-  const [isDeletingFolder, setIsDeletingFolder] = useState(false);
 
   const [folderShareOpen, setFolderShareOpen] = useState(false);
-  const [folderSharePath, setFolderSharePath] = useState("");
-  const [folderShareWithClients, setFolderShareWithClients] = useState(false);
-  const [folderShareWithSubs, setFolderShareWithSubs] = useState(false);
-  const [folderShareApplyToExisting, setFolderShareApplyToExisting] = useState(false);
-  const [isSavingFolderShare, setIsSavingFolderShare] = useState(false);
+  const [folderShareTarget, setFolderShareTarget] = useState<FolderShareTarget | null>(null);
 
   const [propertiesTimelineEvents, setPropertiesTimelineEvents] = useState<FileTimelineEvent[]>([]);
   const [propertiesTimelineLoading, setPropertiesTimelineLoading] = useState(false);
@@ -294,28 +188,9 @@ function UnifiedDocumentsLayoutInner() {
   const [esignFile, setEsignFile] = useState<FileWithUrls | null>(null);
   const [esignSource, setEsignSource] = useState<EnvelopeWizardSourceEntity | null>(null);
 
-  const [drawingViewerOpen, setDrawingViewerOpen] = useState(false);
-  const [drawingViewerSheet, setDrawingViewerSheet] =
-    useState<DrawingSheet | null>(null);
-  const [drawingViewerSheets, setDrawingViewerSheets] = useState<
-    DrawingSheet[]
-  >([]);
-  const [drawingViewerUrl, setDrawingViewerUrl] = useState<string | null>(null);
-  const [drawingViewerMarkups, setDrawingViewerMarkups] = useState<
-    DrawingMarkup[]
-  >([]);
-  const [drawingViewerPins, setDrawingViewerPins] = useState<DrawingPin[]>([]);
-  const [drawingViewerHighlightedPinId, setDrawingViewerHighlightedPinId] =
-    useState<string | null>(null);
-  const [createFromDrawingOpen, setCreateFromDrawingOpen] = useState(false);
-  const [createFromDrawingPosition, setCreateFromDrawingPosition] = useState<{
-    x: number;
-    y: number;
-  } | null>(null);
-  const drawingViewerRequestIdRef = useRef(0);
-  const tilesCookieRequestedRef = useRef(false);
   const handledQueryRef = useRef("");
   const [explorerOpen, setExplorerOpen] = useState(false);
+  const [explorerRestored, setExplorerRestored] = useState(false);
 
   useEffect(() => {
     setSelectedFileIds(new Set());
@@ -328,60 +203,39 @@ function UnifiedDocumentsLayoutInner() {
     }
   }, [viewerOpen]);
 
+  // The stored preference can only be read after mount, so the panel starts closed.
+  // Suppress the width transition until it has been restored, otherwise users who
+  // keep the explorer open watch it slide in on every load.
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const saved = window.localStorage.getItem(EXPLORER_OPEN_STORAGE_KEY);
-    if (saved === "true") {
+    if (window.localStorage.getItem(EXPLORER_OPEN_STORAGE_KEY) === "true") {
       setExplorerOpen(true);
     }
+    setExplorerRestored(true);
   }, []);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (!explorerRestored) return;
     window.localStorage.setItem(
       EXPLORER_OPEN_STORAGE_KEY,
       explorerOpen ? "true" : "false",
     );
-  }, [explorerOpen]);
+  }, [explorerOpen, explorerRestored]);
 
-  useEffect(() => {
-    if (!ENABLE_TILES_AUTH || tilesCookieRequestedRef.current) return;
-    tilesCookieRequestedRef.current = true;
-
-    fetch("/api/drawings/tiles-cookie", {
-      method: "POST",
-      credentials: "include",
-    }).catch((error) => {
-      console.warn("[drawings] Failed to set tiles cookie:", error);
-    });
-  }, [ENABLE_TILES_AUTH]);
-
-  const folderOptions = useMemo(() => {
-    const allFolderPaths = new Set<string>(folders);
-    for (const file of files) {
-      if (file.folder_path) {
-        const normalized = normalizeFolderPath(file.folder_path);
-        if (normalized) {
-          allFolderPaths.add(normalized);
-        }
-      }
-    }
-    return Array.from(allFolderPaths).sort((a, b) => a.localeCompare(b));
-  }, [files, folders]);
-  const filteredMoveFolderOptions = useMemo(() => {
-    const query = moveSearchQuery.trim().toLowerCase();
-    if (!query) return folderOptions;
-    return folderOptions.filter((folder) => folder.toLowerCase().includes(query));
-  }, [folderOptions, moveSearchQuery]);
+  const loadVersionsForFile = useCallback(async (fileId: string) => {
+    const versions = await listFileVersionsAction(fileId);
+    setVersionsByFile((prev) => ({
+      ...prev,
+      [fileId]: versions.map(mapVersion),
+    }));
+  }, []);
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     dragCounterRef.current += 1;
-    const hasInternalFileDrag = e.dataTransfer.types.includes(
-      "application/x-arc-file-id",
-    );
-    if (!hasInternalFileDrag && e.dataTransfer.items?.length) {
+    // Only OS files ever reach the native drag API now — internal moves run
+    // through dnd-kit, which never fires a dragenter.
+    if (e.dataTransfer.items?.length) {
       setIsDraggingOver(true);
     }
   }, []);
@@ -451,9 +305,7 @@ function UnifiedDocumentsLayoutInner() {
         const failCount = results.length - successCount;
 
         if (successCount > 0) {
-          await refreshFiles();
-          await refreshFolderPermissions();
-          dispatchNavRefresh();
+          await refreshFiles({ invalidateCache: true });
         }
 
         if (failCount === 0) {
@@ -484,7 +336,7 @@ function UnifiedDocumentsLayoutInner() {
         setIsDirectUploading(false);
       }
     },
-    [projectId, refreshFiles, refreshFolderPermissions],
+    [projectId, refreshFiles],
   );
 
   const handleDrop = useCallback(
@@ -493,11 +345,6 @@ function UnifiedDocumentsLayoutInner() {
       e.stopPropagation();
       setIsDraggingOver(false);
       dragCounterRef.current = 0;
-
-      const hasInternalFileDrag = e.dataTransfer.types.includes(
-        "application/x-arc-file-id",
-      );
-      if (hasInternalFileDrag) return;
 
       const droppedFiles = Array.from(e.dataTransfer.files);
       if (droppedFiles.length > 0) {
@@ -515,7 +362,7 @@ function UnifiedDocumentsLayoutInner() {
       const initialDownloadUrl = file.download_url ?? undefined;
       const initialFile: FileWithDetails = {
         ...file,
-        category: file.category as any,
+        category: file.category,
         download_url: initialDownloadUrl,
         thumbnail_url:
           file.thumbnail_url ??
@@ -528,7 +375,7 @@ function UnifiedDocumentsLayoutInner() {
       setViewerOpen(true);
 
       try {
-        const downloadUrl = await getFileDownloadUrlAction(fileId);
+        const downloadUrl = unwrapAction(await getFileDownloadUrlAction(fileId));
         setViewerFile((prev) => {
           if (!prev || prev.id !== fileId) return prev;
           return {
@@ -541,17 +388,13 @@ function UnifiedDocumentsLayoutInner() {
           };
         });
 
-        const versions = await listFileVersionsAction(fileId);
-        setVersionsByFile((prev) => ({
-          ...prev,
-          [fileId]: versions.map(mapVersion),
-        }));
+        await loadVersionsForFile(fileId);
       } catch (error) {
         console.error("Failed to open file:", error);
         toast.error("Failed to open file");
       }
     },
-    [files],
+    [files, loadVersionsForFile],
   );
 
   const resolveFileForDeepLink = useCallback(
@@ -565,33 +408,33 @@ function UnifiedDocumentsLayoutInner() {
 
   const openPreviewFromDeepLink = useCallback(
     async (fileId: string) => {
-      const existing = files.find((file) => file.id === fileId);
-      if (existing) {
+      if (files.some((file) => file.id === fileId)) {
         await handleFileClick(fileId);
         return;
       }
 
-      const file = await getFileAction(fileId);
+      const file = await resolveFileForDeepLink(fileId);
       if (!file) return;
 
-      const downloadUrl = await getFileDownloadUrlAction(file.id);
+      const [downloadUrl, versions] = await Promise.all([
+        getFileDownloadUrlAction(file.id).then(unwrapAction),
+        listFileVersionsAction(file.id),
+      ]);
+
       setViewerFile({
         ...file,
-        category: file.category as any,
         download_url: downloadUrl,
-        thumbnail_url: file.mime_type?.startsWith("image/")
+        thumbnail_url: isBrowserRenderableImage(file.mime_type, file.file_name)
           ? downloadUrl
           : undefined,
       });
       setViewerOpen(true);
-
-      const versions = await listFileVersionsAction(file.id);
       setVersionsByFile((prev) => ({
         ...prev,
         [file.id]: versions.map(mapVersion),
       }));
     },
-    [files, handleFileClick],
+    [files, handleFileClick, resolveFileForDeepLink],
   );
 
   const focusFileFromDeepLink = useCallback(
@@ -652,54 +495,14 @@ function UnifiedDocumentsLayoutInner() {
     setUploadDialogOpen(true);
   }, []);
 
-  const resetVersionUploadDialog = useCallback(() => {
-    setVersionTargetFile(null);
-    setVersionUploadFile(null);
-    setVersionLabel("");
-    setVersionNotes("");
-    setIsUploadingVersion(false);
-    if (versionFileInputRef.current) {
-      versionFileInputRef.current.value = "";
-    }
-  }, []);
-
   const openVersionUploadDialog = useCallback(
-    async (fileId: string) => {
+    (fileId: string) => {
       const file = files.find((item) => item.id === fileId);
       if (!file) return;
       setVersionTargetFile(file);
-      setVersionUploadFile(null);
-      setVersionLabel("");
-      setVersionNotes("");
       setVersionDialogOpen(true);
-      if (versionFileInputRef.current) {
-        versionFileInputRef.current.value = "";
-      }
-
-      setIsLoadingVersionHistory(true);
-      try {
-        const versions = await listFileVersionsAction(fileId);
-        setVersionsByFile((prev) => ({
-          ...prev,
-          [fileId]: versions.map(mapVersion),
-        }));
-      } catch (error) {
-        console.error("Failed to load version history:", error);
-      } finally {
-        setIsLoadingVersionHistory(false);
-      }
     },
     [files],
-  );
-
-  const handleVersionFileChange = useCallback(
-    (event: React.ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0] ?? null;
-      if (file) {
-        setVersionUploadFile(file);
-      }
-    },
-    [],
   );
 
   const handleFileSelectionChange = useCallback(
@@ -754,8 +557,7 @@ function UnifiedDocumentsLayoutInner() {
     (fileId: string) => {
       const file = files.find((item) => item.id === fileId);
       if (!file) return;
-      setRenameFile(file);
-      setRenameValue(file.file_name);
+      setRenameTargetFile(file);
       setRenameDialogOpen(true);
     },
     [files],
@@ -765,37 +567,18 @@ function UnifiedDocumentsLayoutInner() {
     (fileId: string) => {
       const file = files.find((item) => item.id === fileId);
       if (!file) return;
-      setShareFile(file);
-      setShareWithClients(Boolean(file.share_with_clients));
-      setShareWithSubs(Boolean(file.share_with_subs));
-      setShareLinks([]);
-      setShareLinkLabel("");
-      setShareLinkExpiry("30d");
-      setShareLinkAllowDownload(true);
-      setShareLinksLoading(true);
+      setShareTargetFile(file);
       setShareDialogOpen(true);
-      listFileShareLinksAction(file.id)
-        .then((links) => setShareLinks(links))
-        .catch((err) => {
-          console.error("Failed to load share links", err);
-        })
-        .finally(() => setShareLinksLoading(false));
     },
     [files],
   );
 
   const openMoveDialog = useCallback(
     (fileId?: string) => {
-      if (fileId) {
-        setMoveFileIds([fileId]);
-      } else {
-        setMoveFileIds(Array.from(selectedFileIds));
-      }
-      setMoveTargetFolder(currentPath || "");
-      setMoveSearchQuery("");
+      setMoveFileIds(fileId ? [fileId] : Array.from(selectedFileIds));
       setMoveDialogOpen(true);
     },
-    [selectedFileIds, currentPath],
+    [selectedFileIds],
   );
 
   const openDeleteDialog = useCallback(
@@ -809,33 +592,6 @@ function UnifiedDocumentsLayoutInner() {
     },
     [selectedFileIds],
   );
-
-  const resolveDraggedFileIds = useCallback(
-    (primaryFileId?: string): string[] => {
-      const fileId = primaryFileId ?? draggedFileId;
-      if (!fileId) return [];
-      if (selectedFileIds.has(fileId)) {
-        return Array.from(selectedFileIds);
-      }
-      return [fileId];
-    },
-    [draggedFileId, selectedFileIds],
-  );
-
-  const handleFileDragStart = useCallback(
-    (fileId: string, event: React.DragEvent<HTMLDivElement>) => {
-      setDraggedFileId(fileId);
-      setIsDraggingDocumentFile(true);
-      event.dataTransfer.effectAllowed = "move";
-      event.dataTransfer.setData("application/x-arc-file-id", fileId);
-    },
-    [],
-  );
-
-  const handleFileDragEnd = useCallback(() => {
-    setIsDraggingDocumentFile(false);
-    setDraggedFileId(null);
-  }, []);
 
   const moveFilesToFolder = useCallback(
     async (
@@ -862,8 +618,7 @@ function UnifiedDocumentsLayoutInner() {
           { id: toastId },
         );
         setSelectedFileIds(new Set());
-        await refreshFiles();
-        dispatchNavRefresh();
+        await refreshFiles({ invalidateCache: true });
       } catch (error) {
         console.error("Failed to move files:", error);
         toast.error("Failed to move files", { id: toastId });
@@ -874,470 +629,86 @@ function UnifiedDocumentsLayoutInner() {
     [projectId, refreshFiles],
   );
 
-  const handleDropOnFolder = useCallback(
-    async (targetPath: string, droppedFiles?: File[]) => {
-      if (droppedFiles?.length) {
-        await uploadDroppedFiles(droppedFiles, targetPath);
-        return;
-      }
-
-      const fileIds = resolveDraggedFileIds();
-      await moveFilesToFolder(fileIds, targetPath, targetPath);
-      setIsDraggingDocumentFile(false);
-      setDraggedFileId(null);
+  const handleUploadToFolder = useCallback(
+    (targetPath: string, droppedFiles: File[]) => {
+      void uploadDroppedFiles(droppedFiles, targetPath);
     },
-    [resolveDraggedFileIds, moveFilesToFolder, uploadDroppedFiles],
+    [uploadDroppedFiles],
   );
 
-  const handleDropToRoot = useCallback(async () => {
-    const fileIds = resolveDraggedFileIds();
-    await moveFilesToFolder(fileIds, null, "Root");
-    setIsDraggingDocumentFile(false);
-    setDraggedFileId(null);
-  }, [resolveDraggedFileIds, moveFilesToFolder]);
+  const folderPathForFile = useCallback(
+    (fileId: string) =>
+      normalizeDropPath(files.find((file) => file.id === fileId)?.folder_path),
+    [files],
+  );
+
+  const handleFilesDragStart = useCallback(
+    (event: DragStartEvent) => {
+      const payload = readFileDragPayload(event.active.data.current);
+      if (!payload) return;
+      setOverFolderPath(null);
+      setActiveDrag({
+        payload,
+        originPaths: Array.from(new Set(payload.fileIds.map(folderPathForFile))),
+      });
+    },
+    [folderPathForFile],
+  );
+
+  const handleFilesDragOver = useCallback((event: DragOverEvent) => {
+    const target = event.over ? parseDocumentsDropId(String(event.over.id)) : null;
+    setOverFolderPath(target ? target.folderPath : null);
+  }, []);
+
+  const handleFilesDragCancel = useCallback(() => {
+    setActiveDrag(null);
+    setOverFolderPath(null);
+  }, []);
+
+  const handleFilesDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      setActiveDrag(null);
+      setOverFolderPath(null);
+
+      const payload = readFileDragPayload(event.active.data.current);
+      const target = event.over ? parseDocumentsDropId(String(event.over.id)) : null;
+      // Dropped on empty space: the overlay already said so while the pointer
+      // was there, so there is nothing left to report.
+      if (!payload || !target) return;
+
+      // Files that already live in the target are dropped from the request. If
+      // that leaves nothing, the whole drop is a no-op — no toast, no refetch,
+      // no server call.
+      const movable = payload.fileIds.filter(
+        (fileId) => folderPathForFile(fileId) !== target.folderPath,
+      );
+      if (movable.length === 0) return;
+
+      void moveFilesToFolder(
+        movable,
+        target.folderPath || null,
+        folderLabel(target.folderPath),
+      );
+    },
+    [folderPathForFile, moveFilesToFolder],
+  );
+
+  const dragState = useMemo<DocumentsDragState>(
+    () =>
+      activeDrag
+        ? {
+            draggedFileIds: activeDrag.payload.fileIds,
+            originPaths: activeDrag.originPaths,
+            overFolderPath,
+          }
+        : IDLE_DOCUMENTS_DRAG,
+    [activeDrag, overFolderPath],
+  );
 
   const selectedFolderPath = useMemo(
     () => Array.from(selectedFolderPaths)[0] ?? null,
     [selectedFolderPaths],
   );
-
-  const closeDrawingViewer = useCallback(() => {
-    drawingViewerRequestIdRef.current += 1;
-    setDrawingViewerOpen(false);
-    setDrawingViewerSheet(null);
-    setDrawingViewerSheets([]);
-    setDrawingViewerUrl(null);
-    setDrawingViewerMarkups([]);
-    setDrawingViewerPins([]);
-    setDrawingViewerHighlightedPinId(null);
-    setCreateFromDrawingOpen(false);
-    setCreateFromDrawingPosition(null);
-  }, []);
-
-  const handleSheetClick = useCallback(
-    async (sheet: DrawingSheet, sheets: DrawingSheet[] = []) => {
-      const requestId = drawingViewerRequestIdRef.current + 1;
-      drawingViewerRequestIdRef.current = requestId;
-      setDrawingViewerSheet(sheet);
-      setDrawingViewerSheets(sheets.length > 0 ? sheets : [sheet]);
-      setDrawingViewerUrl(null);
-      setDrawingViewerMarkups([]);
-      setDrawingViewerPins([]);
-      setDrawingViewerHighlightedPinId(null);
-      setDrawingViewerOpen(true);
-
-      try {
-        const hasTiles = Boolean(
-          (sheet as any).tile_base_url && (sheet as any).tile_manifest,
-        );
-        const hasOptimizedImages = Boolean(
-          sheet.image_thumbnail_url &&
-          sheet.image_medium_url &&
-          sheet.image_full_url,
-        );
-
-        const [signedImages, url, markups, pins] = await Promise.all([
-          hasOptimizedImages && !hasTiles
-            ? getSheetOptimizedImageUrlsAction(sheet.id).catch((error) => {
-                console.error("Failed to get signed optimized images:", error);
-                return null;
-              })
-            : Promise.resolve(null),
-          getSheetDownloadUrlAction(sheet.id).catch((error) => {
-            console.error("Failed to get sheet URL:", error);
-            return null;
-          }),
-          listDrawingMarkupsAction({ drawing_sheet_id: sheet.id }).catch(
-            (error) => {
-              console.error("Failed to load markups:", error);
-              return [];
-            },
-          ),
-          listDrawingPinsWithEntitiesAction(sheet.id).catch((error) => {
-            console.error("Failed to load pins:", error);
-            return [];
-          }),
-        ]);
-
-        if (drawingViewerRequestIdRef.current !== requestId) return;
-
-        if (signedImages && !hasTiles) {
-          setDrawingViewerSheet((prev) => {
-            if (!prev || prev.id !== sheet.id) return prev;
-            return {
-              ...prev,
-              image_thumbnail_url:
-                signedImages.thumbnailUrl ?? prev.image_thumbnail_url ?? null,
-              image_medium_url:
-                signedImages.mediumUrl ?? prev.image_medium_url ?? null,
-              image_full_url:
-                signedImages.fullUrl ?? prev.image_full_url ?? null,
-              image_width: signedImages.width ?? prev.image_width ?? null,
-              image_height: signedImages.height ?? prev.image_height ?? null,
-            };
-          });
-        }
-
-        if (!hasOptimizedImages && !hasTiles && !url) {
-          toast.error("Sheet file not available");
-          closeDrawingViewer();
-          return;
-        }
-
-        setDrawingViewerUrl(url);
-        setDrawingViewerMarkups(markups);
-        setDrawingViewerPins(pins);
-      } catch (error) {
-        console.error("Failed to open sheet:", error);
-        if (drawingViewerRequestIdRef.current === requestId) {
-          toast.error("Failed to open sheet");
-        }
-      }
-    },
-    [closeDrawingViewer],
-  );
-
-  const handleDrawingMarkupSave = useCallback(
-    async (markup: SaveMarkupInput) => {
-      try {
-        const created = unwrapAction(await createDrawingMarkupAction(markup));
-        setDrawingViewerMarkups((prev) => [...prev, created]);
-        toast.success("Markup saved");
-      } catch (error) {
-        console.error("Failed to save markup:", error);
-        toast.error("Failed to save markup");
-      }
-    },
-    [],
-  );
-
-  const handleDrawingMarkupDelete = useCallback(async (markupId: string) => {
-    try {
-      unwrapAction(await deleteDrawingMarkupAction(markupId));
-      setDrawingViewerMarkups((prev) =>
-        prev.filter((item) => item.id !== markupId),
-      );
-      toast.success("Markup deleted");
-    } catch (error) {
-      console.error("Failed to delete markup:", error);
-      toast.error("Failed to delete markup");
-    }
-  }, []);
-
-  const handleCreateDrawingPin = useCallback((x: number, y: number) => {
-    setCreateFromDrawingPosition({ x, y });
-    setCreateFromDrawingOpen(true);
-  }, []);
-
-  const handleDrawingPinClick = useCallback(
-    (pin: DrawingPin) => {
-      const base = pin.project_id ? `/projects/${pin.project_id}` : null;
-      if (!base) return;
-
-      switch (pin.entity_type) {
-        case "task":
-          router.push(`${base}/tasks`);
-          break;
-        case "rfi":
-          router.push(`${base}/rfis`);
-          break;
-        case "submittal":
-          router.push(`${base}/submittals`);
-          break;
-        case "punch_list":
-          router.push(`${base}/punch`);
-          break;
-        case "daily_log":
-          router.push(`${base}/daily-logs`);
-          break;
-        default:
-          router.push(base);
-      }
-
-      closeDrawingViewer();
-    },
-    [closeDrawingViewer, router],
-  );
-
-  const handleCreateFromDrawing = useCallback(
-    async (input: any) => {
-      if (!drawingViewerSheet || !createFromDrawingPosition) return;
-
-      try {
-        const targetProjectId = input.project_id ?? projectId;
-        if (!targetProjectId) {
-          throw new Error("Missing project");
-        }
-
-        let entityId: string | null = null;
-
-        if (input.entityType === "task") {
-          const created = unwrapAction(await createTaskFromDrawingAction(targetProjectId, {
-            title: input.title,
-            description: input.description,
-            priority:
-              input.priority === "high"
-                ? "high"
-                : input.priority === "low"
-                  ? "low"
-                  : "normal",
-            status: "todo",
-          }));
-          entityId = created.id;
-        } else if (input.entityType === "rfi") {
-          const created = unwrapAction(await createRfiFromDrawingAction({
-            projectId: targetProjectId,
-            subject: input.subject ?? input.title,
-            question: input.question ?? input.description ?? "",
-            priority:
-              input.priority === "high"
-                ? "high"
-                : input.priority === "low"
-                  ? "low"
-                  : "normal",
-          }));
-          entityId = created.id;
-        } else if (input.entityType === "punch_list") {
-          const created = unwrapAction(await createPunchItemFromDrawingAction({
-            projectId: targetProjectId,
-            title: input.title,
-            description: input.description,
-            location: input.location,
-            severity: input.priority,
-          }));
-          entityId = created.id;
-        } else if (input.entityType === "issue") {
-          const created = unwrapAction(await createTaskFromDrawingAction(targetProjectId, {
-            title: input.title,
-            description: input.description,
-            priority: "high",
-            status: "todo",
-            tags: ["issue"],
-          }));
-          entityId = created.id;
-        }
-
-        if (!entityId) {
-          throw new Error("Unsupported entity type");
-        }
-
-        const createdPin = unwrapAction(await createDrawingPinAction({
-          project_id: targetProjectId,
-          drawing_sheet_id: drawingViewerSheet.id,
-          x_position: createFromDrawingPosition.x,
-          y_position: createFromDrawingPosition.y,
-          entity_type: input.entityType,
-          entity_id: entityId,
-          label: input.title,
-          status: "open",
-        }));
-
-        setDrawingViewerPins((prev) => [...prev, createdPin]);
-        setDrawingViewerHighlightedPinId(createdPin.id);
-        setCreateFromDrawingOpen(false);
-        setCreateFromDrawingPosition(null);
-        toast.success("Entity created and pinned to drawing");
-      } catch (error) {
-        console.error("Failed to create entity from drawing:", error);
-        toast.error("Failed to create entity");
-      }
-    },
-    [createFromDrawingPosition, drawingViewerSheet, projectId],
-  );
-
-  const handleCreateFolder = useCallback(async () => {
-    const normalized = normalizeFolderPath(newFolderPath);
-    if (!normalized) {
-      toast.error("Enter a folder path like /contracts");
-      return;
-    }
-
-    setIsCreatingFolder(true);
-    try {
-      unwrapAction(await createFolderAction(projectId, normalized));
-      toast.success(`Created folder ${normalized}`);
-      setCreateFolderDialogOpen(false);
-      setNewFolderPath("");
-      await refreshFiles();
-      dispatchNavRefresh();
-    } catch (error) {
-      console.error("Failed to create folder:", error);
-      toast.error(
-        error instanceof Error ? error.message : "Failed to create folder",
-      );
-    } finally {
-      setIsCreatingFolder(false);
-    }
-  }, [newFolderPath, projectId, refreshFiles]);
-
-  const handleRenameConfirm = useCallback(async () => {
-    if (!renameFile) return;
-    const nextName = renameValue.trim();
-    if (!nextName) {
-      toast.error("File name is required");
-      return;
-    }
-
-    setIsRenaming(true);
-    try {
-      unwrapAction(await updateFileAction(renameFile.id, { file_name: nextName }));
-      toast.success("File renamed");
-      setRenameDialogOpen(false);
-      setRenameFile(null);
-      await refreshFiles();
-    } catch (error) {
-      console.error("Failed to rename file:", error);
-      toast.error("Failed to rename file");
-    } finally {
-      setIsRenaming(false);
-    }
-  }, [renameFile, renameValue, refreshFiles]);
-
-  const handleSuggestRename = useCallback(async () => {
-    if (!renameFile) return;
-
-    setIsSuggestingRename(true);
-    try {
-      const result = await suggestFileNameAction(renameFile.id);
-      if (!result.ok) {
-        toast.error("Could not suggest a name", { description: result.error });
-        return;
-      }
-      setRenameValue(result.fileName);
-      toast.success("AI name suggested");
-    } catch (error) {
-      console.error("Failed to suggest file name:", error);
-      toast.error("Could not suggest a name");
-    } finally {
-      setIsSuggestingRename(false);
-    }
-  }, [renameFile]);
-
-  const handleShareConfirm = useCallback(async () => {
-    if (!shareFile) return;
-    setIsSavingShare(true);
-    try {
-      unwrapAction(await updateFileAction(shareFile.id, {
-        share_with_clients: shareWithClients,
-        share_with_subs: shareWithSubs,
-      }));
-      toast.success("Sharing updated");
-      setShareDialogOpen(false);
-      setShareFile(null);
-      await refreshFiles();
-    } catch (error) {
-      console.error("Failed to update sharing:", error);
-      toast.error("Failed to update sharing");
-    } finally {
-      setIsSavingShare(false);
-    }
-  }, [refreshFiles, shareFile, shareWithClients, shareWithSubs]);
-
-  const handleCreateShareLink = useCallback(async () => {
-    if (!shareFile) return;
-    setIsCreatingShareLink(true);
-    try {
-      const now = new Date();
-      const expires_at =
-        shareLinkExpiry === "never"
-          ? null
-          : new Date(
-              now.getTime() +
-                (shareLinkExpiry === "7d" ? 7 : 30) * 24 * 60 * 60 * 1000,
-            ).toISOString();
-      const link = unwrapAction(await createFileShareLinkAction({
-        file_id: shareFile.id,
-        label: shareLinkLabel.trim() || null,
-        expires_at,
-        allow_download: shareLinkAllowDownload,
-      }));
-      setShareLinks((prev) => [link, ...prev]);
-      setShareLinkLabel("");
-      const origin =
-        typeof window !== "undefined" ? window.location.origin : "";
-      try {
-        await navigator.clipboard.writeText(`${origin}/f/${link.token}`);
-        setCopiedShareLinkId(link.id);
-        setTimeout(() => setCopiedShareLinkId((prev) => (prev === link.id ? null : prev)), 2000);
-        toast.success("Link created and copied");
-      } catch {
-        toast.success("Link created");
-      }
-    } catch (error: any) {
-      console.error("Failed to create share link", error);
-      toast.error(error?.message || "Failed to create share link");
-    } finally {
-      setIsCreatingShareLink(false);
-    }
-  }, [shareFile, shareLinkExpiry, shareLinkAllowDownload, shareLinkLabel]);
-
-  const handleCopyShareLink = useCallback(async (link: FileShareLink) => {
-    const origin = typeof window !== "undefined" ? window.location.origin : "";
-    try {
-      await navigator.clipboard.writeText(`${origin}/f/${link.token}`);
-      setCopiedShareLinkId(link.id);
-      setTimeout(() => setCopiedShareLinkId((prev) => (prev === link.id ? null : prev)), 2000);
-    } catch (err) {
-      console.error("Copy failed", err);
-      toast.error("Copy failed");
-    }
-  }, []);
-
-  const handleRevokeShareLink = useCallback(async (link: FileShareLink) => {
-    setRevokingShareLinkId(link.id);
-    try {
-      unwrapAction(await revokeFileShareLinkAction(link.id));
-      setShareLinks((prev) =>
-        prev.map((item) =>
-          item.id === link.id
-            ? { ...item, revoked_at: new Date().toISOString(), is_active: false }
-            : item,
-        ),
-      );
-      toast.success("Link revoked");
-    } catch (error: any) {
-      console.error("Failed to revoke share link", error);
-      toast.error(error?.message || "Failed to revoke link");
-    } finally {
-      setRevokingShareLinkId(null);
-    }
-  }, []);
-
-  const handleMoveConfirm = useCallback(async () => {
-    if (moveFileIds.length === 0) return;
-
-    const normalizedTarget = normalizeFolderPath(moveTargetFolder);
-    await moveFilesToFolder(
-      moveFileIds,
-      normalizedTarget,
-      normalizedTarget ?? "Root",
-    );
-    setMoveDialogOpen(false);
-    setMoveFileIds([]);
-    setMoveTargetFolder("");
-  }, [moveFileIds, moveTargetFolder, moveFilesToFolder]);
-
-  const handleDeleteConfirm = useCallback(async () => {
-    if (deleteFileIds.length === 0) return;
-
-    setIsDeleting(true);
-    try {
-      unwrapAction(await bulkDeleteFilesAction(deleteFileIds));
-      toast.success(
-        `Moved ${deleteFileIds.length} file${deleteFileIds.length === 1 ? "" : "s"} to trash`,
-      );
-      setDeleteDialogOpen(false);
-      setDeleteFileIds([]);
-      setSelectedFileIds(new Set());
-      await refreshFiles();
-      dispatchNavRefresh();
-    } catch (error) {
-      console.error("Failed to delete files:", error);
-      toast.error("Failed to delete files");
-    } finally {
-      setIsDeleting(false);
-    }
-  }, [deleteFileIds, refreshFiles]);
 
   const handleRestoreFiles = useCallback(
     async (fileIds: string[]) => {
@@ -1348,8 +719,7 @@ function UnifiedDocumentsLayoutInner() {
         await Promise.all(ids.map((fileId) => unarchiveFileAction(fileId)));
         toast.success(`Restored ${ids.length} file${ids.length === 1 ? "" : "s"}`);
         setSelectedFileIds(new Set());
-        await refreshFiles({ includeMetadata: true });
-        dispatchNavRefresh();
+        await refreshFiles({ includeMetadata: true, invalidateCache: true });
       } catch (error) {
         console.error("Failed to restore files:", error);
         toast.error("Failed to restore files");
@@ -1367,7 +737,7 @@ function UnifiedDocumentsLayoutInner() {
       if (ids.length === 1) {
         const file = files.find((row) => row.id === ids[0]);
         if (file) {
-          const url = await getFileDownloadUrlAction(file.id);
+          const url = unwrapAction(await getFileDownloadUrlAction(file.id));
           await downloadUrlToFile(url, file.file_name);
           return;
         }
@@ -1419,7 +789,7 @@ function UnifiedDocumentsLayoutInner() {
         ...prev,
         [fileId]: versions.map(mapVersion),
       }));
-      await refreshFiles();
+      await refreshFiles({ invalidateCache: true });
     },
     [refreshFiles],
   );
@@ -1432,38 +802,6 @@ function UnifiedDocumentsLayoutInner() {
     [viewerFile, uploadVersionForFile],
   );
 
-  const handleConfirmVersionUpload = useCallback(async () => {
-    if (!versionTargetFile || !versionUploadFile) {
-      toast.error("Choose a file for the new version");
-      return;
-    }
-
-    setIsUploadingVersion(true);
-    try {
-      await uploadVersionForFile(
-        versionTargetFile.id,
-        versionUploadFile,
-        versionLabel.trim() || undefined,
-        versionNotes.trim() || undefined,
-      );
-      toast.success("New version uploaded");
-      setVersionDialogOpen(false);
-      resetVersionUploadDialog();
-    } catch (error) {
-      console.error("Failed to upload version:", error);
-      toast.error("Failed to upload new version");
-    } finally {
-      setIsUploadingVersion(false);
-    }
-  }, [
-    versionTargetFile,
-    versionUploadFile,
-    versionLabel,
-    versionNotes,
-    uploadVersionForFile,
-    resetVersionUploadDialog,
-  ]);
-
   const handleMakeCurrentVersion = useCallback(
     async (versionId: string) => {
       if (!viewerFile) return;
@@ -1473,13 +811,13 @@ function UnifiedDocumentsLayoutInner() {
         ...prev,
         [viewerFile.id]: versions.map(mapVersion),
       }));
-      await refreshFiles();
+      await refreshFiles({ invalidateCache: true });
     },
     [viewerFile, refreshFiles],
   );
 
   const handleDownloadVersion = useCallback(async (versionId: string) => {
-    const url = await getVersionDownloadUrlAction(versionId);
+    const url = unwrapAction(await getVersionDownloadUrlAction(versionId));
     await downloadUrlToFile(url);
   }, []);
 
@@ -1506,91 +844,34 @@ function UnifiedDocumentsLayoutInner() {
           ...prev,
           [viewerFile.id]: versions.map(mapVersion),
         }));
-        await refreshFiles();
+        await refreshFiles({ invalidateCache: true });
       }
     },
     [viewerFile, refreshFiles],
   );
 
   const handleRenameFolder = useCallback((path: string) => {
-    const parts = path.split("/").filter(Boolean);
-    const name = parts[parts.length - 1] || "";
     setFolderRenamePath(path);
-    setFolderRenameValue(name);
     setFolderRenameOpen(true);
   }, []);
-
-  const onConfirmRenameFolder = async () => {
-    if (!folderRenamePath || !folderRenameValue.trim()) return;
-    setIsRenamingFolder(true);
-    try {
-      unwrapAction(await renameFolderAction(projectId, folderRenamePath, folderRenameValue.trim()));
-      setFolderRenameOpen(false);
-      await refreshFiles();
-      await refreshFolderPermissions();
-      toast.success("Folder renamed");
-    } catch (error: any) {
-      toast.error(error.message || "Failed to rename folder");
-    } finally {
-      setIsRenamingFolder(false);
-    }
-  };
 
   const handleDeleteFolder = useCallback((path: string) => {
     setFolderDeletePath(path);
     setFolderDeleteOpen(true);
   }, []);
 
-  const onConfirmDeleteFolder = async () => {
-    if (!folderDeletePath) return;
-    setIsDeletingFolder(true);
-    try {
-      unwrapAction(await deleteFolderAction(projectId, folderDeletePath));
-      setFolderDeleteOpen(false);
-      await refreshFiles();
-      await refreshFolderPermissions();
-      toast.success("Folder deleted");
-    } catch (error: any) {
-      toast.error(error.message || "Failed to delete folder");
-    } finally {
-      setIsDeletingFolder(false);
-    }
-  };
-
-  const handleShareFolder = useCallback((path: string) => {
-    const perms = folderPermissions.find(p => p.path === path);
-    setFolderSharePath(path);
-    setFolderShareWithClients(perms?.share_with_clients ?? false);
-    setFolderShareWithSubs(perms?.share_with_subs ?? false);
-    setFolderShareApplyToExisting(false);
-    setFolderShareOpen(true);
-  }, [folderPermissions]);
-
-  const onConfirmShareFolder = async (applyToExisting: boolean = false) => {
-    if (!folderSharePath) return;
-    setIsSavingFolderShare(true);
-    try {
-      unwrapAction(await updateFolderPermissionsAction(
-        projectId,
-        folderSharePath,
-        {
-          share_with_clients: folderShareWithClients,
-          share_with_subs: folderShareWithSubs,
-        },
-        applyToExisting
-      ));
-      setFolderShareOpen(false);
-      await refreshFolderPermissions();
-      if (applyToExisting) {
-        await refreshFiles();
-      }
-      toast.success("Folder permissions updated");
-    } catch (error: any) {
-      toast.error(error.message || "Failed to update folder permissions");
-    } finally {
-      setIsSavingFolderShare(false);
-    }
-  };
+  const handleShareFolder = useCallback(
+    (path: string) => {
+      const permissions = folderPermissions.find((entry) => entry.path === path);
+      setFolderShareTarget({
+        path,
+        shareWithClients: permissions?.share_with_clients ?? false,
+        shareWithSubs: permissions?.share_with_subs ?? false,
+      });
+      setFolderShareOpen(true);
+    },
+    [folderPermissions],
+  );
 
   const handleViewerFileChange = useCallback((file: FileWithDetails) => {
     setViewerFile((prev) => (prev?.id === file.id ? prev : file));
@@ -1598,7 +879,8 @@ function UnifiedDocumentsLayoutInner() {
       return;
     }
     lastNotifiedViewerFileIdRef.current = file.id;
-    getFileDownloadUrlAction(file.id).then((downloadUrl) => {
+    getFileDownloadUrlAction(file.id).then((result) => {
+      const downloadUrl = unwrapAction(result);
       setViewerFile((prev) => {
         if (!prev || prev.id !== file.id) return prev;
         return {
@@ -1620,7 +902,7 @@ function UnifiedDocumentsLayoutInner() {
 
   const handleDownload = useCallback(async (file: FileWithDetails) => {
     try {
-      const url = await getFileDownloadUrlAction(file.id);
+      const url = unwrapAction(await getFileDownloadUrlAction(file.id));
       await downloadUrlToFile(url, file.file_name);
       toast.success(`Downloading ${file.file_name}`);
     } catch (error) {
@@ -1670,10 +952,30 @@ function UnifiedDocumentsLayoutInner() {
                 thumbnail_url: selectedViewer.thumbnail_url,
               }
             : {}),
-          category: f.category as any,
+          category: f.category,
         };
       });
   }, [files, viewerFile]);
+
+  const folderHasPdf = useMemo(
+    () => files.some((file) => file.mime_type === "application/pdf"),
+    [files],
+  );
+
+  // Warm the PDF stack once we know this folder holds one. The first PDF opened
+  // otherwise pays for ~1MB of viewer chunk and the worker before it can render
+  // anything, which makes it feel much slower than every PDF opened after it.
+  // The time someone spends scanning the table is exactly when that is free.
+  useEffect(() => {
+    if (!folderHasPdf) return;
+
+    if (typeof window.requestIdleCallback === "function") {
+      const handle = window.requestIdleCallback(() => preloadPdfViewer(), { timeout: 3000 });
+      return () => window.cancelIdleCallback(handle);
+    }
+    const handle = window.setTimeout(preloadPdfViewer, 1500);
+    return () => window.clearTimeout(handle);
+  }, [folderHasPdf]);
 
   const propertiesFile = useMemo(() => {
     if (!propertiesFileId) return null;
@@ -1795,7 +1097,7 @@ function UnifiedDocumentsLayoutInner() {
           onShareFolder={handleShareFolder}
           onDeleteFolder={handleDeleteFolder}
           onUploadClick={handleUploadClick}
-          onDropOnFolder={handleDropOnFolder}
+          onUploadToFolder={handleUploadToFolder}
           selectedFileIds={selectedFileIds}
           selectedFolderPaths={selectedFolderPaths}
           onFileSelectionChange={handleFileSelectionChange}
@@ -1810,20 +1112,13 @@ function UnifiedDocumentsLayoutInner() {
         onUploadNewVersion={openVersionUploadDialog}
         onSendForSignature={handleSendForSignature}
         onOpenProperties={setPropertiesFileId}
-        onFileDragStart={handleFileDragStart}
-        onFileDragEnd={handleFileDragEnd}
       />
     );
   };
 
-  const versionDialogHistory = versionTargetFile
-    ? versionsByFile[versionTargetFile.id] ?? []
-    : [];
-  const recentVersionHistory = versionDialogHistory.slice(0, 4);
-
   return (
     <div
-      className="relative flex h-full flex-col overflow-hidden bg-background"
+      className="relative flex h-full min-h-0 flex-col overflow-hidden bg-background"
       aria-busy={isDirectUploading}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
@@ -1838,7 +1133,7 @@ function UnifiedDocumentsLayoutInner() {
           onDownloadFile={handleDownloadById}
           onUploadClick={handleUploadClick}
           onCreateFolderClick={() => {
-            setNewFolderPath(currentPath || "");
+            setCreateFolderInitialPath(currentPath || "");
             setCreateFolderDialogOpen(true);
           }}
           onRenameFile={openRenameDialog}
@@ -1860,12 +1155,24 @@ function UnifiedDocumentsLayoutInner() {
           onRefreshTimeline={refreshPropertiesTimeline}
         />
       ) : (
-      <>
-      <div className="relative z-20 shrink-0 border-b bg-background/95 backdrop-blur-sm px-4 py-3">
+      <DndContext
+        sensors={dragSensors}
+        collisionDetection={documentsCollisionDetection}
+        accessibility={{
+          announcements: documentsDragAnnouncements,
+          screenReaderInstructions: documentsDragInstructions,
+        }}
+        onDragStart={handleFilesDragStart}
+        onDragOver={handleFilesDragOver}
+        onDragCancel={handleFilesDragCancel}
+        onDragEnd={handleFilesDragEnd}
+      >
+      <DocumentsDragProvider state={dragState}>
+      <div className="relative z-20 shrink-0 border-b bg-background px-4 py-3">
         <DocumentsToolbar
           onUploadClick={handleUploadClick}
           onCreateFolderClick={() => {
-            setNewFolderPath(currentPath || "");
+            setCreateFolderInitialPath(currentPath || "");
             setCreateFolderDialogOpen(true);
           }}
           selectedCount={selectedFileIds.size}
@@ -1898,9 +1205,6 @@ function UnifiedDocumentsLayoutInner() {
               handleDeleteFolder(selectedFolderPath);
             }
           }}
-          onDropToFolderPath={handleDropOnFolder}
-          onDropToRoot={handleDropToRoot}
-          isDraggingFiles={isDraggingDocumentFile}
           isDownloadingSelected={isDownloadingSelected}
           explorerOpen={explorerOpen}
           onToggleExplorer={() => setExplorerOpen((open) => !open)}
@@ -1910,7 +1214,8 @@ function UnifiedDocumentsLayoutInner() {
       <div className="relative z-10 flex min-h-0 flex-1">
         <aside
           className={cn(
-            "hidden shrink-0 overflow-hidden border-r bg-background transition-[width,opacity] duration-200 ease-out lg:block",
+            "hidden shrink-0 overflow-hidden border-r bg-background lg:block",
+            explorerRestored && "transition-[width,opacity] duration-200 ease-out",
             explorerOpen ? "w-[280px] opacity-100" : "w-0 border-r-0 opacity-0",
           )}
         >
@@ -1921,9 +1226,12 @@ function UnifiedDocumentsLayoutInner() {
             onShareFolder={handleShareFolder}
           />
         </aside>
-        <ScrollArea className="h-full flex-1">
-          {renderContent()}
-        </ScrollArea>
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          <ScrollArea className="h-full flex-1">
+            {renderContent()}
+          </ScrollArea>
+          <FolderDropDock currentPath={currentPath} />
+        </div>
         <aside
           className={`min-h-0 shrink-0 overflow-hidden border-l bg-background transition-[width,opacity] duration-200 ease-out ${
             propertiesFile ? "w-[380px] opacity-100" : "w-0 border-l-0 opacity-0"
@@ -1950,7 +1258,21 @@ function UnifiedDocumentsLayoutInner() {
           </div>
         </aside>
       </div>
-      </>
+
+      <DragOverlay
+        dropAnimation={null}
+        style={DRAG_OVERLAY_STYLE}
+        modifiers={DRAG_OVERLAY_MODIFIERS}
+      >
+        {activeDrag ? (
+          <FileDragChip
+            payload={activeDrag.payload}
+            targetLabel={overFolderPath === null ? null : folderLabel(overFolderPath)}
+          />
+        ) : null}
+      </DragOverlay>
+      </DocumentsDragProvider>
+      </DndContext>
       )}
 
       <UploadDialog
@@ -1959,176 +1281,22 @@ function UnifiedDocumentsLayoutInner() {
         initialFiles={uploadFiles}
         projectId={projectId}
         folderPath={currentPath}
-        onUploadComplete={refreshFiles}
+        onUploadComplete={() => refreshFiles({ invalidateCache: true })}
       />
 
-      <Dialog
+      <VersionUploadDialog
         open={versionDialogOpen}
         onOpenChange={(open) => {
           setVersionDialogOpen(open);
           if (!open) {
-            resetVersionUploadDialog();
+            setVersionTargetFile(null);
           }
         }}
-      >
-        <DialogContent className="sm:max-w-xl">
-          <DialogHeader>
-            <DialogTitle>Upload new version</DialogTitle>
-            <DialogDescription>
-              Add a revised file while keeping the same document record, sharing, and history.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-2">
-            {versionTargetFile ? (
-              <div className="rounded-lg border bg-muted/20 p-3">
-                <div className="flex items-start gap-3">
-                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-background text-primary shadow-sm">
-                    <FileCheck2 className="h-4 w-4" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">Current file</p>
-                    <p className="truncate text-sm font-semibold">{versionTargetFile.file_name}</p>
-                    <p className="text-xs text-muted-foreground">
-                      Latest v{versionTargetFile.version_number ?? 1} · {formatFileSize(versionTargetFile.size_bytes)}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            ) : null}
-
-            <input
-              ref={versionFileInputRef}
-              type="file"
-              className="hidden"
-              onChange={handleVersionFileChange}
-              disabled={isUploadingVersion}
-            />
-
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => versionFileInputRef.current?.click()}
-              disabled={isUploadingVersion}
-              className={cn(
-                "h-auto w-full justify-start rounded-lg border-dashed px-4 py-4 text-left transition-colors",
-                versionUploadFile ? "border-primary/40 bg-primary/5" : "hover:bg-muted/40",
-              )}
-            >
-              <div className="flex items-start gap-3">
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                  <UploadCloud className="h-4 w-4" />
-                </div>
-                <div>
-                  <p className="text-sm font-medium">
-                    {versionUploadFile ? "Replacement file selected" : "Choose the revised file"}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {versionUploadFile
-                      ? `${versionUploadFile.name} · ${formatFileSize(versionUploadFile.size)}`
-                      : "This becomes the latest version after you click Upload version."}
-                  </p>
-                </div>
-              </div>
-            </Button>
-
-            <div className="grid gap-3 sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
-              <div className="space-y-2">
-                <Label htmlFor="version-label">Version label</Label>
-                <Input
-                  id="version-label"
-                  value={versionLabel}
-                  onChange={(event) => setVersionLabel(event.target.value)}
-                  placeholder="Addendum 2, final, owner comments"
-                  disabled={isUploadingVersion}
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="version-notes">Notes</Label>
-                <Input
-                  id="version-notes"
-                  value={versionNotes}
-                  onChange={(event) => setVersionNotes(event.target.value)}
-                  placeholder="Short note about what changed"
-                  disabled={isUploadingVersion}
-                />
-              </div>
-            </div>
-
-            <div className="rounded-lg border">
-              <div className="flex items-center justify-between border-b px-3 py-2">
-                <div className="flex items-center gap-2">
-                  <History className="h-4 w-4 text-muted-foreground" />
-                  <p className="text-sm font-medium">Recent versions</p>
-                </div>
-                {versionDialogHistory.length > 0 ? (
-                  <span className="text-xs text-muted-foreground">
-                    {versionDialogHistory.length} total
-                  </span>
-                ) : null}
-              </div>
-              {isLoadingVersionHistory ? (
-                <div className="flex items-center gap-2 px-3 py-4 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Loading history...
-                </div>
-              ) : recentVersionHistory.length > 0 ? (
-                <div className="divide-y">
-                  {recentVersionHistory.map((version) => (
-                    <div key={version.id} className="flex items-center gap-3 px-3 py-2.5">
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-xs font-semibold">
-                        v{version.version_number}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium">
-                          {version.label || version.file_name || `Version ${version.version_number}`}
-                        </p>
-                        <p className="truncate text-xs text-muted-foreground">
-                          {version.creator_name ?? "Unknown"} · {formatVersionDate(version.created_at)}
-                          {version.size_bytes ? ` · ${formatFileSize(version.size_bytes)}` : ""}
-                        </p>
-                      </div>
-                      {version.is_current ? (
-                        <span className="rounded-md bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
-                          Current
-                        </span>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="px-3 py-4 text-sm text-muted-foreground">
-                  No version history yet. This upload will create the next version.
-                </p>
-              )}
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setVersionDialogOpen(false)}
-              disabled={isUploadingVersion}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleConfirmVersionUpload}
-              disabled={isUploadingVersion || !versionUploadFile}
-            >
-              {isUploadingVersion ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Uploading...
-                </>
-              ) : (
-                "Upload version"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        file={versionTargetFile}
+        versions={versionTargetFile ? (versionsByFile[versionTargetFile.id] ?? []) : []}
+        onLoadVersions={loadVersionsForFile}
+        onUploadVersion={uploadVersionForFile}
+      />
 
       <EnvelopeWizard
         open={esignOpen}
@@ -2142,7 +1310,7 @@ function UnifiedDocumentsLayoutInner() {
         sourceEntity={esignSource}
         initialFile={esignFile}
         onEnvelopeSent={() => {
-          refreshFiles();
+          void refreshFiles({ invalidateCache: true });
         }}
       />
 
@@ -2175,672 +1343,90 @@ function UnifiedDocumentsLayoutInner() {
         onFileChange={viewerOpen ? handleViewerFileChange : undefined}
       />
 
-      {drawingViewerOpen && drawingViewerSheet && (
-        <DrawingViewer
-          sheet={drawingViewerSheet}
-          fileUrl={drawingViewerUrl ?? undefined}
-          markups={drawingViewerMarkups}
-          pins={drawingViewerPins}
-          highlightedPinId={drawingViewerHighlightedPinId ?? undefined}
-          onClose={closeDrawingViewer}
-          onSaveMarkup={handleDrawingMarkupSave}
-          onDeleteMarkup={handleDrawingMarkupDelete}
-          onCreatePin={handleCreateDrawingPin}
-          onPinClick={handleDrawingPinClick}
-          sheets={drawingViewerSheets}
-          onNavigateSheet={(sheet) => {
-            void handleSheetClick(sheet, drawingViewerSheets);
-          }}
-          imageThumbnailUrl={drawingViewerSheet.image_thumbnail_url ?? null}
-          imageWidth={drawingViewerSheet.image_width ?? null}
-          imageHeight={drawingViewerSheet.image_height ?? null}
-        />
-      )}
-
-      <CreateFromDrawingDialog
-        open={createFromDrawingOpen}
-        onOpenChange={(open) => {
-          setCreateFromDrawingOpen(open);
-          if (!open) {
-            setCreateFromDrawingPosition(null);
-          }
-        }}
-        onCreate={handleCreateFromDrawing}
-        sheet={drawingViewerSheet}
-        position={createFromDrawingPosition || { x: 0, y: 0 }}
-        projectId={projectId}
-      />
-
-      <Dialog
+      <CreateFolderDialog
         open={createFolderDialogOpen}
         onOpenChange={setCreateFolderDialogOpen}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Create folder</DialogTitle>
-            <DialogDescription>
-              Folders are virtual and support nested paths like{" "}
-              <code>/contracts/subcontracts</code>.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            <Input
-              placeholder="/contracts"
-              value={newFolderPath}
-              onChange={(event) => setNewFolderPath(event.target.value)}
-              disabled={isCreatingFolder}
-            />
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setCreateFolderDialogOpen(false)}
-              disabled={isCreatingFolder}
-            >
-              Cancel
-            </Button>
-            <Button onClick={handleCreateFolder} disabled={isCreatingFolder}>
-              {isCreatingFolder ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Creating...
-                </>
-              ) : (
-                "Create"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        initialPath={createFolderInitialPath}
+      />
 
-      <Dialog
+      <FileShareDialog
         open={shareDialogOpen}
         onOpenChange={(open) => {
           setShareDialogOpen(open);
           if (!open) {
-            setShareFile(null);
+            setShareTargetFile(null);
           }
         }}
-      >
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Share</DialogTitle>
-            {shareFile ? (
-              <DialogDescription className="truncate">
-                {shareFile.file_name}
-              </DialogDescription>
-            ) : null}
-          </DialogHeader>
-          <div className="max-h-[70vh] space-y-5 overflow-y-auto py-1 pr-1">
-            <section className="space-y-2">
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                Portals
-              </p>
-              <div className="divide-y rounded-lg border">
-                <label className="flex cursor-pointer items-center justify-between gap-4 px-4 py-3">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium">{terms.ownerPortal}</p>
-                    <p className="text-xs text-muted-foreground">
-                      Accessible to {terms.owners.toLowerCase()} on the {terms.ownerPortal.toLowerCase()}.
-                    </p>
-                  </div>
-                  <Switch
-                    checked={shareWithClients}
-                    onCheckedChange={(value) => setShareWithClients(Boolean(value))}
-                    disabled={isSavingShare}
-                  />
-                </label>
-                <label className="flex cursor-pointer items-center justify-between gap-4 px-4 py-3">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium">Subcontractor portal</p>
-                    <p className="text-xs text-muted-foreground">
-                      Accessible to subcontractors on the subcontractor portal.
-                    </p>
-                  </div>
-                  <Switch
-                    checked={shareWithSubs}
-                    onCheckedChange={(value) => setShareWithSubs(Boolean(value))}
-                    disabled={isSavingShare}
-                  />
-                </label>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {shareSummary(shareWithClients, shareWithSubs, terms.owners)}
-              </p>
-            </section>
+        file={shareTargetFile}
+      />
 
-            <section className="space-y-2">
-              <div className="flex items-center justify-between">
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                  Public links
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Anyone with the link
-                </p>
-              </div>
+      <RenameFileDialog
+        open={renameDialogOpen}
+        onOpenChange={(open) => {
+          setRenameDialogOpen(open);
+          if (!open) {
+            setRenameTargetFile(null);
+          }
+        }}
+        file={renameTargetFile}
+      />
 
-              <div className="rounded-lg border p-3">
-                <div className="flex flex-wrap items-end gap-2">
-                  <div className="min-w-[10rem] flex-1">
-                    <Label className="text-xs text-muted-foreground">Label (optional)</Label>
-                    <Input
-                      value={shareLinkLabel}
-                      onChange={(event) => setShareLinkLabel(event.target.value)}
-                      placeholder="e.g. Inspector, Lender"
-                      disabled={isCreatingShareLink}
-                      className="h-9"
-                    />
-                  </div>
-                  <div className="w-[7rem]">
-                    <Label className="text-xs text-muted-foreground">Expires</Label>
-                    <Select
-                      value={shareLinkExpiry}
-                      onValueChange={(value) =>
-                        setShareLinkExpiry(value as "7d" | "30d" | "never")
-                      }
-                      disabled={isCreatingShareLink}
-                    >
-                      <SelectTrigger className="h-9">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="7d">7 days</SelectItem>
-                        <SelectItem value="30d">30 days</SelectItem>
-                        <SelectItem value="never">Never</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                <label className="mt-3 flex cursor-pointer items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-sm">Allow download</p>
-                    <p className="text-xs text-muted-foreground">
-                      Off = view/preview only.
-                    </p>
-                  </div>
-                  <Switch
-                    checked={shareLinkAllowDownload}
-                    onCheckedChange={(value) => setShareLinkAllowDownload(Boolean(value))}
-                    disabled={isCreatingShareLink}
-                  />
-                </label>
-                <Button
-                  type="button"
-                  onClick={handleCreateShareLink}
-                  disabled={isCreatingShareLink || !shareFile}
-                  size="sm"
-                  className="mt-3 w-full"
-                >
-                  {isCreatingShareLink ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Creating
-                    </>
-                  ) : (
-                    <>
-                      <Link2 className="mr-2 h-4 w-4" />
-                      Create link
-                    </>
-                  )}
-                </Button>
-              </div>
+      <MoveFilesDialog
+        open={moveDialogOpen}
+        onOpenChange={(open) => {
+          setMoveDialogOpen(open);
+          if (!open) {
+            setMoveFileIds([]);
+          }
+        }}
+        fileIds={moveFileIds}
+        isMoving={isMoving}
+        onMoveFiles={moveFilesToFolder}
+        onRequestNewFolder={(suggestedPath) => {
+          setMoveDialogOpen(false);
+          setCreateFolderInitialPath(suggestedPath);
+          setCreateFolderDialogOpen(true);
+        }}
+      />
 
-              {shareLinksLoading ? (
-                <p className="px-1 text-xs text-muted-foreground">Loading links…</p>
-              ) : shareLinks.length === 0 ? (
-                <p className="px-1 text-xs text-muted-foreground">
-                  No public links yet.
-                </p>
-              ) : (
-                <ul className="divide-y rounded-lg border">
-                  {shareLinks.map((link) => {
-                    const expiry = link.expires_at
-                      ? new Date(link.expires_at).toLocaleDateString(undefined, {
-                          month: "short",
-                          day: "numeric",
-                          year: "numeric",
-                        })
-                      : "Never";
-                    const statusLabel = link.revoked_at
-                      ? "Revoked"
-                      : !link.is_active
-                        ? "Expired"
-                        : `Expires ${expiry}`;
-                    return (
-                      <li
-                        key={link.id}
-                        className="flex items-center gap-2 px-3 py-2"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm">
-                            {link.label || "Untitled link"}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {statusLabel}
-                            {link.allow_download ? "" : " · View only"}
-                            {link.use_count > 0
-                              ? ` · ${link.use_count} view${link.use_count === 1 ? "" : "s"}`
-                              : ""}
-                          </p>
-                        </div>
-                        {link.is_active ? (
-                          <>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              onClick={() => handleCopyShareLink(link)}
-                              title="Copy link"
-                            >
-                              {copiedShareLinkId === link.id ? (
-                                <Check className="h-4 w-4 text-primary" />
-                              ) : (
-                                <Copy className="h-4 w-4" />
-                              )}
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                              onClick={() => handleRevokeShareLink(link)}
-                              disabled={revokingShareLinkId === link.id}
-                              title="Revoke link"
-                            >
-                              {revokingShareLinkId === link.id ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              ) : (
-                                <X className="h-4 w-4" />
-                              )}
-                            </Button>
-                          </>
-                        ) : null}
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </section>
-          </div>
-          <DialogFooter>
-            <Button
-              variant="ghost"
-              onClick={() => setShareDialogOpen(false)}
-              disabled={isSavingShare}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleShareConfirm}
-              disabled={isSavingShare || !shareFile}
-            >
-              {isSavingShare ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Saving
-                </>
-              ) : (
-                "Save"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <DeleteFilesDialog
+        open={deleteDialogOpen}
+        onOpenChange={(open) => {
+          setDeleteDialogOpen(open);
+          if (!open) {
+            setDeleteFileIds([]);
+          }
+        }}
+        fileIds={deleteFileIds}
+        onDeleted={async () => {
+          setSelectedFileIds(new Set());
+          await refreshFiles({ invalidateCache: true });
+        }}
+      />
 
-      <Dialog open={renameDialogOpen} onOpenChange={setRenameDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Rename file</DialogTitle>
-            <DialogDescription>
-              Update the file name shown in Documents.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            <div className="flex gap-2">
-              <Input
-                value={renameValue}
-                onChange={(event) => setRenameValue(event.target.value)}
-                disabled={isRenaming || isSuggestingRename}
-                className="min-w-0 flex-1"
-              />
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={handleSuggestRename}
-                disabled={isRenaming || isSuggestingRename || !renameFile}
-                className={cn(
-                  "group relative shrink-0 overflow-hidden border border-primary/20 bg-gradient-to-r from-primary/10 via-background to-primary/10 transition-all",
-                  "before:absolute before:inset-y-0 before:-left-1/2 before:w-1/3 before:skew-x-[-20deg] before:bg-white/60 before:opacity-0 before:transition-all before:duration-700",
-                  "hover:border-primary/40 hover:shadow-[0_0_24px_rgba(59,130,246,0.24)] hover:before:left-[120%] hover:before:opacity-100",
-                  "disabled:before:hidden",
-                )}
-              >
-                {isSuggestingRename ? (
-                  <Loader2 className="relative z-10 h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Sparkles className="relative z-10 h-4 w-4 mr-2 text-primary transition-transform group-hover:scale-110" />
-                )}
-                <span className="relative z-10">AI rename</span>
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              AI reads the file purpose, identifiers, vendors, trades, and scope to suggest a short project-ready name.
-            </p>
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setRenameDialogOpen(false)}
-              disabled={isRenaming || isSuggestingRename}
-            >
-              Cancel
-            </Button>
-            <Button onClick={handleRenameConfirm} disabled={isRenaming || isSuggestingRename}>
-              {isRenaming ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Saving...
-                </>
-              ) : (
-                "Save"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <FolderRenameDialog
+        open={folderRenameOpen}
+        onOpenChange={setFolderRenameOpen}
+        path={folderRenamePath}
+      />
 
-      <Dialog open={moveDialogOpen} onOpenChange={setMoveDialogOpen}>
-        <DialogContent className="sm:max-w-xl">
-          <DialogHeader>
-            <DialogTitle>Move files</DialogTitle>
-            <DialogDescription>
-              Pick a destination from your existing folders. Create a new folder only when you need one.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="rounded-lg border bg-muted/20 p-4">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                    Selected
-                  </p>
-                  <p className="mt-2 text-sm">
-                    Move {moveFileIds.length} file{moveFileIds.length === 1 ? "" : "s"} to{" "}
-                    <span className="font-medium">{moveTargetFolder || "Root"}</span>.
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={isMoving}
-                  onClick={() => {
-                    setMoveDialogOpen(false);
-                    setNewFolderPath(moveSearchQuery.trim() ? `/${moveSearchQuery.trim().replace(/^\/+/, "")}` : currentPath || "");
-                    setCreateFolderDialogOpen(true);
-                  }}
-                >
-                  New folder
-                </Button>
-              </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {moveFileIds.slice(0, 3).map((fileId) => {
-                  const file = files.find((item) => item.id === fileId);
-                  if (!file) return null;
-                  return (
-                    <div key={fileId} className="max-w-full rounded-md border bg-background px-3 py-1.5 text-sm">
-                      <span className="block truncate">{file.file_name}</span>
-                    </div>
-                  );
-                })}
-                {moveFileIds.length > 3 ? (
-                  <div className="rounded-md border bg-background px-3 py-1.5 text-sm text-muted-foreground">
-                    +{moveFileIds.length - 3} more
-                  </div>
-                ) : null}
-              </div>
-            </div>
+      <FolderDeleteDialog
+        open={folderDeleteOpen}
+        onOpenChange={setFolderDeleteOpen}
+        path={folderDeletePath}
+      />
 
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                placeholder="Filter folders"
-                value={moveSearchQuery}
-                onChange={(event) => setMoveSearchQuery(event.target.value)}
-                className="pl-9"
-                disabled={isMoving}
-              />
-            </div>
+      <FolderShareDialog
+        open={folderShareOpen}
+        onOpenChange={(open) => {
+          setFolderShareOpen(open);
+          if (!open) {
+            setFolderShareTarget(null);
+          }
+        }}
+        target={folderShareTarget}
+      />
 
-            <div className="grid gap-2">
-              <button
-                type="button"
-                onClick={() => setMoveTargetFolder("")}
-                className={cn(
-                  "flex items-center justify-between rounded-lg border px-4 py-3 text-left transition-colors",
-                  moveTargetFolder === "" ? "border-primary bg-primary/5" : "hover:bg-muted/40",
-                )}
-                disabled={isMoving}
-              >
-                <div className="flex items-center gap-3">
-                  <div className="rounded-md bg-muted p-2 text-muted-foreground">
-                    <FolderClosed className="h-4 w-4" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium">Root</p>
-                    <p className="text-xs text-muted-foreground">Keep these files at the top level.</p>
-                  </div>
-                </div>
-                {moveTargetFolder === "" ? <Check className="h-4 w-4 text-primary" /> : null}
-              </button>
-              <ScrollArea className="max-h-64 rounded-lg border">
-                <div className="space-y-1 p-2">
-                  {filteredMoveFolderOptions.length === 0 ? (
-                    <div className="px-2 py-8 text-center text-sm text-muted-foreground">
-                      No folders match that search. Use New folder to add one first.
-                    </div>
-                  ) : (
-                    filteredMoveFolderOptions.map((folder) => (
-                      <button
-                        key={folder}
-                        type="button"
-                        onClick={() => setMoveTargetFolder(folder)}
-                        className={cn(
-                          "flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm transition-colors",
-                          moveTargetFolder === folder ? "bg-primary/10 text-primary" : "hover:bg-muted/40",
-                        )}
-                        disabled={isMoving}
-                      >
-                        <span className="truncate">{folder}</span>
-                        {moveTargetFolder === folder ? <Check className="h-4 w-4 shrink-0" /> : null}
-                      </button>
-                    ))
-                  )}
-                </div>
-              </ScrollArea>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setMoveDialogOpen(false)}
-              disabled={isMoving}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleMoveConfirm}
-              disabled={isMoving || moveFileIds.length === 0}
-            >
-              {isMoving ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Moving...
-                </>
-              ) : (
-                "Move"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Move files to trash?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will archive {deleteFileIds.length} file
-              {deleteFileIds.length === 1 ? "" : "s"} so they are hidden from the active documents list and can be restored from a trash view.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDeleteConfirm}
-              disabled={isDeleting}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {isDeleting ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Moving...
-                </>
-              ) : (
-                "Move to trash"
-              )}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      {/* Folder Rename Dialog */}
-      <Dialog open={folderRenameOpen} onOpenChange={setFolderRenameOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Rename folder</DialogTitle>
-            <DialogDescription>
-              This will update the path for all files inside this folder.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            <Input
-              value={folderRenameValue}
-              onChange={(e) => setFolderRenameValue(e.target.value)}
-              placeholder="Folder name"
-              disabled={isRenamingFolder}
-            />
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setFolderRenameOpen(false)} disabled={isRenamingFolder}>
-              Cancel
-            </Button>
-            <Button onClick={onConfirmRenameFolder} disabled={isRenamingFolder || !folderRenameValue.trim()}>
-              {isRenamingFolder ? "Renaming..." : "Rename"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Folder Delete Dialog */}
-      <AlertDialog open={folderDeleteOpen} onOpenChange={setFolderDeleteOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete folder?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete this folder? This action cannot be undone and will also remove any folder-specific sharing defaults.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isDeletingFolder}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={onConfirmDeleteFolder}
-              disabled={isDeletingFolder}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {isDeletingFolder ? "Deleting..." : "Delete Folder"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <Dialog open={folderShareOpen} onOpenChange={setFolderShareOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Share folder</DialogTitle>
-            <DialogDescription className="truncate">
-              {folderSharePath || "Root"}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="py-1">
-            <div className="divide-y rounded-lg border">
-              <label className="flex cursor-pointer items-center justify-between gap-4 px-4 py-3">
-                <div className="min-w-0">
-                  <p className="text-sm font-medium">{terms.ownerPortal}</p>
-                  <p className="text-xs text-muted-foreground">
-                    New uploads default to the {terms.ownerPortal.toLowerCase()}.
-                  </p>
-                </div>
-                <Switch
-                  checked={folderShareWithClients}
-                  onCheckedChange={(value) => setFolderShareWithClients(Boolean(value))}
-                  disabled={isSavingFolderShare}
-                />
-              </label>
-              <label className="flex cursor-pointer items-center justify-between gap-4 px-4 py-3">
-                <div className="min-w-0">
-                  <p className="text-sm font-medium">Subcontractor portal</p>
-                  <p className="text-xs text-muted-foreground">
-                    New uploads default to the subcontractor portal.
-                  </p>
-                </div>
-                <Switch
-                  checked={folderShareWithSubs}
-                  onCheckedChange={(value) => setFolderShareWithSubs(Boolean(value))}
-                  disabled={isSavingFolderShare}
-                />
-              </label>
-            </div>
-            <p className="mt-3 text-xs text-muted-foreground">
-              {shareSummary(folderShareWithClients, folderShareWithSubs, terms.owners)}
-            </p>
-            <label className="mt-4 flex cursor-pointer items-start gap-2">
-              <Checkbox
-                checked={folderShareApplyToExisting}
-                onCheckedChange={(value) => setFolderShareApplyToExisting(Boolean(value))}
-                disabled={isSavingFolderShare}
-                className="mt-0.5"
-              />
-              <span className="text-xs text-muted-foreground">
-                Apply to existing files in this folder. Otherwise, only new uploads are affected.
-              </span>
-            </label>
-          </div>
-          <DialogFooter>
-            <Button
-              variant="ghost"
-              onClick={() => setFolderShareOpen(false)}
-              disabled={isSavingFolderShare}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={() => onConfirmShareFolder(folderShareApplyToExisting)}
-              disabled={isSavingFolderShare}
-            >
-              {isSavingFolderShare ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Saving
-                </>
-              ) : (
-                "Save"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

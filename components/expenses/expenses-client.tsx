@@ -470,7 +470,7 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
     try {
       const file = await getFileAction(expense.receipt_file_id)
       if (!file) return
-      const downloadUrl = await getFileDownloadUrlAction(file.id)
+      const downloadUrl = unwrapAction(await getFileDownloadUrlAction(file.id))
       setViewerFile({
         ...(file as FileWithDetails),
         category: (file.category ?? "financials") as FileWithDetails["category"],
@@ -484,7 +484,7 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
 
   async function handleDownloadFile(file: FileWithDetails) {
     try {
-      const url = await getFileDownloadUrlAction(file.id)
+      const url = unwrapAction(await getFileDownloadUrlAction(file.id))
       window.open(url, "_blank", "noopener,noreferrer")
     } catch (error: any) {
       toast.error("Could not download file", { description: error?.message ?? "Try again." })

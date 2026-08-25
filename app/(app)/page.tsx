@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import { connection } from "next/server";
 
 import { PageLayout } from "@/components/layout/page-layout";
 import { ControlTowerDesk } from "@/components/control-tower/control-tower-desk";
@@ -16,6 +17,11 @@ export default async function HomePage({
 }: {
   searchParams: Promise<{ w?: string }>;
 }) {
+  // Uncached entry point: this reads posture through the live cookie client, and
+  // Supabase checks session expiry with Date.now(). Establish request time first,
+  // exactly as getAppChromeContext() does for the chrome around this page.
+  await connection();
+
   // Posture stays un-suspended: it is cheap and it decides which home this is.
   const [tier, params] = await Promise.all([getOrgProductTier(), searchParams]);
 

@@ -22,10 +22,9 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
  * of the three providers the registry offers. Routing through `runAiObject`
  * fixes all of that at once, and deletes ~200 lines of transport code.
  *
- * One copy of that transport still exists, in `workers/drawings-worker/` — the
- * retired Cloud Run worker. Nothing calls it (see its README) and it is kept
- * only until the in-app migration has soaked in prod; it is not a live
- * unmetered path, and it should be deleted rather than maintained.
+ * There is no longer a second copy: the retired `workers/drawings-worker/`
+ * Cloud Run service carried the last one and has been deleted. This is the only
+ * path drawings vision has.
  *
  * Vision failures return null rather than throwing. Every caller here is
  * best-effort by contract — assist must never make interpretation WORSE — and

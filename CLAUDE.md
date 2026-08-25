@@ -275,6 +275,29 @@ Then the suites your change touches:
 - **Drawings pipeline** — `lib/services/drawings-pipeline.ts`: re-uploads stack
   versions onto ONE canonical sheet set per project. Never create a set per
   upload, never delete old sheets.
+- **Correspondence** is two modules that point one way:
+  `lib/services/project-email-ingest.ts` is the inbound pipeline (webhook →
+  outbox → file the message, attribute the party, queue the classifier);
+  `lib/services/correspondence.ts` is the workbench (read, rule, link, unfile)
+  and ingest imports from it, never the reverse. **Arc never sends from this
+  surface** — mail arrives only by someone forwarding or BCC'ing it to the
+  project address, the same shape as the payables bills inbox, so the log stays
+  a record of correspondence rather than becoming a mail client. **The list is a list of
+  threads**, aggregated by the `project_email_threads` view so paging,
+  filtering, counting and search all happen in the database — never merge or
+  page messages into threads in application code. Threading is
+  `In-Reply-To` → `References` → subject hash, in that order; the subject hash
+  alone merges unrelated chains. `classified_by` has THREE states and the
+  difference is the whole triage queue: `system` (filed, nobody has ruled),
+  `ai` (the model guessed), `user` (a person decided) — a person always
+  outranks the model, and confirming a guess is its own action because
+  re-picking the selected value in a `<Select>` fires nothing. An email links
+  to MANY records through `project_email_links`; `linked_entity_type`/`_id` are
+  legacy and dropped by a gated migration. Unfiling sets `archived_at` — the
+  inbound address is an unauthenticated write, but a log you can delete from is
+  not a record. Attribution to a directory party (`contact_id`/`company_id`)
+  must be written at ingest, not only backfilled: it is what the party's
+  Communications tab reads.
 - **Portals** are token-based public routes: `app/p` (client/buyer), `app/s`
   (sub), `app/b` (bid), `app/proposal`, `app/i` (invoice), plus `app/d`, `app/e`,
   `app/f`, `app/r`, `app/t`. The workspace portals (`p`, `s`, `r`) share one
@@ -301,7 +324,14 @@ Then the suites your change touches:
   `contact_company_links` (with `is_primary`) is the ONLY person↔company
   linkage. `/directory/[id]` resolves **either** kind of party. The list's only
   navigation axis is **Companies | Contacts** — role and trade are filters, never
-  a second tab bar beside it.
+  a second tab bar beside it. **Roles have one mutation surface:**
+  `PartyRolesEditor`, behind *Manage roles* in the account header's overflow
+  menu; the header chips report roles and never edit them. Create forms pick the
+  ONE role that opens the set (`role_key`, from the org's own vocabulary) and
+  edit forms do not touch roles at all — a set with add/end semantics and a
+  status that moves along a lifecycle is not a form field, and the legacy type
+  `<Select>` that used to sit there granted roles additively without ever
+  revoking, so the result was invisible to the person changing it.
 - **External access: the person is the unit, the link is a field.** A
   `portal_access_tokens` row IS one person's access to one project — the token
   string is a delivery mechanism on that row, not a separate thing. **One status

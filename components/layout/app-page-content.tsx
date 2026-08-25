@@ -2,12 +2,9 @@
 
 import { usePageTitle } from "./page-title-context"
 import { cn } from "@/lib/utils"
-import { useIsNavigationPending } from "@/lib/navigation/optimistic-pathname"
-import { AppNavigationFallback } from "@/components/layout/app-navigation-fallback"
 
 export function AppPageContent({ children }: { children: React.ReactNode }) {
-  const { fullBleed, productTier } = usePageTitle()
-  const isNavigationPending = useIsNavigationPending()
+  const { fullBleed } = usePageTitle()
   // Reserve bottom space on phones so the floating mobile bottom-nav doesn't cover content.
   // On md+ (where the desktop sidebar shows), restore the original padding rules.
   const bottomReserve = "pb-[calc(5.5rem+env(safe-area-inset-bottom))]"
@@ -21,7 +18,15 @@ export function AppPageContent({ children }: { children: React.ReactNode }) {
       )}
       style={{ scrollPaddingBottom: "calc(5.5rem + env(safe-area-inset-bottom))" }}
     >
-      {isNavigationPending ? <AppNavigationFallback tier={productTier} /> : children}
+      {/*
+        `children` renders unconditionally. Swapping it for a fallback while a
+        navigation was pending unmounted every shared layout on every click,
+        which is what made a tab switch inside an account re-render the whole
+        account instead of just the tab. Pending navigation is reported by the
+        `(app)` loading boundary's Arc mark and by component-local skeletons —
+        never by an indicator layered over the content region.
+      */}
+      {children}
     </div>
   )
 }

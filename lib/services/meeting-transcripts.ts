@@ -80,6 +80,8 @@ export async function createAudioMeetingTranscript(input: { meetingId: string; f
 }
 
 /** Audio can be long; the ceiling is the job's patience, not the model's. */
+/** ~200k tokens: keeps register + transcript under OpenAI's 272k long-context price step. */
+const MINUTES_TRANSCRIPT_MAX_CHARS = 800_000
 const TRANSCRIPTION_TIMEOUT_MS = 15 * 60_000
 
 /**
@@ -233,13 +235,22 @@ export async function draftMinutesFromTranscript(transcriptId: string, orgId?: s
   if (!transcript?.transcript_text) throw new Error("Transcript is not ready")
   const meeting = await getMeeting(transcript.meeting_id, context.orgId)
   if (meeting.status === "finalized") throw new Error("Finalized meeting minutes are locked")
+  // OpenAI bills the WHOLE request at 2x input / 1.5x output once the prompt
+  // passes 272k tokens, and a 1M-character paste is ~250k tokens before the
+  // register is added. Cap what the model sees below that cliff and say so in
+  // the prompt rather than letting the truncation pass as a complete read.
+  const transcriptText = transcript.transcript_text.slice(0, MINUTES_TRANSCRIPT_MAX_CHARS)
+  const truncationNote =
+    transcript.transcript_text.length > MINUTES_TRANSCRIPT_MAX_CHARS
+      ? `\n\nNOTE: the transcript was cut at ${MINUTES_TRANSCRIPT_MAX_CHARS.toLocaleString("en-US")} characters; the end of the meeting is not included.`
+      : ""
   const result = await runAiObject({
     feature: "meeting_minutes",
     schema: proposalsSchema,
     system:
       "You extract proposed meeting-minutes updates from a transcript against the current item register. " +
       "Never invent facts. Only reference item_ids present in the register.",
-    prompt: `CURRENT REGISTER:\n${JSON.stringify(meeting.items.map((item) => ({ item_id: item.id, number: item.item_number, topic: item.topic, discussion: item.discussion, status: item.status, bic: item.ball_in_court, due: item.due_date, linked: item.linked_entity })))}\n\nTRANSCRIPT:\n${transcript.transcript_text}`,
+    prompt: `CURRENT REGISTER:\n${JSON.stringify(meeting.items.map((item) => ({ item_id: item.id, number: item.item_number, topic: item.topic, discussion: item.discussion, status: item.status, bic: item.ball_in_court, due: item.due_date, linked: item.linked_entity })))}\n\nTRANSCRIPT:\n${transcriptText}${truncationNote}`,
     orgId: context.orgId,
     entityType: "meeting_transcript",
     entityId: transcriptId,

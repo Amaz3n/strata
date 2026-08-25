@@ -57,3 +57,7 @@ Thumbs.db
 
 # Local env backups (contain production credentials)
 .env*.bak*
+
+# Root-level archives and alternate package-manager artifacts
+*.tar.gz
+/package-lock.json

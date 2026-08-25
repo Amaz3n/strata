@@ -72,6 +72,7 @@ import {
 } from "@/components/icons"
 
 import { unwrapAction } from "@/lib/action-result"
+import { configurePdfWorker } from "@/lib/pdf/worker"
 
 type RecipientRole = "signer" | "cc"
 type PrepareStep = "envelope" | "fields"
@@ -1043,7 +1044,7 @@ export function EnvelopeWizard({
     try {
       await fetch(fileUrl, { credentials: "include" }).catch(() => null)
       const { pdfjs } = await import("react-pdf")
-      pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs"
+      configurePdfWorker()
       const task = pdfjs.getDocument({ url: fileUrl, withCredentials: true })
       const pdf = await task.promise
       pdf.destroy()

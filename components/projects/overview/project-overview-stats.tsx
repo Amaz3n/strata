@@ -23,7 +23,6 @@ interface ProjectOverviewStatsProps {
   endDate?: string
   totalActualCents?: number
   adjustedBudgetCents?: number
-  totalExpensesCents?: number
 }
 
 function formatMoney(cents: number): string {
@@ -68,7 +67,6 @@ export function ProjectOverviewStats({
   endDate,
   totalActualCents,
   adjustedBudgetCents,
-  totalExpensesCents,
 }: ProjectOverviewStatsProps) {
   // contracts.total_cents is the revised value after approved change orders.
   const totalContractCents = contractTotalCents
@@ -92,19 +90,21 @@ export function ProjectOverviewStats({
       : varianceDays <= -3
       ? "destructive"
       : "neutral"
+  // A project that has not started yet reports "Upcoming" even without an end
+  // date. Only a project with neither date is genuinely unreportable.
   const scheduleStatus: CellStatus | null =
-    totalDays <= 0
-      ? null
-      : notStarted
+    notStarted
       ? { tone: "neutral", label: "Upcoming" }
+      : totalDays <= 0
+      ? null
       : paceTone === "success"
       ? { tone: "success", label: `${Math.abs(varianceDays)}d ahead`, trend: "up" }
       : paceTone === "destructive"
       ? { tone: "destructive", label: `${Math.abs(varianceDays)}d behind`, trend: "down" }
       : { tone: "neutral", label: "On pace" }
 
-  // `invoicedCents` is the project's one billed number, resolved from the shared
-  // POC position — the same value the budget tab's "Billed" shows.
+  // `invoicedCents` is the project's one billed number: invoice totals in the
+  // billed set — the same value the budget tab's "Billed" shows.
   const realizedInvoiced = invoicedCents
   const hasBudget = (adjustedBudgetCents ?? 0) > 0
   const hasActuals = (totalActualCents ?? 0) > 0
@@ -148,7 +148,7 @@ export function ProjectOverviewStats({
     : null
 
   // Total expenses: all posted job-cost actuals (approved bills + expenses) on the project.
-  const totalExpenses = totalExpensesCents ?? 0
+  const totalExpenses = totalActualCents ?? 0
   const hasExpenses = totalExpenses > 0
   const expensesOfContractPercent =
     hasContract && hasExpenses ? Math.round((totalExpenses / totalContractCents) * 100) : null
@@ -217,19 +217,21 @@ export function ProjectOverviewStats({
       <StatCell
         label="Schedule"
         value={
-          totalDays <= 0
-            ? "—"
-            : notStarted
+          notStarted
             ? `Starts in ${daysUntilStart}d`
+            : totalDays <= 0
+            ? "—"
             : `Day ${daysElapsed} of ${totalDays}`
         }
         detail={
-          totalDays <= 0
-            ? "Start and end dates not set"
-            : notStarted
+          notStarted
             ? startDate
-              ? `Begins ${format(parseISO(startDate), "MMM d, yyyy")} · ${totalDays}d planned`
+              ? totalDays > 0
+                ? `Begins ${format(parseISO(startDate), "MMM d, yyyy")} · ${totalDays}d planned`
+                : `Begins ${format(parseISO(startDate), "MMM d, yyyy")} · no end date`
               : `${totalDays}d planned`
+            : totalDays <= 0
+            ? "Start and end dates not set"
             : endDate
             ? `Ends ${format(parseISO(endDate), "MMM d, yyyy")} · ${daysRemaining}d left`
             : `${daysRemaining}d left`

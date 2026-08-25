@@ -37,14 +37,15 @@ function normalizeRoleKeys(rows: any[]): PlatformRoleKey[] {
 
 export async function listPlatformRoleKeysForUser(userId: string): Promise<PlatformRoleKey[]> {
   const supabase = createServiceSupabaseClient()
-  const nowIso = new Date().toISOString()
 
   const { data, error } = await supabase
     .from("platform_memberships")
     .select("role:roles!inner(key)")
     .eq("user_id", userId)
     .eq("status", "active")
-    .or(`expires_at.is.null,expires_at.gt.${nowIso}`)
+    // Postgres evaluates the expiry ("now" is a timestamptz literal): this runs
+    // while the app chrome renders, where a JS clock read is not allowed.
+    .or("expires_at.is.null,expires_at.gt.now")
 
   if (error) {
     console.error("Failed to load platform memberships", error)

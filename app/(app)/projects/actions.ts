@@ -2,7 +2,15 @@
 
 import { revalidatePath } from "next/cache"
 
-import { createProject, listProjects, updateProject, archiveProject, deleteProject } from "@/lib/services/projects"
+import {
+  archiveProject,
+  createProject,
+  deleteProject,
+  listProjectBillingOptions,
+  listProjectSummaries,
+  listProjects,
+  updateProject,
+} from "@/lib/services/projects"
 import { getProjectScheduleSummaries, listScheduleItemsByProject } from "@/lib/services/schedule"
 import { projectInputSchema, projectUpdateSchema } from "@/lib/validation/projects"
 import { requireOrgContext } from "@/lib/services/context"
@@ -27,8 +35,20 @@ export async function listProjectsAction() {
       return listProjects(undefined, context)
 }
 
-export async function listProjectScheduleSummariesAction(): Promise<Record<string, ProjectScheduleSummary>> {
-      return getProjectScheduleSummaries()
+export async function listProjectSummariesAction() {
+      const context = await requireOrgContext()
+      return listProjectSummaries(undefined, context)
+}
+
+export async function listProjectBillingOptionsAction() {
+      const context = await requireOrgContext()
+      return listProjectBillingOptions(undefined, context)
+}
+
+export async function listProjectScheduleSummariesAction(
+  projectIds?: string[],
+): Promise<Record<string, ProjectScheduleSummary>> {
+      return getProjectScheduleSummaries(undefined, projectIds)
 }
 
 export async function getProjectScheduleItemsAction(projectId: string): Promise<ScheduleItem[]> {

@@ -1,3 +1,4 @@
+import { afterResponse } from "@/lib/observability/after-response"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgMembership } from "@/lib/auth/context"
 import { requireOrgContext } from "@/lib/services/context"
@@ -165,21 +166,22 @@ export async function recordEvent(input: EventInput) {
     throw new Error(`Failed to record event: ${error.message}`)
   }
 
-  // Create notifications for relevant users
-  try {
-    await createNotificationsFromEvent({
-      id: data.id,
-      org_id: resolvedOrgId,
-      event_type: input.eventType,
-      entity_type: input.entityType ?? null,
-      entity_id: input.entityId ?? null,
-      payload,
-      created_at: data.created_at,
-    }, resolvedOrgId)
-  } catch (notificationError) {
-    // Don't fail the event recording if notification creation fails
-    console.error('Failed to create notifications from event:', notificationError)
+  // Notification fan-out resolves an audience, checks each recipient's
+  // permissions and enqueues email — none of which the caller's response
+  // depends on, and all of which was already best-effort. It runs after the
+  // response so a mutation is not held open by work the user never sees.
+  const eventRecord = {
+    id: data.id,
+    org_id: resolvedOrgId,
+    event_type: input.eventType,
+    entity_type: input.entityType ?? null,
+    entity_id: input.entityId ?? null,
+    payload,
+    created_at: data.created_at,
   }
+  afterResponse("events.notification_fanout_failed", () =>
+    createNotificationsFromEvent(eventRecord, resolvedOrgId),
+  )
 
   return data
 }
