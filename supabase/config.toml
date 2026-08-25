@@ -37,8 +37,11 @@ port = 54324
 enabled = false
 file_size_limit = "100MiB"
 
+# Every Arc RLS policy calls auth.uid() or auth.jwt(). With auth disabled the
+# schema that defines them is never created and the baseline migration fails on
+# its first policy, so the contract suite cannot run without this.
 [auth]
-enabled = false
+enabled = true
 site_url = "http://127.0.0.1:3000"
 additional_redirect_urls = []
 jwt_expiry = 3600
