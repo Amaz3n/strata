@@ -18,6 +18,7 @@ import {
   loadDirectoryPartyHeader,
   loadPaymentReadiness,
   loadPrequalificationGlance,
+  loadVendorProgramSummary,
   loadVendorIntelligence,
   loadVendorLedger,
 } from "./page-data";
@@ -33,7 +34,10 @@ export const instant = {
   unstable_disableBuildValidation: true,
 };
 
-async function loadVendorHeaderSignals(id: string): Promise<DirectoryVendorHeaderSignals> {
+async function loadVendorHeaderSignals(
+  id: string,
+  programs: { showCompliance: boolean; showPrequalification: boolean },
+): Promise<DirectoryVendorHeaderSignals> {
   // The ledger's aging math reads today's date. This is the ONLY part of the
   // header that does — identity, roles and the tab set are the same at any
   // hour — so the request dependency lives here, behind its own Suspense
@@ -42,10 +46,10 @@ async function loadVendorHeaderSignals(id: string): Promise<DirectoryVendorHeade
   const [ledger, complianceStatus, intelligence, paymentReadiness, prequalification] =
     await Promise.all([
       loadVendorLedger(id).catch(() => null),
-      loadComplianceStatus(id).catch(() => null),
+      programs.showCompliance ? loadComplianceStatus(id).catch(() => null) : Promise.resolve(null),
       loadVendorIntelligence(id),
       loadPaymentReadiness(id),
-      loadPrequalificationGlance(id),
+      programs.showPrequalification ? loadPrequalificationGlance(id) : Promise.resolve(null),
     ]);
   const summary = ledger?.summary.can_view_bills ? ledger.summary : null;
   const rawW9Status = intelligence.taxReadiness?.w9_status;
@@ -94,31 +98,36 @@ async function PartyAccountHeaderData({ params }: Pick<PartyAccountLayoutProps, 
   // tabs on the role alone gave a vendor CONTACT four tabs that each redirected
   // straight back here. A person's payables live on the company they work for.
   const isVendorCompany = capabilities.isVendor && party.kind === "company";
+  const programSummary = isVendorCompany
+    ? await loadVendorProgramSummary(id)
+    : {
+        hasProjectWork: false,
+        complianceEnrolled: false,
+        hasComplianceHistory: false,
+        hasPrequalificationHistory: false,
+      };
+  const showTradeWork = capabilities.isTradePartner || programSummary.hasProjectWork;
+  const showCompliance =
+    showTradeWork || programSummary.complianceEnrolled || programSummary.hasComplianceHistory;
+  const showPrequalification = showTradeWork || programSummary.hasPrequalificationHistory;
   // Started, deliberately not awaited: identity and tabs are useful without
   // ledger/compliance decoration, so those signals stream into small client
   // Suspense boundaries after the account shell is already interactive.
-  const vendorSignals = isVendorCompany ? loadVendorHeaderSignals(id) : undefined;
+  const vendorSignals = isVendorCompany
+    ? loadVendorHeaderSignals(id, { showCompliance, showPrequalification })
+    : undefined;
 
   // Tabs follow the party's roles, not its kind alone: a company that is only a
   // client never had a use for Commitments, and a person has an activity trail
   // and portal access where a company has a ledger.
   const tabs: PartyTab[] = [{ label: "Overview", href: base, exact: true }];
   if (isVendorCompany) {
-    tabs.push(
-      {
-        label: "Transactions",
-        href: `${base}/transactions`,
-      },
-      { label: "Commitments", href: `${base}/commitments` },
-      {
-        label: "Prequalification",
-        href: `${base}/prequalification`,
-      },
-      {
-        label: "Compliance",
-        href: `${base}/compliance`,
-      },
-    );
+    tabs.push({ label: "Transactions", href: `${base}/transactions` });
+    if (showTradeWork) tabs.push({ label: "Commitments", href: `${base}/commitments` });
+    if (showPrequalification) {
+      tabs.push({ label: "Prequalification", href: `${base}/prequalification` });
+    }
+    if (showCompliance) tabs.push({ label: "Compliance", href: `${base}/compliance` });
   }
   if (party.kind === "company") {
     tabs.push({ label: "Contacts", href: `${base}/contacts` });
@@ -183,7 +192,7 @@ async function PartyAccountHeaderData({ params }: Pick<PartyAccountLayoutProps, 
         isClient={capabilities.isClient}
         canEdit={canEdit}
         canArchive={canArchive}
-        complianceHref={isVendorCompany ? `${base}/compliance` : null}
+        complianceHref={isVendorCompany && showCompliance ? `${base}/compliance` : null}
         vendorSignals={vendorSignals}
         tabs={tabs}
       />

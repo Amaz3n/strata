@@ -99,7 +99,7 @@ export function CompanyForm({ company, initialName, onSubmitted, onCancel, payab
 
   const [formState, setFormState] = useState({
     name: company?.name ?? initialName ?? "",
-    role_key: "subcontractor",
+    role_key: "vendor",
     trade: fallbackTrade ?? "none",
     phone: company?.phone ?? "",
     email: company?.email ?? "",

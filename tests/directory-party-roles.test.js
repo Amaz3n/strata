@@ -35,15 +35,14 @@ test("a party can hold vendor and client roles at once", () => {
   ])
   assert.equal(capabilities.isVendor, true)
   assert.equal(capabilities.isClient, true)
-  // The framing sub who buys a spec home gets BOTH sets of account tabs.
-  assert.equal(capabilities.requiresCompliance, true)
+  assert.equal(capabilities.isTradePartner, true)
 })
 
 test("a party with no roles gets no capabilities rather than a permissive default", () => {
   const capabilities = resolvePartyCapabilities([])
   assert.equal(capabilities.isVendor, false)
   assert.equal(capabilities.isClient, false)
-  assert.equal(capabilities.requiresCompliance, false)
+  assert.equal(capabilities.isTradePartner, false)
 })
 
 test("design parties are not on the AP rail, so compliance does not apply", () => {
@@ -52,7 +51,7 @@ test("design parties are not on the AP rail, so compliance does not apply", () =
   ])
   assert.equal(capabilities.isDesign, true)
   assert.equal(capabilities.isVendor, false)
-  assert.equal(capabilities.requiresCompliance, false)
+  assert.equal(capabilities.isTradePartner, false)
 })
 
 // ── Ended roles are history, not current fact ──────────────────────────────
@@ -83,7 +82,15 @@ test("an inactive role is not current even with no end date", () => {
   assert.equal(isCurrentRole(inactive), false)
   assert.equal(currentRoles([inactive]).length, 0)
   assert.equal(resolvePartyCapabilities([inactive]).isVendor, false)
-  assert.equal(resolvePartyCapabilities([inactive]).requiresCompliance, false)
+  assert.equal(resolvePartyCapabilities([inactive]).isTradePartner, false)
+})
+
+test("a generic AP vendor is not automatically a construction trade partner", () => {
+  const capabilities = resolvePartyCapabilities([
+    role({ key: "vendor", label: "Vendor", category: "vendor" }),
+  ])
+  assert.equal(capabilities.isVendor, true)
+  assert.equal(capabilities.isTradePartner, false)
 })
 
 test("a closed client role is not current", () => {

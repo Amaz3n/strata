@@ -399,6 +399,18 @@ export function PartyAccountHeader({
                       Pay
                     </Link>
                   </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <Link href={`/directory/${partyId}/compliance`}>
+                      <AlertTriangle className="mr-2 h-4 w-4" />
+                      Compliance setup
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <Link href={`/directory/${partyId}/prequalification`}>
+                      <CheckCircle2 className="mr-2 h-4 w-4" />
+                      Prequalification setup
+                    </Link>
+                  </DropdownMenuItem>
                   <DropdownMenuSeparator />
                 </>
               ) : null}

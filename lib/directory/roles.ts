@@ -115,8 +115,10 @@ export function hasRoleCategory(roles: PartyRole[], category: RoleCategory): boo
  * scalar type column could not express at all.
  */
 export interface PartyCapabilities {
-  /** An accounts-payable relationship: commitments, bills, compliance, prequal. */
+  /** An accounts-payable relationship: bills, expenses, credits, and payments. */
   isVendor: boolean
+  /** A construction-facing vendor relationship, distinct from a generic AP payee. */
+  isTradePartner: boolean
   /** Money flows the other way: receivables, and eligible as a project client. */
   isClient: boolean
   /** Architect, engineer, consultant — reviewers, not payees. */
@@ -129,25 +131,23 @@ export interface PartyCapabilities {
   isBuyer: boolean
   /** Closed and now in the warranty relationship. */
   isHomeowner: boolean
-  /** Compliance and prequalification apply to this party. */
-  requiresCompliance: boolean
 }
 
 export function resolvePartyCapabilities(roles: PartyRole[]): PartyCapabilities {
   const current = currentRoles(roles)
   const isVendor = current.some((role) => role.category === "vendor")
+  const isTradePartner = current.some(
+    (role) => role.category === "vendor" && ["subcontractor", "supplier"].includes(role.key),
+  )
   return {
     isVendor,
+    isTradePartner,
     isClient: current.some((role) => role.category === "client"),
     isDesign: current.some((role) => role.category === "design"),
     isInternal: current.some((role) => role.category === "internal"),
     isProspect: current.some((role) => role.key === "prospect"),
     isBuyer: current.some((role) => role.key === "buyer"),
     isHomeowner: current.some((role) => role.key === "homeowner"),
-    // Compliance is a vendor obligation. A design consultant carries insurance
-    // too, but Arc's compliance engine gates PAYMENT, and design parties are
-    // not on the AP rail.
-    requiresCompliance: isVendor,
   }
 }
 

@@ -698,7 +698,10 @@ export async function getVendorPayableProfile(
  * for a column that cannot express it.
  */
 function resolveCompanyRole(input: CompanyInput): { roleKey: string; legacyType: CompanyType } {
-  const roleKey = input.role_key ?? input.company_type ?? "subcontractor"
+  // Missing classification is not permission to put a company on the trade or
+  // AP rail. Interactive vendor creation supplies `role_key: vendor`; older
+  // callers that omit both fields land honestly in the legacy `other` bucket.
+  const roleKey = input.role_key ?? input.company_type ?? "other"
   const legacy = companyTypeEnum.safeParse(roleKey)
   return { roleKey, legacyType: legacy.success ? legacy.data : "other" }
 }

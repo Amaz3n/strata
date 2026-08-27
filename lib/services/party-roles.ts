@@ -481,14 +481,15 @@ export async function resolveProjectVendorRole(
 }
 
 /**
- * Guarantee the vendor role on a company this org is about to owe money to.
+ * Guarantee the generic AP-vendor role on a company this org is about to owe
+ * money to. Project participation decides whether it is a trade partner; a
+ * payable alone must never classify an office vendor as a subcontractor.
  *
  * `resolveCompanyPosture` used to infer "vendor" at read time from the absence
  * of architect/engineer, precisely because a company could acquire commitments
- * without ever being typed as a vendor. Recording it at the moment the
- * commitment is made is what lets the read path be pure role math — and it is
- * the same rule `ensureProjectVendorForCommitment` already applied by treating
- * an unrecognized type as a subcontractor.
+ * without ever being typed as a vendor. Recording the AP relationship at the
+ * moment money is owed keeps vendor ledgers and payment setup discoverable,
+ * while the separate project roster retains the construction relationship.
  */
 export async function ensureVendorRoleWithClient(
   supabase: SupabaseClient,
@@ -503,7 +504,7 @@ export async function ensureVendorRoleWithClient(
   await assignPartyRoleWithClient(supabase, orgId, userId, {
     kind: "company",
     partyId: companyId,
-    roleKey: "subcontractor",
+    roleKey: "vendor",
     status: "active",
     source: "system",
   })

@@ -352,12 +352,13 @@ export async function listDirectoryTrades(): Promise<string[]> {
 }
 
 /**
- * Companies the compliance banner watches: vendor-role, unarchived, capped.
+ * Companies the compliance banner watches: explicitly enrolled, unarchived, capped.
  *
  * The list page used to load EVERY subcontractor and EVERY supplier unpaginated
  * just to feed that banner. This asks the same question against the same
- * paginated view, and the cap is surfaced so a truncated banner never reads as
- * an all-clear.
+ * list, and the cap is surfaced so a truncated banner never reads as an
+ * all-clear. A vendor role alone is intentionally insufficient: office payees
+ * must not create compliance noise.
  */
 export async function listComplianceWatchCompanies(
   limit = 200,
@@ -371,13 +372,12 @@ export async function listComplianceWatchCompanies(
   await requireAnyPermission(READ_PERMISSIONS, { supabase, orgId, userId })
 
   const { data, error, count } = await supabase
-    .from("directory_entries")
+    .from("companies")
     .select("id, name", { count: "exact" })
     .eq("org_id", orgId)
-    .eq("kind", "company")
+    .eq("compliance_monitoring_enabled", true)
     .is("archived_at", null)
-    .overlaps("role_categories", ["vendor"])
-    .order("sort_name", { ascending: true })
+    .order("name", { ascending: true })
     .limit(limit)
 
   if (error) throw new Error(`Failed to load compliance watch list: ${error.message}`)

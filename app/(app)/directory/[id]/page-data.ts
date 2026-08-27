@@ -54,6 +54,13 @@ export interface DirectoryPartyHeader {
   canReviewPrequal: boolean
 }
 
+export interface VendorProgramSummary {
+  hasProjectWork: boolean
+  complianceEnrolled: boolean
+  hasComplianceHistory: boolean
+  hasPrequalificationHistory: boolean
+}
+
 /**
  * Company tabs are a small, bounded set of hot destinations. A one-minute
  * browser-private freshness window lets their runtime prefetches cross the
@@ -114,19 +121,69 @@ export async function loadDirectoryPartyHeader(
     roles: entry.roles,
     capabilities: {
       isVendor,
+      isTradePartner: ["subcontractor", "supplier"].some((key) => keys.has(key)),
       isClient: categories.has("client"),
       isDesign: categories.has("design"),
       isInternal: categories.has("internal"),
       isProspect: keys.has("prospect"),
       isBuyer: keys.has("buyer"),
       isHomeowner: keys.has("homeowner"),
-      requiresCompliance: isVendor,
     },
     canEdit,
     canArchive: canEdit,
     canReviewPrequal: permissions.includes("prequal.review"),
   }
 }
+
+/**
+ * Program state is independent from the broad AP-vendor role. A generic payee
+ * should not inherit construction tabs, while a vendor with project or program
+ * history must keep those records discoverable even after monitoring is paused.
+ */
+export const loadVendorProgramSummary = cache(async (companyId: string): Promise<VendorProgramSummary> => {
+  const { supabase, orgId } = await requireOrgContext()
+  const [company, projectVendors, commitments, requirements, documents, prequalifications] =
+    await Promise.all([
+      supabase
+        .from("companies")
+        .select("compliance_monitoring_enabled")
+        .eq("org_id", orgId)
+        .eq("id", companyId)
+        .maybeSingle(),
+      supabase
+        .from("project_vendors")
+        .select("id", { count: "exact", head: true })
+        .eq("org_id", orgId)
+        .eq("company_id", companyId),
+      supabase
+        .from("commitments")
+        .select("id", { count: "exact", head: true })
+        .eq("org_id", orgId)
+        .eq("company_id", companyId),
+      supabase
+        .from("company_compliance_requirements")
+        .select("id", { count: "exact", head: true })
+        .eq("org_id", orgId)
+        .eq("company_id", companyId),
+      supabase
+        .from("compliance_documents")
+        .select("id", { count: "exact", head: true })
+        .eq("org_id", orgId)
+        .eq("company_id", companyId),
+      supabase
+        .from("prequalifications")
+        .select("id", { count: "exact", head: true })
+        .eq("org_id", orgId)
+        .eq("company_id", companyId),
+    ])
+
+  return {
+    hasProjectWork: (projectVendors.count ?? 0) > 0 || (commitments.count ?? 0) > 0,
+    complianceEnrolled: Boolean(company.data?.compliance_monitoring_enabled),
+    hasComplianceHistory: (requirements.count ?? 0) > 0 || (documents.count ?? 0) > 0,
+    hasPrequalificationHistory: (prequalifications.count ?? 0) > 0,
+  }
+})
 
 /**
  * Resolve one directory id to whichever kind of party it is.
