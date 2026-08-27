@@ -182,7 +182,7 @@ export function ComplianceSettings({
           size="sm"
           variant="outline"
           disabled={disabled || availableDocs.length === 0}
-          title={availableDocs.length === 0 ? "Every document type is already required." : undefined}
+          title={availableDocs.length === 0 ? "Every document type is already in the template." : undefined}
         >
           <Plus className="mr-1.5 size-3.5" />
           Add document
@@ -201,8 +201,8 @@ export function ComplianceSettings({
   return (
     <div className={CONTAINER}>
       <SettingsGroup
-        title="Required documents"
-        description="The baseline every vendor must satisfy before work and money move. Per-vendor additions and waivers live on the vendor's record in Directory."
+        title="Requirement template"
+        description="A reusable shortlist for your team when deciding what a vendor must supply. Adding a vendor does not apply these requirements automatically; assignments and waivers live on the vendor's record in Directory."
         action={documentTypes.length > 0 ? addMenu : null}
       >
         {documentTypes.length === 0 ? (
@@ -215,10 +215,10 @@ export function ComplianceSettings({
           </div>
         ) : requiredDocs.length === 0 ? (
           <div className="py-6">
-            <p className="text-sm leading-5 text-foreground">Nothing required org-wide</p>
+            <p className="text-sm leading-5 text-foreground">No requirement template yet</p>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              Vendors are only checked against requirements set on their own record. Add a document to hold every vendor to
-              the same baseline.
+              Vendors are only checked against requirements selected on their own record. Add documents here to keep a
+              consistent shortlist for your team.
             </p>
           </div>
         ) : (
@@ -390,7 +390,7 @@ export function ComplianceSettings({
 
 /**
  * Editing always happens here rather than inline, so a half-typed coverage minimum
- * never reaches the org baseline. Adding and editing are the same dialog — the only
+ * never reaches the saved template. Adding and editing are the same dialog — the only
  * difference is whether Remove is offered.
  */
 function RequirementDialog({
@@ -438,7 +438,7 @@ function RequirementDialog({
       setError(result)
       return
     }
-    toast.success(item ? `${documentType.name} updated` : `${documentType.name} is now required`)
+    toast.success(item ? `${documentType.name} updated` : `${documentType.name} added to the template`)
     onOpenChange(false)
   }
 
@@ -451,7 +451,7 @@ function RequirementDialog({
       setError(result)
       return
     }
-    toast.success(`${documentType.name} is no longer required`)
+    toast.success(`${documentType.name} removed from the template`)
     onOpenChange(false)
   }
 
@@ -464,7 +464,7 @@ function RequirementDialog({
             {documentType.description ??
               (documentType.has_expiry
                 ? `Tracked with an expiry date — Arc warns ${documentType.expiry_warning_days} days ahead.`
-                : "Required from every vendor unless waived on their record.")}
+                : "Available to assign from a vendor's Compliance tab.")}
           </DialogDescription>
         </DialogHeader>
 

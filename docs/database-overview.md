@@ -199,8 +199,10 @@ backward compatibility and is retired for catalog mode.
 - **`retainage`** - Retainage tracking
 - **`allowances`** - Allowance budgets
 
-**Vendor compliance.** Requirements resolve in three layers — org default →
-vendor override → project overlay — and a waiver is the only exit. See
+**Vendor compliance.** Requirements are explicitly assigned per vendor, then a
+project overlay can add or strengthen job-specific terms. Org defaults are
+reusable setup templates and do not enroll new vendors automatically. A waiver
+is the audited exit. See
 `resolveEffectiveRequirements` in `lib/services/compliance-documents.ts`, which
 every consumer (the directory tab, the vendor portal, the payment hold, the
 nightly autopilot) goes through.
@@ -212,16 +214,16 @@ nightly autopilot) goes through.
   or `org` (the builder's own project documents, via a hidden `org_self` shim
   company). `revoked_at` marks a withdrawn decision; `superseded_by_id` points at
   the newer submission. `metadata.coi_extraction` holds the certificate reading.
-- **`company_compliance_requirements`** - Per-vendor rules (layer 2).
-- **`project_compliance_requirements`** - Per-project overlay (layer 3). A row
+- **`company_compliance_requirements`** - Explicit per-vendor rules.
+- **`project_compliance_requirements`** - Per-project overlay. A row
   with no `company_id` applies to every vendor on the project.
 - **`company_compliance_requirement_waivers`** - Audited exemptions.
 - **`compliance_autopilot_runs` / `_deliveries`** - Nightly chase telemetry,
   idempotent per reminder bucket.
 - **`vendor_document_shares`** - A vendor's consent to carry a document from one
   builder's org into another. Service-role writes only.
-- Org-level config lives on `orgs.compliance_rules` and
-  `orgs.default_compliance_requirements` (both jsonb), not in tables.
+- Org-level config lives on `orgs.compliance_rules`; reusable requirement
+  templates live in `orgs.default_compliance_requirements` (both jsonb).
 
 **Lien waivers — two unrelated systems that share a noun.**
 - **`lien_waivers`** - Payables side: waivers collected FROM subs, anchored to

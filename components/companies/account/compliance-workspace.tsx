@@ -10,6 +10,7 @@ import {
   reviewComplianceDocumentAction,
   setCompanyRequirementsAction,
   uploadComplianceDocumentAction,
+  waiveAllCompanyRequirementsAction,
   waiveCompanyRequirementAction,
 } from "@/app/(app)/directory/[id]/compliance/actions";
 import { Button } from "@/components/ui/button";
@@ -34,6 +35,7 @@ import {
   ComplianceRevokeDialog,
   ComplianceReviewDialog,
   ComplianceUploadDialog,
+  ComplianceWaiveAllDialog,
   ComplianceWaiveDialog,
   factsToInput,
   type DocumentFactValues,
@@ -102,6 +104,7 @@ export function ComplianceWorkspace({
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadPresetTypeId, setUploadPresetTypeId] = useState<string | null>(null);
   const [requestOpen, setRequestOpen] = useState(false);
+  const [waiveAllOpen, setWaiveAllOpen] = useState(false);
   const [reviewTarget, setReviewTarget] = useState<ComplianceRequirementStatus | null>(null);
   const [waiveTarget, setWaiveTarget] = useState<ComplianceRequirement | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<ComplianceDocument | null>(null);
@@ -131,6 +134,14 @@ export function ComplianceWorkspace({
         (item) => item.state === "missing" || item.state === "expired" || item.state === "rejected",
       ),
     [status.statuses],
+  );
+
+  const waivableStandingRequirements = useMemo(
+    () =>
+      status.requirements.filter(
+        (requirement) => requirement.source === "company_override" && !requirement.waiver,
+      ),
+    [status.requirements],
   );
 
   const grouped = useMemo(() => {
@@ -251,6 +262,16 @@ export function ComplianceWorkspace({
       setWaiveTarget(null);
     });
 
+  const submitBulkWaiver = (reason: string) =>
+    run(async () => {
+      unwrapAction(await waiveAllCompanyRequirementsAction(companyId, { reason }));
+      toast({
+        title: "Compliance requirements waived",
+        description: `Autopilot will no longer request these documents from ${companyName}.`,
+      });
+      setWaiveAllOpen(false);
+    });
+
   const submitRevoke = (reason: string) =>
     run(async () => {
       if (!revokeTarget) return;
@@ -315,6 +336,17 @@ export function ComplianceWorkspace({
               {outstanding.length > 0 ? (
                 <Button size="sm" className="h-7" disabled={pending} onClick={() => setRequestOpen(true)}>
                   Request {outstanding.length}
+                </Button>
+              ) : null}
+              {waivableStandingRequirements.length > 0 ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7"
+                  disabled={pending}
+                  onClick={() => setWaiveAllOpen(true)}
+                >
+                  Waive all
                 </Button>
               ) : null}
               <DropdownMenu>
@@ -439,6 +471,14 @@ export function ComplianceWorkspace({
         onOpenChange={(open) => !open && setWaiveTarget(null)}
         requirement={waiveTarget}
         onSubmit={submitWaiver}
+        busy={pending}
+      />
+      <ComplianceWaiveAllDialog
+        open={waiveAllOpen}
+        onOpenChange={setWaiveAllOpen}
+        companyName={companyName}
+        requirementCount={waivableStandingRequirements.length}
+        onSubmit={submitBulkWaiver}
         busy={pending}
       />
       <ComplianceRevokeDialog

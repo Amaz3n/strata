@@ -2021,11 +2021,10 @@ export interface ComplianceDocumentType {
 }
 
 /**
- * Where an effective requirement came from. Resolution runs org default →
- * vendor override → project overlay, so a later source wins on the same
- * document type.
+ * Where an effective requirement came from. A project overlay can add to or
+ * strengthen a requirement explicitly assigned to the vendor.
  */
-export type ComplianceRequirementSource = "org_default" | "company_override" | "project_overlay"
+export type ComplianceRequirementSource = "company_override" | "project_overlay"
 
 export interface ComplianceRequirementWaiver {
   id: string

@@ -42,11 +42,8 @@ export interface RequirementDraft {
 }
 
 /**
- * What this vendor owes, on top of the org policy.
- *
- * Inherited rules are shown but not editable here — turning one off is a waiver,
- * which is an audited act with a reason, not a checkbox. Ticking an inherited
- * type creates a vendor-specific rule that replaces it.
+ * What this vendor explicitly owes. Nothing is selected merely because the
+ * company has a vendor role; a person chooses the applicable documents here.
  */
 export function ComplianceRequirementsEditor({
   open,
@@ -102,14 +99,6 @@ export function ComplianceRequirementsEditor({
     // whatever the user was in the middle of typing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
-
-  const inheritedByTypeId = useMemo(() => {
-    const map = new Map<string, ComplianceRequirement>();
-    for (const requirement of currentRequirements) {
-      if (requirement.source === "org_default") map.set(requirement.document_type_id, requirement);
-    }
-    return map;
-  }, [currentRequirements]);
 
   const projectOverlayTypeIds = useMemo(
     () =>
@@ -185,8 +174,8 @@ export function ComplianceRequirementsEditor({
         <SheetHeader className="border-b bg-muted/40 px-4 py-3 text-left">
           <SheetTitle className="text-sm font-semibold">What {companyName} must carry</SheetTitle>
           <SheetDescription className="text-xs">
-            Rules set here replace your org policy for this vendor. To drop an inherited rule
-            instead, waive it on its row — a waiver is recorded with a reason.
+            Select only the documents this company needs to supply. New vendors are not enrolled
+            automatically.
           </SheetDescription>
         </SheetHeader>
 
@@ -199,7 +188,6 @@ export function ComplianceRequirementsEditor({
               <div className="divide-y">
                 {types.map((type) => {
                   const isSelected = selected[type.id] ?? false;
-                  const inherited = inheritedByTypeId.get(type.id);
                   return (
                     <div key={type.id}>
                       <div className="flex items-start gap-3 px-4 py-3">
@@ -209,17 +197,11 @@ export function ComplianceRequirementsEditor({
                             setSelected((prev) => ({ ...prev, [type.id]: checked === true }))
                           }
                           className="mt-0.5"
-                          aria-label={`${inherited ? "Override" : "Require"} ${type.name}`}
+                          aria-label={`Require ${type.name}`}
                         />
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="text-sm font-medium">{type.name}</span>
-                            {inherited ? (
-                              <StatusChip
-                                label="Org policy"
-                                className="border-border text-muted-foreground"
-                              />
-                            ) : null}
                             {projectOverlayTypeIds.has(type.id) ? (
                               <StatusChip
                                 label="Project rule"
@@ -228,18 +210,16 @@ export function ComplianceRequirementsEditor({
                             ) : null}
                             {isSelected ? (
                               <StatusChip
-                                label={inherited ? "Overridden" : "Vendor rule"}
+                                label="Vendor rule"
                                 className="border-primary/30 text-primary"
                               />
                             ) : null}
                           </div>
                           <p className="mt-0.5 text-xs text-muted-foreground">
-                            {inherited && !isSelected
-                              ? "Inherited from your org policy."
-                              : type.description ||
-                                (type.has_expiry
-                                  ? `Expires · warned ${type.expiry_warning_days} days ahead`
-                                  : "Does not expire")}
+                            {type.description ||
+                              (type.has_expiry
+                                ? `Expires · warned ${type.expiry_warning_days} days ahead`
+                                : "Does not expire")}
                           </p>
                         </div>
                       </div>
@@ -336,8 +316,7 @@ export function ComplianceRequirementsEditor({
 
         <SheetFooter className="flex-row items-center justify-between border-t bg-background px-4 py-3">
           <span className="text-xs text-muted-foreground">
-            {selectedCount} vendor {selectedCount === 1 ? "rule" : "rules"} ·{" "}
-            {inheritedByTypeId.size} inherited
+            {selectedCount} vendor {selectedCount === 1 ? "rule" : "rules"}
           </span>
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>

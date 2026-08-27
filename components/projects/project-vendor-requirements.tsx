@@ -29,7 +29,7 @@ function parseMoneyToCents(value?: string | null) {
 }
 
 /**
- * What this job demands of every vendor on it, on top of org policy.
+ * What this job demands of every vendor on it, on top of any standing vendor rules.
  *
  * An owner mandating a $5M umbrella on one project used to mean raising the bar
  * for those vendors everywhere, because requirements were org-wide or per-vendor
@@ -210,7 +210,7 @@ export function ProjectVendorRequirements({ projectId }: { projectId: string }) 
         <div>
           <h3 className="text-sm font-medium">What this job demands of vendors</h3>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Added on top of your org policy, for this project only. Raises terms — it never drops
+            Added on top of the vendor's standing requirements, for this project only. Raises terms — it never drops
             one, and waiving stays per vendor.
           </p>
         </div>

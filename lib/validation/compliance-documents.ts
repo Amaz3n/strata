@@ -62,6 +62,10 @@ export const complianceRequirementWaiverRevokeSchema = z.object({
   reason: z.string().max(1000).optional(),
 })
 
+export const complianceRequirementsBulkWaiverSchema = z.object({
+  reason: z.string().trim().min(3, "Add a short reason for the waiver").max(1000),
+})
+
 // Document upload schemas
 export const complianceDocumentStatusEnum = z.enum(["pending_review", "approved", "rejected", "expired"]) satisfies z.ZodType<ComplianceDocumentStatus>
 
@@ -123,6 +127,7 @@ export type ProjectComplianceRequirementInput = z.infer<typeof projectCompliance
 export type SetProjectRequirementsInput = z.infer<typeof setProjectRequirementsSchema>
 export type ComplianceRequirementWaiverInput = z.infer<typeof complianceRequirementWaiverInputSchema>
 export type ComplianceRequirementWaiverRevokeInput = z.infer<typeof complianceRequirementWaiverRevokeSchema>
+export type ComplianceRequirementsBulkWaiverInput = z.infer<typeof complianceRequirementsBulkWaiverSchema>
 export type ComplianceDocumentUploadInput = z.infer<typeof complianceDocumentUploadSchema>
 export type ComplianceReviewDecision = z.infer<typeof complianceReviewDecisionSchema>
 export type ComplianceRevokeDecisionInput = z.infer<typeof complianceRevokeDecisionSchema>

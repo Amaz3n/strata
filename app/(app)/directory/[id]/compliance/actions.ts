@@ -10,6 +10,7 @@ import {
   reviewComplianceDocument,
   setCompanyRequirements,
   uploadComplianceDocument,
+  waiveAllCompanyRequirements,
   waiveCompanyRequirement,
 } from "@/lib/services/compliance-documents"
 import type { ComplianceDocument, ComplianceRequirement, ComplianceRequirementWaiver } from "@/lib/types"
@@ -17,6 +18,7 @@ import {
   complianceDocumentRequestSchema,
   complianceRequirementWaiverInputSchema,
   complianceRequirementWaiverRevokeSchema,
+  complianceRequirementsBulkWaiverSchema,
   complianceReviewDecisionSchema,
   complianceRevokeDecisionSchema,
   complianceDocumentUploadSchema,
@@ -63,6 +65,18 @@ export async function revokeCompanyRequirementWaiverAction(
     const parsed = complianceRequirementWaiverRevokeSchema.parse(input ?? {})
     const result = await revokeCompanyRequirementWaiver({ waiverId, input: parsed })
     revalidateCompany(result.company_id)
+    return result
+  })
+}
+
+export async function waiveAllCompanyRequirementsAction(
+  companyId: string,
+  input: unknown,
+): Promise<ActionResult<ComplianceRequirementWaiver[]>> {
+  return runAction(async () => {
+    const parsed = complianceRequirementsBulkWaiverSchema.parse(input)
+    const result = await waiveAllCompanyRequirements({ companyId, input: parsed })
+    revalidateCompany(companyId)
     return result
   })
 }

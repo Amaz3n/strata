@@ -798,6 +798,61 @@ export function ComplianceWaiveDialog({
   );
 }
 
+export function ComplianceWaiveAllDialog({
+  open,
+  onOpenChange,
+  companyName,
+  requirementCount,
+  onSubmit,
+  busy,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  companyName: string;
+  requirementCount: number;
+  onSubmit: (reason: string) => void;
+  busy: boolean;
+}) {
+  const [reason, setReason] = useState("");
+
+  useEffect(() => {
+    if (open) setReason("");
+  }, [open]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Waive all requirements</DialogTitle>
+          <DialogDescription>
+            {companyName} will be exempt from {requirementCount}{" "}
+            {requirementCount === 1 ? "requirement" : "requirements"}. Compliance autopilot will
+            stop emailing them about these documents, and related standing payment holds will be
+            released.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-1.5">
+          <Label className="microlabel">Reason</Label>
+          <Textarea
+            rows={3}
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="e.g. This vendor only supplies materials"
+          />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button disabled={busy || reason.trim().length < 3} onClick={() => onSubmit(reason)}>
+            {busy ? "Waiving…" : "Waive all requirements"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function ComplianceRevokeDialog({
   open,
   onOpenChange,

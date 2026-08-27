@@ -16,6 +16,8 @@ function source(relativePath) {
 const COMPLIANCE = "lib/services/compliance-documents.ts"
 const AUTOPILOT = "lib/services/compliance-autopilot.ts"
 const MIGRATION = "supabase/migrations/20260819120000_compliance_system_hardening.sql"
+const EXPLICIT_REQUIREMENTS_MIGRATION =
+  "supabase/migrations/20260826143000_explicit_vendor_compliance.sql"
 
 /* ================================================================
  * The gate between compliance and money
@@ -147,26 +149,24 @@ test("the compliance permissions survive a catalog regeneration", () => {
   assert.match(catalog, /\('org_bookkeeper', 'compliance\.manage'\)/)
 })
 
-test("the autopilot never writes a synthetic id into a uuid column", () => {
+test("the autopilot only records persisted vendor requirements", () => {
   const autopilot = source(AUTOPILOT)
 
-  // `compliance_autopilot_deliveries.requirement_id` is a uuid with an FK. An
-  // org-default requirement has no row, so its synthetic id would abort the
-  // insert — and the org-level catch would then fail that org's entire run,
-  // skipping every vendor after the first default-only requirement.
-  assert.match(autopilot, /isSyntheticRequirementId/)
-  assert.match(autopilot, /isSyntheticRequirementId\(args\.requirement\.id\) \? null : args\.requirement\.id/)
+  assert.match(autopilot, /requirement_id: args\.requirement\.id/)
+  assert.doesNotMatch(autopilot, /org-default:/)
 })
 
-test("org policy is resolved at read time, never copied onto a vendor", () => {
+test("new vendors are not automatically enrolled in compliance", () => {
   const companies = source("lib/services/companies.ts")
+  const compliance = source(COMPLIANCE)
+  const autopilot = source(AUTOPILOT)
+  const migration = source(EXPLICIT_REQUIREMENTS_MIGRATION)
 
-  // Creating a vendor used to materialize the org defaults as vendor-level
-  // rows. Those sit in the OVERRIDE layer, above the org default they were
-  // copied from — so raising the org's coverage floor later silently skipped
-  // every vendor added before the change, each frozen at that day's policy.
   assert.doesNotMatch(companies, /setCompanyRequirements\(/)
   assert.doesNotMatch(companies, /getDefaultComplianceRequirements/)
+  assert.doesNotMatch(compliance, /orgDefaultToRequirement/)
+  assert.doesNotMatch(autopilot, /default_compliance_requirements/)
+  assert.match(migration, /on conflict \(company_id, document_type_id\) do nothing/)
 })
 
 test("the project overlay uses the same non-destructive shape", () => {
@@ -182,22 +182,23 @@ test("the project overlay uses the same non-destructive shape", () => {
  * One resolver, so nothing can disagree about what a vendor owes
  * ============================================================== */
 
-test("the autopilot chases requirements that come only from org policy", () => {
+test("the autopilot chases only explicitly assigned vendor requirements", () => {
   const autopilot = source(AUTOPILOT)
-
-  // It used to read `company_compliance_requirements` alone — one of three
-  // layers. A vendor whose obligations came from the org template (the common
-  // case, and the shape of the seeded W-9 default) failed the payment hold but
-  // was never chased, because the autopilot could not see the requirement.
   assert.match(autopilot, /resolveOrgRequirementRows/)
-  assert.match(autopilot, /normalizeComplianceRequirementDefaults/)
-
   const resolver = autopilot.slice(autopilot.indexOf("async function resolveOrgRequirementRows"))
-  assert.match(resolver, /default_compliance_requirements/)
-  // Org defaults apply to vendors, not to clients or to the hidden shim company
-  // carrying the builder's own project documents.
-  assert.match(resolver, /system_role/)
-  assert.match(resolver, /company_type/)
+  assert.match(resolver, /company_compliance_requirements/)
+  assert.doesNotMatch(resolver, /default_compliance_requirements/)
+})
+
+test("a vendor can waive every standing requirement in one audited action", () => {
+  const compliance = source(COMPLIANCE)
+  const actions = source("app/(app)/directory/[id]/compliance/actions.ts")
+  const workspace = source("components/companies/account/compliance-workspace.tsx")
+
+  assert.match(compliance, /export async function waiveAllCompanyRequirements/)
+  assert.match(compliance, /directory\.compliance\.bulk_waiver/)
+  assert.match(actions, /waiveAllCompanyRequirementsAction/)
+  assert.match(workspace, /Waive all/)
 })
 
 test("the resolver is layered and exported for every consumer", () => {
@@ -539,7 +540,7 @@ test("held money is only what the hold provably stops", () => {
   // which turns an AP balance into a consequence it cannot back up. Three facts
   // now have to hold per payable: the vendor is short for THAT payable's own
   // job...
-  assert.match(scan, /resolveStatusFromInputs\(orgId, inputs, bill\.companyId, bill\.projectId\)/)
+  assert.match(scan, /resolveStatusFromInputs\(inputs, bill\.companyId, bill\.projectId\)/)
   // ...nobody wrote an override on that bill...
   assert.match(scan, /overriddenBillIds\.has\(bill\.id\)/)
   // ...and the governing policy has the hold at block rather than warn.

@@ -5,7 +5,6 @@ import {
   sendComplianceAutopilotEmail,
 } from "@/lib/services/mailer"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { normalizeComplianceRequirementDefaults } from "@/lib/services/compliance"
 import { expireProjectOwnComplianceDocuments } from "@/lib/services/project-own-compliance"
 import { expirePrequalificationsWithClient } from "@/lib/services/prequalification"
 
@@ -134,14 +133,6 @@ function weekKey(date: Date) {
 }
 
 /**
- * An org-default requirement has no row of its own, so it carries a synthetic
- * id that is not a uuid and must never be written to a uuid column.
- */
-function isSyntheticRequirementId(id: string): boolean {
-  return id.startsWith("org-default:")
-}
-
-/**
  * The document currently answering each requirement.
  *
  * Withdrawn and superseded submissions are dropped first: taking the newest row
@@ -260,66 +251,32 @@ function buildReminder({
 }
 
 /**
- * Every requirement the org actually enforces, per vendor.
- *
- * This used to read `company_compliance_requirements` alone, which is only one
- * of the three layers `resolveEffectiveRequirements` merges. A vendor whose
- * obligations came from the org template — the common case, and the shape of
- * the seeded W-9 default — failed the payment hold but was never chased,
- * because the autopilot could not see the requirement at all.
+ * Every standing requirement explicitly assigned to a vendor.
  *
  * Project overlays are deliberately not applied here: a chase email is about
  * the vendor's standing relationship with the builder, not about one job, and
  * a vendor cannot act on "this is required on Maple Street" from an inbox.
+ * Org defaults are configuration templates, not automatic enrollment.
  */
 async function resolveOrgRequirementRows(
   supabase: ReturnType<typeof createServiceSupabaseClient>,
   orgId: string,
 ): Promise<RequirementRow[]> {
-  const [companyRowsResult, orgRow, documentTypesResult, vendorRoleResult, vendorCompaniesResult] =
-    await Promise.all([
-    supabase
-      .from("company_compliance_requirements")
-      .select(
-        `
-        id, org_id, company_id, document_type_id, is_required,
-        companies(id, name, email),
-        compliance_document_types(id, name, code, has_expiry, expiry_warning_days)
-      `,
-      )
-      .eq("org_id", orgId)
-      .eq("is_required", true),
-    supabase.from("orgs").select("default_compliance_requirements").eq("id", orgId).maybeSingle(),
-    supabase
-      .from("compliance_document_types")
-      .select("id, name, code, has_expiry, expiry_warning_days")
-      .eq("org_id", orgId)
-      .eq("is_active", true),
-    // Org defaults apply to vendors, not to clients or to the hidden shim
-    // company that carries the builder's own project documents.
-    //
-    // Which companies are vendors is a role question, asked of the same view the
-    // directory list and the compliance watch list read. It used to be inferred
-    // from `company_type` by excluding client/architect/engineer — so a company
-    // made a vendor by a commitment or a bill (which never touch that column)
-    // silently missed every default requirement, and a company whose type still
-    // said "subcontractor" long after that role ended kept collecting them.
-    supabase
-      .from("directory_entries")
-      .select("id")
-      .eq("org_id", orgId)
-      .eq("kind", "company")
-      .is("archived_at", null)
-      .overlaps("role_categories", ["vendor"]),
-    supabase.from("companies").select("id, name, email, metadata").eq("org_id", orgId),
-  ])
+  const companyRowsResult = await supabase
+    .from("company_compliance_requirements")
+    .select(
+      `
+      id, org_id, company_id, document_type_id, is_required,
+      companies(id, name, email),
+      compliance_document_types(id, name, code, has_expiry, expiry_warning_days)
+    `,
+    )
+    .eq("org_id", orgId)
+    .eq("is_required", true)
 
   if (companyRowsResult.error) throw companyRowsResult.error
-  if (documentTypesResult.error) throw documentTypesResult.error
-  if (vendorRoleResult.error) throw vendorRoleResult.error
-  if (vendorCompaniesResult.error) throw vendorCompaniesResult.error
 
-  const explicit = ((companyRowsResult.data ?? []) as unknown as Array<
+  return ((companyRowsResult.data ?? []) as unknown as Array<
     Omit<RequirementRow, "companies" | "compliance_document_types"> & {
       companies?: RequirementRow["companies"] | RequirementRow["companies"][]
       compliance_document_types?:
@@ -331,48 +288,6 @@ async function resolveOrgRequirementRows(
     companies: firstRelation(row.companies),
     compliance_document_types: firstRelation(row.compliance_document_types),
   }))
-
-  const defaults = normalizeComplianceRequirementDefaults(
-    (orgRow.data as any)?.default_compliance_requirements,
-  )
-  if (defaults.length === 0) return explicit
-
-  const typesById = new Map(
-    (documentTypesResult.data ?? []).map((type: any) => [type.id as string, type]),
-  )
-  const vendorCompanyIds = new Set(
-    ((vendorRoleResult.data ?? []) as Array<{ id: string }>).map((row) => row.id),
-  )
-  const vendors = (vendorCompaniesResult.data ?? []).filter((company: any) => {
-    if (!vendorCompanyIds.has(company.id as string)) return false
-    // The builder's own shim company holds project documents, not vendor ones.
-    return (company.metadata ?? {}).system_role !== "org_self"
-  })
-
-  const covered = new Set(explicit.map((row) => `${row.company_id}:${row.document_type_id}`))
-  const rows: RequirementRow[] = [...explicit]
-
-  for (const company of vendors) {
-    for (const template of defaults) {
-      const key = `${company.id}:${template.document_type_id}`
-      if (covered.has(key)) continue
-      const documentType = typesById.get(template.document_type_id)
-      if (!documentType) continue
-      rows.push({
-        // A synthetic id: the org default has no row of its own, and the
-        // delivery record stores `requirement_id` for provenance only.
-        id: `org-default:${company.id}:${template.document_type_id}`,
-        org_id: orgId,
-        company_id: company.id,
-        document_type_id: template.document_type_id,
-        is_required: true,
-        companies: { id: company.id, name: company.name, email: company.email },
-        compliance_document_types: documentType,
-      })
-    }
-  }
-
-  return rows
 }
 
 async function createDeliveryIfNeeded(args: {
@@ -411,10 +326,7 @@ async function createDeliveryIfNeeded(args: {
       company_id: args.requirement.company_id,
       contact_id: args.recipient?.contactId ?? null,
       document_type_id: args.requirement.document_type_id,
-      // An org-default requirement has no row of its own, and this column is a
-      // uuid with a foreign key to `company_compliance_requirements` — writing
-      // the synthetic id would abort the insert and fail the whole org's run.
-      requirement_id: isSyntheticRequirementId(args.requirement.id) ? null : args.requirement.id,
+      requirement_id: args.requirement.id,
       document_id: args.document?.id ?? null,
       reminder_kind: args.reminder.kind,
       reminder_bucket: args.reminder.bucket,

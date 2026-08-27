@@ -7,7 +7,6 @@ import type {
   ComplianceRequirement,
   ComplianceRequirementState,
   ComplianceRequirementStatus,
-  ComplianceRequirementTemplateItem,
   ComplianceRequirementWaiver,
   ComplianceStatusSummary,
 } from "@/lib/types"
@@ -19,6 +18,7 @@ import {
   complianceRequirementInputSchema,
   complianceRequirementWaiverInputSchema,
   complianceRequirementWaiverRevokeSchema,
+  complianceRequirementsBulkWaiverSchema,
   complianceReviewDecisionSchema,
   complianceRevokeDecisionSchema,
   type ComplianceDocTypeInput,
@@ -28,6 +28,7 @@ import {
   type ComplianceRequirementInput,
   type ComplianceRequirementWaiverInput,
   type ComplianceRequirementWaiverRevokeInput,
+  type ComplianceRequirementsBulkWaiverInput,
   type ComplianceReviewDecision,
   type ComplianceRevokeDecisionInput,
 } from "@/lib/validation/compliance-documents"
@@ -46,7 +47,6 @@ import { sendComplianceAutopilotEmail, sendComplianceDecisionEmail } from "@/lib
 import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 import { findExistingCompanyPortalToken } from "@/lib/services/portal-access"
-import { normalizeComplianceRequirementDefaults } from "@/lib/services/compliance"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 /**
@@ -582,6 +582,116 @@ export async function revokeCompanyRequirementWaiver({
   })
 
   return mapWaiver(data)
+}
+
+/**
+ * Exempt a vendor from every standing requirement in one audited operation.
+ *
+ * This deliberately targets company requirements only. Project overlays are
+ * job-specific owner/contract obligations and remain visible to the project
+ * payment gate; the nightly autopilot only chases standing company rules.
+ */
+export async function waiveAllCompanyRequirements({
+  companyId,
+  input,
+  orgId,
+}: {
+  companyId: string
+  input: ComplianceRequirementsBulkWaiverInput
+  orgId?: string
+}): Promise<ComplianceRequirementWaiver[]> {
+  const parsed = complianceRequirementsBulkWaiverSchema.parse(input)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("compliance.manage", { supabase, orgId: resolvedOrgId, userId })
+
+  const [companyResult, requirementsResult, waiversResult] = await Promise.all([
+    supabase.from("companies").select("id").eq("org_id", resolvedOrgId).eq("id", companyId).maybeSingle(),
+    supabase
+      .from("company_compliance_requirements")
+      .select("document_type_id")
+      .eq("org_id", resolvedOrgId)
+      .eq("company_id", companyId)
+      .eq("is_required", true),
+    supabase
+      .from("company_compliance_requirement_waivers")
+      .select("document_type_id, expires_at, revoked_at")
+      .eq("org_id", resolvedOrgId)
+      .eq("company_id", companyId)
+      .is("revoked_at", null),
+  ])
+
+  if (companyResult.error || !companyResult.data) throw new Error("Company not found")
+  if (requirementsResult.error) {
+    throw new Error(`Failed to load compliance requirements: ${requirementsResult.error.message}`)
+  }
+  if (waiversResult.error) {
+    throw new Error(`Failed to load compliance waivers: ${waiversResult.error.message}`)
+  }
+
+  const today = new Date().toISOString().slice(0, 10)
+  const activelyWaivedTypeIds = new Set(
+    (waiversResult.data ?? [])
+      .filter((waiver: any) => !waiver.expires_at || waiver.expires_at >= today)
+      .map((waiver: any) => waiver.document_type_id as string),
+  )
+  const expiredWaiverTypeIds = (waiversResult.data ?? [])
+    .filter((waiver: any) => waiver.expires_at && waiver.expires_at < today)
+    .map((waiver: any) => waiver.document_type_id as string)
+  if (expiredWaiverTypeIds.length > 0) {
+    const { error } = await supabase
+      .from("company_compliance_requirement_waivers")
+      .update({
+        revoked_at: new Date().toISOString(),
+        revoked_by: userId,
+        revoke_reason: "Replaced by a permanent bulk waiver.",
+      })
+      .eq("org_id", resolvedOrgId)
+      .eq("company_id", companyId)
+      .is("revoked_at", null)
+      .in("document_type_id", expiredWaiverTypeIds)
+    if (error) throw new Error(`Failed to replace expired compliance waivers: ${error.message}`)
+  }
+  const rows = (requirementsResult.data ?? [])
+    .filter((requirement: any) => !activelyWaivedTypeIds.has(requirement.document_type_id))
+    .map((requirement: any) => ({
+      org_id: resolvedOrgId,
+      company_id: companyId,
+      document_type_id: requirement.document_type_id,
+      reason: parsed.reason,
+      expires_at: null,
+      waived_by: userId,
+    }))
+
+  let created: any[] = []
+  if (rows.length > 0) {
+    const { data, error } = await supabase
+      .from("company_compliance_requirement_waivers")
+      .insert(rows)
+      .select("*")
+    if (error) throw new Error(`Failed to waive compliance requirements: ${error.message}`)
+    created = data ?? []
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "insert",
+    entityType: "compliance_requirement_waiver",
+    entityId: companyId,
+    after: { reason: parsed.reason, document_type_ids: created.map((row) => row.document_type_id) },
+    source: "directory.compliance.bulk_waiver",
+  })
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    eventType: "compliance_requirements_waived",
+    entityType: "company",
+    entityId: companyId,
+    payload: { requirement_count: created.length },
+  })
+
+  return created.map(mapWaiver)
 }
 
 // ============ Documents ============
@@ -1238,64 +1348,29 @@ function isActiveWaiver(waiver: ComplianceRequirementWaiver, now = new Date()): 
   return waiver.expires_at >= todayKey(now)
 }
 
-function orgDefaultToRequirement({
-  orgId,
-  companyId,
-  template,
-  documentType,
-}: {
-  orgId: string
-  companyId: string
-  template: ComplianceRequirementTemplateItem
-  documentType?: ComplianceDocumentType
-}): ComplianceRequirement {
-  return {
-    id: `org-default:${companyId}:${template.document_type_id}`,
-    org_id: orgId,
-    company_id: companyId,
-    document_type_id: template.document_type_id,
-    document_type: documentType,
-    source: "org_default",
-    waiver: null,
-    is_required: true,
-    min_coverage_cents: template.min_coverage_cents ?? undefined,
-    requires_additional_insured: template.requires_additional_insured ?? false,
-    requires_primary_noncontributory: template.requires_primary_noncontributory ?? false,
-    requires_waiver_of_subrogation: template.requires_waiver_of_subrogation ?? false,
-    notes: template.notes ?? undefined,
-    created_at: "",
-    created_by: null,
-  }
-}
-
 /**
  * The one place a vendor's real obligations are decided.
  *
- * Three layers, each overriding the last on the same document type:
- *   org default  → what every vendor owes
- *   vendor override → what this vendor owes
+ * Two explicit layers, each overriding the last on the same document type:
+ *   vendor requirement → what this vendor owes
  *   project overlay → what this job demands, because an owner said so
  *
  * A layer only ever replaces a rule, never weakens the set: an overlay adds a
  * requirement or raises its terms. The waiver is still the only exit, which is
  * what keeps the exit audited.
  *
- * Every consumer — the tab, the portal, the payment hold, the autopilot — goes
- * through here. The autopilot used to read `company_compliance_requirements`
- * directly and so never chased anything an org template alone required.
+ * Org defaults are templates for people configuring a vendor, not obligations
+ * assigned to every company with a vendor role. This keeps adding a material
+ * supplier or other non-submitting vendor from silently starting email chases.
  */
 export function resolveEffectiveRequirements({
-  orgId,
   companyId,
-  defaultRequirements,
   companyRequirements,
   projectRequirements = [],
   documentTypes,
   waivers,
 }: {
-  orgId: string
   companyId: string
-  defaultRequirements: ComplianceRequirementTemplateItem[]
   companyRequirements: ComplianceRequirement[]
   /** Overlay rows for the projects in scope. Already filtered to this company. */
   projectRequirements?: ComplianceRequirement[]
@@ -1309,18 +1384,6 @@ export function resolveEffectiveRequirements({
       .map((waiver) => [waiver.document_type_id, waiver])
   )
   const byTypeId = new Map<string, ComplianceRequirement>()
-
-  for (const template of defaultRequirements) {
-    byTypeId.set(
-      template.document_type_id,
-      orgDefaultToRequirement({
-        orgId,
-        companyId,
-        template,
-        documentType: documentTypesById.get(template.document_type_id),
-      })
-    )
-  }
 
   for (const requirement of companyRequirements) {
     if (!requirement.is_required) continue
@@ -1417,23 +1480,6 @@ async function getProjectRequirementsWithClient(
     companyId: row.company_id ?? null,
     requirement: mapRequirement(row),
   }))
-}
-
-async function getOrgDefaultRequirementTemplatesWithClient(
-  supabase: SupabaseClient,
-  orgId: string
-): Promise<ComplianceRequirementTemplateItem[]> {
-  const { data, error } = await supabase
-    .from("orgs")
-    .select("default_compliance_requirements")
-    .eq("id", orgId)
-    .maybeSingle()
-
-  if (error) {
-    throw new Error(`Failed to load compliance defaults: ${error.message}`)
-  }
-
-  return normalizeComplianceRequirementDefaults((data as any)?.default_compliance_requirements)
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -1662,7 +1708,6 @@ export async function getCompanyComplianceStatus(
 
 /** Everything one vendor's status is built from except the project overlay. */
 interface CompanyComplianceInputs {
-  defaultRequirements: ComplianceRequirementTemplateItem[]
   companyRequirements: ComplianceRequirement[]
   documents: ComplianceDocument[]
   documentTypes: ComplianceDocumentType[]
@@ -1681,13 +1726,7 @@ async function loadCompanyComplianceInputs(
   orgId: string,
   companyId: string
 ): Promise<CompanyComplianceInputs> {
-  const [
-    requirementsResult,
-    documentsResult,
-    defaults,
-    documentTypesResult,
-    waiversResult,
-  ] = await Promise.all([
+  const [requirementsResult, documentsResult, documentTypesResult, waiversResult] = await Promise.all([
     supabase
       .from("company_compliance_requirements")
       .select(
@@ -1710,7 +1749,6 @@ async function loadCompanyComplianceInputs(
       .eq("org_id", orgId)
       .eq("company_id", companyId)
       .order("created_at", { ascending: false }),
-    getOrgDefaultRequirementTemplatesWithClient(supabase, orgId),
     supabase
       .from("compliance_document_types")
       .select("*")
@@ -1745,7 +1783,6 @@ async function loadCompanyComplianceInputs(
   }
 
   return {
-    defaultRequirements: defaults,
     companyRequirements: (requirementsResult.data ?? []).map(mapRequirement),
     documents: (documentsResult.data ?? []).map(mapDocument),
     documentTypes: (documentTypesResult.data ?? []).map(mapDocumentType),
@@ -1772,9 +1809,7 @@ export async function getCompanyComplianceStatusWithClient(
   ])
 
   const requirements = resolveEffectiveRequirements({
-    orgId,
     companyId,
-    defaultRequirements: inputs.defaultRequirements,
     companyRequirements: inputs.companyRequirements,
     projectRequirements: overlays.map((overlay) => overlay.requirement),
     documentTypes: inputs.documentTypes,
@@ -1790,7 +1825,6 @@ export async function getCompanyComplianceStatusWithClient(
 
 /** Everything a page of vendors' verdicts is built from, loaded once. */
 interface CompaniesComplianceInputs {
-  defaultRequirements: ComplianceRequirementTemplateItem[]
   documentTypes: ComplianceDocumentType[]
   requirementsByCompanyId: Map<string, ComplianceRequirement[]>
   documentsByCompanyId: Map<string, ComplianceDocument[]>
@@ -1801,7 +1835,7 @@ interface CompaniesComplianceInputs {
 
 /**
  * The vendors' own compliance records plus every overlay bearing on the projects
- * in scope — six reads, however many vendors and projects are asked about.
+ * in scope — five reads, however many vendors and projects are asked about.
  *
  * The overlays come back ungrouped because the readers group them differently:
  * a directory page asks what could apply to a vendor anywhere in scope, while
@@ -1818,7 +1852,6 @@ async function loadCompaniesComplianceInputs(
   const [
     requirementsResult,
     documentsResult,
-    defaults,
     documentTypesResult,
     waiversResult,
     overlays,
@@ -1844,7 +1877,6 @@ async function loadCompaniesComplianceInputs(
       .eq("org_id", orgId)
       .in("company_id", companyIds)
       .order("created_at", { ascending: false }),
-    getOrgDefaultRequirementTemplatesWithClient(supabase, orgId),
     supabase
       .from("compliance_document_types")
       .select("*")
@@ -1901,7 +1933,6 @@ async function loadCompaniesComplianceInputs(
   }
 
   return {
-    defaultRequirements: defaults,
     documentTypes: (documentTypesResult.data ?? []).map(mapDocumentType),
     requirementsByCompanyId,
     documentsByCompanyId,
@@ -1925,7 +1956,6 @@ async function loadCompaniesComplianceInputs(
  * narrow ones over them.
  */
 function resolveStatusFromInputs(
-  orgId: string,
   inputs: CompaniesComplianceInputs,
   companyId: string,
   projectId: string | null
@@ -1939,9 +1969,7 @@ function resolveStatusFromInputs(
     .map((overlay) => overlay.requirement)
 
   const requirements = resolveEffectiveRequirements({
-    orgId,
     companyId,
-    defaultRequirements: inputs.defaultRequirements,
     companyRequirements: inputs.requirementsByCompanyId.get(companyId) ?? [],
     projectRequirements,
     documentTypes: inputs.documentTypes,
@@ -1998,7 +2026,7 @@ export async function getCompaniesComplianceStatus(
     // Every project in scope at once: this list answers "what does this vendor
     // owe across the work in front of me", not "what does one payable's job
     // demand" — that stricter question is `getComplianceHeldPayables`'.
-    result[companyId] = resolveStatusFromInputs(resolvedOrgId, inputs, companyId, null)
+    result[companyId] = resolveStatusFromInputs(inputs, companyId, null)
   }
 
   return result
@@ -2310,7 +2338,7 @@ export async function getComplianceHeldPayablesByCompanyWithClient(
     const pair = `${bill.companyId}:${bill.projectId}`
     let status = statusByPair.get(pair)
     if (!status) {
-      status = resolveStatusFromInputs(orgId, inputs, bill.companyId, bill.projectId)
+      status = resolveStatusFromInputs(inputs, bill.companyId, bill.projectId)
       statusByPair.set(pair, status)
     }
     if (status.is_compliant) continue
