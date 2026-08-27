@@ -83,6 +83,9 @@ export interface Company {
   is_1099_eligible?: boolean | null
   w9_file_id?: string | null
   w9_received_at?: string | null
+  compliance_monitoring_enabled?: boolean
+  compliance_monitoring_updated_at?: string | null
+  compliance_monitoring_updated_by?: string | null
   created_at: string
   updated_at?: string
   contact_count?: number
@@ -2141,6 +2144,8 @@ export interface ComplianceRequirementStatus {
 
 export interface ComplianceStatusSummary {
   company_id: string
+  /** Off pauses enforcement and email requests without deleting the record. */
+  monitoring_enabled: boolean
   requirements: ComplianceRequirement[]
   documents: ComplianceDocument[]
   /** Per-requirement verdicts, in requirement order. */

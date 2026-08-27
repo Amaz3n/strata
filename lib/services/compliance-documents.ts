@@ -296,6 +296,72 @@ export async function getCompanyRequirements(
   return (data ?? []).map(mapRequirement)
 }
 
+/**
+ * Pause or resume compliance as one vendor-level decision.
+ *
+ * Requirements, waivers, documents, and their history are deliberately left
+ * untouched. Resuming therefore restores the exact record that was paused.
+ */
+export async function setCompanyComplianceMonitoring({
+  companyId,
+  enabled,
+  orgId,
+}: {
+  companyId: string
+  enabled: boolean
+  orgId?: string
+}): Promise<{ companyId: string; enabled: boolean }> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("compliance.manage", { supabase, orgId: resolvedOrgId, userId })
+
+  const { data: existing, error: existingError } = await supabase
+    .from("companies")
+    .select("id, compliance_monitoring_enabled")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", companyId)
+    .maybeSingle()
+
+  if (existingError || !existing) throw new Error("Company not found")
+
+  const { data, error } = await supabase
+    .from("companies")
+    .update({
+      compliance_monitoring_enabled: enabled,
+      compliance_monitoring_updated_at: new Date().toISOString(),
+      compliance_monitoring_updated_by: userId,
+    })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", companyId)
+    .select("id, compliance_monitoring_enabled")
+    .single()
+
+  if (error || !data) {
+    throw new Error(`Failed to update compliance monitoring: ${error?.message}`)
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "company_compliance_monitoring",
+    entityId: companyId,
+    before: { enabled: existing.compliance_monitoring_enabled ?? false },
+    after: { enabled: data.compliance_monitoring_enabled },
+    source: "directory.compliance.monitoring",
+  })
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    eventType: enabled ? "compliance_monitoring_resumed" : "compliance_monitoring_paused",
+    entityType: "company",
+    entityId: companyId,
+    payload: { enabled },
+  })
+
+  return { companyId, enabled: Boolean(data.compliance_monitoring_enabled) }
+}
+
 export async function setCompanyRequirements({
   companyId,
   requirements,
@@ -1677,6 +1743,7 @@ function buildComplianceStatus({
 
   return {
     company_id: companyId,
+    monitoring_enabled: true,
     requirements,
     documents,
     statuses,
@@ -1688,6 +1755,25 @@ function buildComplianceStatus({
     pending_review: pendingReview,
     rejected,
     is_compliant: isCompliant,
+  }
+}
+
+/** Keep the record readable while removing every active enforcement signal. */
+function applyComplianceMonitoring(
+  summary: ComplianceStatusSummary,
+  enabled: boolean,
+): ComplianceStatusSummary {
+  if (enabled) return { ...summary, monitoring_enabled: true }
+  return {
+    ...summary,
+    monitoring_enabled: false,
+    missing: [],
+    deficiencies: [],
+    expiring_soon: [],
+    expired: [],
+    pending_review: [],
+    rejected: [],
+    is_compliant: true,
   }
 }
 
@@ -1708,6 +1794,7 @@ export async function getCompanyComplianceStatus(
 
 /** Everything one vendor's status is built from except the project overlay. */
 interface CompanyComplianceInputs {
+  monitoringEnabled: boolean
   companyRequirements: ComplianceRequirement[]
   documents: ComplianceDocument[]
   documentTypes: ComplianceDocumentType[]
@@ -1726,7 +1813,13 @@ async function loadCompanyComplianceInputs(
   orgId: string,
   companyId: string
 ): Promise<CompanyComplianceInputs> {
-  const [requirementsResult, documentsResult, documentTypesResult, waiversResult] = await Promise.all([
+  const [companyResult, requirementsResult, documentsResult, documentTypesResult, waiversResult] = await Promise.all([
+    supabase
+      .from("companies")
+      .select("compliance_monitoring_enabled")
+      .eq("org_id", orgId)
+      .eq("id", companyId)
+      .maybeSingle(),
     supabase
       .from("company_compliance_requirements")
       .select(
@@ -1761,6 +1854,10 @@ async function loadCompanyComplianceInputs(
       .eq("company_id", companyId),
   ])
 
+  if (companyResult.error || !companyResult.data) {
+    throw new Error("Company not found")
+  }
+
   if (requirementsResult.error) {
     throw new Error(
       `Failed to get compliance requirements: ${requirementsResult.error.message}`
@@ -1783,6 +1880,7 @@ async function loadCompanyComplianceInputs(
   }
 
   return {
+    monitoringEnabled: Boolean(companyResult.data.compliance_monitoring_enabled),
     companyRequirements: (requirementsResult.data ?? []).map(mapRequirement),
     documents: (documentsResult.data ?? []).map(mapDocument),
     documentTypes: (documentTypesResult.data ?? []).map(mapDocumentType),
@@ -1816,15 +1914,19 @@ export async function getCompanyComplianceStatusWithClient(
     waivers: inputs.waivers,
   })
 
-  return buildComplianceStatus({
-    companyId,
-    requirements,
-    documents: inputs.documents,
-  })
+  return applyComplianceMonitoring(
+    buildComplianceStatus({
+      companyId,
+      requirements,
+      documents: inputs.documents,
+    }),
+    inputs.monitoringEnabled,
+  )
 }
 
 /** Everything a page of vendors' verdicts is built from, loaded once. */
 interface CompaniesComplianceInputs {
+  monitoringByCompanyId: Map<string, boolean>
   documentTypes: ComplianceDocumentType[]
   requirementsByCompanyId: Map<string, ComplianceRequirement[]>
   documentsByCompanyId: Map<string, ComplianceDocument[]>
@@ -1850,12 +1952,18 @@ async function loadCompaniesComplianceInputs(
   projectIds: string[]
 ): Promise<CompaniesComplianceInputs> {
   const [
+    companiesResult,
     requirementsResult,
     documentsResult,
     documentTypesResult,
     waiversResult,
     overlays,
   ] = await Promise.all([
+    supabase
+      .from("companies")
+      .select("id, compliance_monitoring_enabled")
+      .eq("org_id", orgId)
+      .in("id", companyIds),
     supabase
       .from("company_compliance_requirements")
       .select(
@@ -1889,6 +1997,10 @@ async function loadCompaniesComplianceInputs(
       .in("company_id", companyIds),
     getProjectRequirementsWithClient(supabase, orgId, companyIds, projectIds),
   ])
+
+  if (companiesResult.error) {
+    throw new Error(`Failed to get compliance monitoring state: ${companiesResult.error.message}`)
+  }
 
   if (requirementsResult.error) {
     throw new Error(
@@ -1933,6 +2045,12 @@ async function loadCompaniesComplianceInputs(
   }
 
   return {
+    monitoringByCompanyId: new Map(
+      (companiesResult.data ?? []).map((company: any) => [
+        company.id as string,
+        Boolean(company.compliance_monitoring_enabled),
+      ]),
+    ),
     documentTypes: (documentTypesResult.data ?? []).map(mapDocumentType),
     requirementsByCompanyId,
     documentsByCompanyId,
@@ -1976,11 +2094,14 @@ function resolveStatusFromInputs(
     waivers: inputs.waiversByCompanyId.get(companyId) ?? [],
   })
 
-  return buildComplianceStatus({
-    companyId,
-    requirements,
-    documents: inputs.documentsByCompanyId.get(companyId) ?? [],
-  })
+  return applyComplianceMonitoring(
+    buildComplianceStatus({
+      companyId,
+      requirements,
+      documents: inputs.documentsByCompanyId.get(companyId) ?? [],
+    }),
+    inputs.monitoringByCompanyId.get(companyId) ?? false,
+  )
 }
 
 /**
@@ -2402,7 +2523,7 @@ export async function requestComplianceDocuments({
   const [{ data: company }, { data: org }, { data: types }] = await Promise.all([
     supabase
       .from("companies")
-      .select("id, name, email")
+      .select("id, name, email, compliance_monitoring_enabled")
       .eq("org_id", resolvedOrgId)
       .eq("id", companyId)
       .maybeSingle(),
@@ -2415,6 +2536,9 @@ export async function requestComplianceDocuments({
   ])
 
   if (!company) throw new Error("Company not found")
+  if (!company.compliance_monitoring_enabled) {
+    throw new Error("Turn compliance monitoring on before requesting documents")
+  }
   if (!types || types.length === 0) throw new Error("Those document types no longer exist")
 
   let recipientEmail = company.email?.trim() ?? ""

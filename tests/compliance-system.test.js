@@ -18,6 +18,8 @@ const AUTOPILOT = "lib/services/compliance-autopilot.ts"
 const MIGRATION = "supabase/migrations/20260819120000_compliance_system_hardening.sql"
 const EXPLICIT_REQUIREMENTS_MIGRATION =
   "supabase/migrations/20260826143000_explicit_vendor_compliance.sql"
+const MONITORING_MIGRATION =
+  "supabase/migrations/20260827020317_company_compliance_monitoring.sql"
 
 /* ================================================================
  * The gate between compliance and money
@@ -188,6 +190,24 @@ test("the autopilot chases only explicitly assigned vendor requirements", () => 
   const resolver = autopilot.slice(autopilot.indexOf("async function resolveOrgRequirementRows"))
   assert.match(resolver, /company_compliance_requirements/)
   assert.doesNotMatch(resolver, /default_compliance_requirements/)
+  assert.match(resolver, /companies!inner/)
+  assert.match(resolver, /companies\.compliance_monitoring_enabled/)
+})
+
+test("compliance monitoring is reversible, defaults off, and preserves existing enrollment", () => {
+  const migration = source(MONITORING_MIGRATION)
+  const compliance = source(COMPLIANCE)
+  const actions = source("app/(app)/directory/[id]/compliance/actions.ts")
+  const workspace = source("components/companies/account/compliance-workspace.tsx")
+
+  assert.match(migration, /compliance_monitoring_enabled boolean not null default false/)
+  assert.match(migration, /company_compliance_requirements requirement/)
+  assert.match(compliance, /export async function setCompanyComplianceMonitoring/)
+  assert.match(compliance, /directory\.compliance\.monitoring/)
+  assert.match(compliance, /applyComplianceMonitoring/)
+  assert.match(actions, /setCompanyComplianceMonitoringAction/)
+  assert.match(workspace, /Compliance monitoring for/)
+  assert.match(workspace, /Autopilot is paused/)
 })
 
 test("a vendor can waive every standing requirement in one audited action", () => {
@@ -241,6 +261,7 @@ test("approving a compliance document needs more than being a member", () => {
 
   for (const [fnName, permission] of [
     ["setCompanyRequirements", "compliance.manage"],
+    ["setCompanyComplianceMonitoring", "compliance.manage"],
     ["waiveCompanyRequirement", "compliance.manage"],
     ["revokeCompanyRequirementWaiver", "compliance.manage"],
     ["uploadComplianceDocument", "compliance.manage"],

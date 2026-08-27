@@ -9,6 +9,7 @@ import {
   revokeCompanyRequirementWaiver,
   reviewComplianceDocument,
   setCompanyRequirements,
+  setCompanyComplianceMonitoring,
   uploadComplianceDocument,
   waiveAllCompanyRequirements,
   waiveCompanyRequirement,
@@ -16,6 +17,7 @@ import {
 import type { ComplianceDocument, ComplianceRequirement, ComplianceRequirementWaiver } from "@/lib/types"
 import {
   complianceDocumentRequestSchema,
+  complianceMonitoringInputSchema,
   complianceRequirementWaiverInputSchema,
   complianceRequirementWaiverRevokeSchema,
   complianceRequirementsBulkWaiverSchema,
@@ -32,6 +34,18 @@ function revalidateCompany(companyId: string) {
   // A decision changes what the payment gate sees, and the Control Tower
   // review count with it.
   revalidatePath("/control-tower")
+}
+
+export async function setCompanyComplianceMonitoringAction(
+  companyId: string,
+  input: unknown,
+): Promise<ActionResult<{ companyId: string; enabled: boolean }>> {
+  return runAction(async () => {
+    const parsed = complianceMonitoringInputSchema.parse(input)
+    const result = await setCompanyComplianceMonitoring({ companyId, enabled: parsed.enabled })
+    revalidateCompany(companyId)
+    return result
+  })
 }
 
 export async function setCompanyRequirementsAction(

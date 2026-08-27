@@ -267,12 +267,13 @@ async function resolveOrgRequirementRows(
     .select(
       `
       id, org_id, company_id, document_type_id, is_required,
-      companies(id, name, email),
+      companies!inner(id, name, email, compliance_monitoring_enabled),
       compliance_document_types(id, name, code, has_expiry, expiry_warning_days)
     `,
     )
     .eq("org_id", orgId)
     .eq("is_required", true)
+    .eq("companies.compliance_monitoring_enabled", true)
 
   if (companyRowsResult.error) throw companyRowsResult.error
 

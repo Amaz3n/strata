@@ -1,6 +1,9 @@
 import { z } from "zod"
-
 import type { ComplianceDocumentKind, ComplianceDocumentStatus } from "@/lib/types"
+
+export const complianceMonitoringInputSchema = z.object({
+  enabled: z.boolean(),
+})
 
 export const complianceDocumentKindEnum = z.enum([
   "insurance",

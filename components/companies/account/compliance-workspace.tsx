@@ -9,11 +9,13 @@ import {
   revokeCompanyRequirementWaiverAction,
   reviewComplianceDocumentAction,
   setCompanyRequirementsAction,
+  setCompanyComplianceMonitoringAction,
   uploadComplianceDocumentAction,
   waiveAllCompanyRequirementsAction,
   waiveCompanyRequirementAction,
 } from "@/app/(app)/directory/[id]/compliance/actions";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -125,7 +127,9 @@ export function ComplianceWorkspace({
     };
   }, [status.statuses]);
 
-  const headline = complianceHeadline({ isCompliant: status.is_compliant, ...counts });
+  const headline = status.monitoring_enabled
+    ? complianceHeadline({ isCompliant: status.is_compliant, ...counts })
+    : { label: "Monitoring off", className: "border-border bg-muted text-muted-foreground" };
 
   /** What the vendor still owes — the set a request email would chase. */
   const outstanding = useMemo(
@@ -272,6 +276,17 @@ export function ComplianceWorkspace({
       setWaiveAllOpen(false);
     });
 
+  const toggleMonitoring = (enabled: boolean) =>
+    run(async () => {
+      unwrapAction(await setCompanyComplianceMonitoringAction(companyId, { enabled }));
+      toast({
+        title: enabled ? "Compliance monitoring resumed" : "Compliance monitoring paused",
+        description: enabled
+          ? `Saved requirements for ${companyName} are active again.`
+          : `Autopilot will not email ${companyName}. Requirements and documents were kept.`,
+      });
+    });
+
   const submitRevoke = (reason: string) =>
     run(async () => {
       if (!revokeTarget) return;
@@ -333,12 +348,21 @@ export function ComplianceWorkspace({
 
           {canManage ? (
             <div className="flex shrink-0 items-center gap-1.5">
-              {outstanding.length > 0 ? (
+              <label className="mr-1 flex items-center gap-2 text-xs text-muted-foreground">
+                <span>Monitoring</span>
+                <Switch
+                  checked={status.monitoring_enabled}
+                  disabled={pending}
+                  aria-label={`Compliance monitoring for ${companyName}`}
+                  onCheckedChange={toggleMonitoring}
+                />
+              </label>
+              {status.monitoring_enabled && outstanding.length > 0 ? (
                 <Button size="sm" className="h-7" disabled={pending} onClick={() => setRequestOpen(true)}>
                   Request {outstanding.length}
                 </Button>
               ) : null}
-              {waivableStandingRequirements.length > 0 ? (
+              {status.monitoring_enabled && waivableStandingRequirements.length > 0 ? (
                 <Button
                   size="sm"
                   variant="outline"
@@ -372,6 +396,13 @@ export function ComplianceWorkspace({
             </div>
           ) : null}
         </div>
+
+        {!status.monitoring_enabled ? (
+          <div className="border-b bg-muted/20 px-4 py-2.5 text-sm text-muted-foreground">
+            Autopilot is paused. Saved requirements, documents, and history remain here and will
+            become active again when monitoring is turned on.
+          </div>
+        ) : null}
 
         {/* The consequence, stated in money. The only banner on the page. */}
         {!status.is_compliant && blocksPayment && heldCents > 0 ? (
