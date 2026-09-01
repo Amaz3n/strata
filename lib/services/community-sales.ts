@@ -429,7 +429,7 @@ export async function convertHoldToReservation(input: unknown, orgId?: string) {
   if (parsed.depositCents > 0) {
     const invoice = await createInvoice({ input: {
       project_id: projectId, invoice_number: `DEP-${Date.now().toString().slice(-9)}`, title: "Earnest deposit",
-      status: "sent", issue_date: new Date().toISOString().slice(0, 10), due_date: new Date().toISOString().slice(0, 10), client_visible: true,
+      issue: true, issue_date: new Date().toISOString().slice(0, 10), due_date: new Date().toISOString().slice(0, 10),
       tax_rate: 0, customer_id: reservation.buyer_contact_id, lines: [{ description: "Earnest deposit", quantity: 1, unit: "deposit", unit_cost: invoiceUnitCostFromCents(parsed.depositCents), taxable: false }],
       metadata: { invoice_kind: "earnest_deposit", source_reservation_id: reservation.id },
     }, orgId: context.orgId, context, authorizationPermission: "sales.manage", sendAuthorizationPermission: "sales.manage" })
@@ -468,7 +468,7 @@ async function forfeitReservationDeposit(
   const today = new Date().toISOString().slice(0, 10)
   const invoice = await createInvoice({ input: {
     project_id: projectId, invoice_number: `FORFEIT-${Date.now().toString().slice(-9)}`, title: "Forfeited earnest deposit",
-    status: "sent", issue_date: today, due_date: today, client_visible: false, tax_rate: 0,
+    issue: false, issue_date: today, due_date: today, tax_rate: 0,
     customer_id: reservation.buyer_contact_id ?? null,
     lines: [{ description: `Forfeited earnest deposit — ${reason}`, quantity: 1, unit: "deposit", unit_cost: invoiceUnitCostFromCents(forfeitedCents), taxable: false }],
     metadata: { invoice_kind: "deposit_forfeiture", source_reservation_id: reservation.id },

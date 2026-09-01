@@ -19,7 +19,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { usePageTitle } from "@/components/layout/page-title-context";
 import { FileDropOverlay } from "@/components/files/file-drop-overlay";
 import { FileViewer, preloadPdfViewer } from "@/components/files/file-viewer";
-import { downloadUrlToFile, getDownloadFileName } from "@/components/files/download";
+import { downloadFilesAsZip, downloadUrlToFile } from "@/components/files/download";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { DocumentsProvider, useDocuments } from "./documents-context";
 import {
@@ -743,34 +743,11 @@ function UnifiedDocumentsLayoutInner() {
         }
       }
 
-      const response = await fetch("/api/documents/download-zip", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileIds: ids }),
-      });
-
-      if (!response.ok) {
-        const payload = await response.json().catch(() => null);
-        toast.error(payload?.error ?? "Failed to create ZIP download");
-        return;
-      }
-
-      const blob = await response.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = objectUrl;
-      link.download = getDownloadFileName(
-        response.headers.get("content-disposition"),
-        `arc-documents-${new Date().toISOString().slice(0, 10)}.zip`,
-      );
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      await downloadFilesAsZip(ids, `arc-documents-${new Date().toISOString().slice(0, 10)}.zip`);
       toast.success(`Downloading ${ids.length} files as ZIP`);
     } catch (error) {
       console.error("Failed to download selected files:", error);
-      toast.error("Failed to download selected files");
+      toast.error(error instanceof Error ? error.message : "Failed to download selected files");
     } finally {
       setIsDownloadingSelected(false);
     }

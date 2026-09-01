@@ -1,5 +1,6 @@
 "use client"
 
+import { newInvoiceHref } from "@/lib/financials/invoice-destinations"
 import { useEffect, useMemo, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { format } from "date-fns"
@@ -363,7 +364,7 @@ const [sheetOpen, setSheetOpen] = useState(false)
 
   // Prepare-invoice hands off to the receivables workspace, pre-seeded from this change order.
   const handlePrepareInvoice = (changeOrder: ChangeOrder) => {
-    router.push(`/projects/${changeOrder.project_id}/financials/receivables?invoice=new&source=change_order:${changeOrder.id}`)
+    router.push(newInvoiceHref(changeOrder.project_id, { sourceChangeOrderId: changeOrder.id }))
   }
 
   const handleEditFromDetail = (changeOrder: ChangeOrder) => {

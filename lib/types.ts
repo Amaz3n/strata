@@ -1028,6 +1028,7 @@ export interface Photo {
   id: string
   url: string
   taken_at?: string
+  caption?: string
   tags?: string[]
 }
 
@@ -1349,20 +1350,6 @@ export interface PaymentIntent {
   on_behalf_of_account_id?: string | null
   idempotency_key?: string | null
   expires_at?: string | null
-  metadata?: Record<string, any>
-  created_at?: string
-  updated_at?: string
-}
-
-export interface PaymentLink {
-  id: string
-  org_id: string
-  invoice_id: string
-  token_hash?: string
-  nonce?: string
-  expires_at?: string | null
-  max_uses?: number | null
-  used_count?: number
   metadata?: Record<string, any>
   created_at?: string
   updated_at?: string
@@ -1902,6 +1889,12 @@ export interface ClientPortalData {
     showDrawSchedule: boolean
   }
 }
+
+/** The small, stable read model used by the portal's project-team page. */
+export type ClientPortalAboutData = Pick<ClientPortalData, "org" | "project" | "projectManager">
+
+/** Files explicitly shared with a visitor on the client portal. */
+export type ClientPortalDocumentsData = Pick<ClientPortalData, "sharedFiles">
 
 export interface SubPortalCommitment {
   id: string

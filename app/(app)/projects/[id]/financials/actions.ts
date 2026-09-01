@@ -5,9 +5,9 @@ import { revalidatePath } from "next/cache"
 import { getBudgetWithActuals, listBudgetBucketChangeOrders, listProjectBudgetLines, listVarianceAlertsForProject } from "@/lib/services/budgets"
 import { listCostCodes } from "@/lib/services/cost-codes"
 import { listProjectCommitments } from "@/lib/services/commitments"
-import { getProjectInvoiceArSummary, listInvoices } from "@/lib/services/invoices"
+import { getInvoiceQueueCounts, getProjectInvoiceArSummary, listInvoicePage } from "@/lib/services/invoices"
 import { listBillableContacts } from "@/lib/services/contacts"
-import { listVendorBillsPageForProject } from "@/lib/services/vendor-bills"
+import { getVendorBillForProject, listVendorBillsPageForProject } from "@/lib/services/vendor-bills"
 import { getProjectBuyoutStatus } from "@/lib/services/bids"
 import { getComplianceRules } from "@/lib/services/compliance"
 import { getCompaniesComplianceStatus } from "@/lib/services/compliance-documents"
@@ -35,7 +35,7 @@ import {
   type CreateFeeInvoiceInput,
   type UpdateFeeProgressInput,
 } from "@/lib/services/fee-billing"
-import { getProjectGmpControlSummary, recordGmpContingencyDrawdown } from "@/lib/services/gmp-control"
+import { recordGmpContingencyDrawdown } from "@/lib/services/gmp-control"
 import {
   createTmTicket,
   createTmTicketSignatureLink,
@@ -106,16 +106,12 @@ function resultError(label: string, result: PromiseSettledResult<unknown>) {
  * directory never rides along with every budget page view.
  */
 export async function fetchBudgetTabDataAction(projectId: string) {
-      const setupStatus = await getProjectFinancialSetupStatusForProject(projectId).catch(() => null)
-      const isFixedPrice = setupStatus?.billingModel === "fixed_price"
       const [
         budgetDataResult,
         costCodesResult,
         varianceAlertsResult,
         commitmentsResult,
         buyoutStatusResult,
-        feeSummaryResult,
-        gmpSummaryResult,
         transfersResult,
       ] = await Promise.allSettled([
         getBudgetWithActuals(projectId),
@@ -123,8 +119,6 @@ export async function fetchBudgetTabDataAction(projectId: string) {
         listVarianceAlertsForProject(projectId),
         listProjectCommitments(projectId),
         getProjectBuyoutStatus(projectId),
-        isFixedPrice ? Promise.resolve(null) : getProjectFeeBillingSummary(projectId),
-        isFixedPrice ? Promise.resolve(null) : getProjectGmpControlSummary(projectId),
         listBudgetTransfers(projectId),
       ])
 
@@ -138,8 +132,6 @@ export async function fetchBudgetTabDataAction(projectId: string) {
         resultError("Variance alerts", varianceAlertsResult),
         resultError("Commitments", commitmentsResult),
         resultError("Buyout status", buyoutStatusResult),
-        isFixedPrice ? null : resultError("Fee billing", feeSummaryResult),
-        isFixedPrice ? null : resultError("GMP control", gmpSummaryResult),
         resultError("Budget transfers", transfersResult),
       ].filter(Boolean) as string[]
       const budgetBucketCompanies = await buildBudgetBucketCompanies(commitments)
@@ -151,8 +143,6 @@ export async function fetchBudgetTabDataAction(projectId: string) {
         commitments,
         buyoutStatus: buyoutStatusResult.status === "fulfilled" ? buyoutStatusResult.value : null,
         budgetBucketCompanies,
-        feeSummary: feeSummaryResult.status === "fulfilled" ? feeSummaryResult.value : null,
-        gmpSummary: gmpSummaryResult.status === "fulfilled" ? gmpSummaryResult.value : null,
         budgetTransfers: transfersResult.status === "fulfilled" ? transfersResult.value : [],
         errors,
       }
@@ -196,10 +186,11 @@ async function buildBudgetBucketCompanies(commitments: Awaited<ReturnType<typeof
  * - Contacts for invoice recipients
  * - Cost codes for invoice line items
  */
-export async function fetchReceivablesTabDataAction(projectId: string) {
-      const [invoicesResult, contactsResult, costCodesResult, ownerPackagesResult, feeSummaryResult, arSummaryResult] = await Promise.allSettled([
-        // First page only; the invoices tab lazy-loads the rest via "Load more".
-        listInvoices({ projectId, limit: 100 }),
+export async function fetchBillingTabDataAction(projectId: string) {
+      const [invoicesResult, contactsResult, costCodesResult, ownerPackagesResult, feeSummaryResult, arSummaryResult, queueCountsResult] = await Promise.allSettled([
+        // First page only; the queue lazy-loads the rest via "Load more". Filtering,
+        // sorting and counting happen in the database from here on.
+        listInvoicePage({ projectId, limit: 100, sort: "activity", sortDirection: "desc" }),
         listBillableContacts(),
         listCostCodes(),
         listProjectOwnerBillingPackageSummaries(projectId),
@@ -208,11 +199,18 @@ export async function fetchReceivablesTabDataAction(projectId: string) {
         getProjectFeeBillingSummary(projectId),
         // Whole-book aging so the AR strip stays correct beyond the first invoice page.
         getProjectInvoiceArSummary({ projectId }),
+        getInvoiceQueueCounts({ projectId }),
       ])
 
       const feeSummary = feeSummaryResult.status === "fulfilled" ? feeSummaryResult.value : null
+      const invoicePage = invoicesResult.status === "fulfilled" ? invoicesResult.value : null
       return {
-        invoices: invoicesResult.status === "fulfilled" ? invoicesResult.value : [],
+        invoices: invoicePage?.invoices ?? [],
+        invoiceTotalCount: invoicePage?.totalCount ?? 0,
+        queueCounts:
+          queueCountsResult.status === "fulfilled"
+            ? queueCountsResult.value
+            : { all: 0, preparing: 0, awaiting_approval: 0, ready: 0, open: 0, overdue: 0, exceptions: 0, paid: 0, void: 0 },
         contacts: contactsResult.status === "fulfilled" ? contactsResult.value : [],
         costCodes: costCodesResult.status === "fulfilled" ? costCodesResult.value : [],
         ownerBillingPackages: ownerPackagesResult.status === "fulfilled" ? ownerPackagesResult.value : [],
@@ -224,6 +222,11 @@ export async function fetchReceivablesTabDataAction(projectId: string) {
           resultError("Cost codes", costCodesResult),
           resultError("Owner billing packages", ownerPackagesResult),
           resultError("Fee billing", feeSummaryResult),
+          // Named on purpose. When the whole-book aggregate failed, the page used
+          // to quietly show nothing where the money totals go, which reads as
+          // "there is no receivable here" rather than "we could not add it up".
+          resultError("Receivables totals", arSummaryResult),
+          resultError("Queue counts", queueCountsResult),
         ].filter(Boolean) as string[],
       }
 }
@@ -234,16 +237,30 @@ export async function fetchReceivablesTabDataAction(projectId: string) {
  * - Vendor bills for the project
  * - Compliance rules for payment blocking
  */
-export async function fetchPayablesTabDataAction(projectId: string, query: { page?: number; pageSize?: number; queue?: string; search?: string } = {}) {
-      const [vendorBillsResult, complianceRulesResult, costCodesResult, budgetLinesResult] = await Promise.allSettled([
+export async function fetchPayablesTabDataAction(projectId: string, query: { page?: number; pageSize?: number; queue?: string; due?: string; search?: string; billId?: string } = {}) {
+      const [vendorBillsResult, selectedBillResult, complianceRulesResult, costCodesResult, budgetLinesResult] = await Promise.allSettled([
         listVendorBillsPageForProject(projectId, query),
+        query.billId ? getVendorBillForProject(projectId, query.billId) : Promise.resolve(null),
         getComplianceRules(),
         listCostCodes(),
         listProjectBudgetLines(projectId),
       ])
 
-      const vendorBillsPage = vendorBillsResult.status === "fulfilled" ? vendorBillsResult.value : { items: [], page: 1, pageSize: 50, total: 0, pageCount: 1 }
+      const vendorBillsPage = vendorBillsResult.status === "fulfilled" ? vendorBillsResult.value : {
+        items: [], page: 1, pageSize: 50, total: 0, pageCount: 1,
+        query: { queue: "approval" as const, due: "any" as const, search: "" },
+        tabs: {
+          drafts: { count: 0, amountCents: 0 }, approval: { count: 0, amountCents: 0 },
+          ready: { count: 0, amountCents: 0 }, inflight: { count: 0, amountCents: 0 },
+          paid: { count: 0, amountCents: 0 }, all: { count: 0, amountCents: 0 },
+        },
+        summaryTruncated: false,
+      }
       const vendorBills = vendorBillsPage.items
+      const selectedBill = selectedBillResult.status === "fulfilled" ? selectedBillResult.value : null
+      const decorationBills = selectedBill && !vendorBills.some((bill) => bill.id === selectedBill.id)
+        ? [...vendorBills, selectedBill]
+        : vendorBills
       const complianceRules =
         complianceRulesResult.status === "fulfilled"
           ? complianceRulesResult.value
@@ -255,7 +272,7 @@ export async function fetchPayablesTabDataAction(projectId: string, query: { pag
             }
       const costCodes = costCodesResult.status === "fulfilled" ? costCodesResult.value : []
       const budgetLines = budgetLinesResult.status === "fulfilled" ? budgetLinesResult.value : []
-      const companyIds = Array.from(new Set(vendorBills.map((b) => b.company_id).filter(Boolean))) as string[]
+      const companyIds = Array.from(new Set(decorationBills.map((b) => b.company_id).filter(Boolean))) as string[]
       // This tab is one job, so the vendors are read against that job's
       // overlay — the same scope the release gate uses.
       const complianceStatusResult = await Promise.allSettled([
@@ -263,13 +280,14 @@ export async function fetchPayablesTabDataAction(projectId: string, query: { pag
       ])
       const complianceStatusByCompanyId =
         complianceStatusResult[0].status === "fulfilled" ? complianceStatusResult[0].value : {}
-      const paymentDecorations = await loadPayablePaymentDecorations(vendorBills).catch(() => ({
+      const paymentDecorations = await loadPayablePaymentDecorations(decorationBills).catch(() => ({
         paymentReadinessByCompanyId: {},
         runMembershipByBillId: {},
       }))
 
       return {
         vendorBills,
+        selectedBill,
         vendorBillsPage,
         complianceRules,
         complianceStatusByCompanyId,
@@ -279,6 +297,7 @@ export async function fetchPayablesTabDataAction(projectId: string, query: { pag
         budgetLines,
         errors: [
           resultError("Vendor bills", vendorBillsResult),
+          resultError("Selected payable", selectedBillResult),
           resultError("Compliance rules", complianceRulesResult),
           resultError("Cost codes", costCodesResult),
           resultError("Compliance status", complianceStatusResult[0]),
@@ -293,8 +312,8 @@ export async function generateInvoiceFromCostsAction(input: unknown) {
       if (!parsed.dryRun) {
         revalidatePath(`/projects/${parsed.projectId}`)
         revalidatePath(`/projects/${parsed.projectId}/financials`)
-        revalidatePath(`/projects/${parsed.projectId}/financials/review`)
-        revalidatePath(`/projects/${parsed.projectId}/financials/receivables`)
+        revalidatePath(`/projects/${parsed.projectId}/financials/cost-inbox`)
+        revalidatePath(`/projects/${parsed.projectId}/financials/billing`)
       }
       return result
   })
@@ -306,8 +325,8 @@ export async function createManualBillableAdjustmentAction(input: unknown) {
       const adjustment = await createManualBillableAdjustment(parsed)
       revalidatePath(`/projects/${parsed.projectId}`)
       revalidatePath(`/projects/${parsed.projectId}/financials`)
-      revalidatePath(`/projects/${parsed.projectId}/financials/review`)
-      revalidatePath(`/projects/${parsed.projectId}/financials/receivables`)
+      revalidatePath(`/projects/${parsed.projectId}/financials/cost-inbox`)
+      revalidatePath(`/projects/${parsed.projectId}/financials/billing`)
       revalidatePath(`/projects/${parsed.projectId}/financials/budget`)
       return adjustment
   })
@@ -320,7 +339,7 @@ export async function saveProjectFinancialSetupAction(input: FinancialSetupInput
       revalidatePath(`/projects/${input.projectId}/financials`)
       revalidatePath(`/projects/${input.projectId}/financials/budget`)
       revalidatePath(`/projects/${input.projectId}/financials/payables`)
-      revalidatePath(`/projects/${input.projectId}/financials/receivables`)
+      revalidatePath(`/projects/${input.projectId}/financials/billing`)
       return result
   })
 }
@@ -338,7 +357,7 @@ export async function createTmTicketAction(input: {
         billableCostIds: input.billableCostIds,
         notes: input.notes ?? null,
       })
-      revalidatePath(`/projects/${input.projectId}/financials/review`)
+      revalidatePath(`/projects/${input.projectId}/financials/cost-inbox`)
       revalidatePath(`/projects/${input.projectId}/financials/tm-tickets`)
       return ticket
   })
@@ -363,9 +382,9 @@ export async function createTmTicketSignatureLinkAction(projectId: string, ticke
 export async function generateInvoiceFromTmTicketAction(projectId: string, ticketId: string) {
   return run(async () => {
       const result = await generateInvoiceFromTmTicket(ticketId)
-      revalidatePath(`/projects/${projectId}/financials/review`)
+      revalidatePath(`/projects/${projectId}/financials/cost-inbox`)
       revalidatePath(`/projects/${projectId}/financials/tm-tickets`)
-      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      revalidatePath(`/projects/${projectId}/financials/billing`)
       return result
   })
 }
@@ -383,8 +402,8 @@ export async function createProjectBillingPeriodAction(input: CreateBillingPerio
       const period = await createProjectBillingPeriod(input)
       revalidatePath(`/projects/${input.projectId}`)
       revalidatePath(`/projects/${input.projectId}/financials`)
-      revalidatePath(`/projects/${input.projectId}/financials/review`)
-      revalidatePath(`/projects/${input.projectId}/financials/receivables`)
+      revalidatePath(`/projects/${input.projectId}/financials/cost-inbox`)
+      revalidatePath(`/projects/${input.projectId}/financials/billing`)
       return period
   })
 }
@@ -394,8 +413,8 @@ export async function closeProjectBillingPeriodAction(input: CloseBillingPeriodI
       const period = await closeProjectBillingPeriod(input)
       revalidatePath(`/projects/${input.projectId}`)
       revalidatePath(`/projects/${input.projectId}/financials`)
-      revalidatePath(`/projects/${input.projectId}/financials/review`)
-      revalidatePath(`/projects/${input.projectId}/financials/receivables`)
+      revalidatePath(`/projects/${input.projectId}/financials/cost-inbox`)
+      revalidatePath(`/projects/${input.projectId}/financials/billing`)
       return period
   })
 }
@@ -405,8 +424,8 @@ export async function generateOwnerBillingPackageAction(input: { projectId: stri
       const pkg = await generateInvoiceBackupPackage(input)
       revalidatePath(`/projects/${input.projectId}`)
       revalidatePath(`/projects/${input.projectId}/financials`)
-      revalidatePath(`/projects/${input.projectId}/financials/review`)
-      revalidatePath(`/projects/${input.projectId}/financials/receivables`)
+      revalidatePath(`/projects/${input.projectId}/financials/cost-inbox`)
+      revalidatePath(`/projects/${input.projectId}/financials/billing`)
       return summarizeOwnerBillingPackage(pkg)
   })
 }
@@ -416,7 +435,7 @@ export async function shareOwnerBillingPackageAction(input: { projectId: string;
       const pkg = await shareInvoiceBackupPackage(input)
       revalidatePath(`/projects/${input.projectId}`)
       revalidatePath(`/projects/${input.projectId}/financials`)
-      revalidatePath(`/projects/${input.projectId}/financials/receivables`)
+      revalidatePath(`/projects/${input.projectId}/financials/billing`)
       return summarizeOwnerBillingPackage(pkg)
   })
 }
@@ -427,7 +446,7 @@ export async function updateProjectFeeProgressAction(input: UpdateFeeProgressInp
       revalidatePath(`/projects/${input.projectId}`)
       revalidatePath(`/projects/${input.projectId}/financials`)
       revalidatePath(`/projects/${input.projectId}/financials/budget`)
-      revalidatePath(`/projects/${input.projectId}/financials/receivables`)
+      revalidatePath(`/projects/${input.projectId}/financials/billing`)
       return summary
   })
 }
@@ -439,7 +458,7 @@ export async function createProjectFeeInvoiceAction(input: CreateFeeInvoiceInput
       revalidatePath(`/projects/${input.projectId}`)
       revalidatePath(`/projects/${input.projectId}/financials`)
       revalidatePath(`/projects/${input.projectId}/financials/budget`)
-      revalidatePath(`/projects/${input.projectId}/financials/receivables`)
+      revalidatePath(`/projects/${input.projectId}/financials/billing`)
       return { invoice, feeSummary }
   })
 }
@@ -447,7 +466,7 @@ export async function createProjectFeeInvoiceAction(input: CreateFeeInvoiceInput
 export async function savePrimeSovLinesAction(projectId: string, input: { lines: PrimeSovLineInput[] }) {
   return run(async () => {
       const state = await upsertPrimeSovLines(projectId, input)
-      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      revalidatePath(`/projects/${projectId}/financials/billing`)
       return state
   })
 }
@@ -455,7 +474,7 @@ export async function savePrimeSovLinesAction(projectId: string, input: { lines:
 export async function importPrimeSovFromBudgetAction(projectId: string) {
   return run(async () => {
       const state = await importSovFromBudget(projectId)
-      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      revalidatePath(`/projects/${projectId}/financials/billing`)
       return state
   })
 }
@@ -463,7 +482,7 @@ export async function importPrimeSovFromBudgetAction(projectId: string) {
 export async function importPrimeSovFromEstimateAction(projectId: string) {
   return run(async () => {
       const state = await importSovFromEstimate(projectId)
-      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      revalidatePath(`/projects/${projectId}/financials/billing`)
       return state
   })
 }
@@ -474,7 +493,7 @@ export async function createPayApplicationAction(
 ) {
   return run(async () => {
       const detail = await createPayApplication(projectId, input)
-      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      revalidatePath(`/projects/${projectId}/financials/billing`)
       return detail
   })
 }
@@ -490,7 +509,7 @@ export async function updatePayApplicationLinesAction(
 ) {
   return run(async () => {
       const detail = await updatePayApplicationLines(payApplicationId, input)
-      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      revalidatePath(`/projects/${projectId}/financials/billing`)
       return detail
   })
 }
@@ -500,7 +519,7 @@ export async function submitPayApplicationAction(projectId: string, payApplicati
       const detail = await submitPayApplication(payApplicationId)
       const payApplications = await listPayApplications(projectId)
       revalidatePath(`/projects/${projectId}/financials`)
-      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      revalidatePath(`/projects/${projectId}/financials/billing`)
       return { detail, payApplications }
   })
 }
@@ -509,7 +528,7 @@ export async function voidPayApplicationAction(projectId: string, payApplication
   return run(async () => {
       const detail = await voidPayApplication(payApplicationId)
       revalidatePath(`/projects/${projectId}/financials`)
-      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      revalidatePath(`/projects/${projectId}/financials/billing`)
       return detail
   })
 }
@@ -517,7 +536,7 @@ export async function voidPayApplicationAction(projectId: string, payApplication
 export async function deletePayApplicationAction(projectId: string, payApplicationId: string) {
   return run(async () => {
       const result = await deletePayApplication(payApplicationId)
-      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      revalidatePath(`/projects/${projectId}/financials/billing`)
       return result
   })
 }
@@ -525,7 +544,7 @@ export async function deletePayApplicationAction(projectId: string, payApplicati
 export async function markPayApplicationApprovedAction(projectId: string, payApplicationId: string) {
   return run(async () => {
       const detail = await markPayApplicationApproved(payApplicationId)
-      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      revalidatePath(`/projects/${projectId}/financials/billing`)
       return detail
   })
 }
@@ -533,7 +552,7 @@ export async function markPayApplicationApprovedAction(projectId: string, payApp
 export async function generatePayApplicationPdfAction(projectId: string, payApplicationId: string) {
   return run(async () => {
       const { fileName, pdf } = await generateSovPayApplicationPdf({ projectId, payApplicationId })
-      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      revalidatePath(`/projects/${projectId}/financials/billing`)
       return { fileName, pdfBase64: pdf.toString("base64") }
   })
 }
@@ -556,7 +575,7 @@ export async function generatePayApplicationPackageAction(
         includeGcCompliance: input.includeGcCompliance ?? false,
       })
       revalidatePath(`/projects/${projectId}/financials`)
-      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      revalidatePath(`/projects/${projectId}/financials/billing`)
       return {
         fileName,
         pdfBase64: pdf.toString("base64"),
@@ -569,7 +588,7 @@ export async function releasePrimeRetainageAction(projectId: string, input: Reta
   return run(async () => {
       const detail = await releasePrimeRetainage(projectId, input)
       revalidatePath(`/projects/${projectId}/financials`)
-      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      revalidatePath(`/projects/${projectId}/financials/billing`)
       return detail
   })
 }
@@ -581,7 +600,7 @@ export async function recordGmpContingencyDrawdownAction(input: unknown) {
       revalidatePath(`/projects/${projectId}`)
       revalidatePath(`/projects/${projectId}/financials`)
       revalidatePath(`/projects/${projectId}/financials/budget`)
-      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      revalidatePath(`/projects/${projectId}/financials/billing`)
       return result
   })
 }

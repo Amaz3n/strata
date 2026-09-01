@@ -1,5 +1,6 @@
 "use client"
 
+import { invoiceHref } from "@/lib/financials/invoice-destinations"
 import { useState } from "react"
 import { format } from "date-fns"
 import { Badge } from "@/components/ui/badge"
@@ -172,7 +173,7 @@ export function RetainageTracker({ projectId, retainage, compact = false }: Reta
                       <TableCell className="px-6 text-center">
                         {item.invoice_id ? (
                           <Button variant="ghost" size="icon" className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity" asChild>
-                            <a href={`/projects/${item.project_id}/invoices?open=${item.invoice_id}`}>
+                            <a href={invoiceHref(item.invoice_id, item.project_id)}>
                               <ExternalLink className="h-3.5 w-3.5" />
                             </a>
                           </Button>

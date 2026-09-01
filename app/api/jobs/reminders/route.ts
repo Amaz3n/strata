@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { sendReminderEmail, sendReminderSMS } from "@/lib/services/mailer"
-import { createPersistedPayLink } from "@/lib/services/payments"
 import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
 import { withCronRun } from "@/lib/services/job-runs"
 
@@ -78,24 +77,14 @@ async function handler(request: NextRequest) {
 
     try {
       let providerMessageId: string | undefined
-      let payLink: string | undefined
 
-      try {
-        const signed = await createPersistedPayLink({
-          supabase,
-          orgId: reminder.org_id,
-          projectId: reminder.invoice.project_id,
-          invoiceId: reminder.invoice.id,
-          expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
-          metadata: { source: "invoice_reminder", reminder_id: reminder.id },
-        })
-        payLink = signed.url
-      } catch {
-        const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")
-        if (appUrl && reminder.invoice.client_visible && reminder.invoice.token) {
-          payLink = `${appUrl}/i/${reminder.invoice.token}`
-        }
-      }
+      // Reminders only go out for published invoices — the public invoice page
+      // is the one pay surface, so an invoice without a token gets no reminder.
+      const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")
+      const payLink =
+        appUrl && reminder.invoice.client_visible && reminder.invoice.token
+          ? `${appUrl}/i/${reminder.invoice.token}`
+          : undefined
 
       if (!payLink) continue
 

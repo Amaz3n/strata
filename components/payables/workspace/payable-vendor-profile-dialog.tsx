@@ -141,6 +141,7 @@ export function PayableVendorProfileDialog({
               <CompanyForm company={company} payablesMode onCancel={() => onOpenChange(false)} onSubmitted={onSaved} />
             </section>
 
+            {profile?.complianceMonitoringEnabled ? (
             <section className="px-6 py-6 lg:px-8">
               <div className="mb-4 flex items-center gap-2">
                 <ShieldCheck className="size-4 text-muted-foreground" />
@@ -182,6 +183,7 @@ export function PayableVendorProfileDialog({
                 </Button>
               </div>
             </section>
+            ) : null}
           </div>
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5 lg:px-8">

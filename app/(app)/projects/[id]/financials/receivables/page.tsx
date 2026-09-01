@@ -1,96 +1,18 @@
-import { Suspense } from "react"
-
-import { fetchReceivablesTabDataAction } from "@/app/(app)/projects/[id]/financials/actions"
-import { FinancialSetupStatusBanner } from "@/components/financials/financial-setup-status-banner"
-import { ReceivablesTab } from "@/components/financials/receivables-tab"
-import { PageLayout } from "@/components/layout/page-layout"
-import { Skeleton } from "@/components/ui/skeleton"
-import { loadFinancialsReceivablesData } from "../page-data"
-
+import { redirect } from "next/navigation"
+export const instant = false
 
 interface PageProps {
   params: Promise<{ id: string }>
-  searchParams?: Promise<{ period?: string }>
+  searchParams?: Promise<Record<string, string | string[] | undefined>>
 }
 
 export default async function FinancialsReceivablesPage({ params, searchParams }: PageProps) {
   const { id } = await params
-  const { period } = (await searchParams) ?? {}
-
-  return (
-    <Suspense fallback={<FinancialsChildSkeleton title="Receivables" />}>
-      <FinancialsReceivablesData id={id} periodId={period ?? null} />
-    </Suspense>
-  )
-}
-
-async function FinancialsReceivablesData({ id, periodId }: { id: string; periodId: string | null }) {
-  const [financialsData, receivablesData] = await Promise.all([
-    loadFinancialsReceivablesData(id, periodId),
-    fetchReceivablesTabDataAction(id),
-  ])
-  const { project, scheduleItems, contract, draws, retainage, builderInfo, featureConfig, setupStatus } = financialsData
-
-  return (
-    <PageLayout
-      title="Receivables"
-      breadcrumbs={[
-        { label: project.name, href: `/projects/${project.id}` },
-        { label: "Financials", href: `/projects/${project.id}/financials` },
-        { label: "Receivables" },
-      ]}
-      fullBleed
-    >
-      <FinancialSetupStatusBanner setup={setupStatus} />
-      <ReceivablesTab
-        projectId={project.id}
-        project={project}
-        billingModel={featureConfig.billingModel}
-        showDraws={featureConfig.showDraws}
-        showRetainage={financialsData.showRetainage}
-        sovState={financialsData.sovState}
-        payApplications={financialsData.payApplications}
-        closeWorkflow={
-          financialsData.costDriven
-            ? {
-                periods: financialsData.billingPeriods,
-                selectedPeriod: financialsData.selectedPeriod,
-                summary: financialsData.closeSummary,
-                feeSummary: financialsData.feeSummary,
-                gmpSummary: financialsData.gmpSummary,
-                autopilot: financialsData.autopilot,
-              }
-            : null
-        }
-        invoices={receivablesData.invoices}
-        draws={draws}
-        retainage={retainage}
-        contacts={receivablesData.contacts}
-        costCodes={receivablesData.costCodes}
-        costCodesEnabled={setupStatus.costCodesEnabled}
-        ownerBillingPackages={receivablesData.ownerBillingPackages}
-        feeSummary={receivablesData.feeSummary}
-        arSummary={receivablesData.arSummary}
-        contract={contract}
-        scheduleItems={scheduleItems}
-        builderInfo={builderInfo}
-        loadErrors={[...financialsData.loadErrors, ...receivablesData.errors]}
-      />
-    </PageLayout>
-  )
-}
-
-function FinancialsChildSkeleton({ title }: { title: string }) {
-  return (
-    <PageLayout title={title} breadcrumbs={[{ label: "Project" }, { label: "Financials" }, { label: title }]} fullBleed>
-      <div className="w-full">
-        <div className="flex min-h-14 items-center border-b px-4 sm:px-6 lg:px-8">
-          <Skeleton className="h-8 w-full max-w-3xl" />
-        </div>
-        <div className="p-4 sm:p-6 lg:p-8">
-          <Skeleton className="h-80 w-full rounded-md" />
-        </div>
-      </div>
-    </PageLayout>
-  )
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries((await searchParams) ?? {})) {
+    if (typeof value === "string") query.set(key, value)
+    else if (Array.isArray(value) && value[0]) query.set(key, value[0])
+  }
+  const suffix = query.size > 0 ? `?${query.toString()}` : ""
+  redirect(`/projects/${id}/financials/billing${suffix}`)
 }

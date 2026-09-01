@@ -2,6 +2,9 @@ import "server-only"
 
 import { randomUUID } from "node:crypto"
 
+import { OPEN_AR_INVOICE_STATUSES } from "@/lib/financials/invoice-lifecycle"
+import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
+
 import { buildTableArtifact } from "@/lib/services/ai-search/artifacts"
 import { retrieveHybridResults } from "@/lib/services/ai-search/retrieval"
 import { resolveProjectById, resolveProjectFromHints, type ProjectRef } from "@/lib/services/ai-search/projects"
@@ -13,7 +16,8 @@ type ResolvedOrgContext = Awaited<ReturnType<typeof requireOrgContext>>
 
 const ANALYTICS_BATCH_SIZE = 1_000
 const MAX_ANALYTICS_ROWS_SOFT_LIMIT = 100_000
-const OPEN_INVOICE_STATUSES = ["sent", "partial", "overdue", "saved", "draft"] as const
+// See lib/financials/invoice-lifecycle.ts. Drafts are not receivable.
+const OPEN_INVOICE_STATUSES = OPEN_AR_INVOICE_STATUSES
 
 export type FinancialRollup = {
   project?: ProjectRef
@@ -724,6 +728,11 @@ export async function executeCanonicalMetricIntent(
     }
     if (intent.key === "overdue_ar") {
       queryBuilder = queryBuilder.lt("due_date", todayIso)
+    }
+    if (intent.key === "revenue_billed") {
+      // "Revenue billed" had no status filter at all, so drafts and voided
+      // invoices inflated it. Billed means billed: BILLED_INVOICE_STATUSES.
+      queryBuilder = queryBuilder.in("status", [...BILLED_INVOICE_STATUSES])
     }
 
     const { data, error } = await queryBuilder

@@ -102,9 +102,19 @@ function SelectItem({
   className,
   children,
   value,
+  description,
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Item> & {
   value: NonNullable<React.ComponentProps<typeof SelectPrimitive.Item>['value']>
+  /**
+   * A second line of guidance under the option, shown in the menu only.
+   *
+   * It sits OUTSIDE `ItemText` on purpose. `Select.Value` renders whatever is
+   * inside `ItemText` into the trigger, and the trigger clamps that to one line
+   * with `line-clamp-1` — so a two-line block written as children collapses and
+   * the trigger renders visibly empty.
+   */
+  description?: React.ReactNode
 }) {
   return (
     <SelectPrimitive.Item
@@ -121,7 +131,16 @@ function SelectItem({
           <CheckIcon className="size-4" />
         </SelectPrimitive.ItemIndicator>
       </span>
-      <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+      {description ? (
+        // A div, not a span: the item styles `*:[span]:last` as a horizontal
+        // row, which would fight this column.
+        <div className="flex min-w-0 flex-col items-start gap-0.5">
+          <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+          <span className="text-xs text-muted-foreground">{description}</span>
+        </div>
+      ) : (
+        <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+      )}
     </SelectPrimitive.Item>
   )
 }

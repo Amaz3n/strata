@@ -12,7 +12,7 @@ import {
   approveVendorBillsAtomicAction,
   deleteProjectVendorBillAction,
 } from "@/app/(app)/projects/[id]/payables/actions"
-import { AlertTriangle, MoreHorizontal, Plus, Receipt, Search, Upload, X } from "@/components/icons"
+import { MoreHorizontal, Plus, Receipt, Search, Upload, X } from "@/components/icons"
 import { PayableCreateWorkspace } from "@/components/payables/payable-create-workspace"
 import { AccountingSyncSheet } from "@/components/integrations/accounting-sync-sheet"
 import { accountingProviderLabel, isAccountingProviderKey } from "@/components/accounting/provider-label"
@@ -43,11 +43,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
-import {
   Empty,
   EmptyDescription,
   EmptyHeader,
@@ -65,7 +60,14 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { dueDisplay, formatDay, payableStatusTone, vendorLabel } from "@/components/payables/payables-ui"
+import { dueDisplay, formatDay, vendorLabel } from "@/components/payables/payables-ui"
+import {
+  PayableOperationalStatus,
+  PayableReadinessDot,
+  PayableReleaseWarning,
+  payableDeleteBlockedReason,
+  payableReleaseWarnings,
+} from "@/components/payables/payable-row-state"
 import {
   isVendorCredit,
   payableOutstandingCents,
@@ -179,72 +181,6 @@ function MethodCell({ bill }: { bill: VendorBillSummary }) {
 }
 
 /**
- * What the release gate is likely to say, from facts the desk already has.
- *
- * The real verdict comes from `evaluateHolds`, which is seven queries a bill and
- * cannot run for a whole page. These are the same inputs it reads, so a row that
- * will stop at the payment gate says so here instead of at the gate — the reason
- * a "Ready to pay" tab is worth trusting.
- */
-function releaseWarnings(
-  bill: VendorBillSummary,
-  complianceRules: ComplianceRules,
-  complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>,
-): string[] {
-  if (bill.is_draft || isVendorCredit(bill) || bill.status === "paid") return []
-  const warnings: string[] = []
-  const compliance = bill.company_id
-    ? complianceStatusByCompanyId[bill.company_id]
-    : undefined
-  if (compliance && !compliance.is_compliant) {
-    warnings.push(
-      compliance.expired.length > 0
-        ? "Vendor compliance documents have expired"
-        : "Vendor is missing required compliance documents",
-    )
-  }
-  if (complianceRules.require_lien_waiver && bill.lien_waiver_status !== "received") {
-    warnings.push("Lien waiver not received")
-  }
-  if (bill.over_budget) warnings.push("Exceeds the linked commitment")
-  return warnings
-}
-
-/**
- * The warning marker on a row, and what it is warning about. An icon whose only
- * explanation is its colour makes people open the payable to find out — which is
- * the trip it exists to save.
- */
-function ReleaseWarningTip({ warnings }: { warnings: string[] }) {
-  return (
-    <Tooltip delayDuration={120}>
-      <TooltipTrigger asChild>
-        <span
-          className="shrink-0 leading-none"
-          onClick={(event) => event.stopPropagation()}
-        >
-          <AlertTriangle className="size-3.5 text-warning" />
-          <span className="sr-only">
-            May block payment: {warnings.join("; ")}
-          </span>
-        </span>
-      </TooltipTrigger>
-      <TooltipContent side="top" align="start">
-        <p className="font-medium">May block payment</p>
-        <ul className="mt-1 space-y-0.5">
-          {warnings.map((warning) => (
-            <li key={warning} className="flex gap-1.5 text-muted-foreground">
-              <span aria-hidden>·</span>
-              <span>{warning}</span>
-            </li>
-          ))}
-        </ul>
-      </TooltipContent>
-    </Tooltip>
-  )
-}
-
-/**
  * Per-row actions, revealed on hover.
  *
  * Delete is offered only while a payable is still just a record: no recorded
@@ -263,15 +199,7 @@ function PayableRowActions({
   onEdit: () => void
   onDelete: () => void
 }) {
-  const blockedReason = membership
-    ? "it belongs to an active payment run"
-    : bill.status === "paid" ||
-        bill.status === "partial" ||
-        (bill.paid_cents ?? 0) > 0
-      ? "it has recorded payments"
-      : bill.qbo_id
-        ? "it exists in the accounting file"
-        : null
+  const blockedReason = payableDeleteBlockedReason(bill, membership)
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -301,86 +229,6 @@ function PayableRowActions({
         )}
       </DropdownMenuContent>
     </DropdownMenu>
-  )
-}
-
-/** Only ever renders for a vendor who is not ready — a healthy row stays quiet. */
-function ReadinessDot({
-  readiness,
-}: {
-  readiness: CompanyPaymentReadinessStatus | undefined
-}) {
-  if (readiness === "ready") return null
-  const label =
-    readiness === "verifying"
-      ? "Vendor is verifying their bank account — ACH is not available yet"
-      : readiness === "invited"
-        ? "Vendor was invited to set up ACH but has not finished"
-        : readiness === "suspended"
-          ? "Vendor's Arc Pay access is suspended"
-          : readiness === "revoked"
-            ? "Vendor's Arc Pay access was revoked"
-            : "Vendor cannot be paid by ACH yet — invite them from the payable"
-  return (
-    <span
-      title={label}
-      className={cn(
-        "size-1.5 shrink-0 rounded-full",
-        readiness === "verifying" ? "bg-muted-foreground" : "bg-warning",
-      )}
-    >
-      <span className="sr-only">{label}</span>
-    </span>
-  )
-}
-
-function statusTone(
-  bill: VendorBillSummary,
-  membership: PayableRunMembership | undefined,
-  awaitsViewer: boolean,
-): { label: string; className: string } {
-  if (isVendorCredit(bill))
-    return { label: "Credit", className: "border-border text-muted-foreground" }
-  // A bill inside a run is no longer just "approved" — say where the money is,
-  // and when a release was scheduled, say which day it goes. "Scheduled" without
-  // the date withholds the only fact that made scheduling worth doing.
-  if (membership) {
-    return {
-      label: awaitsViewer
-        ? "Awaiting your approval"
-        : membership.runStatus === "pending_approval"
-          ? "In approval"
-          : membership.runStatus === "processing"
-            ? "Paying"
-            : membership.scheduledFor
-              ? `Sends ${formatDay(membership.scheduledFor)}`
-              : "Scheduled",
-      className: awaitsViewer
-        ? "border-primary/40 bg-primary/10 text-primary"
-        : "border-primary/25 bg-primary/5 text-primary",
-    }
-  }
-  return payableStatusTone(bill.status, bill.is_draft)
-}
-
-function StatusCell({
-  bill,
-  membership,
-  awaitsViewer = false,
-}: {
-  bill: VendorBillSummary
-  membership?: PayableRunMembership
-  awaitsViewer?: boolean
-}) {
-  const tone = statusTone(bill, membership, awaitsViewer)
-  return (
-    <Badge
-      variant="outline"
-      title={tone.label}
-      className={cn("max-w-full truncate font-normal", tone.className)}
-    >
-      {tone.label}
-    </Badge>
   )
 }
 
@@ -504,8 +352,11 @@ export function PayablesDesk({
 
   React.useEffect(() => {
     if (!accountingEnabled) return
-    void getPayablesAccountingSyncStatesAction(data.bills.map((bill) => bill.id)).then(setAccountingSyncByBillId).catch(() => setAccountingSyncByBillId({}))
-  }, [accountingEnabled, data.bills])
+    const billIds = data.selectedBill && !data.bills.some((bill) => bill.id === data.selectedBill?.id)
+      ? [...data.bills.map((bill) => bill.id), data.selectedBill.id]
+      : data.bills.map((bill) => bill.id)
+    void getPayablesAccountingSyncStatesAction(billIds).then(setAccountingSyncByBillId).catch(() => setAccountingSyncByBillId({}))
+  }, [accountingEnabled, data.bills, data.selectedBill])
 
   React.useEffect(() => {
     let cancelled = false
@@ -521,15 +372,17 @@ export function PayablesDesk({
   }, [])
 
   const openedBill = React.useMemo(
-    () => data.bills.find((bill) => bill.id === workspaceBillId) ?? null,
-    [data.bills, workspaceBillId],
+    () => data.selectedBill?.id === workspaceBillId
+      ? data.selectedBill
+      : data.bills.find((bill) => bill.id === workspaceBillId) ?? null,
+    [data.bills, data.selectedBill, workspaceBillId],
   )
   const openedProjectId = openedBill?.project_id
 
   React.useEffect(() => {
-    if (!workspaceBillId || !openedProjectId) return
+    if (!workspaceBillId || openedProjectId === undefined) return
     let cancelled = false
-    getOrgPayableContextAction(openedProjectId, workspaceBillId).then(
+    getOrgPayableContextAction(openedProjectId ?? null, workspaceBillId).then(
       (result) => {
         if (cancelled || !result.success) return
         setCostCodesEnabled(result.data.costCodesEnabled)
@@ -1183,7 +1036,7 @@ export function PayablesDesk({
                 const total = bill.total_cents ?? 0
                 const isSelected = selectedIds.has(bill.id)
                 const membership = data.runMembershipByBillId[bill.id]
-                const warnings = releaseWarnings(
+                const warnings = payableReleaseWarnings(
                   bill,
                   data.complianceRules,
                   data.complianceStatusByCompanyId,
@@ -1241,10 +1094,10 @@ export function PayablesDesk({
                           {vendorLabel(bill)}
                         </span>
                         {warnings.length > 0 ? (
-                          <ReleaseWarningTip warnings={warnings} />
+                          <PayableReleaseWarning warnings={warnings} />
                         ) : null}
                         {showReadiness ? (
-                          <ReadinessDot
+                          <PayableReadinessDot
                             readiness={
                               bill.company_id
                                 ? data.paymentReadinessByCompanyId[bill.company_id]
@@ -1256,9 +1109,9 @@ export function PayablesDesk({
                     </TableCell>
                     <TableCell>
                       <div className="flex min-w-0 items-center gap-2">
-                        <ProjectAvatar projectId={bill.project_id} size="sm" />
+                        {bill.project_id ? <ProjectAvatar projectId={bill.project_id} size="sm" /> : <Receipt className="size-4 shrink-0 text-muted-foreground" />}
                         <span className="truncate text-sm text-muted-foreground">
-                          {bill.project_name ?? "—"}
+                          {bill.project_name ?? "Overhead"}
                         </span>
                       </div>
                     </TableCell>
@@ -1271,7 +1124,7 @@ export function PayablesDesk({
                       {due.text}
                     </TableCell>
                     <TableCell>
-                      <StatusCell
+                      <PayableOperationalStatus
                         bill={bill}
                         membership={membership}
                         awaitsViewer={awaitsMyApproval(bill)}
@@ -1474,6 +1327,7 @@ export function PayablesDesk({
 
       <PayablesWorkspace
         bills={data.bills}
+        selectedBill={data.selectedBill}
         selectedBillId={workspaceBillId}
         onSelectBill={openBill}
         costCodes={data.costCodes}

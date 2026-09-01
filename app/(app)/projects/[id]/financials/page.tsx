@@ -8,11 +8,12 @@ interface ProjectFinancialsPageProps {
 
 const legacyTabRoutes: Record<string, string> = {
   budget: "budget",
-  receivables: "receivables",
+  receivables: "billing",
+  billing: "billing",
   payables: "payables",
-  "cost-plus": "review",
-  inbox: "review",
-  review: "review",
+  "cost-plus": "cost-inbox",
+  inbox: "cost-inbox",
+  review: "cost-inbox",
   "trust-center": "trust-center",
 }
 
@@ -24,5 +25,5 @@ export default async function ProjectFinancialsLandingPage({ params, searchParam
     redirect(`/projects/${id}/financials/${legacyTabRoutes[tab]}`)
   }
 
-  redirect(`/projects/${id}/financials/receivables`)
+  redirect(`/projects/${id}/financials/billing`)
 }

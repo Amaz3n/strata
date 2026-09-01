@@ -248,7 +248,7 @@ test("cost-plus guardrails cover locked costs, direct change orders, manual adju
     "utf8",
   );
   const reviewQueueSource = fs.readFileSync(
-    path.join(__dirname, "../components/cost-inbox/review-queue-table.tsx"),
+    path.join(__dirname, "../components/cost-inbox/cost-inbox-table.tsx"),
     "utf8",
   );
 
@@ -687,20 +687,18 @@ test("financial jobs and public payment links keep their authorization boundarie
     assert.match(source, /status:\s*401/);
   }
 
-  const payLinkAction = fs.readFileSync(
-    path.join(__dirname, "../app/p/pay/[token]/actions.ts"),
+  // The public invoice page is the one pay surface. Reminders may only link an
+  // invoice its client can already see — never mint bearer access to an
+  // unpublished one.
+  const remindersRoute = fs.readFileSync(
+    path.join(__dirname, "../app/api/jobs/reminders/route.ts"),
     "utf8",
   );
-  const paymentService = fs.readFileSync(
-    path.join(__dirname, "../lib/services/payments.ts"),
-    "utf8",
-  );
-  assert.match(payLinkAction, /createPayLinkPaymentIntent\(token\)/);
-  assert.doesNotMatch(payLinkAction, /createPaymentIntent\(/);
   assert.match(
-    paymentService,
-    /data\.client_visible === false \|\| data\.status === "void"/,
+    remindersRoute,
+    /reminder\.invoice\.client_visible && reminder\.invoice\.token/,
   );
+  assert.doesNotMatch(remindersRoute, /createPersistedPayLink/);
 });
 
 test("sent and synchronized invoices are immutable through the standard editor", () => {
@@ -739,8 +737,11 @@ test("draw billing creates a linked review draft instead of issuing immediately"
     "utf8",
   );
 
-  assert.match(source, /status:\s*"saved"/);
-  assert.match(source, /client_visible:\s*false/);
+  // Callers state intent (`issue`), never a status. A draw builds a draft that a
+  // person still has to send.
+  assert.match(source, /issue:\s*false/);
+  assert.doesNotMatch(source, /status:\s*"saved"/);
+  assert.doesNotMatch(source, /client_visible:/);
   assert.match(source, /source_type:\s*"draw"/);
   assert.match(source, /source_draw_id:\s*draw\.id/);
 });
@@ -751,7 +752,7 @@ test("invoice revisions preserve the original and create a linked replacement dr
     "utf8",
   );
   const client = fs.readFileSync(
-    path.join(__dirname, "../components/invoices/invoices-client.tsx"),
+    path.join(__dirname, "../components/invoices/billing-queue.tsx"),
     "utf8",
   );
 
@@ -851,14 +852,11 @@ test("retainage is derived from the active contract and shown before invoice iss
     "utf8",
   );
   const composer = fs.readFileSync(
-    path.join(
-      __dirname,
-      "../components/invoices/workspace/invoice-editable-document.tsx",
-    ),
+    path.join(__dirname, "../components/invoices/invoice-document-editor.tsx"),
     "utf8",
   );
   const receivables = fs.readFileSync(
-    path.join(__dirname, "../components/financials/receivables-tab.tsx"),
+    path.join(__dirname, "../components/financials/billing-tab.tsx"),
     "utf8",
   );
   const retainageTracker = fs.readFileSync(
@@ -870,7 +868,14 @@ test("retainage is derived from the active contract and shown before invoice iss
     invoiceService,
     /sourceType !== "manual" && sourceType !== "draw" && sourceType !== "change_order"/,
   );
-  assert.match(invoiceService, /Failed to record invoice retainage/);
+  // The retainage row is written inside create_invoice_atomic / update_invoice_atomic,
+  // in the same transaction as the invoice — never a second time from the service.
+  const retainageMigration = fs.readFileSync(
+    path.join(__dirname, "../supabase/migrations/20260829120000_billing_lifecycle_and_command_permissions.sql"),
+    "utf8",
+  );
+  assert.match(retainageMigration, /insert into public\.retainage/);
+  assert.doesNotMatch(invoiceService, /upsertRetainageForInvoice/);
   assert.match(composer, /billing_contract\?\.retainage_percent/);
   assert.match(composer, /Retainage held/);
   assert.match(receivables, /billing_contract: contract/);
@@ -958,4 +963,291 @@ test("sub-tier waiver queries disambiguate the org-scoped commitment relationshi
     "commitments!subtier_requirements_commitment_org_fkey";
   assert.equal(waiverService.split(relationshipHint).length - 1, 2);
   assert.doesNotMatch(waiverService, /commitment:commitments\(id, title\)/);
+});
+
+test("the invoice lifecycle is derived by the server, never supplied by a caller", () => {
+  const validation = fs.readFileSync(
+    path.join(__dirname, "../lib/validation/invoices.ts"),
+    "utf8",
+  );
+  const service = fs.readFileSync(
+    path.join(__dirname, "../lib/services/invoices.ts"),
+    "utf8",
+  );
+
+  // The public input carries INTENT and no state at all. While `status` was an
+  // input, "paid with a full balance due" and "sent with no recipient" were both
+  // things a caller could simply ask for.
+  assert.doesNotMatch(validation, /status:\s*z\.enum/);
+  assert.doesNotMatch(validation, /client_visible:\s*z\.boolean/);
+  assert.match(validation, /issue:\s*z\.boolean\(\)\.default\(false\)/);
+
+  // And the service derives it from that one flag.
+  assert.match(service, /const lifecycleStatus: InvoiceLifecycleStatus = shouldIssue \? "sent" : "draft"/);
+  assert.doesNotMatch(service, /status:\s*input\.status/);
+});
+
+test("an invoice edit cannot relocate the invoice past the move authorization", () => {
+  const service = fs.readFileSync(
+    path.join(__dirname, "../lib/services/invoices.ts"),
+    "utf8",
+  );
+  const migration = fs.readFileSync(
+    path.join(__dirname, "../supabase/migrations/20260829120000_billing_lifecycle_and_command_permissions.sql"),
+    "utf8",
+  );
+
+  // updateInvoice authorizes against the invoice's CURRENT project. Accepting a
+  // different project_id would move it without the two-project check that
+  // moveInvoiceToProject exists to perform.
+  assert.match(service, /Use .{1,3}Move to project.{1,3} to change an invoice's project/);
+  assert.match(migration, /An invoice edit cannot change its project/);
+  assert.match(service, /export async function moveInvoiceToProject/);
+});
+
+test("money rows are readable by members and writable only by commands", () => {
+  const migration = fs.readFileSync(
+    path.join(__dirname, "../supabase/migrations/20260829120000_billing_lifecycle_and_command_permissions.sql"),
+    "utf8",
+  );
+  const writer = fs.readFileSync(
+    path.join(__dirname, "../lib/services/receivables-writer.ts"),
+    "utf8",
+  );
+
+  // The old policies tested org/project MEMBERSHIP for writes, which is tenancy,
+  // not authorization — so invoice.write / invoice.send / payment.release lived
+  // only in application code and any member could bypass them with a direct write.
+  for (const table of ["invoices", "invoice_lines", "payments", "payment_intents"]) {
+    assert.match(
+      migration,
+      new RegExp(`revoke insert, update, delete on public\\.${table} from authenticated`),
+      table,
+    );
+    assert.match(migration, new RegExp(`grant select on public\\.${table} to authenticated`), table);
+  }
+  assert.match(migration, /create policy invoices_read on public\.invoices\s+for select/);
+  assert.match(migration, /create policy payments_read on public\.payments\s+for select/);
+  // Every auth.* call inside an RLS policy stays wrapped in a subquery so it is
+  // evaluated once per statement rather than once per row (the initplan perf bug
+  // fixed Jul 2026). Function bodies are exempt — plpgsql evaluates them once.
+  const policySection = migration.slice(migration.indexOf("drop policy if exists invoices_access"));
+  assert.doesNotMatch(policySection, /(?<!select )auth\.(uid|role)\(\)/);
+  assert.match(policySection, /\(select auth\.role\(\)\) = 'service_role'/);
+  assert.match(writer, /export function receivablesWriter/);
+});
+
+test("payments only apply to invoices that were actually billed", () => {
+  const payments = fs.readFileSync(
+    path.join(__dirname, "../lib/services/payments.ts"),
+    "utf8",
+  );
+  const migration = fs.readFileSync(
+    path.join(__dirname, "../supabase/migrations/20260829120000_billing_lifecycle_and_command_permissions.sql"),
+    "utf8",
+  );
+
+  // A draft carries balance_due_cents equal to its total from the moment it is
+  // created, and the only database guard was `status = 'void'` — so a draft could
+  // be settled and flipped to paid without ever going out.
+  assert.match(payments, /if \(!isIssuedInvoiceStatus\(invoice\.status\)\)/);
+  assert.match(migration, /Cannot apply payment to an invoice that has not been issued/);
+  assert.match(migration, /create trigger payments_require_billable_invoice/);
+});
+
+test("issuing an invoice is durable and cannot double-deliver on retry", () => {
+  const service = fs.readFileSync(
+    path.join(__dirname, "../lib/services/invoices.ts"),
+    "utf8",
+  );
+  const worker = fs.readFileSync(
+    path.join(__dirname, "../app/api/jobs/process-outbox/route.ts"),
+    "utf8",
+  );
+
+  // One durable record is written BEFORE the side effects run, so a crash between
+  // "committed as sent" and "email left the building" is recoverable.
+  assert.match(service, /enqueueOutboxJob\(\{[\s\S]{0,240}INVOICE_ISSUANCE_JOB_TYPE/);
+  assert.match(service, /dedupeByPayloadKeys: \["invoice_id"\]/);
+  assert.match(service, /export async function runInvoiceIssuance/);
+  assert.match(worker, /job\.job_type === INVOICE_ISSUANCE_JOB_TYPE/);
+  // …and the retry cannot bill anyone twice.
+  assert.match(service, /const pendingRecipients = uniqueRecipients\.filter/);
+  assert.match(service, /to: pendingRecipients/);
+});
+
+test("open AR means the same thing to the reports, the queue, and the AI", () => {
+  const aiTools = fs.readFileSync(
+    path.join(__dirname, "../lib/services/ai-search/tools.ts"),
+    "utf8",
+  );
+  const aiFinancial = fs.readFileSync(
+    path.join(__dirname, "../lib/services/ai-search/financial.ts"),
+    "utf8",
+  );
+
+  // Both files declared their own OPEN_INVOICE_STATUSES including `draft` and
+  // `saved`, so "how much do customers owe us?" counted invoices nobody had billed.
+  assert.match(aiTools, /const OPEN_INVOICE_STATUSES = OPEN_AR_INVOICE_STATUSES/);
+  assert.match(aiFinancial, /const OPEN_INVOICE_STATUSES = OPEN_AR_INVOICE_STATUSES/);
+  assert.doesNotMatch(aiTools, /"sent", "partial", "overdue", "saved", "draft"/);
+  assert.doesNotMatch(aiFinancial, /"sent", "partial", "overdue", "saved", "draft"/);
+  // Revenue billed had no status filter at all, so drafts and voids inflated it.
+  assert.match(aiFinancial, /intent\.key === "revenue_billed"[\s\S]{0,300}BILLED_INVOICE_STATUSES/);
+});
+
+test("every billing destination is built in one place", () => {
+  const destinations = fs.readFileSync(
+    path.join(__dirname, "../lib/financials/invoice-destinations.ts"),
+    "utf8",
+  );
+  const retainage = fs.readFileSync(
+    path.join(__dirname, "../components/projects/retainage-tracker.tsx"),
+    "utf8",
+  );
+  const reconciliation = fs.readFileSync(
+    path.join(__dirname, "../lib/services/reports/reconciliation.ts"),
+    "utf8",
+  );
+  const closeReadiness = fs.readFileSync(
+    path.join(__dirname, "../lib/services/project-close-readiness.ts"),
+    "utf8",
+  );
+
+  assert.match(destinations, /export function invoiceHref/);
+  assert.match(destinations, /export function newInvoiceHref/);
+
+  // The legacy project route survives for bookmarks, and now carries the query
+  // across instead of swallowing it — including the old `?open=` spelling.
+  const legacyRedirect = fs.readFileSync(
+    path.join(__dirname, "../app/(app)/projects/[id]/invoices/page.tsx"),
+    "utf8",
+  );
+  assert.match(legacyRedirect, /key === "open" \|\| key === "invoiceId" \? "invoice" : key/);
+
+  // The three contracts that had drifted: `?open=` (never read), the
+  // `/projects/:id/invoices` redirect (drops the query), and `/receivables`.
+  for (const [name, source] of [
+    ["retainage tracker", retainage],
+    ["reconciliation report", reconciliation],
+    ["close readiness", closeReadiness],
+  ]) {
+    assert.doesNotMatch(source, /\?open=/, name);
+    assert.doesNotMatch(source, /\/invoices\?invoice=/, name);
+    assert.doesNotMatch(source, /\/receivables\?invoice=/, name);
+    assert.match(source, /invoiceHref\(/, name);
+  }
+});
+
+test("the invoice inspector is the only invoice detail surface", () => {
+  const componentsDir = path.join(__dirname, "../components/invoices");
+  const files = fs.readdirSync(componentsDir);
+
+  // The legacy sheet was a second implementation with its own idea of which
+  // sections exist, so attachments and internal notes lived in one and payments
+  // in the other. Both consumers now render the canonical inspector.
+  assert.ok(!files.includes("invoice-detail-sheet.tsx"));
+  assert.ok(!files.includes("invoices-client.tsx"));
+  assert.ok(!files.includes("receivables-workspace.tsx"));
+  assert.ok(files.includes("invoice-inspector.tsx"));
+
+  for (const relative of [
+    "../components/projects/draw-schedule-manager.tsx",
+    "../components/cost-inbox/cost-inbox-detail-overlays.tsx",
+  ]) {
+    const source = fs.readFileSync(path.join(__dirname, relative), "utf8");
+    assert.match(source, /InvoiceInspectorSheet/, relative);
+    assert.doesNotMatch(source, /InvoiceDetailSheet/, relative);
+  }
+});
+
+test("composing an invoice owns a route instead of a dismissible sheet", () => {
+  const composer = fs.readFileSync(
+    path.join(__dirname, "../components/invoices/invoice-composer.tsx"),
+    "utf8",
+  );
+  const routeExists = fs.existsSync(
+    path.join(__dirname, "../app/(app)/projects/[id]/financials/billing/new/page.tsx"),
+  );
+
+  assert.ok(routeExists, "the composer needs its own route");
+  // Review reads the SAVED draft, so what a person approves is what will be issued.
+  assert.match(composer, /getInvoiceDetailAction\(invoiceId\)/);
+  assert.match(composer, /issueInvoiceAction\(invoice\.id, parsedRecipients\)/);
+  // And the number reservation is only released when no draft was produced.
+  assert.match(composer, /if \(!reservationId \|\| draftIdRef\.current\) return/);
+});
+
+test("the billing queue filters, counts and pages in the database", () => {
+  const service = fs.readFileSync(
+    path.join(__dirname, "../lib/services/invoices.ts"),
+    "utf8",
+  );
+  const queue = fs.readFileSync(
+    path.join(__dirname, "../components/invoices/billing-queue.tsx"),
+    "utf8",
+  );
+
+  // Counting a loaded page while the aging strip covers the whole book is how the
+  // two came to disagree on a project with more than one page of invoices.
+  assert.match(service, /export async function listInvoicePage/);
+  assert.match(service, /export async function getInvoiceQueueCounts/);
+  assert.match(service, /\{ count: "exact" \}/);
+  assert.match(queue, /loadInvoiceQueueAction/);
+  assert.doesNotMatch(queue, /invoiceQueueCounts\(/);
+
+  // A late response for an invoice the user already left must not overwrite the
+  // one they are looking at.
+  assert.match(queue, /if \(seq !== detailSeq\.current\) return/);
+});
+
+test("an invoice cannot reach `sent` without an immutable record of what was billed", () => {
+  const service = fs.readFileSync(
+    path.join(__dirname, "../lib/services/invoices.ts"),
+    "utf8",
+  );
+
+  // createInvoice/updateInvoice write it from their input; issueInvoice — the
+  // command the queue and the composer's review step both use — writes it from
+  // the persisted row. All three paths, or the snapshot is not a record.
+  const issueBody = service.slice(
+    service.indexOf("export async function issueInvoice"),
+    service.indexOf("export async function requestInvoiceApproval"),
+  );
+  assert.match(issueBody, /issued_snapshot: issuedSnapshot/);
+  assert.match(issueBody, /schema_version: 1/);
+  assert.match(issueBody, /recipients: sentTo/);
+  // …and it refuses to issue anything already issued, or voided.
+  assert.match(issueBody, /This invoice has already been issued/);
+  assert.match(issueBody, /A voided invoice cannot be issued/);
+});
+
+test("the invoice detail shares the page with the list instead of covering it", () => {
+  const queue = fs.readFileSync(
+    path.join(__dirname, "../components/invoices/billing-queue.tsx"),
+    "utf8",
+  );
+  const shell = path.join(__dirname, "../components/financials/workspace/workspace-shell.tsx");
+
+  // The predecessor was a fixed full-screen takeover that hid the list behind the
+  // record you were reading, and squeezed the document into 550px. The panel is
+  // now a flex sibling whose WIDTH animates, so opening it narrows the table and
+  // closing it hands the space straight back.
+  assert.doesNotMatch(queue, /fixed inset-0/);
+  assert.match(queue, /transition-\[width\]/);
+  assert.match(queue, /motion-reduce:transition-none/);
+
+  // Nothing is reserved, and nothing is rendered, while nothing is selected.
+  assert.match(queue, /: "hidden w-0 lg:block"/);
+  assert.doesNotMatch(queue, /<InvoiceInspectorEmpty \/>/);
+
+  // The clip that hides the fixed-width contents mid-animation has to sit ON the
+  // sticky element: an overflow ancestor captures a sticky descendant and stops
+  // it sticking, which is silent and only shows up when the table is long.
+  const aside = queue.slice(queue.indexOf("<aside"), queue.indexOf("</aside>"));
+  assert.match(aside, /overflow-hidden[^"]*"[\s\S]{0,200}lg:sticky/);
+
+  // The old workspace shell is still used by expenses; it just no longer owns
+  // receivables. If that ever changes, this test should be the thing that notices.
+  assert.ok(fs.existsSync(shell));
 });

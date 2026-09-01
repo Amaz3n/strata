@@ -55,7 +55,6 @@ const GRANDFATHERED = [
   "components/change-orders/change-order-detail-sheet.tsx",
   "components/change-orders/change-orders-client.tsx",
   "components/companies/trade-badge.tsx",
-  "components/cost-inbox/review-queue-table.tsx",
   "components/daily-logs/completeness-ring.tsx",
   "components/daily-logs/daily-logs-tab.tsx",
   "components/daily-logs/date-navigator.tsx",

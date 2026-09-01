@@ -7,5 +7,5 @@ interface Props {
 
 export default async function ProjectCostInboxPage({ params }: Props) {
   const { id } = await params
-  redirect(`/projects/${id}/financials/review`)
+  redirect(`/projects/${id}/financials/cost-inbox`)
 }

@@ -82,7 +82,6 @@ export async function createChangeOrderAction(input: unknown) {
   return run(async () => {
     const parsed = changeOrderInputSchema.parse(input)
     const changeOrder = await createChangeOrder({ input: parsed })
-    revalidatePath("/change-orders")
     return changeOrder
   })
 }
@@ -220,7 +219,6 @@ export async function publishChangeOrderAction(changeOrderId: string) {
       .eq("org_id", orgId)
       .eq("id", changeOrder.id)
 
-    revalidatePath("/change-orders")
     revalidatePath(`/projects/${changeOrder.project_id}/change-orders`)
     return {
       changeOrder: changeOrderWithSendMetadata,
@@ -234,7 +232,6 @@ export async function publishChangeOrderAction(changeOrderId: string) {
 export async function startChangeOrderPricingAction(changeOrderId: string) {
   return run(async () => {
     const changeOrder = await startPricing(changeOrderId)
-    revalidatePath("/change-orders")
     revalidatePath(`/projects/${changeOrder.project_id}/change-orders`)
     return changeOrder
   })
@@ -243,7 +240,6 @@ export async function startChangeOrderPricingAction(changeOrderId: string) {
 export async function rejectChangeOrderAction(changeOrderId: string) {
   return run(async () => {
     const changeOrder = await rejectChangeOrder(changeOrderId)
-    revalidatePath("/change-orders")
     revalidatePath(`/projects/${changeOrder.project_id}/change-orders`)
     return changeOrder
   })
@@ -252,7 +248,6 @@ export async function rejectChangeOrderAction(changeOrderId: string) {
 export async function deriveChangeOrderPriceAction(changeOrderId: string, markupPercent: number) {
   return run(async () => {
     const changeOrder = await deriveOwnerPriceFromCost(changeOrderId, markupPercent)
-    revalidatePath("/change-orders")
     revalidatePath(`/projects/${changeOrder.project_id}/change-orders`)
     return changeOrder
   })
@@ -264,11 +259,10 @@ export async function approveChangeOrderAction(changeOrderId: string, input?: un
       changeOrderId,
       approval: parseManualOfflineApprovalInput(input),
     })
-    revalidatePath("/change-orders")
     if (changeOrder.project_id) {
       revalidatePath(`/projects/${changeOrder.project_id}/change-orders`)
       revalidatePath(`/projects/${changeOrder.project_id}/budget`)
-      revalidatePath(`/projects/${changeOrder.project_id}/financials/receivables`)
+      revalidatePath(`/projects/${changeOrder.project_id}/financials/billing`)
       revalidatePath(`/projects/${changeOrder.project_id}`)
     }
     return changeOrder
@@ -367,7 +361,6 @@ export async function createCommitmentChangeOrderFromChangeOrderAction(
         commitment_id: commitmentId,
       },
     })
-    revalidatePath("/change-orders")
     revalidatePath(`/projects/${projectId}/change-orders`)
     revalidatePath(`/projects/${projectId}/commitments`)
     revalidatePath(`/projects/${projectId}/financials/budget`)
@@ -425,7 +418,6 @@ export async function updateChangeOrderFollowupAction(
       throw new Error(`Failed to update follow-up: ${error?.message}`)
     }
 
-    revalidatePath("/change-orders")
     revalidatePath(`/projects/${existing.project_id}/change-orders`)
     return { ...data, lines: metadata.lines ?? [], totals: metadata.totals, metadata }
   })
@@ -438,9 +430,8 @@ export async function linkInvoiceToChangeOrderAction(
 ) {
   return run(async () => {
     const result = await linkInvoiceToChangeOrder({ changeOrderId, invoiceId })
-    revalidatePath("/change-orders")
     revalidatePath(`/projects/${projectId}/change-orders`)
-    revalidatePath(`/projects/${projectId}/financials/receivables`)
+    revalidatePath(`/projects/${projectId}/financials/billing`)
     return result
   })
 }
@@ -448,9 +439,8 @@ export async function linkInvoiceToChangeOrderAction(
 export async function unlinkInvoiceFromChangeOrderAction(projectId: string, changeOrderId: string, invoiceId: string) {
   return run(async () => {
     const result = await unlinkInvoiceFromChangeOrder({ changeOrderId, invoiceId })
-    revalidatePath("/change-orders")
     revalidatePath(`/projects/${projectId}/change-orders`)
-    revalidatePath(`/projects/${projectId}/financials/receivables`)
+    revalidatePath(`/projects/${projectId}/financials/billing`)
     return result
   })
 }
@@ -459,7 +449,6 @@ export async function updateChangeOrderAction(changeOrderId: string, input: unkn
   return run(async () => {
     const parsed = changeOrderInputSchema.parse(input)
     const changeOrder = await updateChangeOrder({ changeOrderId, input: parsed })
-    revalidatePath("/change-orders")
     if (changeOrder.project_id) {
       revalidatePath(`/projects/${changeOrder.project_id}/change-orders`)
     }
@@ -470,7 +459,6 @@ export async function updateChangeOrderAction(changeOrderId: string, input: unkn
 export async function deleteChangeOrderAction(changeOrderId: string) {
   return run(async () => {
     const changeOrder = await deleteChangeOrder({ changeOrderId })
-    revalidatePath("/change-orders")
     if (changeOrder.project_id) {
       revalidatePath(`/projects/${changeOrder.project_id}/change-orders`)
     }
@@ -482,10 +470,9 @@ export async function voidChangeOrderAction(changeOrderId: string, reason?: stri
   return run(async () => {
     const trimmed = typeof reason === "string" ? reason.trim() : ""
     const changeOrder = await voidChangeOrder({ changeOrderId, reason: trimmed.length > 0 ? trimmed : null })
-    revalidatePath("/change-orders")
     if (changeOrder.project_id) {
       revalidatePath(`/projects/${changeOrder.project_id}/change-orders`)
-      revalidatePath(`/projects/${changeOrder.project_id}/financials/receivables`)
+      revalidatePath(`/projects/${changeOrder.project_id}/financials/billing`)
       revalidatePath(`/projects/${changeOrder.project_id}/budget`)
       revalidatePath(`/projects/${changeOrder.project_id}`)
     }

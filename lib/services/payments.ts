@@ -1,26 +1,17 @@
-import {
-  createHash,
-  createHmac,
-  randomBytes,
-  timingSafeEqual,
-} from "node:crypto";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 
+import { isIssuedInvoiceStatus, normalizeInvoiceStatus } from "@/lib/financials/invoice-lifecycle";
+
 import type {
-  Invoice,
   Payment,
   PaymentIntent,
-  PaymentLink,
   PaymentReversal,
 } from "@/lib/types";
 import {
-  createPaymentIntentInputSchema,
-  generatePayLinkInputSchema,
   receivePaymentInputSchema,
   recordPaymentInputSchema,
-  type CreatePaymentIntentInput,
   type CreatePublicInvoicePaymentIntentInput,
-  type GeneratePayLinkInput,
   type ReceivePaymentInput,
   type RecordPaymentInput,
 } from "@/lib/validation/payments";
@@ -43,14 +34,10 @@ import {
   renderStandardEmailLayout,
   sendEmail,
 } from "@/lib/services/mailer";
-import {
-  requireReadyStripeConnectedAccount,
-  requireReadyStripeConnectedAccountForOrg,
-} from "@/lib/services/stripe-connected-accounts";
+import { requireReadyStripeConnectedAccountForOrg } from "@/lib/services/stripe-connected-accounts";
+
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com";
-const PAY_PATH = `${APP_URL}/p/pay`;
-const LINK_SECRET = process.env.PAYMENT_LINK_SECRET;
 
 const reminderRuleSchema = z.object({
   invoice_id: z.string().uuid("Invoice is required"),
@@ -166,170 +153,6 @@ function mapPaymentIntent(row: any): PaymentIntent {
   };
 }
 
-function mapPaymentLink(row: any): PaymentLink {
-  return {
-    id: row.id,
-    org_id: row.org_id,
-    invoice_id: row.invoice_id,
-    token_hash: row.token_hash ?? undefined,
-    nonce: row.nonce ?? undefined,
-    expires_at: row.expires_at ?? undefined,
-    max_uses: row.max_uses ?? undefined,
-    used_count: row.used_count ?? 0,
-    metadata: row.metadata ?? undefined,
-    created_at: row.created_at ?? undefined,
-    updated_at: row.updated_at ?? undefined,
-  };
-}
-
-function hashToken(token: string) {
-  return createHash("sha256").update(token).digest("hex");
-}
-
-function generateToken() {
-  return randomBytes(32).toString("hex");
-}
-
-type PayLinkPayload = {
-  org_id: string;
-  project_id: string;
-  invoice_id: string;
-  exp: number;
-  nonce: string;
-};
-
-function ensureLinkSecret() {
-  if (!LINK_SECRET) {
-    throw new Error("PAYMENT_LINK_SECRET is not configured");
-  }
-  return LINK_SECRET;
-}
-
-export function generateSignedPayLink(params: {
-  orgId: string;
-  projectId: string;
-  invoiceId: string;
-  expiresInHours?: number;
-  expiresAt?: string;
-  nonce?: string;
-}) {
-  const secret = ensureLinkSecret();
-  const nonce = params.nonce ?? randomBytes(16).toString("hex");
-  const requestedExpiry = params.expiresAt
-    ? new Date(params.expiresAt).getTime()
-    : Date.now() + (params.expiresInHours ?? 72) * 3600 * 1000;
-  if (!Number.isFinite(requestedExpiry) || requestedExpiry <= Date.now()) {
-    throw new Error("Payment link expiration must be in the future");
-  }
-  // Signed tokens carry whole seconds. Truncating never extends the caller's
-  // requested deadline; the persisted row below uses this same timestamp.
-  const exp = Math.floor(requestedExpiry / 1000);
-
-  const payload: PayLinkPayload = {
-    org_id: params.orgId,
-    project_id: params.projectId,
-    invoice_id: params.invoiceId,
-    exp,
-    nonce,
-  };
-
-  const payloadStr = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  const signature = createHmac("sha256", secret)
-    .update(payloadStr)
-    .digest("base64url");
-  const token = `${payloadStr}.${signature}`;
-  const url = `${PAY_PATH}/${token}`;
-  return { url, token, payload, expiresAt: new Date(exp * 1000).toISOString() };
-}
-
-export function validateSignedPayLink(token: string): PayLinkPayload | null {
-  if (!token.includes(".")) return null;
-  const secret = LINK_SECRET;
-  if (!secret) return null;
-
-  const parts = token.split(".");
-  if (parts.length !== 2) return null;
-  const [payloadStr, signature] = parts;
-
-  const expectedSig = createHmac("sha256", secret)
-    .update(payloadStr)
-    .digest("base64url");
-  try {
-    if (!timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
-      return null;
-    }
-  } catch {
-    return null;
-  }
-
-  try {
-    const payload = JSON.parse(
-      Buffer.from(payloadStr, "base64url").toString(),
-    ) as PayLinkPayload;
-    if (payload.exp < Math.floor(Date.now() / 1000)) {
-      return null;
-    }
-    return payload;
-  } catch {
-    return null;
-  }
-}
-
-export async function createPersistedPayLink(input: {
-  supabase: ReturnType<typeof createServiceSupabaseClient>;
-  orgId: string;
-  projectId: string;
-  invoiceId: string;
-  expiresAt?: string | null;
-  maxUses?: number | null;
-  metadata?: Record<string, unknown>;
-}) {
-  let token: string;
-  let url: string;
-  let nonce: string;
-  let expiresAt = input.expiresAt ?? null;
-
-  if (LINK_SECRET) {
-    const signed = generateSignedPayLink({
-      orgId: input.orgId,
-      projectId: input.projectId,
-      invoiceId: input.invoiceId,
-      expiresAt: input.expiresAt ?? undefined,
-      expiresInHours: input.expiresAt ? undefined : 72,
-    });
-    token = signed.token;
-    url = signed.url;
-    nonce = signed.payload.nonce;
-    expiresAt = signed.expiresAt;
-  } else {
-    token = generateToken();
-    url = `${PAY_PATH}/${token}`;
-    nonce = generateToken();
-  }
-
-  const { data: linkRow, error: linkError } = await input.supabase
-    .from("payment_links")
-    .insert({
-      org_id: input.orgId,
-      invoice_id: input.invoiceId,
-      token_hash: hashToken(token),
-      nonce,
-      expires_at: expiresAt,
-      max_uses: input.maxUses ?? null,
-      metadata: {
-        ...(input.metadata ?? {}),
-        token_format: LINK_SECRET ? "signed_v1" : "opaque_v1",
-      },
-    })
-    .select("*")
-    .single();
-
-  if (linkError || !linkRow) {
-    throw new Error(`Failed to create payment link: ${linkError?.message}`);
-  }
-
-  return { url, token, link: mapPaymentLink(linkRow) };
-}
 
 async function getInvoiceTotals(
   supabase: ReturnType<typeof createServiceSupabaseClient>,
@@ -659,234 +482,6 @@ async function ensureReceiptForPayment({
   }
 }
 
-export async function generatePayLink(
-  input: GeneratePayLinkInput,
-  orgId?: string,
-) {
-  const parsed = generatePayLinkInputSchema.parse(input);
-  const {
-    orgId: resolvedOrgId,
-    supabase,
-    userId,
-  } = await requireOrgContext(orgId);
-  await requireAuthorization({
-    permission: "invoice.send",
-    userId,
-    orgId: resolvedOrgId,
-    supabase,
-    logDecision: true,
-    resourceType: "invoice",
-    resourceId: parsed.invoice_id,
-  });
-
-  const { data: invoice, error: invoiceError } = await supabase
-    .from("invoices")
-    .select("id, org_id, project_id")
-    .eq("id", parsed.invoice_id)
-    .eq("org_id", resolvedOrgId)
-    .maybeSingle();
-
-  if (invoiceError || !invoice) {
-    throw new Error("Invoice not found for pay link generation");
-  }
-
-  return createPersistedPayLink({
-    supabase,
-    orgId: resolvedOrgId,
-    projectId: invoice.project_id,
-    invoiceId: parsed.invoice_id,
-    expiresAt: parsed.expires_at ?? null,
-    maxUses: parsed.max_uses ?? null,
-    metadata: parsed.metadata ?? {},
-  });
-}
-
-export async function validatePayLinkToken(token: string) {
-  // A signature protects the payload in transit; the persisted row is what
-  // makes expiration, max uses, and revocation authoritative.
-  const signedPayload = validateSignedPayLink(token);
-  if (token.includes(".") && !signedPayload) return null;
-
-  const token_hash = hashToken(token);
-  const supabase = createServiceSupabaseClient();
-  const { data, error } = await supabase
-    .from("payment_links")
-    .select(
-      "*, invoice:invoices(id, org_id, project_id, invoice_number, title, status, due_date, total_cents, balance_due_cents, metadata)",
-    )
-    .eq("token_hash", token_hash)
-    .maybeSingle();
-
-  if (error || !data) return null;
-  if (
-    signedPayload &&
-    (data.org_id !== signedPayload.org_id ||
-      data.invoice_id !== signedPayload.invoice_id ||
-      data.nonce !== signedPayload.nonce ||
-      data.invoice?.project_id !== signedPayload.project_id)
-  ) {
-    return null;
-  }
-  if (data.expires_at && new Date(data.expires_at).getTime() < Date.now())
-    return null;
-  if (
-    data.max_uses != null &&
-    data.used_count != null &&
-    data.used_count >= data.max_uses
-  )
-    return null;
-
-  return {
-    link: mapPaymentLink(data),
-    invoice: data.invoice as Invoice,
-    signed: Boolean(signedPayload),
-  };
-}
-
-export async function getInvoiceForPayLink(token: string) {
-  const result = await validatePayLinkToken(token);
-  if (!result) return null;
-
-  const supabase = createServiceSupabaseClient();
-  const { data, error } = await supabase
-    .from("invoices")
-    .select(
-      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, currency, metadata, created_at, updated_at, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
-    )
-    .eq("id", result.invoice.id)
-    .eq("org_id", result.invoice.org_id)
-    .maybeSingle();
-
-  if (error || !data) return null;
-  if (data.client_visible === false || data.status === "void") return null;
-
-  return {
-    link: result.link,
-    invoice: {
-      ...data,
-      metadata: data.metadata ?? result.invoice.metadata,
-      lines: (data as any).invoice_lines ?? [],
-    },
-  };
-}
-
-export async function createPayLinkPaymentIntent(token: string) {
-  const result = await getInvoiceForPayLink(token);
-  if (!result)
-    throw new Error("Payment link is invalid, expired, or unavailable");
-
-  const invoice = result.invoice;
-  const supabase = createServiceSupabaseClient();
-  const invoiceBalanceCents =
-    invoice.balance_due_cents ?? invoice.total_cents ?? 0;
-  if (invoiceBalanceCents <= 0)
-    throw new Error("Invoice has no outstanding balance");
-
-  const connectedAccount = await requireReadyStripeConnectedAccountForOrg(
-    invoice.org_id,
-  );
-  const amounts = await buildPaymentIntentAmounts({
-    supabase,
-    orgId: invoice.org_id,
-    invoiceBalanceCents,
-    includeProcessingFee: false,
-  });
-  const reusable = await findReusablePaymentIntent({
-    supabase,
-    orgId: invoice.org_id,
-    invoiceId: invoice.id,
-    amountCents: amounts.chargeAmountCents,
-  });
-  if (reusable) return reusable;
-
-  return createReservedStripePaymentIntent({
-    supabase,
-    orgId: invoice.org_id,
-    projectId: invoice.project_id,
-    invoiceId: invoice.id,
-    invoiceNumber: invoice.invoice_number,
-    currency: invoice.currency ?? "usd",
-    principalCents: amounts.invoiceBalanceCents,
-    chargeCents: amounts.chargeAmountCents,
-    connectedAccountId: connectedAccount.stripe_account_id,
-    metadata: {
-      invoice_balance_cents: amounts.invoiceBalanceCents,
-      payment_method_fee_cents: 0,
-      payment_method_total_cents: amounts.chargeAmountCents,
-      pay_link_authorized: true,
-    },
-  });
-}
-
-export async function createPaymentIntent(
-  input: CreatePaymentIntentInput,
-  orgId?: string,
-) {
-  const parsed = createPaymentIntentInputSchema.parse(input);
-  const {
-    orgId: resolvedOrgId,
-    supabase,
-    userId,
-  } = await requireOrgContext(orgId);
-  await requireAuthorization({
-    permission: "payment.read",
-    userId,
-    orgId: resolvedOrgId,
-    supabase,
-    logDecision: true,
-    resourceType: "invoice",
-    resourceId: parsed.invoice_id,
-  });
-
-  const invoice = await getInvoiceTotals(
-    supabase,
-    parsed.invoice_id,
-    resolvedOrgId,
-  );
-  const amount =
-    parsed.amount_cents ??
-    invoice.balance_due_cents ??
-    invoice.total_cents ??
-    0;
-  if (amount <= 0) throw new Error("Invoice has no outstanding balance");
-  const connectedAccount =
-    await requireReadyStripeConnectedAccount(resolvedOrgId);
-  const amounts = await buildPaymentIntentAmounts({
-    supabase,
-    orgId: resolvedOrgId,
-    invoiceBalanceCents: amount,
-    method: parsed.method,
-    includeProcessingFee: parsed.include_processing_fee,
-  });
-  const reusable = await findReusablePaymentIntent({
-    supabase,
-    orgId: resolvedOrgId,
-    invoiceId: parsed.invoice_id,
-    amountCents: amounts.chargeAmountCents,
-    method: parsed.method,
-  });
-  if (reusable) return reusable;
-
-  return createReservedStripePaymentIntent({
-    supabase,
-    orgId: resolvedOrgId,
-    projectId: invoice.project_id,
-    invoiceId: parsed.invoice_id,
-    invoiceNumber: invoice.invoice_number,
-    currency: parsed.currency ?? "usd",
-    principalCents: amounts.invoiceBalanceCents,
-    chargeCents: amounts.chargeAmountCents,
-    method: parsed.method,
-    connectedAccountId: connectedAccount.stripe_account_id,
-    metadata: {
-      ...(parsed.metadata ?? {}),
-      payment_method_choice: parsed.method ?? null,
-      invoice_balance_cents: amounts.invoiceBalanceCents,
-      payment_method_fee_cents: amounts.paymentMethodFeeCents,
-      payment_method_total_cents: amounts.chargeAmountCents,
-    },
-  });
-}
 
 export async function createPublicInvoicePaymentIntent(
   input: CreatePublicInvoicePaymentIntentInput,
@@ -969,15 +564,6 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
 
   let resolvedOrgId = orgId;
   let invoiceId = parsed.invoice_id;
-  let paymentLinkId: string | undefined;
-
-  if (parsed.pay_link_token) {
-    const validation = await validatePayLinkToken(parsed.pay_link_token);
-    if (!validation) throw new Error("Payment link is invalid or expired");
-    resolvedOrgId = validation.invoice.org_id;
-    invoiceId = validation.invoice.id;
-    paymentLinkId = validation.link.id;
-  }
 
   if (!resolvedOrgId || !invoiceId) {
     const ctx = await requireOrgContext(orgId);
@@ -999,6 +585,18 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
   }
 
   const invoice = await getInvoiceTotals(supabase, invoiceId, resolvedOrgId);
+
+  // Money can only be received against something that was actually billed. The
+  // database guard only excluded `void`, so a draft — which carries a full
+  // balance_due_cents from the moment it is created — could be settled and
+  // marked paid without ever having been sent to anyone.
+  if (!isIssuedInvoiceStatus(invoice.status)) {
+    throw new Error(
+      normalizeInvoiceStatus(invoice.status) === "void"
+        ? "A voided invoice cannot take a payment."
+        : "Issue this invoice before recording a payment against it.",
+    );
+  }
 
   if (parsed.provider_payment_id) {
     const { data: existing } = await supabase
@@ -1160,22 +758,6 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
       status: parsed.status ?? "succeeded",
     },
   });
-
-  if (paymentSettled && paymentLinkId) {
-    const { data: linkRow } = await supabase
-      .from("payment_links")
-      .select("used_count, max_uses")
-      .eq("id", paymentLinkId)
-      .maybeSingle();
-
-    if (linkRow) {
-      const nextUsed = (linkRow.used_count ?? 0) + 1;
-      await supabase
-        .from("payment_links")
-        .update({ used_count: nextUsed })
-        .eq("id", paymentLinkId);
-    }
-  }
 
   if (paymentSettled) {
     try {
@@ -1539,54 +1121,6 @@ export async function resolvePaymentReversal(input: {
     );
   }
   return data;
-}
-
-export async function listPaymentsForInvoice(
-  invoiceId: string,
-  orgId?: string,
-) {
-  const {
-    supabase,
-    orgId: resolvedOrgId,
-    userId,
-  } = await requireOrgContext(orgId);
-  await requireAuthorization({
-    permission: "payment.read",
-    userId,
-    orgId: resolvedOrgId,
-    supabase,
-    logDecision: true,
-    resourceType: "invoice",
-    resourceId: invoiceId,
-  });
-  const [paymentsRes, allocationsRes] = await Promise.all([
-    supabase
-      .from("payments")
-      .select("*")
-      .eq("org_id", resolvedOrgId)
-      .eq("invoice_id", invoiceId),
-    supabase
-      .from("payment_allocations")
-      .select("*, payment:payments(*)")
-      .eq("org_id", resolvedOrgId)
-      .eq("invoice_id", invoiceId),
-  ]);
-
-  if (paymentsRes.error)
-    throw new Error(`Failed to list payments: ${paymentsRes.error.message}`);
-  if (allocationsRes.error)
-    throw new Error(
-      `Failed to list payment allocations: ${allocationsRes.error.message}`,
-    );
-
-  return [
-    ...(paymentsRes.data ?? []).map(mapPayment),
-    ...(allocationsRes.data ?? []).map((row: any) =>
-      mapAllocatedPayment(row, invoiceId),
-    ),
-  ].sort((a, b) =>
-    String(b.received_at ?? "").localeCompare(String(a.received_at ?? "")),
-  );
 }
 
 /**

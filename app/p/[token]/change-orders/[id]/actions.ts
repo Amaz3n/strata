@@ -234,7 +234,6 @@ export async function requestChangeOrderChangesAction(input: {
   }
 
   revalidatePath(`/p/${input.token}/change-orders/${input.changeOrderId}`)
-  revalidatePath("/change-orders")
   revalidatePath(`/projects/${access.project_id}/change-orders`)
   return { success: true }
 }

@@ -128,7 +128,7 @@ export async function importQboRecordsAction(params: {
     )
     for (const projectId of projectIds) {
       revalidatePath(`/projects/${projectId}/financials`)
-      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      revalidatePath(`/projects/${projectId}/financials/billing`)
       revalidatePath(`/projects/${projectId}/financials/payables`)
       revalidatePath(`/projects/${projectId}/expenses`)
     }

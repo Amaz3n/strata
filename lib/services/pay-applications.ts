@@ -784,9 +784,8 @@ export async function submitPayApplication(payApplicationId: string, orgId?: str
       invoice_number: numbering.number,
       reservation_id: numbering.reservation_id,
       title: `Pay Application #${applicationNumber}`,
-      status: "saved",
+      issue: false,
       issue_date: today,
-      client_visible: false,
       tax_rate: 0,
       lines: invoiceLines,
       source_type: "pay_application",
@@ -1050,9 +1049,8 @@ export async function releasePrimeRetainage(
       invoice_number: numbering.number,
       reservation_id: numbering.reservation_id,
       title: `Retainage Release — Application #${appRow.application_number}`,
-      status: "saved",
+      issue: false,
       issue_date: new Date().toISOString().slice(0, 10),
-      client_visible: false,
       tax_rate: 0,
       lines: [
         {

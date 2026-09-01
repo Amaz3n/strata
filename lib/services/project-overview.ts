@@ -13,6 +13,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { getProjectJobCostActualsByCostCode } from "@/lib/services/job-cost-actuals"
 import { hasPermission, requireProjectPermission } from "@/lib/services/permissions"
 import type { Project } from "@/lib/types"
+import { formatMoneyCents } from "@/lib/utils"
 
 // ============================================================================
 // project_overview_v1 — the read contract
@@ -92,6 +93,16 @@ export interface ProjectOverviewFinancials {
   adjustedBudgetCents: number | null
   /** Percent of the adjusted budget already spent. Null without a budget. */
   budgetVariancePercent: number | null
+  /** Money sitting where someone has to act, each pointing at the exact filter that clears it. */
+  exceptions: FinancialException[]
+}
+
+export interface FinancialException {
+  id: string
+  title: string
+  detail: string | null
+  tone: "destructive" | "warning"
+  link: string
 }
 
 // ============================================================================
@@ -393,7 +404,7 @@ async function loadFinancials(
   projectId: string,
   canReadBudget: boolean,
 ): Promise<ProjectOverviewFinancials> {
-  const [contract, changeOrders, invoices, budget] = await Promise.all([
+  const [contract, changeOrders, invoices, budget, unbilledCosts, overdueInvoices] = await Promise.all([
     getProjectContract(projectId),
     supabase
       .from("change_orders")
@@ -411,6 +422,27 @@ async function loadFinancials(
     // once inside getProjectPocPosition — and used the second run for nothing but
     // `billedCents`, which is exactly the invoice sum three lines above.
     canReadBudget ? getBudgetWithActuals(projectId, orgId) : Promise.resolve(null),
+    // Approved cost that nobody has invoiced yet. On a cost-plus job this is the
+    // project's most perishable number, and the overview is where someone
+    // notices it before the period closes without it.
+    supabase
+      .from("billable_costs")
+      .select("billable_cents, occurred_on")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .eq("status", "open")
+      .eq("is_billable", true)
+      .order("occurred_on", { ascending: true })
+      .limit(2_000),
+    supabase
+      .from("invoices")
+      .select("balance_due_cents")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .in("status", [...BILLED_INVOICE_STATUSES])
+      .gt("balance_due_cents", 0)
+      .or(`status.eq.overdue,due_date.lte.${new Date().toISOString().slice(0, 10)}`)
+      .limit(500),
   ])
 
   fail("approved change orders", changeOrders.error)
@@ -428,6 +460,11 @@ async function loadFinancials(
       0,
     )
 
+  const budgetVariancePercent =
+    adjustedBudgetCents && adjustedBudgetCents > 0
+      ? Math.round(((budgetActualCents ?? 0) / adjustedBudgetCents) * 100)
+      : null
+
   return {
     contractTotalCents: contract?.total_cents ?? 0,
     approvedChangeOrdersTotalCents: (changeOrders.data ?? []).reduce(
@@ -440,11 +477,70 @@ async function loadFinancials(
     billedCents: resolveBilledCents((invoices.data ?? []).map((row) => row.total_cents)),
     actualCents,
     adjustedBudgetCents,
-    budgetVariancePercent:
-      adjustedBudgetCents && adjustedBudgetCents > 0
-        ? Math.round(((budgetActualCents ?? 0) / adjustedBudgetCents) * 100)
-        : null,
+    budgetVariancePercent,
+    exceptions: buildFinancialExceptions({
+      projectId,
+      budgetVariancePercent,
+      unbilledCosts: unbilledCosts.error ? [] : unbilledCosts.data ?? [],
+      overdueBalanceCents: overdueInvoices.error
+        ? 0
+        : (overdueInvoices.data ?? []).reduce((sum, row) => sum + Number(row.balance_due_cents ?? 0), 0),
+    }),
   }
+}
+
+/**
+ * Each row names a number and links to the filtered surface that clears it —
+ * never to the financials landing page, which would drop the reader one
+ * redirect away from the problem they clicked.
+ */
+function buildFinancialExceptions({
+  projectId,
+  budgetVariancePercent,
+  unbilledCosts,
+  overdueBalanceCents,
+}: {
+  projectId: string
+  budgetVariancePercent: number | null
+  unbilledCosts: Array<{ billable_cents: number | null; occurred_on: string | null }>
+  overdueBalanceCents: number
+}): FinancialException[] {
+  const exceptions: FinancialException[] = []
+
+  const unbilledCents = unbilledCosts.reduce((sum, row) => sum + Number(row.billable_cents ?? 0), 0)
+  if (unbilledCents > 0) {
+    const oldest = unbilledCosts.find((row) => row.occurred_on)?.occurred_on ?? null
+    const days = oldest ? Math.max(0, differenceInCalendarDays(new Date(), new Date(`${oldest}T00:00:00`))) : 0
+    exceptions.push({
+      id: "ready-to-bill",
+      title: `${formatMoneyCents(unbilledCents)} ready to bill`,
+      detail: days > 0 ? `oldest cost ${days}d` : null,
+      tone: days >= 30 ? "destructive" : "warning",
+      link: `/projects/${projectId}/financials/cost-inbox`,
+    })
+  }
+
+  if (overdueBalanceCents > 0) {
+    exceptions.push({
+      id: "overdue-ar",
+      title: `${formatMoneyCents(overdueBalanceCents)} overdue`,
+      detail: "unpaid past due date",
+      tone: "destructive",
+      link: `/projects/${projectId}/financials/billing`,
+    })
+  }
+
+  if (budgetVariancePercent !== null && budgetVariancePercent > 100) {
+    exceptions.push({
+      id: "budget-over",
+      title: `Budget at ${budgetVariancePercent}% of plan`,
+      detail: "spent against adjusted budget",
+      tone: "destructive",
+      link: `/projects/${projectId}/financials/budget`,
+    })
+  }
+
+  return exceptions
 }
 
 // ============================================================================

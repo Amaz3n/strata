@@ -132,8 +132,45 @@ export interface CorrespondenceThreadPage {
   pageSize: number
 }
 
-export interface ArchivedCorrespondencePage {
+interface ArchivedCorrespondencePage {
   messages: CorrespondenceMessage[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+/**
+ * One row of the log, whichever pile it came from.
+ *
+ * The filed log is a list of conversations and the unfiled pile is a list of
+ * messages, but the reader is looking at one list of mail either way. Flatten
+ * the two into a single row shape here, in the service, rather than making the
+ * page hold two lists and a mode flag — that split is what produced the old
+ * log/unfiled tab bar.
+ */
+export interface CorrespondenceListItem {
+  /** What opening this row reads: a whole conversation, or one loose message. */
+  kind: "thread" | "message"
+  /** Thread id or email id, depending on `kind`. Unique within a page. */
+  id: string
+  subject: string
+  direction: CorrespondenceDirection
+  counterparty_name: string
+  counterparty_address: string
+  counterparty_contact_id: string | null
+  counterparty_company_id: string | null
+  snippet: string | null
+  message_count: number
+  occurred_at: string
+  attachment_count: number
+  link_count: number
+  unreviewed_count: number
+  classifications: CorrespondenceClassification[]
+  archived: boolean
+}
+
+export interface CorrespondenceListPage {
+  items: CorrespondenceListItem[]
   total: number
   page: number
   pageSize: number
@@ -601,7 +638,7 @@ export async function listCorrespondenceThreads(
  * wrong project. Kept as rows rather than deleted, and listed flat — a thread
  * rollup over archived messages would only ever describe what was thrown out.
  */
-export async function listArchivedCorrespondence(
+async function listArchivedCorrespondence(
   input: ArchivedCorrespondenceFilterInput,
   orgId?: string,
 ): Promise<ArchivedCorrespondencePage> {
@@ -633,6 +670,94 @@ export async function listArchivedCorrespondence(
     total: count ?? 0,
     page: filters.page,
     pageSize: filters.pageSize,
+  }
+}
+
+/**
+ * The log as one list, whichever pile the filters point at.
+ *
+ * Filed mail is aggregated into conversations by `project_email_threads`;
+ * unfiled mail stays a flat list of messages, because a thread rollup over
+ * archived rows would only ever describe what somebody threw out. Both come
+ * back as `CorrespondenceListItem`, so there is one list surface and one set of
+ * controls above it.
+ */
+export async function listCorrespondence(
+  input: CorrespondenceFilterInput,
+  orgId?: string,
+): Promise<CorrespondenceListPage> {
+  const filters = correspondenceFilterSchema.parse(input)
+
+  if (filters.status === "unfiled") {
+    const page = await listArchivedCorrespondence(
+      {
+        projectId: filters.projectId,
+        search: filters.search,
+        page: filters.page,
+        pageSize: filters.pageSize,
+      },
+      orgId,
+    )
+    return {
+      items: page.messages.map(messageListItem),
+      total: page.total,
+      page: page.page,
+      pageSize: page.pageSize,
+    }
+  }
+
+  const page = await listCorrespondenceThreads(filters, orgId)
+  return {
+    items: page.threads.map(threadListItem),
+    total: page.total,
+    page: page.page,
+    pageSize: page.pageSize,
+  }
+}
+
+function threadListItem(thread: CorrespondenceThread): CorrespondenceListItem {
+  return {
+    kind: "thread",
+    id: thread.thread_id,
+    subject: thread.subject,
+    direction: thread.last_direction,
+    counterparty_name: thread.counterparty_name,
+    counterparty_address: thread.counterparty_address,
+    counterparty_contact_id: thread.counterparty_contact_id,
+    counterparty_company_id: thread.counterparty_company_id,
+    snippet: thread.snippet,
+    message_count: thread.message_count,
+    occurred_at: thread.last_message_at,
+    attachment_count: thread.attachment_count,
+    link_count: thread.link_count,
+    unreviewed_count: thread.unreviewed_count,
+    classifications: thread.classifications,
+    archived: false,
+  }
+}
+
+function messageListItem(message: CorrespondenceMessage): CorrespondenceListItem {
+  const counterparty =
+    message.direction === "inbound" ? message.from_address : message.to_addresses[0] ?? message.from_address
+  return {
+    kind: "message",
+    id: message.id,
+    subject: message.subject,
+    direction: message.direction,
+    counterparty_name: counterparty,
+    counterparty_address: counterparty,
+    counterparty_contact_id: message.contact_id,
+    counterparty_company_id: message.company_id,
+    snippet: message.body_preview,
+    message_count: 1,
+    occurred_at: message.occurred_at,
+    attachment_count: message.attachment_count,
+    link_count: message.links.length,
+    // Nothing in the unfiled pile is waiting on a ruling: taking it out of the
+    // log IS the ruling.
+    unreviewed_count: 0,
+    classifications: [message.classification],
+    archived: true,
   }
 }
 
@@ -716,6 +841,77 @@ async function enrichDetail(
   })
 
   return { ...message, body, body_truncated: truncated, body_file_id: bodyFileId, attachments }
+}
+
+/**
+ * What the reader pane opens for a given URL.
+ *
+ * The log deep-links two ways — `?thread=` from the list, `?email=` from global
+ * search, a notification, or a party's Communications tab — and a message that
+ * has been unfiled belongs to no conversation the log shows. Resolving all
+ * three into one shape here is what lets the reader be a plain component over
+ * server-loaded data instead of the effect-driven fetch it replaced.
+ */
+export interface CorrespondenceReaderTarget {
+  kind: "thread" | "message"
+  /** The list row this target highlights, when that row is on the page. */
+  id: string
+  thread_id: string | null
+  subject: string
+  messages: ProjectEmailDetail[]
+  truncated: boolean
+  total_message_count: number
+}
+
+export async function getCorrespondenceReaderTarget(
+  input: { projectId: string; emailId?: string | null; threadId?: string | null },
+  orgId?: string,
+): Promise<CorrespondenceReaderTarget | null> {
+  if (input.emailId) {
+    const email = await getProjectEmail(input.emailId, input.projectId, orgId)
+    if (!email) return null
+    // An unfiled message is not part of any conversation, so it reads alone.
+    if (email.archived_at) return looseMessageTarget(email)
+    const thread = await getCorrespondenceThread(
+      { projectId: input.projectId, threadId: email.thread_id },
+      orgId,
+    )
+    return thread ? threadTarget(thread) : looseMessageTarget(email)
+  }
+
+  if (input.threadId) {
+    const thread = await getCorrespondenceThread(
+      { projectId: input.projectId, threadId: input.threadId },
+      orgId,
+    )
+    return thread ? threadTarget(thread) : null
+  }
+
+  return null
+}
+
+function threadTarget(thread: CorrespondenceThreadDetail): CorrespondenceReaderTarget {
+  return {
+    kind: "thread",
+    id: thread.thread_id,
+    thread_id: thread.thread_id,
+    subject: thread.subject,
+    messages: thread.messages,
+    truncated: thread.truncated,
+    total_message_count: thread.total_message_count,
+  }
+}
+
+function looseMessageTarget(email: ProjectEmailDetail): CorrespondenceReaderTarget {
+  return {
+    kind: "message",
+    id: email.id,
+    thread_id: null,
+    subject: email.subject,
+    messages: [email],
+    truncated: false,
+    total_message_count: 1,
+  }
 }
 
 export async function getProjectEmail(

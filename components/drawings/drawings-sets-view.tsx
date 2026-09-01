@@ -143,7 +143,6 @@ const DrawingViewer = dynamic(
 
 type SaveMarkupInput = import("./drawing-viewer").SaveMarkupInput
 
-type ProjectOption = { id: string; name: string }
 
 interface DrawingsSetsViewProps {
   initialSets: DrawingSet[]
@@ -153,9 +152,7 @@ interface DrawingsSetsViewProps {
    * the shortfall so a truncated set can never read as a complete one.
    */
   totalSheetCount?: number
-  projects: ProjectOption[]
   selectedProjectId?: string
-  lockProject?: boolean
   initialSelectedSetId?: string
   initialSheetId?: string
   /** Takeoff is read-only without takeoff.write; the panel still shows numbers. */
@@ -391,9 +388,7 @@ export function DrawingsSetsView({
   initialSets,
   initialSheets = [],
   totalSheetCount,
-  projects,
   selectedProjectId,
-  lockProject = false,
   initialSelectedSetId,
   initialSheetId,
   canWriteTakeoff = false,
@@ -843,12 +838,6 @@ export function DrawingsSetsView({
       return next
     })
   }, [])
-
-  const handleProjectChange = (projectId: string) => {
-    if (lockProject) return
-    const next = projectId === "all" ? undefined : projectId
-    router.push(next ? `/drawings?project=${next}` : "/drawings")
-  }
 
   const openFilePicker = () => {
     if (!selectedProjectId) {
@@ -1797,32 +1786,7 @@ export function DrawingsSetsView({
 
       {/* Toolbar */}
       <div className="border-b">
-        <div
-          className={cn(
-            "flex flex-wrap items-center gap-2 px-4 pb-0 sm:pb-3 sm:pt-3",
-            // No selector on mobile (locked project) → no empty top band above the search.
-            lockProject ? "pt-0" : "pt-3",
-          )}
-        >
-          {!lockProject && (
-            <Select
-              value={selectedProjectId ?? "all"}
-              onValueChange={handleProjectChange}
-            >
-              <SelectTrigger className="h-9 w-full sm:w-[200px]">
-                <SelectValue placeholder="Select project" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All projects</SelectItem>
-                {projects.map((p) => (
-                  <SelectItem key={p.id} value={p.id}>
-                    {p.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-
+        <div className="flex flex-wrap items-center gap-2 px-4 pb-0 pt-0 sm:pb-3 sm:pt-3">
           {/* Desktop search lives inline in the toolbar row. */}
           <div className="relative hidden w-full sm:block sm:max-w-sm">
             <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />

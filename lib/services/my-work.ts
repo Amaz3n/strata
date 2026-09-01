@@ -50,7 +50,7 @@ export async function loadMyApprovals(): Promise<MyApprovalsData> {
         projectName: projectNames.get(projectId) ?? "Project",
         count: entry.total,
         breakdown: { time: entry.time, expenses: entry.expenses, bills: entry.bills, costs: entry.costs },
-        href: `/projects/${projectId}/financials/review`,
+        href: `/projects/${projectId}/financials/cost-inbox`,
       }
     })
     .filter((approval) => approval.count > 0)

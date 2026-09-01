@@ -1,3 +1,4 @@
+import { invoiceHref } from "@/lib/financials/invoice-destinations"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import {
@@ -253,7 +254,7 @@ export async function loadOrgBillingDeskData(projectIds: string[] | null = null)
       status: String(row.status ?? "sent"),
       dueDate: row.due_date ?? null,
       balanceDueCents: Number(row.balance_due_cents ?? 0),
-      href: projectId ? `/projects/${projectId}/financials/receivables?invoice=${row.id}` : "/billing",
+      href: projectId ? invoiceHref(row.id, projectId) : "/billing",
     } satisfies OutstandingInvoiceRow
   })
 

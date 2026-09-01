@@ -7,7 +7,7 @@ import { TmTicketWorkflow } from "@/components/financials/tm-ticket-workflow"
 import { PageLayout } from "@/components/layout/page-layout"
 import { Skeleton } from "@/components/ui/skeleton"
 import { getProjectFinancialFeatureConfig } from "@/lib/financials/billing-model"
-import { loadFinancialsReviewQueueData } from "@/lib/services/financials-review-queue"
+import { loadCostInboxData } from "@/lib/services/cost-inbox"
 import { getProjectFinancialSetupStatusForProject } from "@/lib/services/project-financial-setup"
 import { listProjectTmTickets } from "@/lib/services/tm-tickets"
 
@@ -37,11 +37,11 @@ async function TmTicketsContent({ id }: { id: string }) {
 
   const featureConfig = getProjectFinancialFeatureConfig(project, contract)
   if (featureConfig.billingModel !== "time_and_materials") {
-    redirect(`/projects/${project.id}/financials/receivables`)
+    redirect(`/projects/${project.id}/financials/billing`)
   }
 
   const [reviewQueue, setupStatus, tickets] = await Promise.all([
-    loadFinancialsReviewQueueData(id),
+    loadCostInboxData(id),
     getProjectFinancialSetupStatusForProject(id),
     listProjectTmTickets(id),
   ])
@@ -63,7 +63,7 @@ async function TmTicketsContent({ id }: { id: string }) {
       title="T&M Tickets"
       breadcrumbs={[
         { label: project.name, href: `/projects/${project.id}` },
-        { label: "Financials", href: `/projects/${project.id}/financials/receivables` },
+        { label: "Financials", href: `/projects/${project.id}/financials/billing` },
         { label: "T&M Tickets" },
       ]}
       fullBleed

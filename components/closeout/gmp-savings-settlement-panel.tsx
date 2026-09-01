@@ -1,5 +1,6 @@
 "use client"
 
+import { invoiceHref } from "@/lib/financials/invoice-destinations"
 import { useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
@@ -104,7 +105,7 @@ export function GmpSavingsSettlementPanel({
         <div className="mt-3 flex flex-wrap gap-2 text-sm">
           {summary.savings_settlement_invoice_ids.map((invoiceId) => (
             <Button key={invoiceId} asChild size="sm" variant="outline">
-              <Link href={`/projects/${projectId}/financials/receivables?invoice=${invoiceId}`}>Open settlement invoice</Link>
+              <Link href={invoiceHref(invoiceId, projectId)}>Open settlement invoice</Link>
             </Button>
           ))}
         </div>

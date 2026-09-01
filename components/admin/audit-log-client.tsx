@@ -63,6 +63,8 @@ const entityTypes = [
 // id; other entity types land on their listing page.
 function entityHref(entityType: string, entityId: string | null): string | null {
   if (entityType === "project" && entityId) return `/projects/${entityId}`
+  if (entityType === "drawing_set" && entityId) return `/drawings/sets/${entityId}`
+  if (entityType === "drawing_sheet" && entityId) return `/drawings/sheets/${entityId}`
   const listRoutes: Record<string, string> = {
     invoice: "/invoices",
     payment: "/payments",
@@ -70,12 +72,7 @@ function entityHref(entityType: string, entityId: string | null): string | null 
     task: "/tasks",
     estimate: "/estimates",
     proposal: "/proposals",
-    drawing_set: "/drawings",
-    drawing_sheet: "/drawings",
     document: "/documents",
-    rfi: "/rfis",
-    submittal: "/submittals",
-    change_order: "/change-orders",
     contact: "/contacts",
   }
   return listRoutes[entityType] ?? null

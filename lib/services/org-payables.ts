@@ -21,6 +21,13 @@ import {
 } from "@/lib/services/vendor-payment-invitations"
 import { payableOutstandingCents } from "@/lib/financials/payables-rules"
 import { requesterMayApprovePaymentRun } from "@/lib/payments/payment-domain"
+import { listActivePayableRunItems } from "@/lib/services/payable-run-items"
+import {
+  ACTIVE_PAYABLE_RUN_ITEM_STATUSES,
+  PAYABLE_QUEUES,
+  parsePayableQueue,
+  type PayableQueue,
+} from "@/lib/financials/payables-queues"
 import type {
   ComplianceRules,
   ComplianceStatusSummary,
@@ -42,13 +49,7 @@ const MAX_PAGE_SIZE = 100
 const CLOSED_STATUSES = ["rejected"]
 
 /** Payment-run item statuses that mean the bill is spoken for by the rail. */
-export const ACTIVE_RUN_ITEM_STATUSES = [
-  "draft",
-  "pending_approval",
-  "approved",
-  "processing",
-  "partially_paid",
-]
+export const ACTIVE_RUN_ITEM_STATUSES = [...ACTIVE_PAYABLE_RUN_ITEM_STATUSES]
 
 /**
  * How many open payables the money summary reads. Counts and totals for the
@@ -58,8 +59,6 @@ export const ACTIVE_RUN_ITEM_STATUSES = [
  * scanned, because it grows without limit.
  */
 const SUMMARY_SCAN_LIMIT = 2000
-/** Active run items across the org; bounded by how many runs can be in flight. */
-const ACTIVE_RUN_ITEM_LIMIT = 1000
 /** Matches nothing — a stand-in when an `in` list would otherwise be empty. */
 const NIL_UUID = "00000000-0000-0000-0000-000000000000"
 
@@ -69,15 +68,8 @@ const DAY_MS = 86_400_000
  * The payables pipeline, in the order money travels it. Every payable sits on
  * exactly one working tab, which is what makes the totals beside them addable.
  */
-export const PAYABLE_TABS = [
-  "drafts",
-  "approval",
-  "ready",
-  "inflight",
-  "paid",
-  "all",
-] as const
-export type PayableTabKey = (typeof PAYABLE_TABS)[number]
+export const PAYABLE_TABS = PAYABLE_QUEUES
+export type PayableTabKey = PayableQueue
 
 export interface PayableTabSummary {
   count: number
@@ -134,19 +126,10 @@ export async function loadPayablePaymentDecorations(
 
   const [readiness, runItemsResult] = await Promise.all([
     listCompanyPaymentReadiness(companyIds, context.orgId),
-    supabase
-      .from("payment_run_items")
-      .select("bill_id,run_id,status")
-      .eq("org_id", context.orgId)
-      .in("bill_id", billIds)
-      .in("status", ACTIVE_RUN_ITEM_STATUSES)
-      .limit(ACTIVE_RUN_ITEM_LIMIT),
+    listActivePayableRunItems(supabase, context.orgId, { billIds }),
   ])
-  if (runItemsResult.error) {
-    throw new Error(`Unable to load payable payment runs: ${runItemsResult.error.message}`)
-  }
 
-  const runItems = (runItemsResult.data ?? []).filter(
+  const runItems = runItemsResult.filter(
     (item) => item.bill_id && item.run_id,
   )
   const runIds = [...new Set(runItems.map((item) => item.run_id as string))]
@@ -195,6 +178,8 @@ export async function loadPayablePaymentDecorations(
 export interface OrgPayablesDeskData {
   /** Every payable on the desk: open first (by due date), then recently settled. */
   bills: VendorBillSummary[]
+  /** URL-selected payable, even when it lives on another tab or page. */
+  selectedBill: VendorBillSummary | null
   costCodes: CostCode[]
   complianceRules: ComplianceRules
   complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>
@@ -251,6 +236,7 @@ export async function loadOrgPayablesDesk(
     search?: string
     page?: number
     pageSize?: number
+    billId?: string
   } = {},
 ): Promise<OrgPayablesDeskData> {
   const { supabase, orgId, userId } = await requireOrgContext()
@@ -264,9 +250,7 @@ export async function loadOrgPayablesDesk(
     projectIds === null
       ? []
       : await getReportingExcludedProjectIds(supabase, orgId)
-  const tab: PayableTabKey = PAYABLE_TABS.includes(input.tab as PayableTabKey)
-    ? (input.tab as PayableTabKey)
-    : "approval"
+  const tab = parsePayableQueue(input.tab)
   const search = String(input.search ?? "").trim().slice(0, 120)
   const searchFilter = search.replace(/[,%()]/g, " ").trim()
   const page = Math.max(1, Math.floor(input.page ?? 1))
@@ -315,13 +299,8 @@ export async function loadOrgPayablesDesk(
 
   // Which bills the rail already claims: the difference between "ready to pay"
   // and "in flight", so both of those tabs have to wait for it.
-  const { data: runItemRows } = await supabase
-    .from("payment_run_items")
-    .select("bill_id, run_id, status")
-    .eq("org_id", orgId)
-    .in("status", ACTIVE_RUN_ITEM_STATUSES)
-    .limit(ACTIVE_RUN_ITEM_LIMIT)
-  const runItems = (runItemRows ?? []).filter((item) => item.bill_id && item.run_id)
+  const runItemRows = await listActivePayableRunItems(supabase, orgId)
+  const runItems = runItemRows.filter((item) => item.bill_id && item.run_id)
   const inRunBillIds = new Set(runItems.map((item) => item.bill_id as string))
   const inRunList = Array.from(inRunBillIds)
 
@@ -340,30 +319,53 @@ export async function loadOrgPayablesDesk(
     return query.not("status", "in", `(${CLOSED_STATUSES.join(",")})`)
   }
 
-  const applySearch = (query: any) => searchFilter
-    ? query.or(`bill_number.ilike.%${searchFilter}%,qbo_vendor_name.ilike.%${searchFilter}%`)
-    : query
+  const [matchingCompanies, matchingProjects] = searchFilter
+    ? await Promise.all([
+        supabase.from("companies").select("id").eq("org_id", orgId).ilike("name", `%${searchFilter}%`).limit(200),
+        supabase.from("projects").select("id").eq("org_id", orgId).ilike("name", `%${searchFilter}%`).limit(200),
+      ])
+    : [{ data: [], error: null }, { data: [], error: null }]
+  if (matchingCompanies.error) throw new Error(`Failed to search payable vendors: ${matchingCompanies.error.message}`)
+  if (matchingProjects.error) throw new Error(`Failed to search payable projects: ${matchingProjects.error.message}`)
+  const matchingCompanyIds = (matchingCompanies.data ?? []).map((row) => row.id).filter(Boolean)
+  const matchingProjectIds = (matchingProjects.data ?? []).map((row) => row.id).filter(Boolean)
+
+  const applySearch = (query: any) => {
+    if (!searchFilter) return query
+    return query.or([
+      `bill_number.ilike.%${searchFilter}%`,
+      `qbo_vendor_name.ilike.%${searchFilter}%`,
+      ...(matchingCompanyIds.length > 0 ? [`company_id.in.(${matchingCompanyIds.join(",")})`] : []),
+      ...(matchingProjectIds.length > 0 ? [`project_id.in.(${matchingProjectIds.join(",")})`] : []),
+    ].join(","))
+  }
 
   const pageQuery = applySearch(applyTab(scoped(vendorBillSelect), tab))
     .order(tab === "paid" ? "paid_at" : "due_date", { ascending: tab !== "paid", nullsFirst: false })
     .order("created_at", { ascending: false })
     .range(from, from + pageSize - 1)
+  const selectedBillPromise = input.billId
+    ? scoped(vendorBillSelect).eq("id", input.billId).maybeSingle().then((result: unknown) => result)
+    : Promise.resolve({ data: null, error: null })
 
-  const [org, pageResult, summaryResult, paidCount, allCount] = (await Promise.all([
+  const [org, pageResult, summaryResult, paidCount, allCount, selectedBillResult] = (await Promise.all([
     orgPromise,
     pageQuery,
     summaryPromise,
     paidCountPromise,
     allCountPromise,
+    selectedBillPromise,
   ])) as [
     { data: { slug?: string } | null },
     { data: unknown[] | null; error: { message: string } | null; count: number | null },
     { data: SummaryRow[] | null; count: number | null },
     { count: number | null },
     { count: number | null },
+    { data: unknown | null; error: { message: string } | null },
   ]
 
   if (pageResult.error) throw new Error(`Failed to load payables: ${pageResult.error.message}`)
+  if (selectedBillResult.error) throw new Error(`Failed to open payable: ${selectedBillResult.error.message}`)
 
   const tabs: Record<PayableTabKey, PayableTabSummary> = {
     drafts: emptySummary(),
@@ -405,8 +407,14 @@ export async function loadOrgPayablesDesk(
 
   const rows = pageResult.data ?? []
   const bills = await hydrateVendorBills(supabase, orgId, rows)
-  const billIds = new Set(bills.map((bill) => bill.id))
-  const companyIds = bills
+  const selectedBill = selectedBillResult.data
+    ? (await hydrateVendorBills(supabase, orgId, [selectedBillResult.data]))[0] ?? null
+    : null
+  const decorationBills = selectedBill && !bills.some((bill) => bill.id === selectedBill.id)
+    ? [...bills, selectedBill]
+    : bills
+  const billIds = new Set(decorationBills.map((bill) => bill.id))
+  const companyIds = decorationBills
     .map((bill) => bill.company_id)
     .filter(Boolean) as string[]
 
@@ -429,7 +437,7 @@ export async function loadOrgPayablesDesk(
     // vendor against the project overlay, so a chip resolved without it can
     // read green on a bill the gate will stop.
     getCompaniesComplianceStatus(companyIds, orgId, {
-      projectIds: [...new Set(bills.map((bill) => bill.project_id).filter(Boolean))],
+      projectIds: [...new Set(decorationBills.map((bill) => bill.project_id).filter((id): id is string => Boolean(id)))],
     }),
     listCompanyPaymentReadiness(companyIds, orgId),
     pageRunIds.length > 0
@@ -476,6 +484,7 @@ export async function loadOrgPayablesDesk(
 
   return {
     bills,
+    selectedBill,
     costCodes:
       costCodesResult.status === "fulfilled" ? costCodesResult.value : [],
     complianceRules:

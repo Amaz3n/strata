@@ -1,5 +1,6 @@
 'use server'
 
+import { receivablesWriter } from "@/lib/services/receivables-writer"
 import { z } from "zod"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
@@ -85,7 +86,7 @@ export async function adoptImportedInvoiceForOutboundAction(input: unknown) {
     if (syncError || !syncRecord) throw new Error(syncError?.message ?? "Invoice accounting link not found")
 
     const adoptedAt = new Date().toISOString()
-    const { error: updateInvoiceError } = await supabase
+    const { error: updateInvoiceError } = await receivablesWriter()
       .from("invoices")
       .update({ metadata: { ...metadata, accounting_push_adopted: true, accounting_push_adopted_at: adoptedAt } })
       .eq("org_id", orgId)

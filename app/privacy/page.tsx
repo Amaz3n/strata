@@ -1,13 +1,11 @@
 import type { Metadata } from "next"
-import { ArrowLeft } from "lucide-react"
-import Link from "next/link"
+import { LegalDocument } from "@/components/legal/legal-document"
 
 export const metadata: Metadata = {
   title: "Privacy Policy | Arc",
   description: "Privacy Policy for Arc.",
 }
 
-const companyName = "Arc Project Systems LLC"
 const effectiveDate = "May 28, 2026"
 
 const sections = [
@@ -96,39 +94,5 @@ const sections = [
 ]
 
 export default function PrivacyPage() {
-  return (
-    <main className="min-h-screen bg-background text-foreground">
-      <div className="mx-auto max-w-4xl px-5 py-10 sm:px-8 lg:py-14">
-        <div className="mb-10 border-b border-border pb-6">
-          <Link href="/" className="mb-6 inline-flex items-center gap-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground">
-            <ArrowLeft className="h-4 w-4" />
-            Back to Arc
-          </Link>
-          <div className="flex items-center gap-5">
-            <div className="flex h-16 w-16 shrink-0 items-center justify-center border border-border/60 bg-white shadow-sm">
-              <img src="/arc-logo2.svg" alt="Arc logo" className="h-11 w-11 object-contain" />
-            </div>
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">{companyName}</p>
-              <h1 className="mt-2 text-3xl font-semibold tracking-tight sm:text-4xl">Privacy Policy</h1>
-              <p className="mt-2 text-sm text-muted-foreground">Effective {effectiveDate}</p>
-            </div>
-          </div>
-        </div>
-
-        <div className="space-y-8">
-          {sections.map((section) => (
-            <section key={section.title} className="space-y-3">
-              <h2 className="text-lg font-semibold tracking-tight">{section.title}</h2>
-              <div className="space-y-3 text-sm leading-7 text-muted-foreground">
-                {section.body.map((paragraph) => (
-                  <p key={paragraph}>{paragraph}</p>
-                ))}
-              </div>
-            </section>
-          ))}
-        </div>
-      </div>
-    </main>
-  )
+  return <LegalDocument title="Privacy Policy" effectiveDate={effectiveDate} sections={sections} />
 }

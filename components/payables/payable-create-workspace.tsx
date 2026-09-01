@@ -23,7 +23,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 
-import { listCompaniesAction } from "@/app/(app)/companies/actions"
+import { listVendorCompaniesAction } from "@/app/(app)/companies/actions"
 import { uploadFileAction } from "@/app/(app)/documents/actions"
 import {
   extractPayableInvoiceAction,
@@ -251,7 +251,7 @@ export function PayableCreateWorkspace({
   const amountCents = parseDollarsToCents(amountDollars) ?? 0
   const splitTotalCents = lines.reduce((sum, line) => sum + (parseDollarsToCents(line.amountDollars) ?? 0), 0)
   const balanced = lines.length > 0 && splitTotalCents === amountCents
-  const coreValid = Boolean(selectedProjectId && billNumber.trim() && amountCents > 0 && billDate && (companyId || commitmentId !== NO_COMMITMENT))
+  const coreValid = Boolean(billNumber.trim() && amountCents > 0 && billDate && companyId)
   const readyValid = coreValid && balanced && (
     paymentChannel === "external" || paymentSchedule === "on_approval" || Boolean(scheduledPaymentDate)
   ) && (
@@ -296,8 +296,8 @@ export function PayableCreateWorkspace({
   useEffect(() => {
     if (!open) return
     setLoadingCompanies(true)
-    listCompaniesAction()
-      .then((rows) => setCompanies(rows.filter((company) => ["subcontractor", "supplier", "other"].includes(company.company_type))))
+    listVendorCompaniesAction()
+      .then(setCompanies)
       .catch(() => toast.error("Could not load vendors"))
       .finally(() => setLoadingCompanies(false))
   }, [open])
@@ -364,7 +364,7 @@ export function PayableCreateWorkspace({
   }, [companies, companyId, vendorName])
 
   useEffect(() => {
-    if (!open || !selectedProjectId) {
+    if (!open) {
       setCommitments([])
       setContext(null)
       return
@@ -374,8 +374,8 @@ export function PayableCreateWorkspace({
     setLoadingContext(true)
     setContextError(false)
     void Promise.all([
-      listProjectCommitmentsForPayablesAction(selectedProjectId),
-      getPayableCreationContextAction(selectedProjectId),
+      selectedProjectId ? listProjectCommitmentsForPayablesAction(selectedProjectId) : Promise.resolve([]),
+      getPayableCreationContextAction(selectedProjectId || null),
     ]).then(([nextCommitments, nextContext]) => {
       if (cancelled) return
       setCommitments(nextCommitments)
@@ -412,7 +412,7 @@ export function PayableCreateWorkspace({
   }, [open, initialFile])
 
   useEffect(() => {
-    if (!context || !selectedProjectId || lines.length > 0) return
+    if (!context || lines.length > 0) return
     setLines([{
       id: crypto.randomUUID(),
       projectId: selectedProjectId,
@@ -423,7 +423,7 @@ export function PayableCreateWorkspace({
       qboExpenseAccountId: context.accounting.defaults.expenseAccountId ?? "",
       qboApAccountId: context.accounting.defaults.apAccountId ?? "",
       accountingDimensions: {},
-      billableToCustomer: selectedProject?.billingModel !== "fixed_price",
+      billableToCustomer: Boolean(selectedProject && selectedProject.billingModel !== "fixed_price"),
     }])
   }, [amountDollars, context, description, lines.length, selectedProject?.billingModel, selectedProjectId])
 
@@ -431,14 +431,14 @@ export function PayableCreateWorkspace({
     if (lines.length !== 1) return
     setLines((current) => current.map((line) => ({
       ...line,
-      projectId: selectedProjectId || line.projectId,
+      projectId: selectedProjectId,
       amountDollars: amountDollars || "0.00",
       description: description || line.description || "Vendor bill",
     })))
   }, [amountDollars, description, selectedProjectId])
 
   useEffect(() => {
-    if (!open || !context || !selectedProjectId || (!companyId && aiFields.size === 0)) return
+    if (!open || !context || (!companyId && aiFields.size === 0)) return
     if (!vendorName.trim() && !description.trim()) return
     const key = [selectedProjectId, companyId, vendorName, description].join("|")
     if (lastAutoSuggestionKey.current === key) return
@@ -678,11 +678,11 @@ export function PayableCreateWorkspace({
    * lands in the fields below, which is the only report anyone needed.
    */
   async function runCodingSuggestion() {
-    if (!selectedProjectId || (!vendorName.trim() && !description.trim())) return
+    if (!vendorName.trim() && !description.trim()) return
     setIsSuggestingCoding(true)
     try {
       const suggestion = unwrapAction(await suggestPayableCreationCodingAction({
-        projectId: selectedProjectId,
+        projectId: selectedProjectId || null,
         companyId: companyId || null,
         vendorName: selectedCompany?.name ?? vendorName,
         description,
@@ -744,7 +744,7 @@ export function PayableCreateWorkspace({
   }
 
   function submit(creationState: "draft" | "ready") {
-    if (!selectedProjectId || !coreValid || (creationState === "ready" && !readyValid) || !context) return
+    if (!coreValid || (creationState === "ready" && !readyValid) || !context) return
     startTransition(async () => {
       try {
         let fileId: string | null = null
@@ -752,7 +752,7 @@ export function PayableCreateWorkspace({
           setIsUploading(true)
           const formData = new FormData()
           formData.append("file", file)
-          formData.append("projectId", selectedProjectId)
+          if (selectedProjectId) formData.append("projectId", selectedProjectId)
           formData.append("category", "financials")
           const uploaded = unwrapAction(await uploadFileAction(formData))
           fileId = uploaded.id
@@ -761,7 +761,7 @@ export function PayableCreateWorkspace({
         const expenseAccountName = (id: string) => context.accounting.expenseAccounts.find((account) => account.id === id)?.name
         const apAccountName = (id: string) => context.accounting.apAccounts.find((account) => account.id === id)?.name
         const read = scannedRead.current
-        const result = unwrapAction(await createProjectVendorBillAction(selectedProjectId, {
+        const result = unwrapAction(await createProjectVendorBillAction(selectedProjectId || null, {
           creation_state: creationState,
           commitment_id: commitmentId === NO_COMMITMENT ? null : commitmentId,
           company_id: companyId || undefined,
@@ -776,20 +776,20 @@ export function PayableCreateWorkspace({
           description: description.trim() || undefined,
           file_id: fileId,
           actual_lines: creationState === "draft" && !balanced ? undefined : lines.map((line) => ({
-            project_id: selectedProjectId,
+            project_id: selectedProjectId || null,
             cost_code_id: line.costCodeId || null,
             budget_line_id: line.budgetLineId || null,
             description: line.description.trim() || description.trim() || `Bill ${billNumber.trim()}`,
             amount_cents: parseDollarsToCents(line.amountDollars) ?? 0,
-            billable_to_customer: line.billableToCustomer,
+            billable_to_customer: selectedProjectId ? line.billableToCustomer : false,
             qbo_expense_account_id: line.qboExpenseAccountId || undefined,
             qbo_expense_account_name: expenseAccountName(line.qboExpenseAccountId),
             qbo_ap_account_id: line.qboApAccountId || undefined,
             qbo_ap_account_name: apAccountName(line.qboApAccountId),
             accounting_dimensions: line.accountingDimensions,
           })),
-          retainage_percent: retainage ? Number(retainage) : undefined,
-          lien_waiver_status: lienWaiver,
+          retainage_percent: selectedProjectId && retainage ? Number(retainage) : undefined,
+          lien_waiver_status: selectedProjectId ? lienWaiver : "not_required",
           payment_channel: paymentChannel,
           preferred_payment_method: paymentChannel === "arc" ? "ach" : externalMethod,
           payment_memo: paymentChannel === "arc" ? paymentMemo.trim() || null : null,
@@ -996,7 +996,7 @@ export function PayableCreateWorkspace({
                           <Popover open={projectPickerOpen} onOpenChange={setProjectPickerOpen} modal>
                             <PopoverTrigger asChild>
                               <Button type="button" variant="outline" role="combobox" aria-expanded={projectPickerOpen} className="h-10 w-full min-w-0 justify-between px-3 font-normal">
-                                <span className={cn("min-w-0 truncate", !selectedProject && "text-muted-foreground")}>{selectedProject?.name ?? "Choose project"}</span>
+                                <span className="min-w-0 truncate">{selectedProject?.name ?? "Overhead / no project"}</span>
                                 <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
                               </Button>
                             </PopoverTrigger>
@@ -1009,7 +1009,11 @@ export function PayableCreateWorkspace({
                                   onTouchMove={(event) => event.stopPropagation()}
                                 >
                                   <CommandEmpty>No projects found.</CommandEmpty>
-                                  <CommandGroup heading="Projects">
+                                  <CommandGroup heading="Allocation">
+                                    <CommandItem value="Overhead no project" onSelect={() => handleProjectChange(NO_PROJECT)}>
+                                      <Check className={cn("size-4 shrink-0", !selectedProjectId ? "opacity-100" : "opacity-0")} />
+                                      <span className="min-w-0 truncate">Overhead / no project</span>
+                                    </CommandItem>
                                     {projects.map((project) => (
                                       <CommandItem key={project.id} value={project.name} onSelect={() => handleProjectChange(project.id)}>
                                         <Check className={cn("size-4 shrink-0", project.id === selectedProjectId ? "opacity-100" : "opacity-0")} />
@@ -1120,9 +1124,7 @@ export function PayableCreateWorkspace({
                         headerQboApAccountId={lines[0]?.qboApAccountId ?? context.accounting.defaults.apAccountId ?? ""}
                         defaultBillable={() => selectedProject?.billingModel !== "fixed_price"}
                       />
-                    ) : (
-                      <div className="border bg-muted/20 px-4 py-8 text-center text-sm text-muted-foreground">Choose a project to load coding options.</div>
-                    )}
+                    ) : null}
 
                   </div>
 
@@ -1242,25 +1244,33 @@ export function PayableCreateWorkspace({
                           </div>
                         </>
                       )}
-                      <div className="min-w-0">
-                        <FieldLabel>Retainage</FieldLabel>
-                        <div className="relative">
-                          <Input value={retainage} onChange={(event) => setRetainage(event.target.value.replace(/[^\d.]/g, ""))} inputMode="decimal" placeholder="0" className="h-10 pr-8 tabular-nums" />
-                          <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground">%</span>
+                      {selectedProjectId ? (
+                        <>
+                          <div className="min-w-0">
+                            <FieldLabel>Retainage</FieldLabel>
+                            <div className="relative">
+                              <Input value={retainage} onChange={(event) => setRetainage(event.target.value.replace(/[^\d.]/g, ""))} inputMode="decimal" placeholder="0" className="h-10 pr-8 tabular-nums" />
+                              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground">%</span>
+                            </div>
+                          </div>
+                          <div className="min-w-0">
+                            <FieldLabel>Lien waiver</FieldLabel>
+                            <Select value={lienWaiver} onValueChange={setLienWaiver}>
+                              <SelectTrigger className="h-10 w-full min-w-0 overflow-hidden [&>span]:min-w-0 [&>span]:truncate"><SelectValue /></SelectTrigger>
+                              <SelectContent className="w-[var(--radix-select-trigger-width)] max-w-[var(--radix-select-trigger-width)]">
+                                <SelectItem value="not_required">Not required</SelectItem>
+                                <SelectItem value="requested">Request from vendor</SelectItem>
+                                <SelectItem value="received">Received</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            {lienWaiver === "requested" ? <p className="mt-1.5 text-xs text-muted-foreground">Arc will send the vendor a secure waiver-signing request when this payable is created.</p> : null}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="sm:col-span-2 border bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground">
+                          Overhead payables skip retainage, lien waivers, and construction compliance holds.
                         </div>
-                      </div>
-                      <div className="min-w-0">
-                        <FieldLabel>Lien waiver</FieldLabel>
-                        <Select value={lienWaiver} onValueChange={setLienWaiver}>
-                          <SelectTrigger className="h-10 w-full min-w-0 overflow-hidden [&>span]:min-w-0 [&>span]:truncate"><SelectValue /></SelectTrigger>
-                          <SelectContent className="w-[var(--radix-select-trigger-width)] max-w-[var(--radix-select-trigger-width)]">
-                            <SelectItem value="not_required">Not required</SelectItem>
-                            <SelectItem value="requested">Request from vendor</SelectItem>
-                            <SelectItem value="received">Received</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        {lienWaiver === "requested" ? <p className="mt-1.5 text-xs text-muted-foreground">Arc will send the vendor a secure waiver-signing request when this payable is created.</p> : null}
-                      </div>
+                      )}
                     </div>
 
                     <div className="border bg-muted/20 px-4 py-4">

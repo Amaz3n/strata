@@ -51,6 +51,9 @@ import { getProjectContract } from "@/lib/services/contracts"
 import { requireOrgContext } from "@/lib/services/context"
 import { buildInternalFileUrl, getDefaultFolderForCategory, normalizeFolderPath } from "@/lib/services/files"
 import { triggerFileIndexing } from "@/lib/services/files-indexing"
+import { isPhotoMedia } from "@/lib/media/photo-media"
+import { registerUploadedPhoto } from "@/lib/services/photos"
+import { photoCaptureMetadataSchema, type PhotoCaptureMetadata } from "@/lib/validation/photos"
 import { createInitialVersion } from "@/lib/services/file-versions"
 import { generateDrawPayApplicationPdf } from "@/lib/services/reports/pay-application"
 import {
@@ -1075,7 +1078,7 @@ export async function generateInvoiceFromDrawAction(projectId: string, drawId: s
         })
 
         revalidatePath(`/projects/${projectId}`)
-        revalidatePath(`/projects/${projectId}/financials/receivables`)
+        revalidatePath(`/projects/${projectId}/financials/billing`)
 
         return {
           invoice_id: invoice.id,
@@ -1174,7 +1177,7 @@ export async function linkInvoiceToDrawAction(projectId: string, drawId: string,
   return run(async () => {
       const result = await linkInvoiceToDraw({ drawId, invoiceId })
       revalidatePath(`/projects/${projectId}`)
-      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      revalidatePath(`/projects/${projectId}/financials/billing`)
       return result
   })
 }
@@ -1183,7 +1186,7 @@ export async function unlinkInvoiceFromDrawAction(projectId: string, drawId: str
   return run(async () => {
       const result = await unlinkInvoiceFromDraw({ drawId })
       revalidatePath(`/projects/${projectId}`)
-      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      revalidatePath(`/projects/${projectId}/financials/billing`)
       return result
   })
 }
@@ -1268,7 +1271,7 @@ export async function releaseProjectRetainageAction(
 
       revalidatePath(`/projects/${projectId}`)
       revalidatePath(`/projects/${projectId}/financials`)
-      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      revalidatePath(`/projects/${projectId}/financials/billing`)
 
       return { success: true, invoice_id: result.invoice_id }
   })
@@ -4712,6 +4715,26 @@ export async function getProjectAssignableResourcesAction(projectId: string): Pr
       return resources
 }
 
+/**
+ * EXIF the browser read before uploading. It arrives as form fields rather than
+ * being parsed here because the capture time in a file carries no timezone —
+ * only the machine that is standing in it can turn "15:04" into an instant.
+ * `lib/media/exif.ts` has the full argument.
+ */
+function readCaptureMetadata(formData: FormData): PhotoCaptureMetadata | null {
+  const takenAt = formData.get("taken_at")?.toString()
+  const latitude = formData.get("latitude")?.toString()
+  const longitude = formData.get("longitude")?.toString()
+  if (!takenAt && !latitude && !longitude) return null
+
+  const parsed = photoCaptureMetadataSchema.safeParse({
+    taken_at: takenAt || undefined,
+    latitude: latitude ? Number(latitude) : undefined,
+    longitude: longitude ? Number(longitude) : undefined,
+  })
+  return parsed.success ? parsed.data : null
+}
+
 export async function uploadProjectFileAction(
   projectId: string,
   formData: FormData
@@ -4850,6 +4873,32 @@ export async function uploadProjectFileAction(
       })
 
       void triggerFileIndexing(data.id as string, orgId)
+
+      // A photo's record is created by a trigger on `files`; what only this
+      // request knows is what the browser read out of the file before sending it
+      // — the capture time and GPS fix that the upload timestamp would otherwise
+      // replace. Enqueuing the caption is the other half, and nothing did it
+      // before, which is why every photo in Arc has a null caption while the
+      // workbench offers to search captions.
+      //
+      // The bytes are already stored and the row already written, so a failure
+      // here is enrichment lost, not an upload lost, and it is reported rather
+      // than raised — failing the action would tell the user their photo did not
+      // upload when it did.
+      if (isPhotoMedia(file.type)) {
+        try {
+          await registerUploadedPhoto(
+            {
+              fileId: data.id as string,
+              projectId,
+              capture: readCaptureMetadata(formData),
+            },
+            orgId,
+          )
+        } catch (photoError) {
+          console.error("[files] Failed to record photo capture metadata", photoError)
+        }
+      }
 
       revalidatePath(`/projects/${projectId}`)
 

@@ -18,6 +18,7 @@ export type EditableBudgetLine = {
   description: string
   amount_dollars: string
   cost_type: CostType | null
+  metadata: Record<string, unknown>
 }
 
 export type CostBucketDraft = {
@@ -118,6 +119,7 @@ export function toLineState(lines: BudgetLineRecord[] | undefined): EditableBudg
       amount_dollars:
         typeof line.amount_cents === "number" ? String((line.amount_cents / 100).toFixed(2)) : "0",
       cost_type: line.cost_type ?? costCode?.cost_type ?? null,
+      metadata: line.metadata ?? {},
     }
   })
 }

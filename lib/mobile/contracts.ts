@@ -382,7 +382,7 @@ export interface MobilePayableDTO {
   id: string
   bill_number: string | null
   vendor_name: string | null
-  project_id: string
+  project_id: string | null
   project_name: string | null
   /** Production posture only — a payable against a house on a lot. */
   lot_label: string | null

@@ -1,3 +1,4 @@
+import { receivablesWriter } from "@/lib/services/receivables-writer"
 import { createHash } from "crypto"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
@@ -613,7 +614,7 @@ export async function shareInvoiceBackupPackage(input: { projectId: string; pack
 
   const { ensureInvoiceToken } = await import("@/lib/services/invoices")
   await ensureInvoiceToken(existing.invoice_id, resolvedOrgId)
-  const { error: invoiceUpdateError } = await supabase
+  const { error: invoiceUpdateError } = await receivablesWriter()
     .from("invoices")
     .update({
       client_visible: true,

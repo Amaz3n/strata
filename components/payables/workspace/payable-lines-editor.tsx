@@ -90,7 +90,7 @@ export function PayableLinesEditor({
     0,
   )
   const balanced = splitTotalCents === billTotalCents
-  const projectName = (id: string) => projects.find((project) => project.id === id)?.name ?? "Project"
+  const projectName = (id: string) => id ? (projects.find((project) => project.id === id)?.name ?? "Project") : "Overhead"
   const costCodeLabel = (id: string) => {
     const code = costCodes.find((entry) => entry.id === id)
     if (!code) return null

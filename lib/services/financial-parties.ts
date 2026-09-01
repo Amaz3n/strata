@@ -1,3 +1,4 @@
+import { invoiceHref } from "@/lib/financials/invoice-destinations"
 import "server-only"
 
 import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
@@ -203,19 +204,19 @@ export async function getFinancialPartyReceivables(input: {
   for (const invoice of readableInvoices.filter((row) => billed.has(String(row.status)))) {
     const project = projectById.get(String(invoice.project_id))
     if (!project) continue
-    activity.push({ id: `invoice:${invoice.id}`, kind: "invoice", occurred_at: invoice.issue_date ?? invoice.sent_at ?? invoice.updated_at ?? invoice.created_at ?? "1970-01-01", label: `Invoice ${invoice.invoice_number ?? ""}`.trim(), detail: invoice.title || project.name, amount_cents: Number(invoice.total_cents ?? 0), project_id: project.id, project_name: project.name, invoice_id: invoice.id, source_href: `/invoices?invoice=${invoice.id}&project=${project.id}`, journal_entry_id: null })
+    activity.push({ id: `invoice:${invoice.id}`, kind: "invoice", occurred_at: invoice.issue_date ?? invoice.sent_at ?? invoice.updated_at ?? invoice.created_at ?? "1970-01-01", label: `Invoice ${invoice.invoice_number ?? ""}`.trim(), detail: invoice.title || project.name, amount_cents: Number(invoice.total_cents ?? 0), project_id: project.id, project_name: project.name, invoice_id: invoice.id, source_href: invoiceHref(invoice.id, project.id), journal_entry_id: null })
   }
   for (const payment of paymentResult.data ?? []) {
     const invoice = invoiceById.get(payment.invoice_id)
     const project = invoice ? projectById.get(String(invoice.project_id)) : null
     if (!invoice || !project) continue
-    activity.push({ id: `payment:${payment.id}`, kind: "payment", occurred_at: payment.received_at, label: "Payment received", detail: payment.reference || payment.method || invoice.invoice_number || "Invoice payment", amount_cents: Number(payment.amount_cents), project_id: project.id, project_name: project.name, invoice_id: invoice.id, source_href: `/invoices?invoice=${invoice.id}&project=${project.id}`, journal_entry_id: null })
+    activity.push({ id: `payment:${payment.id}`, kind: "payment", occurred_at: payment.received_at, label: "Payment received", detail: payment.reference || payment.method || invoice.invoice_number || "Invoice payment", amount_cents: Number(payment.amount_cents), project_id: project.id, project_name: project.name, invoice_id: invoice.id, source_href: invoiceHref(invoice.id, project.id), journal_entry_id: null })
   }
   for (const adjustment of adjustmentResult.data ?? []) {
     const invoice = invoiceById.get(adjustment.invoice_id)
     const project = invoice ? projectById.get(String(invoice.project_id)) : null
     if (!invoice || !project) continue
-    activity.push({ id: `adjustment:${adjustment.id}`, kind: adjustment.adjustment_type as "credit_memo" | "write_off", occurred_at: adjustment.voided_at ?? adjustment.effective_date ?? adjustment.created_at, label: `${adjustment.adjustment_type === "write_off" ? "Write-off" : "Credit memo"}${adjustment.status === "void" ? " voided" : ""}`, detail: adjustment.reason, amount_cents: adjustment.status === "void" ? 0 : -Number(adjustment.amount_cents), project_id: project.id, project_name: project.name, invoice_id: invoice.id, source_href: `/invoices?invoice=${invoice.id}&project=${project.id}`, journal_entry_id: null })
+    activity.push({ id: `adjustment:${adjustment.id}`, kind: adjustment.adjustment_type as "credit_memo" | "write_off", occurred_at: adjustment.voided_at ?? adjustment.effective_date ?? adjustment.created_at, label: `${adjustment.adjustment_type === "write_off" ? "Write-off" : "Credit memo"}${adjustment.status === "void" ? " voided" : ""}`, detail: adjustment.reason, amount_cents: adjustment.status === "void" ? 0 : -Number(adjustment.amount_cents), project_id: project.id, project_name: project.name, invoice_id: invoice.id, source_href: invoiceHref(invoice.id, project.id), journal_entry_id: null })
   }
   if (canViewBooks && activity.length > 0) {
     const sourceIds = activity.map((row) => row.id.split(":")[1])

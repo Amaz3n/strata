@@ -4,11 +4,26 @@ import * as React from 'react'
 
 import { cn } from '@/lib/utils'
 
-function Table({ className, ...props }: React.ComponentProps<'table'>) {
+function Table({
+  className,
+  containerClassName,
+  ...props
+}: React.ComponentProps<'table'> & {
+  /**
+   * Classes for the scroll box around the table.
+   *
+   * `overflow-x-auto` makes `overflow-y` compute to `auto` as well, so this
+   * container — not the page — is the scroll box a `sticky` header positions
+   * against. Left at content height it never scrolls and the header rides away
+   * with the rows. Give it a bounded height here (`h-full overflow-auto` inside
+   * a sized parent) to make `sticky top-0` on `TableHeader` actually stick.
+   */
+  containerClassName?: string
+}) {
   return (
     <div
       data-slot="table-container"
-      className="relative w-full overflow-x-auto"
+      className={cn('relative w-full overflow-x-auto', containerClassName)}
     >
       <table
         data-slot="table"

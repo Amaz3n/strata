@@ -118,7 +118,6 @@ export async function createTakeoffConditionAction(
 ): Promise<ActionResult<TakeoffCondition>> {
   return run(async () => {
     const result = await createTakeoffCondition(input)
-    revalidatePath("/drawings")
     return result
   })
 }
@@ -131,7 +130,6 @@ export async function updateTakeoffConditionAction(
 ): Promise<ActionResult<TakeoffCondition>> {
   return run(async () => {
     const result = await updateTakeoffCondition(conditionId, updates, undefined, seenUpdatedAt)
-    revalidatePath("/drawings")
     return result
   })
 }
@@ -141,7 +139,6 @@ export async function deleteTakeoffConditionAction(
 ): Promise<ActionResult<{ released_markups: number; detached_lines: number }>> {
   return run(async () => {
     const result = await deleteTakeoffCondition(conditionId)
-    revalidatePath("/drawings")
     return result
   })
 }
@@ -151,7 +148,6 @@ export async function assignMarkupsToConditionAction(
 ): Promise<ActionResult<number>> {
   return run(async () => {
     const result = await assignMarkupsToCondition(input)
-    revalidatePath("/drawings")
     return result
   })
 }
@@ -168,7 +164,6 @@ export async function syncConditionsAction(
 ): Promise<ActionResult<SyncResult>> {
   return run(async () => {
     const result = await syncConditions(input)
-    revalidatePath("/drawings")
     revalidatePath("/estimates")
     return result
   })
@@ -242,7 +237,6 @@ export async function confirmReanchoredMarkupsAction(
 ): Promise<ActionResult<number>> {
   return run(async () => {
     const result = await confirmReanchoredMarkups(markupIds)
-    revalidatePath("/drawings")
     return result
   })
 }
@@ -306,7 +300,6 @@ export async function applyConditionTemplatesAction(
 ): Promise<ActionResult<ApplyTemplatesResult>> {
   return run(async () => {
     const result = await applyConditionTemplates(input)
-    revalidatePath("/drawings")
     return result
   })
 }
@@ -340,7 +333,6 @@ export async function setTakeoffSheetStatusAction(
 ): Promise<ActionResult<null>> {
   return run(async () => {
     await setTakeoffSheetStatus(input)
-    revalidatePath("/drawings")
     return null
   })
 }
@@ -382,7 +374,6 @@ export async function acceptSymbolMatchesAction(
 ): Promise<ActionResult<AcceptSymbolMatchesResult>> {
   return run(async () => {
     const result = await acceptSymbolMatches(input)
-    revalidatePath("/drawings")
     return result
   })
 }

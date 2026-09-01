@@ -5,7 +5,6 @@ import type { Invoice, InvoiceLine, InvoiceTotals, InvoiceView } from "@/lib/typ
 import type { InvoiceInput, InvoiceLineInput } from "@/lib/validation/invoices"
 import { isCostDrivenBillingModel, resolveProjectBillingModel } from "@/lib/financials/billing-model"
 import {
-  calculateInvoiceTotals,
   calculateInvoiceTotalsWithRetainage,
   isInvoiceFeeLine,
   isSystemGeneratedRetainageLine,
@@ -23,9 +22,18 @@ import { sendEmail, renderEmailTemplate, getOrgSenderEmail } from "@/lib/service
 import { InvoiceEmail } from "@/lib/emails/invoice-email"
 import { getNextInvoiceNumber, markReservationUsed, releaseInvoiceNumberReservation } from "@/lib/services/invoice-numbers"
 import { enqueueInvoiceSync } from "@/lib/services/accounting-sync"
-import { isSyncableInvoiceStatus } from "@/lib/financials/ledger-status"
-import { getAgingBucket, type AgingBucket as ReportAgingBucket } from "@/lib/services/reports/aging"
-import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
+import { BILLED_INVOICE_STATUSES, isSyncableInvoiceStatus } from "@/lib/financials/ledger-status"
+import {
+  accumulateArAging,
+  emptyArAgingTotals,
+  isIssuedInvoiceStatus,
+  normalizeInvoiceStatus,
+  OPEN_AR_INVOICE_STATUSES,
+  type ArAgingTotals,
+  type InvoiceLifecycleStatus,
+} from "@/lib/financials/invoice-lifecycle"
+import { completeOutboxJob, enqueueOutboxJob } from "@/lib/services/outbox"
+import { receivablesWriter } from "@/lib/services/receivables-writer"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { releaseInvoiceFromBillingPeriod } from "@/lib/services/billing-periods"
 import {
@@ -465,54 +473,6 @@ function applySourceDerivedBillingLines(lines: InvoiceLine[], sourceContext: Sou
   ]
 }
 
-async function upsertRetainageForInvoice(params: {
-  supabase: SupabaseClient
-  orgId: string
-  projectId?: string | null
-  invoiceId: string
-  sourceContext: SourceBillingContext | null
-}) {
-  const { supabase, orgId, projectId, invoiceId, sourceContext } = params
-  if (!projectId || !sourceContext?.contractId || sourceContext.retainageAmountCents <= 0) return
-
-  const { data: existing } = await supabase
-    .from("retainage")
-    .select("id, status")
-    .eq("org_id", orgId)
-    .eq("invoice_id", invoiceId)
-    .maybeSingle()
-
-  if (existing?.id) {
-    if (existing.status === "paid") return
-
-    const { error: updateError } = await supabase
-      .from("retainage")
-      .update({
-        project_id: projectId,
-        contract_id: sourceContext.contractId,
-        amount_cents: sourceContext.retainageAmountCents,
-      })
-      .eq("org_id", orgId)
-      .eq("id", existing.id)
-    if (updateError) {
-      throw new Error(`Failed to update invoice retainage: ${updateError.message}`)
-    }
-    return
-  }
-
-  const { error: insertError } = await supabase.from("retainage").insert({
-    org_id: orgId,
-    project_id: projectId,
-    contract_id: sourceContext.contractId,
-    invoice_id: invoiceId,
-    amount_cents: sourceContext.retainageAmountCents,
-    status: "held",
-  })
-  if (insertError) {
-    throw new Error(`Failed to record invoice retainage: ${insertError.message}`)
-  }
-}
-
 /**
  * Which invoices reach the external accounting system. The set itself lives in
  * `lib/financials/ledger-status.ts` next to the GL sets it intentionally
@@ -661,49 +621,6 @@ async function assertDirectChangeOrderInvoiceAllowed(params: {
   }
 }
 
-async function syncDrawInvoiceLink(params: {
-  supabase: SupabaseClient
-  orgId: string
-  drawId?: string | null
-  invoiceId: string
-}) {
-  const { supabase, orgId, drawId, invoiceId } = params
-  if (!drawId) return
-
-  const { data: draw, error } = await supabase
-    .from("draw_schedules")
-    .select("id, invoice_id, status")
-    .eq("org_id", orgId)
-    .eq("id", drawId)
-    .maybeSingle()
-
-  if (error) {
-    throw new Error(`Failed to validate draw linkage: ${error.message}`)
-  }
-
-  if (!draw) {
-    throw new Error("Selected draw no longer exists.")
-  }
-
-  if (draw.invoice_id && draw.invoice_id !== invoiceId) {
-    throw new Error("Selected draw is already linked to another invoice.")
-  }
-
-  const nextStatus = draw.status === "paid" || draw.status === "partial" ? draw.status : "invoiced"
-  const { error: updateError } = await supabase
-    .from("draw_schedules")
-    .update({
-      invoice_id: invoiceId,
-      status: nextStatus,
-    })
-    .eq("org_id", orgId)
-    .eq("id", drawId)
-
-  if (updateError) {
-    throw new Error(`Failed to link draw to invoice: ${updateError.message}`)
-  }
-}
-
 async function releaseInvoiceSourceLinks(params: {
   supabase: SupabaseClient
   orgId: string
@@ -843,17 +760,20 @@ function mapInvoiceRow(row: InvoiceRow, accountingState?: AccountingSyncState | 
   const lines = (metadata.lines as InvoiceLine[] | undefined) ?? []
   const totalsFromMetadata = (metadata.totals as InvoiceTotals | undefined) ?? undefined
 
+  // The COLUMNS are the economics. `metadata.totals` is a snapshot written when
+  // the invoice was last edited and never touched again — the payment engine
+  // decrements `balance_due_cents`, not the JSON — so reading the metadata first
+  // reported the original amount as still owing on a part-paid invoice.
   const totals: InvoiceTotals | undefined =
-    totalsFromMetadata ??
-    (row.total_cents != null
+    row.total_cents != null
       ? {
-        subtotal_cents: row.subtotal_cents ?? row.total_cents,
-        tax_cents: row.tax_cents ?? 0,
+        subtotal_cents: row.subtotal_cents ?? totalsFromMetadata?.subtotal_cents ?? row.total_cents,
+        tax_cents: row.tax_cents ?? totalsFromMetadata?.tax_cents ?? 0,
         total_cents: row.total_cents,
         balance_due_cents: row.balance_due_cents ?? row.total_cents,
         tax_rate: metadata.tax_rate,
       }
-      : undefined)
+      : totalsFromMetadata
 
   return {
     id: row.id,
@@ -864,7 +784,7 @@ function mapInvoiceRow(row: InvoiceRow, accountingState?: AccountingSyncState | 
     token: row.token ?? undefined,
     invoice_number: row.invoice_number,
     title: row.title ?? `Invoice ${row.invoice_number}`,
-    status: (row.status as Invoice["status"]) ?? "saved",
+    status: normalizeInvoiceStatus(row.status),
     qbo_id: accountingState?.externalId ?? undefined,
     qbo_synced_at: accountingState?.syncedAt ?? undefined,
     qbo_sync_status: (accountingState?.status as Invoice["qbo_sync_status"]) ?? null,
@@ -878,6 +798,8 @@ function mapInvoiceRow(row: InvoiceRow, accountingState?: AccountingSyncState | 
     currency: "usd",
     balance_due_cents: row.balance_due_cents ?? totals?.balance_due_cents,
     metadata: metadata ?? undefined,
+    // Source columns are canonical; the metadata copy survives only for rows
+    // written before those columns existed.
     source_type: row.source_type ?? (metadata as any)?.source_type ?? undefined,
     customer_name: (metadata as any)?.customer_name ?? (row as any).customer_name,
     lines,
@@ -930,38 +852,160 @@ function mapInvoiceWithLines(row: any, accountingState?: AccountingSyncState | n
   }
 }
 
-async function safeSelect<T>(
-  supabase: SupabaseClient,
-  query: () => Promise<{ data: T | null; error: any }>,
-  fallback: T,
-): Promise<T> {
-  try {
-    const { data, error } = await query()
-    if (error) {
-      console.warn("Invoices query failed, returning fallback", error)
-      return fallback
-    }
-    return data ?? fallback
-  } catch (err) {
-    console.warn("Invoices query threw, returning fallback", err)
-    return fallback
-  }
-}
+const INVOICE_LIST_COLUMNS =
+  "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, sent_at, sent_to_emails, product_posture, approval_status, delivery_status, issued_snapshot"
 
-export async function listInvoices({
-  orgId,
-  projectId,
-  limit,
-  offset,
-  search,
-}: {
+/**
+ * The billing queues. These are the operational buckets a person actually works —
+ * "what do I have to do next" — not a status filter dressed up as one, and they
+ * resolve in the DATABASE so a queue's count, its rows and the aging strip above
+ * them are all measured over the same book. Filtering a loaded page in the browser
+ * made a 400-invoice project quietly disagree with itself.
+ */
+export type InvoiceQueueKey =
+  | "all"
+  | "preparing"
+  | "awaiting_approval"
+  | "ready"
+  | "open"
+  | "overdue"
+  | "exceptions"
+  | "paid"
+  | "void"
+
+export interface ListInvoicesOptions {
   orgId?: string
   projectId?: string
   limit?: number
   offset?: number
   /** Case-insensitive match on invoice number, title, or customer name. */
   search?: string
-} = {}): Promise<Invoice[]> {
+  queue?: InvoiceQueueKey
+  sort?: InvoiceSortKey
+  sortDirection?: "asc" | "desc"
+}
+
+export type InvoiceSortKey = "number" | "customer" | "issue_date" | "due_date" | "amount" | "balance" | "status" | "activity"
+
+const INVOICE_SORT_COLUMNS: Record<InvoiceSortKey, string> = {
+  number: "invoice_number",
+  customer: "metadata->>customer_name",
+  issue_date: "issue_date",
+  due_date: "due_date",
+  amount: "total_cents",
+  balance: "balance_due_cents",
+  status: "status",
+  activity: "updated_at",
+}
+
+/**
+ * The slice of the PostgREST builder these filters use. Structural, so the same
+ * filter definitions apply to a row query and to a `head: true` count query
+ * without the two drifting apart — which is how a queue chip ends up claiming a
+ * different number from the rows it shows.
+ */
+interface InvoiceFilterable<Self> {
+  eq(column: string, value: unknown): Self
+  neq(column: string, value: unknown): Self
+  in(column: string, values: readonly unknown[]): Self
+  gt(column: string, value: unknown): Self
+  gte(column: string, value: unknown): Self
+  lt(column: string, value: unknown): Self
+  or(filters: string): Self
+}
+
+function applyInvoiceQueueFilter<Q extends InvoiceFilterable<Q>>(
+  query: Q,
+  queue: InvoiceQueueKey,
+  todayIso: string,
+): Q {
+  switch (queue) {
+    case "preparing":
+      return query.eq("status", "draft").in("approval_status", ["not_required", "draft"])
+    case "awaiting_approval":
+      return query.eq("status", "draft").eq("approval_status", "pending")
+    case "ready":
+      // Approved (or never needing approval) and still unsent: someone has to press send.
+      return query.eq("status", "draft").eq("approval_status", "approved")
+    case "open":
+      return query.in("status", [...OPEN_AR_INVOICE_STATUSES]).gt("balance_due_cents", 0).gte("due_date", todayIso)
+    case "overdue":
+      return query.in("status", [...OPEN_AR_INVOICE_STATUSES]).gt("balance_due_cents", 0).lt("due_date", todayIso)
+    case "exceptions":
+      return query.in("delivery_status", ["failed", "bounced"])
+    case "paid":
+      return query.eq("status", "paid")
+    case "void":
+      return query.eq("status", "void")
+    default:
+      return query
+  }
+}
+
+function applyInvoiceSearchFilter<Q extends InvoiceFilterable<Q>>(query: Q, search?: string): Q {
+  const term = search?.trim()
+  if (!term) return query
+  // Escape PostgREST or-filter specials so user input can't break the filter expression.
+  const sanitized = term.replace(/[%_]/g, (match) => `\\${match}`).replace(/[(),.]/g, " ").trim()
+  if (!sanitized) return query
+  return query.or(
+    `invoice_number.ilike.%${sanitized}%,title.ilike.%${sanitized}%,metadata->>customer_name.ilike.%${sanitized}%`,
+  )
+}
+
+export interface InvoicePage {
+  invoices: Invoice[]
+  /** Rows matching the filters across the whole book, not just this page. */
+  totalCount: number
+  hasMore: boolean
+}
+
+/** One page of invoices plus the true match count, both filtered in the database. */
+export async function listInvoicePage(options: ListInvoicesOptions = {}): Promise<InvoicePage> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(options.orgId)
+  await requireInvoicePermission({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    permission: "invoice.read",
+    projectId: options.projectId,
+  })
+
+  const todayIso = new Date().toISOString().slice(0, 10)
+  const sortColumn = INVOICE_SORT_COLUMNS[options.sort ?? "activity"]
+  const ascending = options.sortDirection === "asc"
+
+  let query = supabase
+    .from("invoices")
+    .select(INVOICE_LIST_COLUMNS, { count: "exact" })
+    .eq("org_id", resolvedOrgId)
+    .order(sortColumn, { ascending, nullsFirst: false })
+    .order("created_at", { ascending: false })
+
+  if (options.projectId) query = query.eq("project_id", options.projectId)
+  query = applyInvoiceQueueFilter(query, options.queue ?? "all", todayIso)
+  query = applyInvoiceSearchFilter(query, options.search)
+
+  const limit = typeof options.limit === "number" && options.limit > 0 ? options.limit : undefined
+  const start = Math.max(0, options.offset ?? 0)
+  if (limit) query = query.range(start, start + limit - 1)
+
+  const { data, error, count } = await query
+  if (error) throw new Error(`Failed to list invoices: ${error.message}`)
+
+  const invoices = await mapInvoiceRowsWithAccounting(supabase, resolvedOrgId, (data ?? []) as InvoiceRow[])
+  const totalCount = count ?? invoices.length
+  return { invoices, totalCount, hasMore: limit ? start + invoices.length < totalCount : false }
+}
+
+/** Counts for every queue chip, over the whole book. One round trip per queue. */
+export async function getInvoiceQueueCounts({
+  orgId,
+  projectId,
+}: {
+  orgId?: string
+  projectId?: string
+} = {}): Promise<Record<InvoiceQueueKey, number>> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireInvoicePermission({
     supabase,
@@ -971,44 +1015,57 @@ export async function listInvoices({
     projectId,
   })
 
-  let query = supabase
-    .from("invoices")
-    .select(
-      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, sent_at, sent_to_emails, product_posture, approval_status, delivery_status, issued_snapshot",
-    )
-    .eq("org_id", resolvedOrgId)
-    .order("created_at", { ascending: false })
+  const todayIso = new Date().toISOString().slice(0, 10)
+  const queues: InvoiceQueueKey[] = [
+    "all",
+    "preparing",
+    "awaiting_approval",
+    "ready",
+    "open",
+    "overdue",
+    "exceptions",
+    "paid",
+  ]
 
-  if (projectId) {
-    query = query.eq("project_id", projectId)
-  }
-  const term = search?.trim()
-  if (term) {
-    // Escape PostgREST or-filter specials so user input can't break the filter expression.
-    const sanitized = term.replace(/[%_]/g, (match) => `\\${match}`).replace(/[(),.]/g, " ").trim()
-    if (sanitized) {
-      query = query.or(
-        `invoice_number.ilike.%${sanitized}%,title.ilike.%${sanitized}%,metadata->>customer_name.ilike.%${sanitized}%`,
-      )
-    }
-  }
-  if (typeof limit === "number" && limit > 0) {
-    const start = Math.max(0, offset ?? 0)
-    query = query.range(start, start + limit - 1)
-  }
+  const results = await Promise.all(
+    queues.map(async (queue) => {
+      let query = supabase
+        .from("invoices")
+        .select("id", { count: "exact", head: true })
+        .eq("org_id", resolvedOrgId)
+      if (projectId) query = query.eq("project_id", projectId)
+      if (queue !== "all") query = query.neq("status", "void")
+      query = applyInvoiceQueueFilter(query, queue, todayIso)
+      const { count, error } = await query
+      if (error) throw new Error(`Failed to count ${queue} invoices: ${error.message}`)
+      return [queue, count ?? 0] as const
+    }),
+  )
 
-  const { data, error } = await query
-
-  if (error) throw new Error(`Failed to list invoices: ${error.message}`)
-
-  return mapInvoiceRowsWithAccounting(supabase, resolvedOrgId, (data ?? []) as InvoiceRow[])
+  const counts = Object.fromEntries(results) as Record<InvoiceQueueKey, number>
+  counts.void = 0
+  return counts
 }
 
-export interface InvoiceArSummary {
-  outstandingCents: number
-  overdueCents: number
-  /** Balance past due by 1–30 / 31–60 / 61–90 / 90+ days. */
-  buckets: [number, number, number, number]
+export async function listInvoices(options: ListInvoicesOptions = {}): Promise<Invoice[]> {
+  const page = await listInvoicePage(options)
+  return page.invoices
+}
+
+/**
+ * The four numbers a billing page opens with, plus the aging ladder underneath
+ * them. Computed over the project's WHOLE book, not the loaded page, so the
+ * headline and the rows can never tell different stories.
+ *
+ * `collectedCents` is derived, not scanned: every issued invoice's total is
+ * either still owed, credited away, or was paid, so
+ * `billed − outstanding − credited` IS money received, with no second pass over
+ * the payments table to fall out of step with the balances.
+ */
+export interface InvoiceArSummary extends ArAgingTotals {
+  billedCents: number
+  collectedCents: number
+  creditedCents: number
 }
 
 /**
@@ -1031,36 +1088,44 @@ export async function getProjectInvoiceArSummary({
     projectId,
   })
 
-  const { data, error } = await supabase
-    .from("invoices")
-    .select("status, balance_due_cents, total_cents, due_date")
-    .eq("org_id", resolvedOrgId)
-    .eq("project_id", projectId)
-    .in("status", ["sent", "partial", "overdue"])
+  const [{ data, error }, { data: adjustmentRows, error: adjustmentError }] = await Promise.all([
+    supabase
+      .from("invoices")
+      .select("status, balance_due_cents, total_cents, due_date")
+      .eq("org_id", resolvedOrgId)
+      .eq("project_id", projectId)
+      .in("status", [...BILLED_INVOICE_STATUSES]),
+    supabase
+      .from("receivable_adjustments")
+      .select("amount_cents")
+      .eq("org_id", resolvedOrgId)
+      .eq("project_id", projectId)
+      .eq("status", "posted"),
+  ])
 
   if (error) throw new Error(`Failed to load AR summary: ${error.message}`)
+  if (adjustmentError) throw new Error(`Failed to load AR adjustments: ${adjustmentError.message}`)
 
-  // One aging ladder for the whole app: lib/services/reports/aging.ts.
-  const summary: InvoiceArSummary = { outstandingCents: 0, overdueCents: 0, buckets: [0, 0, 0, 0] }
-  const bucketIndex: Partial<Record<ReportAgingBucket, 0 | 1 | 2 | 3>> = {
-    "1_30": 0,
-    "31_60": 1,
-    "61_90": 2,
-    "90_plus": 3,
+  // One aging ladder for the whole app: lib/financials/invoice-lifecycle.ts.
+  const aging = (data ?? []).reduce<ArAgingTotals>(
+    (totals, row) =>
+      accumulateArAging(totals, {
+        status: row.status,
+        balanceCents: Number(row.balance_due_cents ?? row.total_cents ?? 0),
+        dueDate: row.due_date,
+      }),
+    emptyArAgingTotals(),
+  )
+
+  const billedCents = (data ?? []).reduce((sum, row) => sum + Number(row.total_cents ?? 0), 0)
+  const creditedCents = (adjustmentRows ?? []).reduce((sum, row) => sum + Number(row.amount_cents ?? 0), 0)
+
+  return {
+    ...aging,
+    billedCents,
+    creditedCents,
+    collectedCents: Math.max(0, billedCents - aging.outstandingCents - creditedCents),
   }
-
-  for (const row of data ?? []) {
-    const balance = Number(row.balance_due_cents ?? row.total_cents ?? 0)
-    if (balance <= 0) continue
-    summary.outstandingCents += balance
-    const { bucket } = getAgingBucket({ dueDate: row.due_date, isPaid: false })
-    const index = bucketIndex[bucket]
-    if (index === undefined) continue
-    summary.overdueCents += balance
-    summary.buckets[index] += balance
-  }
-
-  return summary
 }
 
 export async function createInvoice({
@@ -1089,7 +1154,8 @@ export async function createInvoice({
     permission: authorizationPermission,
     projectId: input.project_id,
   })
-  if (input.status === "sent" || input.client_visible) {
+  const shouldIssue = input.issue === true
+  if (shouldIssue) {
     await requireInvoicePermission({
       supabase,
       orgId: resolvedOrgId,
@@ -1139,25 +1205,23 @@ export async function createInvoice({
       ? { ...resolvedSourceContext, retainagePercent: 0, retainageAmountCents: 0 }
       : null
   const lines = applySourceDerivedBillingLines(normalizeLines(input.lines), sourceContext)
-  const fromCostIds =
-    sourceType === "from_costs"
-      ? Array.from(new Set(lines.flatMap((line) => line.billable_cost_ids ?? [])))
-      : []
   if (sourceType === "from_costs" && !input.project_id) {
     throw new Error("Project is required to invoice approved costs")
   }
   const totals = calculateInvoiceTotalsWithRetainage(lines, input.tax_rate, discountFromInput(input))
-  const shouldGenerateToken = input.client_visible === true || input.status === "sent"
   const approvalStatus =
     sourceType === "pay_application"
       ? "approved"
       : receivablesPolicy.approvalMode === "required_review"
         ? "draft"
         : "not_required"
-  if (shouldGenerateToken && approvalStatus !== "approved" && approvalStatus !== "not_required") {
+  if (shouldIssue && approvalStatus !== "approved" && approvalStatus !== "not_required") {
     throw new Error(`${receivablesPolicy.customerLabel} billing must be approved before it can be issued.`)
   }
-  const token = shouldGenerateToken ? randomUUID() : null
+  // The lifecycle is derived here and nowhere else: a caller states whether it is
+  // billing the customer, and the server decides what that makes the invoice.
+  const lifecycleStatus: InvoiceLifecycleStatus = shouldIssue ? "sent" : "draft"
+  const token = shouldIssue ? randomUUID() : null
 
   if (sourceType === "from_costs") {
     const costIds = Array.from(new Set(lines.flatMap((line) => line.billable_cost_ids ?? [])))
@@ -1199,8 +1263,8 @@ export async function createInvoice({
       costIds,
       preview,
       reservationId: reservationId ?? null,
-      status: input.status ?? "saved",
-      clientVisible: shouldGenerateToken,
+      status: lifecycleStatus,
+      clientVisible: shouldIssue,
       notes: input.notes ?? null,
       sentToEmails: input.sent_to_emails ?? null,
       metadata: {
@@ -1229,13 +1293,13 @@ export async function createInvoice({
 
     const invoiceId = approvedCostInvoice.invoiceId
 
-    const { error: postureError } = await supabase
+    const { error: postureError } = await receivablesWriter()
       .from("invoices")
       .update({
         product_posture: productPosture,
         approval_status: approvalStatus,
-        delivery_status: shouldGenerateToken ? "queued" : "not_sent",
-        issued_snapshot: shouldGenerateToken
+        delivery_status: shouldIssue ? "queued" : "not_sent",
+        issued_snapshot: shouldIssue
           ? issuedInvoiceSnapshot({ posture: productPosture, input, lines, totals })
           : null,
       })
@@ -1245,16 +1309,16 @@ export async function createInvoice({
       throw new Error(`Failed to apply the invoice workflow: ${postureError.message}`)
     }
 
-    if (shouldGenerateToken) {
-      await recordEvent({
+    if (shouldIssue) {
+      await deliverIssuedInvoice({
         orgId: resolvedOrgId,
-        eventType: "invoice_sent",
-        entityType: "invoice",
-        entityId: invoiceId,
-        payload: { invoice_number: input.invoice_number, project_id: input.project_id, total_cents: totals.total_cents, sent_to_emails: input.sent_to_emails ?? [] },
-        channel: "notification",
+        invoiceId,
+        invoiceNumber: input.invoice_number,
+        projectId: input.project_id ?? null,
+        totalCents: totals.total_cents,
+        dueDate: input.due_date ?? null,
+        recipients: input.sent_to_emails ?? [],
       })
-      await sendInvoiceEmail({ orgId: resolvedOrgId, invoiceId, totalCents: totals.total_cents, dueDate: input.due_date ?? undefined })
     }
     const created = await getInvoiceWithLines(invoiceId, resolvedOrgId)
     if (!created) throw new Error("Approved-cost invoice was created but could not be reloaded")
@@ -1270,33 +1334,17 @@ export async function createInvoice({
     sourcePayApplicationId,
   })
 
-  if (fromCostIds.length > 0) {
-    const { data: lockedRows, error: lockError } = await supabase
-      .from("billable_costs")
-      .update({ status: "locked" })
-      .eq("org_id", resolvedOrgId)
-      .eq("project_id", input.project_id)
-      .eq("status", "open")
-      .in("id", fromCostIds)
-      .select("id")
-
-    if (lockError) throw new Error(`Failed to lock billable costs: ${lockError.message}`)
-    if ((lockedRows ?? []).length !== fromCostIds.length) {
-      throw new Error("Some approved costs were already claimed by another invoice. Refresh and try again.")
-    }
-  }
-
   const payload = {
     org_id: resolvedOrgId,
     project_id: input.project_id ?? null,
     token,
     invoice_number: input.invoice_number,
     title: input.title,
-    status: input.status ?? "saved",
+    status: lifecycleStatus,
     issue_date: input.issue_date ?? null,
     due_date: input.due_date ?? null,
     notes: input.notes ?? null,
-    client_visible: shouldGenerateToken,
+    client_visible: shouldIssue,
     subtotal_cents: totals.subtotal_cents,
     tax_cents: totals.tax_cents,
     tax_jurisdiction_id: input.tax_jurisdiction_id ?? null,
@@ -1304,8 +1352,8 @@ export async function createInvoice({
     balance_due_cents: totals.total_cents,
     product_posture: productPosture,
     approval_status: approvalStatus,
-    delivery_status: shouldGenerateToken ? "queued" : "not_sent",
-    issued_snapshot: shouldGenerateToken
+    delivery_status: shouldIssue ? "queued" : "not_sent",
+    issued_snapshot: shouldIssue
       ? issuedInvoiceSnapshot({ posture: productPosture, input, lines, totals })
       : null,
     source_type: sourceType,
@@ -1348,7 +1396,7 @@ export async function createInvoice({
       org_phone: orgData?.phone ?? null,
       org_address: orgData?.address ?? null,
     },
-    sent_at: shouldGenerateToken ? new Date().toISOString() : null,
+    sent_at: shouldIssue ? new Date().toISOString() : null,
     sent_to_emails: input.sent_to_emails ?? null,
   }
 
@@ -1363,60 +1411,22 @@ export async function createInvoice({
 
   const created = rpcResult as { invoice: InvoiceRow; lines: Array<{ id: string; metadata: Record<string, any> }> } | null
   if (error || !created?.invoice) {
-    if (fromCostIds.length > 0) {
-      await supabase.from("billable_costs").update({ status: "open" }).eq("org_id", resolvedOrgId).in("id", fromCostIds)
-    }
     throw new Error(`Failed to create invoice: ${error?.message ?? "unknown error"}`)
   }
   const data = created.invoice
-  const insertedLines = created.lines
-
-  if (fromCostIds.length > 0) {
-    for (const line of insertedLines ?? []) {
-      const lineCostIds = ((line.metadata as any)?.billable_cost_ids ?? []) as string[]
-      if (lineCostIds.length === 0) continue
-      const { error: costUpdateError } = await supabase
-        .from("billable_costs")
-        .update({
-          invoice_id: data.id,
-          invoice_line_id: line.id,
-          status: "billed",
-          billed_at: new Date().toISOString(),
-        })
-        .eq("org_id", resolvedOrgId)
-        .in("id", lineCostIds)
-
-      if (costUpdateError) {
-        throw new Error(`Failed to mark approved costs billed: ${costUpdateError.message}`)
-      }
-    }
-  }
 
   if (reservationId) {
     await markReservationUsed(reservationId, data.id, resolvedOrgId)
   }
 
-  if (sourceType === "draw" && sourceDrawId) {
-    await syncDrawInvoiceLink({
-      supabase,
-      orgId: resolvedOrgId,
-      drawId: sourceDrawId,
-      invoiceId: data.id,
-    })
-  }
+  // Draw linkage and the retainage row are written inside create_invoice_atomic,
+  // in the same transaction as the invoice. Re-doing either out here could only
+  // ever disagree with what already committed.
 
-  await upsertRetainageForInvoice({
-    supabase,
-    orgId: resolvedOrgId,
-    projectId: input.project_id ?? null,
-    invoiceId: data.id,
-    sourceContext,
-  })
-
-  // Bookkeeping tail: events, audit, email, and sync enqueue are independent of
-  // each other — run them together. The invoice is already committed, so a
-  // failure here must not make the caller believe creation failed; log and move on.
-  const wasSent = payload.client_visible || payload.status === "sent"
+  // The invoice is committed. Record-keeping that belongs to creation alone runs
+  // here; everything that belongs to ISSUING it goes through the durable path in
+  // deliverIssuedInvoice so a crash between commit and delivery is recoverable
+  // rather than silently lost.
   const bookkeepingResults = await Promise.allSettled([
     recordEvent({
       orgId: resolvedOrgId,
@@ -1425,21 +1435,6 @@ export async function createInvoice({
       entityId: data.id,
       payload: { invoice_number: input.invoice_number, project_id: input.project_id, total_cents: totals.total_cents },
     }),
-    wasSent
-      ? recordEvent({
-          orgId: resolvedOrgId,
-          eventType: "invoice_sent",
-          entityType: "invoice",
-          entityId: data.id,
-          payload: {
-            invoice_number: input.invoice_number,
-            project_id: input.project_id,
-            total_cents: totals.total_cents,
-            sent_to_emails: payload.sent_to_emails,
-          },
-          channel: "notification",
-        })
-      : Promise.resolve(),
     recordAudit({
       orgId: resolvedOrgId,
       actorId: userId,
@@ -1448,22 +1443,27 @@ export async function createInvoice({
       entityId: data.id,
       after: payload,
     }),
-    wasSent
-      ? sendInvoiceEmail({
-          orgId: resolvedOrgId,
-          invoiceId: data.id,
-          totalCents: totals.total_cents,
-          dueDate: input.due_date ?? undefined,
-        })
-      : Promise.resolve(),
-    shouldQueueQboSync(payload.status, payload.client_visible)
-      ? enqueueInvoiceSync(data.id, resolvedOrgId)
-      : Promise.resolve(),
   ])
   for (const settled of bookkeepingResults) {
     if (settled.status === "rejected") {
       console.error("[invoices.createInvoice] post-commit bookkeeping failed", data.id, settled.reason)
     }
+  }
+
+  if (shouldIssue) {
+    await deliverIssuedInvoice({
+      orgId: resolvedOrgId,
+      invoiceId: data.id,
+      invoiceNumber: input.invoice_number,
+      projectId: input.project_id ?? null,
+      totalCents: totals.total_cents,
+      dueDate: input.due_date ?? null,
+      recipients: payload.sent_to_emails ?? [],
+    })
+  } else if (shouldQueueQboSync(payload.status, payload.client_visible)) {
+    await enqueueInvoiceSync(data.id, resolvedOrgId).catch((error) => {
+      console.error("[invoices.createInvoice] accounting sync enqueue failed", data.id, error)
+    })
   }
 
   const fresh = await getInvoiceWithLines(data.id, resolvedOrgId)
@@ -1503,10 +1503,18 @@ export async function updateInvoice({
     projectId: existing.project_id,
     invoiceId,
   })
-  if (existing.sent_at || hasAccountingExternalId(existingAccountingState) || !["draft", "saved"].includes(existing.status)) {
+  if (existing.sent_at || hasAccountingExternalId(existingAccountingState) || isIssuedInvoiceStatus(existing.status)) {
     throw new Error("Issued or accounting-synced invoices are immutable. Void and reissue the invoice instead.")
   }
-  if (input.status === "sent" || input.client_visible) {
+  // The permission check above was resolved against the invoice's CURRENT project.
+  // Accepting a different project_id here would let an ordinary edit relocate the
+  // invoice past the two-project authorization that moveInvoiceToProject exists to
+  // enforce. Moving is its own command.
+  if (input.project_id && input.project_id !== (existing.project_id ?? null)) {
+    throw new Error("Use “Move to project” to change an invoice's project.")
+  }
+  const shouldIssue = input.issue === true || existing.client_visible === true
+  if (shouldIssue) {
     await requireInvoicePermission({
       supabase,
       orgId: resolvedOrgId,
@@ -1520,9 +1528,10 @@ export async function updateInvoice({
   const sourceType = input.source_type ?? (existing.metadata as any)?.source_type ?? "manual"
   const sourceDrawId = input.source_draw_id ?? (existing.metadata as any)?.source_draw_id ?? null
   const sourceChangeOrderId = input.source_change_order_id ?? (existing.metadata as any)?.source_change_order_id ?? null
+  const projectId = existing.project_id ?? null
   const productPosture = await resolveInvoicePosture({
     supabase,
-    projectId: input.project_id ?? existing.project_id,
+    projectId,
     productTier,
   })
   const receivablesPolicy = getReceivablesPosturePolicy(productPosture)
@@ -1538,14 +1547,14 @@ export async function updateInvoice({
   await assertDirectChangeOrderInvoiceAllowed({
     supabase,
     orgId: resolvedOrgId,
-    projectId: input.project_id ?? existing.project_id ?? null,
+    projectId,
     sourceType,
     sourceChangeOrderId,
   })
   const resolvedSourceContext = await resolveInvoiceSourceBillingContext({
     supabase,
     orgId: resolvedOrgId,
-    projectId: input.project_id ?? existing.project_id ?? null,
+    projectId,
     sourceType,
     sourceDrawId,
     sourceChangeOrderId,
@@ -1559,23 +1568,23 @@ export async function updateInvoice({
   const lines = applySourceDerivedBillingLines(normalizeLines(input.lines), sourceContext)
   const totals = calculateInvoiceTotalsWithRetainage(lines, input.tax_rate, discountFromInput(input))
   // Internal PDF rendering may create a token without publishing the invoice.
-  // Only an explicit publish input (or an already-published invoice) can advance
-  // the lifecycle; token possession alone is never authority to send.
-  const shouldPublish = existing.client_visible === true || input.client_visible === true || input.status === "sent"
+  // Only an explicit issue intent (or an already-published invoice) advances the
+  // lifecycle; token possession alone is never authority to send.
   const approvalStatus =
     receivablesPolicy.approvalMode !== "required_review"
       ? "not_required"
       : sourceType === "pay_application"
         ? "approved"
-        : shouldPublish
+        : shouldIssue
           ? existing.approval_status ?? "draft"
           : "draft"
-  if (shouldPublish && approvalStatus !== "approved" && approvalStatus !== "not_required") {
+  if (shouldIssue && approvalStatus !== "approved" && approvalStatus !== "not_required") {
     throw new Error(`${receivablesPolicy.customerLabel} billing must be approved before it can be issued.`)
   }
-  const token = shouldPublish ? existing.token ?? randomUUID() : existing.token ?? null
-  const sentAt = shouldPublish ? existing.sent_at ?? new Date().toISOString() : existing.sent_at ?? null
-  const isFirstSend = shouldPublish && !existing.sent_at
+  const lifecycleStatus: InvoiceLifecycleStatus = shouldIssue ? "sent" : "draft"
+  const token = shouldIssue ? existing.token ?? randomUUID() : existing.token ?? null
+  const sentAt = shouldIssue ? existing.sent_at ?? new Date().toISOString() : existing.sent_at ?? null
+  const isFirstSend = shouldIssue && !existing.sent_at
   const sentTo =
     input.sent_to_emails && input.sent_to_emails.length > 0 ? input.sent_to_emails : existing.sent_to_emails ?? null
 
@@ -1589,15 +1598,15 @@ export async function updateInvoice({
   })
 
   const payload = {
-    project_id: input.project_id ?? null,
+    project_id: projectId,
     token,
     invoice_number: input.invoice_number,
     title: input.title,
-    status: input.status ?? "saved",
+    status: lifecycleStatus,
     issue_date: input.issue_date ?? null,
     due_date: input.due_date ?? null,
     notes: input.notes ?? null,
-    client_visible: shouldPublish,
+    client_visible: shouldIssue,
     subtotal_cents: totals.subtotal_cents,
     tax_cents: totals.tax_cents,
     tax_jurisdiction_id: input.tax_jurisdiction_id ?? null,
@@ -1605,8 +1614,8 @@ export async function updateInvoice({
     balance_due_cents: totals.total_cents,
     product_posture: productPosture,
     approval_status: approvalStatus,
-    delivery_status: shouldPublish ? "queued" : "not_sent",
-    issued_snapshot: shouldPublish
+    delivery_status: shouldIssue ? "queued" : "not_sent",
+    issued_snapshot: shouldIssue
       ? issuedInvoiceSnapshot({ posture: productPosture, input, lines, totals })
       : null,
     source_type: sourceType,
@@ -1667,24 +1676,8 @@ export async function updateInvoice({
     eventType: "invoice_updated",
     entityType: "invoice",
     entityId: invoiceId,
-    payload: { invoice_number: input.invoice_number, project_id: input.project_id, total_cents: totals.total_cents },
+    payload: { invoice_number: input.invoice_number, project_id: projectId, total_cents: totals.total_cents },
   })
-
-  if (isFirstSend) {
-    await recordEvent({
-      orgId: resolvedOrgId,
-      eventType: "invoice_sent",
-      entityType: "invoice",
-      entityId: invoiceId,
-      payload: {
-        invoice_number: input.invoice_number,
-        project_id: input.project_id,
-        total_cents: totals.total_cents,
-        sent_to_emails: sentTo,
-      },
-      channel: "notification",
-    })
-  }
 
   await recordAudit({
     orgId: resolvedOrgId,
@@ -1696,17 +1689,17 @@ export async function updateInvoice({
     after: payload,
   })
 
-  const sendTransition = existing.status !== "sent" && payload.status === "sent"
-  if (isFirstSend || sendTransition) {
-    await sendInvoiceEmail({
+  if (isFirstSend || (shouldIssue && !isIssuedInvoiceStatus(existing.status))) {
+    await deliverIssuedInvoice({
       orgId: resolvedOrgId,
       invoiceId,
+      invoiceNumber: input.invoice_number,
+      projectId,
       totalCents: totals.total_cents,
-      dueDate: input.due_date ?? undefined,
+      dueDate: input.due_date ?? null,
+      recipients: sentTo ?? [],
     })
-  }
-
-  if (
+  } else if (
     shouldQueueQboSync(payload.status, payload.client_visible) ||
     shouldQueueQboSync(existing.status, existing.client_visible) ||
     hasAccountingExternalId(existingAccountingState)
@@ -1716,6 +1709,137 @@ export async function updateInvoice({
 
   const fresh = await getInvoiceWithLines(invoiceId, resolvedOrgId)
   return fresh ?? mapInvoiceRow(data as InvoiceRow)
+}
+
+/**
+ * Bill an existing draft to the customer, without resubmitting the document.
+ *
+ * `updateInvoice(… issue: true)` is the composer's path — it saves the final
+ * edits and issues in one write. This is the queue's path: the row is already
+ * what it should be, and the only thing changing is that somebody is now asking
+ * to be paid for it. Both funnel into the same derived lifecycle and the same
+ * durable delivery, so there is one definition of "issued" and one of "sent".
+ */
+export async function issueInvoice({
+  invoiceId,
+  recipients,
+  orgId,
+}: {
+  invoiceId: string
+  /** Overrides the invoice's stored recipients when the sender picks new ones. */
+  recipients?: string[]
+  orgId?: string
+}) {
+  const { supabase, orgId: resolvedOrgId, userId, productTier } = await requireOrgContext(orgId)
+  const { data: existing, error } = await supabase
+    .from("invoices")
+    .select(
+      "id, project_id, invoice_number, title, status, token, client_visible, sent_at, sent_to_emails, subtotal_cents, tax_cents, total_cents, balance_due_cents, issue_date, due_date, approval_status, product_posture, source_type, metadata",
+    )
+    .eq("org_id", resolvedOrgId)
+    .eq("id", invoiceId)
+    .maybeSingle()
+  if (error || !existing) throw new Error(error?.message ?? "Invoice not found")
+
+  await requireInvoicePermission({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    permission: "invoice.send",
+    projectId: existing.project_id,
+    invoiceId,
+  })
+
+  if (isIssuedInvoiceStatus(existing.status)) {
+    throw new Error("This invoice has already been issued.")
+  }
+  if (normalizeInvoiceStatus(existing.status) === "void") {
+    throw new Error("A voided invoice cannot be issued. Revise it instead.")
+  }
+
+  const posture = await resolveInvoicePosture({ supabase, projectId: existing.project_id, productTier })
+  const policy = getReceivablesPosturePolicy(posture)
+  if (
+    policy.approvalMode === "required_review" &&
+    existing.approval_status !== "approved" &&
+    existing.approval_status !== "not_required"
+  ) {
+    throw new Error(`${policy.customerLabel} billing must be approved before it can be issued.`)
+  }
+
+  const sentTo = recipients && recipients.length > 0 ? recipients : existing.sent_to_emails ?? []
+  if (sentTo.length === 0) {
+    throw new Error("Add at least one recipient before issuing this invoice.")
+  }
+
+  const sentAt = new Date().toISOString()
+  // The snapshot is the immutable record of what the customer was actually
+  // billed — an invoice must never reach `sent` without one, however it got there.
+  const existingMetadata = (existing.metadata as Record<string, any> | null) ?? {}
+  const issuedSnapshot = {
+    schema_version: 1,
+    issued_at: sentAt,
+    product_posture: posture,
+    invoice_number: existing.invoice_number,
+    title: existing.title ?? null,
+    issue_date: existing.issue_date ?? null,
+    due_date: existing.due_date ?? null,
+    customer_id: existingMetadata.customer_id ?? null,
+    customer_name: existingMetadata.customer_name ?? null,
+    recipients: sentTo,
+    source_type: existing.source_type ?? existingMetadata.source_type ?? "manual",
+    lines: existingMetadata.lines ?? [],
+    totals: {
+      subtotal_cents: existing.subtotal_cents ?? 0,
+      tax_cents: existing.tax_cents ?? 0,
+      total_cents: existing.total_cents ?? 0,
+      balance_due_cents: existing.balance_due_cents ?? existing.total_cents ?? 0,
+    },
+  }
+
+  const service = createServiceSupabaseClient()
+  const { data: issued, error: issueError } = await service
+    .from("invoices")
+    .update({
+      status: "sent",
+      client_visible: true,
+      token: existing.token ?? randomUUID(),
+      sent_at: sentAt,
+      sent_to_emails: sentTo,
+      delivery_status: "queued",
+      issued_snapshot: issuedSnapshot,
+    })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", invoiceId)
+    .select("id, total_cents, due_date")
+    .single()
+  if (issueError || !issued) {
+    throw new Error(`Failed to issue invoice: ${issueError?.message ?? "unknown error"}`)
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "invoice",
+    entityId: invoiceId,
+    before: { status: existing.status, client_visible: existing.client_visible, sent_at: existing.sent_at },
+    after: { status: "sent", client_visible: true, sent_at: sentAt },
+  })
+
+  await deliverIssuedInvoice({
+    orgId: resolvedOrgId,
+    invoiceId,
+    invoiceNumber: existing.invoice_number,
+    projectId: existing.project_id ?? null,
+    totalCents: Number(issued.total_cents ?? existing.total_cents ?? 0),
+    dueDate: (issued.due_date as string | null) ?? existing.due_date ?? null,
+    recipients: sentTo,
+  })
+
+  const fresh = await getInvoiceWithLines(invoiceId, resolvedOrgId)
+  if (!fresh) throw new Error("Invoice was issued but could not be reloaded")
+  return fresh
 }
 
 export async function requestInvoiceApproval({
@@ -1984,11 +2108,12 @@ export async function deleteInvoice({ invoiceId, orgId }: { invoiceId: string; o
     metadata: (existing.metadata as Record<string, any> | null) ?? null,
   })
 
-  await supabase.from("invoice_lines").delete().eq("org_id", resolvedOrgId).eq("invoice_id", invoiceId)
+  const writer = receivablesWriter()
+  await writer.from("invoice_lines").delete().eq("org_id", resolvedOrgId).eq("invoice_id", invoiceId)
   await supabase.from("accounting_sync_records").delete().eq("org_id", resolvedOrgId).eq("entity_type", "invoice").eq("entity_id", invoiceId)
   await supabase.from("invoice_views").delete().eq("org_id", resolvedOrgId).eq("invoice_id", invoiceId)
 
-  const { error: deleteError } = await supabase.from("invoices").delete().eq("org_id", resolvedOrgId).eq("id", invoiceId)
+  const { error: deleteError } = await writer.from("invoices").delete().eq("org_id", resolvedOrgId).eq("id", invoiceId)
   if (deleteError) {
     throw new Error(`Failed to delete invoice: ${deleteError.message}`)
   }
@@ -2098,7 +2223,7 @@ export async function moveInvoiceToProject({
     moved_at: new Date().toISOString(),
   }
 
-  const { data: updated, error: updateError } = await supabase
+  const { data: updated, error: updateError } = await receivablesWriter()
     .from("invoices")
     .update({
       project_id: targetProjectId,
@@ -2340,7 +2465,7 @@ export async function getOrCreateInvoiceToken(invoiceId: string, orgId?: string)
   })
   if (data.token) return data.token
 
-  const { data: updated, error: updateError } = await supabase
+  const { data: updated, error: updateError } = await receivablesWriter()
     .from("invoices")
     .update({ token: randomUUID() })
     .eq("id", invoiceId)
@@ -2400,7 +2525,7 @@ export async function ensureInvoiceToken(invoiceId: string, orgId?: string) {
   const alreadyPublished = Boolean(data.token) && data.client_visible && Boolean(data.sent_at) && nextStatus === data.status
   if (alreadyPublished) return token
 
-  const { data: updated, error: updateError } = await supabase
+  const { data: updated, error: updateError } = await receivablesWriter()
     .from("invoices")
     .update({
       token,
@@ -2534,6 +2659,97 @@ export async function listInvoiceViews(invoiceId: string, orgId?: string): Promi
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || "https://arcnaples.com"
 
+export const INVOICE_ISSUANCE_JOB_TYPE = "issue_invoice"
+
+export interface InvoiceIssuanceJobPayload {
+  invoice_id: string
+  invoice_number?: string | null
+  project_id?: string | null
+  total_cents?: number | null
+  due_date?: string | null
+  sent_to_emails?: string[]
+}
+
+/**
+ * Issuing an invoice has consequences that outlive the request: the customer gets
+ * an email, the notification feed gets an `invoice_sent` event, and the external
+ * accounting system gets a push. Running those as a fire-and-forget tail meant a
+ * function timeout between "invoice committed as sent" and "email left the
+ * building" was unrecoverable and invisible — the invoice said sent and nobody
+ * had been billed.
+ *
+ * So: write ONE durable job first, then do the work inline so the user still sees
+ * it happen, then close the job. A crash anywhere in the middle leaves the job
+ * pending and the outbox worker finishes it. Every step is idempotent, so running
+ * it twice bills nobody twice.
+ */
+async function deliverIssuedInvoice(params: {
+  orgId: string
+  invoiceId: string
+  invoiceNumber: string
+  projectId: string | null
+  totalCents: number
+  dueDate: string | null
+  recipients: string[]
+}) {
+  const payload: InvoiceIssuanceJobPayload = {
+    invoice_id: params.invoiceId,
+    invoice_number: params.invoiceNumber,
+    project_id: params.projectId,
+    total_cents: params.totalCents,
+    due_date: params.dueDate,
+    sent_to_emails: params.recipients,
+  }
+  // Two minutes of headroom so the cron never races the inline attempt below.
+  const enqueued = await enqueueOutboxJob({
+    orgId: params.orgId,
+    jobType: INVOICE_ISSUANCE_JOB_TYPE,
+    payload: payload as unknown as Record<string, unknown>,
+    dedupeByPayloadKeys: ["invoice_id"],
+    runAt: new Date(Date.now() + 2 * 60 * 1000).toISOString(),
+  })
+
+  try {
+    await runInvoiceIssuance(params.orgId, payload)
+    await completeOutboxJob(enqueued.enqueued ? enqueued.id : undefined)
+  } catch (error) {
+    if (!enqueued.enqueued && enqueued.reason === "error") {
+      // Nothing durable exists to retry this, so the caller has to hear about it.
+      throw error
+    }
+    console.error("[invoices.deliverIssuedInvoice] deferred to outbox retry", params.invoiceId, error)
+  }
+}
+
+/** The issuance job body. Idempotent; safe to run again after a partial failure. */
+export async function runInvoiceIssuance(orgId: string, payload: InvoiceIssuanceJobPayload) {
+  const invoiceId = payload.invoice_id
+  if (!invoiceId) throw new Error("Invoice issuance job is missing invoice_id")
+
+  await recordEvent({
+    orgId,
+    eventType: "invoice_sent",
+    entityType: "invoice",
+    entityId: invoiceId,
+    payload: {
+      invoice_number: payload.invoice_number,
+      project_id: payload.project_id,
+      total_cents: payload.total_cents,
+      sent_to_emails: payload.sent_to_emails ?? [],
+    },
+    channel: "notification",
+  })
+
+  await sendInvoiceEmail({
+    orgId,
+    invoiceId,
+    totalCents: payload.total_cents ?? undefined,
+    dueDate: payload.due_date ?? undefined,
+  })
+
+  await enqueueInvoiceSync(invoiceId, orgId)
+}
+
 async function sendInvoiceEmail({
   orgId,
   invoiceId,
@@ -2578,17 +2794,43 @@ async function sendInvoiceEmail({
   }
 
   const issueKey = invoice.sent_at ?? new Date().toISOString()
+  const deliveryKeyFor = (recipient: string) => `${invoiceId}:${issueKey}:${recipient.toLowerCase()}`
+
+  // The delivery row is keyed on (invoice, issue, recipient), so a retry reuses
+  // the same row — but reusing the row is not the same as not sending again.
+  // Anyone already delivered for THIS issuance is dropped from the send list,
+  // which is what makes a retried issuance job safe to run.
+  const { data: priorDeliveries, error: priorError } = await supabase
+    .from("invoice_deliveries")
+    .select("recipient, status")
+    .eq("org_id", orgId)
+    .eq("invoice_id", invoiceId)
+    .in("idempotency_key", uniqueRecipients.map(deliveryKeyFor))
+  if (priorError) {
+    throw new Error(`Failed to read invoice delivery history: ${priorError.message}`)
+  }
+  const alreadyDelivered = new Set(
+    (priorDeliveries ?? [])
+      .filter((row) => row.status === "sent" || row.status === "delivered")
+      .map((row) => String(row.recipient ?? "").toLowerCase()),
+  )
+  const pendingRecipients = uniqueRecipients.filter((recipient) => !alreadyDelivered.has(recipient.toLowerCase()))
+  if (pendingRecipients.length === 0) {
+    await supabase.from("invoices").update({ delivery_status: "sent" }).eq("id", invoiceId).eq("org_id", orgId)
+    return
+  }
+
   const { data: deliveries, error: deliveryError } = await supabase
     .from("invoice_deliveries")
     .upsert(
-      uniqueRecipients.map((recipient) => ({
+      pendingRecipients.map((recipient) => ({
         org_id: orgId,
         invoice_id: invoiceId,
         channel: "email",
         recipient,
         status: "sending",
         attempt_count: 1,
-        idempotency_key: `${invoiceId}:${issueKey}:${recipient.toLowerCase()}`,
+        idempotency_key: deliveryKeyFor(recipient),
         metadata: { invoice_number: invoice.invoice_number },
       })),
       { onConflict: "org_id,idempotency_key" },
@@ -2636,7 +2878,7 @@ async function sendInvoiceEmail({
 
   try {
     await sendEmail({
-      to: uniqueRecipients,
+      to: pendingRecipients,
       subject,
       html,
       from: getOrgSenderEmail(org?.slug, org?.name),
@@ -2670,7 +2912,7 @@ async function sendInvoiceEmail({
     .eq("id", invoiceId)
     .eq("org_id", orgId)
 
-  const mergedRecipients = Array.from(new Set([...(invoice.sent_to_emails ?? []), ...uniqueRecipients]))
+  const mergedRecipients = Array.from(new Set([...(invoice.sent_to_emails ?? []), ...pendingRecipients]))
   const existingRecipients = invoice.sent_to_emails ?? []
   const shouldUpdateRecipients =
     mergedRecipients.length !== existingRecipients.length ||
@@ -2685,14 +2927,3 @@ async function sendInvoiceEmail({
   }
 }
 
-async function fetchContactEmail(
-  supabase: any,
-  contactId: string,
-): Promise<{ email: string | null; full_name?: string } | null> {
-  const { data, error } = await supabase.from("contacts").select("email, full_name").eq("id", contactId).maybeSingle()
-  if (error) {
-    console.warn("Failed to fetch contact email", error)
-    return null
-  }
-  return data
-}

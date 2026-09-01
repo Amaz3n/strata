@@ -1,3 +1,4 @@
+import { receivablesWriter } from "@/lib/services/receivables-writer"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { z } from "zod"
 
@@ -342,7 +343,7 @@ export async function linkInvoiceToBillingPeriod(args: {
   invoiceId: string
   costIds: string[]
 }) {
-  const { error: invoiceError } = await args.supabase
+  const { error: invoiceError } = await receivablesWriter()
     .from("invoices")
     .update({ billing_period_id: args.billingPeriodId })
     .eq("org_id", args.orgId)
@@ -424,7 +425,7 @@ export async function releaseInvoiceFromBillingPeriod(args: {
   )
   const now = new Date().toISOString()
 
-  const { error: invoiceUpdateError } = await args.supabase
+  const { error: invoiceUpdateError } = await receivablesWriter()
     .from("invoices")
     .update({ billing_period_id: null })
     .eq("org_id", args.orgId)

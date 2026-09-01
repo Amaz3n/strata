@@ -1,3 +1,4 @@
+import { newInvoiceHref } from "@/lib/financials/invoice-destinations"
 import Link from "next/link";
 
 import type { PartyReceivablesSummary } from "@/lib/services/financial-parties";
@@ -76,7 +77,7 @@ export function ClientReceivablesTable({
                   <TableCell className="text-right">
                     {summary?.can_view_invoices ? (
                       <Button asChild size="sm" variant="ghost">
-                        <Link href={`/invoices?invoice=new&project=${row.project_id}`}>
+                        <Link href={newInvoiceHref(row.project_id)}>
                           New invoice
                         </Link>
                       </Button>

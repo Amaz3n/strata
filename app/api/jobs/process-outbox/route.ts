@@ -40,13 +40,14 @@ import { downloadFilesObject, uploadFilesObject } from "@/lib/storage/files-stor
 import { reindexEntity, removeFromIndex } from "@/lib/services/search-index"
 import { processInboundBillEmail } from "@/lib/services/payables-email-ingest"
 import { processQuickCaptureDraft } from "@/lib/services/quick-capture"
-import { processPhotoCaption } from "@/lib/services/photo-intelligence"
+import { enrichPhotoFromSource, processPhotoCaption } from "@/lib/services/photo-intelligence"
 import { classifyProjectEmail, processInboundProjectEmail } from "@/lib/services/project-email-ingest"
 import { extractCoiFacts } from "@/lib/services/ap-document-verification"
 import { sendVendorBillWaiverChase } from "@/lib/services/payment-holds"
 import { FLOORPLAN_INTERPRET_JOB, runFloorplanInterpretation } from "@/lib/services/floorplan-models"
 import { propagateApprovalToLedger } from "@/lib/services/cost-plus"
 import { enqueueVendorBillSync } from "@/lib/services/accounting-sync"
+import { INVOICE_ISSUANCE_JOB_TYPE, runInvoiceIssuance } from "@/lib/services/invoices"
 import { floorplanTargetSchema } from "@/lib/validation/floorplan"
 import type { SearchEntityType } from "@/lib/services/search-config"
 
@@ -143,6 +144,7 @@ const OUTBOX_JOB_TYPES = [
   "chase_vendor_bill_waiver",
   "extract_coi_facts",
   "project_vendor_bill_approval",
+  INVOICE_ISSUANCE_JOB_TYPE,
   FLOORPLAN_INTERPRET_JOB,
 ]
 
@@ -586,6 +588,8 @@ async function processOutboxQueue(request: NextRequest) {
         // Returns its outcome as data — an unreadable certificate completes the
         // job and leaves the payment hold on the stored expiry.
         await extractCoiFacts(fileId, job.org_id)
+      } else if (job.job_type === INVOICE_ISSUANCE_JOB_TYPE) {
+        await runInvoiceIssuance(job.org_id, job.payload ?? {})
       } else if (job.job_type === "project_vendor_bill_approval") {
         const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
         if (!billId) throw new Error("Vendor-bill approval projection is missing bill_id")
@@ -1350,7 +1354,7 @@ async function generateFilePreviewJob(supabase: ReturnType<typeof createServiceS
 
   const { data: file, error } = await supabase
     .from("files")
-    .select("id, org_id, project_id, file_name, storage_path, mime_type, metadata")
+    .select("id, org_id, project_id, file_name, storage_path, mime_type, metadata, category")
     .eq("id", fileId)
     .maybeSingle()
 
@@ -1464,6 +1468,23 @@ async function generateFilePreviewJob(supabase: ReturnType<typeof createServiceS
         content_type: primary.contentType,
         generated_at: new Date().toISOString(),
       })
+
+      // The bytes are already here and already decoded once, so this is the one
+      // place every image in Arc passes through with its original in hand —
+      // whichever surface uploaded it. Capture time, GPS and the caption queue
+      // all hang off that. A photo whose EXIF is unreadable is still a photo, so
+      // this never fails the preview it just finished writing.
+      try {
+        await enrichPhotoFromSource({
+          supabase,
+          orgId: file.org_id,
+          fileId: file.id,
+          bytes: sourceBytes,
+          category: file.category,
+        })
+      } catch (enrichError) {
+        console.error(`[preview] Failed to enrich photo ${file.id}:`, enrichError)
+      }
       return
     }
 

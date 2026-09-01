@@ -1,3 +1,4 @@
+import { receivablesWriter } from "@/lib/services/receivables-writer"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import type { ChangeOrder, ChangeOrderLine, ChangeOrderTotals } from "@/lib/types"
@@ -2111,7 +2112,7 @@ export async function linkInvoiceToChangeOrder({
     change_order_linked_manually: true,
   }
 
-  const { error: invoiceUpdateError } = await supabase
+  const { error: invoiceUpdateError } = await receivablesWriter()
     .from("invoices")
     .update({ metadata: nextMetadata })
     .eq("id", invoice.id)
@@ -2209,7 +2210,7 @@ export async function unlinkInvoiceFromChangeOrder({
     source_type: metadata.source_type === "change_order" ? "manual" : metadata.source_type,
   }
 
-  const { error: invoiceUpdateError } = await supabase
+  const { error: invoiceUpdateError } = await receivablesWriter()
     .from("invoices")
     .update({ metadata: nextMetadata })
     .eq("id", invoice.id)
@@ -2431,7 +2432,7 @@ export async function updateChangeOrder({
         change_order_total_cents: data.total_cents,
         change_order_status: data.status,
       }
-      await supabase
+      await receivablesWriter()
         .from("invoices")
         .update({ metadata: nextMetadata })
         .eq("org_id", resolvedOrgId)
@@ -2520,7 +2521,7 @@ export async function deleteChangeOrder({
         ...rest,
         source_type: metadata.source_type === "change_order" ? "manual" : metadata.source_type,
       }
-      await supabase
+      await receivablesWriter()
         .from("invoices")
         .update({ metadata: nextMetadata })
         .eq("org_id", resolvedOrgId)

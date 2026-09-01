@@ -5,6 +5,8 @@
 // write-through indexer (search-index.ts). Keep this file free of "use server"
 // and of any runtime dependencies on the server action modules.
 
+import { INVOICE_HREF_TEMPLATE } from "@/lib/financials/invoice-destinations"
+
 export type SearchEntityType =
   | 'project'
   | 'task'
@@ -323,7 +325,7 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     titleField: 'application_number',
     subtitleFields: ['status', 'period_end', 'current_payment_due_cents'],
     searchableFields: ['status'],
-    hrefTemplate: '/projects/{project_id}/financials/receivables?tab=payapps',
+    hrefTemplate: '/projects/{project_id}/financials/billing?tab=payapps',
     joins: ['LEFT JOIN projects p ON pa.project_id = p.id'],
   },
   invoice: {
@@ -331,7 +333,7 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     titleField: 'title',
     subtitleFields: ['invoice_number', 'status', 'total_cents'],
     searchableFields: ['title', 'invoice_number', 'notes'],
-    hrefTemplate: '/projects/{project_id}/financials/receivables?invoice={id}',
+    hrefTemplate: INVOICE_HREF_TEMPLATE,
     joins: ['LEFT JOIN projects p ON i.project_id = p.id'],
   },
   payment: {
@@ -395,7 +397,7 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     subtitleFields: ['status', 'total_cents'],
     descriptionFields: ['description', 'reason'],
     searchableFields: ['title', 'description', 'reason', 'summary'],
-    hrefTemplate: '/change-orders/{id}',
+    hrefTemplate: '/projects/{project_id}/change-orders',
     joins: ['LEFT JOIN projects p ON co.project_id = p.id'],
   },
   contract: {
@@ -421,7 +423,7 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     subtitleFields: ['rfi_number', 'status'],
     descriptionFields: ['question'],
     searchableFields: ['subject', 'question', 'drawing_reference', 'spec_reference', 'location'],
-    hrefTemplate: '/rfis/{id}',
+    hrefTemplate: '/projects/{project_id}/rfis?rfi={id}',
     joins: ['LEFT JOIN projects p ON r.project_id = p.id'],
   },
   submittal: {
@@ -430,7 +432,7 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     subtitleFields: ['submittal_number', 'status'],
     descriptionFields: ['description'],
     searchableFields: ['title', 'description', 'spec_section'],
-    hrefTemplate: '/submittals/{id}',
+    hrefTemplate: '/projects/{project_id}/submittals?submittal={id}',
     joins: ['LEFT JOIN projects p ON s.project_id = p.id'],
   },
   drawing_set: {

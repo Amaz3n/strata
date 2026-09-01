@@ -8,7 +8,6 @@ import type { ClientPortalData } from "@/lib/types"
 interface PortalActionsTabProps {
   data: ClientPortalData
   token: string
-  portalType: "client" | "sub"
 }
 
 function formatSelectionPrice(selection: ClientPortalData["pendingSelections"][number]) {
@@ -23,9 +22,7 @@ function formatSelectionPrice(selection: ClientPortalData["pendingSelections"][n
   return amount
 }
 
-export function PortalActionsTab({ data, token, portalType }: PortalActionsTabProps) {
-  const basePath = portalType === "client" ? "p" : "s"
-
+export function PortalActionsTab({ data, token }: PortalActionsTabProps) {
   return (
     <div className="space-y-4">
       <Card>
@@ -39,7 +36,7 @@ export function PortalActionsTab({ data, token, portalType }: PortalActionsTabPr
             data.pendingChangeOrders.map((co) => (
               <a
                 key={co.id}
-                href={`/${basePath}/${token}/change-orders/${co.id}`}
+                href={`/p/${token}/change-orders/${co.id}`}
                 className="block py-3 border-b last:border-0 hover:bg-muted/50 -mx-2 px-2 rounded"
               >
                 <div className="flex items-center justify-between mb-1">
@@ -67,47 +64,45 @@ export function PortalActionsTab({ data, token, portalType }: PortalActionsTabPr
         </CardContent>
       </Card>
 
-      {portalType === "client" && (
-        <Card>
-          <CardHeader className="pb-2 flex flex-row items-center justify-between">
-            <CardTitle className="text-base">Decisions</CardTitle>
-            {data.pendingDecisions.length > 0 && (
-              <a href={`/p/${token}/decisions`} className="text-sm text-primary">
-                Review & decide
+      <Card>
+        <CardHeader className="pb-2 flex flex-row items-center justify-between">
+          <CardTitle className="text-base">Decisions</CardTitle>
+          {data.pendingDecisions.length > 0 && (
+            <a href={`/p/${token}/decisions`} className="text-sm text-primary">
+              Review & decide
+            </a>
+          )}
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {data.pendingDecisions.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No decisions awaiting you</p>
+          ) : (
+            data.pendingDecisions.slice(0, 3).map((decision) => (
+              <a
+                key={decision.id}
+                href={`/p/${token}/decisions`}
+                className="block py-2 border-b last:border-0 hover:bg-muted/50 -mx-2 px-2 rounded"
+              >
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium">{decision.title}</p>
+                  <Badge variant="outline" className="text-xs">Pending</Badge>
+                </div>
+                {decision.due_date && (
+                  <p className="text-xs text-muted-foreground">
+                    Needed by {format(new Date(`${decision.due_date}T00:00:00`), "MMM d")}
+                  </p>
+                )}
               </a>
-            )}
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {data.pendingDecisions.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No decisions awaiting you</p>
-            ) : (
-              data.pendingDecisions.slice(0, 3).map((decision) => (
-                <a
-                  key={decision.id}
-                  href={`/p/${token}/decisions`}
-                  className="block py-2 border-b last:border-0 hover:bg-muted/50 -mx-2 px-2 rounded"
-                >
-                  <div className="flex items-center justify-between">
-                    <p className="text-sm font-medium">{decision.title}</p>
-                    <Badge variant="outline" className="text-xs">Pending</Badge>
-                  </div>
-                  {decision.due_date && (
-                    <p className="text-xs text-muted-foreground">
-                      Needed by {format(new Date(`${decision.due_date}T00:00:00`), "MMM d")}
-                    </p>
-                  )}
-                </a>
-              ))
-            )}
-          </CardContent>
-        </Card>
-      )}
+            ))
+          )}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader className="pb-2 flex flex-row items-center justify-between">
           <CardTitle className="text-base">Selections</CardTitle>
           {data.pendingSelections.length > 0 && (
-            <a href={`/${basePath}/${token}/selections`} className="text-sm text-primary">
+            <a href={`/p/${token}/selections`} className="text-sm text-primary">
               View all
             </a>
           )}
@@ -144,11 +139,9 @@ export function PortalActionsTab({ data, token, portalType }: PortalActionsTabPr
       <Card>
         <CardHeader className="pb-2 flex flex-row items-center justify-between">
           <CardTitle className="text-base">Punch List</CardTitle>
-          {portalType === "client" && (
-            <a href={`/p/${token}/punch-list`} className="text-sm text-primary">
-              Add item
-            </a>
-          )}
+          <a href={`/p/${token}/punch-list`} className="text-sm text-primary">
+            Add item
+          </a>
         </CardHeader>
         <CardContent className="space-y-2">
           {data.punchItems.length === 0 ? (
@@ -171,35 +164,33 @@ export function PortalActionsTab({ data, token, portalType }: PortalActionsTabPr
         </CardContent>
       </Card>
 
-      {portalType === "client" && (
-        <Card>
-          <CardHeader className="pb-2 flex flex-row items-center justify-between">
-            <CardTitle className="text-base">Warranty requests</CardTitle>
-            <a href={`/p/${token}/warranty`} className="text-sm text-primary">
-              Submit request
-            </a>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {data.warrantyRequests && data.warrantyRequests.length > 0 ? (
-              data.warrantyRequests.slice(0, 3).map((req) => (
-                <div key={req.id} className="flex items-center justify-between py-2 border-b last:border-0">
-                  <div>
-                    <p className="text-sm font-medium">{req.title}</p>
-                    {req.description ? (
-                      <p className="text-xs text-muted-foreground">{req.description}</p>
-                    ) : null}
-                  </div>
-                  <Badge variant="outline" className="capitalize text-xs">
-                    {req.status}
-                  </Badge>
+      <Card>
+        <CardHeader className="pb-2 flex flex-row items-center justify-between">
+          <CardTitle className="text-base">Warranty requests</CardTitle>
+          <a href={`/p/${token}/warranty`} className="text-sm text-primary">
+            Submit request
+          </a>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {data.warrantyRequests && data.warrantyRequests.length > 0 ? (
+            data.warrantyRequests.slice(0, 3).map((req) => (
+              <div key={req.id} className="flex items-center justify-between py-2 border-b last:border-0">
+                <div>
+                  <p className="text-sm font-medium">{req.title}</p>
+                  {req.description ? (
+                    <p className="text-xs text-muted-foreground">{req.description}</p>
+                  ) : null}
                 </div>
-              ))
-            ) : (
-              <p className="text-sm text-muted-foreground">No warranty requests</p>
-            )}
-          </CardContent>
-        </Card>
-      )}
+                <Badge variant="outline" className="capitalize text-xs">
+                  {req.status}
+                </Badge>
+              </div>
+            ))
+          ) : (
+            <p className="text-sm text-muted-foreground">No warranty requests</p>
+          )}
+        </CardContent>
+      </Card>
     </div>
   )
 }

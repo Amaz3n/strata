@@ -21,7 +21,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 
-import type { Contract, DrawSchedule, ScheduleItem, CostCode, Invoice, InvoiceView } from "@/lib/types"
+import type { Contract, DrawSchedule, ScheduleItem, CostCode, Invoice } from "@/lib/types"
 import { cn, parseLocalDate, formatLocalDate } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -35,7 +35,7 @@ import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Calendar as CalendarPicker } from "@/components/ui/calendar"
-import { InvoiceDetailSheet } from "@/components/invoices/invoice-detail-sheet"
+import { InvoiceInspectorSheet } from "@/components/invoices/invoice-inspector"
 
 import {
   createProjectDrawAction,
@@ -49,7 +49,7 @@ import {
   unlinkInvoiceFromDrawAction,
   updateProjectDrawAction,
 } from "@/app/(app)/projects/[id]/actions"
-import { getInvoiceDetailAction, manualResyncInvoiceAction } from "@/app/(app)/invoices/actions"
+import { getInvoiceDetailAction } from "@/app/(app)/invoices/actions"
 import { unwrapAction } from "@/lib/action-result"
 
 const statusMap: Record<string, { label: string; tone: string }> = {
@@ -129,12 +129,6 @@ export function DrawScheduleManager({
   const [invoiceDetailOpen, setInvoiceDetailOpen] = useState(false)
   const [linkedInvoiceLoading, setLinkedInvoiceLoading] = useState(false)
   const [linkedInvoice, setLinkedInvoice] = useState<Invoice | null>(null)
-  const [linkedInvoiceLink, setLinkedInvoiceLink] = useState<string | undefined>()
-  const [linkedInvoiceViews, setLinkedInvoiceViews] = useState<InvoiceView[] | undefined>()
-  const [linkedInvoiceSyncHistory, setLinkedInvoiceSyncHistory] = useState<
-    Array<{ id: string; status: string; last_synced_at: string; error_message?: string | null; qbo_id?: string | null }>
-  >()
-  const [invoiceResyncing, setInvoiceResyncing] = useState(false)
   const [search, setSearch] = useState("")
   const [linkPickerOpen, setLinkPickerOpen] = useState(false)
   const [linkableInvoices, setLinkableInvoices] = useState<LinkableInvoice[]>([])
@@ -200,16 +194,10 @@ export function DrawScheduleManager({
     try {
       const result = unwrapAction(await getInvoiceDetailAction(invoiceId))
       setLinkedInvoice(result.invoice)
-      setLinkedInvoiceLink(result.link)
-      setLinkedInvoiceViews(result.views)
-      setLinkedInvoiceSyncHistory(result.syncHistory)
       return result.invoice
     } catch (err: any) {
       toast.error("Could not load linked invoice", { description: err?.message ?? "Please try again." })
       setLinkedInvoice(null)
-      setLinkedInvoiceLink(undefined)
-      setLinkedInvoiceViews(undefined)
-      setLinkedInvoiceSyncHistory(undefined)
       return null
     } finally {
       setLinkedInvoiceLoading(false)
@@ -219,9 +207,6 @@ export function DrawScheduleManager({
   useEffect(() => {
     if (!selectedDraw?.invoice_id) {
       setLinkedInvoice(null)
-      setLinkedInvoiceLink(undefined)
-      setLinkedInvoiceViews(undefined)
-      setLinkedInvoiceSyncHistory(undefined)
       return
     }
 
@@ -427,9 +412,6 @@ export function DrawScheduleManager({
       setDraws((prev) => prev.map((d) => (d.id === result.draw.id ? (result.draw as DrawSchedule) : d)))
       setSelectedDraw(result.draw as DrawSchedule)
       setLinkedInvoice(null)
-      setLinkedInvoiceLink(undefined)
-      setLinkedInvoiceViews(undefined)
-      setLinkedInvoiceSyncHistory(undefined)
       toast.success("Invoice unlinked")
     } catch (err: any) {
       toast.error("Could not unlink invoice", { description: err?.message ?? "Please try again." })
@@ -687,36 +669,12 @@ export function DrawScheduleManager({
         onLink={handleLinkInvoice}
       />
 
-      <InvoiceDetailSheet
+      <InvoiceInspectorSheet
+        invoiceId={selectedDraw?.invoice_id ?? null}
         open={invoiceDetailOpen}
         onOpenChange={setInvoiceDetailOpen}
-        invoice={linkedInvoice}
-        link={linkedInvoiceLink}
-        views={linkedInvoiceViews}
-        syncHistory={linkedInvoiceSyncHistory}
-        loading={linkedInvoiceLoading}
-        manualResyncing={invoiceResyncing}
-        onCopyLink={async () => {
-          if (linkedInvoiceLink && typeof navigator !== "undefined" && navigator.clipboard) {
-            await navigator.clipboard.writeText(linkedInvoiceLink)
-            toast.success("Link copied")
-          }
-        }}
-        onManualResync={async () => {
-          if (!linkedInvoice) return
-          setInvoiceResyncing(true)
-          try {
-            unwrapAction(await manualResyncInvoiceAction(linkedInvoice.id))
-            toast.success("Resync enqueued")
-            await loadLinkedInvoice(linkedInvoice.id)
-          } catch (err: any) {
-            toast.error("Failed to resync", { description: err?.message ?? "Please try again." })
-          } finally {
-            setInvoiceResyncing(false)
-          }
-        }}
-        onPaymentRecorded={async () => {
-          await refreshDrawsAndLinkedInvoice(linkedInvoice?.id)
+        onChanged={async () => {
+          await refreshDrawsAndLinkedInvoice(selectedDraw?.invoice_id)
         }}
       />
 

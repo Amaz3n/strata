@@ -537,6 +537,8 @@ export interface VendorPayableProfile {
   payoutBankLast4: string | null
   /** False when the viewer may not read payables — the money fields read zero. */
   canViewBills: boolean
+  /** Construction compliance is an explicit program, never implied by AP. */
+  complianceMonitoringEnabled: boolean
   /**
    * Enough compliance to say whether this vendor can be paid. The full record
    * lives on the directory workspace; a payables dialog only needs the verdict
@@ -566,7 +568,7 @@ export async function getVendorPayableProfile(
 
   const { data: company, error } = await supabase
     .from("companies")
-    .select("id,name,metadata,default_payment_terms")
+    .select("id,name,metadata,default_payment_terms,compliance_monitoring_enabled")
     .eq("org_id", resolvedOrgId)
     .eq("id", companyId)
     .maybeSingle()
@@ -629,7 +631,9 @@ export async function getVendorPayableProfile(
       .eq("org_id", resolvedOrgId)
       .eq("company_id", companyId)
       .maybeSingle(),
-    getCompanyComplianceStatusWithClient(supabase, resolvedOrgId, companyId).catch(() => null),
+    company.compliance_monitoring_enabled
+      ? getCompanyComplianceStatusWithClient(supabase, resolvedOrgId, companyId).catch(() => null)
+      : Promise.resolve(null),
   ])
 
   const metadata = (company.metadata ?? {}) as Record<string, unknown>
@@ -675,6 +679,7 @@ export async function getVendorPayableProfile(
     payoutBankName: recipient?.payout_bank_name ?? null,
     payoutBankLast4: recipient?.payout_bank_last4 ?? null,
     canViewBills,
+    complianceMonitoringEnabled: Boolean(company.compliance_monitoring_enabled),
     compliance: complianceStatus
       ? {
           isCompliant: complianceStatus.is_compliant,

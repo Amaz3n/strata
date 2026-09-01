@@ -164,6 +164,8 @@ interface PayablesWorkspaceProps {
    */
   projectId?: string
   bills: VendorBillSummary[]
+  /** Selected record loaded independently when a deep link is off-page. */
+  selectedBill?: VendorBillSummary | null
   selectedBillId: string | null
   onSelectBill: (billId: string | null) => void
   costCodes: CostCode[]
@@ -224,6 +226,7 @@ function stageAcceptsEdits(stage: PayableStage) {
 export function PayablesWorkspace({
   projectId,
   bills,
+  selectedBill: selectedBillOverride = null,
   selectedBillId,
   onSelectBill,
   costCodes,
@@ -322,8 +325,10 @@ export function PayablesWorkspace({
   const approveShortcutRef = useRef<(() => void) | null>(null)
 
   const selectedBill = useMemo(
-    () => bills.find((bill) => bill.id === selectedBillId) ?? null,
-    [bills, selectedBillId],
+    () => selectedBillOverride?.id === selectedBillId
+      ? selectedBillOverride
+      : bills.find((bill) => bill.id === selectedBillId) ?? null,
+    [bills, selectedBillId, selectedBillOverride],
   )
   const [approvalSignals, setApprovalSignals] =
     useState<{ evenFlow: EvenFlowPriceAssessment | null; schedule: BillScheduleAssessment | null } | null>(null)
@@ -1402,7 +1407,7 @@ export function PayablesWorkspace({
                     qboExpenseAccounts={qboExpenseAccounts}
                     qboApAccounts={qboApAccounts}
                     billTotalCents={billTotalCents}
-                    fallbackProjectId={selectedBill.project_id}
+                    fallbackProjectId={selectedBill.project_id ?? ""}
                     defaultDescription={form.billNumber || "Vendor bill"}
                     headerQboExpenseAccountId={form.qboExpenseAccountId}
                     headerQboApAccountId={form.qboApAccountId}

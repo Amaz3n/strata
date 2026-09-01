@@ -1,3 +1,4 @@
+import { receivablesWriter } from "@/lib/services/receivables-writer"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { z } from "zod"
 
@@ -87,8 +88,8 @@ const createFeeInvoiceSchema = z.object({
   issueDate: z.string().optional(),
   dueDate: z.string().optional(),
   billingPeriodId: z.string().uuid().optional().nullable(),
-  status: z.enum(["draft", "saved", "sent"]).default("saved"),
-  clientVisible: z.boolean().default(false),
+  /** Bill the fee to the customer immediately instead of leaving a draft. */
+  issue: z.boolean().default(false),
 })
 
 export type UpdateFeeProgressInput = z.infer<typeof updateFeeProgressSchema>
@@ -736,7 +737,7 @@ export async function recordProjectFeeBillingForInvoice(args: {
     .maybeSingle()
 
   const existingMetadata = (invoiceRow?.metadata as Record<string, any> | null) ?? {}
-  await args.supabase
+  await receivablesWriter()
     .from("invoices")
     .update({
       billing_period_id: args.billingPeriodId ?? null,
@@ -793,7 +794,7 @@ export async function createProjectFeeInvoice(input: CreateFeeInvoiceInput, orgI
   const today = new Date().toISOString().slice(0, 10)
   const issueDate = parsed.issueDate ?? today
   const dueDate = parsed.dueDate ?? issueDate
-  const status = parsed.status
+  const shouldIssue = parsed.issue
   const retainFee = Boolean(
     context.contract?.retainage_applies_to_fee ??
       context.contract?.snapshot?.retainage_applies_to_fee ??
@@ -811,10 +812,9 @@ export async function createProjectFeeInvoice(input: CreateFeeInvoiceInput, orgI
       invoice_number: nextNumber.number,
       reservation_id: nextNumber.reservation_id,
       title: "Construction management fee",
-      status,
+      issue: shouldIssue,
       issue_date: issueDate,
       due_date: dueDate,
-      client_visible: parsed.clientVisible || status === "sent",
       tax_rate: 0,
       source_type: "fee",
       customer_name: context.project.qbo_customer_name ?? undefined,

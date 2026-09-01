@@ -67,11 +67,16 @@ export function PhotoTimeline({ entries }: PhotoTimelineProps) {
         <DialogContent className="max-w-3xl p-0">
           <DialogTitle className="sr-only">Photo preview</DialogTitle>
           {selectedPhoto && (
-            <img
-              src={selectedPhoto.url}
-              alt=""
-              className="w-full h-auto"
-            />
+            <>
+              <img
+                src={selectedPhoto.url}
+                alt={selectedPhoto.caption ?? ""}
+                className="w-full h-auto"
+              />
+              {selectedPhoto.caption && (
+                <p className="px-4 pb-4 text-sm text-muted-foreground">{selectedPhoto.caption}</p>
+              )}
+            </>
           )}
         </DialogContent>
       </Dialog>

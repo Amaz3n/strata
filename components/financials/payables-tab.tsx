@@ -13,6 +13,7 @@ type ProjectBillingModel = "fixed_price" | "cost_plus_percent" | "cost_plus_fixe
 interface PayablesTabProps {
   projectId: string
   vendorBills: VendorBillSummary[]
+  selectedBill?: VendorBillSummary | null
   costCodes: CostCode[]
   budgetLines?: BudgetLineOption[]
   costCodesEnabled?: boolean
@@ -30,13 +31,17 @@ interface PayablesTabProps {
     approvers: Array<{ userId: string; name: string }>
   } | null
   pagination: { page: number; pageSize: number; total: number; pageCount: number }
+  queueTotals: Record<string, { count: number; amountCents: number }>
+  summaryTruncated?: boolean
   initialQueue: string
+  initialDue: string
   initialSearch: string
 }
 
 export function PayablesTab({
   projectId,
   vendorBills,
+  selectedBill = null,
   costCodes,
   budgetLines = [],
   costCodesEnabled = true,
@@ -51,7 +56,10 @@ export function PayablesTab({
   viewerMayApproveRuns = false,
   approvalViewer = null,
   pagination,
+  queueTotals,
+  summaryTruncated = false,
   initialQueue,
+  initialDue,
   initialSearch,
 }: PayablesTabProps) {
   return (
@@ -71,6 +79,7 @@ export function PayablesTab({
       <ProjectPayablesClient
         projectId={projectId}
         vendorBills={vendorBills}
+        selectedBill={selectedBill}
         costCodes={costCodesEnabled ? costCodes : []}
         budgetLines={budgetLines}
         costCodesEnabled={costCodesEnabled}
@@ -85,7 +94,10 @@ export function PayablesTab({
         viewerMayApproveRuns={viewerMayApproveRuns}
         approvalViewer={approvalViewer}
         pagination={pagination}
+        queueTotals={queueTotals}
+        summaryTruncated={summaryTruncated}
         initialQueue={initialQueue}
+        initialDue={initialDue}
         initialSearch={initialSearch}
       />
     </div>

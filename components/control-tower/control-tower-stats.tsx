@@ -979,9 +979,9 @@ function DueSheet({
         </Section>
 
         <Section label="Open work">
-          <LineRow label="RFIs" value={String(openItems.rfis)} href="/rfis" tone={openItems.rfis === 0 ? "muted" : "default"} />
-          <LineRow label="Submittals" value={String(openItems.submittals)} href="/submittals" tone={openItems.submittals === 0 ? "muted" : "default"} />
-          <LineRow label="Change orders" value={String(openItems.changeOrders)} href="/change-orders" tone={openItems.changeOrders === 0 ? "muted" : "default"} />
+          <LineRow label="RFIs" value={String(openItems.rfis)} tone={openItems.rfis === 0 ? "muted" : "default"} />
+          <LineRow label="Submittals" value={String(openItems.submittals)} tone={openItems.submittals === 0 ? "muted" : "default"} />
+          <LineRow label="Change orders" value={String(openItems.changeOrders)} tone={openItems.changeOrders === 0 ? "muted" : "default"} />
           <LineRow label="Punch items" value={String(openItems.punchItems)} href="/tasks" tone={openItems.punchItems === 0 ? "muted" : "default"} />
           <LineRow
             label="Compliance reviews"

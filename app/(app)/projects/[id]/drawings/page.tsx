@@ -88,9 +88,7 @@ async function ProjectDrawingsData({
         initialSets={sets}
         initialSheets={sheets}
         totalSheetCount={totalSheetCount}
-        projects={[{ id: project.id, name: project.name }]}
         selectedProjectId={project.id}
-        lockProject
         initialSelectedSetId={initialSelectedSetId}
         initialSheetId={query.sheetId}
         canWriteTakeoff={canWriteTakeoff}

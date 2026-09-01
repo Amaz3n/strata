@@ -1,3 +1,4 @@
+import { invoiceHref } from "@/lib/financials/invoice-destinations"
 import { isBefore, parseISO, startOfToday } from "date-fns"
 
 import { requireOrgContext } from "@/lib/services/context"
@@ -205,7 +206,7 @@ export async function getProjectCloseReadiness(projectId: string, orgId?: string
         severity: "blocker",
         title: isPastDate(invoice.due_date) ? `${label} is overdue` : `${label} has an open balance`,
         detail: `${status.replaceAll("_", " ")} invoice with ${balance > 0 ? "a remaining balance" : "unresolved status"}.`,
-        href: projectHref(projectId, `/invoices?invoice=${invoice.id}`),
+        href: invoiceHref(invoice.id, projectId),
         amountCents: balance,
       })
     } else if (["draft", "saved"].includes(status) && money(invoice.total_cents) > 0) {
@@ -215,7 +216,7 @@ export async function getProjectCloseReadiness(projectId: string, orgId?: string
         severity: "warning",
         title: `${label} is not issued`,
         detail: "Draft/saved invoices should be sent, voided, or removed before close.",
-        href: projectHref(projectId, `/invoices?invoice=${invoice.id}`),
+        href: invoiceHref(invoice.id, projectId),
         amountCents: money(invoice.total_cents),
       })
     }
@@ -227,7 +228,7 @@ export async function getProjectCloseReadiness(projectId: string, orgId?: string
         severity: invoice.qbo_sync_status === "error" ? "blocker" : "warning",
         title: `${label} is not settled in QuickBooks`,
         detail: `QuickBooks sync status is ${invoice.qbo_sync_status}.`,
-        href: projectHref(projectId, `/invoices?invoice=${invoice.id}`),
+        href: invoiceHref(invoice.id, projectId),
       })
     }
   }

@@ -30,10 +30,26 @@ import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import type { PayableRunMembership } from "@/lib/services/org-payables"
+import type { CompanyPaymentReadinessStatus } from "@/lib/services/vendor-payment-invitations"
 import { isVendorCredit, summarizePayables } from "@/lib/financials/payables-rules"
+import {
+  PAYABLE_QUEUE_LABELS,
+  PAYABLE_QUEUES,
+  parsePayableDueFilter,
+  parsePayableQueue,
+  type PayableDueFilter,
+  type PayableQueue,
+} from "@/lib/financials/payables-queues"
 import type { ComplianceRules, ComplianceStatusSummary, CostCode } from "@/lib/types"
 import { CodingCombobox } from "@/components/financials/workspace/coding-combobox"
-import { billBadge, dueDisplay, payableTypeBadge, vendorLabel } from "./payables-ui"
+import { dueDisplay, vendorLabel } from "./payables-ui"
+import {
+  PayableOperationalStatus,
+  PayableReadinessDot,
+  PayableReleaseWarning,
+  payableDeleteBlockedReason,
+  payableReleaseWarnings,
+} from "./payable-row-state"
 
 type QBOAccountOption = { id: string; name: string; fullyQualifiedName?: string }
 
@@ -43,26 +59,13 @@ type QBOAccountOption = { id: string; name: string; fullyQualifiedName?: string 
  * the desk tabs) plus a separate due-date dimension; the server applies one at
  * a time, so picking a due filter clears the lifecycle pick and vice versa.
  */
-type ExplorerQueueParam = "all" | "drafts" | "needs_review" | "payable" | "paid" | "overdue" | "due_soon"
+const LIFECYCLE_FILTERS = PAYABLE_QUEUES.map((key) => ({ key, label: PAYABLE_QUEUE_LABELS[key] }))
 
-const LIFECYCLE_FILTERS: { key: ExplorerQueueParam; label: string }[] = [
-  { key: "all", label: "All" },
-  { key: "drafts", label: "Drafts" },
-  { key: "needs_review", label: "Needs approval" },
-  { key: "payable", label: "Ready to pay" },
-  { key: "paid", label: "Paid" },
-]
-
-const DUE_FILTERS: { key: ExplorerQueueParam; label: string }[] = [
+const DUE_FILTERS: { key: PayableDueFilter; label: string }[] = [
+  { key: "any", label: "Any due date" },
   { key: "overdue", label: "Overdue" },
   { key: "due_soon", label: "Due soon" },
 ]
-
-function normalizeQueueParam(value: string): ExplorerQueueParam {
-  return ["all", "drafts", "needs_review", "payable", "paid", "overdue", "due_soon"].includes(value)
-    ? (value as ExplorerQueueParam)
-    : "needs_review"
-}
 
 interface PayablesExplorerProps {
   vendorBills: VendorBillSummary[]
@@ -72,6 +75,8 @@ interface PayablesExplorerProps {
   /** External files need vendor linking and manual sync; Arc Books does not. */
   externalAccountingEnabled?: boolean
   runMembershipByBillId?: Record<string, PayableRunMembership>
+  paymentReadinessByCompanyId?: Record<string, CompanyPaymentReadinessStatus>
+  viewerMayApproveRuns?: boolean
   accountingProviderName?: string | null
   qboExpenseAccounts?: QBOAccountOption[]
   complianceRules: ComplianceRules
@@ -83,14 +88,17 @@ interface PayablesExplorerProps {
   onSyncQbo?: (bill: VendorBillSummary) => void
   onOpenSyncSheet?: () => void
   onDelete?: (bill: VendorBillSummary) => void
-  onBulkApprove?: (bills: VendorBillSummary[]) => void
-  onBulkSyncQbo?: (bills: VendorBillSummary[]) => void
+  onBulkApprove?: (bills: VendorBillSummary[]) => Promise<boolean>
+  onBulkSyncQbo?: (bills: VendorBillSummary[]) => Promise<boolean>
   onSelectCostCode?: (bill: VendorBillSummary, costCodeId: string | null) => void
   onSelectQboExpenseAccount?: (bill: VendorBillSummary, accountId: string) => void
   toolbarLeading?: ReactNode
   fullBleed?: boolean
   pagination: { page: number; pageSize: number; total: number; pageCount: number }
+  queueTotals: Record<PayableQueue, { count: number; amountCents: number }>
+  summaryTruncated?: boolean
   initialQueue: string
+  initialDue: string
   initialSearch: string
 }
 
@@ -101,6 +109,8 @@ export function PayablesExplorer({
   accountingEnabled = true,
   externalAccountingEnabled = accountingEnabled,
   runMembershipByBillId = {},
+  paymentReadinessByCompanyId = {},
+  viewerMayApproveRuns = false,
   accountingProviderName = "Accounting",
   qboExpenseAccounts = [],
   complianceRules,
@@ -119,14 +129,20 @@ export function PayablesExplorer({
   toolbarLeading,
   fullBleed = false,
   pagination,
+  queueTotals,
+  summaryTruncated = false,
   initialQueue,
+  initialDue,
   initialSearch,
 }: PayablesExplorerProps) {
   const router = useRouter()
   const urlSearchParams = useSearchParams()
   const [search, setSearch] = useState(initialSearch)
-  const [queueFilter, setQueueFilter] = useState<ExplorerQueueParam>(normalizeQueueParam(initialQueue))
+  const [queueFilter, setQueueFilter] = useState<PayableQueue>(parsePayableQueue(initialQueue))
+  const [dueFilter, setDueFilter] = useState<PayableDueFilter>(parsePayableDueFilter(initialDue))
+  const [view, setView] = useState<"review" | "coding">(() => urlSearchParams.get("view") === "coding" ? "coding" : "review")
   const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [bulkPending, setBulkPending] = useState(false)
   const [openCostCodeBillId, setOpenCostCodeBillId] = useState<string | null>(null)
   const [openQboAccountBillId, setOpenQboAccountBillId] = useState<string | null>(null)
 
@@ -140,7 +156,14 @@ export function PayablesExplorer({
     router.replace(`?${params.toString()}`, { scroll: false })
   }, [router, urlSearchParams])
 
-  useEffect(() => { setSearch(initialSearch); setQueueFilter(normalizeQueueParam(initialQueue)) }, [initialQueue, initialSearch])
+  useEffect(() => {
+    setSearch(initialSearch)
+    setQueueFilter(parsePayableQueue(initialQueue))
+    setDueFilter(parsePayableDueFilter(initialDue))
+  }, [initialDue, initialQueue, initialSearch])
+  useEffect(() => {
+    setView(urlSearchParams.get("view") === "coding" ? "coding" : "review")
+  }, [urlSearchParams])
   useEffect(() => {
     if (search === initialSearch) return
     const timer = window.setTimeout(() => navigateQuery({ q: search.trim() || null, page: null }), 350)
@@ -155,9 +178,29 @@ export function PayablesExplorer({
   const bulkApprovable = selectedBills.filter((bill) => bill.status === "pending" && !bill.is_draft && !isVendorCredit(bill) && mayApprove(bill))
   const bulkSyncable = selectedBills.filter((bill) => bill.qbo_sync_status !== "synced" && !isVendorCredit(bill))
 
-  const visibleIds = rows.map((bill) => bill.id)
+  const visibleIds = useMemo(
+    () => rows.filter((bill) => !isVendorCredit(bill)).map((bill) => bill.id),
+    [rows],
+  )
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.includes(id))
   const someVisibleSelected = visibleIds.some((id) => selectedIds.includes(id))
+
+  useEffect(() => {
+    setSelectedIds((current) => {
+      const next = current.filter((id) => visibleIds.includes(id))
+      return next.length === current.length ? current : next
+    })
+  }, [visibleIds])
+
+  async function runBulk(action: (() => Promise<boolean>) | undefined) {
+    if (!action || bulkPending) return
+    setBulkPending(true)
+    try {
+      if (await action()) setSelectedIds([])
+    } finally {
+      setBulkPending(false)
+    }
+  }
 
   function toggleSelectAll(checked: boolean | "indeterminate") {
     if (checked) {
@@ -179,6 +222,7 @@ export function PayablesExplorer({
           <div className="relative w-full sm:w-72">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
+              aria-label="Search payables by vendor or bill number"
               placeholder="Search vendor, bill..."
               value={search}
               onChange={(event) => setSearch(event.target.value)}
@@ -191,14 +235,21 @@ export function PayablesExplorer({
                 <button
                   key={filter.key}
                   type="button"
-                  onClick={() => { setQueueFilter(filter.key); navigateQuery({ queue: filter.key === "needs_review" ? null : filter.key, page: null }) }}
+                  aria-pressed={queueFilter === filter.key}
+                  onClick={() => {
+                    setQueueFilter(filter.key)
+                    navigateQuery({ queue: filter.key === "approval" ? null : filter.key, page: null })
+                  }}
                   className={cn(
                     "flex h-8 shrink-0 items-center gap-1.5 px-3 text-xs font-medium transition-colors",
                     queueFilter === filter.key ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
                   )}
                 >
                   <span>{filter.label}</span>
-                  {queueFilter === filter.key ? <span className="bg-primary-foreground/20 px-1.5 py-0.5 text-[10px] tabular-nums text-primary-foreground">{pagination.total}</span> : null}
+                  <span className={cn(
+                    "px-1.5 py-0.5 text-[10px] tabular-nums",
+                    queueFilter === filter.key ? "bg-primary-foreground/20 text-primary-foreground" : "bg-muted text-muted-foreground",
+                  )}>{queueTotals[filter.key].count}</span>
                 </button>
               ))}
             </div>
@@ -208,24 +259,42 @@ export function PayablesExplorer({
                 <button
                   key={filter.key}
                   type="button"
+                  aria-pressed={dueFilter === filter.key}
                   onClick={() => {
-                    const next = queueFilter === filter.key ? "all" : filter.key
-                    setQueueFilter(next)
-                    navigateQuery({ queue: next === "needs_review" ? null : next, page: null })
+                    setDueFilter(filter.key)
+                    navigateQuery({ due: filter.key === "any" ? null : filter.key, page: null })
                   }}
                   className={cn(
                     "flex h-8 shrink-0 items-center gap-1.5 px-3 text-xs font-medium transition-colors",
-                    queueFilter === filter.key ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                    dueFilter === filter.key ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
                   )}
                 >
                   <span>{filter.label}</span>
-                  {queueFilter === filter.key ? <span className="bg-primary-foreground/20 px-1.5 py-0.5 text-[10px] tabular-nums text-primary-foreground">{pagination.total}</span> : null}
                 </button>
               ))}
             </div>
           </div>
         </div>
         <div className="flex w-full gap-2 sm:w-auto">
+          <div className="flex shrink-0 border bg-muted/20 p-1" aria-label="Payables view">
+            {(["review", "coding"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                aria-pressed={view === mode}
+                onClick={() => {
+                  setView(mode)
+                  navigateQuery({ view: mode === "review" ? null : mode })
+                }}
+                className={cn(
+                  "h-8 px-3 text-xs font-medium capitalize transition-colors",
+                  view === mode ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {mode}
+              </button>
+            ))}
+          </div>
           {externalAccountingEnabled && onOpenSyncSheet ? (
             <Button type="button" variant="outline" onClick={onOpenSyncSheet} className="w-full sm:w-auto">
               <ExternalLink className="mr-2 h-4 w-4" />
@@ -247,11 +316,8 @@ export function PayablesExplorer({
               type="button"
               variant="outline"
               size="sm"
-              disabled={bulkApprovable.length === 0}
-              onClick={() => {
-                onBulkApprove?.(bulkApprovable)
-                setSelectedIds([])
-              }}
+              disabled={bulkPending || bulkApprovable.length === 0}
+              onClick={() => void runBulk(onBulkApprove ? () => onBulkApprove(bulkApprovable) : undefined)}
             >
               <CheckCircle2 className="mr-2 h-4 w-4" />
               Approve {bulkApprovable.length || ""}
@@ -261,11 +327,8 @@ export function PayablesExplorer({
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={bulkSyncable.length === 0}
-                onClick={() => {
-                  onBulkSyncQbo?.(bulkSyncable)
-                  setSelectedIds([])
-                }}
+                disabled={bulkPending || bulkSyncable.length === 0}
+                onClick={() => void runBulk(onBulkSyncQbo ? () => onBulkSyncQbo(bulkSyncable) : undefined)}
               >
                 <ExternalLink className="mr-2 h-4 w-4" />
                 Sync {bulkSyncable.length || ""}
@@ -279,7 +342,7 @@ export function PayablesExplorer({
       ) : null}
 
       <div className="min-h-0 flex-1 overflow-auto">
-        <Table className={costCodesEnabled ? "min-w-[1260px]" : "min-w-[1100px]"}>
+        <Table className={view === "coding" ? (costCodesEnabled ? "min-w-[1260px]" : "min-w-[1100px]") : "min-w-[900px]"}>
           <TableHeader>
             <TableRow className="divide-x">
               <TableHead className="relative w-[72px] min-w-[72px] py-3 text-center">
@@ -292,9 +355,9 @@ export function PayablesExplorer({
               <TableHead className="w-[132px] px-4 py-3 text-center">Due Date</TableHead>
               <TableHead className="w-[150px] px-4 py-3 text-right">Amount</TableHead>
               <TableHead className="min-w-[220px] px-4 py-3">Commitment</TableHead>
-              {externalAccountingEnabled ? <TableHead className="min-w-[260px] px-4 py-3">Vendor link</TableHead> : null}
-              {accountingEnabled ? <TableHead className="min-w-[260px] px-4 py-3">Accounting</TableHead> : null}
-              {costCodesEnabled ? <TableHead className="min-w-[220px] px-4 py-3">Cost Code</TableHead> : null}
+              {view === "coding" && externalAccountingEnabled ? <TableHead className="min-w-[260px] px-4 py-3">Vendor link</TableHead> : null}
+              {view === "coding" && accountingEnabled ? <TableHead className="min-w-[260px] px-4 py-3">Accounting</TableHead> : null}
+              {view === "coding" && costCodesEnabled ? <TableHead className="min-w-[220px] px-4 py-3">Cost Code</TableHead> : null}
               <TableHead className="sticky right-0 z-10 w-[112px] min-w-[112px] border-l bg-background px-3 py-3 text-center shadow-[-1px_0_0_var(--border)]">
                 Actions
               </TableHead>
@@ -302,13 +365,29 @@ export function PayablesExplorer({
           </TableHeader>
           <TableBody>
             {rows.map((bill) => (
-              <TableRow key={bill.id} data-state={selectedIds.includes(bill.id) ? "selected" : undefined} className="divide-x align-middle">
+              <TableRow
+                key={bill.id}
+                data-state={selectedIds.includes(bill.id) ? "selected" : undefined}
+                className="group/row cursor-pointer divide-x align-middle"
+                tabIndex={0}
+                aria-label={`Open ${vendorLabel(bill)} invoice ${bill.bill_number ?? "payable"}`}
+                onClick={(event) => {
+                  if ((event.target as HTMLElement).closest("button,input,[role=checkbox],[role=menuitem],[role=combobox]")) return
+                  onViewDetails?.(bill)
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault()
+                    onViewDetails?.(bill)
+                  }
+                }}
+              >
                 <TableCell className="relative w-[72px] min-w-[72px] py-2 text-center align-middle">
                   <div className="absolute inset-0 flex items-center justify-center">
-                    <Checkbox checked={selectedIds.includes(bill.id)} onCheckedChange={(checked) => toggleSelectOne(bill.id, checked)} aria-label={`Select payable ${vendorLabel(bill)}`} />
+                    {isVendorCredit(bill) ? null : <Checkbox checked={selectedIds.includes(bill.id)} onCheckedChange={(checked) => toggleSelectOne(bill.id, checked)} aria-label={`Select payable ${vendorLabel(bill)}`} />}
                   </div>
                 </TableCell>
-                <TableCell className="px-4 py-2 cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => onViewDetails?.(bill)}>
+                <TableCell className="px-4 py-2 transition-colors group-hover/row:bg-muted/30">
                   <div className="flex min-w-0 items-center gap-3">
                     <Avatar className="size-7 rounded-md">
                       <AvatarFallback className="rounded-md text-[11px] font-semibold">{initialsFor(vendorLabel(bill))}</AvatarFallback>
@@ -316,6 +395,12 @@ export function PayablesExplorer({
                     <div className="min-w-0 flex-1">
                       <div className="flex min-w-0 items-center gap-2">
                         <span className="truncate text-sm font-semibold">{vendorLabel(bill)}</span>
+                        {payableReleaseWarnings(bill, complianceRules, complianceStatusByCompanyId).length > 0 ? (
+                          <PayableReleaseWarning warnings={payableReleaseWarnings(bill, complianceRules, complianceStatusByCompanyId)} />
+                        ) : null}
+                        {!runMembershipByBillId[bill.id] && bill.company_id && paymentReadinessByCompanyId[bill.company_id] ? (
+                          <PayableReadinessDot readiness={paymentReadinessByCompanyId[bill.company_id]} />
+                        ) : null}
                         {bill.file_id ? <Receipt className="h-3.5 w-3.5 shrink-0 text-primary" /> : null}
                       </div>
                       <div className="truncate text-[11px] text-muted-foreground">
@@ -325,21 +410,25 @@ export function PayablesExplorer({
                     </div>
                   </div>
                 </TableCell>
-                <TableCell className="px-4 py-2 text-center cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => onViewDetails?.(bill)}>
+                <TableCell className="px-4 py-2 text-center transition-colors group-hover/row:bg-muted/30">
                   <div className="flex items-center justify-center gap-1.5">
-                    {runMembershipByBillId[bill.id] && runMembershipByBillId[bill.id]?.runStatus !== "draft" ? (
-                      <Badge variant="outline" className="max-w-[132px] truncate border-primary/25 bg-primary/5 font-normal text-primary">
-                        {paymentRunStatusLabel(runMembershipByBillId[bill.id]!)}
-                      </Badge>
-                    ) : isVendorCredit(bill) ? payableTypeBadge(bill) : billBadge(bill.status, bill.is_draft)}
+                    <PayableOperationalStatus
+                      bill={bill}
+                      membership={runMembershipByBillId[bill.id]}
+                      awaitsViewer={Boolean(
+                        viewerMayApproveRuns &&
+                        runMembershipByBillId[bill.id]?.runStatus === "pending_approval" &&
+                        (!runMembershipByBillId[bill.id]?.preparedByViewer || runMembershipByBillId[bill.id]?.requesterMayApprove)
+                      )}
+                    />
                   </div>
                 </TableCell>
-                <TableCell className="px-4 py-2 text-center text-sm cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => onViewDetails?.(bill)}>
+                <TableCell className="px-4 py-2 text-center text-sm transition-colors group-hover/row:bg-muted/30">
                   <span className={cn("tabular-nums", dueDisplay(bill).className)}>
                     {dueDisplay(bill).text}
                   </span>
                 </TableCell>
-                <TableCell className="px-4 py-2 text-right cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => onViewDetails?.(bill)}>
+                <TableCell className="px-4 py-2 text-right transition-colors group-hover/row:bg-muted/30">
                   <div className="text-sm font-semibold tabular-nums">{formatCurrency(bill.project_amount_cents ?? bill.total_cents ?? 0)}</div>
                   {bill.is_shared ? (
                     <div className="text-[10px] font-medium text-primary">of {formatCurrency(bill.total_cents ?? 0)} shared</div>
@@ -353,12 +442,12 @@ export function PayablesExplorer({
                     <div className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-destructive">Over commitment</div>
                   ) : null}
                 </TableCell>
-                {externalAccountingEnabled ? (
+                {view === "coding" && externalAccountingEnabled ? (
                   <TableCell className="p-0">
                     <PayableVendorLinkCell bill={bill} onEditVendor={onViewDetails} />
                   </TableCell>
                 ) : null}
-                {accountingEnabled ? (
+                {view === "coding" && accountingEnabled ? (
                   <TableCell className="p-0">
                     <PayableQboAccountCombobox
                       bill={bill}
@@ -369,7 +458,7 @@ export function PayablesExplorer({
                     />
                   </TableCell>
                 ) : null}
-                {costCodesEnabled ? (
+                {view === "coding" && costCodesEnabled ? (
                   <TableCell className="p-0">
                     <PayableCostCodeCombobox
                       bill={bill}
@@ -400,6 +489,7 @@ export function PayablesExplorer({
                     ) : null}
                     <RowActions
                       bill={bill}
+                      membership={runMembershipByBillId[bill.id]}
                       accountingEnabled={externalAccountingEnabled}
                       onEdit={onViewDetails}
                       onViewFiles={onViewDetails}
@@ -412,7 +502,7 @@ export function PayablesExplorer({
             ))}
             {rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={(costCodesEnabled ? 8 : 7) + (accountingEnabled ? 1 : 0) + (externalAccountingEnabled ? 1 : 0)} className="h-48 text-center text-muted-foreground hover:bg-transparent">
+                <TableCell colSpan={7 + (view === "coding" && costCodesEnabled ? 1 : 0) + (view === "coding" && accountingEnabled ? 1 : 0) + (view === "coding" && externalAccountingEnabled ? 1 : 0)} className="h-48 text-center text-muted-foreground hover:bg-transparent">
                   <div className="flex flex-col items-center gap-3">
                     <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
                       <Receipt className="h-6 w-6" />
@@ -430,11 +520,14 @@ export function PayablesExplorer({
       </div>
 
       <div className="min-h-10 shrink-0 border-t bg-muted/10 px-4 py-1.5 flex flex-wrap items-center justify-between gap-2 text-[11px] font-medium text-muted-foreground uppercase tracking-widest">
-        <div>{pagination.total} records · page {pagination.page} of {pagination.pageCount}</div>
+        <div>
+          {pagination.total} records · page {pagination.page} of {pagination.pageCount}
+          {summaryTruncated ? " · queue totals show the first 2,000 records" : ""}
+        </div>
         <div className="flex gap-4">
-          <span>Outstanding: {formatCurrency(totals.outstandingCents)}</span>
-          <span>Settled: {formatCurrency(totals.settledCents)}</span>
-          <span>Vendor credits: {formatCurrency(totals.vendorCreditsCents)}</span>
+          <span>This page outstanding: {formatCurrency(totals.outstandingCents)}</span>
+          <span>This page settled: {formatCurrency(totals.settledCents)}</span>
+          <span>This page credits: {formatCurrency(totals.vendorCreditsCents)}</span>
           <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" disabled={pagination.page <= 1} onClick={() => navigateQuery({ page: String(pagination.page - 1) })}>Previous</Button>
           <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" disabled={pagination.page >= pagination.pageCount} onClick={() => navigateQuery({ page: String(pagination.page + 1) })}>Next</Button>
         </div>
@@ -555,6 +648,7 @@ function PayableCostCodeCombobox({
 
 function RowActions({
   bill,
+  membership,
   accountingEnabled,
   onEdit,
   onViewFiles,
@@ -562,12 +656,14 @@ function RowActions({
   onDelete,
 }: {
   bill: VendorBillSummary
+  membership?: PayableRunMembership
   accountingEnabled: boolean
   onEdit?: (bill: VendorBillSummary) => void
   onViewFiles?: (bill: VendorBillSummary) => void
   onSyncQbo?: (bill: VendorBillSummary) => void
   onDelete?: (bill: VendorBillSummary) => void
 }) {
+  const deleteBlockedReason = payableDeleteBlockedReason(bill, membership)
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -590,10 +686,14 @@ function RowActions({
           </>
         ) : null}
         <DropdownMenuSeparator />
-        <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => onDelete?.(bill)}>
-          <Trash2 className="mr-2 h-4 w-4" />
-          Delete payable
-        </DropdownMenuItem>
+        {deleteBlockedReason ? (
+          <p className="px-2 py-1.5 text-xs text-muted-foreground">Cannot be deleted — {deleteBlockedReason}.</p>
+        ) : (
+          <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => onDelete?.(bill)}>
+            <Trash2 className="mr-2 h-4 w-4" />
+            Delete payable
+          </DropdownMenuItem>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -602,18 +702,6 @@ function RowActions({
 function initialsFor(value: string) {
   const parts = value.trim().split(/\s+/).filter(Boolean)
   return (parts[0]?.[0] ?? "?").concat(parts[1]?.[0] ?? "").toUpperCase()
-}
-
-function paymentRunStatusLabel(membership: PayableRunMembership) {
-  if (membership.runStatus === "pending_approval") return "Payment approval"
-  if (membership.runStatus === "processing") return "Paying"
-  if (membership.scheduledFor) {
-    return `Sends ${new Date(`${membership.scheduledFor}T00:00:00`).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-    })}`
-  }
-  return "In payment run"
 }
 
 function costCodeLabel(code: CostCode) {

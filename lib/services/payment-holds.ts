@@ -39,7 +39,7 @@ export {
 
 export interface PaymentReleaseEvidence {
   billId: string
-  projectId: string
+  projectId: string | null
   companyId: string | null
   holdEvaluation: PaymentHoldEvaluation
   subtierWaiversRequired: boolean
@@ -134,13 +134,15 @@ export async function evaluateHolds(
   }
   const companyId = await resolveBillCompany(supabase, resolvedOrgId, bill.company_id, bill.commitment_id)
   const [{ data: projectPolicy }, { data: orgPolicy }, { data: overrideRows }, compliance, funding, rules, { data: projectControls }] = await Promise.all([
-    supabase.from("payment_hold_policies").select("conditions,waiver_auto_chase").eq("org_id", resolvedOrgId).eq("project_id", bill.project_id).maybeSingle(),
+    bill.project_id
+      ? supabase.from("payment_hold_policies").select("conditions,waiver_auto_chase").eq("org_id", resolvedOrgId).eq("project_id", bill.project_id).maybeSingle()
+      : Promise.resolve({ data: null }),
     supabase.from("payment_hold_policies").select("conditions,waiver_auto_chase").eq("org_id", resolvedOrgId).is("project_id", null).maybeSingle(),
     supabase.from("payment_hold_overrides").select("hold_kind,reason").eq("org_id", resolvedOrgId).eq("bill_id", billId).is("revoked_at", null),
     // Scoped to this payable's project so a project overlay — an owner
     // mandating higher limits on one job — actually gates the money it was
     // written to gate.
-    companyId
+    companyId && bill.project_id
       ? getCompanyComplianceStatusWithClient(supabase, resolvedOrgId, companyId, {
           projectIds: [bill.project_id],
         })
@@ -149,7 +151,9 @@ export async function evaluateHolds(
       ? supabase.from("invoices").select("status").eq("org_id", resolvedOrgId).eq("id", bill.funding_invoice_id).maybeSingle()
       : Promise.resolve({ data: null }),
     getComplianceRulesWithClient(supabase, resolvedOrgId),
-    supabase.from("projects").select("require_subtier_waivers").eq("org_id", resolvedOrgId).eq("id", bill.project_id).maybeSingle(),
+    bill.project_id
+      ? supabase.from("projects").select("require_subtier_waivers").eq("org_id", resolvedOrgId).eq("id", bill.project_id).maybeSingle()
+      : Promise.resolve({ data: null }),
   ])
   const overrides = Object.fromEntries((overrideRows ?? []).map((row) => [row.hold_kind, row.reason])) as Partial<Record<PaymentHoldKind, string>>
   // The type's own `kind` decides this. Matching on the name meant the seeded
@@ -187,7 +191,7 @@ export async function evaluateHolds(
     // actually asks for one. `assertBillReleasable` gates its hard waiver checks
     // on these same two flags — the hold must agree or it blocks payment for a
     // document nothing requires.
-    waiverRequired: Boolean(rules.require_lien_waiver) || Boolean(projectControls?.require_subtier_waivers),
+    waiverRequired: Boolean(bill.project_id) && (Boolean(rules.require_lien_waiver) || Boolean(projectControls?.require_subtier_waivers)),
     // "received" is the schema's only waiver-in-hand state. The legacy value
     // "signed" is normalized to "received" at the validation boundary
     // (lib/validation/vendor-bills.ts) and backfilled in the data.
@@ -202,7 +206,7 @@ export async function evaluateHolds(
     policy: parsePaymentHoldPolicy(projectPolicy?.conditions ?? orgPolicy?.conditions),
   })
   const waiverAutoChase = projectPolicy?.waiver_auto_chase ?? orgPolicy?.waiver_auto_chase ?? true
-  if (options.enqueueWaiverChase && waiverAutoChase && evaluation.holds.some((hold) => hold.kind === "waiver_signed" && !hold.overridden)) {
+  if (bill.project_id && options.enqueueWaiverChase && waiverAutoChase && evaluation.holds.some((hold) => hold.kind === "waiver_signed" && !hold.overridden)) {
     await enqueueOutboxJob({ orgId: resolvedOrgId, jobType: "chase_vendor_bill_waiver", payload: { bill_id: billId, project_id: bill.project_id }, dedupeByPayloadKeys: ["bill_id"] })
   }
   return evaluation
@@ -260,12 +264,14 @@ export async function assertBillReleasable(
     .limit(1)
   if (options.excludePaymentRunId) inFlightQuery = inFlightQuery.neq("run_id", options.excludePaymentRunId)
   const [{ data: projectControls }, rules, { data: inFlightPaymentItems, error: inFlightError }] = await Promise.all([
-    supabase
-      .from("projects")
-      .select("require_subtier_waivers")
-      .eq("org_id", resolvedOrgId)
-      .eq("id", bill.project_id)
-      .maybeSingle(),
+    bill.project_id
+      ? supabase
+          .from("projects")
+          .select("require_subtier_waivers")
+          .eq("org_id", resolvedOrgId)
+          .eq("id", bill.project_id)
+          .maybeSingle()
+      : Promise.resolve({ data: null }),
     // No catch-and-default here. This is the release gate: defaulting
     // `require_lien_waiver` to false on a read failure meant a transient
     // database error silently dropped the waiver requirement and let the
@@ -301,7 +307,7 @@ export async function assertBillReleasable(
     }
   }
 
-  if (rules.block_payment_on_missing_docs) {
+  if (bill.project_id && rules.block_payment_on_missing_docs) {
     if (rules.require_lien_waiver && bill.lien_waiver_status !== "received") {
       throw new Error("Lien waiver required before payment")
     }
@@ -316,7 +322,7 @@ export async function assertBillReleasable(
     }
   }
 
-  const waiverRequired = Boolean(rules.require_lien_waiver) || Boolean(projectControls?.require_subtier_waivers)
+  const waiverRequired = Boolean(bill.project_id) && (Boolean(rules.require_lien_waiver) || Boolean(projectControls?.require_subtier_waivers))
   const { data: waiverRow, error: waiverError } = await supabase.from("lien_waivers")
     .select("id,waiver_type,status,amount_cents,through_date,signed_at,signed_file_id,signature_data")
     .eq("org_id", resolvedOrgId).eq("bill_id", billId).eq("status", "signed")
@@ -372,7 +378,7 @@ export async function assertBillReleasable(
     holdEvaluation,
     subtierWaiversRequired: Boolean(projectControls?.require_subtier_waivers),
     missingSubtierWaiverCount,
-    complianceRequired: Boolean(rules.block_payment_on_missing_docs),
+    complianceRequired: Boolean(bill.project_id && rules.block_payment_on_missing_docs),
     waiverEvidence: waiverRow ? {
       id: waiverRow.id,
       type: waiverRow.waiver_type,

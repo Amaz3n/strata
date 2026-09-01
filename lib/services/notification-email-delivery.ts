@@ -132,7 +132,7 @@ function buildNotificationHref(payload: Record<string, unknown>): string | null 
     case "invoice":
       return `/projects/${projectId}/invoices`
     case "payment":
-      return `/projects/${projectId}/financials/receivables`
+      return `/projects/${projectId}/financials/billing`
     case "change_order":
       return `/projects/${projectId}/change-orders`
     case "file":

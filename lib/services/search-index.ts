@@ -295,7 +295,7 @@ export async function reindexEntity(
     href = typeof row.bill_id === "string" && row.bill_id
       ? `/payables?bill=${row.bill_id}`
       : projectId
-        ? `/projects/${projectId}/financials/receivables`
+        ? `/projects/${projectId}/financials/billing`
         : "/invoices"
   }
 

@@ -11,6 +11,7 @@
  * QBO sync errors → the sync sheet) are deliberately excluded.
  */
 
+import { invoiceHref } from "@/lib/financials/invoice-destinations"
 import { isCostDrivenBillingModel, resolveProjectBillingModel } from "@/lib/financials/billing-model"
 import { PAYABLE_VENDOR_BILL_STATUSES } from "@/lib/financials/ledger-status"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
@@ -166,7 +167,7 @@ async function checkInvoiceTotalMismatch(
         amount_cents: mismatch,
         source_type: "invoice",
         source_id: invoice.id,
-        href: projectFinancialHref(projectId, `/receivables?invoice=${invoice.id}`),
+        href: invoiceHref(invoice.id, projectId),
       })
     }
   }
@@ -633,7 +634,7 @@ async function checkRetainageMismatch(
         amount_cents: Number(row.amount_cents ?? 0),
         source_type: "invoice",
         source_id: row.release_invoice_id,
-        href: projectFinancialHref(projectId, `/receivables?invoice=${row.release_invoice_id}`),
+        href: invoiceHref(row.release_invoice_id, projectId),
       })
       continue
     }
@@ -654,7 +655,7 @@ async function checkRetainageMismatch(
         amount_cents: Number(row.amount_cents ?? 0),
         source_type: "invoice",
         source_id: row.release_invoice_id,
-        href: projectFinancialHref(projectId, `/receivables?invoice=${row.release_invoice_id}`),
+        href: invoiceHref(row.release_invoice_id, projectId),
       })
     }
   }

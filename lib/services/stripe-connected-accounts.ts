@@ -463,17 +463,6 @@ export async function createStripeConnectedAccountDashboardLoginLink(orgId?: str
   return createStripeDashboardLoginLink(connection.stripe_account_id)
 }
 
-export async function requireReadyStripeConnectedAccount(orgId?: string) {
-  const connection = await syncStripeConnectedAccount(orgId)
-  if (!connection || !isStripeConnectedAccountReady(connection)) {
-    throw new Error("Online payments are not configured for this organization yet.")
-  }
-  if (!hasBuilderPaymentResponsibility(connection)) {
-    throw new Error("Online payments must be reconnected before accepting invoice payments.")
-  }
-  return connection
-}
-
 export async function requireReadyStripeConnectedAccountForOrg(orgId: string) {
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase

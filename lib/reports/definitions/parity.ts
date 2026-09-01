@@ -1,5 +1,7 @@
 import { formatMoneyCents } from "@/lib/reports/format"
 import type { ReportDefinition } from "@/lib/reports/types"
+import { compareForecastSnapshotLines } from "@/lib/financials/forecasting"
+import { listBudgetSnapshots } from "@/lib/services/budgets"
 import { getCashFlowForecast } from "@/lib/services/reports/cash-flow-forecast"
 import { getOshaLog } from "@/lib/services/reports/osha-log"
 import { getTimePhasedForecast } from "@/lib/services/reports/time-phased-forecast"
@@ -13,6 +15,28 @@ const forecastTimePhased: ReportDefinition = {
     const curve = ctx.params.curve === "front_loaded" || ctx.params.curve === "back_loaded" ? ctx.params.curve : "linear"
     const report = await getTimePhasedForecast({ projectId: ctx.projectId, curve })
     return { subtitle: `${report.start} through ${report.end}`, tables: [{ key: "forecast", columns: [{ key: "cost_code", header: "Cost code" }, { key: "name", header: "Description" }, { key: "ctc", header: "CTC", type: "money" }, ...report.months.map((month) => ({ key: month, header: month, type: "money" as const }))], rows: report.rows.map((row) => ({ key: row.key, cells: { cost_code: row.cost_code, name: row.name, ctc: row.ctc_cents, ...row.months } })), totals: { name: "Total", ctc: report.rows.reduce((sum, row) => sum + row.ctc_cents, 0), ...Object.fromEntries(report.months.map((month) => [month, report.rows.reduce((sum, row) => sum + (row.months[month] ?? 0), 0)])) }, emptyMessage: "No forecast cost remains." }] }
+  },
+}
+
+const forecastHistory: ReportDefinition = {
+  slug: "forecast-history", title: "Forecast History", group: "financial",
+  summary: "See which cost codes moved between the two most recent forecast snapshots.", scopes: ["project"], permissions: ["report.read", "budget.read"],
+  run: async (ctx) => {
+    if (!ctx.projectId) throw new Error("Project scope is required")
+    const snapshots = await listBudgetSnapshots(ctx.projectId)
+    const [to, from] = snapshots
+    if (!from || !to) {
+      return { tables: [{ key: "history", columns: [{ key: "cost_code", header: "Cost code" }, { key: "from", header: "From EAC", type: "money" }, { key: "to", header: "To EAC", type: "money" }, { key: "movement", header: "Movement", type: "money" }], rows: [], emptyMessage: "Two forecast snapshots are required." }] }
+    }
+    const rows = compareForecastSnapshotLines(from.by_cost_code, to.by_cost_code)
+      .filter((row) => row.variance_cents !== 0)
+      .sort((left, right) => Math.abs(right.variance_cents) - Math.abs(left.variance_cents))
+    const net = rows.reduce((sum, row) => sum + row.variance_cents, 0)
+    return {
+      subtitle: `${from.snapshot_date} through ${to.snapshot_date}`,
+      stats: [{ key: "changed", label: "Changed cost codes", value: String(rows.length) }, { key: "net", label: "Net forecast change", value: formatMoneyCents(net), tone: net > 0 ? "negative" : net < 0 ? "positive" : "muted" }],
+      tables: [{ key: "history", columns: [{ key: "cost_code", header: "Cost code" }, { key: "from", header: "From EAC", type: "money" }, { key: "to", header: "To EAC", type: "money" }, { key: "movement", header: "Movement", type: "money" }], rows: rows.map((row) => ({ key: row.key, cells: { cost_code: row.label, from: row.from_cents, to: row.to_cents, movement: { value: row.variance_cents, tone: row.variance_cents > 0 ? "negative" : "positive" } } })), emptyMessage: "No forecast movement between the latest snapshots." }],
+    }
   },
 }
 
@@ -37,4 +61,4 @@ const oshaLog: ReportDefinition = {
   },
 }
 
-export const PARITY_REPORTS: ReportDefinition[] = [forecastTimePhased, cashFlowForecast, oshaLog]
+export const PARITY_REPORTS: ReportDefinition[] = [forecastTimePhased, forecastHistory, cashFlowForecast, oshaLog]

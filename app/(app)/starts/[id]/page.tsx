@@ -8,5 +8,6 @@ export const instant = false
  */
 export default async function StartPackagePermalink({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
-  redirect(`/starts?package=${id}`)
+  const query = new URLSearchParams({ package: id })
+  redirect(`/starts?${query}`)
 }

@@ -464,7 +464,7 @@ async function assertRunPayablesStillCurrent(
   const supabase = createServiceSupabaseClient()
   const billIds = [...new Set(items.map((item) => String(item.bill_id)))]
   const relationshipIds = [...new Set(items.map((item) => String(item.relationship_id)))]
-  const projectIds = [...new Set(items.map((item) => String(item.project_id)))]
+  const projectIds = [...new Set(items.map((item) => item.project_id).filter((value): value is string => typeof value === "string" && value.length > 0))]
   const [policy, billsResult, relationshipsResult, projectsResult, evidence] = await Promise.all([
     loadPaymentPolicy(orgId),
     supabase.from("vendor_bills")
@@ -475,7 +475,9 @@ async function assertRunPayablesStillCurrent(
       .select("id,company_id,vendor_entity_id,status")
       .eq("org_id", orgId)
       .in("id", relationshipIds),
-    supabase.from("projects").select("id,location").eq("org_id", orgId).in("id", projectIds),
+    projectIds.length > 0
+      ? supabase.from("projects").select("id,location").eq("org_id", orgId).in("id", projectIds)
+      : Promise.resolve({ data: [], error: null }),
     Promise.all(items.map((item) => assertBillReleasable(String(item.bill_id), orgId, { excludePaymentRunId: String(run.id) }))),
   ])
   if (billsResult.error || (billsResult.data ?? []).length !== billIds.length) throw new Error("A payment-run payable no longer exists")
