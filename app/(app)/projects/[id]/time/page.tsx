@@ -1,4 +1,5 @@
 import { Suspense } from "react"
+import Link from "next/link"
 import { Skeleton } from "@/components/ui/skeleton"
 import { notFound } from "next/navigation"
 
@@ -10,8 +11,6 @@ import { listTeamMembers } from "@/lib/services/team"
 import { PageLayout } from "@/components/layout/page-layout"
 import { TimeEntriesClient } from "@/components/time/time-entries-client"
 import { Button } from "@/components/ui/button"
-
-import { unwrapAction } from "@/lib/action-result"
 
 interface Props {
   params: Promise<{ id: string }>
@@ -51,15 +50,22 @@ function ProjectTimeFallback() {
 }
 
 async function ProjectTimeData({ id }: { id: string }) {
-  const project = await getProjectAction(id)
-  if (!project) notFound()
+  const canManageCrewPromise = hasPermission("time.write").catch(() => false)
+  const teamMembersPromise = canManageCrewPromise.then((canManageCrew) =>
+    canManageCrew
+      ? listTeamMembers(undefined, { includeProjectCounts: false }).catch(() => [])
+      : [],
+  )
 
-  const [costCodes, data, canManageCrew, teamMembers] = await Promise.all([
+  const [project, costCodes, data, canManageCrew, teamMembers] = await Promise.all([
+    getProjectAction(id),
     listCostCodes().catch(() => []),
     listProjectTimeEntries(id).catch(() => [] as any[]),
-    hasPermission("time.write").catch(() => false),
-    listTeamMembers(undefined, { includeProjectCounts: false }).catch(() => []),
+    canManageCrewPromise,
+    teamMembersPromise,
   ])
+
+  if (!project) notFound()
 
   return (
     <PageLayout
@@ -69,7 +75,13 @@ async function ProjectTimeData({ id }: { id: string }) {
         { label: "Time" },
       ]}
     >
-      {project.is_public_work ? <div className="mb-4 flex justify-end"><Button asChild variant="outline" size="sm"><a href={`/projects/${project.id}/time/certified-payroll`}>Certified payroll</a></Button></div> : null}
+      {project.is_public_work ? (
+        <div className="mb-4 flex justify-end">
+          <Button asChild variant="outline" size="sm">
+            <Link href={`/projects/${project.id}/time/certified-payroll`}>Certified payroll</Link>
+          </Button>
+        </div>
+      ) : null}
       <TimeEntriesClient
         projectId={project.id}
         initialEntries={data ?? []}

@@ -80,7 +80,7 @@ export async function getPayableAuditTrailAction(
 }
 
 export interface OrgPayableContext {
-  projectId: string
+  projectId: string | null
   costCodesEnabled: boolean
   budgetLines: BudgetLineOption[]
   holds: PaymentHoldEvaluation | null
@@ -94,14 +94,14 @@ export interface OrgPayableContext {
  * whole desk up front. It is fetched when a payable is actually opened.
  */
 export async function getOrgPayableContextAction(
-  projectId: string,
+  projectId: string | null,
   billId: string,
 ): Promise<ActionResult<OrgPayableContext>> {
   try {
     const { supabase, orgId } = await requireOrgContext()
     const [costCodesEnabled, budgetLines, holds] = await Promise.all([
-      getProjectCostCodesEnabled(supabase, orgId, projectId),
-      listProjectBudgetLines(projectId, orgId).catch(() => []),
+      projectId ? getProjectCostCodesEnabled(supabase, orgId, projectId) : Promise.resolve(false),
+      projectId ? listProjectBudgetLines(projectId, orgId).catch(() => []) : Promise.resolve([]),
       // Holds need payment.release; readers without it still get to see the payable.
       evaluateHolds(billId, orgId).catch(() => null),
     ])

@@ -37,7 +37,14 @@ export const invoiceInputSchema = z.object({
     .or(z.literal(""))
     .transform((val) => (val === "" ? undefined : val ?? undefined)),
   title: z.string().min(3, "Title is required"),
-  status: z.enum(["draft", "saved", "sent", "partial", "paid", "overdue", "void"]).default("saved"),
+  /**
+   * Intent, not state. `false` saves a draft; `true` bills the customer — which
+   * requires `invoice.send` and, in postures that review billing, an approval.
+   * Everything downstream (`status`, `client_visible`, `token`, `sent_at`,
+   * `delivery_status`, the issued snapshot) is derived by the server from this
+   * one flag, so "paid with a full balance due" cannot be asked for.
+   */
+  issue: z.boolean().default(false),
   issue_date: z.string().optional(),
   due_date: z.string().optional(),
   notes: z
@@ -45,7 +52,6 @@ export const invoiceInputSchema = z.object({
     .max(2000, "Notes are too long")
     .optional()
     .transform((val) => (val && val.trim().length > 0 ? val : undefined)),
-  client_visible: z.boolean().default(false),
   tax_rate: z.number().min(0).max(20).default(0),
   tax_jurisdiction_id: z.string().uuid().optional().nullable(),
   tax_jurisdiction_name: z.string().trim().max(160).optional().nullable(),

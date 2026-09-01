@@ -31,7 +31,13 @@ export default async function PayablesPage({ searchParams }: { searchParams: Pro
       .order("created_at")
       .limit(1)
       .maybeSingle()
-    redirect(firstItem?.bill_id ? `/payables?bill=${firstItem.bill_id}` : "/payables")
+    const target = new URLSearchParams()
+    if (params.community) target.set("community", params.community)
+    if (firstItem?.bill_id) {
+      target.set("tab", "inflight")
+      target.set("bill", firstItem.bill_id)
+    }
+    redirect(target.size > 0 ? `/payables?${target.toString()}` : "/payables")
   }
   // Every tab switch re-runs this page, so nothing here waits on anything it does
   // not need. The desk query does not depend on the rail being open, and the two
@@ -42,6 +48,7 @@ export default async function PayablesPage({ searchParams }: { searchParams: Pro
       search: params.q,
       page: Number(params.page) || 1,
       pageSize: Number(params.pageSize) || 50,
+      billId: params.bill,
     }),
     // Approval routing and risk blocks only mean something once the builder has
     // a rail to release money on.

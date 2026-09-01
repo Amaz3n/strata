@@ -8,9 +8,6 @@ import {
 } from "./actions"
 import { TasksPageClient } from "./tasks-page-client"
 
-import { unwrapAction } from "@/lib/action-result"
-
-
 interface TasksPageProps {
   searchParams: Promise<{ project?: string }>
 }
@@ -24,21 +21,12 @@ export default async function TasksPage({ searchParams }: TasksPageProps) {
     loadMyApprovals(),
   ])
 
-  const team = resources
-    .filter((resource) => resource.type === "user")
-    .map((resource) => ({
-      id: resource.id,
-      user_id: resource.id,
-      full_name: resource.name,
-      avatar_url: resource.avatar_url,
-    }))
-
   return (
     <PageLayout title="Tasks" fullBleed>
       <TasksPageClient
         initialTasks={tasks}
         projects={projects}
-        team={team}
+        assignableResources={resources}
         approvals={approvalsData.approvals}
         initialProjectFilter={project && projects.some((p) => p.id === project) ? project : undefined}
       />

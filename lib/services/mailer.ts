@@ -11,6 +11,7 @@ import { ExternalPasswordResetEmail } from "@/lib/emails/external-password-reset
 import { ExternalVerifyEmail } from "@/lib/emails/external-verify-email"
 import { PrequalificationRequestEmail } from "@/lib/emails/prequalification-request-email"
 import { PrequalificationDecisionEmail } from "@/lib/emails/prequalification-decision-email"
+import { ARC_SITE_URL, palette } from "@/lib/emails/theme"
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY
 const RESEND_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev"
@@ -113,15 +114,15 @@ export function renderStandardEmailLayout(args: {
           ${args.buttonUrl ? `
             <table align="center" border="0" cellpadding="0" cellspacing="0" style="margin: 26px auto 16px auto;">
               <tr>
-                <td align="center" style="background-color: #3A70EE; border-radius: 4px;">
-                  <a href="${args.buttonUrl}" style="background-color: #3A70EE; color: #ffffff; border: 1px solid #3A70EE; text-decoration: none; font-size: 14px; font-weight: 700; padding: 12px 24px; display: inline-block; border-radius: 4px;">
+                <td align="center" style="background-color: ${palette.brand};">
+                  <a href="${args.buttonUrl}" style="background-color: ${palette.brand}; color: #ffffff; border: 1px solid ${palette.brand}; text-decoration: none; font-size: 14px; font-weight: 700; padding: 12px 24px; display: inline-block;">
                     ${escapeHtml(args.buttonText || 'Open in Arc')}
                   </a>
                 </td>
               </tr>
             </table>
             <p style="margin: 16px 0 0 0; color: #666666; font-size: 12px; line-height: 1.65; text-align: center;">
-              If the button does not open, <a href="${args.buttonUrl}" style="color: #3A70EE; text-decoration: underline;">open secure link</a>
+              If the button does not open, <a href="${args.buttonUrl}" style="color: ${palette.brand}; text-decoration: underline;">open secure link</a>
             </p>
           ` : ''}
         </td>
@@ -130,7 +131,7 @@ export function renderStandardEmailLayout(args: {
       <!-- Footer -->
       <tr>
         <td style="padding: 18px 40px 22px 40px; background-color: #ffffff; border-top: 1px solid #ebebeb; text-align: center;">
-          <div style="margin: 0 0 8px 0; color: #777777; font-size: 12px; line-height: 1.5;">Sent via Arc</div>
+          <div style="margin: 0 0 8px 0; color: #777777; font-size: 12px; line-height: 1.5;">Sent via <a href="${ARC_SITE_URL}" style="color: #777777; font-weight: 600; text-decoration: underline;">Arc</a></div>
           ${showManageSettings ? `
             <div style="margin: 0; color: #999999; font-size: 11px; line-height: 1.5;">
               <a href="${appUrl}/settings" style="color: #777777; text-decoration: underline;">Manage Notification Settings</a>

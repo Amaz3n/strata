@@ -86,7 +86,7 @@ export function toFormState(bill: VendorBillSummary, { costCodesEnabled, qboDefa
     existing.length > 0
       ? existing.map((line, index) => ({
           id: line.id ?? `line-${index}`,
-          projectId: line.project_id ?? bill.project_id,
+          projectId: line.project_id ?? bill.project_id ?? "",
           costCodeId: line.cost_code_id ?? "",
           budgetLineId: line.budget_line_id ?? "",
           description: line.description ?? bill.bill_number ?? "Vendor bill",
@@ -99,7 +99,7 @@ export function toFormState(bill: VendorBillSummary, { costCodesEnabled, qboDefa
       : [
           {
             id: "line-0",
-            projectId: bill.project_id,
+            projectId: bill.project_id ?? "",
             // No silent default: an untouched picker must not code the bill.
             costCodeId: costCodesEnabled ? bill.actual_cost_code_id ?? "" : "",
             budgetLineId: "",

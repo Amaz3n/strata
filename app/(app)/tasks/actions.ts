@@ -512,15 +512,24 @@ export async function listOrgAssignableResourcesAction(): Promise<AssignableReso
       const { supabase, orgId } = await requireOrgContext()
       const resources: AssignableResource[] = []
 
-      const { data: members } = await supabase
-        .from("memberships")
-        .select(`
-          user_id,
-          app_users!inner(id, full_name, email, avatar_url),
-          roles!inner(key, label)
-        `)
-        .eq("org_id", orgId)
-        .eq("status", "active")
+      const [{ data: members }, { data: contacts }] = await Promise.all([
+        supabase
+          .from("memberships")
+          .select(`
+            user_id,
+            app_users!inner(id, full_name, email, avatar_url),
+            roles!inner(key, label)
+          `)
+          .eq("org_id", orgId)
+          .eq("status", "active"),
+        supabase
+          .from("contacts")
+          .select(`
+            id, full_name, email, role, contact_type, primary_company_id,
+            companies!contacts_primary_company_id_fkey(name, company_type)
+          `)
+          .eq("org_id", orgId),
+      ])
 
       const seen = new Set<string>()
       for (const member of members ?? []) {
@@ -536,14 +545,6 @@ export async function listOrgAssignableResourcesAction(): Promise<AssignableReso
           role: (member.roles as any)?.label ?? undefined,
         })
       }
-
-      const { data: contacts } = await supabase
-        .from("contacts")
-        .select(`
-          id, full_name, email, role, contact_type, primary_company_id,
-          companies!contacts_primary_company_id_fkey(name, company_type)
-        `)
-        .eq("org_id", orgId)
 
       for (const contact of contacts ?? []) {
         const company = contact.companies as any

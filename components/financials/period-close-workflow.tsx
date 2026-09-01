@@ -1,5 +1,6 @@
 "use client"
 
+import { invoiceHref } from "@/lib/financials/invoice-destinations"
 import Link from "next/link"
 import { useMemo, useState, useTransition, type ReactNode } from "react"
 import { useRouter } from "next/navigation"
@@ -79,10 +80,10 @@ export function PeriodCloseWorkflow({
 
   function selectPeriod(periodId: string) {
     if (periodId === NO_PERIOD) {
-      router.push(`/projects/${projectId}/financials/receivables?tab=close`)
+      router.push(`/projects/${projectId}/financials/billing?tab=close`)
       return
     }
-    router.push(`/projects/${projectId}/financials/receivables?tab=close&period=${periodId}`)
+    router.push(`/projects/${projectId}/financials/billing?tab=close&period=${periodId}`)
   }
 
   function generateInvoiceAndBackup() {
@@ -106,7 +107,7 @@ export function PeriodCloseWorkflow({
         if (invoiceId) {
           unwrapAction(await generateOwnerBillingPackageAction({ projectId, invoiceId, includeGcCompliance }))
           toast.success("Invoice and backup package created")
-          router.push(`/projects/${projectId}/financials/receivables?invoice=${invoiceId}`)
+          router.push(invoiceHref(invoiceId, projectId))
         } else {
           toast.success("Invoice workflow finished")
           router.refresh()
@@ -173,17 +174,17 @@ export function PeriodCloseWorkflow({
         <div className="space-y-3">
           <WorkflowStep
             number={1}
-            title="Review queue"
+            title="Cost Inbox"
             status={summary.reviewItemCount === 0 ? "done" : summary.blockedItemCount > 0 ? "blocked" : "open"}
-            detail={`${summary.reviewItemCount} item${summary.reviewItemCount === 1 ? "" : "s"} still in review · ${summary.blockedItemCount} blocked`}
-            href={`/projects/${projectId}/financials/review`}
+            detail={`${summary.reviewItemCount} item${summary.reviewItemCount === 1 ? "" : "s"} still to approve · ${summary.blockedItemCount} blocked`}
+            href={`/projects/${projectId}/financials/cost-inbox`}
           />
           <WorkflowStep
             number={2}
             title="Costs ready to bill"
             status={summary.readyCostCount > 0 ? "open" : "done"}
             detail={`${formatMoney(summary.readyCostCents)} across ${summary.readyCostCount} cost${summary.readyCostCount === 1 ? "" : "s"} · oldest ${summary.oldestReadyCostDays || 0} days`}
-            href={`/projects/${projectId}/financials/review`}
+            href={`/projects/${projectId}/financials/cost-inbox`}
           />
           <WorkflowStep
             number={3}
@@ -245,7 +246,7 @@ export function PeriodCloseWorkflow({
                 Generate invoice + backup
               </Button>
               <Button asChild variant="outline">
-                <Link href={`/projects/${projectId}/financials/review`}>Adjust selection</Link>
+                <Link href={`/projects/${projectId}/financials/cost-inbox`}>Adjust selection</Link>
               </Button>
             </div>
           </WorkflowStep>

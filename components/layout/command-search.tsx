@@ -2924,26 +2924,6 @@ export function CommandSearch({ className, defaultOpen = false }: CommandSearchP
                       </div>
                     ))}
 
-                  {/* See all results */}
-                  {flatResults.length > 0 && (
-                    <div className="border-t border-border/40 px-4 py-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const sp = new URLSearchParams({ q: query.trim() })
-                          if (typeFilters.length > 0) sp.set("types", [...typeFilters].sort().join(","))
-                          if (projectScopeActive && currentProjectId) sp.set("projectId", currentProjectId)
-                          handleNavigate(`/search?${sp.toString()}`)
-                        }}
-                        className="flex w-full items-center gap-2 rounded-none px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
-                      >
-                        <Search className="size-3" />
-                        <span>See all results</span>
-                        <ArrowRight className="ml-auto size-3" />
-                      </button>
-                    </div>
-                  )}
-
                   {/* AI suggestion at bottom of search results */}
                   {flatResults.length > 0 && aiEnabled && (
                     <div className="border-t border-border/40 px-4 py-2">

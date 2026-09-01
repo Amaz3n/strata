@@ -13,9 +13,9 @@ import type {
 import { deleteProjectVendorBillAction } from "@/app/(app)/projects/[id]/payables/actions";
 import { unwrapAction } from "@/lib/action-result";
 import {
-  ReviewDetailOverlays,
-  type ReviewOverlayTarget,
-} from "@/components/cost-inbox/review-detail-overlays";
+  CostInboxDetailOverlays,
+  type CostInboxOverlayTarget,
+} from "@/components/cost-inbox/cost-inbox-detail-overlays";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -99,7 +99,7 @@ export function VendorTransactionsTable({
   const searchParams = useSearchParams();
   const { toast } = useToast();
   const [isPending, startTransition] = useTransition();
-  const [overlayTarget, setOverlayTarget] = useState<ReviewOverlayTarget | null>(null);
+  const [overlayTarget, setOverlayTarget] = useState<CostInboxOverlayTarget | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<VendorLedgerEntry | null>(null);
 
   const selectedKinds = useMemo(
@@ -504,7 +504,7 @@ export function VendorTransactionsTable({
         </div>
       </div>
 
-      <ReviewDetailOverlays
+      <CostInboxDetailOverlays
         costCodesEnabled
         target={overlayTarget}
         onClose={() => setOverlayTarget(null)}

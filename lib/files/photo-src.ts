@@ -12,11 +12,24 @@ export interface PreviewMetadata {
   width?: number | null
   height?: number | null
   thumbhash?: string | null
-  sizes?: Array<{ width: number; path: string; content_type: string }> | null
+  /**
+   * The rungs this file actually has. Only the width is read — a caller holding
+   * the stored `sizes` objects can pass them as they are, and one that only
+   * knows the widths can say so without inventing the rest.
+   */
+  sizes?: Array<{ width: number }> | null
 }
 
 export function previewUrl(fileId: string, width?: number): string {
   return width ? `/api/files/${fileId}/preview?w=${width}` : `/api/files/${fileId}/preview`
+}
+
+/** `srcset` across a known set of rung widths. */
+export function photoSrcSetFromWidths(fileId: string, widths?: number[] | null): string | null {
+  if (!widths || widths.length === 0) return null
+  const sorted = [...new Set(widths)].sort((a, b) => a - b)
+  if (sorted.length === 0) return null
+  return sorted.map((width) => `${previewUrl(fileId, width)} ${width}w`).join(", ")
 }
 
 /**
@@ -24,13 +37,7 @@ export function previewUrl(fileId: string, width?: number): string {
  * file predates the ladder, in which case callers use `previewUrl()` alone.
  */
 export function photoSrcSet(fileId: string, preview?: PreviewMetadata | null): string | null {
-  const available = preview?.sizes
-  if (!available || available.length === 0) return null
-
-  const widths = [...new Set(available.map((entry) => entry.width))].sort((a, b) => a - b)
-  if (widths.length === 0) return null
-
-  return widths.map((width) => `${previewUrl(fileId, width)} ${width}w`).join(", ")
+  return photoSrcSetFromWidths(fileId, preview?.sizes?.map((entry) => entry.width))
 }
 
 /** `width / height` for aspect-ratio reservation; null when dimensions are unknown. */

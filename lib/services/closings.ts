@@ -1,3 +1,4 @@
+import { receivablesWriter } from "@/lib/services/receivables-writer"
 import { randomUUID } from "crypto"
 
 import type { SupabaseClient } from "@supabase/supabase-js"
@@ -283,7 +284,7 @@ export async function settleClosing(input: unknown, orgId?: string) {
   const { data: priorInvoice } = await context.supabase.from("invoices").select("id").eq("org_id", context.orgId).eq("project_id", closing.project_id).contains("metadata", { invoice_kind: "closing", source_closing_id: closing.id }).maybeSingle()
   const invoice = priorInvoice ?? await createInvoice({ input: {
     project_id: closing.project_id, invoice_number: `CLOSE-${Date.now().toString().slice(-9)}`, title: `Closing — ${project?.name ?? "Home"}`,
-    status: "sent", issue_date: parsed.actualDate, due_date: parsed.actualDate, client_visible: true, tax_rate: 0,
+    issue: true, issue_date: parsed.actualDate, due_date: parsed.actualDate, tax_rate: 0,
     customer_id: project?.client_id ?? null, customer_name: project?.client?.full_name ?? null, sent_to_emails: project?.client?.email ? [project.client.email] : undefined,
     lines: invoiceLines.map((line) => ({ description: line.description, quantity: 1, unit: "closing", unit_cost: line.amountCents / 100, taxable: false })),
     metadata: { invoice_kind: "closing", source_closing_id: closing.id, settlement },
@@ -311,7 +312,7 @@ export async function settleClosing(input: unknown, orgId?: string) {
   }
   for (const deposit of settlement.depositsApplied) {
     const { data: depositInvoice } = await context.supabase.from("invoices").select("metadata").eq("org_id", context.orgId).eq("id", deposit.invoiceId).maybeSingle()
-    await context.supabase.from("invoices").update({ metadata: { ...(depositInvoice?.metadata ?? {}), settled_into_closing_id: closing.id } }).eq("org_id", context.orgId).eq("id", deposit.invoiceId)
+    await receivablesWriter().from("invoices").update({ metadata: { ...(depositInvoice?.metadata ?? {}), settled_into_closing_id: closing.id } }).eq("org_id", context.orgId).eq("id", deposit.invoiceId)
   }
   if (pending.recordBalance) {
     await recordPayment({ invoice_id: invoice.id, amount_cents: settlement.balanceDueCents, fee_cents: 0, currency: "usd", method: parsed.paymentMethod, provider: "manual", provider_payment_id: balanceProviderPaymentId, reference: parsed.paymentReference, status: "succeeded", metadata: { source_closing_id: closing.id } }, context.orgId)

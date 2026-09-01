@@ -17,10 +17,10 @@
  * counted as held while its invoice never posted to `1110`.
  *
  * The projector's set wins, because it is the one the GL is actually built
- * from. It also matches how the rest of the app already reads these states:
- * sending an invoice moves `draft | saved → sent`, and `draft` and `saved` are
- * the editable, still-deletable pair everywhere in `lib/services/invoices.ts`.
- * An invoice nobody has sent is not yet a receivable.
+ * from. It also matches how the rest of the app reads these states: issuing an
+ * invoice moves it `draft → sent`, and `draft` is the editable, still-deletable
+ * state. An invoice nobody has sent is not yet a receivable. (`saved` has since
+ * been folded into `draft` — see lib/financials/invoice-lifecycle.ts.)
  */
 
 /**
@@ -53,38 +53,38 @@ export function isPayableVendorBillStatus(status: string | null | undefined): bo
 /* ------------------------------------------------------------------------- *
  * The outbound accounting-sync sets.
  *
- * These are deliberately NOT the GL sets above, and the difference is the whole
- * reason they are written down here instead of being hand-typed at each push
- * site — which is how they came to exist in three places with no name and no
- * stated intent.
+ * These are deliberately NOT the same question as the GL sets above, and the
+ * difference is why they are written down here instead of being hand-typed at
+ * each push site — which is how they came to exist in three places with no name
+ * and no stated intent.
  *
  * The GL sets answer "has this reached Arc's ledger?". These answer "does this
- * belong in the customer's external accounting system?", and the external
- * system is where the customer's bookkeeper works. It is wider on purpose:
- * bookkeepers expect to see a transaction in QuickBooks as soon as it is real
- * enough to be worked, and Arc has been pushing on these boundaries to a live
- * QuickBooks file since before the GL existed. Narrowing them would silently
- * stop syncing transactions that a real customer's books already contain, which
- * is a far worse failure than the asymmetry.
+ * belong in the customer's external accounting system?" — the file their
+ * bookkeeper actually works in. For vendor bills that is still wider than the GL
+ * set on purpose: bookkeepers expect an approved bill to appear in QuickBooks
+ * before it is paid.
  *
- * THE CONSEQUENCE, STATED PLAINLY: a `saved` invoice is accounts receivable in
- * QuickBooks and is *not* receivable in Arc's GL (`BILLED_INVOICE_STATUSES`
- * excludes `saved` because sending an invoice moves `draft | saved -> sent`).
- * Between saving and sending, Arc's AR and QuickBooks' AR disagree by that
- * invoice, and any Arc-vs-QuickBooks reconciliation report will show the gap.
- * That is a known, accepted divergence — not a bug to be "fixed" by editing one
- * of these lists in isolation. Changing either set changes what posts to a
- * customer's real books; it is a migration, not an edit.
+ * For invoices the two sets are now identical, and that is a deliberate change.
+ * They used to differ by the `saved` status, which meant a never-sent draft was
+ * accounts receivable in the customer's QuickBooks while being nothing at all in
+ * Arc — and because the invoice composer autosaved every keystroke into `saved`,
+ * abandoned drafts landed in a real customer's books. `saved` has been removed
+ * from the lifecycle entirely (see lib/financials/invoice-lifecycle.ts); an
+ * invoice now syncs once it is issued. Callers additionally push any invoice
+ * flagged `client_visible`, regardless of status — an invoice the client can see
+ * is one the bookkeeper needs — and re-push anything already linked to an
+ * external record so corrections still flow.
+ *
+ * Narrowing this set only stops NEW pushes; it never removes anything from a
+ * customer's books, and already-synced invoices keep re-pushing on change.
+ * Widening it is a migration, not an edit.
  * ------------------------------------------------------------------------- */
 
 /**
- * Invoice statuses that are pushed to the external accounting system.
- *
- * Wider than `BILLED_INVOICE_STATUSES` by `saved`. Callers additionally push any
- * invoice flagged `client_visible`, regardless of status — an invoice the client
- * can see is one the bookkeeper needs.
+ * Invoice statuses that are pushed to the external accounting system: the
+ * issued set, matching `BILLED_INVOICE_STATUSES`.
  */
-export const SYNCABLE_INVOICE_STATUSES = ["saved", "sent", "partial", "paid", "overdue"] as const
+export const SYNCABLE_INVOICE_STATUSES = ["sent", "partial", "paid", "overdue"] as const
 
 /**
  * Vendor-bill statuses that are pushed to the external accounting system.

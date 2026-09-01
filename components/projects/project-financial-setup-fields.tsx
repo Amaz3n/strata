@@ -63,13 +63,15 @@ export const billingModelOptions: Array<{ id: ProjectBillingModel; title: string
 
 export function billingModelOptionsForPosture(posture: ProjectPosture) {
   if (posture === "residential") return billingModelOptions
-  const priority: ProjectBillingModel[] = [
-    "fixed_price",
-    "cost_plus_gmp",
-    "cost_plus_percent",
-    "cost_plus_fixed_fee",
-    "time_and_materials",
-  ]
+  // A production home sells under a purchase agreement at a set price; its cost
+  // control is the locked budget plus VPOs, not a billable cost queue. Offering
+  // cost-driven models here would hand a spec home an owner-billing pipeline it
+  // has no buyer for. A genuine custom home inside a production org is a
+  // residential-posture project and still gets the full list.
+  const priority: ProjectBillingModel[] =
+    posture === "production"
+      ? ["fixed_price"]
+      : ["fixed_price", "cost_plus_gmp", "cost_plus_percent", "cost_plus_fixed_fee", "time_and_materials"]
   return priority.flatMap((model) => {
     const option = billingModelOptions.find((candidate) => candidate.id === model)
     return option ? [option] : []

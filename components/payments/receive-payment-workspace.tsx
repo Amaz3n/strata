@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState, useTransition } from "react"
+import { useMemo, useRef, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { format } from "date-fns"
@@ -8,6 +8,7 @@ import { Check, Search } from "lucide-react"
 import { toast } from "sonner"
 
 import { recordMultiInvoicePaymentAction } from "@/app/(app)/payments/actions"
+import { invoiceHref } from "@/lib/financials/invoice-destinations"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -41,6 +42,11 @@ export function ReceivePaymentWorkspace({ workspace }: { workspace: Workspace })
     .filter((allocation) => allocation.amount_cents > 0)
   const total = allocations.reduce((sum, allocation) => sum + allocation.amount_cents, 0)
 
+  // One key per receipt being composed, not per click. Minting it inside submit()
+  // meant a lost response followed by an impatient retry recorded the money twice
+  // — the idempotency key was the one thing guaranteed to differ.
+  const receiptKeyRef = useRef(`manual-receipt:${crypto.randomUUID()}`)
+
   const submit = () => {
     const invalid = allocations.find((allocation) => {
       const invoice = workspace.invoices.find((item) => item.id === allocation.invoice_id)
@@ -56,7 +62,7 @@ export function ReceivePaymentWorkspace({ workspace }: { workspace: Workspace })
         received_at: receivedAt.toISOString(),
         method,
         reference: reference.trim() || undefined,
-        idempotency_key: `manual-receipt:${crypto.randomUUID()}`,
+        idempotency_key: receiptKeyRef.current,
         party_type: workspace.partyType ?? undefined,
         party_id: workspace.partyId ?? undefined,
         allocations,
@@ -64,6 +70,8 @@ export function ReceivePaymentWorkspace({ workspace }: { workspace: Workspace })
       })
       if (!result.success) { toast.error(result.error); return }
       toast.success(`Receipt recorded across ${allocations.length} invoice${allocations.length === 1 ? "" : "s"}`)
+      // The receipt is banked; the next one is a different receipt.
+      receiptKeyRef.current = `manual-receipt:${crypto.randomUUID()}`
       setAmounts({})
       setReference("")
       router.refresh()
@@ -97,7 +105,7 @@ export function ReceivePaymentWorkspace({ workspace }: { workspace: Workspace })
                   const applied = parseDollars(amounts[invoice.id] ?? "")
                   return (
                     <tr key={invoice.id} className="border-b last:border-0">
-                      <td className="px-4 py-3"><Link className="font-medium underline-offset-4 hover:underline" href={`/invoices?invoice=${invoice.id}&project=${invoice.projectId}`}>{invoice.invoiceNumber}</Link><p className="mt-0.5 text-xs text-muted-foreground">{invoice.dueDate ? `Due ${invoice.dueDate}` : "No due date"}</p></td>
+                      <td className="px-4 py-3"><Link className="font-medium underline-offset-4 hover:underline" href={invoiceHref(invoice.id, invoice.projectId)}>{invoice.invoiceNumber}</Link><p className="mt-0.5 text-xs text-muted-foreground">{invoice.dueDate ? `Due ${invoice.dueDate}` : "No due date"}</p></td>
                       <td className="px-3 py-3"><p>{invoice.customerName}</p><p className="text-xs text-muted-foreground">{invoice.projectName}</p></td>
                       <td className="px-3 py-3 text-right font-mono tabular-nums">{formatMoneyCentsExact(invoice.balanceCents)}</td>
                       <td className="px-4 py-3"><div className="ml-auto flex w-44 items-center gap-2"><Input inputMode="decimal" value={amounts[invoice.id] ?? ""} onChange={(event) => setAmounts((current) => ({ ...current, [invoice.id]: event.target.value }))} placeholder="0.00" className="text-right font-mono" aria-label={`Amount applied to ${invoice.invoiceNumber}`} /><Button size="icon" variant={applied === invoice.balanceCents ? "default" : "outline"} title="Apply full balance" onClick={() => setAmounts((current) => ({ ...current, [invoice.id]: (invoice.balanceCents / 100).toFixed(2) }))}><Check className="h-4 w-4" /></Button></div></td>

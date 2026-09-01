@@ -1,3 +1,4 @@
+import { receivablesWriter } from "@/lib/services/receivables-writer"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { COMPANY_PAYABLE_LIMIT } from "@/lib/financials/vendor-bill-constants"
@@ -21,7 +22,12 @@ import { isSyncableVendorBillStatus } from "@/lib/financials/ledger-status"
 import { APPROVAL_GATE_REASONS, loadApprovalGateSettings } from "@/lib/financials/approval-gates"
 import { isCostDrivenBillingModel } from "@/lib/financials/billing-model"
 import { payableOutstandingCents } from "@/lib/financials/payables-rules"
-import { ACTIVE_RUN_ITEM_STATUSES } from "@/lib/services/org-payables"
+import {
+  parseProjectPayablesQuery,
+  type PayableDueFilter,
+  type PayableQueue,
+} from "@/lib/financials/payables-queues"
+import { listActivePayableRunItems } from "@/lib/services/payable-run-items"
 import { accountingDimension, accountingReference, buildAccountingCoding, readCodingSource, type CodingSource } from "@/lib/services/accounting-coding"
 import { getAccountingSyncState } from "@/lib/services/accounting-sync-state"
 import { assertBillReleasable, type PaymentReleaseEvidence } from "@/lib/services/payment-holds"
@@ -56,7 +62,7 @@ export interface VendorBillPaymentSummary {
 export interface VendorBillSummary {
   id: string
   org_id: string
-  project_id: string
+  project_id: string | null
   project_name?: string
   commitment_id?: string
   commitment_title?: string
@@ -871,11 +877,14 @@ export interface VendorBillsPage {
   pageSize: number
   total: number
   pageCount: number
+  query: { queue: PayableQueue; due: PayableDueFilter; search: string }
+  tabs: Record<PayableQueue, { count: number; amountCents: number }>
+  summaryTruncated: boolean
 }
 
 export async function listVendorBillsPageForProject(
   projectId: string,
-  input: { page?: number; pageSize?: number; queue?: string; search?: string } = {},
+  input: { page?: number; pageSize?: number; queue?: string; due?: string; search?: string } = {},
   orgId?: string,
 ): Promise<VendorBillsPage> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
@@ -891,7 +900,7 @@ export async function listVendorBillsPageForProject(
   })
   const page = Math.max(1, Math.floor(input.page ?? 1))
   const pageSize = Math.min(100, Math.max(10, Math.floor(input.pageSize ?? 50)))
-  const queue = String(input.queue ?? "needs_review")
+  const { queue, due } = parseProjectPayablesQuery(input)
   const search = String(input.search ?? "")
     .trim()
     .slice(0, 120)
@@ -913,10 +922,30 @@ export async function listVendorBillsPageForProject(
     .limit(2_000)
   if (allocatedError) throw new Error(`Failed to resolve allocated bills: ${allocatedError.message}`)
   const allocatedBillIds = Array.from(new Set((allocatedRows ?? []).map((row: any) => row.bill_id).filter(Boolean)))
-  let query = supabase.from("vendor_bills").select(vendorBillSelect, { count: "exact" }).eq("org_id", resolvedOrgId)
-  query = allocatedBillIds.length > 0 ? query.or(`project_id.eq.${projectId},id.in.(${allocatedBillIds.join(",")})`) : query.eq("project_id", projectId)
-  const today = new Date().toISOString().slice(0, 10)
-  const soon = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10)
+  const scoped = (select: string, count = false) => {
+    const scopedQuery = supabase.from("vendor_bills").select(select, count ? { count: "exact" } : undefined).eq("org_id", resolvedOrgId)
+    return allocatedBillIds.length > 0
+      ? scopedQuery.or(`project_id.eq.${projectId},id.in.(${allocatedBillIds.join(",")})`)
+      : scopedQuery.eq("project_id", projectId)
+  }
+  let query = scoped(vendorBillSelect, true)
+  const todayDate = new Date()
+  const soonDate = new Date(todayDate)
+  soonDate.setDate(todayDate.getDate() + 7)
+  const dateKey = (date: Date) => [date.getFullYear(), String(date.getMonth() + 1).padStart(2, "0"), String(date.getDate()).padStart(2, "0")].join("-")
+  const today = dateKey(todayDate)
+  const soon = dateKey(soonDate)
+
+  const claimedRows = await listActivePayableRunItems(supabase, resolvedOrgId)
+  const claimedIds = Array.from(
+    new Set(claimedRows.map((row) => row.bill_id).filter((id): id is string => typeof id === "string")),
+  )
+  const claimedIdSet = new Set(claimedIds)
+  const summaryPromise = scoped("id,status,total_cents,paid_cents,retainage_cents,metadata", true)
+    .neq("status", "rejected")
+    .order("due_date", { ascending: true, nullsFirst: false })
+    .limit(2_000)
+
   if (queue === "drafts") query = query.eq("metadata->>creation_state", "draft")
   else {
     if (queue !== "all") {
@@ -928,38 +957,146 @@ export async function listVendorBillsPageForProject(
         .or("metadata->>source.is.null,metadata->>source.neq.vendor_credit")
     }
     if (queue === "paid") query = query.eq("status", "paid")
-    else if (queue === "payable") {
+    else if (queue === "inflight") {
+      query = query.in("id", claimedIds.length > 0 ? claimedIds : ["00000000-0000-0000-0000-000000000000"])
+    } else if (queue === "ready") {
       // "Ready to pay" means nobody has claimed it yet. A payable already
       // inside an active payment run is in flight, and offering it for payment
       // a second time is how a bill gets paid twice.
       query = query.in("status", ["approved", "partial"])
-      const { data: claimedRows } = await supabase
-        .from("payment_run_items")
-        .select("bill_id")
-        .eq("org_id", resolvedOrgId)
-        .in("status", ACTIVE_RUN_ITEM_STATUSES)
-        .limit(1_000)
-      const claimedIds = Array.from(
-        new Set((claimedRows ?? []).map((row) => row.bill_id).filter((id): id is string => typeof id === "string")),
-      )
       if (claimedIds.length > 0) query = query.not("id", "in", `(${claimedIds.join(",")})`)
-    } else if (queue === "needs_review") query = query.eq("status", "pending")
-    else if (queue === "overdue") query = query.neq("status", "paid").lt("due_date", today)
-    else if (queue === "due_soon") query = query.neq("status", "paid").gte("due_date", today).lte("due_date", soon)
+    } else if (queue === "approval") query = query.eq("status", "pending")
+    else if (queue === "all") query = query.neq("status", "rejected")
   }
-  if (search) query = query.or(`bill_number.ilike.%${search}%,qbo_vendor_name.ilike.%${search}%`)
-  const { data, error, count } = await query
-    .order("due_date", { ascending: true, nullsFirst: false })
-    .order("created_at", { ascending: false })
-    .range((page - 1) * pageSize, page * pageSize - 1)
+
+  if (due === "overdue") query = query.neq("status", "paid").lt("due_date", today)
+  else if (due === "due_soon") query = query.neq("status", "paid").gte("due_date", today).lte("due_date", soon)
+
+  if (search) {
+    const { data: matchingCompanies, error: companySearchError } = await supabase
+      .from("companies")
+      .select("id")
+      .eq("org_id", resolvedOrgId)
+      .ilike("name", `%${search}%`)
+      .limit(200)
+    if (companySearchError) throw new Error(`Failed to search payable vendors: ${companySearchError.message}`)
+    const companyIds = (matchingCompanies ?? []).map((company) => company.id).filter(Boolean)
+    const searchParts = [
+      `bill_number.ilike.%${search}%`,
+      `qbo_vendor_name.ilike.%${search}%`,
+      ...(companyIds.length > 0 ? [`company_id.in.(${companyIds.join(",")})`] : []),
+    ]
+    query = query.or(searchParts.join(","))
+  }
+  const [{ data, error, count }, summaryResult] = await Promise.all([
+    query
+      .order("due_date", { ascending: true, nullsFirst: false })
+      .order("created_at", { ascending: false })
+      .range((page - 1) * pageSize, page * pageSize - 1),
+    summaryPromise,
+  ])
   if (error) throw new Error(`Failed to list vendor bills: ${error.message}`)
+  if (summaryResult.error) throw new Error(`Failed to summarize project payables: ${summaryResult.error.message}`)
+  const tabs: Record<PayableQueue, { count: number; amountCents: number }> = {
+    drafts: { count: 0, amountCents: 0 },
+    approval: { count: 0, amountCents: 0 },
+    ready: { count: 0, amountCents: 0 },
+    inflight: { count: 0, amountCents: 0 },
+    paid: { count: 0, amountCents: 0 },
+    all: { count: 0, amountCents: 0 },
+  }
+  const summaryRows = (summaryResult.data ?? []) as unknown as Array<{
+    id: string
+    status: string | null
+    total_cents: number | null
+    paid_cents: number | null
+    retainage_cents: number | null
+    metadata: Record<string, unknown> | null
+  }>
+  for (const row of summaryRows) {
+    const metadata = (row.metadata as Record<string, unknown> | null) ?? {}
+    const draft = metadata.creation_state === "draft"
+    const credit = metadata.source === "vendor_credit"
+    const outstanding = payableOutstandingCents({
+      payable_type: credit ? "vendor_credit" : "bill",
+      total_cents: row.total_cents,
+      paid_cents: Number(row.paid_cents ?? 0),
+      retainage_cents: row.retainage_cents,
+    })
+    tabs.all.count += 1
+    tabs.all.amountCents += outstanding
+    if (draft) {
+      tabs.drafts.count += 1
+      tabs.drafts.amountCents += outstanding
+    } else if (!credit && row.status === "paid") {
+      tabs.paid.count += 1
+    } else if (!credit && claimedIdSet.has(row.id)) {
+      tabs.inflight.count += 1
+      tabs.inflight.amountCents += outstanding
+    } else if (!credit && row.status === "pending") {
+      tabs.approval.count += 1
+      tabs.approval.amountCents += outstanding
+    } else if (!credit && (row.status === "approved" || row.status === "partial") && outstanding > 0) {
+      tabs.ready.count += 1
+      tabs.ready.amountCents += outstanding
+    }
+  }
   return {
     items: await hydrateVendorBills(supabase, resolvedOrgId, data ?? [], projectId),
     page,
     pageSize,
     total: count ?? 0,
     pageCount: Math.max(1, Math.ceil((count ?? 0) / pageSize)),
+    query: { queue, due, search },
+    tabs,
+    summaryTruncated: (summaryResult.count ?? 0) > 2_000,
   }
+}
+
+/**
+ * Resolve a project-scoped payable independently of the active queue/page so a
+ * copied `?bill=` link always opens the record it names. Line allocations count
+ * as project membership just as they do in the list query.
+ */
+export async function getVendorBillForProject(
+  projectId: string,
+  billId: string,
+  orgId?: string,
+): Promise<VendorBillSummary | null> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "bill.read",
+    userId,
+    orgId: resolvedOrgId,
+    projectId,
+    supabase,
+    logDecision: true,
+    resourceType: "vendor_bill",
+    resourceId: billId,
+  })
+  const { data: bill, error } = await supabase
+    .from("vendor_bills")
+    .select(vendorBillSelect)
+    .eq("org_id", resolvedOrgId)
+    .eq("id", billId)
+    .maybeSingle()
+  if (error) throw new Error(`Failed to open vendor bill: ${error.message}`)
+  if (!bill) return null
+
+  if ((bill as { project_id?: string | null }).project_id !== projectId) {
+    const { data: allocation, error: allocationError } = await supabase
+      .from("bill_lines")
+      .select("id")
+      .eq("org_id", resolvedOrgId)
+      .eq("bill_id", billId)
+      .eq("project_id", projectId)
+      .limit(1)
+      .maybeSingle()
+    if (allocationError) throw new Error(`Failed to verify payable allocation: ${allocationError.message}`)
+    if (!allocation) return null
+  }
+
+  return (await hydrateVendorBills(supabase, resolvedOrgId, [bill], projectId))[0] ?? null
 }
 
 /**
@@ -2031,7 +2168,7 @@ export async function createProjectVendorBill({
   input,
   orgId,
 }: {
-  projectId: string
+  projectId: string | null
   input: VendorBillCreate
   orgId?: string
 }): Promise<VendorBillSummary> {
@@ -2042,15 +2179,16 @@ export async function createProjectVendorBill({
     permission: "bill.write",
     userId,
     orgId: resolvedOrgId,
-    projectId,
+    projectId: projectId ?? undefined,
     supabase,
     logDecision: true,
-    resourceType: "project",
-    resourceId: projectId,
+    resourceType: projectId ? "project" : "vendor_bill",
+    resourceId: projectId ?? "new",
   })
 
   let commitment: { id: string; total_cents: number | null; company_id?: string | null } | null = null
   if (parsed.commitment_id) {
+    if (!projectId) throw new Error("Choose a project before linking a commitment")
     const { data, error: commitmentError } = await supabase
       .from("commitments")
       .select("id, total_cents, company_id")
@@ -2085,7 +2223,7 @@ export async function createProjectVendorBill({
 
   const vendorName = parsed.vendor_name?.trim() || parsed.qbo_vendor_name?.trim() || null
   const explicitLines = parsed.actual_lines ?? []
-  if (explicitLines.some((line) => line.project_id && line.project_id !== projectId)) {
+  if (explicitLines.some((line) => (line.project_id ?? null) !== projectId)) {
     throw new Error("Create the payable first before splitting it across projects")
   }
   if (explicitLines.length > 0 && explicitLines.reduce((sum, line) => sum + line.amount_cents, 0) !== parsed.total_cents) {
@@ -2130,7 +2268,7 @@ export async function createProjectVendorBill({
     .insert({
       org_id: resolvedOrgId,
       project_id: projectId,
-      commitment_id: parsed.commitment_id ?? null,
+      commitment_id: projectId ? (parsed.commitment_id ?? null) : null,
       company_id: companyId,
       bill_number: parsed.bill_number.trim(),
       total_cents: parsed.total_cents,
@@ -2168,11 +2306,11 @@ export async function createProjectVendorBill({
         (codingSuggestion?.autoApply
           ? codingSuggestion.accountingCoding
           : buildAccountingCoding({ counterpartyId: parsed.qbo_vendor_id, counterpartyName: parsed.qbo_vendor_name || parsed.vendor_name })),
-      retainage_percent: parsed.retainage_percent ?? null,
-      retainage_cents: parsed.retainage_percent ? Math.round((parsed.total_cents * parsed.retainage_percent) / 100) : 0,
+      retainage_percent: projectId ? (parsed.retainage_percent ?? null) : null,
+      retainage_cents: projectId && parsed.retainage_percent ? Math.round((parsed.total_cents * parsed.retainage_percent) / 100) : 0,
       early_pay_discount_percent: parsed.early_pay_discount_percent ?? null,
       early_pay_discount_days: parsed.early_pay_discount_days ?? null,
-      lien_waiver_status: parsed.lien_waiver_status ?? "not_required",
+      lien_waiver_status: projectId ? (parsed.lien_waiver_status ?? "not_required") : "not_required",
       qbo_vendor_id: parsed.qbo_vendor_id || null,
       qbo_vendor_name: parsed.qbo_vendor_name || parsed.vendor_name || null,
     })
@@ -2193,7 +2331,7 @@ export async function createProjectVendorBill({
         description: line.description?.trim() || parsed.description?.trim() || `Bill ${parsed.bill_number.trim()}`,
         amount_cents: line.amount_cents,
         project_id: projectId,
-        billable_to_customer: line.billable_to_customer,
+        billable_to_customer: projectId ? line.billable_to_customer : false,
         qbo_expense_account_id: line.qbo_expense_account_id,
         qbo_expense_account_name: line.qbo_expense_account_name,
         qbo_ap_account_id: line.qbo_ap_account_id,
@@ -2974,7 +3112,7 @@ export async function reassignImportedPayable({
   // new project. (Applied vendor credits are blocked above, so this only runs
   // for ordinary bills.)
   if (!isVendorCredit && (paymentCount ?? 0) > 0) {
-    const { error: paymentMoveError } = await supabase
+    const { error: paymentMoveError } = await receivablesWriter()
       .from("payments")
       .update({ project_id: targetProjectId })
       .eq("org_id", resolvedOrgId)

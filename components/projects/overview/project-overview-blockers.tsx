@@ -18,12 +18,12 @@ import {
   OverviewRow,
 } from "@/components/overview/primitives"
 import { cn } from "@/lib/utils"
-import type { AttentionItem } from "@/lib/services/project-overview"
+import type { AttentionItem, FinancialException } from "@/lib/services/project-overview"
 
 interface ProjectOverviewBlockersProps {
   items: AttentionItem[]
-  /** Percent of the adjusted budget already spent; null without a budget. */
-  budgetVariancePercent: number | null
+  /** Money needing someone's hand, each linking to the filter that clears it. */
+  financialExceptions: FinancialException[]
   /** True when more items matched than this band shows. */
   truncated: boolean
   projectId: string
@@ -70,9 +70,7 @@ const toneRule: Record<Tone, string> = {
   neutral: "bg-muted-foreground/30",
 }
 
-interface BlockerItem extends AttentionItem {
-  isBudget?: boolean
-}
+type BlockerItem = AttentionItem
 
 function daysLate(dueDate?: string | null): number {
   if (!dueDate) return 0
@@ -90,27 +88,11 @@ function groupOf(item: BlockerItem): GroupKey {
 
 export function ProjectOverviewBlockers({
   items,
-  budgetVariancePercent,
+  financialExceptions,
   truncated,
   projectId,
 }: ProjectOverviewBlockersProps) {
-  const budgetBlocker: BlockerItem | null =
-    budgetVariancePercent !== null && budgetVariancePercent > 100
-      ? {
-          id: "budget",
-          type: "task",
-          title: `Budget at ${budgetVariancePercent}% of plan`,
-          reason: "overdue",
-          dueDate: null,
-          link: `/projects/${projectId}/financials`,
-          isBudget: true,
-        }
-      : null
-
-  const allItems: BlockerItem[] = [
-    ...(budgetBlocker ? [budgetBlocker] : []),
-    ...items,
-  ].slice(0, 12)
+  const allItems: BlockerItem[] = items.slice(0, 12)
 
   const grouped = GROUP_ORDER.map((key) => ({
     key,
@@ -119,16 +101,18 @@ export function ProjectOverviewBlockers({
     items: allItems.filter((i) => groupOf(i) === key),
   })).filter((g) => g.items.length > 0)
 
-  const criticalCount = allItems.filter(
-    (i) =>
-      groupOf(i) === "overdue_long" ||
-      groupOf(i) === "overdue" ||
-      i.reason === "blocked"
-  ).length
+  const openCount = allItems.length + financialExceptions.length
+  const criticalCount =
+    allItems.filter(
+      (i) =>
+        groupOf(i) === "overdue_long" ||
+        groupOf(i) === "overdue" ||
+        i.reason === "blocked"
+    ).length + financialExceptions.filter((e) => e.tone === "destructive").length
 
   return (
     <section className="border-b lg:border-b-0 lg:border-r">
-      <BandHeader title="Needs attention" count={allItems.length > 0 ? `${allItems.length} open` : null}>
+      <BandHeader title="Needs attention" count={openCount > 0 ? `${openCount} open` : null}>
         {criticalCount > 0 && (
           <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-destructive bg-destructive/10 px-2 py-0.5 rounded-sm">
             <span className="h-1 w-1 rounded-full bg-destructive" />
@@ -138,7 +122,7 @@ export function ProjectOverviewBlockers({
       </BandHeader>
 
       <BandBody>
-        {allItems.length === 0 ? (
+        {openCount === 0 ? (
           <OverviewEmptyState
             icon={<CheckCircle2 className="h-5 w-5 text-success" />}
             tone="success"
@@ -147,6 +131,40 @@ export function ProjectOverviewBlockers({
           />
         ) : (
           <div className="space-y-7">
+            {financialExceptions.length > 0 && (
+              <div>
+                <GroupHeader
+                  label="Money"
+                  count={financialExceptions.length}
+                  ruleClassName={toneRule.warning}
+                  labelClassName={toneText.warning}
+                />
+                <ul className="space-y-0.5">
+                  {financialExceptions.map((exception) => (
+                    <li key={exception.id}>
+                      <OverviewRow href={exception.link} tone={exception.tone === "destructive" ? "destructive" : "neutral"}>
+                        <IconChip tone={exception.tone === "destructive" ? "destructive" : "neutral"}>
+                          <DollarSign className="h-3.5 w-3.5" />
+                        </IconChip>
+                        <span className="flex-1 min-w-0 truncate text-sm font-medium tabular-nums text-foreground">
+                          {exception.title}
+                        </span>
+                        {exception.detail && (
+                          <span
+                            className={cn(
+                              "shrink-0 text-[11px] font-medium",
+                              exception.tone === "destructive" ? "text-destructive/85" : "text-muted-foreground",
+                            )}
+                          >
+                            {exception.detail}
+                          </span>
+                        )}
+                      </OverviewRow>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {grouped.map((group) => (
               <div key={group.key}>
                 <GroupHeader
@@ -160,16 +178,11 @@ export function ProjectOverviewBlockers({
                     const isCritical =
                       group.key === "overdue_long" || item.reason === "blocked"
                     const late = daysLate(item.dueDate)
-                    const icon = item.isBudget ? (
-                      <DollarSign className="h-3.5 w-3.5" />
-                    ) : (
-                      typeIcon[item.type]
-                    )
                     return (
                       <li key={`${item.type}-${item.id}`}>
                         <OverviewRow href={item.link} tone={isCritical ? "destructive" : "neutral"}>
                           <IconChip tone={isCritical ? "destructive" : "neutral"}>
-                            {icon}
+                            {typeIcon[item.type]}
                           </IconChip>
                           <span className="flex-1 min-w-0 text-sm font-medium text-foreground truncate">
                             {item.title}

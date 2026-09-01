@@ -741,7 +741,7 @@ const drawStatus: ReportDefinition = {
           ],
           rows: report.rows.map((row) => ({
             key: row.draw_id,
-            href: row.project_id ? `/projects/${row.project_id}/financials/receivables` : undefined,
+            href: row.project_id ? `/projects/${row.project_id}/financials/billing` : undefined,
             cells: {
               draw_number: row.draw_number,
               title: row.title ?? "—",
@@ -826,7 +826,7 @@ const payAppRegister: ReportDefinition = {
           ],
           rows: rows.map((row) => ({
             key: row.pay_application_id,
-            href: row.project_id ? `/projects/${row.project_id}/financials/receivables` : undefined,
+            href: row.project_id ? `/projects/${row.project_id}/financials/billing` : undefined,
             cells: {
               application: `App #${row.application_number}`,
               ...projectCell(ctx.scope, row),

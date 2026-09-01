@@ -31,7 +31,6 @@ import {
 import type { Submittal, SubmittalItem, SubmittalReviewStep } from "@/lib/types"
 
 function revalidateSubmittalPaths(projectId: string) {
-  revalidatePath("/submittals")
   revalidatePath(`/projects/${projectId}/submittals`)
 }
 

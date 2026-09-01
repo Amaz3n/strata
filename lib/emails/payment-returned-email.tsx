@@ -1,4 +1,14 @@
-import { Body, Button, Container, Head, Heading, Hr, Html, Img, Link, Preview, Section, Text } from "@react-email/components"
+import { Button, Link, Section, Text } from "@react-email/components"
+
+import { EmailLayout } from "./email-layout"
+import {
+  buttonFor,
+  buttonWrap,
+  fallbackText,
+  link,
+  palette,
+  paragraph,
+} from "./theme"
 
 /**
  * Money that came back. Several different mechanisms, one shape — because the
@@ -128,213 +138,87 @@ export function PaymentReturnedEmail({
   const counterpartyRowLabel = kind === "customer_reversed" || kind === "qbo_reversed" ? "Customer" : "Vendor"
 
   return (
-    <Html>
-      <Head />
-      <Preview>{`${heading} · ${displayOrgName}`}</Preview>
-      <Body style={main}>
-        <Container style={container}>
-          <Section style={header}>
-            {orgLogoUrl ? (
-              <Img src={orgLogoUrl} alt={displayOrgName} width="56" height="56" style={logoImage} />
-            ) : (
-              <Text style={logoFallback}>{displayOrgName.slice(0, 1).toUpperCase()}</Text>
-            )}
-            <Text style={brandName}>{displayOrgName}</Text>
-            <Text style={brandSub}>{KIND_KICKER[kind]}</Text>
-          </Section>
+    <EmailLayout
+      preview={`${heading} · ${displayOrgName}`}
+      subtitle={KIND_KICKER[kind]}
+      orgName={orgName}
+      orgLogoUrl={orgLogoUrl}
+      footerNote={<>{displayOrgName} payment operations</>}
+      tone="danger"
+    >
+      <Text style={paragraph}>{greeting}</Text>
 
-          <Section style={hero}>
-            <Text style={heroKicker}>{KIND_KICKER[kind]}</Text>
-            <Heading style={heroHeading}>{heading}</Heading>
-            <Text style={heroMeta}>{leadFor(kind)}</Text>
-          </Section>
-
-          <Section style={content}>
-            <Text style={paragraph}>{greeting}</Text>
-
-            <Section style={sectionCard}>
-              <Text style={sectionTitle}>The Payment</Text>
-              <table style={factTable} cellPadding={0} cellSpacing={0} role="presentation">
-                <tbody>
-                  <tr>
-                    <td style={factLabelCell}>Amount</td>
-                    <td style={factValueCellStrong} align="right">
-                      {amountLabel ?? "—"}
-                    </td>
-                  </tr>
-                  <tr>
-                    <td style={factLabelCell}>{counterpartyRowLabel}</td>
-                    <td style={factValueCell} align="right">
-                      {counterpartyName ?? "—"}
-                    </td>
-                  </tr>
-                  <tr>
-                    <td style={factLabelCell}>Document</td>
-                    <td style={factValueCell} align="right">
-                      {documentLabel ?? "—"}
-                    </td>
-                  </tr>
-                  {projectName ? (
-                    <tr>
-                      <td style={factLabelCell}>Project</td>
-                      <td style={factValueCell} align="right">
-                        {projectName}
-                      </td>
-                    </tr>
-                  ) : null}
-                  <tr>
-                    <td style={factLabelCellLast}>Reported</td>
-                    <td style={factValueCellLast} align="right">
-                      {occurredLabel ?? "Just now"}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </Section>
-
-            {reason ? (
-              <Section style={reasonCard}>
-                <Text style={reasonLabel}>Reason given</Text>
-                <Text style={reasonText}>{reason}</Text>
-              </Section>
+      <Section style={sectionCard}>
+        <Text style={sectionTitle}>The Payment</Text>
+        <table style={factTable} cellPadding={0} cellSpacing={0} role="presentation">
+          <tbody>
+            <tr>
+              <td style={factLabelCell}>Amount</td>
+              <td style={factValueCellStrong} align="right">
+                {amountLabel ?? "—"}
+              </td>
+            </tr>
+            <tr>
+              <td style={factLabelCell}>{counterpartyRowLabel}</td>
+              <td style={factValueCell} align="right">
+                {counterpartyName ?? "—"}
+              </td>
+            </tr>
+            <tr>
+              <td style={factLabelCell}>Document</td>
+              <td style={factValueCell} align="right">
+                {documentLabel ?? "—"}
+              </td>
+            </tr>
+            {projectName ? (
+              <tr>
+                <td style={factLabelCell}>Project</td>
+                <td style={factValueCell} align="right">
+                  {projectName}
+                </td>
+              </tr>
             ) : null}
+            <tr>
+              <td style={factLabelCellLast}>Reported</td>
+              <td style={factValueCellLast} align="right">
+                {occurredLabel ?? "Just now"}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </Section>
 
-            <Section style={stepsCard}>
-              <Text style={stepsTitle}>Do this next</Text>
-              {steps.map((step, index) => (
-                <Text key={`step-${index}`} style={stepText}>
-                  {index + 1}. {step}
-                </Text>
-              ))}
-            </Section>
+      {reason ? (
+        <Section style={reasonCard}>
+          <Text style={reasonLabel}>Reason given</Text>
+          <Text style={reasonText}>{reason}</Text>
+        </Section>
+      ) : null}
 
-            <Section style={buttonWrap}>
-              <Button style={button} href={actionUrl}>
-                Open in Arc
-              </Button>
-            </Section>
+      <Section style={stepsCard}>
+        <Text style={stepsTitle}>Do this next</Text>
+        {steps.map((step, index) => (
+          <Text key={`step-${index}`} style={stepText}>
+            {index + 1}. {step}
+          </Text>
+        ))}
+      </Section>
 
-            <Text style={fallbackText}>
-              If the button does not open,{" "}
-              <Link href={actionUrl} style={link}>
-                open it directly
-              </Link>
-              . Never send or confirm bank details by replying to an email about a returned payment.
-            </Text>
-          </Section>
+      <Section style={buttonWrap}>
+        <Button style={buttonFor("danger")} href={actionUrl}>
+          Open in Arc
+        </Button>
+      </Section>
 
-          <Hr style={hr} />
-          <Section style={footer}>
-            <Text style={footerText}>Sent via Arc · {displayOrgName} payment operations</Text>
-          </Section>
-        </Container>
-      </Body>
-    </Html>
+      <Text style={fallbackText}>
+        If the button does not open,{" "}
+        <Link href={actionUrl} style={link}>
+          open it directly
+        </Link>
+        . Never send or confirm bank details by replying to an email about a returned payment.
+      </Text>
+    </EmailLayout>
   )
-}
-
-const main: React.CSSProperties = {
-  backgroundColor: "#f4eceb",
-  fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Ubuntu, Arial, sans-serif',
-  margin: "0",
-  padding: "24px 0",
-}
-
-const container: React.CSSProperties = {
-  backgroundColor: "#ffffff",
-  margin: "0 auto",
-  maxWidth: "680px",
-  border: "1px solid #dcdcdc",
-}
-
-const header: React.CSSProperties = {
-  textAlign: "center",
-  padding: "34px 40px 20px 40px",
-  borderBottom: "1px solid #ebebeb",
-}
-
-const logoImage: React.CSSProperties = {
-  border: "1px solid #d6d6d6",
-  backgroundColor: "#ffffff",
-  display: "block",
-  margin: "0 auto",
-  padding: "6px",
-  width: "56px",
-  height: "56px",
-  objectFit: "contain",
-}
-
-const logoFallback: React.CSSProperties = {
-  margin: "0 auto",
-  width: "56px",
-  height: "56px",
-  display: "block",
-  textAlign: "center",
-  lineHeight: "56px",
-  border: "1px solid #d6d6d6",
-  backgroundColor: "#fff",
-  color: "#111111",
-  fontWeight: 700,
-  fontSize: "18px",
-}
-
-const brandName: React.CSSProperties = {
-  margin: "12px 0 0 0",
-  color: "#111111",
-  fontSize: "15px",
-  fontWeight: 700,
-}
-
-const brandSub: React.CSSProperties = {
-  margin: "4px 0 0 0",
-  color: "#b42318",
-  fontSize: "11px",
-  fontWeight: 700,
-  textTransform: "uppercase",
-  letterSpacing: "1px",
-}
-
-const hero: React.CSSProperties = {
-  backgroundColor: "#912018",
-  color: "#fef6f5",
-  padding: "26px 32px",
-  borderBottom: "1px solid #f3c9c4",
-}
-
-const heroKicker: React.CSSProperties = {
-  margin: "0 0 10px 0",
-  color: "#fbd5d0",
-  fontSize: "11px",
-  fontWeight: 700,
-  textTransform: "uppercase",
-  letterSpacing: "1px",
-}
-
-const heroHeading: React.CSSProperties = {
-  margin: "0",
-  color: "#fff6f5",
-  fontSize: "30px",
-  lineHeight: "1.1",
-  fontWeight: 700,
-  letterSpacing: "-0.8px",
-}
-
-const heroMeta: React.CSSProperties = {
-  margin: "12px 0 0 0",
-  color: "#f7d9d5",
-  fontSize: "13px",
-  lineHeight: "1.55",
-}
-
-const content: React.CSSProperties = {
-  padding: "24px 32px 30px 32px",
-}
-
-const paragraph: React.CSSProperties = {
-  margin: "0 0 12px 0",
-  color: "#2f2f2f",
-  fontSize: "14px",
-  lineHeight: "1.6",
 }
 
 const sectionCard: React.CSSProperties = {
@@ -348,7 +232,7 @@ const sectionTitle: React.CSSProperties = {
   padding: "12px 14px",
   borderBottom: "1px solid #f6dcd9",
   backgroundColor: "#fef3f2",
-  color: "#b42318",
+  color: palette.danger,
   fontSize: "12px",
   fontWeight: 700,
   textTransform: "uppercase",
@@ -391,7 +275,7 @@ const factValueCellLast: React.CSSProperties = {
 
 const factValueCellStrong: React.CSSProperties = {
   ...factValueCell,
-  color: "#b42318",
+  color: palette.danger,
   fontSize: "18px",
   fontWeight: 700,
   letterSpacing: "-0.3px",
@@ -430,7 +314,7 @@ const stepsCard: React.CSSProperties = {
 
 const stepsTitle: React.CSSProperties = {
   margin: "0 0 8px 0",
-  color: "#b54708",
+  color: palette.warning,
   fontSize: "11px",
   fontWeight: 700,
   textTransform: "uppercase",
@@ -442,53 +326,6 @@ const stepText: React.CSSProperties = {
   color: "#7a4708",
   fontSize: "12px",
   lineHeight: "1.55",
-}
-
-const buttonWrap: React.CSSProperties = {
-  textAlign: "center",
-  marginTop: "22px",
-}
-
-const button: React.CSSProperties = {
-  backgroundColor: "#b42318",
-  color: "#ffffff",
-  borderRadius: "0",
-  padding: "13px 26px",
-  fontSize: "13px",
-  fontWeight: 700,
-  textDecoration: "none",
-  textTransform: "uppercase",
-  letterSpacing: "0.6px",
-}
-
-const fallbackText: React.CSSProperties = {
-  margin: "14px 0 0 0",
-  color: "#676767",
-  fontSize: "12px",
-  lineHeight: "1.5",
-  textAlign: "center",
-}
-
-const link: React.CSSProperties = {
-  color: "#b42318",
-  textDecoration: "underline",
-}
-
-const hr: React.CSSProperties = {
-  borderColor: "#e6e6e6",
-  margin: "0",
-}
-
-const footer: React.CSSProperties = {
-  padding: "16px 32px 20px 32px",
-  textAlign: "center",
-}
-
-const footerText: React.CSSProperties = {
-  margin: "0",
-  color: "#7c7c7c",
-  fontSize: "12px",
-  textAlign: "center",
 }
 
 export default PaymentReturnedEmail

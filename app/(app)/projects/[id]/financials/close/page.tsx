@@ -9,5 +9,5 @@ interface PageProps {
 export default async function FinancialsClosePage({ params, searchParams }: PageProps) {
   const { id } = await params
   const { period } = (await searchParams) ?? {}
-  redirect(`/projects/${id}/financials/receivables?tab=close${period ? `&period=${encodeURIComponent(period)}` : ""}`)
+  redirect(`/projects/${id}/financials/billing?tab=close${period ? `&period=${encodeURIComponent(period)}` : ""}`)
 }

@@ -1,8 +1,6 @@
-import { notFound } from "next/navigation"
-
 import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { PortalDocumentsTab } from "@/components/portal/tabs/portal-documents-tab"
-import { loadClientPortalPage } from "../load-portal"
+import { loadClientPortalDocumentsPage } from "../load-portal"
 
 interface Props {
   params: Promise<{ token: string }>
@@ -11,11 +9,7 @@ interface Props {
 
 export default async function ClientPortalDocumentsPage({ params }: Props) {
   const { token } = await params
-  const { access, data } = await loadClientPortalPage(token)
-
-  if (access.permissions.can_view_documents === false) {
-    notFound()
-  }
+  const { access, data } = await loadClientPortalDocumentsPage(token)
 
   return (
     <>

@@ -13,8 +13,12 @@ import { listProjects } from "@/lib/services/projects"
 import { hasPermission } from "@/lib/services/permissions"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
+import { runWithServiceOrgContext } from "@/lib/services/context"
+import { triggerFileIndexing } from "@/lib/services/files-indexing"
+import { registerUploadedPhoto } from "@/lib/services/photos"
 import { NotificationService } from "@/lib/services/notifications"
 import { uploadFilesObject, createFilesDownloadUrl, deleteFilesObjects } from "@/lib/storage/files-storage"
+import { photoCaptureMetadataSchema, type PhotoCaptureMetadata } from "@/lib/validation/photos"
 
 const entrySchema = z.object({
   entry_type: z.enum(["work", "constraint", "inspection", "safety", "delivery", "note", "task_update", "punch_update"]),
@@ -636,7 +640,48 @@ export async function uploadMobileDailyLogPhoto(
     created_by: context.user.id,
   }).select("id").single()
   if (version?.id) await context.serviceSupabase.from("files").update({ current_version_id: version.id }).eq("id", data.id)
+
+  // The two things a web upload has always done and this path never did.
+  //
+  // Without indexing there is no preview ladder, so every field photo was served
+  // to the grid as a multi-megabyte original. Without the photo registration
+  // there is no caption and no capture time — and the phone is the one client
+  // that actually knows when and where the shutter fired, so it sends both.
+  //
+  // Both run inside the trusted service scope because there is no cookie session
+  // on a mobile request to resolve an org context from.
+  const capture = readMobileCaptureMetadata(formData)
+  try {
+    await runWithServiceOrgContext(context.serviceContext, async () => {
+      await triggerFileIndexing(data.id, context.orgId)
+      await registerUploadedPhoto({ fileId: data.id, projectId, capture }, context.orgId)
+    })
+  } catch (enrichmentError) {
+    // The photo is stored and synced; losing its caption or thumbnail must not
+    // make the app think the upload failed and retry it.
+    console.error("[mobile] Failed to enrich uploaded photo", enrichmentError)
+  }
+
   return signedPhoto(context, data)
+}
+
+/**
+ * Capture metadata off the device. The phone reads it from the asset library
+ * where the zone is unambiguous, which is why the server accepts it rather than
+ * re-deriving it from EXIF it cannot place in a timezone.
+ */
+function readMobileCaptureMetadata(formData: FormData): PhotoCaptureMetadata | null {
+  const takenAt = formData.get("taken_at")?.toString()
+  const latitude = formData.get("latitude")?.toString()
+  const longitude = formData.get("longitude")?.toString()
+  if (!takenAt && !latitude && !longitude) return null
+
+  const parsed = photoCaptureMetadataSchema.safeParse({
+    taken_at: takenAt || undefined,
+    latitude: latitude ? Number(latitude) : undefined,
+    longitude: longitude ? Number(longitude) : undefined,
+  })
+  return parsed.success ? parsed.data : null
 }
 
 async function signedPhoto(context: MobileOrgContext, row: any): Promise<MobileDailyLogPhotoDTO> {

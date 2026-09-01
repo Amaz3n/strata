@@ -1,5 +1,6 @@
 import "server-only"
 
+import { projectedMargin } from "@/lib/financials/production-margin"
 import { requireOrgContext } from "@/lib/services/context"
 import { requireProjectPermission } from "@/lib/services/permissions"
 
@@ -112,8 +113,7 @@ export async function getProductionHouseOverview(projectId: string, orgId?: stri
   const budget = Number(budgetRows?.[0]?.total_cents ?? 0)
   const actualCost = (costs ?? []).reduce((total, row) => total + Number(row.cost_cents ?? 0), 0)
   const vpoCents = (vpos ?? []).reduce((total, row) => total + Number(row.total_cents ?? 0), 0)
-  const projectedCost = Math.max(budget, actualCost) + vpoCents
-  const projectedMargin = salePrice - projectedCost
+  const margin = projectedMargin({ revenueCents: salePrice, budgetCents: budget, actualCostCents: actualCost, vpoCents })
   const reasonTotals = new Map<string, number>()
   for (const row of vpos ?? []) {
     const reason = one<any>(row.reason)
@@ -191,8 +191,8 @@ export async function getProductionHouseOverview(projectId: string, orgId?: stri
       vpoCents,
       vpoCount: vpos?.length ?? 0,
       topVpoReason: Array.from(reasonTotals.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null,
-      projectedMarginCents: projectedMargin,
-      projectedMarginPercent: salePrice > 0 ? (projectedMargin / salePrice) * 100 : 0,
+      projectedMarginCents: margin.marginCents,
+      projectedMarginPercent: margin.marginPercent,
     },
     gates: {
       startStatus: startPackage?.status ?? "No start package",

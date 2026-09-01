@@ -1,3 +1,4 @@
+import { receivablesWriter } from "@/lib/services/receivables-writer"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { createHash, randomBytes } from "crypto"
 import { z } from "zod"
@@ -484,7 +485,7 @@ export async function generateInvoiceFromTmTicket(ticketId: string, orgId?: stri
     .eq("org_id", resolvedOrgId)
     .eq("id", result.invoiceId)
     .maybeSingle()
-  await supabase
+  await receivablesWriter()
     .from("invoices")
     .update({
       metadata: {

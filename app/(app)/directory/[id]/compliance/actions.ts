@@ -33,7 +33,6 @@ function revalidateCompany(companyId: string) {
   revalidatePath("/directory")
   // A decision changes what the payment gate sees, and the Control Tower
   // review count with it.
-  revalidatePath("/control-tower")
 }
 
 export async function setCompanyComplianceMonitoringAction(

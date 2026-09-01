@@ -718,7 +718,7 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
           <DropdownMenuSeparator />
           {isSubmitted ? (
             <DropdownMenuItem asChild>
-              <Link href={`/projects/${projectId}/financials/review`}>Review in Financials</Link>
+              <Link href={`/projects/${projectId}/financials/cost-inbox`}>Open in Cost Inbox</Link>
             </DropdownMenuItem>
           ) : canSync ? (
             <DropdownMenuItem onClick={() => syncExpense(expense.id)}>Sync to {accountingProviderName}</DropdownMenuItem>
@@ -733,11 +733,11 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
   function rowReviewAction(expense: ProjectExpense) {
     const isSubmitted = expense.status === "submitted"
     return (
-      <IconTooltip label={isSubmitted ? "Review in Financials" : statusLabels[expense.status] ?? expense.status}>
+      <IconTooltip label={isSubmitted ? "Open in Cost Inbox" : statusLabels[expense.status] ?? expense.status}>
         <span>
           {isSubmitted ? (
             <Button asChild type="button" size="icon" variant="outline" className="h-9 w-9 rounded-md bg-background">
-              <Link href={`/projects/${projectId}/financials/review`}>
+              <Link href={`/projects/${projectId}/financials/cost-inbox`}>
                 <ExternalLink className="h-4 w-4" />
                 <span className="sr-only">Review expense in Financials</span>
               </Link>

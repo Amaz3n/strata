@@ -2,35 +2,11 @@ import { z } from "zod"
 
 export const paymentMethodInputSchema = z.enum(["ach", "card", "wire", "check"])
 
-export const createPaymentIntentInputSchema = z.object({
-  invoice_id: z.string().uuid("Invoice is required"),
-  amount_cents: z.number().int().positive().optional(),
-  currency: z.string().default("usd"),
-  method: paymentMethodInputSchema.optional(),
-  include_processing_fee: z.boolean().optional().default(false),
-  metadata: z.record(z.any()).optional(),
-})
-
 export const createPublicInvoicePaymentIntentInputSchema = z.object({
   token: z.string().min(1, "Invoice link is required"),
   method: z.enum(["ach", "card"]),
   // Optional partial payment; server clamps to the outstanding balance.
   amount_cents: z.number().int().min(100, "Minimum online payment is $1.00").optional(),
-})
-
-export const generatePayLinkInputSchema = z.object({
-  invoice_id: z.string().uuid("Invoice is required"),
-  expires_at: z.string().datetime({ offset: true }).optional(),
-  max_uses: z.number().int().min(1).optional(),
-  metadata: z.record(z.any()).optional(),
-}).superRefine((value, ctx) => {
-  if (value.expires_at && new Date(value.expires_at).getTime() <= Date.now()) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["expires_at"],
-      message: "Expiration must be in the future",
-    })
-  }
 })
 
 export const recordPaymentInputSchema = z.object({
@@ -43,7 +19,6 @@ export const recordPaymentInputSchema = z.object({
   status: z.enum(["pending", "processing", "succeeded", "failed", "canceled", "refunded"]).default("succeeded"),
   reference: z.string().optional(),
   provider: z.string().optional(),
-  pay_link_token: z.string().optional(),
   idempotency_key: z.string().optional(),
   received_at: z.string().datetime({ offset: true }).optional(),
   metadata: z.record(z.any()).optional(),
@@ -80,9 +55,7 @@ export const receivePaymentInputSchema = z.object({
   }
 })
 
-export type CreatePaymentIntentInput = z.infer<typeof createPaymentIntentInputSchema>
 export type CreatePublicInvoicePaymentIntentInput = z.infer<typeof createPublicInvoicePaymentIntentInputSchema>
-export type GeneratePayLinkInput = z.infer<typeof generatePayLinkInputSchema>
 export type RecordPaymentInput = z.infer<typeof recordPaymentInputSchema>
 export type ReceivePaymentInput = z.infer<typeof receivePaymentInputSchema>
 

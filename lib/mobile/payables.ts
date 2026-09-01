@@ -326,7 +326,7 @@ function mapPayable(
     documents: Map<string, MobilePayableDocumentDTO>
   },
 ): MobilePayableDTO {
-  const lot = context.lots.get(bill.project_id)
+  const lot = bill.project_id ? context.lots.get(bill.project_id) : undefined
   return {
     id: bill.id,
     bill_number: bill.bill_number ?? null,
@@ -370,7 +370,7 @@ function mapPayable(
  */
 async function decorate(context: MobileOrgContext, bills: VendorBillSummary[]) {
   const companyIds = [...new Set(bills.map((bill) => bill.company_id).filter((id): id is string => Boolean(id)))]
-  const projectIds = [...new Set(bills.map((bill) => bill.project_id).filter(Boolean))]
+  const projectIds = [...new Set(bills.map((bill) => bill.project_id).filter((id): id is string => Boolean(id)))]
 
   const [rules, complianceByCompanyId, lots, documents] = await Promise.all([
     runWithServiceOrgContext(context.serviceContext, () => getComplianceRules(context.orgId)),
@@ -486,13 +486,18 @@ export async function getMobilePayable(context: MobileOrgContext, billId: string
     throw new MobileAPIError(404, "payable_not_found", "That payable could not be found.")
   }
 
-  const verdicts = await authorizeMany({
-    permission: "bill.approve",
-    userId: context.user.id,
-    orgId: context.orgId,
-    projectIds: [bill.project_id],
-  })
-  const mayApprove = verdicts.get(bill.project_id) === true
+  const mayApprove = bill.project_id
+    ? (await authorizeMany({
+        permission: "bill.approve",
+        userId: context.user.id,
+        orgId: context.orgId,
+        projectIds: [bill.project_id],
+      })).get(bill.project_id) === true
+    : await hasPermission("bill.approve", {
+        supabase: context.serviceSupabase,
+        orgId: context.orgId,
+        userId: context.user.id,
+      })
 
   const [decorations, holdEvaluation] = await Promise.all([
     decorate(context, [bill]),

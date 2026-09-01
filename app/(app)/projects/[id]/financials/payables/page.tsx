@@ -17,7 +17,7 @@ import { unwrapAction } from "@/lib/action-result"
 
 interface PageProps {
   params: Promise<{ id: string }>
-  searchParams: Promise<{ queue?: string; q?: string; page?: string; pageSize?: string; bill?: string }>
+  searchParams: Promise<{ queue?: string; due?: string; q?: string; page?: string; pageSize?: string; bill?: string }>
 }
 
 export default async function FinancialsPayablesPage({ params, searchParams }: PageProps) {
@@ -30,10 +30,10 @@ export default async function FinancialsPayablesPage({ params, searchParams }: P
   )
 }
 
-async function FinancialsPayablesData({ id, query }: { id: string; query: { queue?: string; q?: string; page?: string; pageSize?: string; bill?: string } }) {
+async function FinancialsPayablesData({ id, query }: { id: string; query: { queue?: string; due?: string; q?: string; page?: string; pageSize?: string; bill?: string } }) {
   const [{ project }, data, setupStatus, paymentContext] = await Promise.all([
     loadFinancialsOverviewData(id),
-    fetchPayablesTabDataAction(id, { queue: query.queue, search: query.q, page: Number(query.page) || 1, pageSize: Number(query.pageSize) || 50 }),
+    fetchPayablesTabDataAction(id, { queue: query.queue, due: query.due, search: query.q, billId: query.bill, page: Number(query.page) || 1, pageSize: Number(query.pageSize) || 50 }),
     getProjectFinancialSetupStatusForProject(id),
     requireOrgContext().then(async ({ orgId, userId }) => ({
       railOpen: await isVendorPayoutSetupOpen(orgId),
@@ -48,7 +48,7 @@ async function FinancialsPayablesData({ id, query }: { id: string; query: { queu
   // nothing in the list, so evaluating every row cost roughly seven queries per
   // bill plus a compliance lookup on every render — 350+ round trips for a page
   // showing one. The org desk already loads this per bill on selection.
-  const openBillId = query.bill && data.vendorBills.some((bill) => bill.id === query.bill) ? query.bill : null
+  const openBillId = data.selectedBill?.id ?? null
   const openBillHolds = openBillId ? await evaluateHolds(openBillId).catch(() => null) : null
   const holdEvaluations = openBillId && openBillHolds ? { [openBillId]: openBillHolds } : {}
 
@@ -66,9 +66,13 @@ async function FinancialsPayablesData({ id, query }: { id: string; query: { queu
       <PayablesTab
         projectId={project.id}
         vendorBills={data.vendorBills}
+        selectedBill={data.selectedBill}
         pagination={data.vendorBillsPage}
-        initialQueue={query.queue ?? "needs_review"}
-        initialSearch={query.q ?? ""}
+        queueTotals={data.vendorBillsPage.tabs}
+        summaryTruncated={data.vendorBillsPage.summaryTruncated}
+        initialQueue={data.vendorBillsPage.query.queue}
+        initialDue={data.vendorBillsPage.query.due}
+        initialSearch={data.vendorBillsPage.query.search}
         costCodes={data.costCodes}
         budgetLines={data.budgetLines}
         costCodesEnabled={setupStatus.costCodesEnabled}

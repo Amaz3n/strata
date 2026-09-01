@@ -11,8 +11,20 @@ export const CORRESPONDENCE_PAGE_SIZE = 50
 /** Ceiling on one request, so a hand-built query can't ask for the whole log. */
 export const CORRESPONDENCE_MAX_PAGE_SIZE = 200
 
+/**
+ * Which pile of the log is being read.
+ *
+ * A filter, not a mode. Unfiled mail is the same corpus seen from the other
+ * side — it used to be a second tab, which made the two look like different
+ * surfaces and doubled every control on the page.
+ */
+export const CORRESPONDENCE_STATUSES = ["filed", "unfiled"] as const
+
+export type CorrespondenceStatus = (typeof CORRESPONDENCE_STATUSES)[number]
+
 export const correspondenceFilterSchema = z.object({
   projectId: z.string().uuid(),
+  status: z.enum(CORRESPONDENCE_STATUSES).default("filed"),
   search: z.string().trim().max(200).optional(),
   classification: z.enum(CORRESPONDENCE_CLASSIFICATIONS).optional(),
   direction: z.enum(["inbound", "outbound"]).optional(),
@@ -109,6 +121,7 @@ export function parseCorrespondenceSearchParams(
   }
   const candidate = {
     projectId,
+    status: value("view") === "unfiled" ? "unfiled" : "filed",
     search: value("q"),
     classification: value("classification"),
     direction: value("direction"),

@@ -41,6 +41,32 @@ async function fileBelongsToReviewedDocument(
   return !!item || !!link
 }
 
+/**
+ * A photo the builder deliberately published to the client feed.
+ *
+ * This is its own reachability rule rather than a `share_with_clients` flag on
+ * the file: publishing happens on the photo record, from the photos workbench,
+ * and marking the underlying file shared would also expose it through Documents,
+ * which is not what "publish to the client feed" means.
+ */
+async function fileIsPublishedPhoto(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  orgId: string,
+  projectId: string,
+  fileId: string,
+): Promise<boolean> {
+  const { data } = await supabase
+    .from("photos")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("file_id", fileId)
+    .eq("visibility", "client")
+    .limit(1)
+    .maybeSingle()
+  return !!data
+}
+
 /** Sub tokens reach the item files of submittals assigned to their company
  * (their own uploads plus the returned stamped copy). */
 async function fileBelongsToCompanySubmittal(
@@ -103,12 +129,13 @@ export async function GET(
 ) {
   const { token, fileId } = await context.params
 
+  // The permission is decided per file below, not up front: a photo published to
+  // the client feed is reachable with `can_view_photos` by someone whose link
+  // does not carry document access at all. The token itself is still validated
+  // here, and every path below demands one of the two permissions.
   let access
   try {
-    access = await assertPortalActionAccess(token, {
-      requireProject: true,
-      permission: "can_view_documents",
-    })
+    access = await assertPortalActionAccess(token, { requireProject: true })
   } catch {
     return NextResponse.json({ error: "Invalid or expired portal access" }, { status: 401 })
   }
@@ -127,26 +154,39 @@ export async function GET(
     return NextResponse.json({ error: "File not available" }, { status: 404 })
   }
 
-  if (!file[shareColumn]) {
-    // Reviewer seats additionally reach files that ride the documents they
-    // review: submittal item uploads and submittal/RFI attachments. Sub seats
-    // reach their own submittal item files (including the stamped copy).
-    const isReachable =
-      access.portal_type === "reviewer"
-        ? await fileBelongsToReviewedDocument(supabase, access.org_id, file.id)
-        : access.portal_type === "sub" && access.company_id
-          ? (await fileBelongsToCompanySubmittal(supabase, access.org_id, file.id, access.company_id)) ||
-            (access.permissions.can_view_rfis !== false &&
-              (await fileBelongsToCompanyRfi(
-                supabase,
-                access.org_id,
-                file.id,
-                access.company_id,
-                access.scoped_rfi_id ?? null,
-              )))
-          : false
-    if (!isReachable) {
-      return NextResponse.json({ error: "File not available" }, { status: 404 })
+  // A published photo is reachable on the photos permission alone.
+  const asPublishedPhoto =
+    access.permissions.can_view_photos !== false &&
+    (await fileIsPublishedPhoto(supabase, access.org_id, access.project_id, file.id))
+
+  if (!asPublishedPhoto) {
+    // Unchanged from when this was asserted up front: document access is an
+    // explicit yes, not merely the absence of a no.
+    if (access.permissions.can_view_documents !== true) {
+      return NextResponse.json({ error: "Invalid or expired portal access" }, { status: 401 })
+    }
+
+    if (!file[shareColumn]) {
+      // Reviewer seats additionally reach files that ride the documents they
+      // review: submittal item uploads and submittal/RFI attachments. Sub seats
+      // reach their own submittal item files (including the stamped copy).
+      const isReachable =
+        access.portal_type === "reviewer"
+          ? await fileBelongsToReviewedDocument(supabase, access.org_id, file.id)
+          : access.portal_type === "sub" && access.company_id
+            ? (await fileBelongsToCompanySubmittal(supabase, access.org_id, file.id, access.company_id)) ||
+              (access.permissions.can_view_rfis !== false &&
+                (await fileBelongsToCompanyRfi(
+                  supabase,
+                  access.org_id,
+                  file.id,
+                  access.company_id,
+                  access.scoped_rfi_id ?? null,
+                )))
+            : false
+      if (!isReachable) {
+        return NextResponse.json({ error: "File not available" }, { status: 404 })
+      }
     }
   }
 

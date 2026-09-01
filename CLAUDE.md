@@ -298,6 +298,33 @@ Then the suites your change touches:
   not a record. Attribution to a directory party (`contact_id`/`company_id`)
   must be written at ingest, not only backfilled: it is what the party's
   Communications tab reads.
+- **Photos: the record is the row, not the file.** Every project image/video
+  `files` row gets a `photos` row from a trigger (`tg_files_ensure_photo_record`)
+  — that invariant is what lets the workbench list photos uploaded by any of a
+  dozen paths without each one remembering to write a second row. **`taken_at` is
+  the timeline's axis and is NOT NULL**: EXIF capture time when the file settles a
+  timezone, upload time otherwise. EXIF has no offset, so only a client standing
+  in that zone may resolve one — the browser sends `taken_at` with the upload and
+  the server derives one only from `OffsetTimeOriginal` or a GPS clock to
+  difference against (`lib/media/exif.ts`, tested). **The list reads the
+  `project_photo_entries` view** so filtering, sorting, paging and counting happen
+  in the database; only `source_type` is resolved in app code, and that path is
+  batch-bounded and returns its cursor rather than scanning a project dry.
+  **Paperwork is not a photo:** the view excludes `financials`, `contracts` and
+  `permits` (`NON_PHOTO_FILE_CATEGORIES` in `lib/media/photo-media.ts`, with a
+  twin in the view's WHERE clause and a test binding them together), because a
+  photographed receipt is `image/jpeg` and the old list's only test was the mime
+  type. The exclusion is on READ, never in the trigger — the record is one cheap
+  row, the file may be recategorised later, and the trigger runs before
+  `file_links` exists so it could not classify anyway. This is a holding
+  position: what Photos is *for* — a curated visual record keyed on area and
+  album, versus the date-grouped grid that duplicates Daily Logs — is unsettled. Photos
+  render from the **preview ladder** (`generate_file_preview` → `HashImage` +
+  `lib/files/photo-src.ts`), never the original — `thumbnail_url` from
+  `lib/services/photos.ts` is the one place that decides, and a HEIC original is
+  not renderable anywhere. Captions are enqueued from the preview job, the single
+  path every image takes, and gated on the org's AI flag. `photos.visibility =
+  'client'` is the client portal feed, served through `/api/portal/files/:token/:fileId`.
 - **Portals** are token-based public routes: `app/p` (client/buyer), `app/s`
   (sub), `app/b` (bid), `app/proposal`, `app/i` (invoice), plus `app/d`, `app/e`,
   `app/f`, `app/r`, `app/t`. The workspace portals (`p`, `s`, `r`) share one

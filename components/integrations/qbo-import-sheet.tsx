@@ -938,7 +938,7 @@ export function QboImportPanel({ active = true, projectId, connectionId, connect
                   Imported {lastImportSummary.imported} · skipped {lastImportSummary.skipped} · failed {lastImportSummary.failed}
                 </span>
               {(lastImport.invoice > 0 || lastImport.payment > 0 || lastImport.client_deposit > 0) && (
-                <ImportLink href={`/projects/${projectId}/financials/receivables`} label="Open Receivables" />
+                <ImportLink href={`/projects/${projectId}/financials/billing`} label="Open Billing" />
               )}
               {(lastImport.bill > 0 || lastImport.bill_payment > 0 || lastImport.vendor_credit > 0) && (
                 <ImportLink href={`/projects/${projectId}/financials/payables`} label="Open Payables" />

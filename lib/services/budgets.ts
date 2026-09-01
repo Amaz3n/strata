@@ -630,6 +630,9 @@ export interface BudgetRecord {
 
 export interface BudgetBreakdownRow {
   cost_code_id: string | null
+  /** Human-readable labels are embedded in newer snapshots for durable reporting. */
+  cost_code?: string | null
+  cost_code_name?: string | null
   cost_type: CostType | null
   budget_line_id: string | null
   budget_cents: number
@@ -1280,7 +1283,21 @@ export async function takeBudgetSnapshot(
         total_invoiced_cents: data.summary.total_invoiced_cents,
         variance_cents: data.summary.total_variance_cents,
         margin_percent: data.summary.gross_margin_percent,
-        by_cost_code: data.breakdown,
+        by_cost_code: data.breakdown.map((row) => {
+          const budgetLine = data.budget.lines.find(
+            (line) =>
+              (row.budget_line_id != null && line.id === row.budget_line_id) ||
+              (row.cost_code_id != null && line.cost_code_id === row.cost_code_id),
+          )
+          const costCode = Array.isArray(budgetLine?.cost_code)
+            ? budgetLine.cost_code[0]
+            : budgetLine?.cost_code
+          return {
+            ...row,
+            cost_code: costCode?.code ?? null,
+            cost_code_name: costCode?.name ?? null,
+          }
+        }),
         source: options.source ?? "manual",
         label: options.label ?? null,
         status: options.formal ? "formal" : "captured",

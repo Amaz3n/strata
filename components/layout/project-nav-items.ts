@@ -28,7 +28,6 @@ export type ProjectSection =
   | "meetings"
   | "transmittals"
   | "inspections"
-  | "forms"
   | "safety"
   | "decisions"
   | "selections"
@@ -106,7 +105,6 @@ export const BUILD_SECTIONS = new Set<ProjectSection>([
   "meetings",
   "transmittals",
   "inspections",
-  "forms",
   "safety",
   "decisions",
   "selections",
@@ -130,6 +128,7 @@ export function getProjectSection(pathname: string): ProjectSection {
   if (!segment) return "overview"
   if (segment === "financials") {
     switch (subSegment) {
+      case "cost-inbox":
       case "review":
         return "financials-review"
       case "tm-tickets":
@@ -142,6 +141,7 @@ export function getProjectSection(pathname: string): ProjectSection {
         return "budget"
       case "payables":
         return "payables"
+      case "billing":
       case "receivables":
         return "receivables"
       default:
@@ -171,7 +171,6 @@ export function getProjectSection(pathname: string): ProjectSection {
     case "meetings":
     case "transmittals":
     case "inspections":
-    case "forms":
     case "safety":
     case "decisions":
     case "selections":
@@ -194,7 +193,7 @@ export function getProjectSection(pathname: string): ProjectSection {
 }
 
 export function getFinancialLandingUrl(projectId: string) {
-  return `/projects/${projectId}/financials/receivables`
+  return `/projects/${projectId}/financials/billing`
 }
 
 function visibleBadge(count?: number) {
@@ -220,8 +219,8 @@ function buildFinancialSubs(
     config?.showInbox === false
       ? null
       : {
-          title: "Review",
-          url: url("/financials/review"),
+          title: "Cost Inbox",
+          url: url("/financials/cost-inbox"),
           isActive: section === "financials-review" || section === "cost-inbox",
           badge: visibleBadge(reviewBadgeCount),
           requiredAny: ["invoice.write", "bill.approve"],
@@ -241,8 +240,8 @@ function buildFinancialSubs(
       requiredAny: ["budget.read", "commitment.read"],
     },
     {
-      title: "Receivables",
-      url: url("/financials/receivables"),
+      title: "Billing",
+      url: url("/financials/billing"),
       isActive: section === "receivables" || section === "invoices",
       requiredAny: ["invoice.read", "payment.read", "draw.read"],
     },
@@ -419,12 +418,6 @@ export function buildProjectNavGroups({
       url: url("/submittals"),
       isActive: section === "submittals",
       requiredAny: ["submittal.read"],
-    },
-    {
-      title: "Forms",
-      url: url("/forms"),
-      isActive: section === "forms",
-      requiredAny: ["forms.read", "forms.write"],
     },
     {
       title: "Meeting Minutes",

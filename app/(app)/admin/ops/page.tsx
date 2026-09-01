@@ -33,6 +33,7 @@ async function OpsData() {
 
   return (
     <OpsClient
+      referenceTimeMs={Date.now()}
       cronHealth={cronHealth}
       outboxHealth={outboxHealth}
       stuckHealth={stuckHealth}

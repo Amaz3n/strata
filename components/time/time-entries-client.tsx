@@ -228,7 +228,7 @@ export function TimeEntriesClient({
         <DropdownMenuContent align="end">
           {isReviewable ? (
             <DropdownMenuItem asChild>
-              <Link href={`/projects/${projectId}/financials/review`}>Review in Financials</Link>
+              <Link href={`/projects/${projectId}/financials/cost-inbox`}>Open in Cost Inbox</Link>
             </DropdownMenuItem>
           ) : null}
           {isPmApproved ? (

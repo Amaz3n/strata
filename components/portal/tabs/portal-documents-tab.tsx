@@ -8,10 +8,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { FILE_CATEGORIES } from "@/components/files/types"
 import { PortalDrawingsSection } from "@/components/portal/portal-drawings"
 import { logPortalFileAccess } from "@/lib/portal/file-access-log"
-import type { ClientPortalData } from "@/lib/types"
+import type { ClientPortalDocumentsData } from "@/lib/types"
 
 interface PortalDocumentsTabProps {
-  data: ClientPortalData
+  data: ClientPortalDocumentsData
   token: string
   canDownload?: boolean
 }

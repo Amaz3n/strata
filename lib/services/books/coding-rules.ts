@@ -38,13 +38,13 @@ function normalize(value: string | null | undefined) {
   return value?.trim().toLowerCase().replace(/\s+/g, " ") ?? "";
 }
 
-async function requireCodingContext(orgId?: string, projectId?: string) {
+async function requireCodingContext(orgId?: string, projectId?: string | null) {
   const context = await requireOrgContext(orgId);
   await requireAuthorization({
     permission: "bill.write",
     userId: context.userId,
     orgId: context.orgId,
-    projectId,
+    projectId: projectId ?? undefined,
     supabase: context.supabase,
     resourceType: "coding_rule",
     resourceId: context.orgId,
@@ -56,7 +56,7 @@ export async function suggestCoding(input: {
   companyId?: string | null;
   vendorName?: string | null;
   memo?: string | null;
-  projectId?: string;
+  projectId?: string | null;
   orgId?: string;
 }) {
   const context = await requireCodingContext(input.orgId, input.projectId);
@@ -117,7 +117,7 @@ export async function learnCodingRule(input: {
    * contradicted the rule".
    */
   appliedRuleId?: string | null;
-  projectId?: string;
+  projectId?: string | null;
   orgId?: string;
 }) {
   const context = await requireCodingContext(input.orgId, input.projectId);

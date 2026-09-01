@@ -6,6 +6,7 @@ import { toast } from "sonner"
 
 import type { ProjectAccessPerson, ProjectAccessStatus } from "@/lib/types"
 import type { ProjectPosture } from "@/lib/product-tier"
+import { copyText } from "@/lib/clipboard"
 import { terminology } from "@/lib/terminology"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
@@ -58,30 +59,9 @@ export interface ProjectAccessRosterProps {
   onSetRequireAccount: (tokenId: string, requireAccount: boolean) => Promise<void> | void
 }
 
-async function copyText(value: string) {
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(value)
-      toast.success("Link copied")
-      return
-    } catch {
-      // Fall through to the textarea path (iOS, older browsers).
-    }
-  }
-
-  try {
-    const textArea = document.createElement("textarea")
-    textArea.value = value
-    textArea.style.position = "fixed"
-    textArea.style.left = "-9999px"
-    document.body.appendChild(textArea)
-    textArea.select()
-    const ok = document.execCommand("copy")
-    document.body.removeChild(textArea)
-    toast[ok ? "success" : "error"](ok ? "Link copied" : "Unable to copy link")
-  } catch {
-    toast.error("Unable to copy link")
-  }
+async function copyLink(value: string) {
+  const copied = await copyText(value)
+  toast[copied ? "success" : "error"](copied ? "Link copied" : "Unable to copy link")
 }
 
 /**
@@ -258,7 +238,7 @@ function AccessRow({
               className="size-7"
               title="Copy link"
               onClick={() =>
-                copyText(`${origin}/${PORTAL_PATH[person.portal_type] ?? "s"}/${person.token}`)
+                void copyLink(`${origin}/${PORTAL_PATH[person.portal_type] ?? "s"}/${person.token}`)
               }
             >
               <Copy className="size-3.5" />

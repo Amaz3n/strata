@@ -8,7 +8,6 @@ import { toast } from "sonner"
 import type { Task, TaskStatus, TaskPriority, TaskChecklistItem, TaskTrade } from "@/lib/types"
 import { type TaskInput } from "@/lib/validation/tasks"
 import { cn } from "@/lib/utils"
-import { listOrgAssignableResourcesAction } from "@/app/(app)/tasks/actions"
 import type { AssignableResource } from "@/app/(app)/projects/[id]/actions"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
 import { LinkedDrawings } from "@/components/drawings"
@@ -98,18 +97,20 @@ interface TaskProjectOption {
   name: string
 }
 
+interface TaskTeamMember {
+  id: string
+  user_id: string
+  full_name: string
+  avatar_url?: string
+}
+
 interface TasksTabProps {
   tasks: Task[]
   /** Projects the task can be attached to. Empty = personal-only. */
   projects: TaskProjectOption[]
   /** Preselect the project filter (e.g. arriving from a project's Tasks nav). */
   initialProjectFilter?: string
-  team: Array<{
-    id: string
-    user_id: string
-    full_name: string
-    avatar_url?: string
-  }>
+  assignableResources: AssignableResource[]
   onTaskCreate: (input: TaskInput) => Promise<Task>
   onTaskUpdate: (taskId: string, input: Partial<TaskInput>) => Promise<Task>
   onTaskDelete: (taskId: string) => Promise<void>
@@ -270,7 +271,7 @@ export function TasksTab({
   tasks: initialTasks,
   projects,
   initialProjectFilter,
-  team,
+  assignableResources,
   onTaskCreate,
   onTaskUpdate,
   onTaskDelete,
@@ -289,17 +290,9 @@ export function TasksTab({
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [taskToDelete, setTaskToDelete] = useState<Task | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [assignableResources, setAssignableResources] = useState<AssignableResource[]>([])
-
   useEffect(() => {
     setTasks(initialTasks)
   }, [initialTasks])
-
-  useEffect(() => {
-    listOrgAssignableResourcesAction()
-      .then((res) => setAssignableResources(res))
-      .catch((err) => console.error("Failed to load assignable resources", err))
-  }, [])
 
   // ============================================
   // COMPUTED VALUES
@@ -346,6 +339,16 @@ export function TasksTab({
   const assignableContacts = useMemo(
     () => assignableResources.filter((r) => r.type === "contact"),
     [assignableResources],
+  )
+  const team = useMemo(
+    () =>
+      assignableUsers.map((resource) => ({
+        id: resource.id,
+        user_id: resource.id,
+        full_name: resource.name,
+        avatar_url: resource.avatar_url,
+      })),
+    [assignableUsers],
   )
 
   const activeFilterCount = useMemo(() => {
@@ -1025,7 +1028,7 @@ interface TaskDetailSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   task: Task
-  team: TasksTabProps["team"]
+  team: TaskTeamMember[]
   projects: TaskProjectOption[]
   onUpdate: (taskId: string, updates: Partial<TaskInput>) => Promise<Task>
   onDelete: () => void

@@ -1,5 +1,6 @@
 "use client"
 
+import { invoiceHref } from "@/lib/financials/invoice-destinations"
 import { useMemo, useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
@@ -281,7 +282,7 @@ export function TmTicketWorkflow({
                       ) : null}
                       {ticket.invoice_id ? (
                         <Button asChild type="button" size="sm" variant="outline">
-                          <Link href={`/projects/${projectId}/financials/receivables?invoice=${ticket.invoice_id}`}>Open</Link>
+                          <Link href={invoiceHref(ticket.invoice_id, projectId)}>Open</Link>
                         </Button>
                       ) : null}
                       {!["billed", "voided"].includes(ticket.status) ? (

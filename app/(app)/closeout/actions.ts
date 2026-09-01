@@ -48,7 +48,7 @@ export async function settleGmpSavingsAction(projectId: string) {
       const result = await settleGmpSavings(projectId)
       revalidatePath(`/projects/${projectId}/closeout`)
       revalidatePath(`/projects/${projectId}/financials`)
-      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      revalidatePath(`/projects/${projectId}/financials/billing`)
       return result
   })
 }

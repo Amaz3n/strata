@@ -1,3 +1,4 @@
+import { receivablesWriter } from "@/lib/services/receivables-writer"
 import { requireOrgContext } from "@/lib/services/context"
 import { createInvoice } from "@/lib/services/invoices"
 import { createFileRecord } from "@/lib/services/files"
@@ -237,7 +238,7 @@ export async function linkInvoiceToDraw({
 
   const nextMetadata = buildDrawLinkMetadata(metadata, draw, nowIso)
 
-  const { error: invoiceUpdateError } = await supabase
+  const { error: invoiceUpdateError } = await receivablesWriter()
     .from("invoices")
     .update({ metadata: nextMetadata })
     .eq("id", invoice.id)
@@ -340,7 +341,7 @@ export async function unlinkInvoiceFromDraw({
     const metadata = (invoice.metadata ?? {}) as Record<string, any>
     const nextMetadata = removeDrawLinkMetadata(metadata, drawId)
 
-    await supabase
+    await receivablesWriter()
       .from("invoices")
       .update({ metadata: nextMetadata })
       .eq("id", invoiceId)
@@ -535,11 +536,10 @@ export async function invoiceDrawSchedule({
       invoice_number,
       reservation_id,
       title: isDeposit ? draw.title : `Draw ${draw.draw_number}: ${draw.title}`,
-      status: "saved",
+      issue: false,
       issue_date,
       due_date: due_date ?? draw.due_date ?? undefined,
       notes: draw.description ?? undefined,
-      client_visible: false,
       tax_rate: 0,
       lines,
       source_type: "draw",

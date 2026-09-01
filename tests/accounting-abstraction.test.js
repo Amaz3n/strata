@@ -489,16 +489,20 @@ test("the outbound sync sets are declared once, and never re-typed on the seam",
     isSyncableVendorBillStatus,
   } = require("../lib/financials/ledger-status")
 
-  // The sync sets are wider than the GL sets on purpose: a `saved` invoice is AR
-  // in QuickBooks and is not AR in Arc's ledger. That divergence is accepted and
-  // documented; what is not acceptable is each push site deciding it privately.
-  assert.deepEqual([...SYNCABLE_INVOICE_STATUSES], ["saved", "sent", "partial", "paid", "overdue"])
+  // Invoices sync once they are issued — the same set the GL posts from. They used
+  // to differ by `saved`, so an autosaved composer draft became AR in a customer's
+  // QuickBooks; `saved` is gone from the lifecycle entirely. Vendor bills stay
+  // wider than their GL set on purpose. What is not acceptable either way is each
+  // push site deciding privately.
+  assert.deepEqual([...SYNCABLE_INVOICE_STATUSES], ["sent", "partial", "paid", "overdue"])
   assert.deepEqual([...SYNCABLE_VENDOR_BILL_STATUSES], ["approved", "partial", "paid"])
-  assert.ok(SYNCABLE_INVOICE_STATUSES.includes("saved"))
-  assert.ok(!BILLED_INVOICE_STATUSES.includes("saved"))
+  assert.ok(!SYNCABLE_INVOICE_STATUSES.includes("saved"))
+  assert.ok(!SYNCABLE_INVOICE_STATUSES.includes("draft"))
+  assert.deepEqual([...SYNCABLE_INVOICE_STATUSES], [...BILLED_INVOICE_STATUSES])
   for (const status of PAYABLE_VENDOR_BILL_STATUSES) assert.ok(SYNCABLE_VENDOR_BILL_STATUSES.includes(status))
 
-  assert.equal(isSyncableInvoiceStatus("SAVED"), true)
+  assert.equal(isSyncableInvoiceStatus("SENT"), true)
+  assert.equal(isSyncableInvoiceStatus("saved"), false)
   assert.equal(isSyncableInvoiceStatus("draft"), false)
   assert.equal(isSyncableInvoiceStatus(null), false)
   assert.equal(isSyncableVendorBillStatus("partial"), true)
@@ -507,7 +511,7 @@ test("the outbound sync sets are declared once, and never re-typed on the seam",
   // The declaration must state why it differs and what the consequence is, so
   // the next reader does not "fix" the asymmetry by narrowing one list.
   const ledgerStatus = fs.readFileSync(path.join(__dirname, "../lib/financials/ledger-status.ts"), "utf8")
-  assert.match(ledgerStatus, /THE CONSEQUENCE, STATED PLAINLY/)
+  assert.match(ledgerStatus, /Widening it is a migration, not an edit/)
 
   // No module on the accounting-sync seam re-declares either set inline.
   const seam = [

@@ -72,7 +72,7 @@ export function FinancialSetupStatusBanner({ setup }: { setup: ProjectFinancialS
           <span className="flex flex-wrap items-center gap-2">
             Financial setup
             <Badge variant={blocking.length > 0 ? "destructive" : "outline"}>
-              {blocking.length > 0 ? "Needs setup" : "Review"}
+              {blocking.length > 0 ? "Needs setup" : "Incomplete"}
             </Badge>
           </span>
           <Button
@@ -81,7 +81,7 @@ export function FinancialSetupStatusBanner({ setup }: { setup: ProjectFinancialS
             onClick={openSetup}
             disabled={isLoading}
           >
-            {isLoading ? "Loading…" : blocking.length > 0 ? "Set up" : "Review"}
+            {isLoading ? "Loading…" : blocking.length > 0 ? "Set up" : "Finish setup"}
           </Button>
         </AlertTitle>
         <AlertDescription>

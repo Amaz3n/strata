@@ -115,7 +115,19 @@ money source of truth; readers must never infer it from a `paid` status label.
 - **`daily_logs`** - Daily construction logs
 - **`daily_log_entries`** - Individual log entries
 - **`punch_items`** - Quality control items
-- **`photos`** - Project photos with metadata
+- **`photos`** - One row per project image/video file, written by a trigger on
+  `files` so every upload path produces one. Carries `taken_at` (the capture
+  instant, EXIF when the file settles a timezone, upload time otherwise — this is
+  the timeline's sort key), album, area, trade, GPS, AI caption/tags, and the
+  `visibility` that decides the client portal feed
+- **`photo_albums`** - Named groupings within a project; deleting one clears
+  membership and never deletes photos
+- **`project_photo_entries`** (view) - A photo record joined to its file, with the
+  preview-ladder facts and a search haystack; what the photos workbench reads, so
+  filtering, sorting, paging and counting happen in the database. Excludes images
+  filed as paperwork (`financials`, `contracts`, `permits`) — a photographed
+  receipt is still an image, and the exclusion lives here rather than in the
+  trigger so the record survives a recategorisation
 
 #### Document Management
 - **`files`** - File storage with versioning

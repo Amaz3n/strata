@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { format, formatDistanceToNow } from "date-fns"
+import { format, formatDistance } from "date-fns"
 import { toast } from "sonner"
 
 import { Badge } from "@/components/ui/badge"
@@ -30,6 +30,7 @@ import type {
 } from "@/lib/services/ops"
 
 interface OpsClientProps {
+  referenceTimeMs: number
   cronHealth: CronJobHealth[]
   outboxHealth: OutboxHealth
   stuckHealth: StuckOutboxHealth
@@ -53,15 +54,25 @@ const CRON_STATE_LABEL: Record<CronJobHealth["state"], string> = {
   "no-data": "No runs yet",
 }
 
-function relative(value: string | null) {
-  return value ? formatDistanceToNow(new Date(value), { addSuffix: true }) : "—"
+const CURRENCY_FORMATTER = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+})
+
+function relative(value: string | null, referenceTimeMs: number) {
+  return value ? formatDistance(new Date(value), new Date(referenceTimeMs), { addSuffix: true }) : "—"
 }
 
 function exact(value: string | null) {
   return value ? format(new Date(value), "MMM d, HH:mm:ss") : undefined
 }
 
+function money(cents: number) {
+  return CURRENCY_FORMATTER.format(cents / 100)
+}
+
 export function OpsClient({
+  referenceTimeMs,
   cronHealth,
   outboxHealth,
   stuckHealth,
@@ -85,9 +96,6 @@ export function OpsClient({
   const [resolveNote, setResolveNote] = useState("")
   const [resolveReference, setResolveReference] = useState("")
   const [resolveEvidenceSource, setResolveEvidenceSource] = useState<"provider" | "bank" | "accounting" | "ledger" | "other">("provider")
-
-  const money = (cents: number) =>
-    new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100)
 
   const reconcileNow = () => {
     startRefreshing(async () => {
@@ -224,10 +232,10 @@ export function OpsClient({
                   </TableCell>
                   <TableCell className="py-2.5 text-xs text-muted-foreground">{job.scheduleLabel}</TableCell>
                   <TableCell className="py-2.5 text-xs" title={exact(job.lastRunAt)}>
-                    {relative(job.lastRunAt)}
+                    {relative(job.lastRunAt, referenceTimeMs)}
                   </TableCell>
                   <TableCell className="py-2.5 text-xs" title={exact(job.lastSuccessAt)}>
-                    {relative(job.lastSuccessAt)}
+                    {relative(job.lastSuccessAt, referenceTimeMs)}
                   </TableCell>
                   <TableCell className="py-2.5 text-right text-xs tabular-nums text-muted-foreground">
                     {job.lastRunDurationMs !== null ? `${(job.lastRunDurationMs / 1000).toFixed(1)}s` : "—"}
@@ -261,7 +269,9 @@ export function OpsClient({
             <span className="ml-2 normal-case tracking-normal">
               {outboxHealth.pendingCount} pending · {outboxHealth.processingCount} processing ·{" "}
               {outboxHealth.completedLast24h} completed in 24h
-              {outboxHealth.oldestPendingAt ? ` · oldest pending ${relative(outboxHealth.oldestPendingAt)}` : ""}
+              {outboxHealth.oldestPendingAt
+                ? ` · oldest pending ${relative(outboxHealth.oldestPendingAt, referenceTimeMs)}`
+                : ""}
             </span>
           </h2>
           <div className="flex items-center gap-2">
@@ -304,7 +314,7 @@ export function OpsClient({
                       </div>
                     </TableCell>
                     <TableCell className="py-2.5 text-xs" title={exact(item.updatedAt)}>
-                      {relative(item.updatedAt)}
+                      {relative(item.updatedAt, referenceTimeMs)}
                     </TableCell>
                     <TableCell className="py-2.5 pr-4 text-right">
                       <Button
@@ -382,7 +392,7 @@ export function OpsClient({
                       {group.totalCount}
                     </TableCell>
                     <TableCell className="py-2.5 text-xs" title={exact(group.oldestStuckSince)}>
-                      {relative(group.oldestStuckSince)}
+                      {relative(group.oldestStuckSince, referenceTimeMs)}
                     </TableCell>
                     <TableCell className="py-2.5 text-xs">
                       <div className="max-w-xs truncate" title={orgsLabel(group)}>
@@ -464,7 +474,7 @@ export function OpsClient({
                       </div>
                     </TableCell>
                     <TableCell className="py-2.5 pr-4 text-xs" title={exact(alert.createdAt)}>
-                      {relative(alert.createdAt)}
+                      {relative(alert.createdAt, referenceTimeMs)}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -601,7 +611,7 @@ export function OpsClient({
           ) : null}
           {reconciliations.length > 0 ? (
             <div className="border-t px-4 py-2 text-xs text-muted-foreground">
-              Last run {relative(reconciliations[0].createdAt)} ·{" "}
+              Last run {relative(reconciliations[0].createdAt, referenceTimeMs)} ·{" "}
               <span className="capitalize">{reconciliations[0].status}</span> · difference{" "}
               <span className="tabular-nums">{money(reconciliations[0].differenceCents)}</span>
             </div>
@@ -634,7 +644,8 @@ export function OpsClient({
                 {qboHealth.map((conn) => {
                   const refreshExpiry = conn.refreshTokenExpiresAt ? new Date(conn.refreshTokenExpiresAt) : null
                   const refreshExpiringSoon =
-                    refreshExpiry !== null && refreshExpiry.getTime() - Date.now() < 7 * 24 * 60 * 60 * 1000
+                    refreshExpiry !== null &&
+                    refreshExpiry.getTime() - referenceTimeMs < 7 * 24 * 60 * 60 * 1000
                   return (
                     <TableRow key={conn.orgId}>
                       <TableCell className="pl-4 py-2.5 text-sm font-medium">{conn.orgName}</TableCell>
@@ -648,13 +659,15 @@ export function OpsClient({
                         </Badge>
                       </TableCell>
                       <TableCell className="py-2.5 text-xs" title={exact(conn.lastSyncAt)}>
-                        {relative(conn.lastSyncAt)}
+                        {relative(conn.lastSyncAt, referenceTimeMs)}
                       </TableCell>
                       <TableCell
                         className={cn("py-2.5 text-xs", refreshExpiringSoon && "font-medium text-destructive")}
                         title={exact(conn.refreshTokenExpiresAt)}
                       >
-                        {conn.refreshTokenExpiresAt ? relative(conn.refreshTokenExpiresAt) : "—"}
+                        {conn.refreshTokenExpiresAt
+                          ? relative(conn.refreshTokenExpiresAt, referenceTimeMs)
+                          : "—"}
                       </TableCell>
                       <TableCell
                         className={cn(

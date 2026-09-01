@@ -43,7 +43,6 @@ export async function createRfiAction(input: unknown): Promise<ActionResult<Rfi>
   try {
     const parsed = createRfiRequestSchema.parse(input)
     const rfi = await createRfi({ input: parsed, sendNow: parsed.send_now })
-    revalidatePath("/rfis")
     revalidatePath(`/projects/${rfi.project_id}/rfis`)
     return { success: true, data: rfi }
   } catch (error) {
@@ -54,7 +53,6 @@ export async function createRfiAction(input: unknown): Promise<ActionResult<Rfi>
 export async function sendRfiAction(rfiId: string): Promise<ActionResult<Rfi>> {
   try {
     const rfi = await sendRfi({ rfiId })
-    revalidatePath("/rfis")
     revalidatePath(`/projects/${rfi.project_id}/rfis`)
     return { success: true, data: rfi }
   } catch (error) {
@@ -66,7 +64,6 @@ export async function addRfiResponseAction(input: unknown): Promise<ActionResult
   try {
     const parsed = rfiResponseInputSchema.parse(input)
     await addRfiResponse({ orgId: undefined, input: parsed })
-    revalidatePath("/rfis")
     return { success: true, data: null }
   } catch (error) {
     return actionError(error)
@@ -77,7 +74,6 @@ export async function decideRfiAction(input: unknown): Promise<ActionResult<null
   try {
     const parsed = rfiDecisionSchema.parse(input)
     await decideRfi({ orgId: undefined, input: parsed })
-    revalidatePath("/rfis")
     return { success: true, data: null }
   } catch (error) {
     return actionError(error)
@@ -87,7 +83,6 @@ export async function decideRfiAction(input: unknown): Promise<ActionResult<null
 export async function closeRfiAction(rfiId: string): Promise<ActionResult<Rfi>> {
   try {
     const rfi = await closeRfi({ rfiId })
-    revalidatePath("/rfis")
     revalidatePath(`/projects/${rfi.project_id}/rfis`)
     return { success: true, data: rfi }
   } catch (error) {
@@ -98,7 +93,6 @@ export async function closeRfiAction(rfiId: string): Promise<ActionResult<Rfi>> 
 export async function reopenRfiAction(rfiId: string): Promise<ActionResult<Rfi>> {
   try {
     const rfi = await reopenRfi({ rfiId })
-    revalidatePath("/rfis")
     revalidatePath(`/projects/${rfi.project_id}/rfis`)
     return { success: true, data: rfi }
   } catch (error) {
@@ -109,7 +103,6 @@ export async function reopenRfiAction(rfiId: string): Promise<ActionResult<Rfi>>
 export async function convertRfiToChangeOrderAction(rfiId: string): Promise<ActionResult<ChangeOrder>> {
   try {
     const changeOrder = await convertRfiToChangeOrder({ rfiId })
-    revalidatePath("/rfis")
     revalidatePath(`/projects/${changeOrder.project_id}/change-orders`)
     return { success: true, data: changeOrder }
   } catch (error) {

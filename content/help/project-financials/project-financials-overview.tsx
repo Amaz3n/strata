@@ -70,13 +70,13 @@ export default function ProjectFinancialsOverviewArticle() {
         .
       </p>
 
-      <h3>6. Receivables &amp; Invoices</h3>
+      <h3>6. Billing &amp; Invoices</h3>
       <p>
         Create client progress invoices by billing period, track client retainage holdings, sync invoices with QuickBooks, 
         and collect card or ACH payments online.
         {" "}
-        <Link href="/help/project-financials/financial-workflows/receivables-invoicing">
-          Read the Receivables &amp; Invoices Guide
+        <Link href="/help/project-financials/financial-workflows/billing-invoicing">
+          Read the Billing &amp; Invoices Guide
         </Link>
         .
       </p>

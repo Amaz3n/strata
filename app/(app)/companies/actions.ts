@@ -8,6 +8,8 @@ import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 import { getProvider } from "@/lib/integrations/accounting/registry"
 import { ACCOUNTING_PROVIDERS } from "@/lib/integrations/accounting/catalog"
 import { companyFiltersSchema, companyInputSchema, companyUpdateSchema } from "@/lib/validation/companies"
+import { resolvePartyCapabilities } from "@/lib/directory/roles"
+import { getPartyRoles } from "@/lib/services/party-roles"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 import { inviteCompanyToPaymentSetup, setCompanyPaymentAccessStatus } from "@/lib/services/vendor-payment-invitations"
@@ -23,6 +25,13 @@ async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
 export async function listCompaniesAction(filters?: unknown) {
       const parsed = companyFiltersSchema.parse(filters ?? undefined) ?? undefined
       return listCompanies(undefined, parsed)
+}
+
+/** The AP picker follows live vendor roles, not the legacy company_type bucket. */
+export async function listVendorCompaniesAction() {
+  const companies = await listCompanies()
+  const roles = await getPartyRoles({ companyIds: companies.map((company) => company.id) })
+  return companies.filter((company) => resolvePartyCapabilities(roles.get(company.id) ?? []).isVendor)
 }
 
 export async function createCompanyAction(input: unknown) {

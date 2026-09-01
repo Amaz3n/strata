@@ -1,3 +1,4 @@
+import { INVOICE_HREF_TEMPLATE } from "@/lib/financials/invoice-destinations"
 import "server-only"
 
 import type { SearchEntityType } from "@/lib/services/search"
@@ -195,7 +196,7 @@ export const ENTITY_HREF_FALLBACKS: Record<SearchEntityType, string> = {
   file: "/files/{id}",
   contact: "/contacts/{id}",
   company: "/directory/{id}",
-  invoice: "/projects/{project_id}/financials/receivables?invoice={id}",
+  invoice: INVOICE_HREF_TEMPLATE,
   payment: "/payments/{id}",
   payment_run: "/payables?run={id}",
   budget: "/budgets/{id}",
@@ -205,7 +206,7 @@ export const ENTITY_HREF_FALLBACKS: Record<SearchEntityType, string> = {
   change_order: "/change-orders/{id}",
   contract: "/contracts/{id}",
   proposal: "/signatures",
-  pay_application: "/projects/{project_id}/financials/receivables?payApp={id}",
+  pay_application: "/projects/{project_id}/financials/billing?payApp={id}",
   rfi: "/rfis/{id}",
   submittal: "/submittals/{id}",
   meeting: "/projects/{project_id}/meetings?meeting={id}",

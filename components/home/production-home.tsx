@@ -71,9 +71,9 @@ export function ProductionHome({ data, showCustomProjects }: { data: ProductionH
       {showCustomProjects && (
         <Link
           className="flex items-center gap-1.5 border-b px-5 py-2 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
-          href="/control-tower"
+          href="/projects"
         >
-          Custom projects are active · open the custom project control tower
+          Custom projects are active · open the projects list
           <ArrowUpRight className="h-3 w-3" />
         </Link>
       )}

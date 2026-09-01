@@ -458,14 +458,15 @@ test("a bill only holds on a lien waiver when policy actually requires one", () 
   )
 })
 
-test("the waiver hold and the hard release gate read the same two flags", () => {
+test("construction waiver holds use the same flags and never apply to overhead", () => {
   const holds = fs.readFileSync(path.resolve(__dirname, "../lib/services/payment-holds.ts"), "utf8")
   // evaluateHolds must source waiverRequired from compliance rules + the project
   // sub-tier flag, the same inputs assertBillReleasable gates its throws on.
-  assert.match(holds, /waiverRequired: Boolean\(rules\.require_lien_waiver\) \|\| Boolean\(projectControls\?\.require_subtier_waivers\)/)
+  assert.match(holds, /waiverRequired: Boolean\(bill\.project_id\) && \(Boolean\(rules\.require_lien_waiver\) \|\| Boolean\(projectControls\?\.require_subtier_waivers\)\)/)
   assert.match(holds, /getComplianceRulesWithClient\(supabase, resolvedOrgId\)/)
   // Auto-chase hangs off the hold, so an unrequired waiver must not email vendors.
-  assert.match(holds, /waiverAutoChase && evaluation\.holds\.some\(\(hold\) => hold\.kind === "waiver_signed"/)
+  assert.match(holds, /bill\.project_id && options\.enqueueWaiverChase && waiverAutoChase && evaluation\.holds\.some\(\(hold\) => hold\.kind === "waiver_signed"/)
+  assert.match(holds, /if \(bill\.project_id && rules\.block_payment_on_missing_docs\)/)
 })
 
 test("payment step-up reads the caller's session, never a passed-in client", () => {
@@ -908,7 +909,9 @@ test("the payables desk tabs partition the pipeline and total real outstanding b
   // that counted under both "due" and "needs approval" is money reported twice.
   // Each working tab is one bucket, chosen once per payable.
   const orgService = fs.readFileSync(path.resolve(__dirname, "../lib/services/org-payables.ts"), "utf8")
-  assert.match(orgService, /PAYABLE_TABS = \[\s*"drafts",\s*"approval",\s*"ready",\s*"inflight",\s*"paid",\s*"all",\s*\]/)
+  const queueContract = fs.readFileSync(path.resolve(__dirname, "../lib/financials/payables-queues.ts"), "utf8")
+  assert.match(queueContract, /PAYABLE_QUEUES = \[\s*"drafts",\s*"approval",\s*"ready",\s*"inflight",\s*"paid",\s*"all",\s*\]/)
+  assert.match(orgService, /PAYABLE_TABS = PAYABLE_QUEUES/)
   // Sums are outstanding balances, so retainage and partial payments come off.
   assert.match(orgService, /payableOutstandingCents\(\{/)
   // "Ready to pay" excludes anything the rail already claims, and "in flight" is
@@ -2216,5 +2219,6 @@ test("the project payables list means the same thing as the org desk", () => {
   // "ready to pay"; this list excluded neither, so a credit sat there with a
   // negative balance and a claimed bill could be offered for payment twice.
   assert.match(page, /metadata->>source\.neq\.vendor_credit/)
-  assert.match(page, /ACTIVE_RUN_ITEM_STATUSES/)
+  assert.match(page, /listActivePayableRunItems/)
+  assert.match(page, /queue === "inflight"/)
 })

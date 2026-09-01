@@ -1,5 +1,6 @@
 import "server-only"
 
+import { projectedMargin, rollUpProjectedMargin } from "@/lib/financials/production-margin"
 import {
   getDivisionAccessForUser,
   getDivisionScopedProjectIds,
@@ -28,6 +29,7 @@ export type ProductionLotPnlRow = {
   budgetCents: number
   actualCostCents: number
   vpoCents: number
+  projectedCostCents: number
   projectedMarginCents: number
   projectedMarginPercent: number
 }
@@ -42,6 +44,7 @@ export type CommunityPnlRow = {
   budgetCents: number
   actualCostCents: number
   vpoCents: number
+  projectedCostCents: number
   projectedMarginCents: number
   projectedMarginPercent: number
   targetMarginPercent: number | null
@@ -199,8 +202,7 @@ export async function getProductionPortfolioReport(
     const budgetCents = budgets.get(lot.project_id) ?? 0
     const actualCostCents = costs.get(lot.project_id) ?? 0
     const vpoCents = vpos.get(lot.project_id) ?? 0
-    const projectedCost = Math.max(actualCostCents, budgetCents) + vpoCents
-    const projectedMarginCents = revenueCents - projectedCost
+    const margin = projectedMargin({ revenueCents, budgetCents, actualCostCents, vpoCents })
     return {
       communityId: lot.community_id,
       projectId: lot.project_id,
@@ -213,8 +215,9 @@ export async function getProductionPortfolioReport(
       budgetCents,
       actualCostCents,
       vpoCents,
-      projectedMarginCents,
-      projectedMarginPercent: revenueCents > 0 ? (projectedMarginCents / revenueCents) * 100 : 0,
+      projectedCostCents: margin.projectedCostCents,
+      projectedMarginCents: margin.marginCents,
+      projectedMarginPercent: margin.marginPercent,
     }
   })
 
@@ -224,7 +227,7 @@ export async function getProductionPortfolioReport(
     const budgetCents = sum(scopedLots.map((row) => ({ amount: row.budgetCents })))
     const actualCostCents = sum(scopedLots.map((row) => ({ amount: row.actualCostCents })))
     const vpoCents = sum(scopedLots.map((row) => ({ amount: row.vpoCents })))
-    const projectedMarginCents = sum(scopedLots.map((row) => ({ amount: row.projectedMarginCents })))
+    const rollup = rollUpProjectedMargin(scopedLots.map((row) => ({ revenueCents: row.revenueCents, projectedCostCents: row.projectedCostCents, marginCents: row.projectedMarginCents })))
     const closedRevenueCents = sum(scopedLots.filter((row) => row.status === "closed").map((row) => ({ amount: row.revenueCents })))
     return {
       communityId: community.id,
@@ -236,8 +239,9 @@ export async function getProductionPortfolioReport(
       budgetCents,
       actualCostCents,
       vpoCents,
-      projectedMarginCents,
-      projectedMarginPercent: revenueCents > 0 ? (projectedMarginCents / revenueCents) * 100 : 0,
+      projectedCostCents: rollup.projectedCostCents,
+      projectedMarginCents: rollup.marginCents,
+      projectedMarginPercent: rollup.marginPercent,
       targetMarginPercent: typeof (community.settings as any)?.target_margin_percent === "number"
         ? Number((community.settings as any).target_margin_percent)
         : typeof (community.settings as any)?.margin_target_percent === "number"
@@ -262,13 +266,13 @@ export async function getProductionPortfolioReport(
     }
     existing.homes += 1
     existing.revenueCents += row.revenueCents
-    existing.costCents += Math.max(row.actualCostCents, row.budgetCents) + row.vpoCents
+    existing.costCents += row.projectedCostCents
     existing.marginCents = existing.revenueCents - existing.costCents
     existing.marginPercent = existing.revenueCents > 0 ? (existing.marginCents / existing.revenueCents) * 100 : 0
     planMap.set(row.planId, existing)
   }
 
-  const totalDirectCost = sum(lotRows.map((row) => ({ amount: Math.max(row.actualCostCents, row.budgetCents) })))
+  const totalDirectCost = sum(lotRows.map((row) => ({ amount: row.projectedCostCents })))
   const varianceMap = new Map<string, ProductionPortfolioReport["variance"][number]>()
   for (const row of vpoResult.data ?? []) {
     const reasonRow = one<any>(row.reason)
@@ -288,7 +292,7 @@ export async function getProductionPortfolioReport(
   const budgetCents = sum(communityRows.map((row) => ({ amount: row.budgetCents })))
   const actualCostCents = sum(communityRows.map((row) => ({ amount: row.actualCostCents })))
   const vpoCents = sum(communityRows.map((row) => ({ amount: row.vpoCents })))
-  const marginCents = revenueCents - Math.max(actualCostCents, budgetCents) - vpoCents
+  const portfolio = rollUpProjectedMargin(communityRows.map((row) => ({ revenueCents: row.revenueCents, projectedCostCents: row.projectedCostCents, marginCents: row.projectedMarginCents })))
   return {
     communities: communityRows,
     plans: Array.from(planMap.values()).sort((a, b) => b.marginCents - a.marginCents),
@@ -300,8 +304,8 @@ export async function getProductionPortfolioReport(
       budgetCents,
       actualCostCents,
       vpoCents,
-      marginCents,
-      marginPercent: revenueCents > 0 ? (marginCents / revenueCents) * 100 : 0,
+      marginCents: portfolio.marginCents,
+      marginPercent: portfolio.marginPercent,
     },
   }
 }
@@ -322,6 +326,7 @@ function emptyCommunity(row: any): CommunityPnlRow {
     budgetCents: 0,
     actualCostCents: 0,
     vpoCents: 0,
+    projectedCostCents: 0,
     projectedMarginCents: 0,
     projectedMarginPercent: 0,
     targetMarginPercent: null,

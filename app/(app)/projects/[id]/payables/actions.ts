@@ -86,13 +86,15 @@ function toPayableActionError(error: unknown): string {
   return "Something went wrong. Please try again.";
 }
 
-function revalidatePayablesPages(projectId: string) {
+function revalidatePayablesPages(projectId?: string | null) {
   // Not `/projects/[id]/payables` — that route is a redirect stub, so
   // revalidating it refreshed nothing anybody looks at. The org desk lists the
   // same payables and has to move with the project one.
-  revalidatePath(`/projects/${projectId}/financials`);
-  revalidatePath(`/projects/${projectId}/financials/payables`);
-  revalidatePath(`/projects/${projectId}`);
+  if (projectId) {
+    revalidatePath(`/projects/${projectId}/financials`);
+    revalidatePath(`/projects/${projectId}/financials/payables`);
+    revalidatePath(`/projects/${projectId}`);
+  }
   revalidatePath("/payables");
 }
 
@@ -177,7 +179,7 @@ export async function releaseRetainageAction(
 }
 
 export async function createProjectVendorBillAction(
-  projectId: string,
+  projectId: string | null,
   input: unknown,
 ): Promise<ActionResult<PayableMutationResult>> {
   return run(async () => {
@@ -186,7 +188,7 @@ export async function createProjectVendorBillAction(
         projectId,
         input: input as any,
       });
-      if (bill.lien_waiver_status === "requested") {
+      if (projectId && bill.lien_waiver_status === "requested") {
         const { orgId } = await requireOrgContext();
         await enqueueOutboxJob({
           orgId,
@@ -263,7 +265,7 @@ export async function ensureProjectVendorCompanyForPayableAction(
           orgId,
           input: {
             name: vendorName,
-            company_type: "supplier",
+            role_key: "vendor",
             qbo_vendor_id: bill.qbo_vendor_id || undefined,
             qbo_vendor_name: bill.qbo_vendor_name || undefined,
             qbo_vendor_synced_at: bill.qbo_vendor_id
@@ -301,31 +303,31 @@ export async function listProjectCommitmentsForPayablesAction(
   return listProjectCommitments(projectId);
 }
 
-/** Everything the creation workspace needs once its project is known. */
-export async function getPayableCreationContextAction(projectId: string) {
+/** Everything the creation workspace needs for project or overhead coding. */
+export async function getPayableCreationContextAction(projectId?: string | null) {
   const { orgId, supabase, userId } = await requireOrgContext();
   await requireAuthorization({
     permission: "bill.write",
     userId,
     orgId,
-    projectId,
+    projectId: projectId ?? undefined,
     supabase,
-    resourceType: "project",
-    resourceId: projectId,
+    resourceType: projectId ? "project" : "vendor_bill",
+    resourceId: projectId ?? "new",
   });
   const [costCodesEnabled, budgetLines, costCodes, accounting, taxJurisdictions] =
     await Promise.all([
-      getProjectCostCodesEnabled(supabase, orgId, projectId),
-      listProjectBudgetLines(projectId, orgId).catch(() => []),
+      projectId ? getProjectCostCodesEnabled(supabase, orgId, projectId) : Promise.resolve(false),
+      projectId ? listProjectBudgetLines(projectId, orgId).catch(() => []) : Promise.resolve([]),
       listCostCodes(orgId).catch(() => []),
-      getPayablesAccountingContextAction(projectId),
+      getPayablesAccountingContextAction(projectId ?? undefined),
       createServiceSupabaseClient().from("books_tax_jurisdictions").select("id,name,use_tax_rate_micros").eq("org_id", orgId).eq("active", true).order("name").then(({ data }) => data ?? []),
     ]);
   return { costCodesEnabled, budgetLines, costCodes, accounting, taxJurisdictions };
 }
 
 const payableCodingSuggestionInput = z.object({
-  projectId: z.string().uuid(),
+  projectId: z.string().uuid().nullable().optional(),
   companyId: z.string().uuid().nullable().optional(),
   vendorName: z.string().trim().max(200).nullable().optional(),
   description: z.string().trim().max(1000).nullable().optional(),
@@ -590,7 +592,7 @@ export async function syncProjectVendorBillToAccountingAction(
 }
 
 export async function deleteProjectVendorBillAction(
-  projectId: string,
+  projectId: string | null,
   billId: string,
 ): Promise<ActionResult<PayableActionResult>> {
   return run(async () => {

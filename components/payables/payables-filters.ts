@@ -1,6 +1,15 @@
-import type { PayableRunMembership, PayableTabKey } from "@/lib/services/org-payables"
+import type { PayableRunMembership } from "@/lib/services/org-payables"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import { isVendorCredit, payableOutstandingCents } from "@/lib/financials/payables-rules"
+import {
+  PAYABLE_QUEUES,
+  PAYABLE_QUEUE_LABELS,
+  type PayableDueFilter,
+  type PayableQueue,
+} from "@/lib/financials/payables-queues"
+
+export { PAYABLE_QUEUES, PAYABLE_QUEUE_LABELS }
+export type { PayableDueFilter, PayableQueue }
 
 /**
  * One lifecycle taxonomy for every payables surface — the desk's tabs are
@@ -8,23 +17,6 @@ import { isVendorCredit, payableOutstandingCents } from "@/lib/financials/payabl
  * vendor being paid. Due-date urgency is a separate, orthogonal dimension
  * (see `PayableDueFilter`), never a lifecycle queue of its own.
  */
-export type PayableQueue = PayableTabKey
-
-export const PAYABLE_QUEUES: PayableQueue[] = ["drafts", "approval", "ready", "inflight", "paid", "all"]
-
-/** Full names everywhere — the rail uses the same words as the desk tabs. */
-export const PAYABLE_QUEUE_LABELS: Record<PayableQueue, string> = {
-  drafts: "Drafts",
-  approval: "Needs approval",
-  ready: "Ready to pay",
-  inflight: "In flight",
-  paid: "Paid",
-  all: "All",
-}
-
-/** Urgency is a filter on top of a queue, not a place a payable lives. */
-export type PayableDueFilter = "any" | "overdue" | "due_soon"
-
 /** Bill id → active run membership, when the surface knows about runs. */
 type RunLookup = Record<string, Pick<PayableRunMembership, "runStatus">>
 

@@ -134,7 +134,7 @@ async function AttentionBand({ id }: { id: string }) {
     <ProjectOverviewBlockers
       items={operations.attention}
       truncated={operations.attentionTruncated}
-      budgetVariancePercent={financials.budgetVariancePercent}
+      financialExceptions={financials.exceptions}
       projectId={id}
     />
   )

@@ -42,7 +42,7 @@ import CommitmentsArticle from "./project-financials/commitments"
 import PayablesArticle from "./project-financials/payables"
 import ExpensesTimeArticle from "./project-financials/expenses-time"
 import ChangeOrdersArticle from "./project-financials/change-orders"
-import ReceivablesInvoicingArticle from "./project-financials/receivables-invoicing"
+import BillingInvoicingArticle from "./project-financials/billing-invoicing"
 import ProjectsOverviewArticle from "./projects/projects-overview"
 import TroubleshootingOverviewArticle from "./troubleshooting/troubleshooting-overview"
 import PermissionsAccessIssuesArticle from "./troubleshooting/permissions-access-issues"
@@ -303,11 +303,11 @@ export const helpTopics: HelpTopic[] = [
             content: ChangeOrdersArticle,
           },
           {
-            slug: "receivables-invoicing",
-            title: "Receivables & Invoices",
+            slug: "billing-invoicing",
+            title: "Billing & Invoices",
             description: "Progress bill clients, hold retainage, send secure invoice links, and collect payments.",
             updatedAt: "2026-06-16",
-            content: ReceivablesInvoicingArticle,
+            content: BillingInvoicingArticle,
           },
         ],
       },

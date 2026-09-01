@@ -324,9 +324,9 @@ export function PortalHomeTab({ data, token, canPayInvoices = false }: PortalHom
                     Due {format(new Date(data.financialSummary.nextDraw.due_date), "MMM d, yyyy")}
                   </p>
                 )}
-                {canPayInvoices && data.financialSummary.nextDraw.payment_available && (
+                {canPayInvoices && data.financialSummary.nextDraw.payment_available && data.financialSummary.nextDraw.invoice_id && (
                   <Button asChild size="sm" className="mt-3 h-8">
-                    <Link href={`/p/${token}/draws/${data.financialSummary.nextDraw.id}/pay`}>
+                    <Link href={`/p/${token}/invoices/${data.financialSummary.nextDraw.invoice_id}`}>
                       <CreditCard className="mr-1 h-3.5 w-3.5" />
                       Pay draw
                     </Link>

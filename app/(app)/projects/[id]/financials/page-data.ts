@@ -9,10 +9,11 @@ import {
   listProjectDrawsAction,
   listProjectRetainageAction,
 } from "../actions"
+import { summarizeBillingCycle } from "@/lib/financials/billing-cycle-summary"
 import { getProjectFinancialFeatureConfig, isCostDrivenBillingModel } from "@/lib/financials/billing-model"
 import { getBillingAutopilotState } from "@/lib/services/billing-autopilot"
 import { getProjectFeeBillingSummary } from "@/lib/services/fee-billing"
-import { loadFinancialsReviewQueueData } from "@/lib/services/financials-review-queue"
+import { loadCostInboxData, toBillingCycleItems } from "@/lib/services/cost-inbox"
 import { getProjectGmpControlSummary } from "@/lib/services/gmp-control"
 import { getOrgBilling } from "@/lib/services/orgs"
 import { getProjectFinancialSetupStatusForProject } from "@/lib/services/project-financial-setup"
@@ -46,7 +47,7 @@ export async function loadFinancialsOverviewData(projectId: string) {
       listProjectDrawsAction(projectId),
       listProjectRetainageAction(projectId),
       getProjectApprovedChangeOrderTotalAction(projectId),
-      loadFinancialsReviewQueueData(projectId),
+      loadCostInboxData(projectId),
     ])
 
   return {
@@ -133,20 +134,9 @@ export async function loadFinancialsCloseData(projectId: string, selectedBilling
     billingPeriods[0] ??
     null
   const selectedPeriodId = selectedPeriod?.id ?? null
-  const inSelectedPeriod = (cost: any) =>
-    !selectedPeriodId ||
-    cost.billing_period_id === selectedPeriodId ||
-    cost.late_to_billing_period_id === selectedPeriodId
-  const costsReadyToBill = overview.reviewQueue.openCosts.filter(
-    (cost: any) => cost.status === "open" && cost.queue_state === "ready-to-invoice" && inSelectedPeriod(cost),
-  )
-  const reviewItems = [
-    ...overview.reviewQueue.timeEntries,
-    ...overview.reviewQueue.expenses,
-    ...overview.reviewQueue.vendorBills,
-  ].filter((item: any) => item.queue_state !== "billed")
-  const blockedItems = reviewItems.filter((item: any) => item.queue_state === "blocked")
-  const lateCosts = costsReadyToBill.filter((cost: any) => cost.late_to_billing_period_id === selectedPeriodId)
+  const closeSummary = summarizeBillingCycle(toBillingCycleItems(overview.reviewQueue), {
+    billingPeriodId: selectedPeriodId,
+  })
 
   return {
     ...overview,
@@ -160,14 +150,14 @@ export async function loadFinancialsCloseData(projectId: string, selectedBilling
     gmpSummary: gmpSummaryResult.status === "fulfilled" ? gmpSummaryResult.value : null,
     autopilot: autopilotResult.status === "fulfilled" ? autopilotResult.value : { enabled: false, run: null },
     closeSummary: {
-      reviewItemCount: reviewItems.length,
-      blockedItemCount: blockedItems.length,
-      readyCostIds: costsReadyToBill.map((cost: any) => cost.id as string),
-      readyCostCount: costsReadyToBill.length,
-      readyCostCents: costsReadyToBill.reduce((sum: number, cost: any) => sum + Number(cost.billable_cents ?? 0), 0),
-      lateCostCount: lateCosts.length,
-      lateCostCents: lateCosts.reduce((sum: number, cost: any) => sum + Number(cost.billable_cents ?? 0), 0),
-      oldestReadyCostDays: oldestAgeDays(costsReadyToBill.map((cost: any) => cost.occurred_on)),
+      reviewItemCount: closeSummary.reviewItemCount,
+      blockedItemCount: closeSummary.blockedCount,
+      readyCostIds: closeSummary.readyCostIds,
+      readyCostCount: closeSummary.readyToInvoiceCount,
+      readyCostCents: closeSummary.readyToInvoiceCents,
+      lateCostCount: closeSummary.lateCostCount,
+      lateCostCents: closeSummary.lateCostCents,
+      oldestReadyCostDays: closeSummary.oldestReadyCostDays,
     },
     loadErrors: [
       resultError("Fee billing", feeSummaryResult),
@@ -189,16 +179,3 @@ function formatAddress(address?: Address) {
   return address.formatted?.trim() || undefined
 }
 
-function ageDays(value?: string | null) {
-  if (!value) return 0
-  const date = new Date(`${value}T00:00:00`)
-  if (Number.isNaN(date.getTime())) return 0
-  const today = new Date()
-  const todayUtc = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate())
-  const thenUtc = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate())
-  return Math.max(0, Math.floor((todayUtc - thenUtc) / 86_400_000))
-}
-
-function oldestAgeDays(values: Array<string | null | undefined>) {
-  return values.reduce((max, value) => Math.max(max, ageDays(value)), 0)
-}

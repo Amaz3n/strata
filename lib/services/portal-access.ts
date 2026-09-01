@@ -5,7 +5,9 @@ import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import type {
   ChangeOrder,
+  ClientPortalAboutData,
   ClientPortalData,
+  ClientPortalDocumentsData,
   DailyLog,
   DrawSchedule,
   Invoice,
@@ -1551,90 +1553,34 @@ async function fetchSharedDailyLogsForPortal(supabase: any, orgId: string, proje
     .slice(0, 50)
 }
 
-export async function loadClientPortalData({
-  orgId,
-  projectId,
-  permissions,
-  companyId,
-  contactId,
-  scopedRfiId,
-  portalToken,
-}: {
-  orgId: string
-  projectId: string
-  permissions: PortalPermissions
-  companyId?: string | null
-  contactId?: string | null
-  scopedRfiId?: string | null
-  portalToken?: string
-}): Promise<ClientPortalData> {
-  const supabase = createServiceSupabaseClient()
-
-  const [orgRow, projectRow, pmRow, scheduleItems, dailyLogs, filesResult, defaultFinancialSummary] = await Promise.all([
+async function loadClientPortalAboutDataWithClient(
+  supabase: SupabaseClient,
+  { orgId, projectId }: { orgId: string; projectId: string },
+): Promise<ClientPortalAboutData> {
+  const [orgRow, projectRow, pmRow] = await Promise.all([
     supabase.from("orgs").select("id, name, logo_url").eq("id", orgId).single(),
     supabase
       .from("projects")
       .select("id, org_id, name, status, phase, start_date, end_date, location, property_type, created_at, updated_at")
+      .eq("org_id", orgId)
       .eq("id", projectId)
       .single(),
     supabase
       .from("project_members")
       .select("user_id, role_id, roles!inner(key), app_users(id, full_name, email, phone, avatar_url)")
+      .eq("org_id", orgId)
       .eq("project_id", projectId)
       .in("roles.key", ["pm", "project_manager"])
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle(),
-    permissions.can_view_schedule ? listProjectScheduleItemsWithClient(supabase, orgId, projectId) : Promise.resolve([]),
-    permissions.can_view_daily_logs ? fetchSharedDailyLogsForPortal(supabase, orgId, projectId) : Promise.resolve([]),
-    permissions.can_view_documents
-      ? supabase
-          .from("files")
-          .select("*")
-          .eq("org_id", orgId)
-          .eq("project_id", projectId)
-          .eq("share_with_clients", true)
-          .order("created_at", { ascending: false })
-      : Promise.resolve({ data: [] }),
-    permissions.can_view_budget ? loadPortalFinancialSummary({ orgId, projectId }) : Promise.resolve(undefined),
   ])
 
   if (orgRow.error || !orgRow.data) throw new Error("Org not found for portal")
   if (projectRow.error || !projectRow.data) throw new Error("Project not found for portal")
-  const isProductionBuyerPortal = projectRow.data.property_type === "production"
-  const financialSummary = isProductionBuyerPortal
-    ? await loadProductionPortalFinancialSummary({ orgId, projectId })
-    : defaultFinancialSummary
+  if (pmRow.error) throw new Error(`Failed to load project manager for portal: ${pmRow.error.message}`)
 
   const pmUser = pmRow.data?.app_users as any
-  const projectManager = pmUser ? {
-    id: pmUser.id,
-    full_name: pmUser.full_name,
-    email: pmUser.email ?? undefined,
-    phone: pmUser.phone ?? undefined,
-    avatar_url: pmUser.avatar_url ?? undefined,
-    role_label: "Project Manager",
-  } : undefined
-
-  const pendingChangeOrders = permissions.can_approve_change_orders
-    ? await fetchChangeOrders(supabase, orgId, projectId)
-    : []
-
-  const invoices = permissions.can_view_invoices
-    ? await fetchInvoices(supabase, orgId, projectId, permissions.can_pay_invoices ?? false)
-    : []
-  const rfis = permissions.can_view_rfis ? await fetchRfis(supabase, orgId, projectId, scopedRfiId ?? null) : []
-  const submittals = permissions.can_view_submittals ? await fetchSubmittals(supabase, orgId, projectId) : []
-
-  const selections = permissions.can_submit_selections ? await fetchSelections(supabase, orgId, projectId) : []
-  const pendingDecisions = permissions.can_submit_selections
-    ? (await listDecisionsForPortal(orgId, projectId, contactId ?? null)).filter(
-        (decision) => decision.status === "pending",
-      )
-    : []
-  const punchItems = permissions.can_create_punch_items ? await fetchPunchItems(supabase, orgId, projectId) : []
-  const photos = permissions.can_view_photos ? await fetchPhotoTimeline(supabase, orgId, projectId) : []
-  const warrantyRequests = permissions.can_view_warranty ? await fetchWarrantyRequests(supabase, orgId, projectId) : []
 
   return {
     org: {
@@ -1654,7 +1600,130 @@ export async function loadClientPortalData({
       updated_at: projectRow.data.updated_at,
       property_type: projectRow.data.property_type,
     },
-    projectManager,
+    projectManager: pmUser
+      ? {
+          id: pmUser.id,
+          full_name: pmUser.full_name,
+          email: pmUser.email ?? undefined,
+          phone: pmUser.phone ?? undefined,
+          avatar_url: pmUser.avatar_url ?? undefined,
+          role_label: "Project Manager",
+        }
+      : undefined,
+  }
+}
+
+/**
+ * Identity-only portal read model. Team/about pages should not pay to hydrate
+ * schedules, financials, documents, photos, and every actionable workflow.
+ */
+export async function loadClientPortalAboutData({
+  orgId,
+  projectId,
+}: {
+  orgId: string
+  projectId: string
+}): Promise<ClientPortalAboutData> {
+  return loadClientPortalAboutDataWithClient(createServiceSupabaseClient(), { orgId, projectId })
+}
+
+async function loadClientPortalDocumentsDataWithClient(
+  supabase: SupabaseClient,
+  {
+    orgId,
+    projectId,
+    portalToken,
+  }: { orgId: string; projectId: string; portalToken?: string },
+): Promise<ClientPortalDocumentsData> {
+  const { data, error } = await supabase
+    .from("files")
+    .select("*")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("share_with_clients", true)
+    .order("created_at", { ascending: false })
+    .limit(50)
+
+  if (error) throw new Error(`Failed to load client portal documents: ${error.message}`)
+
+  return {
+    sharedFiles: (data ?? []).map((file: any) => mapFileMetadata(file, portalToken)),
+  }
+}
+
+/** The files-only read model used by the client portal documents page. */
+export async function loadClientPortalDocumentsData({
+  orgId,
+  projectId,
+  portalToken,
+}: {
+  orgId: string
+  projectId: string
+  portalToken?: string
+}): Promise<ClientPortalDocumentsData> {
+  return loadClientPortalDocumentsDataWithClient(createServiceSupabaseClient(), {
+    orgId,
+    projectId,
+    portalToken,
+  })
+}
+
+export async function loadClientPortalData({
+  orgId,
+  projectId,
+  permissions,
+  companyId,
+  contactId,
+  scopedRfiId,
+  portalToken,
+}: {
+  orgId: string
+  projectId: string
+  permissions: PortalPermissions
+  companyId?: string | null
+  contactId?: string | null
+  scopedRfiId?: string | null
+  portalToken?: string
+}): Promise<ClientPortalData> {
+  const supabase = createServiceSupabaseClient()
+
+  const [aboutData, scheduleItems, dailyLogs, documentsData, defaultFinancialSummary] = await Promise.all([
+    loadClientPortalAboutDataWithClient(supabase, { orgId, projectId }),
+    permissions.can_view_schedule ? listProjectScheduleItemsWithClient(supabase, orgId, projectId) : Promise.resolve([]),
+    permissions.can_view_daily_logs ? fetchSharedDailyLogsForPortal(supabase, orgId, projectId) : Promise.resolve([]),
+    permissions.can_view_documents
+      ? loadClientPortalDocumentsDataWithClient(supabase, { orgId, projectId, portalToken })
+      : Promise.resolve({ sharedFiles: [] }),
+    permissions.can_view_budget ? loadPortalFinancialSummary({ orgId, projectId }) : Promise.resolve(undefined),
+  ])
+
+  const isProductionBuyerPortal = aboutData.project.property_type === "production"
+  const financialSummary = isProductionBuyerPortal
+    ? await loadProductionPortalFinancialSummary({ orgId, projectId })
+    : defaultFinancialSummary
+
+  const pendingChangeOrders = permissions.can_approve_change_orders
+    ? await fetchChangeOrders(supabase, orgId, projectId)
+    : []
+
+  const invoices = permissions.can_view_invoices
+    ? await fetchInvoices(supabase, orgId, projectId, permissions.can_pay_invoices ?? false)
+    : []
+  const rfis = permissions.can_view_rfis ? await fetchRfis(supabase, orgId, projectId, scopedRfiId ?? null) : []
+  const submittals = permissions.can_view_submittals ? await fetchSubmittals(supabase, orgId, projectId) : []
+
+  const selections = permissions.can_submit_selections ? await fetchSelections(supabase, orgId, projectId) : []
+  const pendingDecisions = permissions.can_submit_selections
+    ? (await listDecisionsForPortal(orgId, projectId, contactId ?? null)).filter(
+        (decision) => decision.status === "pending",
+      )
+    : []
+  const punchItems = permissions.can_create_punch_items ? await fetchPunchItems(supabase, orgId, projectId) : []
+  const photos = permissions.can_view_photos ? await fetchPhotoTimeline(supabase, orgId, projectId, portalToken) : []
+  const warrantyRequests = permissions.can_view_warranty ? await fetchWarrantyRequests(supabase, orgId, projectId) : []
+
+  return {
+    ...aboutData,
     schedule: scheduleItems ?? [],
     photos,
     pendingChangeOrders,
@@ -1667,9 +1736,7 @@ export async function loadClientPortalData({
     recentLogs: (dailyLogs ?? []).filter((log) => log.project_id === projectId).slice(0, 5),
     // Shared drawing sheets are NOT injected here — the portal documents tab
     // renders them via /api/portal/drawings/[token] in the tiled viewer.
-    sharedFiles: (filesResult.data ?? [])
-      .map((file: any) => mapFileMetadata(file, portalToken))
-      .slice(0, 50),
+    sharedFiles: documentsData.sharedFiles,
     punchItems,
     financialSummary,
     portalPresentation: isProductionBuyerPortal
@@ -2601,7 +2668,16 @@ async function fetchSubmittals(supabase: any, orgId: string, projectId: string):
   return data ?? []
 }
 
-async function fetchPhotoTimeline(supabase: any, orgId: string, projectId: string) {
+/**
+ * The client-facing progress feed: photos a builder has explicitly published.
+ *
+ * The URL is built here, from the file id, against this visitor's own token
+ * route. It used to be `files.storage_path` straight out of the RPC — an R2
+ * object key that the portal dropped into an `<img src>`, where it resolved
+ * relative to the portal origin and 404'd. Every published photo was a broken
+ * image, which is part of why nothing was ever published.
+ */
+async function fetchPhotoTimeline(supabase: any, orgId: string, projectId: string, portalToken?: string) {
   const { data, error } = await supabase.rpc("photo_timeline_for_portal", {
     p_project_id: projectId,
     p_org_id: orgId,
@@ -2616,12 +2692,15 @@ async function fetchPhotoTimeline(supabase: any, orgId: string, projectId: strin
     data?.map((row: any) => ({
       week_start: row.week_start,
       week_end: row.week_end,
-      photos: (row.photos ?? []).map((p: any) => ({
-        id: p.id,
-        url: p.url,
-        taken_at: p.taken_at,
-        tags: p.tags,
-      })),
+      photos: (row.photos ?? [])
+        .filter((p: any) => Boolean(p.file_id) && portalToken)
+        .map((p: any) => ({
+          id: p.id,
+          url: `/api/portal/files/${portalToken}/${p.file_id}`,
+          taken_at: p.taken_at,
+          caption: p.caption ?? undefined,
+          tags: p.tags,
+        })),
       log_summaries: row.summaries ?? [],
     })) ?? []
   )

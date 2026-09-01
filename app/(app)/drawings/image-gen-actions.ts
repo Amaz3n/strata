@@ -1,7 +1,6 @@
 "use server"
 
 import { requireOrgContext } from "@/lib/services/context"
-import { revalidatePath } from "next/cache"
 import { buildDrawingsImageUrl } from "@/lib/storage/drawings-urls"
 
 /**
@@ -46,7 +45,6 @@ export async function updateSheetVersionImages(
     throw new Error(`Failed to update sheet version: ${error.message}`)
   }
 
-  revalidatePath("/drawings")
 }
 
 /**

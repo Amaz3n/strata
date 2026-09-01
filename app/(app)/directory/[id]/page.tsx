@@ -61,6 +61,19 @@ function formatAddress(party: { address?: unknown }) {
   );
 }
 
+function safeWebsiteHref(value: string | null | undefined) {
+  if (!value) return null;
+
+  try {
+    const normalized = value.trim();
+    const hasExplicitScheme = /^[a-z][a-z0-9+.-]*:/i.test(normalized);
+    const url = new URL(hasExplicitScheme ? normalized : `https://${normalized}`);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
 function NotesSection({
   internalNotes,
   notes,
@@ -246,6 +259,7 @@ async function PartyOverviewContent({ id }: { id: string }) {
   const scorecard = intelligence.scorecard;
   const canViewBills = ledger?.summary.can_view_bills ?? false;
   const address = formatAddress(company);
+  const websiteHref = safeWebsiteHref(company.website);
 
   return (
     <div className="grid grid-cols-1 gap-5 px-4 py-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-start">
@@ -293,14 +307,15 @@ async function PartyOverviewContent({ id }: { id: string }) {
             <FactRow
               label="Website"
               value={
-                company.website ? (
+                websiteHref ? (
                   <a
-                    href={company.website}
+                    href={websiteHref}
                     target="_blank"
                     rel="noreferrer"
                     className="underline-offset-4 hover:underline"
                   >
-                    {company.website.replace(/^https?:\/\//, "")}
+                    {company.website?.replace(/^https?:\/\//, "") ??
+                      websiteHref.replace(/^https?:\/\//, "")}
                   </a>
                 ) : (
                   "—"

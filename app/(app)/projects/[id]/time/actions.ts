@@ -59,8 +59,8 @@ function revalidateProjectTimeFinancials(projectId: string) {
   revalidatePath(`/projects/${projectId}/time`)
   revalidatePath(`/projects/${projectId}/cost-inbox`)
   revalidatePath(`/projects/${projectId}/financials`)
-  revalidatePath(`/projects/${projectId}/financials/review`)
-  revalidatePath(`/projects/${projectId}/financials/receivables`)
+  revalidatePath(`/projects/${projectId}/financials/cost-inbox`)
+  revalidatePath(`/projects/${projectId}/financials/billing`)
 }
 
 export async function createTimeEntriesAction(projectId: string, formData: FormData) {

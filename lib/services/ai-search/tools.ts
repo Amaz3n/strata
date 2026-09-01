@@ -1,3 +1,5 @@
+import { INVOICE_HREF_TEMPLATE, invoiceHref } from "@/lib/financials/invoice-destinations"
+import { OPEN_AR_INVOICE_STATUSES } from "@/lib/financials/invoice-lifecycle"
 import type { OrgServiceContext } from "@/lib/services/context"
 import { searchEntities, type SearchEntityType, type SearchResult } from "@/lib/services/search"
 import { formatEntityTypeForAi } from "@/lib/services/ai-search-utils"
@@ -17,7 +19,10 @@ export interface AiToolExecutionResult {
   metadata?: Record<string, unknown>
 }
 
-const OPEN_INVOICE_STATUSES = ["sent", "partial", "overdue", "saved", "draft"] as const
+// One definition of open AR for the whole app. This list used to include `draft`
+// and `saved`, so "how much do customers owe us?" counted invoices nobody had
+// billed — and answered with a number no report on any other screen agreed with.
+const OPEN_INVOICE_STATUSES = OPEN_AR_INVOICE_STATUSES
 const ACTIVE_PROJECT_STATUSES = ["active", "on_hold"] as const
 
 const ENTITY_HINTS: Array<{ type: SearchEntityType; pattern: RegExp }> = [
@@ -35,16 +40,16 @@ const ENTITY_HINTS: Array<{ type: SearchEntityType; pattern: RegExp }> = [
 const HREF_BY_ENTITY: Partial<Record<SearchEntityType, string>> = {
   project: "/projects/{id}",
   task: "/tasks/{id}",
-  invoice: "/projects/{project_id}/financials/receivables?invoice={id}",
+  invoice: INVOICE_HREF_TEMPLATE,
   payment: "/payments/{id}",
   budget: "/budgets/{id}",
   estimate: "/estimates/{id}",
   commitment: "/commitments/{id}",
-  change_order: "/change-orders/{id}",
+  change_order: "/projects/{project_id}/change-orders",
   contract: "/contracts/{id}",
   proposal: "/signatures",
-  rfi: "/rfis/{id}",
-  submittal: "/submittals/{id}",
+  rfi: "/projects/{project_id}/rfis?rfi={id}",
+  submittal: "/projects/{project_id}/submittals?submittal={id}",
   payable: "/projects/{project_id}/financials/payables?bill={id}",
   expense: "/projects/{project_id}/expenses?expense={id}",
   prospect: "/pipeline?prospectId={id}",
@@ -331,7 +336,7 @@ async function executeCountOpenInvoices(context: OrgServiceContext): Promise<AiT
       type: "invoice",
       title,
       subtitle: subtitleParts.join(" • "),
-      href: `/invoices/${row.id}`,
+      href: invoiceHref(row.id, row.project_id),
       project_id: row.project_id ?? undefined,
       project_name: (row as { projects?: { name?: string | null } }).projects?.name ?? undefined,
       updated_at: undefined,
@@ -536,7 +541,7 @@ async function executeArSnapshot(context: OrgServiceContext): Promise<AiToolExec
       type: "invoice",
       title,
       subtitle: `${row.status} • ${formatCurrencyFromCents(cents)} • due ${formatDateForAnswer(row.due_date)}`,
-      href: `/invoices/${row.id}`,
+      href: invoiceHref(row.id, row.project_id),
       project_id: row.project_id ?? undefined,
       project_name: (row as { projects?: { name?: string | null } }).projects?.name ?? undefined,
       updated_at: undefined,

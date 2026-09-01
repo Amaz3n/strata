@@ -309,7 +309,6 @@ export async function createDrawingSetAction(
   return run(async () => {
       await requireAnyPermission(["drawing.upload", "org.admin"])
       const result = await createDrawingSet(input)
-      revalidatePath("/drawings")
       revalidatePath(`/projects/${input.project_id}`)
       return result
   })
@@ -325,7 +324,6 @@ export async function updateDrawingSetAction(
   return run(async () => {
       await requireAnyPermission(["drawing.upload", "org.admin"])
       const result = await updateDrawingSet(setId, updates)
-      revalidatePath("/drawings")
       revalidatePath(`/projects/${result.project_id}`)
       return result
   })
@@ -339,7 +337,6 @@ export async function deleteDrawingSetAction(setId: string): Promise<ActionResul
       await requireAnyPermission(["docs.delete", "org.admin"])
       const set = await getDrawingSet(setId)
       await deleteDrawingSet(setId)
-      revalidatePath("/drawings")
       if (set?.project_id) {
         revalidatePath(`/projects/${set.project_id}`)
       }
@@ -574,7 +571,6 @@ export async function createDrawingSetFromUpload(input: {
         // The draft revision stays in "processing" - the cron retries it.
       }
 
-      revalidatePath("/drawings")
       revalidatePath(`/projects/${input.projectId}`)
 
       return { set: drawingSet, draftRevisionId }
@@ -655,7 +651,6 @@ export async function retryDraftRevisionAction(revisionId: string): Promise<Acti
       }
 
       await triggerDrawingsPipeline()
-      revalidatePath("/drawings")
       revalidatePath(`/projects/${revision.project_id}`)
   })
 }
@@ -761,7 +756,6 @@ export async function retryProcessingAction(setId: string): Promise<ActionResult
         console.error("Failed to queue drawing processing:", error)
       }
 
-      revalidatePath("/drawings")
       revalidatePath(`/projects/${set.project_id}`)
 
       return updated
@@ -831,7 +825,6 @@ export async function createDrawingRevisionAction(
   return run(async () => {
       await requireAnyPermission(["drawing.upload", "org.admin"])
       const result = await createDrawingRevision(input)
-      revalidatePath("/drawings")
       revalidatePath(`/projects/${input.project_id}`)
       return result
   })
@@ -847,7 +840,6 @@ export async function updateDrawingRevisionAction(
   return run(async () => {
       await requireAnyPermission(["drawing.upload", "org.admin"])
       const result = await updateDrawingRevision(revisionId, updates)
-      revalidatePath("/drawings")
       revalidatePath(`/projects/${result.project_id}`)
       return result
   })
@@ -861,7 +853,6 @@ export async function deleteDrawingRevisionAction(revisionId: string): Promise<A
       await requireAnyPermission(["docs.delete", "org.admin"])
       const revision = await getDrawingRevision(revisionId)
       await deleteDrawingRevision(revisionId)
-      revalidatePath("/drawings")
       if (revision?.project_id) {
         revalidatePath(`/projects/${revision.project_id}`)
       }
@@ -918,7 +909,6 @@ export async function createDrawingSheetAction(
   return run(async () => {
       await requireAnyPermission(["drawing.upload", "org.admin"])
       const result = await createDrawingSheet(input)
-      revalidatePath("/drawings")
       revalidatePath(`/projects/${input.project_id}`)
       return result
   })
@@ -938,7 +928,6 @@ export async function updateDrawingSheetAction(
         changesSharing ? ["docs.share", "org.admin"] : ["drawing.upload", "org.admin"],
       )
       const result = await updateDrawingSheet(sheetId, updates)
-      revalidatePath("/drawings")
       revalidatePath(`/projects/${result.project_id}`)
       return result
   })
@@ -954,7 +943,6 @@ export async function bulkUpdateSheetSharingAction(
   return run(async () => {
       await requireAnyPermission(["docs.share", "org.admin"])
       await bulkUpdateSheetSharing(sheetIds, sharing)
-      revalidatePath("/drawings")
   })
 }
 
@@ -966,7 +954,6 @@ export async function deleteDrawingSheetAction(sheetId: string): Promise<ActionR
       await requireAnyPermission(["docs.delete", "org.admin"])
       const sheet = await getDrawingSheet(sheetId)
       await deleteDrawingSheet(sheetId)
-      revalidatePath("/drawings")
       if (sheet?.project_id) {
         revalidatePath(`/projects/${sheet.project_id}`)
       }
@@ -1154,7 +1141,6 @@ export async function setSheetVersionCalibrationAction(
 ): Promise<ActionResult<SheetCalibration & { recomputed_markups: number }>> {
   return run(async () => {
       const result = await setSheetVersionCalibration(input)
-      revalidatePath("/drawings")
       return result
   })
 }
@@ -1168,7 +1154,6 @@ export async function createSheetVersionAction(
   return run(async () => {
       await requireAnyPermission(["drawing.upload", "org.admin"])
       const result = await createSheetVersion(input)
-      revalidatePath("/drawings")
       return result
   })
 }
@@ -1176,91 +1161,6 @@ export async function createSheetVersionAction(
 // ============================================================================
 // HELPER ACTIONS
 // ============================================================================
-
-/**
- * List projects for the project filter dropdown
- */
-export async function listProjectsForDrawingsAction(): Promise<
-  Array<{ id: string; name: string }>
-> {
-      const { supabase, orgId } = await requireOrgContext()
-
-      const { data, error } = await supabase
-        .from("projects")
-        .select("id, name")
-        .eq("org_id", orgId)
-        .in("status", ["active", "on_hold"])
-        .order("name", { ascending: true })
-
-      if (error) {
-        console.error("Failed to list projects:", error.message)
-        return []
-      }
-
-      return data ?? []
-}
-
-/**
- * Queue tile generation for sheets that don't have tiles yet
- */
-export async function queueTileGenerationForExistingSheetsAction(): Promise<ActionResult<{
-  queued: number
-}>> {
-  return run(async () => {
-      // Queueing uses service role to avoid RLS/NOT NULL issues.
-      const { supabase, orgId } = await requireOrgContext()
-      await requireAnyPermission(["org.admin"])
-      const service = createServiceSupabaseClient()
-
-      // Find sheet versions that don't have tiles generated yet
-      const { data: sheetVersions, error } = await supabase
-        .from("drawing_sheet_versions")
-        .select("id")
-        .eq("org_id", orgId)
-        .is("tile_manifest", null)
-        .not("file_id", "is", null)
-        .order("created_at", { ascending: true })
-        .limit(500)
-
-      if (error) {
-        throw new Error(`Failed to find sheets needing tiles: ${error.message}`)
-      }
-
-      if (!sheetVersions?.length) {
-        return { queued: 0 }
-      }
-
-      // Queue tile generation jobs
-      const jobs = sheetVersions.map((sv) => ({
-        org_id: orgId,
-        event_id: null,
-        job_type: "generate_drawing_tiles",
-        status: "pending",
-        retry_count: 0,
-        last_error: "",
-        payload: { sheetVersionId: sv.id },
-        run_at: new Date().toISOString(),
-      }))
-
-      const { error: insertError } = await service
-        .from("outbox")
-        .insert(jobs)
-
-      if (insertError) {
-        throw new Error(`Failed to queue tile generation jobs: ${insertError.message}`)
-      }
-
-      const trigger = await triggerDrawingsPipeline()
-      if (!trigger.triggered) {
-        console.warn("[TileBackfill] Drawings pipeline kick failed (cron will pick up):", trigger.error)
-      }
-
-      revalidatePath("/drawings")
-      revalidatePath("/drawings/debug")
-
-      return { queued: jobs.length }
-  })
-}
 
 /**
  * Refresh the drawing sheets list materialized view
@@ -1483,7 +1383,6 @@ export async function publishRevisionAction(input: PublishRevisionInput): Promis
   return run(async () => {
       await requireAnyPermission(["drawing.upload", "org.admin"])
       await publishRevision(input)
-      revalidatePath("/drawings")
   })
 }
 
@@ -1491,7 +1390,6 @@ export async function discardRevisionAction(revisionId: string): Promise<ActionR
   return run(async () => {
       await requireAnyPermission(["drawing.upload", "org.admin"])
       await discardRevision(revisionId)
-      revalidatePath("/drawings")
   })
 }
 
@@ -1544,7 +1442,6 @@ export async function createDrawingMarkupAction(
 ): Promise<ActionResult<DrawingMarkup>> {
   return run(async () => {
       const result = await createDrawingMarkup(input)
-      revalidatePath("/drawings")
       return result
   })
 }
@@ -1558,7 +1455,6 @@ export async function updateDrawingMarkupAction(
 ): Promise<ActionResult<DrawingMarkup>> {
   return run(async () => {
       const result = await updateDrawingMarkup(markupId, updates)
-      revalidatePath("/drawings")
       return result
   })
 }
@@ -1569,7 +1465,6 @@ export async function updateDrawingMarkupAction(
 export async function deleteDrawingMarkupAction(markupId: string): Promise<ActionResult<void>> {
   return run(async () => {
       await deleteDrawingMarkup(markupId)
-      revalidatePath("/drawings")
   })
 }
 
@@ -1631,7 +1526,6 @@ export async function createDrawingPinAction(
 ): Promise<ActionResult<DrawingPin>> {
   return run(async () => {
       const result = await createDrawingPin(input)
-      revalidatePath("/drawings")
       return result
   })
 }
@@ -1645,7 +1539,6 @@ export async function updateDrawingPinAction(
 ): Promise<ActionResult<DrawingPin>> {
   return run(async () => {
       const result = await updateDrawingPin(pinId, updates)
-      revalidatePath("/drawings")
       return result
   })
 }
@@ -1656,7 +1549,6 @@ export async function updateDrawingPinAction(
 export async function deleteDrawingPinAction(pinId: string): Promise<ActionResult<void>> {
   return run(async () => {
       await deleteDrawingPin(pinId)
-      revalidatePath("/drawings")
   })
 }
 
@@ -1669,7 +1561,6 @@ export async function deletePinForEntityAction(
 ): Promise<ActionResult<void>> {
   return run(async () => {
       await deletePinForEntity(entityType, entityId)
-      revalidatePath("/drawings")
   })
 }
 
@@ -1880,7 +1771,6 @@ export async function createPhotoFromDrawingAction(
         label: parsed.caption?.trim() || file.file_name,
       })
 
-      revalidatePath("/drawings")
       return { ...pin, entity_title: pin.label }
   })
 }
@@ -1937,7 +1827,6 @@ export async function syncPinStatusAction(
 ): Promise<ActionResult<void>> {
   return run(async () => {
       await syncPinStatus(entityType, entityId, newStatus)
-      revalidatePath("/drawings")
   })
 }
 

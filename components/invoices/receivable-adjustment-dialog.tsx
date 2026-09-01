@@ -19,8 +19,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import type { Invoice } from "@/lib/types"
 
-import { balanceCentsOf } from "./workspace/receivables-filters"
-import { formatMoneyFromCents } from "./workspace/invoice-ui"
+import { balanceCentsOf, formatMoneyFromCents } from "./invoice-presentation"
 
 interface ReceivableAdjustmentDialogProps {
   invoice: Invoice | null

@@ -1,13 +1,12 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
 import {
   approveBudgetTransferAction,
   closeBudgetTransferAction,
   createBudgetTransferAction,
-  setBudgetLineContingencyAction,
 } from "@/app/(app)/projects/[id]/financials/budget/actions";
 import { unwrapAction } from "@/lib/action-result";
 import type { BudgetTransfer } from "@/lib/services/budget-transfers";
@@ -40,14 +39,17 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
-import { Download, Printer } from "lucide-react";
 
 type Line = {
   id: string;
   description: string;
   amount_cents: number | null;
   metadata?: Record<string, unknown>;
-  cost_code?: { id?: string | null; code?: string | null; name?: string | null } | null;
+  cost_code?: {
+    id?: string | null;
+    code?: string | null;
+    name?: string | null;
+  } | null;
   actual_cents?: number;
 };
 const toCents = (value: string) =>
@@ -60,15 +62,19 @@ const money = (cents: number) =>
   });
 
 export function BudgetTransfersPanel({
+  open,
+  onOpenChange,
   projectId,
   transfers,
   lines,
 }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   projectId: string;
   transfers: BudgetTransfer[];
   lines: Line[];
 }) {
-  const [open, setOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
   const [pending, startTransition] = useTransition();
   const [reason, setReason] = useState("");
   const [fromId, setFromId] = useState("");
@@ -76,41 +82,12 @@ export function BudgetTransfersPanel({
   const [amount, setAmount] = useState("");
   const [allowOverride, setAllowOverride] = useState(false);
   const [overrideReason, setOverrideReason] = useState("");
-  const [contingencyLineId, setContingencyLineId] = useState("");
   const router = useRouter();
   const { toast } = useToast();
   const amountCents = Number.isFinite(toCents(amount)) ? toCents(amount) : 0;
   // A two-line transfer always nets to zero; the panel only needs to know
   // whether the entered amount is usable.
   const amountValid = amountCents > 0;
-  const contingency = useMemo(
-    () =>
-      lines
-        .filter((line) => line.metadata?.is_contingency === true)
-        .map((line) => {
-          const movement = transfers
-            .filter((transfer) => transfer.status === "approved")
-            .flatMap((transfer) => transfer.lines)
-            .filter((item) => item.budget_line_id === line.id)
-            .reduce((sum, item) => sum + item.amount_cents, 0);
-          return {
-            ...line,
-            movement,
-            remaining: Number(line.amount_cents ?? 0) + movement,
-            transfersIn: transfers
-              .filter((transfer) => transfer.status === "approved")
-              .flatMap((transfer) => transfer.lines)
-              .filter((item) => item.budget_line_id === line.id && item.amount_cents > 0)
-              .reduce((sum, item) => sum + item.amount_cents, 0),
-            draws: transfers
-              .filter((transfer) => transfer.status === "approved")
-              .flatMap((transfer) => transfer.lines)
-              .filter((item) => item.budget_line_id === line.id && item.amount_cents < 0)
-              .reduce((sum, item) => sum + Math.abs(item.amount_cents), 0),
-          };
-        }),
-    [lines, transfers],
-  );
   const create = () =>
     startTransition(async () => {
       try {
@@ -127,7 +104,7 @@ export function BudgetTransfersPanel({
           }),
         );
         toast({ title: "Transfer submitted for approval" });
-        setOpen(false);
+        setCreateOpen(false);
         router.refresh();
       } catch (error) {
         toast({
@@ -150,251 +127,249 @@ export function BudgetTransfersPanel({
       }
     });
   const close = (id: string, status: "rejected" | "void") => {
-    const reason = window.prompt(`Reason this transfer is being ${status === "void" ? "voided" : "rejected"}:`);
+    const reason = window.prompt(
+      `Reason this transfer is being ${status === "void" ? "voided" : "rejected"}:`,
+    );
     if (!reason?.trim()) return;
     startTransition(async () => {
       try {
-        unwrapAction(await closeBudgetTransferAction(projectId, id, status, reason));
-        toast({ title: `Budget transfer ${status === "void" ? "voided" : "rejected"}` });
-        router.refresh();
-      } catch (error) {
-        toast({ title: `Unable to ${status} transfer`, description: (error as Error).message });
-      }
-    });
-  };
-  const markContingency = () =>
-    startTransition(async () => {
-      try {
         unwrapAction(
-          await setBudgetLineContingencyAction(
-            projectId,
-            contingencyLineId,
-            true,
-          ),
+          await closeBudgetTransferAction(projectId, id, status, reason),
         );
-        toast({ title: "Contingency line updated" });
+        toast({
+          title: `Budget transfer ${status === "void" ? "voided" : "rejected"}`,
+        });
         router.refresh();
       } catch (error) {
         toast({
-          title: "Unable to update contingency",
+          title: `Unable to ${status} transfer`,
           description: (error as Error).message,
         });
       }
     });
+  };
   return (
-    <div className="space-y-4 border-t pt-4">
-      <div className="flex items-end gap-2">
-        <div className="min-w-64">
-          <Label>Contingency budget line</Label>
-          <Select value={contingencyLineId} onValueChange={setContingencyLineId}>
-            <SelectTrigger><SelectValue placeholder="Mark a line as contingency" /></SelectTrigger>
-            <SelectContent>
-              {lines.filter((line) => line.metadata?.is_contingency !== true).map((line) => (
-                <SelectItem key={line.id} value={line.id}>{line.description}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <Button size="sm" variant="outline" disabled={!contingencyLineId || pending} onClick={markContingency}>
-          Mark contingency
-        </Button>
-      </div>
-      {contingency.length > 0 ? (
-        <div className="space-y-2">
-          <div className="flex justify-end gap-2">
-            <Button size="sm" variant="outline" asChild>
-              <a href={`/projects/${projectId}/exports/contingency?format=csv`}><Download className="mr-1 h-3.5 w-3.5" />Export CSV</a>
-            </Button>
-            <Button size="sm" variant="outline" asChild>
-              <a href={`/projects/${projectId}/exports/contingency?format=pdf`} target="_blank" rel="noreferrer"><Printer className="mr-1 h-3.5 w-3.5" />Print PDF</a>
-            </Button>
-          </div>
-          <div className="grid gap-px border bg-border sm:grid-cols-2 lg:grid-cols-4">
-          {contingency.map((line) => (
-            <div key={line.id} className="bg-background p-3">
-              <div className="text-[11px] uppercase text-muted-foreground">
-                Contingency · {line.description}
-              </div>
-              <div className="mt-1 text-lg font-semibold tabular-nums">
-                {money(line.remaining)}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                Starting {money(Number(line.amount_cents ?? 0))} · In {money(line.transfersIn)} · Draws {money(line.draws)}
-              </div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                {Number(line.amount_cents ?? 0) + line.transfersIn > 0
-                  ? `${((line.draws / (Number(line.amount_cents ?? 0) + line.transfersIn)) * 100).toFixed(1)}% drawn`
-                  : "Drawn % unavailable"}
-                {typeof line.actual_cents === "number" ? ` · Actuals ${money(line.actual_cents)}` : ""}
-              </div>
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent
+        side="right"
+        mobileFullscreen
+        className="flex flex-col sm:max-w-3xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)]"
+      >
+        <SheetHeader className="border-b px-4 pb-4 pt-6 sm:px-6">
+          <SheetTitle>Transfers & revisions</SheetTitle>
+          <SheetDescription>
+            Move approved budget between cost lines without changing the project
+            total.
+          </SheetDescription>
+        </SheetHeader>
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+          <div className="mb-4 flex items-end justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-semibold">Transfer register</h3>
+              <p className="text-xs text-muted-foreground">
+                {transfers.length === 0
+                  ? "No budget reallocations have been recorded."
+                  : `${transfers.length} recorded transfer${transfers.length === 1 ? "" : "s"}.`}
+              </p>
             </div>
-          ))}
-          </div>
-        </div>
-      ) : null}
-      <div className="flex items-end justify-between">
-        <div>
-          <h3 className="text-sm font-semibold">Budget transfers</h3>
-          <p className="text-xs text-muted-foreground">
-            Move budget between lines without changing the project total or EAC.
-          </p>
-        </div>
-        <Sheet open={open} onOpenChange={setOpen}>
-          <SheetTrigger asChild>
-            <Button size="sm">New transfer</Button>
-          </SheetTrigger>
-          <SheetContent>
-            <SheetHeader>
-              <SheetTitle>New budget transfer</SheetTitle>
-              <SheetDescription>
-                Choose source and destination lines. The transfer must net to
-                zero.
-              </SheetDescription>
-            </SheetHeader>
-            <div className="space-y-4 p-4">
-              <div>
-                <Label>Reason</Label>
-                <Textarea
-                  value={reason}
-                  onChange={(e) => setReason(e.target.value)}
-                />
-              </div>
-              <div>
-                <Label>From</Label>
-                <Select value={fromId} onValueChange={setFromId}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select source line" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {lines.map((line) => (
-                      <SelectItem key={line.id} value={line.id}>
-                        {line.cost_code?.code
-                          ? `${line.cost_code.code} · `
-                          : ""}
-                        {line.description}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>To</Label>
-                <Select value={toId} onValueChange={setToId}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select destination line" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {lines
-                      .filter((line) => line.id !== fromId)
-                      .map((line) => (
-                        <SelectItem key={line.id} value={line.id}>
-                          {line.cost_code?.code
-                            ? `${line.cost_code.code} · `
-                            : ""}
-                          {line.description}
-                        </SelectItem>
-                      ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>Amount ($)</Label>
-                <Input
-                  inputMode="decimal"
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                />
-              </div>
-              <div className="flex justify-between border p-3 text-sm">
-                <span>Net change</span>
-                <span className="tabular-nums">
-                  {amountValid ? money(0) : "Enter a valid amount"}
-                </span>
-              </div>
-              <div className="space-y-2 border p-3">
-                <div className="flex items-center gap-2">
-                  <Checkbox id="budget-floor-override" checked={allowOverride} onCheckedChange={(value) => setAllowOverride(value === true)} />
-                  <Label htmlFor="budget-floor-override" className="font-normal">Request an authorized cost-floor override</Label>
-                </div>
-                {allowOverride ? <Textarea value={overrideReason} onChange={(event) => setOverrideReason(event.target.value)} placeholder="Required override justification" /> : null}
-              </div>
-              <Button
-                className="w-full"
-                disabled={
-                  pending ||
-                  !reason.trim() ||
-                  !fromId ||
-                  !toId ||
-                  amountCents <= 0
-                  || (allowOverride && overrideReason.trim().length < 3)
-                }
-                onClick={create}
-              >
-                {pending ? "Submitting…" : "Submit for approval"}
-              </Button>
-            </div>
-          </SheetContent>
-        </Sheet>
-      </div>
-      <div className="border">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>#</TableHead>
-              <TableHead>Date</TableHead>
-              <TableHead>Reason</TableHead>
-              <TableHead>Movement</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {transfers.length === 0 ? (
-              <TableRow>
-                <TableCell
-                  colSpan={6}
-                  className="h-20 text-center text-muted-foreground"
-                >
-                  No transfers yet.
-                </TableCell>
-              </TableRow>
-            ) : (
-              transfers.map((transfer) => (
-                <TableRow key={transfer.id}>
-                  <TableCell className="tabular-nums">
-                    {transfer.transfer_number}
-                  </TableCell>
-                  <TableCell>
-                    {new Date(transfer.created_at).toLocaleDateString()}
-                  </TableCell>
-                  <TableCell>{transfer.reason}</TableCell>
-                  <TableCell className="text-xs">
-                    {transfer.lines
-                      .map(
-                        (line) =>
-                          `${line.amount_cents < 0 ? "From" : "To"} ${line.budget_line?.description ?? "line"} ${money(Math.abs(line.amount_cents))}`,
-                      )
-                      .join(" · ")}
-                  </TableCell>
-                  <TableCell className="capitalize">
-                    {transfer.status.replaceAll("_", " ")}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {transfer.status === "pending_approval" ? (
-                      <div className="flex justify-end gap-1">
-                        <Button size="sm" variant="ghost" disabled={pending} onClick={() => close(transfer.id, "rejected")}>Reject</Button>
-                        <Button size="sm" variant="outline" disabled={pending} onClick={() => approve(transfer.id)}>Approve</Button>
-                      </div>
-                    ) : transfer.status === "approved" ? (
-                      <Button size="sm" variant="ghost" disabled={pending} onClick={() => close(transfer.id, "void")}>Void</Button>
+            <Sheet open={createOpen} onOpenChange={setCreateOpen}>
+              <SheetTrigger asChild>
+                <Button size="sm">New transfer</Button>
+              </SheetTrigger>
+              <SheetContent>
+                <SheetHeader>
+                  <SheetTitle>New budget transfer</SheetTitle>
+                  <SheetDescription>
+                    Choose source and destination lines. The transfer must net
+                    to zero.
+                  </SheetDescription>
+                </SheetHeader>
+                <div className="space-y-4 p-4">
+                  <div>
+                    <Label>Reason</Label>
+                    <Textarea
+                      value={reason}
+                      onChange={(e) => setReason(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <Label>From</Label>
+                    <Select value={fromId} onValueChange={setFromId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select source line" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {lines.map((line) => (
+                          <SelectItem key={line.id} value={line.id}>
+                            {line.cost_code?.code
+                              ? `${line.cost_code.code} · `
+                              : ""}
+                            {line.description}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label>To</Label>
+                    <Select value={toId} onValueChange={setToId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select destination line" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {lines
+                          .filter((line) => line.id !== fromId)
+                          .map((line) => (
+                            <SelectItem key={line.id} value={line.id}>
+                              {line.cost_code?.code
+                                ? `${line.cost_code.code} · `
+                                : ""}
+                              {line.description}
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label>Amount ($)</Label>
+                    <Input
+                      inputMode="decimal"
+                      value={amount}
+                      onChange={(e) => setAmount(e.target.value)}
+                    />
+                  </div>
+                  <div className="flex justify-between border p-3 text-sm">
+                    <span>Net change</span>
+                    <span className="tabular-nums">
+                      {amountValid ? money(0) : "Enter a valid amount"}
+                    </span>
+                  </div>
+                  <div className="space-y-2 border p-3">
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="budget-floor-override"
+                        checked={allowOverride}
+                        onCheckedChange={(value) =>
+                          setAllowOverride(value === true)
+                        }
+                      />
+                      <Label
+                        htmlFor="budget-floor-override"
+                        className="font-normal"
+                      >
+                        Request an authorized cost-floor override
+                      </Label>
+                    </div>
+                    {allowOverride ? (
+                      <Textarea
+                        value={overrideReason}
+                        onChange={(event) =>
+                          setOverrideReason(event.target.value)
+                        }
+                        placeholder="Required override justification"
+                      />
                     ) : null}
-                  </TableCell>
+                  </div>
+                  <Button
+                    className="w-full"
+                    disabled={
+                      pending ||
+                      !reason.trim() ||
+                      !fromId ||
+                      !toId ||
+                      amountCents <= 0 ||
+                      (allowOverride && overrideReason.trim().length < 3)
+                    }
+                    onClick={create}
+                  >
+                    {pending ? "Submitting…" : "Submit for approval"}
+                  </Button>
+                </div>
+              </SheetContent>
+            </Sheet>
+          </div>
+          <div className="overflow-x-auto border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>#</TableHead>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Reason</TableHead>
+                  <TableHead>Movement</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead />
                 </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </div>
-    </div>
+              </TableHeader>
+              <TableBody>
+                {transfers.length === 0 ? (
+                  <TableRow>
+                    <TableCell
+                      colSpan={6}
+                      className="h-20 text-center text-muted-foreground"
+                    >
+                      No transfers yet.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  transfers.map((transfer) => (
+                    <TableRow key={transfer.id}>
+                      <TableCell className="tabular-nums">
+                        {transfer.transfer_number}
+                      </TableCell>
+                      <TableCell>
+                        {new Date(transfer.created_at).toLocaleDateString()}
+                      </TableCell>
+                      <TableCell>{transfer.reason}</TableCell>
+                      <TableCell className="text-xs">
+                        {transfer.lines
+                          .map(
+                            (line) =>
+                              `${line.amount_cents < 0 ? "From" : "To"} ${line.budget_line?.description ?? "line"} ${money(Math.abs(line.amount_cents))}`,
+                          )
+                          .join(" · ")}
+                      </TableCell>
+                      <TableCell className="capitalize">
+                        {transfer.status.replaceAll("_", " ")}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {transfer.status === "pending_approval" ? (
+                          <div className="flex justify-end gap-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={pending}
+                              onClick={() => close(transfer.id, "rejected")}
+                            >
+                              Reject
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={pending}
+                              onClick={() => approve(transfer.id)}
+                            >
+                              Approve
+                            </Button>
+                          </div>
+                        ) : transfer.status === "approved" ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={pending}
+                            onClick={() => close(transfer.id, "void")}
+                          >
+                            Void
+                          </Button>
+                        ) : null}
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+      </SheetContent>
+    </Sheet>
   );
 }

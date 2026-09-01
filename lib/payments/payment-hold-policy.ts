@@ -17,7 +17,7 @@ export interface PaymentHold {
 }
 
 export interface PaymentHoldFacts {
-  projectId: string
+  projectId: string | null
   companyId: string | null
   complianceCurrent: boolean
   insuranceCurrent: boolean
@@ -90,6 +90,7 @@ const AI_CLAIM_HOLD_KINDS = new Set<PaymentHoldKind>(["waiver_verified", "insura
 
 export function evaluatePaymentHoldFacts(facts: PaymentHoldFacts): PaymentHoldEvaluation {
   const waiverVerification = facts.waiverVerification ?? null
+  const payablesHref = facts.projectId ? `/projects/${facts.projectId}/financials/payables` : "/payables"
   const active: Array<{ kind: PaymentHoldKind; failed: boolean; cureHref: string | null; detail: string | null }> = [
     { kind: "insurance_current", failed: !facts.insuranceCurrent, cureHref: facts.companyId ? `/directory/${facts.companyId}/compliance` : null, detail: facts.insuranceContradiction ?? null },
     {
@@ -98,16 +99,16 @@ export function evaluatePaymentHoldFacts(facts: PaymentHoldFacts): PaymentHoldEv
       cureHref: facts.companyId ? `/directory/${facts.companyId}/compliance` : null,
       detail: facts.insuranceContradiction ?? null,
     },
-    { kind: "waiver_signed", failed: facts.waiverRequired && !facts.waiverSigned, cureHref: `/projects/${facts.projectId}/financials/payables`, detail: null },
+    { kind: "waiver_signed", failed: facts.waiverRequired && !facts.waiverSigned, cureHref: payablesHref, detail: null },
     {
       kind: "waiver_verified",
       failed: waiverVerification !== null && !waiverVerification.matches,
-      cureHref: waiverVerification?.documentHref ?? `/projects/${facts.projectId}/financials/payables`,
+      cureHref: waiverVerification?.documentHref ?? payablesHref,
       detail: waiverVerification?.mismatchSummary ?? null,
     },
     { kind: "compliance_docs_approved", failed: !facts.complianceCurrent, cureHref: facts.companyId ? `/directory/${facts.companyId}/compliance` : null, detail: null },
-    { kind: "retainage_rules_met", failed: !facts.retainageRulesMet, cureHref: `/projects/${facts.projectId}/financials/payables`, detail: null },
-    { kind: "funding_received", failed: facts.fundingRequired && !facts.fundingReceived, cureHref: `/projects/${facts.projectId}/financials/receivables`, detail: null },
+    { kind: "retainage_rules_met", failed: !facts.retainageRulesMet, cureHref: payablesHref, detail: null },
+    { kind: "funding_received", failed: facts.fundingRequired && !facts.fundingReceived, cureHref: facts.projectId ? `/projects/${facts.projectId}/financials/billing` : "/payables", detail: null },
   ]
   const holds = active.filter((item) => item.failed).map((item) => {
     const overrideReason = facts.overrides[item.kind] ?? null

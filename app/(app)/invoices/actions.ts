@@ -6,8 +6,11 @@ import {
   createInvoice,
   deleteInvoice,
   ensureInvoiceToken,
+  getInvoiceQueueCounts,
   getOrCreateInvoiceToken,
   getInvoiceWithLines,
+  issueInvoice,
+  listInvoicePage,
   listInvoiceViews,
   listInvoices,
   moveInvoiceToProject,
@@ -16,10 +19,15 @@ import {
   reviseInvoice,
   updateInvoice,
   voidInvoice,
+  type ListInvoicesOptions,
 } from "@/lib/services/invoices"
+import { isIssuedInvoiceStatus } from "@/lib/financials/invoice-lifecycle"
+import type { InvoiceDelivery } from "@/lib/types"
+import { PROJECT_BILLING_SEGMENT } from "@/lib/financials/invoice-destinations"
 import { listProjects } from "@/lib/services/projects"
 import { processAccountingPush } from "@/lib/services/accounting-sync"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { receivablesWriter } from "@/lib/services/receivables-writer"
 import { requireOrgContext } from "@/lib/services/context"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { invoiceInputSchema } from "@/lib/validation/invoices"
@@ -58,7 +66,7 @@ import {
   setInvoiceScheduleActive,
   type InvoiceScheduleFrequency,
 } from "@/lib/services/invoice-schedules"
-import { unwrapAction, actionError, type ActionResult  } from "@/lib/action-result"
+import { actionError, type ActionResult } from "@/lib/action-result"
 
 const INVOICE_PDF_TEMPLATE_VERSION = 2
 
@@ -73,13 +81,29 @@ async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   }
 }
 
-export async function listInvoicesAction(
-  projectId?: string,
-  options?: { limit?: number; offset?: number; search?: string },
-) {
-  return run(() =>
-    listInvoices({ projectId, limit: options?.limit, offset: options?.offset, search: options?.search }),
-  )
+export async function listInvoicesAction(projectId?: string, options?: Omit<ListInvoicesOptions, "projectId">) {
+  return run(() => listInvoices({ ...options, projectId }))
+}
+
+/** One page of rows plus the true match count and every queue's count. */
+export async function loadInvoiceQueueAction(projectId: string | undefined, options: Omit<ListInvoicesOptions, "projectId">) {
+  return run(async () => {
+    const [page, counts] = await Promise.all([
+      listInvoicePage({ ...options, projectId }),
+      getInvoiceQueueCounts({ projectId }),
+    ])
+    return { ...page, counts }
+  })
+}
+
+export async function issueInvoiceAction(invoiceId: string, recipients?: string[]) {
+  return run(async () => {
+    if (!invoiceId) throw new Error("Invoice id is required")
+    const invoice = await issueInvoice({ invoiceId, recipients })
+    revalidatePath("/invoices")
+    if (invoice.project_id) revalidatePath(`/projects/${invoice.project_id}/${PROJECT_BILLING_SEGMENT}`)
+    return invoice
+  })
 }
 
 export async function createInvoiceAction(input: unknown) {
@@ -179,7 +203,7 @@ export async function voidInvoiceAction(invoiceId: string) {
     const invoice = await voidInvoice({ invoiceId })
     revalidatePath("/invoices")
     if (invoice.project_id) {
-      revalidatePath(`/projects/${invoice.project_id}/financials/receivables`)
+      revalidatePath(`/projects/${invoice.project_id}/financials/billing`)
     }
     return invoice
   })
@@ -191,7 +215,7 @@ export async function reviseInvoiceAction(invoiceId: string) {
     const invoice = await reviseInvoice({ invoiceId })
     revalidatePath("/invoices")
     if (invoice.project_id) {
-      revalidatePath(`/projects/${invoice.project_id}/financials/receivables`)
+      revalidatePath(`/projects/${invoice.project_id}/financials/billing`)
     }
     return invoice
   })
@@ -219,7 +243,7 @@ export async function deleteInvoiceAction(invoiceId: string) {
     const result = await deleteInvoice({ invoiceId })
     revalidatePath("/invoices")
     if (result.projectId) {
-      revalidatePath(`/projects/${result.projectId}/financials/receivables`)
+      revalidatePath(`/projects/${result.projectId}/financials/billing`)
     }
   })
 }
@@ -238,9 +262,9 @@ export async function moveInvoiceToProjectAction(invoiceId: string, targetProjec
     const result = await moveInvoiceToProject({ invoiceId, targetProjectId })
     revalidatePath("/invoices")
     if (result.fromProjectId) {
-      revalidatePath(`/projects/${result.fromProjectId}/financials/receivables`)
+      revalidatePath(`/projects/${result.fromProjectId}/financials/billing`)
     }
-    revalidatePath(`/projects/${result.toProjectId}/financials/receivables`)
+    revalidatePath(`/projects/${result.toProjectId}/financials/billing`)
     return result.invoice
   })
 }
@@ -265,84 +289,172 @@ export async function getInvoiceDetailAction(invoiceId: string) {
   return run(() => loadInvoiceDetail(invoiceId))
 }
 
+/**
+ * Everything the invoice inspector shows, in as few round trips as the data
+ * dependencies allow.
+ *
+ * Two things this deliberately does NOT do. It does not await eight independent
+ * reads one after another — the only real dependency is that Books entries need
+ * the adjustment ids, so that pair runs in sequence and the other six do not.
+ * And it does not turn a failed read into an empty array: "this invoice has no
+ * payments" and "we could not load its payments" are opposite facts about money,
+ * and rendering them identically is how a person concludes an invoice was never
+ * paid. Failures are named in `loadErrors` and the section says so.
+ */
+const DELIVERY_CHANNELS = ["email", "sms", "link", "download"] as const
+const DELIVERY_STATUSES = ["queued", "sending", "sent", "delivered", "bounced", "failed"] as const
+
+/** Narrow raw delivery rows onto the domain type the inspector renders. */
+function mapDeliveryRows(rows: Array<Record<string, unknown>> | null): InvoiceDelivery[] {
+  return (rows ?? []).map((row) => {
+    const channel = String(row.channel ?? "email")
+    const status = String(row.status ?? "queued")
+    return {
+      id: String(row.id),
+      channel: (DELIVERY_CHANNELS as readonly string[]).includes(channel)
+        ? (channel as InvoiceDelivery["channel"])
+        : "email",
+      recipient: (row.recipient as string | null) ?? null,
+      status: (DELIVERY_STATUSES as readonly string[]).includes(status)
+        ? (status as InvoiceDelivery["status"])
+        : "queued",
+      provider_message_id: (row.provider_message_id as string | null) ?? null,
+      error_message: (row.error_message as string | null) ?? null,
+      attempt_count: Number(row.attempt_count ?? 0),
+      queued_at: String(row.queued_at ?? row.created_at ?? ""),
+      sent_at: (row.sent_at as string | null) ?? null,
+      delivered_at: (row.delivered_at as string | null) ?? null,
+      opened_at: (row.opened_at as string | null) ?? null,
+      clicked_at: (row.clicked_at as string | null) ?? null,
+      failed_at: (row.failed_at as string | null) ?? null,
+      metadata: (row.metadata as Record<string, unknown> | null) ?? undefined,
+      created_at: String(row.created_at ?? ""),
+    }
+  })
+}
+
 async function loadInvoiceDetail(invoiceId: string) {
   if (!invoiceId) throw new Error("Invoice id is required")
 
   const invoice = await getInvoiceWithLines(invoiceId)
   if (!invoice) throw new Error("Invoice not found")
 
+  const orgId = invoice.org_id
+  const supabase = createServiceSupabaseClient()
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || "https://arcnaples.com"
+  const loadErrors: string[] = []
+
+  function note(label: string, error: unknown) {
+    console.error(`Failed to load invoice ${label}`, error)
+    loadErrors.push(label)
+  }
+
   // Viewing detail must never mutate lifecycle — only guarantee a token exists
   // for invoices that were already shared.
-  const token =
-    invoice.client_visible || invoice.sent_at || invoice.status === "sent"
-      ? await getOrCreateInvoiceToken(invoiceId, invoice.org_id)
-      : invoice.token ?? null
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || "https://arcnaples.com"
-  const views = await listInvoiceViews(invoiceId, invoice.org_id)
-  const supabase = createServiceSupabaseClient()
-  const { data: syncHistory } = await supabase
-    .from("accounting_sync_records")
-    .select("id, status, last_synced_at, error_message, external_id")
-    .eq("org_id", invoice.org_id)
-    .eq("entity_type", "invoice")
-    .eq("entity_id", invoiceId)
-    .order("last_synced_at", { ascending: false })
+  const needsToken = Boolean(invoice.client_visible || invoice.sent_at || isIssuedInvoiceStatus(invoice.status))
 
-  const adjustments = await listInvoiceReceivableAdjustments(invoiceId, invoice.org_id).catch((error) => {
-    console.error("Failed to load invoice receivable adjustments", error)
-    return []
-  })
-  const booksSourceIds = [invoiceId, ...adjustments.map((adjustment) => adjustment.id)]
-
-  const [{ data: deliveries }, { data: booksEntries }] = await Promise.all([
+  const [
+    tokenResult,
+    viewsResult,
+    syncResult,
+    deliveriesResult,
+    adjustmentsResult,
+    paymentsResult,
+    waiversResult,
+    auditResult,
+  ] = await Promise.allSettled([
+    needsToken ? getOrCreateInvoiceToken(invoiceId, orgId) : Promise.resolve(invoice.token ?? null),
+    listInvoiceViews(invoiceId, orgId),
+    supabase
+      .from("accounting_sync_records")
+      .select("id, status, last_synced_at, error_message, external_id")
+      .eq("org_id", orgId)
+      .eq("entity_type", "invoice")
+      .eq("entity_id", invoiceId)
+      .order("last_synced_at", { ascending: false })
+      .throwOnError(),
     supabase
       .from("invoice_deliveries")
       .select("id, channel, recipient, status, provider_message_id, error_message, attempt_count, queued_at, sent_at, delivered_at, opened_at, clicked_at, failed_at, metadata, created_at")
-      .eq("org_id", invoice.org_id)
+      .eq("org_id", orgId)
       .eq("invoice_id", invoiceId)
       .order("created_at", { ascending: false })
-      .limit(50),
-    supabase
-      .from("journal_entries")
-      .select("id, entry_date, status, posting_key, posted_at, reversal_of_entry_id")
-      .eq("org_id", invoice.org_id)
-      .in("source_type", ["invoice", "receivable_adjustment"])
-      .in("source_id", booksSourceIds)
-      .order("created_at", { ascending: false })
-      .limit(10),
+      .limit(50)
+      .throwOnError(),
+    listInvoiceReceivableAdjustments(invoiceId, orgId),
+    getInvoicePaymentActivity(invoiceId, orgId),
+    listInvoiceLienWaivers(invoiceId, orgId),
+    listEntityAuditTrail({
+      entityType: "invoice",
+      entityId: invoiceId,
+      permission: "invoice.read",
+      orgId,
+      projectId: invoice.project_id,
+    }),
   ])
 
-  const paymentActivity = await getInvoicePaymentActivity(invoiceId, invoice.org_id).catch((error) => {
-    console.error("Failed to load invoice payment activity", error)
-    return { payments: [], reversals: [] }
-  })
-  const lienWaivers = await listInvoiceLienWaivers(invoiceId, invoice.org_id).catch((error) => {
-    console.error("Failed to load invoice lien waivers", error)
-    return []
-  })
-  const auditTrail = await listEntityAuditTrail({
-    entityType: "invoice",
-    entityId: invoiceId,
-    permission: "invoice.read",
-    orgId: invoice.org_id,
-    projectId: invoice.project_id,
-  }).catch((error) => {
-    console.error("Failed to load invoice change history", error)
-    return []
-  })
+  if (tokenResult.status === "rejected") note("share link", tokenResult.reason)
+  if (viewsResult.status === "rejected") note("client views", viewsResult.reason)
+  if (syncResult.status === "rejected") note("accounting sync history", syncResult.reason)
+  if (deliveriesResult.status === "rejected") note("delivery history", deliveriesResult.reason)
+  if (adjustmentsResult.status === "rejected") note("credits and write-offs", adjustmentsResult.reason)
+  if (paymentsResult.status === "rejected") note("payments", paymentsResult.reason)
+  if (waiversResult.status === "rejected") note("lien waivers", waiversResult.reason)
+  if (auditResult.status === "rejected") note("change history", auditResult.reason)
+
+  const token = tokenResult.status === "fulfilled" ? tokenResult.value : invoice.token ?? null
+  const adjustments = adjustmentsResult.status === "fulfilled" ? adjustmentsResult.value : []
+  const paymentActivity =
+    paymentsResult.status === "fulfilled" ? paymentsResult.value : { payments: [], reversals: [] }
+
+  // Books entries are the one read that genuinely depends on another: a credit
+  // memo posts its own entry, so the adjustment ids have to exist first.
+  let booksEntries: Array<{
+    id: string
+    entry_date: string
+    status: string
+    posting_key: string
+    posted_at?: string | null
+    reversal_of_entry_id?: string | null
+  }> = []
+  try {
+    const { data } = await supabase
+      .from("journal_entries")
+      .select("id, entry_date, status, posting_key, posted_at, reversal_of_entry_id")
+      .eq("org_id", orgId)
+      .in("source_type", ["invoice", "receivable_adjustment"])
+      .in("source_id", [invoiceId, ...adjustments.map((adjustment) => adjustment.id)])
+      .order("created_at", { ascending: false })
+      .limit(10)
+      .throwOnError()
+    booksEntries = (data ?? []).map((row) => ({
+      id: String(row.id),
+      entry_date: String(row.entry_date ?? ""),
+      status: String(row.status ?? ""),
+      posting_key: String(row.posting_key ?? ""),
+      posted_at: (row.posted_at as string | null) ?? null,
+      reversal_of_entry_id: (row.reversal_of_entry_id as string | null) ?? null,
+    }))
+  } catch (error) {
+    note("Books impact", error)
+  }
 
   return {
     invoice: { ...invoice, token },
     link: token ? `${appUrl}/i/${token}` : undefined,
-    views,
-    deliveries: deliveries ?? [],
-    booksEntries: booksEntries ?? [],
-    syncHistory: (syncHistory ?? []).map((record) => ({ ...record, qbo_id: record.external_id })),
+    views: viewsResult.status === "fulfilled" ? viewsResult.value : [],
+    deliveries: deliveriesResult.status === "fulfilled" ? mapDeliveryRows(deliveriesResult.value.data) : [],
+    booksEntries,
+    syncHistory:
+      syncResult.status === "fulfilled"
+        ? (syncResult.value.data ?? []).map((record) => ({ ...record, qbo_id: record.external_id }))
+        : [],
     payments: paymentActivity.payments,
     reversals: paymentActivity.reversals,
     adjustments,
-    lienWaivers,
-    auditTrail,
+    lienWaivers: waiversResult.status === "fulfilled" ? waiversResult.value : [],
+    auditTrail: auditResult.status === "fulfilled" ? auditResult.value : [],
+    loadErrors,
   }
 }
 
@@ -391,7 +503,7 @@ export async function updateInvoiceNotesAction(invoiceId: string, notes: string)
       resourceId: invoiceId,
     })
     const trimmed = notes.trim()
-    const { error } = await supabase
+    const { error } = await receivablesWriter()
       .from("invoices")
       .update({ notes: trimmed.length > 0 ? trimmed : null })
       .eq("org_id", orgId)
@@ -1010,7 +1122,7 @@ async function generateInvoicePdf(
     link_role: "invoice_pdf",
   })
 
-  await supabase
+  await receivablesWriter()
     .from("invoices")
     .update({
       metadata: {
@@ -1046,7 +1158,7 @@ async function generateInvoicePdf(
           note: `Arc invoice PDF ${invoice.invoice_number}`,
         })
 
-        await supabase
+        await receivablesWriter()
           .from("invoices")
           .update({
             metadata: {
@@ -1072,7 +1184,7 @@ async function generateInvoicePdf(
   revalidatePath("/invoices")
   if (invoice.project_id) {
     revalidatePath(`/projects/${invoice.project_id}/financials`)
-    revalidatePath(`/projects/${invoice.project_id}/financials/receivables`)
+    revalidatePath(`/projects/${invoice.project_id}/financials/billing`)
   }
 
   const durationMs = Date.now() - startedAt

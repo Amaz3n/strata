@@ -1,6 +1,6 @@
 import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { PortalAboutTab } from "@/components/portal/tabs/portal-about-tab"
-import { loadClientPortalPage } from "../load-portal"
+import { loadClientPortalAboutPage } from "../load-portal"
 
 interface Props {
   params: Promise<{ token: string }>
@@ -9,7 +9,7 @@ interface Props {
 
 export default async function ClientPortalAboutPage({ params }: Props) {
   const { token } = await params
-  const { data } = await loadClientPortalPage(token)
+  const { data } = await loadClientPortalAboutPage(token)
 
   return (
     <>

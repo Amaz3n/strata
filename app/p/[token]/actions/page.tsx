@@ -17,7 +17,7 @@ export default async function ClientPortalActionsPage({ params }: Props) {
         title="Approvals"
         description="Change orders, selections, and decisions waiting on you."
       />
-      <PortalActionsTab data={data} token={token} portalType="client" />
+      <PortalActionsTab data={data} token={token} />
     </>
   )
 }

@@ -794,8 +794,8 @@ export function ExpenseWorkspace({
               </p>
             </div>
             <Button asChild>
-              <Link href={`/projects/${projectId}/financials/review`}>
-                Review in Financials
+              <Link href={`/projects/${projectId}/financials/cost-inbox`}>
+                Open in Cost Inbox
                 <ExternalLink className="h-4 w-4" />
               </Link>
             </Button>

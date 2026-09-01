@@ -188,8 +188,6 @@ export const TEAM_PERMISSION_OPTIONS: PermissionOption[] = [
   { key: "safety.read", label: "View safety incidents", category: "Field Operations" },
   { key: "safety.write", label: "Record safety incidents & observations", category: "Field Operations" },
   { key: "quick_capture.create", label: "Use field quick capture", category: "Field Operations" },
-  { key: "forms.read", label: "View structured forms", category: "Field Operations" },
-  { key: "forms.write", label: "Manage structured forms", category: "Field Operations" },
   { key: "warranty.read", label: "View warranty requests", category: "Field Operations" },
   { key: "warranty.write", label: "Manage warranty requests and visits", category: "Field Operations" },
   { key: "warranty.manage", label: "Manage warranty coverage and SLAs", category: "Field Operations" },

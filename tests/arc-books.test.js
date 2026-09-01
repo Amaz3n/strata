@@ -4159,7 +4159,7 @@ test("retainage held on the schedule of values is tied to the retainage ledger",
   assert.equal(drifted[0].localAmountCents, 500_000);
   assert.equal(drifted[0].externalAmountCents, 530_000);
   assert.equal(drifted[0].differenceCents, -30_000);
-  assert.equal(drifted[0].details.href, "/projects/p-1/financials/receivables");
+  assert.equal(drifted[0].details.href, "/projects/p-1/financials/billing");
 
   // Released retainage nets out of the SOV side, so a fully released contract ties.
   assert.deepEqual(

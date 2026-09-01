@@ -250,7 +250,7 @@ export function planRetainageControlFindings(args: {
         project_id: sov.projectId,
         description:
           "Retainage held on the schedule of values does not match the retainage ledger the books read",
-        href: `/projects/${sov.projectId}/financials/receivables`,
+        href: `/projects/${sov.projectId}/financials/billing`,
       },
     })
   }

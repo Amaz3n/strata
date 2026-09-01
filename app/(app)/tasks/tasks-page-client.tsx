@@ -4,6 +4,7 @@ import Link from "next/link"
 
 import { TasksTab } from "@/components/tasks/tasks-tab"
 import { ArrowUpRight } from "@/components/icons"
+import type { AssignableResource } from "@/app/(app)/projects/[id]/actions"
 import type { Task } from "@/lib/types"
 import type { MyWorkApproval } from "@/lib/services/my-work"
 import {
@@ -17,7 +18,7 @@ import { unwrapAction } from "@/lib/action-result"
 interface TasksPageClientProps {
   initialTasks: Task[]
   projects: Array<{ id: string; name: string }>
-  team: Array<{ id: string; user_id: string; full_name: string; avatar_url?: string }>
+  assignableResources: AssignableResource[]
   approvals: MyWorkApproval[]
   initialProjectFilter?: string
 }
@@ -54,7 +55,7 @@ function ApprovalsBand({ approvals }: { approvals: MyWorkApproval[] }) {
 export function TasksPageClient({
   initialTasks,
   projects,
-  team,
+  assignableResources,
   approvals,
   initialProjectFilter,
 }: TasksPageClientProps) {
@@ -65,7 +66,7 @@ export function TasksPageClient({
         <TasksTab
           tasks={initialTasks}
           projects={projects}
-          team={team}
+          assignableResources={assignableResources}
           initialProjectFilter={initialProjectFilter}
           onTaskCreate={(input) => createMyTaskAction(input).then(unwrapAction)}
           onTaskUpdate={(taskId, updates) => updateMyTaskAction(taskId, updates).then(unwrapAction)}
