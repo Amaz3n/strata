@@ -1,4 +1,4 @@
-import { AdminLoadingSkeleton } from "@/components/admin/admin-loading-skeleton"
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { requireAnyPermissionGuard } from "@/lib/auth/guards"
@@ -67,7 +67,7 @@ function SupportTableSkeleton() {
 
 export default function SupportPage() {
   return (
-    <Suspense fallback={<AdminLoadingSkeleton />}>
+    <Suspense fallback={<PageLoadingSkeleton />}>
       <SupportPageContent />
     </Suspense>
   )

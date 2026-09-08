@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { connection } from "next/server"
 
 import { PageLayout } from "@/components/layout/page-layout"
@@ -13,7 +15,7 @@ function money(cents: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100)
 }
 
-export default async function PaymentReconciliationPage() {
+async function PaymentReconciliationPageContent() {
   await connection()
   await requirePermissionGuard("payment.reconcile")
   const [runs, exceptions, blockedReleases] = await Promise.all([
@@ -90,5 +92,13 @@ export default async function PaymentReconciliationPage() {
         </section>
       </div>
     </PageLayout>
+  )
+}
+
+export default function PaymentReconciliationPage() {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <PaymentReconciliationPageContent />
+    </Suspense>
   )
 }

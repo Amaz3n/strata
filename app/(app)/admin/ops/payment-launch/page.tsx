@@ -1,4 +1,4 @@
-import { AdminLoadingSkeleton } from "@/components/admin/admin-loading-skeleton"
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { connection } from "next/server"
 
@@ -75,7 +75,7 @@ async function PaymentLaunchPageContent() {
 
 export default function PaymentLaunchPage() {
   return (
-    <Suspense fallback={<AdminLoadingSkeleton />}>
+    <Suspense fallback={<PageLoadingSkeleton />}>
       <PaymentLaunchPageContent />
     </Suspense>
   )

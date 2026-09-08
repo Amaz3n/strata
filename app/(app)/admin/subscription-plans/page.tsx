@@ -1,4 +1,4 @@
-import { AdminLoadingSkeleton } from "@/components/admin/admin-loading-skeleton"
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { requireAnyPermissionGuard } from "@/lib/auth/guards"
@@ -28,7 +28,7 @@ async function PlansPageContent() {
 
 export default function PlansPage() {
   return (
-    <Suspense fallback={<AdminLoadingSkeleton />}>
+    <Suspense fallback={<PageLoadingSkeleton />}>
       <PlansPageContent />
     </Suspense>
   )

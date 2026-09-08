@@ -1,4 +1,4 @@
-import { AdminLoadingSkeleton } from "@/components/admin/admin-loading-skeleton"
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { PaymentFeesClient } from "@/components/admin/payment-fees-client"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -32,7 +32,7 @@ async function PaymentFeesPageContent() {
 
 export default function PaymentFeesPage() {
   return (
-    <Suspense fallback={<AdminLoadingSkeleton />}>
+    <Suspense fallback={<PageLoadingSkeleton />}>
       <PaymentFeesPageContent />
     </Suspense>
   )

@@ -1,4 +1,4 @@
-import { AdminLoadingSkeleton } from "@/components/admin/admin-loading-skeleton"
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { notFound } from "next/navigation"
 
@@ -20,7 +20,7 @@ async function ProductionOnboardingPageContent({ params }: { params: Promise<{ o
 
 export default function ProductionOnboardingPage(props: Parameters<typeof ProductionOnboardingPageContent>[0]) {
   return (
-    <Suspense fallback={<AdminLoadingSkeleton />}>
+    <Suspense fallback={<PageLoadingSkeleton />}>
       <ProductionOnboardingPageContent {...props} />
     </Suspense>
   )

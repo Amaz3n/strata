@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { notFound } from "next/navigation"
 import { connection } from "next/server"
 
@@ -14,7 +16,7 @@ interface PageProps {
   searchParams: Promise<Record<string, string | string[] | undefined>>
 }
 
-export default async function OrgReportPage({ params, searchParams }: PageProps) {
+async function OrgReportPageContent({ params, searchParams }: PageProps) {
   await connection()
   const [{ slug }, search] = await Promise.all([params, searchParams])
   const definition = getReportDefinition(slug)
@@ -50,5 +52,13 @@ export default async function OrgReportPage({ params, searchParams }: PageProps)
         />
       </div>
     </PageLayout>
+  )
+}
+
+export default function OrgReportPage(props: Parameters<typeof OrgReportPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <OrgReportPageContent {...props} />
+    </Suspense>
   )
 }

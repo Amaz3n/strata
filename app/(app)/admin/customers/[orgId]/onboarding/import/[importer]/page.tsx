@@ -1,4 +1,4 @@
-import { AdminLoadingSkeleton } from "@/components/admin/admin-loading-skeleton"
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { notFound } from "next/navigation"
 import { connection } from "next/server"
@@ -33,7 +33,7 @@ async function ImporterPageContent({ params, searchParams }: { params: Promise<{
 
 export default function ImporterPage(props: Parameters<typeof ImporterPageContent>[0]) {
   return (
-    <Suspense fallback={<AdminLoadingSkeleton />}>
+    <Suspense fallback={<PageLoadingSkeleton />}>
       <ImporterPageContent {...props} />
     </Suspense>
   )
