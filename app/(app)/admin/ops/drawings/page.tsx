@@ -1,3 +1,4 @@
+import { AdminLoadingSkeleton } from "@/components/admin/admin-loading-skeleton"
 import { Suspense } from "react"
 
 import { PageLayout } from "@/components/layout/page-layout"
@@ -12,7 +13,7 @@ async function DeadLetterData() {
   return <DrawingsDeadLetterClient health={health} />
 }
 
-export default async function DrawingsDeadLetterPage() {
+async function DrawingsDeadLetterPageContent() {
   await requireAnyPermissionGuard(["billing.manage", "platform.support.read"])
 
   return (
@@ -46,5 +47,13 @@ function DeadLetterSkeleton() {
         ))}
       </div>
     </div>
+  )
+}
+
+export default function DrawingsDeadLetterPage() {
+  return (
+    <Suspense fallback={<AdminLoadingSkeleton />}>
+      <DrawingsDeadLetterPageContent />
+    </Suspense>
   )
 }

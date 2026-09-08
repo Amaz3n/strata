@@ -1,3 +1,4 @@
+import { AdminLoadingSkeleton } from "@/components/admin/admin-loading-skeleton"
 import { Suspense } from "react"
 
 import { PageLayout } from "@/components/layout/page-layout"
@@ -20,7 +21,7 @@ async function AiConsoleData({ windowDays }: { windowDays: number }) {
   return <AiConsole snapshot={snapshot} />
 }
 
-export default async function AiOpsPage({
+async function AiOpsPageContent({
   searchParams,
 }: {
   searchParams: Promise<{ window?: string | string[] }>
@@ -69,5 +70,13 @@ function AiConsoleSkeleton() {
         ))}
       </div>
     </div>
+  )
+}
+
+export default function AiOpsPage(props: Parameters<typeof AiOpsPageContent>[0]) {
+  return (
+    <Suspense fallback={<AdminLoadingSkeleton />}>
+      <AiOpsPageContent {...props} />
+    </Suspense>
   )
 }

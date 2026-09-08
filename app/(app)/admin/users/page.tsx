@@ -1,3 +1,4 @@
+import { AdminLoadingSkeleton } from "@/components/admin/admin-loading-skeleton"
 import { Suspense } from "react"
 
 import { PageLayout } from "@/components/layout/page-layout"
@@ -12,7 +13,7 @@ async function UsersData() {
   return <UsersActivityClient data={data} />
 }
 
-export default async function UsersPage() {
+async function UsersPageContent() {
   await requireAnyPermissionGuard(["billing.manage", "platform.support.read"])
 
   return (
@@ -53,5 +54,13 @@ function UsersSkeleton() {
         ))}
       </div>
     </div>
+  )
+}
+
+export default function UsersPage() {
+  return (
+    <Suspense fallback={<AdminLoadingSkeleton />}>
+      <UsersPageContent />
+    </Suspense>
   )
 }

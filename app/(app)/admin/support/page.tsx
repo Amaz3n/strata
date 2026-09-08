@@ -1,3 +1,4 @@
+import { AdminLoadingSkeleton } from "@/components/admin/admin-loading-skeleton"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { requireAnyPermissionGuard } from "@/lib/auth/guards"
@@ -28,7 +29,7 @@ async function ImpersonationLauncher() {
   )
 }
 
-export default async function SupportPage() {
+async function SupportPageContent() {
   await requireAnyPermissionGuard(["billing.manage", "platform.support.read"])
 
   return (
@@ -61,5 +62,13 @@ function SupportTableSkeleton() {
         <Skeleton key={i} className="h-12 w-full" />
       ))}
     </div>
+  )
+}
+
+export default function SupportPage() {
+  return (
+    <Suspense fallback={<AdminLoadingSkeleton />}>
+      <SupportPageContent />
+    </Suspense>
   )
 }

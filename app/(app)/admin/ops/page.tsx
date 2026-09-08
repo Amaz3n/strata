@@ -1,3 +1,4 @@
+import { AdminLoadingSkeleton } from "@/components/admin/admin-loading-skeleton"
 import { Suspense } from "react"
 
 import { PageLayout } from "@/components/layout/page-layout"
@@ -45,7 +46,7 @@ async function OpsData() {
   )
 }
 
-export default async function OpsPage() {
+async function OpsPageContent() {
   await requireAnyPermissionGuard(["billing.manage", "platform.support.read"])
 
   return (
@@ -86,5 +87,13 @@ function OpsSkeleton() {
         ))}
       </div>
     </div>
+  )
+}
+
+export default function OpsPage() {
+  return (
+    <Suspense fallback={<AdminLoadingSkeleton />}>
+      <OpsPageContent />
+    </Suspense>
   )
 }
