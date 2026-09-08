@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { AlertTriangle, CheckCircle2, FileSignature } from "lucide-react"
 import type { ReactNode } from "react"
 
@@ -22,7 +24,7 @@ interface PageProps {
   searchParams: Promise<{ signed?: string }>
 }
 
-export default async function TmTicketSigningPage({ params, searchParams }: PageProps) {
+async function TmTicketSigningPageContent({ params, searchParams }: PageProps) {
   const { token } = await params
   const { signed } = await searchParams
 
@@ -191,4 +193,12 @@ function formatCurrency(value?: number | null) {
     currency: "USD",
     maximumFractionDigits: 0,
   }).format(Number(value ?? 0) / 100)
+}
+
+export default function TmTicketSigningPage(props: Parameters<typeof TmTicketSigningPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <TmTicketSigningPageContent {...props} />
+    </Suspense>
+  )
 }

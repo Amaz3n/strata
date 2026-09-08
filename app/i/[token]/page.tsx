@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { notFound } from "next/navigation"
 
 import { headers } from "next/headers"
@@ -20,7 +22,7 @@ export const metadata = {
   },
 }
 
-export default async function InvoicePublicPage({ params }: Params) {
+async function InvoicePublicPageContent({ params }: Params) {
   const { token } = await params
   const invoice = await getInvoiceByToken(token)
 
@@ -104,5 +106,13 @@ export default async function InvoicePublicPage({ params }: Params) {
       branding={branding}
       lienWaivers={lienWaivers}
     />
+  )
+}
+
+export default function InvoicePublicPage(props: Parameters<typeof InvoicePublicPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <InvoicePublicPageContent {...props} />
+    </Suspense>
   )
 }
