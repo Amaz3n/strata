@@ -1,5 +1,8 @@
 import { redirect } from "next/navigation"
 
+// Compatibility redirect; the directory destination owns its navigation contract.
+export const instant = false
+
 /**
  * A person's account lives in the directory shell alongside a company's.
  *

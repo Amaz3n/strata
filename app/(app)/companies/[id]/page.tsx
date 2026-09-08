@@ -1,5 +1,8 @@
 import { redirect } from "next/navigation";
 
+// Compatibility redirect; the directory destination owns its navigation contract.
+export const instant = false;
+
 interface LegacyCompanyPageProps {
   params: Promise<{ id: string }>;
   searchParams?: Promise<{ tab?: string }>;
