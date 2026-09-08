@@ -1,3 +1,4 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react";
 import { connection } from "next/server";
 
@@ -12,7 +13,7 @@ import { orgHasActiveNonProductionProjects } from "@/lib/services/production-des
 
 const FIELD_WINDOWS: FieldWindow[] = ["today", "week", "twoweek"];
 
-export default async function HomePage({
+async function HomePageContent({
   searchParams,
 }: {
   searchParams: Promise<{ w?: string }>;
@@ -59,4 +60,12 @@ async function ProductionHomeBand({ window }: { window?: string }) {
   ]);
 
   return <ProductionHome data={data} showCustomProjects={showCustomProjects} />;
+}
+
+export default function HomePage(props: Parameters<typeof HomePageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <HomePageContent {...props} />
+    </Suspense>
+  )
 }

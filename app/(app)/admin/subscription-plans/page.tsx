@@ -1,10 +1,12 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { requireAnyPermissionGuard } from "@/lib/auth/guards"
 import { SubscriptionPlansClient } from "@/components/admin/subscription-plans-client"
 import { getPlans } from "@/lib/services/admin"
 
 
-export default async function PlansPage() {
+async function PlansPageContent() {
   await requireAnyPermissionGuard(["billing.manage", "platform.billing.manage"])
 
   const plans = await getPlans()
@@ -21,5 +23,13 @@ export default async function PlansPage() {
         <SubscriptionPlansClient plans={plans} />
       </div>
     </PageLayout>
+  )
+}
+
+export default function PlansPage() {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <PlansPageContent />
+    </Suspense>
   )
 }

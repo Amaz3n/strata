@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { createHmac } from "crypto"
 import { type ReactNode } from "react"
 import { notFound } from "next/navigation"
@@ -71,7 +73,7 @@ function StatusPanel({
   )
 }
 
-export default async function DocumentSigningPage({ params }: Params) {
+async function DocumentSigningPageContent({ params }: Params) {
   const { token } = await params
   const secret = process.env.DOCUMENT_SIGNING_SECRET
   if (!secret) {
@@ -315,5 +317,13 @@ export default async function DocumentSigningPage({ params }: Params) {
       signerRole={signerRole}
       signerEmail={signingRequest.sent_to_email}
     />
+  )
+}
+
+export default function DocumentSigningPage(props: Parameters<typeof DocumentSigningPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <DocumentSigningPageContent {...props} />
+    </Suspense>
   )
 }

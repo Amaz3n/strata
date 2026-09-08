@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import {
   isBidPortalPinVerified,
   loadBidPortalData,
@@ -36,7 +38,7 @@ const EMPTY_BID_PORTAL_DATA = {
   draft: null,
 }
 
-export default async function BidPortalPage({ params }: BidPortalPageProps) {
+async function BidPortalPageContent({ params }: BidPortalPageProps) {
   const { token } = await params
 
   const access = await validateBidPortalToken(token)
@@ -100,4 +102,12 @@ export default async function BidPortalPage({ params }: BidPortalPageProps) {
   const workspace = await getExternalPortalWorkspaceContext({ orgId: access.org_id })
 
   return <BidPortalClient token={token} access={access} data={data} pinRequired={false} workspace={workspace} />
+}
+
+export default function BidPortalPage(props: Parameters<typeof BidPortalPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <BidPortalPageContent {...props} />
+    </Suspense>
+  )
 }

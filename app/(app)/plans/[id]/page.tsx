@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { notFound } from "next/navigation"
 
 import { PageLayout } from "@/components/layout/page-layout"
@@ -23,7 +25,7 @@ import { listTemplates } from "@/lib/services/schedule"
 
 const PLAN_NOT_FOUND = "House plan not found"
 
-export default async function PlanDetailPage({ params }: { params: Promise<{ id: string }> }) {
+async function PlanDetailPageContent({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
 
   /**
@@ -111,5 +113,13 @@ export default async function PlanDetailPage({ params }: { params: Promise<{ id:
         canRelease={elevated || permissions.includes("plan.release")}
       />
     </PageLayout>
+  )
+}
+
+export default function PlanDetailPage(props: Parameters<typeof PlanDetailPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <PlanDetailPageContent {...props} />
+    </Suspense>
   )
 }

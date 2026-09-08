@@ -22,6 +22,8 @@ function formatBytes(bytes: number): string {
 }
 
 async function AnalyticsData() {
+  await requireAnyPermissionGuard(["billing.manage", "platform.billing.manage"])
+
   // Demo-org usage is a usage metric, so it reads from this page rather than
   // from a launcher on the Platform index that had nothing else to do.
   const [metrics, trends, demoUsage] = await Promise.all([
@@ -171,9 +173,7 @@ async function AnalyticsData() {
   )
 }
 
-export default async function AnalyticsPage() {
-  await requireAnyPermissionGuard(["billing.manage", "platform.billing.manage"])
-
+export default function AnalyticsPage() {
   return (
     <PageLayout
       title="Analytics"

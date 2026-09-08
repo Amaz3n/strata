@@ -1,10 +1,12 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { z } from "zod"
 
 import { ReceivePaymentWorkspace } from "@/components/payments/receive-payment-workspace"
 import { PageLayout } from "@/components/layout/page-layout"
 import { getReceivePaymentWorkspace } from "@/lib/services/payments"
 
-export default async function ReceivePaymentPage({
+async function ReceivePaymentPageContent({
   searchParams,
 }: {
   searchParams: Promise<{ partyType?: string; partyId?: string }>
@@ -29,5 +31,13 @@ export default async function ReceivePaymentPage({
     >
       <ReceivePaymentWorkspace workspace={workspace} />
     </PageLayout>
+  )
+}
+
+export default function ReceivePaymentPage(props: Parameters<typeof ReceivePaymentPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <ReceivePaymentPageContent {...props} />
+    </Suspense>
   )
 }

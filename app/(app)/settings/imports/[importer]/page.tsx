@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { notFound } from "next/navigation"
 
 import { ImportWorkspace } from "@/components/admin/import-workspace"
@@ -9,7 +11,7 @@ import { getImportBatch, listImportBatches } from "@/lib/services/imports"
 import { commitOrgImportAction, discardOrgImportAction, patchOrgImportRowAction, previewOrgImportAction, setOrgImportUpdateExistingAction, stageOrgImportAction } from "../actions"
 
 
-export default async function OrgImporterPage({ params, searchParams }: { params: Promise<{ importer: string }>; searchParams: Promise<{ batch?: string }> }) {
+async function OrgImporterPageContent({ params, searchParams }: { params: Promise<{ importer: string }>; searchParams: Promise<{ batch?: string }> }) {
   const [{ importer: rawImporter }, query, productTier] = await Promise.all([params, searchParams, getOrgProductTier()])
   if (!IMPORTER_KEYS.includes(rawImporter as ImporterKey) || rawImporter === "open_wip") notFound()
   const importer = rawImporter as ImporterKey
@@ -21,4 +23,12 @@ export default async function OrgImporterPage({ params, searchParams }: { params
   const batchesResult = await listImportBatches({ importer, limit: 25 })
   const detail = query.batch ? await getImportBatch(query.batch, { limit: 500 }) : null
   return <PageLayout title={definition.label} breadcrumbs={[{ label: "Settings", href: "/settings" }, { label: "Data imports", href: "/settings/imports" }, { label: definition.label }]}><ImportWorkspace importer={importer} label={definition.label} description={definition.description} columns={definition.columns} fileKinds={definition.fileKinds} batches={batchesResult.batches} detail={detail} backHref="/settings/imports" previewAction={previewOrgImportAction} stageAction={stageOrgImportAction} patchAction={patchOrgImportRowAction} updateExistingAction={setOrgImportUpdateExistingAction} commitAction={commitOrgImportAction} discardAction={discardOrgImportAction} /></PageLayout>
+}
+
+export default function OrgImporterPage(props: Parameters<typeof OrgImporterPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <OrgImporterPageContent {...props} />
+    </Suspense>
+  )
 }

@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { createHmac } from "crypto"
 import { notFound } from "next/navigation"
 
@@ -45,7 +47,7 @@ function pickNextRequiredRequest(
   return nextRequired
 }
 
-export default async function ProposalPage({ params }: Params) {
+async function ProposalPageContent({ params }: Params) {
   const { token } = await params
   const tokenHash = createHmac("sha256", requireProposalSecret()).update(token).digest("hex")
   const supabase = createServiceSupabaseClient()
@@ -140,5 +142,13 @@ export default async function ProposalPage({ params }: Params) {
       pdfUrl={`/proposal/${token}/pdf`}
       continueSigningUrl={canContinueSigning ? `/proposal/${token}/continue` : null}
     />
+  )
+}
+
+export default function ProposalPage(props: Parameters<typeof ProposalPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <ProposalPageContent {...props} />
+    </Suspense>
   )
 }

@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { notFound } from "next/navigation"
 
 import { loadEstimateByToken } from "@/lib/services/estimate-portal"
@@ -15,7 +17,7 @@ interface Params {
   params: Promise<{ token: string }>
 }
 
-export default async function EstimatePortalPage({ params }: Params) {
+async function EstimatePortalPageContent({ params }: Params) {
   const { token } = await params
   const estimate = await loadEstimateByToken(token)
 
@@ -32,5 +34,13 @@ export default async function EstimatePortalPage({ params }: Params) {
       pdfUrl={`/e/${token}/pdf`}
       expired={expired}
     />
+  )
+}
+
+export default function EstimatePortalPage(props: Parameters<typeof EstimatePortalPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <EstimatePortalPageContent {...props} />
+    </Suspense>
   )
 }

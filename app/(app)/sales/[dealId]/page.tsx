@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { notFound } from "next/navigation"
 
 import { PageLayout } from "@/components/layout/page-layout"
@@ -38,7 +40,7 @@ const ACTIVITY_CAP = 60
  * moves depending on how much the other has to say. Each pane carries its own
  * control: the log has Log activity, the attention list has the follow-up.
  */
-export default async function DealDetailPage({ params }: { params: Promise<{ dealId: string }> }) {
+async function DealDetailPageContent({ params }: { params: Promise<{ dealId: string }> }) {
   const { dealId } = await params
   const [detail, ambient, teamMembers] = await Promise.all([
     getSalesDealDetail(decodeURIComponent(dealId)),
@@ -198,5 +200,13 @@ export default async function DealDetailPage({ params }: { params: Promise<{ dea
         </div>
       </div>
     </PageLayout>
+  )
+}
+
+export default function DealDetailPage(props: Parameters<typeof DealDetailPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <DealDetailPageContent {...props} />
+    </Suspense>
   )
 }

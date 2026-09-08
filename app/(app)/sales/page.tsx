@@ -1,3 +1,4 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 
 import { PageLayout } from "@/components/layout/page-layout"
@@ -23,7 +24,7 @@ interface SalesPageProps {
  * filter on this page — production staff are assigned to communities, so the
  * scope is ambient across every desk at once.
  */
-export default async function SalesPage({ searchParams }: SalesPageProps) {
+async function SalesPageContent({ searchParams }: SalesPageProps) {
   const params = await searchParams
   const view: DealView = isDealView(params.view) ? params.view : "open"
   const filter: DealFilter = isDealFilter(params.due) ? params.due : "all"
@@ -82,5 +83,13 @@ async function SalesBoardBand({ view, filter }: { view: DealView; filter: DealFi
         />
       }
     />
+  )
+}
+
+export default function SalesPage(props: Parameters<typeof SalesPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <SalesPageContent {...props} />
+    </Suspense>
   )
 }

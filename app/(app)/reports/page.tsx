@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { ReportCatalog } from "@/components/reports/report-catalog"
 import { catalogFor, resolveOrgReportScope } from "@/lib/services/report-catalog"
@@ -7,7 +9,7 @@ import Link from "next/link"
 import { Badge } from "@/components/ui/badge"
 
 
-export default async function ReportsPage() {
+async function ReportsPageContent() {
   const resolution = await resolveOrgReportScope()
   const [groups, runs, saved] = await Promise.all([
     Promise.resolve(catalogFor(resolution)),
@@ -27,5 +29,13 @@ export default async function ReportsPage() {
         />
       </div>
     </PageLayout>
+  )
+}
+
+export default function ReportsPage() {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <ReportsPageContent />
+    </Suspense>
   )
 }

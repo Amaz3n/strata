@@ -1,3 +1,4 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { requireAnyPermissionGuard } from "@/lib/auth/guards"
@@ -15,7 +16,7 @@ async function FeatureFlagsData() {
   return <FeatureFlagsTable initialFlags={featureFlags} organizations={organizations} />
 }
 
-export default async function FeaturesPage() {
+async function FeaturesPageContent() {
   await requireAnyPermissionGuard(["features.manage", "platform.feature_flags.manage"])
 
   return (
@@ -40,5 +41,13 @@ function FeatureFlagsSkeleton() {
         <Skeleton key={i} className="h-12 w-full" />
       ))}
     </div>
+  )
+}
+
+export default function FeaturesPage() {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <FeaturesPageContent />
+    </Suspense>
   )
 }

@@ -1,3 +1,4 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { requireAnyPermissionGuard } from "@/lib/auth/guards"
@@ -93,7 +94,7 @@ function AuditLogSkeleton() {
   )
 }
 
-export default async function AuditPage({
+async function AuditPageContent({
   searchParams,
 }: {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>
@@ -163,5 +164,13 @@ export default async function AuditPage({
         </Suspense>
       </div>
     </PageLayout>
+  )
+}
+
+export default function AuditPage(props: Parameters<typeof AuditPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <AuditPageContent {...props} />
+    </Suspense>
   )
 }

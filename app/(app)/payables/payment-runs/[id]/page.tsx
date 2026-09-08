@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import Link from "next/link"
 import { notFound } from "next/navigation"
 import { connection } from "next/server"
@@ -17,7 +19,7 @@ import { terminology } from "@/lib/terminology"
 function money(cents: number) { return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100) }
 function Evidence({ value }: { value: unknown }) { return <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words bg-muted/20 p-3 font-mono text-[11px] leading-5 text-muted-foreground">{JSON.stringify(value ?? {}, null, 2)}</pre> }
 
-export default async function PaymentRunDetailPage({ params }: { params: Promise<{ id: string }> }) {
+async function PaymentRunDetailPageContent({ params }: { params: Promise<{ id: string }> }) {
   await connection()
   await requireAnyPermissionGuard(["payment.release", "payment.approve_run", "payment.reconcile", "payment.manage_rail"])
   const { id } = await params
@@ -58,4 +60,12 @@ export default async function PaymentRunDetailPage({ params }: { params: Promise
       {run.details_truncated ? <p className="text-xs text-warning">Showing the first 1,000 items. Reconciliation remains authoritative for the complete run.</p> : null}
     </main>
   </PageLayout>
+}
+
+export default function PaymentRunDetailPage(props: Parameters<typeof PaymentRunDetailPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <PaymentRunDetailPageContent {...props} />
+    </Suspense>
+  )
 }

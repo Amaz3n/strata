@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { headers } from "next/headers"
 import { notFound } from "next/navigation"
 import Image from "next/image"
@@ -42,7 +44,7 @@ function formatExpiry(iso?: string): string | null {
   })
 }
 
-export default async function PublicFileSharePage({ params }: Params) {
+async function PublicFileSharePageContent({ params }: Params) {
   const { token } = await params
   const link = await getFileShareLinkByToken(token)
 
@@ -138,5 +140,13 @@ export default async function PublicFileSharePage({ params }: Params) {
         </p>
       </div>
     </div>
+  )
+}
+
+export default function PublicFileSharePage(props: Parameters<typeof PublicFileSharePageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <PublicFileSharePageContent {...props} />
+    </Suspense>
   )
 }

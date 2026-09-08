@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { RunwayBoard } from "@/components/design-studio/runway-board"
 import { getStudioRunway, listBookableHomes } from "@/lib/services/design-studio"
@@ -10,7 +12,7 @@ interface PageProps {
   searchParams: Promise<{ community?: string }>
 }
 
-export default async function DesignStudioPage({ searchParams }: PageProps) {
+async function DesignStudioPageContent({ searchParams }: PageProps) {
   const { community } = await searchParams
   const ambient = await getAmbientDeskContext()
   const communityId = community || ambient.communityId
@@ -32,5 +34,13 @@ export default async function DesignStudioPage({ searchParams }: PageProps) {
         canManage={canManage}
       />
     </PageLayout>
+  )
+}
+
+export default function DesignStudioPage(props: Parameters<typeof DesignStudioPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <DesignStudioPageContent {...props} />
+    </Suspense>
   )
 }

@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { PaymentFeesClient } from "@/components/admin/payment-fees-client"
 import { PageLayout } from "@/components/layout/page-layout"
 import { requirePermissionGuard } from "@/lib/auth/guards"
@@ -7,7 +9,7 @@ import {
 } from "@/lib/services/payment-fee-policies"
 
 
-export default async function PaymentFeesPage() {
+async function PaymentFeesPageContent() {
   await requirePermissionGuard("platform.billing.manage")
 
   const [policies, organizations] = await Promise.all([
@@ -25,5 +27,13 @@ export default async function PaymentFeesPage() {
     >
       <PaymentFeesClient initialPolicies={policies} organizations={organizations} />
     </PageLayout>
+  )
+}
+
+export default function PaymentFeesPage() {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <PaymentFeesPageContent />
+    </Suspense>
   )
 }

@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { connection } from "next/server"
 
 import { PageLayout } from "@/components/layout/page-layout"
@@ -16,7 +18,7 @@ const LABELS = {
   production_qa: "Production-mode end-to-end QA",
 } as const
 
-export default async function PaymentLaunchPage() {
+async function PaymentLaunchPageContent() {
   await connection()
   await requirePaymentLaunchOwner()
   const [gates, payoutSchedule] = await Promise.all([listPaymentLaunchGateStates(), getPlatformPayoutScheduleState()])
@@ -68,5 +70,13 @@ export default async function PaymentLaunchPage() {
         </div>
       </div>
     </PageLayout>
+  )
+}
+
+export default function PaymentLaunchPage() {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <PaymentLaunchPageContent />
+    </Suspense>
   )
 }

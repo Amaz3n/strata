@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import Link from "next/link"
 
 import { PageLayout } from "@/components/layout/page-layout"
@@ -29,7 +31,7 @@ function batchSummary(batches: ImportBatchSummary[]) {
   return batches.length === 1 ? status : `${status} · ${batches.length} batches`
 }
 
-export default async function ImportsPage() {
+async function ImportsPageContent() {
   const [result, access, productTier, hasProductionProjects, hasPriceAgreements] = await Promise.all([
     listImportBatches({ limit: 50 }),
     getCurrentUserPermissions(),
@@ -105,5 +107,13 @@ export default async function ImportsPage() {
         </SettingsGroup>
       </div>
     </PageLayout>
+  )
+}
+
+export default function ImportsPage() {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <ImportsPageContent />
+    </Suspense>
   )
 }

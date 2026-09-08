@@ -1,10 +1,12 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { GateSettingsClient } from "@/components/starts/gate-settings-client"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { listGateDefinitions } from "@/lib/services/starts"
 
 
-export default async function StartSettingsPage() {
+async function StartSettingsPageContent() {
   const [definitions, permissions] = await Promise.all([listGateDefinitions(), getCurrentUserPermissions()])
   const grants = permissions.permissions
   const canManage = grants.includes("*") || grants.includes("org.admin") || grants.includes("start.release")
@@ -20,5 +22,13 @@ export default async function StartSettingsPage() {
         <GateSettingsClient definitions={definitions} canManage={canManage} />
       </div>
     </PageLayout>
+  )
+}
+
+export default function StartSettingsPage() {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <StartSettingsPageContent />
+    </Suspense>
   )
 }

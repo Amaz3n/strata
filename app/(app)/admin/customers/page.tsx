@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { requireAnyPermissionGuard } from "@/lib/auth/guards"
 import { CustomersClient } from "@/components/admin/customers-table"
@@ -44,7 +46,7 @@ async function setOrganizationStatus(formData: FormData) {
   unwrapAction(await setOrganizationStatusAction(formData))
 }
 
-export default async function CustomersPage({
+async function CustomersPageContent({
   searchParams,
 }: {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>
@@ -103,5 +105,13 @@ export default async function CustomersPage({
         />
       </div>
     </PageLayout>
+  )
+}
+
+export default function CustomersPage(props: Parameters<typeof CustomersPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <CustomersPageContent {...props} />
+    </Suspense>
   )
 }

@@ -1,3 +1,4 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import Link from "next/link";
 import { connection } from "next/server";
 import { Suspense } from "react";
@@ -59,7 +60,7 @@ function resolveSection(value?: string): SectionKey {
     : "waivers";
 }
 
-export default async function TemplatesPage({
+async function TemplatesPageContent({
   searchParams,
 }: {
   searchParams: Promise<{ section?: string }>;
@@ -191,4 +192,12 @@ async function WaiversSection() {
       canManage={decision.allowed}
     />
   );
+}
+
+export default function TemplatesPage(props: Parameters<typeof TemplatesPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <TemplatesPageContent {...props} />
+    </Suspense>
+  )
 }

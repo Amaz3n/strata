@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { CatalogWorkbench } from "@/components/design-studio/catalog-workbench"
 import { listCatalog, listPlanPricingMatrix } from "@/lib/services/option-catalog"
@@ -10,7 +12,7 @@ interface PageProps {
   searchParams: Promise<{ community?: string }>
 }
 
-export default async function CatalogPage({ searchParams }: PageProps) {
+async function CatalogPageContent({ searchParams }: PageProps) {
   const { community } = await searchParams
   const ambient = await getAmbientDeskContext()
   const communityId = community || ambient.communityId
@@ -38,5 +40,13 @@ export default async function CatalogPage({ searchParams }: PageProps) {
         canManage={canManage}
       />
     </PageLayout>
+  )
+}
+
+export default function CatalogPage(props: Parameters<typeof CatalogPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <CatalogPageContent {...props} />
+    </Suspense>
   )
 }

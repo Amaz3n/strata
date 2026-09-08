@@ -1,9 +1,11 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { getProjectWaiverRegister } from "@/lib/services/waiver-register"
 import { resolveProductionDeskScope } from "@/lib/services/production-desk-scope"
 import { WaiverRegisterClient } from "@/app/(app)/projects/[id]/financials/waivers/waiver-register-client"
 import { listProjects } from "@/lib/services/projects"
-export default async function Page({
+async function PageContent({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | undefined>>
@@ -28,5 +30,13 @@ export default async function Page({
     <PageLayout title="Payables · Waivers" fullBleed>
       <WaiverRegisterClient register={register} commitments={[]} />
     </PageLayout>
+  )
+}
+
+export default function Page(props: Parameters<typeof PageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <PageContent {...props} />
+    </Suspense>
   )
 }

@@ -1,3 +1,4 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react";
 import { loadProjectDirectory } from "@/lib/services/project-directory";
 import { projectDirectoryQuerySchema } from "@/lib/projects/directory";
@@ -30,7 +31,7 @@ async function ProjectsData({
   );
 }
 
-export default async function ProjectsPage({
+async function ProjectsPageContent({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | undefined>>;
@@ -61,4 +62,12 @@ function ProjectsSkeleton() {
       </div>
     </div>
   );
+}
+
+export default function ProjectsPage(props: Parameters<typeof ProjectsPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <ProjectsPageContent {...props} />
+    </Suspense>
+  )
 }

@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { notFound } from "next/navigation"
 import { connection } from "next/server"
 
@@ -9,7 +11,7 @@ import { getOnboardingRun } from "@/lib/services/onboarding"
 import { commitImportAction, discardImportAction, patchImportRowAction, previewImportAction, setImportUpdateExistingAction, stageImportAction } from "../../actions"
 
 
-export default async function ImporterPage({ params, searchParams }: { params: Promise<{ orgId: string; importer: string }>; searchParams: Promise<{ batch?: string }> }) {
+async function ImporterPageContent({ params, searchParams }: { params: Promise<{ orgId: string; importer: string }>; searchParams: Promise<{ batch?: string }> }) {
   await connection()
   const [{ orgId, importer: rawImporter }, query] = await Promise.all([params, searchParams])
   if (!IMPORTER_KEYS.includes(rawImporter as ImporterKey)) notFound()
@@ -27,4 +29,12 @@ export default async function ImporterPage({ params, searchParams }: { params: P
   async function discard(input: { orgId?: string; importer: ImporterKey; batchId: string }) { "use server"; return discardImportAction({ ...input, orgId }) }
 
   return <PageLayout title={definition.label} breadcrumbs={[{ label: "Admin", href: "/admin" }, { label: "Customers", href: "/admin/customers" }, { label: onboarding.org.name, href: `/admin/customers/${orgId}/onboarding` }, { label: definition.label }]}><ImportWorkspace orgId={orgId} onboardingRunId={onboarding.run.id} importer={importer} label={definition.label} description={definition.description} columns={definition.columns} fileKinds={definition.fileKinds} batches={batchesResult.batches} detail={detail} backHref={`/admin/customers/${orgId}/onboarding`} previewAction={preview} stageAction={stage} patchAction={patch} updateExistingAction={updateExisting} commitAction={commit} discardAction={discard} /></PageLayout>
+}
+
+export default function ImporterPage(props: Parameters<typeof ImporterPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <ImporterPageContent {...props} />
+    </Suspense>
+  )
 }
