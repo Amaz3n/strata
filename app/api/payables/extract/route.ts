@@ -7,7 +7,6 @@ import { createFileFromUpload } from "@/lib/services/files"
 import { extractPayableInvoiceFromFile } from "@/lib/services/document-extraction"
 import { invoiceFileError, payableIntakeError } from "@/lib/payables/intake"
 
-export const runtime = "nodejs"
 export const maxDuration = 180
 
 /** Fetch avoids the browser's serialized Server Action queue. Persist and read
