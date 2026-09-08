@@ -1,5 +1,9 @@
 import { redirect } from "next/navigation"
 
+// Compatibility redirect; the destination owns its navigation contract.
+export const instant = false
+
+
 interface PageProps {
   params: Promise<{ id: string }>
   searchParams?: Promise<Record<string, string | string[] | undefined>>
