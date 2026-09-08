@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import Link from "next/link"
 import { PageLayout } from "@/components/layout/page-layout"
 import {
@@ -90,7 +92,7 @@ function pillClass(isActive: boolean) {
     : "rounded-full border px-3 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
 }
 
-export default async function EmailPreviewPage({ searchParams }: { searchParams: SearchParams }) {
+async function EmailPreviewPageContent({ searchParams }: { searchParams: SearchParams }) {
   const resolvedSearchParams = await searchParams
   const params = toUrlParams(resolvedSearchParams)
 
@@ -524,5 +526,13 @@ export default async function EmailPreviewPage({ searchParams }: { searchParams:
         </div>
       </div>
     </PageLayout>
+  )
+}
+
+export default function EmailPreviewPage(props: Parameters<typeof EmailPreviewPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <EmailPreviewPageContent {...props} />
+    </Suspense>
   )
 }

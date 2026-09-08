@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { PurchasingClient } from "@/components/purchasing/purchasing-client"
 import { listOrgBidPackages } from "@/lib/services/bids"
@@ -18,7 +20,7 @@ function relationName(value: unknown, fallback: string) {
   return row && typeof row === "object" && typeof Reflect.get(row, "name") === "string" ? String(Reflect.get(row, "name")) : fallback
 }
 
-export default async function PurchasingPage({ searchParams }: { searchParams: Promise<{ tab?: string; project?: string }> }) {
+async function PurchasingPageContent({ searchParams }: { searchParams: Promise<{ tab?: string; project?: string }> }) {
   const params = await searchParams
   const ambient = await getAmbientDeskContext()
   const today = new Date()
@@ -45,4 +47,12 @@ export default async function PurchasingPage({ searchParams }: { searchParams: P
     communities={communities.map((row) => ({ id: row.id, name: row.name, code: row.code }))}
     plans={plans.map((row) => ({ id: row.id, name: row.name, code: row.code }))}
   /></PageLayout>
+}
+
+export default function PurchasingPage(props: Parameters<typeof PurchasingPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <PurchasingPageContent {...props} />
+    </Suspense>
+  )
 }

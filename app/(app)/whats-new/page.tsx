@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { ReleaseNotesPage } from "@/components/release-notes/release-notes-page"
 import { requireAuth } from "@/lib/auth/context"
@@ -11,7 +13,7 @@ import {
 
 const MANAGE_PERMISSIONS = ["platform.feature_flags.manage", "features.manage"]
 
-export default async function WhatsNewPage() {
+async function WhatsNewPageContent() {
   const { user, orgId } = await requireAuth()
   const canManage = await hasAnyPermission(MANAGE_PERMISSIONS, {
     userId: user.id,
@@ -37,5 +39,13 @@ export default async function WhatsNewPage() {
     <PageLayout title="What's New">
       <ReleaseNotesPage notes={notes} />
     </PageLayout>
+  )
+}
+
+export default function WhatsNewPage() {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <WhatsNewPageContent />
+    </Suspense>
   )
 }

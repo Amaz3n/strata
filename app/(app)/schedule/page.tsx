@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import Link from "next/link"
 import {
   differenceInCalendarDays,
@@ -692,7 +694,7 @@ function LegendSwatch({ color, label }: { color: string; label: string }) {
   )
 }
 
-export default async function SchedulePage({
+async function SchedulePageContent({
   searchParams,
 }: {
   searchParams: Promise<{ zoom?: string; community?: string }>
@@ -941,5 +943,13 @@ export default async function SchedulePage({
         ) : null}
       </div>
     </PageLayout>
+  )
+}
+
+export default function SchedulePage(props: Parameters<typeof SchedulePageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <SchedulePageContent {...props} />
+    </Suspense>
   )
 }

@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { TakeoffTemplatesPanel } from "@/components/settings/takeoff-templates-panel"
 import { unwrapAction } from "@/lib/action-result"
@@ -11,7 +13,7 @@ import {
 } from "@/app/(app)/drawings/takeoff-actions"
 
 
-export default async function TakeoffSettingsPage() {
+async function TakeoffSettingsPageContent() {
   const [templatesResult, groupsResult, costCodes, permissionResult] = await Promise.all([
     listConditionTemplatesAction(),
     listTemplateGroupsAction(),
@@ -42,5 +44,13 @@ export default async function TakeoffSettingsPage() {
         canManage={canManage}
       />
     </PageLayout>
+  )
+}
+
+export default function TakeoffSettingsPage() {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <TakeoffSettingsPageContent />
+    </Suspense>
   )
 }

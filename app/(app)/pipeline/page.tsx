@@ -1,3 +1,4 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { redirect } from "next/navigation"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -115,7 +116,7 @@ async function PipelineData({ searchParams }: PipelinePageProps) {
   )
 }
 
-export default async function PipelinePage(props: PipelinePageProps) {
+async function PipelinePageContent(props: PipelinePageProps) {
   const [productTier, params] = await Promise.all([getOrgProductTier(), props.searchParams])
   if (productTier === "production") {
     const next = new URLSearchParams()
@@ -141,5 +142,13 @@ export default async function PipelinePage(props: PipelinePageProps) {
         <PipelineData searchParams={props.searchParams} />
       </Suspense>
     </PageLayout>
+  )
+}
+
+export default function PipelinePage(props: Parameters<typeof PipelinePageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <PipelinePageContent {...props} />
+    </Suspense>
   )
 }

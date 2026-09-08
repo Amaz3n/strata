@@ -1,3 +1,4 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import Link from "next/link"
 
@@ -26,7 +27,7 @@ function resolveSection(value?: string): SectionKey {
   return SECTIONS.some((section) => section.key === value) ? (value as SectionKey) : "codes"
 }
 
-export default async function CostCodingPage({ searchParams }: { searchParams: Promise<{ section?: string }> }) {
+async function CostCodingPageContent({ searchParams }: { searchParams: Promise<{ section?: string }> }) {
   const section = resolveSection((await searchParams).section)
 
   return (
@@ -102,5 +103,13 @@ function RosterSkeleton() {
         ))}
       </div>
     </div>
+  )
+}
+
+export default function CostCodingPage(props: Parameters<typeof CostCodingPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <CostCodingPageContent {...props} />
+    </Suspense>
   )
 }

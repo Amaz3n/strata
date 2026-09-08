@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { redirect } from "next/navigation"
 
 import { PageLayout } from "@/components/layout/page-layout"
@@ -13,7 +15,7 @@ import {
 } from "@/lib/services/platform-bugs"
 
 
-export default async function PlatformBugsPage() {
+async function PlatformBugsPageContent() {
   try {
     await requirePlatformBugOwner()
   } catch {
@@ -42,5 +44,13 @@ export default async function PlatformBugsPage() {
         />
       </div>
     </PageLayout>
+  )
+}
+
+export default function PlatformBugsPage() {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <PlatformBugsPageContent />
+    </Suspense>
   )
 }

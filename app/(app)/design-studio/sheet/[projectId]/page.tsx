@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { notFound } from "next/navigation"
 
 import { PageLayout } from "@/components/layout/page-layout"
@@ -9,7 +11,7 @@ interface PageProps {
   params: Promise<{ projectId: string }>
 }
 
-export default async function SelectionSheetPage({ params }: PageProps) {
+async function SelectionSheetPageContent({ params }: PageProps) {
   const { projectId } = await params
   const sheet = await getSelectionSheet(projectId)
   if (!sheet) notFound()
@@ -22,5 +24,13 @@ export default async function SelectionSheetPage({ params }: PageProps) {
     >
       <SelectionSheetClient sheet={sheet} />
     </PageLayout>
+  )
+}
+
+export default function SelectionSheetPage(props: Parameters<typeof SelectionSheetPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <SelectionSheetPageContent {...props} />
+    </Suspense>
   )
 }

@@ -1,10 +1,12 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { LaunchLane } from "@/components/starts/launch-lane"
 import { getStartsDesk } from "@/lib/services/starts-desk"
 import { resolveProductionDeskScope } from "@/lib/services/production-desk-scope"
 
 
-export default async function StartsPage({
+async function StartsPageContent({
   searchParams,
 }: {
   searchParams: Promise<{ community?: string; package?: string }>
@@ -22,5 +24,13 @@ export default async function StartsPage({
         initialPackageId={params.package}
       />
     </PageLayout>
+  )
+}
+
+export default function StartsPage(props: Parameters<typeof StartsPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <StartsPageContent {...props} />
+    </Suspense>
   )
 }

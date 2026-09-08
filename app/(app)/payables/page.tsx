@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { parsePayablesBookQuery } from "@/lib/financials/payables-book"
 import { PageLayout } from "@/components/layout/page-layout"
 import { requireOrgContext } from "@/lib/services/context"
@@ -13,7 +15,7 @@ import { hasAnyPermission } from "@/lib/services/permissions"
 import { listPaymentRuns } from "@/lib/services/payment-runs"
 
 
-export default async function PayablesPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined> & { community?: string; tab?: string; q?: string; page?: string; pageSize?: string; run?: string; bill?: string; due?: string }> }) {
+async function PayablesPageContent({ searchParams }: { searchParams: Promise<Record<string, string | undefined> & { community?: string; tab?: string; q?: string; page?: string; pageSize?: string; run?: string; bill?: string; due?: string }> }) {
   const params = await searchParams
   const [scope, { orgId, userId }] = await Promise.all([
     resolveProductionDeskScope({ communityId: params.community }),
@@ -61,5 +63,13 @@ export default async function PayablesPage({ searchParams }: { searchParams: Pro
         approvalViewer={{ userId, approvers: routing?.approvers ?? [] }}
       />
     </PageLayout>
+  )
+}
+
+export default function PayablesPage(props: Parameters<typeof PayablesPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <PayablesPageContent {...props} />
+    </Suspense>
   )
 }

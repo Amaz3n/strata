@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import Link from "next/link"
 
 import { PageLayout } from "@/components/layout/page-layout"
@@ -8,7 +10,7 @@ import { cn } from "@/lib/utils"
 
 const WINDOWS = [2, 3, 4] as const
 
-export default async function TradeLookaheadPage({ searchParams }: { searchParams: Promise<{ weeks?: string }> }) {
+async function TradeLookaheadPageContent({ searchParams }: { searchParams: Promise<{ weeks?: string }> }) {
   const params = await searchParams
   const weeks = params.weeks === "2" || params.weeks === "4" ? (Number(params.weeks) as 2 | 4) : 3
   const result = await getTradeLookahead({ weeks, pageSize: 100 })
@@ -41,5 +43,13 @@ export default async function TradeLookaheadPage({ searchParams }: { searchParam
         <TradeLookaheadClient rows={result.rows} weeks={weeks} />
       </div>
     </PageLayout>
+  )
+}
+
+export default function TradeLookaheadPage(props: Parameters<typeof TradeLookaheadPageContent>[0]) {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <TradeLookaheadPageContent {...props} />
+    </Suspense>
   )
 }

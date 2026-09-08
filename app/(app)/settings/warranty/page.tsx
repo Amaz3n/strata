@@ -1,3 +1,5 @@
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { getOrgProductTier } from "@/lib/services/context"
 import { getProjectPosture } from "@/lib/product-tier"
@@ -6,7 +8,7 @@ import { listWarrantyPrograms, listWarrantySlaTargets } from "@/lib/services/war
 import { WarrantySettingsClient } from "./warranty-settings-client"
 
 
-export default async function WarrantySettingsPage() {
+async function WarrantySettingsPageContent() {
   const [programs, targets, productTier] = await Promise.all([
     listWarrantyPrograms(),
     listWarrantySlaTargets(),
@@ -21,5 +23,13 @@ export default async function WarrantySettingsPage() {
         posture={getProjectPosture(null, productTier)}
       />
     </PageLayout>
+  )
+}
+
+export default function WarrantySettingsPage() {
+  return (
+    <Suspense fallback={<PageLoadingSkeleton />}>
+      <WarrantySettingsPageContent />
+    </Suspense>
   )
 }
