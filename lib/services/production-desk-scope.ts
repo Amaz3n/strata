@@ -1,4 +1,3 @@
-import { listCommunities } from "@/lib/services/communities"
 import { requireOrgContext } from "@/lib/services/context"
 import { getAmbientDeskContext } from "@/lib/services/desk-context"
 import {
@@ -51,7 +50,7 @@ export async function resolveProductionDeskScope(input: {
   const context = await requireOrgContext()
   const ambient = await getAmbientDeskContext()
   const requestedCommunityId = input.communityId ?? ambient.communityId
-  const communityRows = await listCommunities({}, context.orgId)
+  const communityRows = ambient.pinnableCommunities
   const communities = communityRows.map(({ id, name }) => ({ id, name }))
   const communityId = communities.some((option) => option.id === requestedCommunityId)
     ? requestedCommunityId

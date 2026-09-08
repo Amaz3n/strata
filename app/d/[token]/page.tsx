@@ -10,6 +10,7 @@ import { recordESignEvent } from "@/lib/services/esign-events"
 import { createExecutedFileAccessToken } from "@/lib/services/esign-executed-links"
 import { loadEstimateByIdForPortal } from "@/lib/services/estimate-portal"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { WaiverSigningClient } from "@/components/portal/waiver-signing-client"
 import { EstimateBuilderSigningClient } from "@/components/portal/estimate-builder-signing-client"
 import { DocumentSigningClient } from "./document-signing-client"
 
@@ -269,6 +270,14 @@ export default async function DocumentSigningPage({ params }: Params) {
 
   if (fieldsError) {
     throw new Error(`Failed to load document fields: ${fieldsError.message}`)
+  }
+
+  if (signingRequest.document.metadata?.waiver_signing_experience === "review" && signingRequest.document.metadata?.invoice_lien_waiver_id) {
+    const recipients = signingRequest.document.metadata?.draft_recipients ?? []
+    return <WaiverSigningClient token={token} title={signingRequest.document.title}
+      signerEmail={signingRequest.sent_to_email ?? ""}
+      signerName={recipients.find((recipient: { email?: string }) => recipient.email === signingRequest.sent_to_email)?.name ?? ""}
+      fields={(fields ?? []).filter(field => !field.signer_role || field.signer_role === signerRole)}/>
   }
 
   const priorSignedRequestIds = (groupRequests ?? [])

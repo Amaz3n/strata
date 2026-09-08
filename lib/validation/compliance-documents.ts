@@ -5,6 +5,18 @@ export const complianceMonitoringInputSchema = z.object({
   enabled: z.boolean(),
 })
 
+/**
+ * A calendar day, `YYYY-MM-DD`.
+ *
+ * Every date in this slice was a bare `z.string()`, so "next year" reached the
+ * database and `lib/compliance/dates.ts` had to treat it as absent. An empty
+ * string is accepted and normalized away because the dialogs send one for a
+ * field the user left alone.
+ */
+export const complianceDateSchema = z
+  .union([z.string().trim().date(), z.literal("")])
+  .transform((value) => (value === "" ? undefined : value))
+
 export const complianceDocumentKindEnum = z.enum([
   "insurance",
   "tax",
@@ -58,7 +70,10 @@ export const setProjectRequirementsSchema = z.object({
 export const complianceRequirementWaiverInputSchema = z.object({
   document_type_id: z.string().uuid(),
   reason: z.string().max(1000).optional(),
-  expires_at: z.string().optional(),
+  // A waiver releases a payment hold, so its expiry decides money. It was a
+  // bare string, and an unparseable one compared lexicographically against
+  // today — which is to say, unpredictably.
+  expires_at: complianceDateSchema.optional(),
 })
 
 export const complianceRequirementWaiverRevokeSchema = z.object({
@@ -74,8 +89,8 @@ export const complianceDocumentStatusEnum = z.enum(["pending_review", "approved"
 
 export const complianceDocumentUploadSchema = z.object({
   document_type_id: z.string().uuid(),
-  effective_date: z.string().optional(),
-  expiry_date: z.string().optional(),
+  effective_date: complianceDateSchema.optional(),
+  expiry_date: complianceDateSchema.optional(),
   policy_number: z.string().max(100).optional(),
   coverage_amount_cents: z.number().int().positive().optional(),
   carrier_name: z.string().max(200).optional(),

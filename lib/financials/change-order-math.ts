@@ -31,3 +31,19 @@ export function deriveOwnerUnitPriceCents({
 export function changeOrderMarginCents(priceCents: number, costCents: number | null): number | null {
   return costCents == null ? null : priceCents - costCents
 }
+
+/** Internal cost is a line total, while the legacy price field is per unit. */
+export function changeOrderBudgetCostCents(line: {
+  internal_cost_cents?: number | null
+  quantity?: number | null
+  unit_cost_cents?: number | null
+  allowance_cents?: number | null
+}): number {
+  return Math.round(line.internal_cost_cents ??
+    changeOrderOwnerPriceCents(line))
+}
+
+/** Owner-price basis for contract/GMP movement, independent of internal cost. */
+export function changeOrderOwnerPriceCents(line: { quantity?: number | null; unit_cost_cents?: number | null; allowance_cents?: number | null }): number {
+  return Math.round((line.quantity ?? 1) * (line.unit_cost_cents ?? 0) + (line.allowance_cents ?? 0))
+}

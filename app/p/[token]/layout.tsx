@@ -70,6 +70,7 @@ async function ClientPortalLayoutContent({ children, params }: ClientPortalLayou
     permissions: access.permissions,
     counts: context.counts,
     hasInvoices: context.hasInvoices,
+    hasPayApplications: context.hasPayApplications,
     has3dModel: floorplan !== null,
     roadmapLabel: context.roadmapLabel,
   })

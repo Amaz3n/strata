@@ -2,6 +2,7 @@ import sharp from "sharp"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import type { InvoicePdfData, InvoicePdfLine } from "@/lib/pdfs/invoice"
+import { invoicePaymentMethods, paymentMethodLabels } from "@/components/invoices/arc-invoice-document"
 
 type AnySupabase = SupabaseClient<any, any, any>
 
@@ -225,10 +226,12 @@ export async function buildInvoicePdfData({
     fromLines,
     billToLines,
     projectName: projectName ?? undefined,
+    paymentMethods: paymentMethodLabels(invoicePaymentMethods(metadata)),
+    amountDueCents: invoice.balance_due_cents ?? invoice.totals?.balance_due_cents ?? undefined,
     notes:
       (typeof invoice.notes === "string" && invoice.notes.trim().length > 0
         ? invoice.notes
-        : String(settings.invoice_default_payment_details ?? settings.invoice_default_note ?? "").trim()) || undefined,
+        : String(settings.invoice_default_payment_details ?? "").trim()) || undefined,
     payUrl: `${resolvedAppUrl}/i/${token}`,
     subtotalCents: invoice.subtotal_cents ?? invoice.totals?.subtotal_cents ?? 0,
     taxCents: invoice.tax_cents ?? invoice.totals?.tax_cents ?? 0,

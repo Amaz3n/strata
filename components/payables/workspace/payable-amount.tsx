@@ -1,19 +1,19 @@
-"use client"
+"use client";
 
-import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
-import type { VendorBillSummary } from "@/lib/services/vendor-bills"
-import { cn } from "@/lib/utils"
-import { dueSentence } from "../payables-ui"
+import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers";
+import type { VendorBillSummary } from "@/lib/services/vendor-bills";
+import { cn } from "@/lib/utils";
+import { dueSentence } from "../payables-ui";
 
 interface PayableAmountProps {
-  bill: VendorBillSummary
-  isVendorCredit: boolean
-  totalCents: number
-  paidCents: number
-  retainedCents: number
-  balanceCents: number
-  accountingProviderName?: string | null
-  accountingEnabled: boolean
+  bill: VendorBillSummary;
+  isVendorCredit: boolean;
+  totalCents: number;
+  paidCents: number;
+  retainedCents: number;
+  balanceCents: number;
+  accountingProviderName?: string | null;
+  accountingEnabled: boolean;
 }
 
 /**
@@ -38,28 +38,34 @@ export function PayableAmount({
 }: PayableAmountProps) {
   if (isVendorCredit) {
     return (
-      <div className="shrink-0 px-6 pb-5 sm:px-8">
-        <p className="font-mono text-[40px] font-medium leading-none tabular-nums tracking-tight">
+      <div className="pb-7">
+        <p className="mb-3 text-sm text-muted-foreground">Vendor credit</p>
+        <p className="text-[40px] font-medium leading-none tabular-nums tracking-tight sm:text-[48px]">
           {formatMoneyFromCents(totalCents)}
         </p>
         <p className="mt-2.5 text-sm text-muted-foreground">
           Credit against this vendor — reduces project cost
-          {accountingEnabled ? ` · managed in ${accountingProviderName ?? "accounting"}` : ""}
+          {accountingEnabled
+            ? ` · managed in ${accountingProviderName ?? "accounting"}`
+            : ""}
         </p>
       </div>
-    )
+    );
   }
 
-  const settled = balanceCents <= 0
-  const headlineCents = settled ? totalCents : balanceCents
-  const hasBreakdown = paidCents !== 0 || retainedCents !== 0
-  const due = dueSentence(bill)
+  const settled = balanceCents <= 0;
+  const headlineCents = settled ? totalCents : balanceCents;
+  const hasBreakdown = paidCents !== 0 || retainedCents !== 0;
+  const due = dueSentence(bill);
 
   return (
-    <div className="shrink-0 px-6 pb-5 sm:px-8">
+    <div className="pb-7">
+      <p className="mb-3 text-sm text-muted-foreground">
+        {settled ? "Bill total" : "Outstanding"}
+      </p>
       <p
         className={cn(
-          "font-mono text-[40px] font-medium leading-none tabular-nums tracking-tight",
+          "text-[40px] font-medium leading-none tabular-nums tracking-tight sm:text-[48px]",
           settled && "text-muted-foreground",
         )}
       >
@@ -67,7 +73,11 @@ export function PayableAmount({
       </p>
 
       <p className="mt-2.5 text-sm text-muted-foreground">
-        {settled ? "Settled in full" : due.text}
+        {settled
+          ? retainedCents > 0
+            ? "Paid · retainage held"
+            : "Settled in full"
+          : due.text}
         {!settled && due.tail ? (
           <>
             {" · "}
@@ -77,19 +87,22 @@ export function PayableAmount({
       </p>
 
       {hasBreakdown ? (
-        <p className="mt-1 font-mono text-xs tabular-nums text-muted-foreground">
+        <p className="mt-2 text-sm tabular-nums text-muted-foreground">
           {formatMoneyFromCents(totalCents)} billed
           {paidCents !== 0 ? ` − ${formatMoneyFromCents(paidCents)} paid` : ""}
-          {retainedCents !== 0 ? ` − ${formatMoneyFromCents(retainedCents)} retained` : ""}
+          {retainedCents !== 0
+            ? ` − ${formatMoneyFromCents(retainedCents)} retained`
+            : ""}
           {settled ? "" : ` = ${formatMoneyFromCents(balanceCents)}`}
         </p>
       ) : null}
 
       {bill.over_budget ? (
         <p className="mt-3 border-l-2 border-destructive py-0.5 pl-2.5 text-xs text-destructive">
-          Exceeds the linked commitment. Check the contract balance before approving.
+          Exceeds the linked commitment. Check the contract balance before
+          approving.
         </p>
       ) : null}
     </div>
-  )
+  );
 }

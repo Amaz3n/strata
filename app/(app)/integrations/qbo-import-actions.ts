@@ -3,32 +3,26 @@
 import { revalidatePath } from "next/cache"
 
 import {
-  importQboRecords,
-  linkExistingQboImportRecord,
-  listImportableQboRecords,
-  listQboCustomersForImport,
+  fromAccountingImportListing,
+  fromAccountingImportResult,
   type QboImportCustomerListing,
   type QboImportEntityType,
   type QboImportListing,
   type QboImportResult,
 } from "@/lib/integrations/accounting/qbo/import"
+import {
+  applyAccountingImport,
+  previewAccountingImport,
+  listAccountingImportCustomers,
+  listAccountingImportConnections,
+  linkAccountingImportRecord,
+} from "@/lib/services/accounting-import"
 import { listProjects } from "@/lib/services/projects"
 import { requireOrgContext } from "@/lib/services/context"
 import { getOrgCostCodesEnabled, resolveCostCodesEnabled } from "@/lib/financials/cost-codes-enabled"
-import { requireAuthorization } from "@/lib/services/authorization"
 
 export async function listQboImportConnectionsAction(): Promise<{ id: string; label: string; company: string | null }[]> {
-  const { supabase, orgId, userId } = await requireOrgContext()
-  await requireAuthorization({ permission: "bill.read", userId, orgId, supabase, logDecision: true })
-  const { data, error } = await supabase
-    .from("accounting_connections")
-    .select("id,label,external_account_name")
-    .eq("org_id", orgId)
-    .eq("provider", "qbo")
-    .eq("status", "active")
-    .order("connected_at")
-  if (error) throw new Error(`Failed to load QuickBooks connections: ${error.message}`)
-  return (data ?? []).map((row) => ({ id: row.id, label: row.label, company: row.external_account_name ?? null }))
+  return (await listAccountingImportConnections()).filter((connection) => connection.provider === "qbo")
 }
 
 /** List QBO transactions with no Arc counterpart, optionally bounded by a lookback window. */
@@ -39,7 +33,9 @@ export async function listQboImportRecordsAction(params?: {
 }): Promise<QboImportListing> {
   try {
     if (!params?.connectionId) return { connected: false, records: [] }
-    return await listImportableQboRecords({ connectionId: params.connectionId, sinceDate: params.sinceDate, types: params.types })
+    return fromAccountingImportListing(
+      await previewAccountingImport({ connectionId: params.connectionId, sinceDate: params.sinceDate, types: params.types }),
+    )
   } catch (error: any) {
     return {
       connected: true,
@@ -53,7 +49,7 @@ export async function listQboImportRecordsAction(params?: {
 export async function listQboCustomersForImportAction(connectionId?: string): Promise<QboImportCustomerListing> {
   try {
     if (!connectionId) return { connected: false, customers: [] }
-    return await listQboCustomersForImport({ connectionId })
+    return await listAccountingImportCustomers(connectionId)
   } catch (error) {
     return { connected: true, customers: [] }
   }
@@ -103,7 +99,12 @@ export async function importQboRecordsAction(params: {
 }): Promise<QboImportResult> {
   let result: QboImportResult
   try {
-    result = await importQboRecords({ connectionId: params.connectionId, items: params.items })
+    result = fromAccountingImportResult(
+      await applyAccountingImport({
+        connectionId: params.connectionId,
+        items: params.items.map(({ qboId, ...item }) => ({ ...item, externalId: qboId })),
+      }),
+    )
   } catch (error: any) {
     return {
       imported: 0,
@@ -145,7 +146,12 @@ export async function linkExistingQboImportRecordAction(params: {
 }): Promise<{ linked: true } | { linked: false; error: string }> {
   let result: { linked: true }
   try {
-    result = await linkExistingQboImportRecord(params)
+    result = await linkAccountingImportRecord({
+      connectionId: params.connectionId,
+      externalId: params.qboId,
+      entityType: params.entityType,
+      existingEntityId: params.existingEntityId,
+    })
   } catch (error: any) {
     return { linked: false, error: error?.message ?? "Couldn't link existing record" }
   }

@@ -15,6 +15,9 @@ const { subtractPreIssuanceInvoices } = require("../lib/financials/invoice-rollu
 
 const read = (relative) => fs.readFileSync(path.join(__dirname, "..", relative), "utf8")
 
+const CONTROL_TOWER_MIGRATION =
+  "supabase/migrations/20260903120000_control_tower_rollup.sql"
+
 /**
  * One fixture, read by every surface below. Every invoice status the check
  * constraint allows is present, and the pre-issuance pair carries real money so
@@ -141,7 +144,6 @@ test("cash-flow forecast projects only real receivables and real payables", () =
 
 test("every money surface reads the ledger status sets rather than re-declaring them", () => {
   for (const file of [
-    "lib/services/dashboard.ts",
     "lib/services/companies.ts",
     "lib/services/weekly-executive-snapshot.ts",
     "lib/services/reports/cash-flow-forecast.ts",
@@ -151,12 +153,31 @@ test("every money surface reads the ledger status sets rather than re-declaring 
     assert.match(read(file), /@\/lib\/financials\/ledger-status/, `${file} must import the shared status sets`)
   }
 
-  // The dashboard's AP tile reads columns vendor_bills actually has, and sums
-  // them through the one payables rule.
-  const dashboard = read("lib/services/dashboard.ts")
-  assert.doesNotMatch(dashboard, /amount_cents/)
-  assert.doesNotMatch(dashboard, /vendor_bills[\s\S]{0,200}balance_due_cents/)
-  assert.match(dashboard, /payableOutstandingCents/)
+  // The control tower aggregates in SQL, so its parity check is on the function
+  // rather than on a TypeScript import: `control_tower_rollup` restates the two
+  // status sets and the outstanding-payable rule because SQL cannot import
+  // them, and a restatement that drifts is exactly how a desk and a report come
+  // to disagree about what is owed. Compared literally, not by eye.
+  const rollup = read(CONTROL_TOWER_MIGRATION)
+  const sqlList = (statuses) => statuses.map((status) => `'${status}'`).join(", ")
+
+  assert.ok(
+    rollup.includes(`status in (${sqlList(BILLED_INVOICE_STATUSES)})`),
+    "control_tower_rollup must aggregate exactly the billed invoice set",
+  )
+  assert.ok(
+    rollup.includes(`status in (${sqlList(PAYABLE_VENDOR_BILL_STATUSES)})`),
+    "control_tower_rollup must aggregate exactly the payable vendor-bill set",
+  )
+
+  // total − held retainage − paid, floored at zero: `payableOutstandingCents`,
+  // written out. A bill's balance is not a column on vendor_bills.
+  assert.match(
+    rollup,
+    /greatest\(\s*0,\s*coalesce\(b\.total_cents, 0\)\s*- greatest\(0, coalesce\(b\.retainage_cents, 0\) - coalesce\(b\.retainage_released_cents, 0\)\)\s*- coalesce\(b\.paid_cents, 0\)\s*\)/,
+  )
+  assert.doesNotMatch(rollup, /amount_cents/)
+  assert.doesNotMatch(rollup, /vendor_bills[\s\S]{0,200}balance_due_cents/)
 
   // Profitability includes the billed set instead of excluding an inverse list.
   const profitability = read("lib/services/reports/project-profitability.ts")

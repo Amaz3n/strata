@@ -133,11 +133,24 @@ export interface PartyCapabilities {
   isHomeowner: boolean
 }
 
+/**
+ * The vendor roles that mean construction work rather than an invoice to pay.
+ *
+ * Lived inline in two places that had to agree — `resolvePartyCapabilities` and
+ * the account header's own copy — and they decide which tabs a party gets and
+ * whether compliance watches them.
+ */
+export const TRADE_PARTNER_ROLE_KEYS: readonly string[] = ["subcontractor", "supplier"]
+
+export function isTradePartnerRoleKey(key: string): boolean {
+  return TRADE_PARTNER_ROLE_KEYS.includes(key)
+}
+
 export function resolvePartyCapabilities(roles: PartyRole[]): PartyCapabilities {
   const current = currentRoles(roles)
   const isVendor = current.some((role) => role.category === "vendor")
   const isTradePartner = current.some(
-    (role) => role.category === "vendor" && ["subcontractor", "supplier"].includes(role.key),
+    (role) => role.category === "vendor" && isTradePartnerRoleKey(role.key),
   )
   return {
     isVendor,

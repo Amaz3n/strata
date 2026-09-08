@@ -16,6 +16,7 @@ import type {
   PortalAccessToken,
   PortalFinancialSummary,
   PortalPermissions,
+  PortalTokenPurpose,
   PortalType,
   ProjectAccessPerson,
   ProjectAccessStatus,
@@ -55,6 +56,12 @@ import { getCompanyComplianceStatusWithClient } from "@/lib/services/compliance-
 import { getLatestPrequalificationWithClient } from "@/lib/services/prequalification"
 import { getComplianceRulesWithClient } from "@/lib/services/compliance"
 import { getProjectFinancialFeatureConfig } from "@/lib/financials/billing-model"
+import { readCertification, readSentToOwner } from "@/lib/financials/pay-app-lifecycle"
+import { getProjectPosture, normalizeProductTier } from "@/lib/product-tier"
+import { getReceivablesPosturePolicy } from "@/lib/receivables/policy"
+
+/** Posted: the owner never sees a draft, a return in progress, or a void. */
+const POSTED_PAY_APPLICATION_STATUSES = ["submitted", "invoiced", "approved", "paid"]
 
 const PIN_SALT_ROUNDS = 10
 const MAX_PIN_ATTEMPTS = 5
@@ -73,6 +80,7 @@ function mapPermissions(row: any): PortalPermissions {
     can_create_punch_items: !!row.can_create_punch_items,
     can_view_warranty: row.can_view_warranty ?? true,
     can_view_invoices: row.can_view_invoices ?? true,
+    can_certify_pay_applications: row.can_certify_pay_applications ?? false,
     can_pay_invoices: row.can_pay_invoices ?? false,
     can_view_rfis: row.can_view_rfis ?? true,
     can_view_submittals: row.can_view_submittals ?? true,
@@ -107,6 +115,7 @@ function mapAccessToken(row: any): PortalAccessToken {
     token: decryptPortalToken(row.token_encrypted) ?? "",
     name: row.name,
     portal_type: row.portal_type,
+    purpose: row.purpose === "vendor_payout" ? "vendor_payout" : "portal",
     reviewer_role: row.reviewer_role ?? null,
     permissions: mapPermissions(row),
     pin_required: !!row.pin_required,
@@ -446,6 +455,57 @@ export async function validatePortalToken(token: string) {
   }
 
   return mapAccessToken(data)
+}
+
+export type UnusablePortalTokenReason = "expired" | "revoked" | "paused" | "exhausted"
+
+/**
+ * Why a token that exists no longer opens anything.
+ *
+ * `validatePortalToken` deliberately collapses every one of these into `null`,
+ * and the portals turn that into `notFound()` — right for a project link,
+ * because confirming that a guessed token was real tells an attacker something.
+ * A payout invitation is the one case where the silence costs more than it
+ * buys: the vendor was mailed the link, the link is time-boxed by design, and a
+ * 404 tells them Arc is broken rather than that they need a new email. Callers
+ * decide who is entitled to the answer; this only reports it.
+ */
+export async function describeUnusablePortalToken(token: string): Promise<
+  | {
+      reason: UnusablePortalTokenReason
+      purpose: PortalTokenPurpose
+      orgName: string | null
+      companyName: string | null
+    }
+  | null
+> {
+  const supabase = createServiceSupabaseClient()
+  const { data } = await supabase
+    .from("portal_access_tokens")
+    .select("purpose, paused_at, revoked_at, expires_at, access_count, max_access_count, org:orgs(name), company:companies(name)")
+    .eq("token_hash", hashPortalToken(token))
+    .maybeSingle()
+  if (!data) return null
+
+  const reason: UnusablePortalTokenReason | null = data.revoked_at
+    ? "revoked"
+    : data.paused_at
+      ? "paused"
+      : data.expires_at && new Date(data.expires_at) <= new Date()
+        ? "expired"
+        : data.max_access_count != null && Number(data.access_count ?? 0) >= Number(data.max_access_count)
+          ? "exhausted"
+          : null
+  if (!reason) return null
+
+  const org = Array.isArray(data.org) ? data.org[0] : data.org
+  const company = Array.isArray(data.company) ? data.company[0] : data.company
+  return {
+    reason,
+    purpose: data.purpose === "vendor_payout" ? "vendor_payout" : "portal",
+    orgName: org?.name ?? null,
+    companyName: company?.name ?? null,
+  }
 }
 
 /**
@@ -2256,8 +2316,10 @@ export async function loadSubPortalShellContext({
 export interface ClientPortalShellContext {
   org: { id: string; name: string; logo_url?: string | null }
   project: { id: string; name: string; address?: string | null }
-  counts: { actions: number }
+  counts: { actions: number; payApplicationsAwaitingCertificate: number }
   hasInvoices: boolean
+  /** A posted pay application exists, so the owner has a register worth opening. */
+  hasPayApplications: boolean
   roadmapLabel: string
 }
 
@@ -2275,9 +2337,9 @@ export async function loadClientPortalShellContext({
 }): Promise<ClientPortalShellContext> {
   const supabase = createServiceSupabaseClient()
 
-  const [orgResult, projectResult, changeOrderCount, selectionCount, decisionCount, invoiceCount] =
+  const [orgResult, projectResult, changeOrderCount, selectionCount, decisionCount, invoiceCount, payApplicationRows] =
     await Promise.all([
-      supabase.from("orgs").select("id, name, logo_url").eq("id", orgId).single(),
+      supabase.from("orgs").select("id, name, logo_url, product_tier").eq("id", orgId).single(),
       supabase.from("projects").select("id, name, address, property_type").eq("id", projectId).single(),
       supabase
         .from("change_orders")
@@ -2304,7 +2366,39 @@ export async function loadClientPortalShellContext({
         .eq("org_id", orgId)
         .eq("project_id", projectId)
         .eq("client_visible", true),
+      // The owner's pay-application register and its "waiting on you" badge need
+      // two facts, and both come off the same short list of posted applications —
+      // a project bills monthly, so this is a handful of rows, not a scan. It
+      // rides the layout's existing Promise.all rather than costing a round trip.
+      supabase
+        .from("pay_applications")
+        .select("status, metadata")
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .in("status", POSTED_PAY_APPLICATION_STATUSES)
+        .limit(200),
     ])
+
+  const posture = getProjectPosture(
+    projectResult.data?.property_type,
+    normalizeProductTier(orgResult.data?.product_tier),
+  )
+  const certificationRequired =
+    getReceivablesPosturePolicy(posture).approvalMode === "required_review"
+  const payApplications = (payApplicationRows.data ?? []) as Array<{
+    status: string
+    metadata: Record<string, unknown> | null
+  }>
+  // Mirrors `derivePayApplicationStage` + `awaiting_certificate`: sent to the
+  // owner, not yet certified, and this posture actually wants a certificate.
+  const awaitingCertificate = certificationRequired
+    ? payApplications.filter(
+        (row) =>
+          (row.status === "submitted" || row.status === "invoiced") &&
+          !readCertification(row.metadata) &&
+          readSentToOwner(row.metadata) !== null,
+      ).length
+    : 0
 
   return {
     org: {
@@ -2319,9 +2413,14 @@ export async function loadClientPortalShellContext({
     },
     counts: {
       actions:
-        (changeOrderCount.count ?? 0) + (selectionCount.count ?? 0) + (decisionCount.count ?? 0),
+        (changeOrderCount.count ?? 0) +
+        (selectionCount.count ?? 0) +
+        (decisionCount.count ?? 0) +
+        awaitingCertificate,
+      payApplicationsAwaitingCertificate: awaitingCertificate,
     },
     hasInvoices: (invoiceCount.count ?? 0) > 0,
+    hasPayApplications: payApplications.length > 0,
     roadmapLabel: projectResult.data?.property_type === "production" ? "Milestones" : "Roadmap",
   }
 }
@@ -2496,6 +2595,7 @@ function permissionsToColumns(overrides?: Partial<PortalPermissions>) {
     can_create_punch_items: overrides?.can_create_punch_items ?? false,
     can_view_warranty: overrides?.can_view_warranty ?? true,
     can_view_invoices: overrides?.can_view_invoices ?? true,
+    can_certify_pay_applications: overrides?.can_certify_pay_applications ?? false,
     can_pay_invoices: overrides?.can_pay_invoices ?? false,
     can_view_rfis: overrides?.can_view_rfis ?? true,
     can_view_submittals: overrides?.can_view_submittals ?? true,

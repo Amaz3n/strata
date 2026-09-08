@@ -34,7 +34,7 @@ enabled = false
 port = 54324
 
 [storage]
-enabled = false
+enabled = true
 file_size_limit = "100MiB"
 
 # Every Arc RLS policy calls auth.uid() or auth.jwt(). With auth disabled the

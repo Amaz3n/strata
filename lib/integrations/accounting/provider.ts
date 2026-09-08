@@ -1,3 +1,4 @@
+import type { AccountingImportApplyInput, AccountingImportPreviewInput, AccountingImportListing, AccountingImportResult, AccountingImportCustomerListing, AccountingImportLinkInput } from "@/lib/integrations/accounting/import"
 export type AccountingProviderKey = "qbo" | "file"
 
 export type AccountingDimensionKind = "class" | "customer" | "location" | "department" | "entity"
@@ -77,7 +78,24 @@ export interface PushResult {
   raw?: unknown
 }
 
+export interface AccountingInboundQueueItem {
+  id: string; connectionId: string; provider: string; entityName: string; externalId: string;
+  operation: string; error: string | null; receivedAt: string; processedAt: string | null
+}
+
 export interface AccountingProvider {
+  validateSettings?(settings: Record<string, unknown>): Record<string, unknown>
+
+  previewImport?(input: AccountingImportPreviewInput): Promise<AccountingImportListing>
+  applyImport?(input: AccountingImportApplyInput): Promise<AccountingImportResult>
+  listImportCustomers?(input: { orgId: string; connectionId: string }): Promise<AccountingImportCustomerListing>
+  linkExistingImportRecord?(input: AccountingImportLinkInput): Promise<{ linked: true }>
+
+  listInboundEvents?(input: { orgId: string; limit: number }): Promise<AccountingInboundQueueItem[]>
+  retryInboundEvent?(input: { orgId: string; eventId: string }): Promise<{ success: boolean; error: string | null }>
+
+  /** Provider-owned transport/validation classification; shared workers never inspect provider fault codes. */
+  classifyError?(error: unknown): { retryable: boolean; reason: string; message: string }
   readonly key: AccountingProviderKey
   readonly capabilities: AccountingCapabilities
   ensureHealthy(connectionId: string): Promise<{ ok: boolean; error?: string }>
@@ -133,7 +151,7 @@ export interface AccountingProvider {
    * Build the URL a user is sent to in order to authorize a new connection.
    * The returned state must round-trip through the provider's OAuth callback.
    */
-  getConnectUrl?(input: { orgId: string }): Promise<{ url: string; state: string }>
+  getConnectUrl?(input: { orgId: string; userId: string; connectionId?: string; expectedAccountId?: string }): Promise<{ url: string; state: string }>
   /**
    * Verify and persist an inbound webhook delivery into the provider's event queue.
    * Returns null when the request is not authentic (caller responds 401).

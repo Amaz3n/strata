@@ -149,11 +149,11 @@ describe("resolveQBOSyncTarget", () => {
 
 describe("findAlreadyCreatedQBOTransaction", () => {
   it("adopts the id a previous attempt already created", async () => {
-    const seen: Array<{ entity: string; marker: string; since?: string | null }> = []
+    const seen: Array<{ entity: string; marker: string }> = []
     const found = await findAlreadyCreatedQBOTransaction({
       client: {
-        findTransactionByPrivateNote: async (entity, marker, opts) => {
-          seen.push({ entity, marker, since: opts?.sinceDate })
+        findTransactionByPrivateNote: async (entity, marker) => {
+          seen.push({ entity, marker })
           return { Id: "4242" }
         },
       },
@@ -165,7 +165,6 @@ describe("findAlreadyCreatedQBOTransaction", () => {
     expect(found).toBe("4242")
     expect(seen[0].entity).toBe("Payment")
     expect(seen[0].marker).toBe("[arc:payment:pay-1]")
-    expect(seen[0].since).toMatch(/^\d{4}-\d{2}-\d{2}$/)
   })
 
   it("returns null when nothing matches the marker", async () => {
@@ -178,29 +177,22 @@ describe("findAlreadyCreatedQBOTransaction", () => {
     expect(found).toBeNull()
   })
 
-  it("returns null when the match carries no Id", async () => {
-    const found = await findAlreadyCreatedQBOTransaction({
+  it("blocks creation when the match carries no Id", async () => {
+    await expect(findAlreadyCreatedQBOTransaction({
       client: { findTransactionByPrivateNote: async () => ({}) },
       entity: "Bill",
       entityType: "vendor_bill",
       entityId: "b-1",
-    })
-    expect(found).toBeNull()
+    })).rejects.toThrow("no transaction identity")
   })
 
-  it("degrades to null instead of throwing when the lookup itself fails", async () => {
-    // A failed lookup must not block the push — the create below is still
-    // guarded by the sync record, and the outbox will retry.
-    const found = await findAlreadyCreatedQBOTransaction({
-      client: {
-        findTransactionByPrivateNote: async () => {
-          throw new Error("QBO query failed")
-        },
-      },
+  it("preserves the lookup failure instead of allowing another create", async () => {
+    const error = new Error("QBO query failed")
+    await expect(findAlreadyCreatedQBOTransaction({
+      client: { findTransactionByPrivateNote: async () => { throw error } },
       entity: "Invoice",
       entityType: "invoice",
       entityId: "i-1",
-    })
-    expect(found).toBeNull()
+    })).rejects.toBe(error)
   })
 })

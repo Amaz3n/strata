@@ -1,4 +1,8 @@
 import "server-only";
+import { loadOpeningOwnedSources } from "@/lib/services/books/opening-sources";
+import { loadRetainageReleaseInvoiceCents } from "@/lib/services/retainage";
+import { collectBooksRows } from "@/lib/services/books/paging";
+import { invoiceTaxBases } from "@/lib/services/books/tax-summary-rules";
 
 import { z } from "zod";
 
@@ -7,7 +11,7 @@ import {
   PAYABLE_VENDOR_BILL_STATUSES,
 } from "@/lib/financials/ledger-status";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
-import { requireAuthorization } from "@/lib/services/authorization";
+import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access";
 import { createCompleteBooksExport } from "@/lib/services/books/exports";
 import { requireOrgContext } from "@/lib/services/context";
 import { recordEvent } from "@/lib/services/events";
@@ -30,88 +34,68 @@ export async function buildSalesUseTaxSummary(input: {
     logDecision: true,
   });
   const service = createServiceSupabaseClient();
-  const [invoiceResult, billResult, jurisdictionResult] = await Promise.all([
-    service
-      .from("invoices")
-      .select(
-        "id, issue_date, subtotal_cents, tax_cents, total_cents, tax_jurisdiction_id, metadata, project_id",
-      )
-      .eq("org_id", context.orgId)
-      .gte("issue_date", input.startDate)
-      .lte("issue_date", input.endDate)
-      .in("status", [...BILLED_INVOICE_STATUSES]),
-    service
-      .from("vendor_bills")
-      .select("id,bill_date,tax_jurisdiction_id,use_tax_accrued_cents")
-      .eq("org_id", context.orgId)
-      .gte("bill_date", input.startDate)
-      .lte("bill_date", input.endDate)
-      .in("status", [...PAYABLE_VENDOR_BILL_STATUSES]),
-    service
-      .from("books_tax_jurisdictions")
-      .select("id,name")
-      .eq("org_id", context.orgId),
+  const [invoices, bills, jurisdictions, adjustments, openingSources, retainageReleases] = await Promise.all([
+    collectBooksRows((from, to) => service.from("invoices").select("id,issue_date,subtotal_cents,tax_cents,tax_jurisdiction_id,metadata")
+      .eq("org_id", context.orgId).gte("issue_date", input.startDate).lte("issue_date", input.endDate).in("status", [...BILLED_INVOICE_STATUSES]).order("id").range(from, to)),
+    collectBooksRows((from, to) => service.from("vendor_bills").select("id,tax_jurisdiction_id,use_tax_accrued_cents")
+      .eq("org_id", context.orgId).gte("bill_date", input.startDate).lte("bill_date", input.endDate).in("status", [...PAYABLE_VENDOR_BILL_STATUSES]).order("id").range(from, to)),
+    collectBooksRows((from, to) => service.from("books_tax_jurisdictions").select("id,name").eq("org_id", context.orgId).order("id").range(from, to)),
+    collectBooksRows((from, to) => service.from("receivable_adjustments").select("id,invoice_id,amount_cents,tax_cents,metadata,invoice:invoices(tax_jurisdiction_id)")
+      .eq("org_id", context.orgId).eq("status", "posted").eq("adjustment_type", "credit_memo").gte("effective_date", input.startDate).lte("effective_date", input.endDate).order("id").range(from, to)),
+    loadOpeningOwnedSources(context.orgId),
+    loadRetainageReleaseInvoiceCents({ supabase: service, orgId: context.orgId }),
   ]);
-  const error =
-    invoiceResult.error ?? billResult.error ?? jurisdictionResult.error;
-  if (error)
-    throw new Error(`Failed to build sales/use-tax summary: ${error.message}`);
-  const jurisdictionNames = new Map(
-    (jurisdictionResult.data ?? []).map((row) => [
-      String(row.id),
-      String(row.name),
-    ]),
-  );
-  const byJurisdiction = new Map<
-    string,
-    {
-      taxableSalesCents: number;
-      taxCents: number;
-      useTaxCents: number;
-      invoiceCount: number;
-      billCount: number;
-    }
-  >();
-  for (const invoice of invoiceResult.data ?? []) {
-    const metadata =
-      invoice.metadata &&
-      typeof invoice.metadata === "object" &&
-      !Array.isArray(invoice.metadata)
-        ? invoice.metadata
-        : {};
-    const jurisdiction = invoice.tax_jurisdiction_id
-      ? (jurisdictionNames.get(String(invoice.tax_jurisdiction_id)) ??
-        "Unassigned")
-      : typeof metadata.tax_jurisdiction === "string" &&
-          metadata.tax_jurisdiction.trim()
-        ? metadata.tax_jurisdiction.trim()
-        : "Unassigned";
-    const current = byJurisdiction.get(jurisdiction) ?? {
-      taxableSalesCents: 0,
-      taxCents: 0,
-      useTaxCents: 0,
-      invoiceCount: 0,
-      billCount: 0,
-    };
-    current.taxableSalesCents += Number(invoice.subtotal_cents ?? 0);
+  const reportInvoices = invoices.filter(invoice => !openingSources.invoices.has(invoice.id) && !retainageReleases.has(invoice.id) && (invoice.metadata as Record<string, unknown> | null)?.invoice_kind !== "earnest_deposit");
+  const excludedOpeningCount = invoices.filter(invoice => openingSources.invoices.has(invoice.id)).length;
+  const jurisdictionNames = new Map(jurisdictions.map((row) => [row.id, row.name]));
+  const ids = reportInvoices.map((row) => row.id);
+  const lineRows = [];
+  for (let offset = 0; offset < ids.length; offset += 200) {
+    lineRows.push(...await collectBooksRows((from, to) => service.from("invoice_lines")
+      .select("id,invoice_id,quantity,unit_price_cents,description,unit,metadata").eq("org_id", context.orgId)
+      .in("invoice_id", ids.slice(offset, offset + 200)).order("id").range(from, to)));
+  }
+  const linesByInvoice = new Map<string, typeof lineRows>();
+  for (const line of lineRows) { const group = linesByInvoice.get(line.invoice_id) ?? []; group.push(line); linesByInvoice.set(line.invoice_id, group); }
+  const empty = () => ({ taxableSalesCents: 0, exemptSalesCents: 0, unclassifiedSalesCents: 0, taxCents: 0, useTaxCents: 0, invoiceCount: 0, billCount: 0, adjustmentCount: 0 });
+  const byJurisdiction = new Map<string, ReturnType<typeof empty>>();
+  const nameFor = (id: string | null) => id ? jurisdictionNames.get(id) ?? "Unassigned" : "Unassigned";
+  for (const invoice of reportInvoices) {
+    const jurisdiction = nameFor(invoice.tax_jurisdiction_id);
+    const current = byJurisdiction.get(jurisdiction) ?? empty();
+    const metadata = z.record(z.unknown()).catch({}).parse(invoice.metadata);
+    const totals = z.record(z.unknown()).catch({}).parse(metadata.totals);
+    const discount = Number(totals.discount_cents ?? metadata.discount_cents ?? 0);
+    const lines = linesByInvoice.get(invoice.id) ?? [];
+    const bases = lines.length ? invoiceTaxBases(lines, discount) : { taxableSalesCents: 0, exemptSalesCents: 0, unclassifiedSalesCents: Number(invoice.subtotal_cents ?? 0) - discount };
+    current.taxableSalesCents += bases.taxableSalesCents;
+    current.exemptSalesCents += bases.exemptSalesCents;
+    current.unclassifiedSalesCents += bases.unclassifiedSalesCents;
     current.taxCents += Number(invoice.tax_cents ?? 0);
     current.invoiceCount += 1;
     byJurisdiction.set(jurisdiction, current);
   }
-  for (const bill of billResult.data ?? []) {
-    if (Number(bill.use_tax_accrued_cents ?? 0) <= 0) continue;
-    const jurisdiction = bill.tax_jurisdiction_id
-      ? (jurisdictionNames.get(String(bill.tax_jurisdiction_id)) ??
-        "Unassigned")
-      : "Unassigned";
-    const current = byJurisdiction.get(jurisdiction) ?? {
-      taxableSalesCents: 0,
-      taxCents: 0,
-      useTaxCents: 0,
-      invoiceCount: 0,
-      billCount: 0,
-    };
-    current.useTaxCents += Number(bill.use_tax_accrued_cents ?? 0);
+  for (const adjustment of adjustments) {
+    const invoice = Array.isArray(adjustment.invoice) ? adjustment.invoice[0] : adjustment.invoice;
+    const jurisdiction = nameFor(invoice?.tax_jurisdiction_id ?? null);
+    const current = byJurisdiction.get(jurisdiction) ?? empty();
+    const metadata = z.record(z.unknown()).catch({}).parse(adjustment.metadata);
+    const base = Number(adjustment.amount_cents) - Number(adjustment.tax_cents);
+    const taxable = Number(metadata.taxable_base_cents ?? 0);
+    const exempt = Number(metadata.exempt_base_cents ?? 0);
+    if (![taxable, exempt].every((value) => Number.isSafeInteger(value) && value >= 0) || taxable + exempt > base) throw new Error("Invalid tax base on receivable adjustment");
+    current.taxableSalesCents -= taxable;
+    current.exemptSalesCents -= exempt;
+    current.unclassifiedSalesCents -= base - taxable - exempt;
+    current.taxCents -= Number(adjustment.tax_cents);
+    current.adjustmentCount += 1;
+    byJurisdiction.set(jurisdiction, current);
+  }
+  for (const bill of bills) {
+    if (Number(bill.use_tax_accrued_cents ?? 0) === 0) continue;
+    const jurisdiction = nameFor(bill.tax_jurisdiction_id);
+    const current = byJurisdiction.get(jurisdiction) ?? empty();
+    current.useTaxCents += Number(bill.use_tax_accrued_cents);
     current.billCount += 1;
     byJurisdiction.set(jurisdiction, current);
   }
@@ -130,6 +114,8 @@ export async function buildSalesUseTaxSummary(input: {
     // "every invoice is Unassigned" knows to ask why; a table that just says
     // "Unassigned" looks like a data-entry oversight they should chase.
     limitations: [
+      ...(excludedOpeningCount ? ["Opening residual balances are excluded from sales; combine any pre-cutover activity from the prior system when preparing a filing."] : []),
+      ...(rows.some((row) => row.unclassifiedSalesCents !== 0) ? ["Unclassified sales or credit bases need line-level tax treatment before filing."] : []),
       ...(unassignedCount > 0
         ? [
             `${unassignedCount} invoice(s) carry no tax jurisdiction and must be corrected before filing.`,

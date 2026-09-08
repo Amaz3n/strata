@@ -207,6 +207,81 @@ export function parseSettlementAdjustments(value: unknown): SettlementAdjustment
   })
 }
 
+export type SettlementStatementLine = { description: string; amountCents: number }
+
+export type SettlementStatementDeposit = { label: string; amountCents: number; receivedAt?: string | null }
+
+/**
+ * The settlement table, grouped the way a buyer reads it: what the home was
+ * priced at, what changed after the agreement, what the closing table adds,
+ * then the cash already collected against it.
+ */
+export type SettlementStatementLines = {
+  purchasePrice: SettlementStatementLine[]
+  changeOrders: SettlementStatementLine[]
+  adjustments: SettlementStatementLine[]
+  finalPriceCents: number
+  deposits: SettlementStatementDeposit[]
+  depositsAppliedCents: number
+  balanceDueCents: number
+}
+
+export type SettlementStatementInput = {
+  pricing: PurchaseAgreementPricing
+  lotLabel: string
+  planLabel: string
+  approvedChangeOrders: Array<{ id: string; number?: number | null; title: string; totalCents: number }>
+  adjustments?: SettlementAdjustment[]
+  deposits?: SettlementDeposit[]
+}
+
+/**
+ * One composition of the settlement, used by the closing invoice, the closing
+ * workbench and the settlement statement PDF. Three surfaces that describe the
+ * same sale to the same buyer must not be free to label or total it
+ * differently, so they all read these groups.
+ *
+ * Zero-value lines are dropped — a plan with no lot premium should not print a
+ * "Lot premium $0.00" row on the statement the buyer signs.
+ */
+export function buildSettlementStatementLines(input: SettlementStatementInput): SettlementStatementLines {
+  const purchasePrice = [
+    { description: `Base price — ${input.planLabel}, Lot ${input.lotLabel}`, amountCents: input.pricing.basePriceCents },
+    { description: `Lot premium — Lot ${input.lotLabel}`, amountCents: input.pricing.lotPremiumCents },
+    ...input.pricing.structuralOptions.map((item) => ({ description: `Structural option — ${item.label}`, amountCents: item.priceCents })),
+    ...input.pricing.designSelections.map((item) => ({ description: `Design selection — ${item.label}`, amountCents: item.priceCents })),
+    ...input.pricing.incentives.map((item) => ({ description: `Incentive — ${item.name}`, amountCents: -item.valueCents })),
+  ].filter((line) => line.amountCents !== 0)
+  const changeOrders = input.approvedChangeOrders
+    .map((changeOrder) => ({
+      description: `Change order${changeOrder.number ? ` ${changeOrder.number}` : ""} — ${changeOrder.title}`,
+      amountCents: changeOrder.totalCents,
+    }))
+    .filter((line) => line.amountCents !== 0)
+  const adjustments = (input.adjustments ?? [])
+    .map((adjustment) => ({
+      description: `${SETTLEMENT_ADJUSTMENT_LABELS[adjustment.kind]} — ${adjustment.label}`,
+      amountCents: adjustment.amountCents,
+    }))
+    .filter((line) => line.amountCents !== 0)
+  const deposits = (input.deposits ?? []).map((deposit) => ({
+    label: deposit.label,
+    amountCents: deposit.amountCents,
+    receivedAt: deposit.receivedAt ?? null,
+  }))
+  const finalPriceCents = closingInvoiceLinesTotalCents([...purchasePrice, ...changeOrders, ...adjustments])
+  const depositsAppliedCents = deposits.reduce((sum, deposit) => sum + deposit.amountCents, 0)
+  return {
+    purchasePrice,
+    changeOrders,
+    adjustments,
+    finalPriceCents,
+    deposits,
+    depositsAppliedCents,
+    balanceDueCents: finalPriceCents - depositsAppliedCents,
+  }
+}
+
 /**
  * The closing invoice bills the full sale price. Deposits are NOT netted into
  * the lines: an earnest deposit is a customer-deposit liability, and it is
@@ -214,31 +289,9 @@ export function parseSettlementAdjustments(value: unknown): SettlementAdjustment
  * shrinking the invoice. Netting them here would understate revenue by the
  * deposit and strand the liability on the balance sheet forever.
  */
-export function buildClosingInvoiceLines(input: {
-  pricing: PurchaseAgreementPricing
-  lotLabel: string
-  planLabel: string
-  approvedChangeOrders: Array<{ id: string; number?: number | null; title: string; totalCents: number }>
-  adjustments?: SettlementAdjustment[]
-}) {
-  const lines = [
-    { description: `Base price — ${input.planLabel}, Lot ${input.lotLabel}`, amountCents: input.pricing.basePriceCents },
-    ...(input.pricing.lotPremiumCents
-      ? [{ description: `Lot premium — Lot ${input.lotLabel}`, amountCents: input.pricing.lotPremiumCents }]
-      : []),
-    ...input.pricing.structuralOptions.map((item) => ({ description: `Structural option — ${item.label}`, amountCents: item.priceCents })),
-    ...input.pricing.designSelections.map((item) => ({ description: `Design selection — ${item.label}`, amountCents: item.priceCents })),
-    ...input.pricing.incentives.map((item) => ({ description: `Incentive — ${item.name}`, amountCents: -item.valueCents })),
-    ...input.approvedChangeOrders.map((changeOrder) => ({
-      description: `Change order${changeOrder.number ? ` ${changeOrder.number}` : ""} — ${changeOrder.title}`,
-      amountCents: changeOrder.totalCents,
-    })),
-    ...(input.adjustments ?? []).map((adjustment) => ({
-      description: `${SETTLEMENT_ADJUSTMENT_LABELS[adjustment.kind]} — ${adjustment.label}`,
-      amountCents: adjustment.amountCents,
-    })),
-  ]
-  return lines.filter((line) => line.amountCents !== 0)
+export function buildClosingInvoiceLines(input: SettlementStatementInput): SettlementStatementLine[] {
+  const statement = buildSettlementStatementLines(input)
+  return [...statement.purchasePrice, ...statement.changeOrders, ...statement.adjustments]
 }
 
 const SETTLEMENT_ADJUSTMENT_LABELS: Record<SettlementAdjustmentKind, string> = {

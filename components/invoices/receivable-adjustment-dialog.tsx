@@ -39,6 +39,8 @@ export function ReceivableAdjustmentDialog({ invoice, open, onOpenChange, onPost
   const [kind, setKind] = useState<"credit_memo" | "write_off">("credit_memo")
   const [amount, setAmount] = useState("")
   const [tax, setTax] = useState("0.00")
+  const [taxableBase, setTaxableBase] = useState("")
+  const [exemptBase, setExemptBase] = useState("")
   const [effectiveDate, setEffectiveDate] = useState(format(new Date(), "yyyy-MM-dd"))
   const [reason, setReason] = useState("")
   const [idempotencyKey, setIdempotencyKey] = useState("")
@@ -49,6 +51,7 @@ export function ReceivableAdjustmentDialog({ invoice, open, onOpenChange, onPost
     setKind("credit_memo")
     setAmount("")
     setTax("0.00")
+    setTaxableBase(""); setExemptBase("")
     setEffectiveDate(format(new Date(), "yyyy-MM-dd"))
     setReason("")
     setIdempotencyKey(`${invoice?.id ?? "invoice"}:${crypto.randomUUID()}`)
@@ -56,7 +59,10 @@ export function ReceivableAdjustmentDialog({ invoice, open, onOpenChange, onPost
 
   const amountCents = useMemo(() => currencyToCents(amount), [amount])
   const taxCents = useMemo(() => currencyToCents(tax), [tax])
+  const taxableBaseCents = taxableBase.trim() ? currencyToCents(taxableBase) : undefined
+  const exemptBaseCents = exemptBase.trim() ? currencyToCents(exemptBase) : undefined
   const invalid =
+    (kind === "credit_memo" && (taxableBaseCents === null || exemptBaseCents === null || (taxableBaseCents ?? 0) < 0 || (exemptBaseCents ?? 0) < 0 || (taxableBaseCents ?? 0) + (exemptBaseCents ?? 0) > (amountCents ?? 0) - (taxCents ?? 0))) ||
     !invoice ||
     amountCents === null ||
     amountCents <= 0 ||
@@ -77,6 +83,7 @@ export function ReceivableAdjustmentDialog({ invoice, open, onOpenChange, onPost
         adjustmentType: kind,
         amountCents,
         taxCents: kind === "credit_memo" ? taxCents : 0,
+        ...(kind === "credit_memo" ? { taxableBaseCents: taxableBaseCents ?? undefined, exemptBaseCents: exemptBaseCents ?? undefined } : {}),
         effectiveDate,
         reason: reason.trim(),
         idempotencyKey,
@@ -130,6 +137,9 @@ export function ReceivableAdjustmentDialog({ invoice, open, onOpenChange, onPost
               <Label htmlFor="adjustment-tax">Sales tax included in credit</Label>
               <Input id="adjustment-tax" inputMode="decimal" value={tax} onChange={(event) => setTax(event.target.value)} />
               <p className="text-xs text-muted-foreground">Use zero unless the credit reverses taxable work.</p>
+              <Label htmlFor="adjustment-taxable-base">Taxable work credited, before tax</Label><Input id="adjustment-taxable-base" inputMode="decimal" value={taxableBase} onChange={event => setTaxableBase(event.target.value)} placeholder="Unclassified" />
+              <Label htmlFor="adjustment-exempt-base">Exempt work credited</Label><Input id="adjustment-exempt-base" inputMode="decimal" value={exemptBase} onChange={event => setExemptBase(event.target.value)} placeholder="Unclassified" />
+              <p className="text-xs text-muted-foreground">Any remaining pre-tax credit stays unclassified for the tax review.</p>
             </div>
           ) : (
             <p className="border bg-muted/40 p-3 text-xs text-muted-foreground">A write-off keeps revenue intact and posts the loss to Bad debt expense.</p>

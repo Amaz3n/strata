@@ -13,6 +13,12 @@ import {
   resolvePaymentOperationsIncident,
 } from "@/lib/services/ops-watchdog"
 import { requirePermission } from "@/lib/services/permissions"
+import {
+  hasStalePaymentState,
+  loadStalePaymentState,
+  STALE_PAYMENT_STATE_HOURS,
+  STALE_PAYMENT_STATE_INCIDENT_CODE,
+} from "@/lib/services/payment-stale-state"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 /** Provider round-trips in flight while reconciling one org's period. */
@@ -28,26 +34,12 @@ const SETTLEMENT_CONCURRENCY = 8
  * no alert and no exception — the money had left the builder and never reached
  * the vendor, and the only reason anyone found out was a manual audit.
  */
-const STALE_PAYMENT_STATE_HOURS = 96
-/** Non-terminal disbursement states. Anything here is still owed to someone. */
-const NON_TERMINAL_DISBURSEMENT_STATUSES = [
-  "created",
-  "submitted",
-  "debit_pending",
-  "funds_available",
-  "transfer_pending",
-  "payout_pending",
-]
-/** Non-terminal run states. `draft`/`pending_approval` wait on people, not on money. */
-const NON_TERMINAL_RUN_STATUSES = ["processing", "partially_failed"]
 /** Page size for exhaustive stale-state and exception scans. */
 const RECONCILIATION_PAGE_SIZE = 500
 /** Upper bound on orgs examined per tick; the time budget is the real limit. */
 const RECONCILIATION_ORG_SWEEP_LIMIT = 500
 /** Leaves headroom under the route's 300s maxDuration for the final writes. */
 const DEFAULT_RECONCILIATION_BUDGET_MS = 240_000
-/** One incident per org for "money that stopped moving", regardless of how many rows. */
-const STALE_PAYMENT_STATE_INCIDENT_CODE = "stale_payment_state"
 /** Postgres unique violation. A losing race, not a failure. */
 const UNIQUE_VIOLATION = "23505"
 
@@ -138,7 +130,7 @@ async function loadFundingProviderCustomerIds(orgId: string, provider: string) {
     .eq("provider", provider)
     .not("provider_customer_id", "is", null)
   if (error) throw new Error(`Unable to load funding customers for reconciliation: ${error.message}`)
-  return [...new Set((data ?? []).map((row) => String(row.provider_customer_id)).filter(Boolean))]
+  return [...new Set((data ?? []).flatMap((row) => typeof row.provider_customer_id === "string" && row.provider_customer_id.length > 0 ? [row.provider_customer_id] : []))]
 }
 
 async function loadRecipientProviderAccountIds(orgId: string, provider: string) {
@@ -155,7 +147,7 @@ async function loadRecipientProviderAccountIds(orgId: string, provider: string) 
     .eq("provider", provider)
     .in("id", recipientIds)
   if (recipientError) throw new Error(`Unable to load provider recipient accounts: ${recipientError.message}`)
-  return [...new Set((recipients ?? []).map((row) => String(row.provider_account_id)).filter(Boolean))]
+  return [...new Set((recipients ?? []).flatMap((row) => typeof row.provider_account_id === "string" && row.provider_account_id.length > 0 ? [row.provider_account_id] : []))]
 }
 
 async function loadDisbursementsByProviderActivity(orgId: string, provider: string, activity: ProviderActivity[]) {
@@ -219,37 +211,15 @@ async function loadFeeChargesByProviderActivity(orgId: string, provider: string,
  */
 async function flagStalePaymentStates(reconciliationRunId: string, orgId: string): Promise<number> {
   const supabase = createServiceSupabaseClient()
-  const cutoff = new Date(Date.now() - STALE_PAYMENT_STATE_HOURS * 60 * 60 * 1000).toISOString()
-  const staleDisbursements: Array<{ id: string; run_id: string; status: string; amount_cents: number; provider_payment_id: string | null; created_at: string }> = []
-  const staleRuns: Array<{ id: string; status: string; total_debit_cents: number; processing_started_at: string | null; created_at: string }> = []
-  for (let from = 0; ; from += RECONCILIATION_PAGE_SIZE) {
-    const { data, error } = await supabase.from("disbursements")
-      .select("id,run_id,status,amount_cents,provider_payment_id,created_at")
-      .eq("org_id", orgId)
-      .in("status", NON_TERMINAL_DISBURSEMENT_STATUSES)
-      .lte("created_at", cutoff)
-      .order("created_at", { ascending: true })
-      .order("id", { ascending: true })
-      .range(from, from + RECONCILIATION_PAGE_SIZE - 1)
-    if (error) throw new Error(`Unable to load stale disbursements: ${error.message}`)
-    staleDisbursements.push(...(data ?? []))
-    if ((data ?? []).length < RECONCILIATION_PAGE_SIZE) break
-  }
-  for (let from = 0; ; from += RECONCILIATION_PAGE_SIZE) {
-    const { data, error } = await supabase.from("payment_runs")
-      .select("id,status,total_debit_cents,processing_started_at,created_at")
-      .eq("org_id", orgId)
-      .in("status", NON_TERMINAL_RUN_STATUSES)
-      .lte("created_at", cutoff)
-      .order("created_at", { ascending: true })
-      .order("id", { ascending: true })
-      .range(from, from + RECONCILIATION_PAGE_SIZE - 1)
-    if (error) throw new Error(`Unable to load stale payment runs: ${error.message}`)
-    staleRuns.push(...(data ?? []))
-    if ((data ?? []).length < RECONCILIATION_PAGE_SIZE) break
-  }
+  // The scan itself is shared with the hourly watchdog, which runs it across
+  // every organization whether or not reconciliation is enabled. This caller
+  // owns the exception ROWS; the watchdog owns raising the incident when
+  // reconciliation is not running at all.
+  const staleState = await loadStalePaymentState({ orgId })
+  const staleDisbursements = staleState.disbursements
+  const staleRuns = staleState.runs
 
-  const orgHasStaleState = staleDisbursements.length > 0 || staleRuns.length > 0
+  const orgHasStaleState = hasStalePaymentState(staleState)
   const rows = [
     ...staleDisbursements.map((disbursement) => ({
       disbursement_id: disbursement.id as string | null,
@@ -525,7 +495,7 @@ async function performPaymentReconciliation(input: { period_start: string; perio
       disbursements,
       SETTLEMENT_CONCURRENCY,
       (disbursement) => disbursement.provider_payment_id
-        ? provider.retrieveSettlement({ providerPaymentId: String(disbursement.provider_payment_id) })
+        ? provider.retrieveSettlement({ providerPaymentId: disbursement.provider_payment_id as string })
         : Promise.resolve(null),
     )
 
@@ -550,7 +520,7 @@ async function performPaymentReconciliation(input: { period_start: string; perio
           expected_cents: expectedDebit,
           provider_cents: 0,
           difference_cents: -expectedDebit,
-          status: "missing_provider",
+          status: disbursement.status === "created" ? "missing_provider" : "missing_provider_reference",
         })
         continue
       }
@@ -568,7 +538,7 @@ async function performPaymentReconciliation(input: { period_start: string; perio
         reconciliation_run_id: run.id,
         org_id: orgId,
         disbursement_id: disbursement.id,
-        provider_reference: String(disbursement.provider_payment_id),
+        provider_reference: disbursement.provider_payment_id as string,
         expected_cents: expectedDebit,
         provider_cents: settlement.debitAmountCents,
         difference_cents: differenceCents,
@@ -614,8 +584,8 @@ async function performPaymentReconciliation(input: { period_start: string; perio
     const feeSettlements = await mapWithConcurrency(
       feeCharges,
       SETTLEMENT_CONCURRENCY,
-      (charge) => charge.provider_payment_id
-        ? provider.retrieveSettlement({ providerPaymentId: String(charge.provider_payment_id) })
+      (charge) => typeof charge.provider_payment_id === "string" && charge.provider_payment_id.length > 0
+        ? provider.retrieveSettlement({ providerPaymentId: charge.provider_payment_id })
         : Promise.resolve(null),
     )
     for (const [index, charge] of feeCharges.entries()) {

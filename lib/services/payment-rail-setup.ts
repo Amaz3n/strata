@@ -11,10 +11,10 @@ import { assertPaymentLaunchReady } from "@/lib/services/payment-launch-readines
 import { sendVendorPayoutDestinationChangedEmail } from "@/lib/services/mailer"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
 import { requireRecentPaymentStepUp } from "@/lib/services/payment-step-up"
+import { type PaymentRunApprover } from "@/lib/services/payment-approver-roster"
 import {
   getPaymentApprovalRouting,
   listPaymentApproverCandidates,
-  type PaymentRunApprover,
 } from "@/lib/services/payment-approvers"
 import {
   claimVendorCompany,
@@ -101,6 +101,8 @@ export interface PaymentRailSettings {
     payoutHoldHours: number
     newVendorHoldHours: number
     waiverJurisdiction: string
+    /** States whose construction-payment controls have cleared legal review. */
+    enabledJurisdictions: string[]
   }
   fundingSources: Array<{
     id: string
@@ -137,21 +139,23 @@ export async function getPaymentRailSettings(orgId?: string): Promise<PaymentRai
   const context = await requireOrgContext(orgId)
   await requirePermission("payment.release", context)
   const supabase = createServiceSupabaseClient()
-  const [{ data: policy }, { data: fundingSources }, { data: changes }, canManage, canApprove] = await Promise.all([
-    supabase.from("payment_rail_policies").select("enabled,approval_mode,requester_may_approve,control_change_cooling_hours,per_payment_limit_cents,per_run_limit_cents,daily_limit_cents,max_inflight_cents,return_loss_ceiling_cents,payout_hold_hours,new_vendor_hold_hours,waiver_jurisdiction").eq("org_id", context.orgId).maybeSingle(),
+  const [{ data: policy, error: policyError }, { data: fundingSources, error: fundingError }, { data: changes, error: changesError }, canManage, canApprove] = await Promise.all([
+    supabase.from("payment_rail_policies").select("enabled,approval_mode,requester_may_approve,control_change_cooling_hours,per_payment_limit_cents,per_run_limit_cents,daily_limit_cents,max_inflight_cents,return_loss_ceiling_cents,payout_hold_hours,new_vendor_hold_hours,waiver_jurisdiction,enabled_jurisdictions").eq("org_id", context.orgId).maybeSingle(),
     supabase.from("org_funding_sources").select("id,provider,bank_name,last4,verification_status,status,is_default,usable_after").eq("org_id", context.orgId).order("created_at", { ascending: false }).limit(20),
     supabase.from("payment_control_change_requests").select("id,funding_source_id,requested_by_user_id,status,required_approvals,apply_after,proposed_masked_details").eq("org_id", context.orgId).eq("kind", "org_funding_source").in("status", ["pending_approval", "cooling_off"]).order("created_at", { ascending: false }).limit(20),
     hasPermission("payment.manage_rail", context),
     hasPermission("payment.approve_run", context),
   ])
+  if (policyError || fundingError || changesError) throw new Error("Unable to load payment settings.")
   const changeIds = (changes ?? []).map((change) => change.id)
-  const [{ data: approvals }, routing, candidates] = await Promise.all([
+  const [{ data: approvals, error: approvalsError }, routing, candidates] = await Promise.all([
     changeIds.length > 0
       ? supabase.from("payment_control_change_approvals").select("change_request_id,decision").in("change_request_id", changeIds)
-      : Promise.resolve({ data: [] }),
+      : Promise.resolve({ data: [], error: null }),
     getPaymentApprovalRouting(context.orgId),
     canManage ? listPaymentApproverCandidates(context.orgId) : Promise.resolve([]),
   ])
+  if (approvalsError) throw new Error("Unable to load payment approval status.")
   return {
     policy: {
       configured: Boolean(policy),
@@ -167,6 +171,7 @@ export async function getPaymentRailSettings(orgId?: string): Promise<PaymentRai
       payoutHoldHours: Number(policy?.payout_hold_hours ?? 48),
       newVendorHoldHours: Number(policy?.new_vendor_hold_hours ?? 72),
       waiverJurisdiction: policy?.waiver_jurisdiction ?? "FL",
+      enabledJurisdictions: policy?.enabled_jurisdictions ?? ["FL"],
     },
     fundingSources: (fundingSources ?? []).map((row) => ({
       id: row.id,
@@ -343,13 +348,14 @@ async function adoptVerifiedRecipient(input: { vendorEntityId: string; relations
   // The ready account was still adopted successfully; only that first writer
   // owns the email notification.
   if (!relationship) return true
+  const { data: company } = await supabase.from("companies").select("name").eq("org_id", relationship.org_id).eq("id", relationship.company_id).maybeSingle()
   await Promise.all([
     recordEvent({
       orgId: relationship.org_id,
       eventType: "vendor_recipient_status_updated",
       entityType: "payment_recipient_account",
       entityId: recipient.id,
-      payload: { status: "ready", payouts_enabled: true, reused_existing_account: true },
+      payload: { status: "ready", payouts_enabled: true, reused_existing_account: true, company_id: relationship.company_id, company_name: company?.name ?? null },
     }),
     recordAudit({
       orgId: relationship.org_id,
@@ -434,7 +440,15 @@ async function createVendorRecipientOnboarding(parsed: { vendor_entity_id: strin
       last_provider_sync_at: new Date().toISOString(),
     }).select("id,provider,provider_account_id,status,payouts_enabled").single()
     if (error || !data) throw new Error(`Unable to save recipient account: ${error?.message}`)
-    recipient = { id: data.id, provider: data.provider, status: data.status, payoutsEnabled: data.payouts_enabled, bankName: null, bankLast4: null }
+    recipient = {
+      id: data.id,
+      provider: data.provider,
+      status: data.status,
+      payoutsEnabled: data.payouts_enabled,
+      bankName: null,
+      bankLast4: null,
+      requirementsCurrentlyDue: snapshot.requirementsCurrentlyDue.map((requirement) => String(requirement)),
+    }
   }
 
   // Every relationship for this entity points at its one recipient account,
@@ -640,6 +654,9 @@ export async function syncVendorRecipient(
   }
 
   const relationships = await listRecipientRelationships(recipient.id)
+  const companyIds = [...new Set(relationships.map((relationship) => relationship.company_id))]
+  const { data: companies } = companyIds.length ? await supabase.from("companies").select("id,name").in("id", companyIds) : { data: [] }
+  const companyNameById = new Map((companies ?? []).map((company) => [company.id, company.name]))
   const relationshipStatus = snapshot.status === "ready" && snapshot.payoutsEnabled ? "active" : "onboarding"
   await Promise.all(relationships.map(async (relationship) => {
     // A provider readiness sync is not authority to undo a builder's fraud
@@ -662,7 +679,7 @@ export async function syncVendorRecipient(
     // delivery would mail the same "vendor is ready" notice indefinitely.
     await Promise.all([
       changed
-        ? recordEvent({ orgId: relationship.org_id, eventType: "vendor_recipient_status_updated", entityType: "payment_recipient_account", entityId: recipient.id, payload: { status: snapshot.status, payouts_enabled: snapshot.payoutsEnabled, relationship_status: relationshipStatus, company_id: relationship.company_id } })
+        ? recordEvent({ orgId: relationship.org_id, eventType: "vendor_recipient_status_updated", entityType: "payment_recipient_account", entityId: recipient.id, payload: { status: snapshot.status, payouts_enabled: snapshot.payoutsEnabled, relationship_status: relationshipStatus, company_id: relationship.company_id, company_name: companyNameById.get(relationship.company_id) ?? null } })
         : Promise.resolve(null),
       recordAudit({ orgId: relationship.org_id, action: "update", entityType: "payment_recipient_account", entityId: recipient.id, after: { status: snapshot.status, payouts_enabled: snapshot.payoutsEnabled }, source: auditSource }),
     ])

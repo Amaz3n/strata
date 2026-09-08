@@ -3,7 +3,7 @@ import { connection } from "next/server";
 
 import { PageLayout } from "@/components/layout/page-layout";
 import { ControlTowerDesk } from "@/components/control-tower/control-tower-desk";
-import { ControlTowerStatsSkeleton } from "@/components/control-tower/control-tower-skeletons";
+import { ControlTowerSkeleton } from "@/components/control-tower/control-tower-skeletons";
 import { ProductionHome } from "@/components/home/production-home";
 import { getOrgProductTier } from "@/lib/services/context";
 import { getAmbientDeskContext } from "@/lib/services/desk-context";
@@ -29,7 +29,7 @@ export default async function HomePage({
     return (
       <>
         <PageLayout title="Home" fullBleed />
-        <Suspense fallback={<ControlTowerStatsSkeleton />}>
+        <Suspense fallback={<ControlTowerSkeleton />}>
           <ProductionHomeBand window={params.w} />
         </Suspense>
       </>
@@ -39,7 +39,9 @@ export default async function HomePage({
   return (
     <>
       <PageLayout title="Control Tower" fullBleed />
-      <ControlTowerDesk />
+      <Suspense fallback={<ControlTowerSkeleton />}>
+        <ControlTowerDesk />
+      </Suspense>
     </>
   );
 }

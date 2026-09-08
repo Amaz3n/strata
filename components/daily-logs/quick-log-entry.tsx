@@ -9,6 +9,7 @@ import type { FileCategory, ProjectPunchItem } from "@/app/(app)/projects/[id]/a
 import type { DailyLogEntryInput, DailyLogInput } from "@/lib/validation/daily-logs"
 import { cn } from "@/lib/utils"
 
+import { dailyLogDraftStorage } from "@/lib/daily-logs/draft-storage"
 import { useOfflineDailyLogs } from "@/lib/hooks/use-offline-daily-logs"
 import { getCoordinatesFromAddress, getCurrentWeather } from "@/lib/utils/weather"
 import { MentionTextarea, type MentionableUser } from "./mention-textarea"
@@ -65,6 +66,7 @@ const weatherOptions = [
 
 interface QuickLogEntryProps {
   projectId: string
+  userId?: string
   projectAddress?: string
   scheduleItems: ScheduleItem[]
   tasks: Task[]
@@ -92,7 +94,11 @@ interface QuickLogEntryProps {
    * Presentation shell. Mobile keeps the bottom `drawer`; the day-centric desktop
    * workspace uses a centered `dialog` (mirrors the platform issues composer).
    */
-  variant?: "drawer" | "dialog"
+  variant?: "drawer" | "dialog" | "inline"
+  onLoadContext?: () => Promise<void>
+  contextLoading?: boolean
+  contextError?: string | null
+  onDraftPendingChange?: (pending: boolean) => void
 }
 
 type DateOption = "today" | "yesterday" | "custom"
@@ -125,6 +131,27 @@ type PunchUpdateDraft = {
   id: string
   punch_item_id?: string
   mark_closed: boolean
+}
+
+interface QuickLogDraft {
+  summary: string
+  weather: string
+  date: string
+  files: File[]
+  mentionedUserIds: string[]
+  activeDetails: string[]
+  showDetailedEntries: boolean
+  workItems: WorkEntryDraft[]
+  inspectionItems: InspectionEntryDraft[]
+  taskUpdates: TaskUpdateDraft[]
+  punchUpdates: PunchUpdateDraft[]
+  deliveriesText: string
+  constraintsText: string
+  safetyText: string
+  submissionId: string | null
+  createdLog: DailyLog | null
+  uploadedFileIndexes?: number[]
+  completed?: boolean
 }
 
 function createDraftId() {
@@ -187,6 +214,7 @@ function isImageAttachment(file: File) {
 
 export function QuickLogEntry({
   projectId,
+  userId,
   projectAddress,
   scheduleItems,
   tasks,
@@ -201,8 +229,25 @@ export function QuickLogEntry({
   onOpenChange,
   defaultDate,
   variant = "drawer",
+  onLoadContext,
+  contextLoading = false,
+  contextError,
+  onDraftPendingChange,
 }: QuickLogEntryProps) {
   const today = new Date()
+  const draftKey = userId ? `daily-log-draft:${userId}:${projectId}:${format(defaultDate ?? today, "yyyy-MM-dd")}` : null
+  const [draftReady, setDraftReady] = useState(!draftKey)
+  const [draftRecovered, setDraftRecovered] = useState(false)
+  const [draftError, setDraftError] = useState<string | null>(null)
+  const latestDraft = useRef<QuickLogDraft | null>(null)
+  const draftFinished = useRef(false)
+  const hydratedDraftKey = useRef<string | null>(null)
+  const draftLoadFailed = useRef(false)
+  const submissionId = useRef<string | null>(null)
+  const submittingLock = useRef(false)
+  const createdLogRef = useRef<DailyLog | null>(null)
+  const uploadedFiles = useRef(new Set<File>())
+  const loadContext = () => { void onLoadContext?.().catch(() => undefined) }
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Drag-and-drop attachments — dialog/desktop affordance.
@@ -220,6 +265,7 @@ export function QuickLogEntry({
     onOpenChange?.(next)
   }
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [savedLogId, setSavedLogId] = useState<string | null>(null)
   const [summary, setSummary] = useState("")
   const [selectedWeather, setSelectedWeather] = useState<string>("")
   const [selectedDate, setSelectedDate] = useState<DateOption>("today")
@@ -234,7 +280,7 @@ export function QuickLogEntry({
   // every keystroke in the summary field. Derive them once per file list and
   // revoke the previous batch.
   const previewUrls = useMemo(
-    () => selectedFiles.map((file) => (canPreviewSelectedImage(file) ? URL.createObjectURL(file) : null)),
+    () => selectedFiles.map((file) => (isImageAttachment(file) && canPreviewSelectedImage(file) ? URL.createObjectURL(file) : null)),
     [selectedFiles],
   )
   useEffect(() => {
@@ -245,7 +291,7 @@ export function QuickLogEntry({
 
   // When opened with a target date (day-centric desktop flow), pre-select it.
   useEffect(() => {
-    if (!open || !defaultDate) return
+    if ((!open && variant !== "inline") || !defaultDate || createdLogRef.current) return
     if (isSameDay(defaultDate, today)) {
       setSelectedDate("today")
     } else if (isSameDay(defaultDate, subDays(today, 1))) {
@@ -255,14 +301,14 @@ export function QuickLogEntry({
       setCustomDate(defaultDate)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, defaultDate])
+  }, [open, defaultDate, variant])
 
   // Offline sync hook
-  const { isOnline, pendingLogs, saveOfflineLog, syncPendingLogs, isSyncing } = useOfflineDailyLogs(projectId)
+  const { isOnline, pendingLogs, saveOfflineLog, syncPendingLogs, isSyncing } = useOfflineDailyLogs(projectId, userId)
 
   // Auto-fetch weather when opening drawer if not set
   useEffect(() => {
-    if (!open || selectedWeather || !projectAddress || !isOnline) return
+    if (variant === "inline" || !draftReady || !open || selectedWeather || !projectAddress || !isOnline) return
 
     let mounted = true
     async function fetchWeather() {
@@ -279,10 +325,11 @@ export function QuickLogEntry({
     fetchWeather()
 
     return () => { mounted = false }
-  }, [open, projectAddress, selectedWeather, isOnline])
+  }, [open, projectAddress, selectedWeather, isOnline, draftReady, variant])
 
   // Detailed entries - collapsed by default
   const [showDetailedEntries, setShowDetailedEntries] = useState(false)
+  const [activeDetails, setActiveDetails] = useState<string[]>([])
   const [workItems, setWorkItems] = useState<WorkEntryDraft[]>([])
   const [inspectionItems, setInspectionItems] = useState<InspectionEntryDraft[]>([])
   const [taskUpdates, setTaskUpdates] = useState<TaskUpdateDraft[]>([])
@@ -295,6 +342,7 @@ export function QuickLogEntry({
   // Get actual date value from the day-picker chips. In the day-centric flow the
   // picker is seeded from the open day, but the chips still let you retarget.
   function getDateValue(): string {
+    if (variant === "inline" && defaultDate) return format(defaultDate, "yyyy-MM-dd")
     if (selectedDate === "today") {
       return format(today, "yyyy-MM-dd")
     } else if (selectedDate === "yesterday") {
@@ -305,12 +353,96 @@ export function QuickLogEntry({
     return format(today, "yyyy-MM-dd")
   }
 
+  const draftSnapshot = useMemo<QuickLogDraft>(() => ({
+    summary, weather: selectedWeather, date: getDateValue(), files: selectedFiles,
+    mentionedUserIds, activeDetails, showDetailedEntries, workItems, inspectionItems,
+    taskUpdates, punchUpdates, deliveriesText, constraintsText, safetyText,
+    submissionId: submissionId.current, createdLog: createdLogRef.current,
+    uploadedFileIndexes: selectedFiles.flatMap((file, index) => uploadedFiles.current.has(file) ? [index] : []),
+    // Submission state makes ref changes part of the persisted snapshot.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [summary, selectedWeather, selectedDate, customDate, selectedFiles, mentionedUserIds, activeDetails,
+    showDetailedEntries, workItems, inspectionItems, taskUpdates, punchUpdates, deliveriesText,
+    constraintsText, safetyText, savedLogId, isSubmitting, defaultDate, variant])
+  latestDraft.current = draftSnapshot
+  if (draftFinished.current && (summary || selectedFiles.length || workItems.length || inspectionItems.length || taskUpdates.length || punchUpdates.length || deliveriesText || constraintsText || safetyText) && !isSubmitting) draftFinished.current = false
+
+  useEffect(() => {
+    if (!draftKey) { setDraftReady(true); return }
+    let active = true
+    setDraftReady(false)
+    void dailyLogDraftStorage.load<QuickLogDraft>(draftKey).then((draft) => {
+      if (!active || !draft || draft.completed) return
+      setSummary(draft.summary)
+      setSelectedWeather(draft.weather)
+      setSelectedDate("custom")
+      setCustomDate(new Date(`${draft.date}T12:00:00`))
+      setSelectedFiles(draft.files)
+      uploadedFiles.current = new Set((draft.uploadedFileIndexes ?? []).map((index) => draft.files[index]).filter(Boolean))
+      setMentionedUserIds(draft.mentionedUserIds)
+      setActiveDetails(draft.activeDetails)
+      setShowDetailedEntries(draft.showDetailedEntries)
+      setWorkItems(draft.workItems)
+      setInspectionItems(draft.inspectionItems)
+      setTaskUpdates(draft.taskUpdates)
+      setPunchUpdates(draft.punchUpdates)
+      setDeliveriesText(draft.deliveriesText)
+      setConstraintsText(draft.constraintsText)
+      setSafetyText(draft.safetyText)
+      submissionId.current = draft.submissionId
+      createdLogRef.current = draft.createdLog
+      setSavedLogId(draft.createdLog?.id ?? null)
+      setDraftRecovered(Boolean(draft.summary || draft.files.length || draft.workItems.length || draft.inspectionItems.length || draft.deliveriesText || draft.constraintsText || draft.safetyText || draft.taskUpdates.length || draft.punchUpdates.length))
+    }).catch(() => {
+      draftLoadFailed.current = true
+      if (active) setDraftError("Draft recovery is unavailable on this device. Keep this page open until your log is saved.")
+    }).finally(() => { if (active) { hydratedDraftKey.current = draftKey; setDraftReady(true) } })
+    return () => { active = false }
+  }, [draftKey])
+
+  useEffect(() => {
+    if (!draftReady || !draftKey || draftFinished.current || draftLoadFailed.current) return
+    void dailyLogDraftStorage.save(draftKey, draftSnapshot).then(() => setDraftError(null)).catch(() => {
+      setDraftError("This draft could not be saved on your device. Keep this page open until your log is saved.")
+    })
+  }, [draftKey, draftReady, draftSnapshot])
+
+  useEffect(() => () => {
+    if (draftKey && hydratedDraftKey.current === draftKey && latestDraft.current && !draftFinished.current && !draftLoadFailed.current) {
+      void dailyLogDraftStorage.save(draftKey, latestDraft.current).catch(() => {})
+    }
+  }, [draftKey])
+
+  async function persistSubmissionDraft() {
+    if (!draftKey || !latestDraft.current) return
+    await dailyLogDraftStorage.save(draftKey, {
+      ...latestDraft.current, submissionId: submissionId.current, createdLog: createdLogRef.current,
+      uploadedFileIndexes: selectedFiles.flatMap((file, index) => uploadedFiles.current.has(file) ? [index] : []),
+    })
+  }
+
+  async function finishDraft() {
+    if (draftKey && latestDraft.current) {
+      // A completion marker prevents recovery if deletion is interrupted.
+      await dailyLogDraftStorage.save(draftKey, { ...latestDraft.current, completed: true })
+      draftFinished.current = true
+      await dailyLogDraftStorage.remove(draftKey).catch(() => {})
+    }
+    draftFinished.current = true
+    setDraftRecovered(false)
+  }
+
   // Reset form
   function resetForm() {
+    submissionId.current = null
+    createdLogRef.current = null
+    setSavedLogId(null)
+    uploadedFiles.current.clear()
+    setActiveDetails([])
     setSummary("")
     setSelectedWeather("")
-    setSelectedDate("today")
-    setCustomDate(undefined)
+    setSelectedDate(defaultDate ? "custom" : "today")
+    setCustomDate(defaultDate)
     setSelectedFiles([])
     setMentionedUserIds([])
     setShowDetailedEntries(false)
@@ -388,6 +520,7 @@ export function QuickLogEntry({
 
   // Handle submit
   async function handleSubmit() {
+    if (submittingLock.current || !draftReady) return
     const entries = buildEntries()
     const hasLogContent = Boolean(summary.trim() || selectedWeather || entries.length > 0)
 
@@ -395,11 +528,15 @@ export function QuickLogEntry({
       return
     }
 
+    submittingLock.current = true
+    submissionId.current ??= crypto.randomUUID()
     setIsSubmitting(true)
     try {
-      if (!isOnline) {
+      await persistSubmissionDraft()
+      if (!isOnline && !createdLogRef.current) {
         await saveOfflineLog(
           {
+            submission_id: submissionId.current,
             project_id: projectId,
             date: getDateValue(),
             summary: summary.trim(),
@@ -410,15 +547,17 @@ export function QuickLogEntry({
           selectedFiles,
           { category: selectedFiles.every(isImageAttachment) ? "photos" : "other" },
         )
+        await finishDraft()
         resetForm()
         setOpen(false)
         return
       }
 
-      let createdLog: DailyLog | null = null
+      let createdLog = createdLogRef.current
 
-      if (hasLogContent || selectedFiles.length > 0) {
+      if (!createdLog && (hasLogContent || selectedFiles.length > 0)) {
         createdLog = await onCreateLog({
+          submission_id: submissionId.current,
           project_id: projectId,
           date: getDateValue(),
           summary: summary.trim(),
@@ -426,27 +565,30 @@ export function QuickLogEntry({
           entries,
           mentioned_user_ids: mentionedUserIds,
         })
+        createdLogRef.current = createdLog
+        setSavedLogId(createdLog.id)
+        await persistSubmissionDraft()
       }
 
       if (selectedFiles.length > 0 && createdLog) {
-        await onUploadFiles(selectedFiles, {
+        await onUploadFiles(selectedFiles.filter((file) => !uploadedFiles.current.has(file)), {
           dailyLogId: createdLog.id,
           category: selectedFiles.every(isImageAttachment) ? "photos" : "other",
         })
+        selectedFiles.forEach((file) => uploadedFiles.current.add(file))
+        await persistSubmissionDraft()
       }
 
-      if (selectedFiles.length > 0 && !hasLogContent) {
-        toast.success(`${selectedFiles.length} attachment${selectedFiles.length > 1 ? "s" : ""} uploaded`)
-      } else {
-        toast.success("Log added")
-      }
+      await finishDraft()
+      toast.success("Log saved")
 
       resetForm()
       setOpen(false)
     } catch (error) {
       console.error(error)
-      toast.error("Failed to add log")
+      toast.error(error instanceof Error ? error.message : "Failed to add log. Your draft is still here.")
     } finally {
+      submittingLock.current = false
       setIsSubmitting(false)
     }
   }
@@ -531,6 +673,10 @@ export function QuickLogEntry({
     structuredEntryCount > 0
   )
 
+  useEffect(() => {
+    onDraftPendingChange?.(!draftReady || canSubmit || isSubmitting)
+  }, [onDraftPendingChange, draftReady, canSubmit, isSubmitting])
+
   // Drag-and-drop drop handler (dialog only).
   function handleDrop(event: React.DragEvent) {
     if (!isFileDrag(event)) return
@@ -548,6 +694,9 @@ export function QuickLogEntry({
 
   const banners = (
     <>
+      {!draftReady && <p role="status" className="px-4 py-2 text-xs text-muted-foreground">Recovering your draft…</p>}
+      {draftRecovered && <p role="status" className="px-4 py-2 text-xs text-muted-foreground">Your draft was restored.</p>}
+      {draftError && <p role="alert" className="px-4 py-2 text-xs text-destructive">{draftError}</p>}
       {!isOnline && (
         <div className="bg-yellow-500/10 border-b border-yellow-500/20 text-yellow-700 dark:text-yellow-400 px-4 py-2 text-xs font-medium flex items-center justify-center">
           You are offline. Logs will be saved to your device and synced later.
@@ -642,7 +791,8 @@ export function QuickLogEntry({
   const dateBlock = <div className="mb-3">{datePickerChips}</div>
 
   const composerBody = (
-    <>
+    <fieldset disabled={!draftReady || Boolean(savedLogId) || isSubmitting} className="min-w-0">
+      <legend className="sr-only">Log content</legend>
       {/* Hidden file input — shared by the preview grid's add tile and the
           footer's attach button in either shell. */}
       <input
@@ -676,7 +826,7 @@ export function QuickLogEntry({
             ))}
           </div>
         </div>
-      ) : selectedWeather ? (
+      ) : selectedWeather && variant !== "inline" ? (
         <div className="mb-3 flex items-center gap-1.5 text-xs">
           <span aria-hidden>{weatherEmojiFor(selectedWeather)}</span>
           <span className="font-medium text-foreground">{selectedWeather}</span>
@@ -692,7 +842,7 @@ export function QuickLogEntry({
           mentionableUsers={mentionableUsers}
           mentionedUserIds={mentionedUserIds}
           onMentionedUserIdsChange={setMentionedUserIds}
-          placeholder="What happened on site today?"
+          placeholder={getDateValue() === format(today, "yyyy-MM-dd") ? "What happened on site today?" : `What happened on ${getDateValue()}?`}
           rows={1}
           className="min-h-[80px]"
         />
@@ -723,6 +873,7 @@ export function QuickLogEntry({
                 )}
                 <button
                   type="button"
+                  aria-label={`Remove ${file.name}`}
                   onClick={() => removeFile(index)}
                   className="absolute top-1 right-1 w-5 h-5 bg-black/60 rounded-full flex items-center justify-center hover:bg-black/80 transition-colors"
                 >
@@ -743,9 +894,9 @@ export function QuickLogEntry({
       )}
 
       {/* Detailed entries toggle */}
-      <button
+      {variant !== "inline" && <button
         type="button"
-        onClick={() => setShowDetailedEntries(!showDetailedEntries)}
+        onClick={() => { loadContext(); setShowDetailedEntries(!showDetailedEntries) }}
         aria-expanded={showDetailedEntries}
         className="w-full flex items-center justify-between py-3 text-sm text-muted-foreground hover:text-foreground transition-colors"
       >
@@ -762,11 +913,11 @@ export function QuickLogEntry({
           "h-4 w-4 transition-transform",
           showDetailedEntries && "rotate-180"
         )} />
-      </button>
+      </button>}
 
       {/* Detailed entries — a minimal, symmetric editor. Each section shares the
           same header + card rhythm so the form reads as one system. */}
-      <div
+      {showDetailedEntries && <div
         className={cn(
           "grid transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none",
           showDetailedEntries ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
@@ -775,7 +926,7 @@ export function QuickLogEntry({
         <div className="min-h-0 overflow-hidden">
           <div className="mt-1 space-y-6 border-t pt-4">
             {/* Work performed */}
-            <section className="space-y-2.5">
+            {(variant !== "inline" || activeDetails.includes("work")) && <section className="space-y-2.5">
             <EntrySectionHeader label="Work performed" onAdd={addWorkItem} />
             {workItems.length > 0 && (
               <div className="space-y-2">
@@ -842,10 +993,10 @@ export function QuickLogEntry({
                 ))}
               </div>
             )}
-          </section>
+          </section>}
 
           {/* Inspections */}
-          <section className="space-y-2.5">
+          {(variant !== "inline" || activeDetails.includes("inspection")) && <section className="space-y-2.5">
             <EntrySectionHeader label="Inspections" onAdd={addInspectionItem} />
             {inspectionItems.length > 0 && (
               <div className="space-y-2">
@@ -895,10 +1046,10 @@ export function QuickLogEntry({
                 ))}
               </div>
             )}
-          </section>
+          </section>}
 
           {/* Task updates */}
-          <section className="space-y-2.5">
+          {(variant !== "inline" || activeDetails.includes("task")) && <section className="space-y-2.5">
             <EntrySectionHeader label="Task updates" onAdd={addTaskUpdate} />
             {taskUpdates.length > 0 && (
               <div className="space-y-2">
@@ -933,10 +1084,10 @@ export function QuickLogEntry({
                 ))}
               </div>
             )}
-          </section>
+          </section>}
 
           {/* Punch updates */}
-          <section className="space-y-2.5">
+          {(variant !== "inline" || activeDetails.includes("punch")) && <section className="space-y-2.5">
             <EntrySectionHeader label="Punch updates" onAdd={addPunchUpdate} />
             {punchUpdates.length > 0 && (
               <div className="space-y-2">
@@ -971,20 +1122,21 @@ export function QuickLogEntry({
                 ))}
               </div>
             )}
-          </section>
+          </section>}
 
           {/* Site events — deliveries, delays/constraints, safety. One per line. */}
           <section className="space-y-3">
             {(
               [
-                { label: "Deliveries", value: deliveriesText, set: setDeliveriesText, placeholder: "Lumber package, rebar…" },
-                { label: "Delays & constraints", value: constraintsText, set: setConstraintsText, placeholder: "Waiting on inspection, weather hold…" },
-                { label: "Safety", value: safetyText, set: setSafetyText, placeholder: "Toolbox talk, incident…" },
+                { key: "delivery", label: "Deliveries", value: deliveriesText, set: setDeliveriesText, placeholder: "Lumber package, rebar…" },
+                { key: "constraint", label: "Delays & constraints", value: constraintsText, set: setConstraintsText, placeholder: "Waiting on inspection, weather hold…" },
+                { key: "safety", label: "Safety", value: safetyText, set: setSafetyText, placeholder: "Toolbox talk, incident…" },
               ] as const
-            ).map(({ label, value, set, placeholder }) => (
+            ).filter(({ key }) => variant !== "inline" || activeDetails.includes(key)).map(({ label, value, set, placeholder }) => (
               <div key={label} className="space-y-1.5">
                 <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{label}</h4>
                 <textarea
+                  aria-label={label}
                   value={value}
                   onChange={(event) => set(event.target.value)}
                   placeholder={placeholder}
@@ -996,9 +1148,64 @@ export function QuickLogEntry({
           </section>
           </div>
         </div>
-      </div>
-    </>
+      </div>}
+    </fieldset>
   )
+
+  if (variant === "inline") {
+    return (
+      <form
+        aria-label={`Add log for ${getDateValue()}`}
+        className="border bg-card"
+        onSubmit={(event) => { event.preventDefault(); if (canSubmit) void handleSubmit() }}
+        onFocusCapture={loadContext}
+        onKeyDown={(event) => {
+          if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+            event.preventDefault()
+            if (canSubmit) void handleSubmit()
+          }
+        }}
+        onDragOver={(event) => { if (isFileDrag(event)) event.preventDefault() }}
+        onDrop={handleDrop}
+      >
+        {banners}
+        <fieldset disabled={isSubmitting || !draftReady} className="min-w-0 p-4 sm:p-5">
+          <legend className="sr-only">New daily log</legend>
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <h2 className="text-sm font-medium">Add a log</h2>
+          </div>
+          {composerBody}
+          {savedLogId && <p role="status" className="mb-3 text-sm text-muted-foreground">Your log is saved. Retry to finish attaching your files.</p>}
+          {contextLoading && <p role="status" className="mb-3 text-xs text-muted-foreground">Loading people and project details…</p>}
+          {contextError && <p role="alert" className="mb-3 text-xs text-destructive">{contextError} <button type="button" onClick={loadContext} className="underline">Retry</button></p>}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" variant="ghost" size="sm" onClick={() => fileInputRef.current?.click()}><Paperclip className="size-4" />Attach</Button>
+            <Select value="" onValueChange={(value) => {
+              loadContext()
+              setActiveDetails((previous) => previous.includes(value) ? previous : [...previous, value])
+              setShowDetailedEntries(true)
+              if (value === "work") addWorkItem()
+              if (value === "inspection") addInspectionItem()
+              if (value === "task") addTaskUpdate()
+              if (value === "punch") addPunchUpdate()
+            }}>
+              <SelectTrigger aria-label="Add to log" className="h-8 w-auto gap-2 border-0 shadow-none"><Plus className="size-4" /><SelectValue placeholder="Add to log" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="work">Work performed</SelectItem>
+                <SelectItem value="inspection">Inspection</SelectItem>
+                <SelectItem value="task">Task update</SelectItem>
+                <SelectItem value="punch">Punch update</SelectItem>
+                <SelectItem value="delivery">Delivery</SelectItem>
+                <SelectItem value="constraint">Delay or constraint</SelectItem>
+                <SelectItem value="safety">Safety</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button type="submit" size="sm" className="ml-auto" disabled={!draftReady || !canSubmit || isSubmitting}>{isSubmitting ? "Saving…" : savedLogId ? "Retry attachments" : "Save log"}</Button>
+          </div>
+        </fieldset>
+      </form>
+    )
+  }
 
   // Desktop day-centric workspace: a centered dialog mirroring the platform
   // issues composer — clean header, drag-to-attach, ⌘↵ to submit.
@@ -1070,7 +1277,7 @@ export function QuickLogEntry({
                 </Button>
                 <Button
                   type="button"
-                  disabled={!canSubmit || isSubmitting}
+                  disabled={!draftReady || !canSubmit || isSubmitting}
                   onClick={handleSubmit}
                   className="gap-2"
                 >
@@ -1132,7 +1339,7 @@ export function QuickLogEntry({
             <Button
               type="button"
               size="sm"
-              disabled={!canSubmit || isSubmitting}
+              disabled={!draftReady || !canSubmit || isSubmitting}
               onClick={handleSubmit}
               className="gap-2 px-4"
             >

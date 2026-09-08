@@ -1,11 +1,12 @@
+import { allocateContractValue } from "@/lib/financials/sov-allocation"
+import { estimateLineAmountCents } from "@/lib/financials/estimate-totals"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { requireOrgContext } from "@/lib/services/context"
-import { getOrgCostCodesEnabled, resolveCostCodesEnabled } from "@/lib/financials/cost-codes-enabled"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
-import { buildBudgetDraftFromEstimate, listBudgetEstimateSources } from "@/lib/services/budget-from-estimate"
+import { listBudgetEstimateSources } from "@/lib/services/budget-from-estimate"
 import { primeSovLinesUpsertSchema, type PrimeSovLineInput } from "@/lib/validation/pay-applications"
 
 export interface PrimeSovLine {
@@ -16,6 +17,7 @@ export interface PrimeSovLine {
   cost_code_id: string | null
   cost_code_label: string | null
   budget_line_id: string | null
+  budget_line_ids: string[]
   scheduled_value_cents: number
   previous_billed_cents: number
   stored_materials_cents: number
@@ -27,6 +29,7 @@ export interface PrimeSovLine {
 
 export interface PrimeSovSummary {
   contract_id: string
+  revision: number
   /** Revised contract sum (snapshot.revised_total_cents falls back to total_cents). */
   contract_sum_cents: number
   scheduled_total_cents: number
@@ -70,7 +73,7 @@ function lineHasBilling(row: Pick<SovLineRow, "previous_billed_cents" | "stored_
 export async function getProgressBillingContract(supabase: SupabaseClient, orgId: string, projectId: string) {
   const { data, error } = await supabase
     .from("contracts")
-    .select("id, project_id, status, total_cents, retainage_percent, retainage_schedule, stored_materials_retainage_percent, snapshot")
+    .select("id, project_id, status, total_cents, retainage_percent, retainage_schedule, stored_materials_retainage_percent, snapshot, sov_revision")
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .in("status", ["active", "amended", "completed"])
@@ -114,6 +117,7 @@ async function attachCostCodeLabels(
   return rows.map((row) => ({
     ...row,
     cost_code_label: row.cost_code_id ? labels.get(row.cost_code_id) ?? null : null,
+    budget_line_ids: row.budget_line_id ? [row.budget_line_id] : [],
   }))
 }
 
@@ -154,6 +158,12 @@ async function loadPrimeSovState(
   }
 
   const lines = await attachCostCodeLabels(supabase, orgId, (rows ?? []) as SovLineRow[])
+  const { data: links, error: linksError } = await supabase.from("prime_sov_budget_links")
+    .select("prime_sov_line_id, budget_line_id").eq("org_id", orgId).eq("contract_id", contract.id)
+  if (linksError) throw new Error(`Failed to load budget scope links: ${linksError.message}`)
+  const linksByLine = new Map<string, string[]>()
+  for (const link of links ?? []) linksByLine.set(link.prime_sov_line_id, [...(linksByLine.get(link.prime_sov_line_id) ?? []), link.budget_line_id])
+  for (const line of lines) line.budget_line_ids = linksByLine.get(line.id) ?? line.budget_line_ids
   const scheduledTotal = lines.reduce((sum, line) => sum + line.scheduled_value_cents, 0)
   const contractSum = resolveContractSumCents(contract)
 
@@ -161,6 +171,7 @@ async function loadPrimeSovState(
     lines,
     summary: {
       contract_id: contract.id as string,
+      revision: Number(contract.sov_revision ?? 0),
       contract_sum_cents: contractSum,
       scheduled_total_cents: scheduledTotal,
       variance_cents: scheduledTotal - contractSum,
@@ -181,7 +192,7 @@ async function loadPrimeSovState(
  */
 export async function upsertPrimeSovLines(
   projectId: string,
-  input: { lines: PrimeSovLineInput[] },
+  input: { lines: PrimeSovLineInput[]; expected_revision?: number },
   options?: { orgId?: string; fromChangeOrder?: boolean },
 ): Promise<PrimeSovState> {
   const parsed = primeSovLinesUpsertSchema.parse(input)
@@ -241,68 +252,19 @@ export async function upsertPrimeSovLines(
     }
   }
 
-  if (removed.length > 0) {
-    const { error: deleteError } = await supabase
-      .from("prime_sov_lines")
-      .delete()
-      .eq("org_id", resolvedOrgId)
-      .eq("contract_id", contract.id)
-      .in(
-        "id",
-        removed.map((row) => row.id),
-      )
-    if (deleteError) {
-      throw new Error(`Failed to remove SOV lines: ${deleteError.message}`)
-    }
-  }
-
-  // Renumber in two passes so the (contract_id, line_number) unique constraint
-  // never collides mid-save: park kept lines on negative numbers first.
-  const keptIds = parsed.lines.map((line) => line.id).filter((id): id is string => Boolean(id))
-  for (let index = 0; index < keptIds.length; index += 1) {
-    const { error: parkError } = await supabase
-      .from("prime_sov_lines")
-      .update({ line_number: -(index + 1) })
-      .eq("org_id", resolvedOrgId)
-      .eq("id", keptIds[index])
-    if (parkError) {
-      throw new Error(`Failed to renumber SOV lines: ${parkError.message}`)
-    }
-  }
-
-  for (let index = 0; index < parsed.lines.length; index += 1) {
-    const line = parsed.lines[index]
-    const payload = {
-      description: line.description,
-      cost_code_id: line.cost_code_id ?? null,
-      budget_line_id: line.budget_line_id ?? null,
-      scheduled_value_cents: line.scheduled_value_cents,
-      retainage_percent_override: line.retainage_percent_override ?? null,
-      line_number: index + 1,
-      sort_order: index,
-    }
-
-    if (line.id) {
-      const { error: updateError } = await supabase
-        .from("prime_sov_lines")
-        .update(payload)
-        .eq("org_id", resolvedOrgId)
-        .eq("id", line.id)
-      if (updateError) {
-        throw new Error(`Failed to update SOV line: ${updateError.message}`)
-      }
-    } else {
-      const { error: insertError } = await supabase.from("prime_sov_lines").insert({
-        ...payload,
-        org_id: resolvedOrgId,
-        project_id: projectId,
-        contract_id: contract.id,
-      })
-      if (insertError) {
-        throw new Error(`Failed to add SOV line: ${insertError.message}`)
-      }
-    }
-  }
+  const { error: saveError } = await supabase.rpc("save_prime_sov_lines", {
+    p_org_id: resolvedOrgId,
+    p_project_id: projectId,
+    p_contract_id: contract.id,
+    p_expected_revision: input.expected_revision ?? Number(contract.sov_revision ?? 0),
+    p_lines: parsed.lines.map((line) => ({
+      ...line,
+      budget_line_id: line.budget_line_id === undefined && line.id
+        ? existingById.get(line.id)?.budget_line_id ?? null
+        : line.budget_line_id ?? null,
+    })),
+  })
+  if (saveError) throw new Error(`Failed to save schedule of values: ${saveError.message}`)
 
   const state = await listPrimeSovLines(projectId, resolvedOrgId)
 
@@ -425,12 +387,14 @@ export async function importSovFromBudget(projectId: string, orgId?: string): Pr
       const existing = grouped.get(line.cost_code_id)
       if (existing) {
         existing.scheduled_value_cents += amount
+        existing.budget_line_ids = [...(existing.budget_line_ids ?? []), line.id as string]
         continue
       }
       const entry: PrimeSovLineInput = {
         description: codeLabels.get(line.cost_code_id) ?? line.description ?? "Budget line",
         cost_code_id: line.cost_code_id,
         budget_line_id: line.id as string,
+        budget_line_ids: [line.id as string],
         scheduled_value_cents: amount,
       }
       grouped.set(line.cost_code_id, entry)
@@ -440,6 +404,7 @@ export async function importSovFromBudget(projectId: string, orgId?: string): Pr
         description: line.description ?? "Budget line",
         cost_code_id: null,
         budget_line_id: line.id as string,
+        budget_line_ids: [line.id as string],
         scheduled_value_cents: amount,
       })
     }
@@ -449,7 +414,8 @@ export async function importSovFromBudget(projectId: string, orgId?: string): Pr
     throw new Error("The budget has no non-zero lines to import")
   }
 
-  return upsertPrimeSovLines(projectId, { lines: proposed }, { orgId: resolvedOrgId })
+  const allocated = allocateContractValue(proposed.map((line) => line.scheduled_value_cents), resolveContractSumCents(contract))
+  return upsertPrimeSovLines(projectId, { lines: proposed.map((line, index) => ({ ...line, scheduled_value_cents: allocated[index] })) }, { orgId: resolvedOrgId })
 }
 
 /**
@@ -488,37 +454,29 @@ export async function importSovFromEstimate(
     throw new Error("This project has no estimate to import from")
   }
 
-  const [{ data: settings }, orgCostCodesDefault] = await Promise.all([
-    supabase
-      .from("project_financial_settings")
-      .select("cost_codes_enabled")
-      .eq("org_id", resolvedOrgId)
-      .eq("project_id", projectId)
-      .maybeSingle(),
-    getOrgCostCodesEnabled(supabase, resolvedOrgId),
-  ])
-
-  const draft = await buildBudgetDraftFromEstimate({
-    projectId,
-    estimateId,
-    costCodesEnabled: resolveCostCodesEnabled(settings?.cost_codes_enabled, orgCostCodesDefault),
-    orgId: resolvedOrgId,
-  })
-
-  const proposed: PrimeSovLineInput[] = draft.lines
-    .filter((line) => line.amount_cents !== 0)
+  const { data: estimate, error: estimateError } = await supabase
+    .from("estimates")
+    .select("id, metadata, items:estimate_items(id, description, cost_code_id, item_type, quantity, unit_cost_cents, markup_pct, metadata, sort_order)")
+    .eq("org_id", resolvedOrgId).eq("project_id", projectId).eq("id", estimateId).maybeSingle()
+  if (estimateError || !estimate) throw new Error("Unable to load the estimate billing values")
+  const acceptedIds = new Set<string>(estimate.metadata?.accepted_options?.ids ?? [])
+  const proposed: PrimeSovLineInput[] = (estimate.items ?? [])
+    .filter((line) => line.item_type !== "group" && (!line.metadata?.is_optional || acceptedIds.has(line.id)))
+    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
     .map((line) => ({
-      description: line.cost_code_label ?? line.description ?? "Estimate line",
+      description: line.description ?? "Estimate line",
       cost_code_id: line.cost_code_id ?? null,
       budget_line_id: null,
-      scheduled_value_cents: line.amount_cents,
+      scheduled_value_cents: estimateLineAmountCents(line) ?? 0,
     }))
+    .filter((line) => line.scheduled_value_cents !== 0)
 
   if (proposed.length === 0) {
     throw new Error("The estimate has no cost lines to import")
   }
 
-  return upsertPrimeSovLines(projectId, { lines: proposed }, { orgId: resolvedOrgId })
+  const allocated = allocateContractValue(proposed.map((line) => line.scheduled_value_cents), resolveContractSumCents(contract))
+  return upsertPrimeSovLines(projectId, { lines: proposed.map((line, index) => ({ ...line, scheduled_value_cents: allocated[index] })) }, { orgId: resolvedOrgId })
 }
 
 /**
@@ -672,4 +630,34 @@ export async function applyApprovedChangeOrderToSov({
   })
 
   return loadPrimeSovState(supabase, resolvedOrgId, changeOrder.project_id as string)
+}
+
+export interface SovBudgetEvidenceOption {
+  id: string
+  description: string
+  budget_cents: number
+  group_key: string
+  actual_cents: number
+  committed_cents: number
+  forecast_cents: number
+}
+
+/** Cost evidence is permissioned separately from owner-visible contract values. */
+export async function getSovBudgetEvidence(projectId: string): Promise<SovBudgetEvidenceOption[]> {
+  const { getBudgetWithActuals } = await import("@/lib/services/budgets")
+  const data = await getBudgetWithActuals(projectId)
+  if (!data) return []
+  return data.budget.lines.map((line) => {
+    const position = data.breakdown.find((row) => row.budget_line_id === line.id ||
+      (row.cost_code_id != null && row.cost_code_id === line.cost_code_id))
+    return {
+      id: line.id,
+      description: line.description ?? "Budget scope",
+      budget_cents: line.amount_cents ?? 0,
+      group_key: position?.cost_code_id ?? position?.budget_line_id ?? line.id,
+      actual_cents: position?.actual_cents ?? 0,
+      committed_cents: position?.committed_cents ?? 0,
+      forecast_cents: position?.eac_cents ?? line.amount_cents ?? 0,
+    }
+  })
 }

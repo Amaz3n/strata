@@ -1,9 +1,10 @@
 import "server-only"
+import { verifyBooksReversalHistory } from "@/lib/services/books/reversal-history"
 
 import { z } from "zod"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { requireAuthorization } from "@/lib/services/authorization"
+import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access"
 import { draftFromFact, isRetiredFactKind } from "@/lib/services/books/fact-drafts"
 import { booksDigest } from "@/lib/services/books/hash"
 import { resolveProjectionVersion } from "@/lib/services/books/projector"
@@ -63,7 +64,7 @@ export async function runLedgerRebuildDrillForOrg(orgId: string) {
       const facts = page.filter((fact) => !isRetiredFactKind(fact.fact_kind))
       const ids = facts.map((fact) => fact.id)
       const { data: entries, error: entryError } = ids.length > 0
-        ? await service.from("journal_entries").select("id, fact_id, entry_date, entry_kind, memo, posting_key, policy_version, lines:journal_lines(line_no, project_id, company_id, debit_cents, credit_cents, description, dimensions, account:gl_accounts(code))").eq("org_id", orgId).in("fact_id", ids).eq("status", "posted")
+        ? await service.from("journal_entries").select("id, fact_id, entry_date, entry_kind, memo, posting_key, projection_version, policy_version, lines:journal_lines(line_no, project_id, company_id, debit_cents, credit_cents, description, dimensions, account:gl_accounts(code))").eq("org_id", orgId).in("fact_id", ids).in("status", ["posted", "reversed"])
         : { data: [], error: null }
       if (entryError) throw new Error(entryError.message)
       const entryByFact = new Map((entries ?? []).map((entry) => [entry.fact_id, entry]))
@@ -76,7 +77,7 @@ export async function runLedgerRebuildDrillForOrg(orgId: string) {
             accountingDate: fact.accounting_date,
             payload: fact.payload,
             sourceVersion: fact.source_version,
-            projectionVersion,
+            projectionVersion: Number(entryByFact.get(fact.id)?.projection_version ?? projectionVersion),
             policyVersion: fact.policy_version,
           })
         } catch (error) {
@@ -124,16 +125,18 @@ export async function runLedgerRebuildDrillForOrg(orgId: string) {
       if (orphanError) throw new Error(orphanError.message)
       const orphanPage = orphanEntries ?? []
       const orphanIds = orphanPage.map((entry) => entry.id)
-      const [debtEvents, assetEvents] = orphanIds.length > 0
+      const [debtEvents, assetEvents, depositBatches] = orphanIds.length > 0
         ? await Promise.all([
             service.from("books_debt_events").select("journal_entry_id").eq("org_id", orgId).in("journal_entry_id", orphanIds),
             service.from("books_fixed_asset_events").select("journal_entry_id").eq("org_id", orgId).in("journal_entry_id", orphanIds),
+            service.from("books_deposit_batches").select("journal_entry_id").eq("org_id", orgId).eq("status", "posted").in("journal_entry_id", orphanIds),
           ])
-        : [{ data: [], error: null }, { data: [], error: null }]
-      if (debtEvents.error ?? assetEvents.error) throw new Error((debtEvents.error ?? assetEvents.error)?.message)
+        : [{ data: [], error: null }, { data: [], error: null }, { data: [], error: null }]
+      if (debtEvents.error ?? assetEvents.error ?? depositBatches.error) throw new Error((debtEvents.error ?? assetEvents.error ?? depositBatches.error)?.message)
       const registeredEntryIds = new Set([
         ...(debtEvents.data ?? []).map((row) => String(row.journal_entry_id)),
         ...(assetEvents.data ?? []).map((row) => String(row.journal_entry_id)),
+        ...(depositBatches.data ?? []).map((row) => String(row.journal_entry_id)),
       ])
       for (const entry of orphanPage) {
         if (registeredEntryIds.has(String(entry.id))) continue
@@ -151,6 +154,7 @@ export async function runLedgerRebuildDrillForOrg(orgId: string) {
       differences.unshift({ type: "orphan_scan_capped", scan_capped: true, scanned: ORPHAN_SCAN_LIMIT })
     }
 
+    differences.push(...await verifyBooksReversalHistory(orgId))
     const rebuiltDigest = booksDigest(rebuilt)
     const status = differences.length === 0 ? "passed" : "failed"
     const { error: updateError } = await service.from("ledger_rebuild_runs").update({ status, source_fact_count: sourceFactCount, rebuilt_entry_count: rebuiltEntryCount, rebuilt_digest: rebuiltDigest, differences: differences.slice(0, 200), completed_at: new Date().toISOString() }).eq("org_id", orgId).eq("id", runId)

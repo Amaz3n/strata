@@ -93,17 +93,8 @@ export async function exportAccountingBatch(input: { batchId: string }, orgId?: 
   await requirePermission("financials.export", context)
   const supabase = createServiceSupabaseClient()
 
-  const { data: batch, error } = await supabase
-    .from("accounting_batches")
-    .select("id,format,status,line_count")
-    .eq("org_id", context.orgId)
-    .eq("id", parsed.batchId)
-    .maybeSingle()
-  if (error || !batch) throw new Error("Accounting batch was not found")
-  if (batch.status === "void") throw new Error("This accounting batch was voided")
-  if (Number(batch.line_count) > MAX_BATCH_LINES) {
-    throw new Error(`This batch has ${batch.line_count} lines, beyond the ${MAX_BATCH_LINES}-line import limit. Split it before exporting.`)
-  }
+  const { data: batch, error } = await supabase.rpc("seal_accounting_batch", { p_org_id: context.orgId, p_batch_id: parsed.batchId, p_actor_id: context.userId, p_max_lines: MAX_BATCH_LINES })
+  if (error || !batch) throw new Error(`Unable to seal accounting batch: ${error?.message ?? "not found"}`)
 
   const { data: lines, error: linesError } = await supabase
     .from("accounting_batch_lines")
@@ -129,14 +120,7 @@ export async function exportAccountingBatch(input: { batchId: string }, orgId?: 
 
   // Only the first export closes the batch. Re-downloading is not a new export
   // and must not restamp who exported it or when.
-  if (batch.status === "open") {
-    const { error: closeError } = await supabase
-      .from("accounting_batches")
-      .update({ status: "exported", exported_at: new Date().toISOString(), exported_by: context.userId })
-      .eq("org_id", context.orgId)
-      .eq("id", parsed.batchId)
-      .eq("status", "open")
-    if (closeError) throw new Error(`Unable to close accounting batch: ${closeError.message}`)
+  if (batch.sealed_now) {
     await Promise.all([
       recordEvent({
         orgId: context.orgId,

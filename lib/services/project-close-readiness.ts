@@ -1,3 +1,4 @@
+import { getAccountingSyncStates } from "@/lib/services/accounting-sync-state"
 import { invoiceHref } from "@/lib/financials/invoice-destinations"
 import { isBefore, parseISO, startOfToday } from "date-fns"
 
@@ -119,18 +120,18 @@ export async function getProjectCloseReadiness(projectId: string, orgId?: string
   ] = await Promise.all([
     supabase
       .from("invoices")
-      .select("id, invoice_number, title, status, due_date, total_cents, balance_due_cents, qbo_sync_status")
+      .select("id, invoice_number, title, status, due_date, total_cents, balance_due_cents")
       .eq("org_id", resolvedOrgId)
       .eq("project_id", projectId)
       .neq("status", "void"),
     supabase
       .from("vendor_bills")
-      .select("id, commitment_id, bill_number, status, due_date, total_cents, paid_cents, lien_waiver_status, qbo_sync_status, qbo_sync_error")
+      .select("id, commitment_id, bill_number, status, due_date, total_cents, paid_cents, lien_waiver_status")
       .eq("org_id", resolvedOrgId)
       .eq("project_id", projectId),
     supabase
       .from("project_expenses")
-      .select("id, description, status, amount_cents, tax_cents, is_billable, qbo_sync_status")
+      .select("id, description, status, amount_cents, tax_cents, is_billable")
       .eq("org_id", resolvedOrgId)
       .eq("project_id", projectId),
     supabase
@@ -192,6 +193,11 @@ export async function getProjectCloseReadiness(projectId: string, orgId?: string
   }
 
   const issues: CloseReadinessIssue[] = []
+  const [invoiceStates, billStates, expenseStates] = await Promise.all([
+    getAccountingSyncStates(supabase, { orgId: resolvedOrgId, entityType: "invoice", entityIds: (invoicesResult.data ?? []).map((row) => row.id) }),
+    getAccountingSyncStates(supabase, { orgId: resolvedOrgId, entityType: "bill", entityIds: (billsResult.data ?? []).map((row) => row.id) }),
+    getAccountingSyncStates(supabase, { orgId: resolvedOrgId, entityType: "project_expense", entityIds: (expensesResult.data ?? []).map((row) => row.id) }),
+  ])
   const invoices = invoicesResult.data ?? []
 
   for (const invoice of invoices) {
@@ -221,13 +227,13 @@ export async function getProjectCloseReadiness(projectId: string, orgId?: string
       })
     }
 
-    if (invoice.qbo_sync_status === "error" || invoice.qbo_sync_status === "pending") {
+    if (invoiceStates.get(invoice.id)?.status === "error" || invoiceStates.get(invoice.id)?.status === "pending") {
       issues.push({
         id: `invoice-sync-${invoice.id}`,
         category: "financial",
-        severity: invoice.qbo_sync_status === "error" ? "blocker" : "warning",
+        severity: invoiceStates.get(invoice.id)?.status === "error" ? "blocker" : "warning",
         title: `${label} is not settled in QuickBooks`,
-        detail: `QuickBooks sync status is ${invoice.qbo_sync_status}.`,
+        detail: `Accounting sync status is ${invoiceStates.get(invoice.id)?.status}.`,
         href: invoiceHref(invoice.id, projectId),
       })
     }
@@ -315,13 +321,13 @@ export async function getProjectCloseReadiness(projectId: string, orgId?: string
       })
     }
 
-    if (bill.qbo_sync_status === "error" || bill.qbo_sync_status === "needs_review") {
+    if (billStates.get(bill.id)?.status === "error" || billStates.get(bill.id)?.status === "needs_review") {
       issues.push({
         id: `bill-sync-${bill.id}`,
         category: "vendors",
         severity: "warning",
         title: `${label} needs accounting review`,
-        detail: bill.qbo_sync_error || `QuickBooks sync status is ${bill.qbo_sync_status}.`,
+        detail: billStates.get(bill.id)?.error || `Accounting sync status is ${billStates.get(bill.id)?.status}.`,
         href: projectHref(projectId, "/financials/payables"),
       })
     }
@@ -380,13 +386,13 @@ export async function getProjectCloseReadiness(projectId: string, orgId?: string
         href: projectHref(projectId, `/expenses?expense=${expense.id}`),
         amountCents: amount,
       })
-    } else if (status === "approved" && ["error", "needs_review", "pending"].includes(String(expense.qbo_sync_status ?? ""))) {
+    } else if (status === "approved" && ["error", "needs_review", "pending"].includes(String(expenseStates.get(expense.id)?.status ?? ""))) {
       issues.push({
         id: `expense-sync-${expense.id}`,
         category: "financial",
-        severity: expense.qbo_sync_status === "error" ? "blocker" : "warning",
+        severity: expenseStates.get(expense.id)?.status === "error" ? "blocker" : "warning",
         title: expense.description || "Approved expense needs accounting review",
-        detail: `QuickBooks sync status is ${expense.qbo_sync_status}.`,
+        detail: `Accounting sync status is ${expenseStates.get(expense.id)?.status}.`,
         href: projectHref(projectId, `/expenses?expense=${expense.id}`),
         amountCents: amount,
       })

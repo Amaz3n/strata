@@ -3,6 +3,8 @@ import "server-only"
 import { z } from "zod"
 
 import { requireAuth } from "@/lib/auth/context"
+import { getPaymentRailProvider } from "@/lib/integrations/payments/payment-rail-registry"
+import type { PaymentExecutionConfig } from "@/lib/payments/operations-monitor"
 import { recordAudit } from "@/lib/services/audit"
 import { getCurrentPlatformAccess } from "@/lib/services/platform-access"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -24,6 +26,29 @@ export interface PaymentLaunchGateState {
   note: string | null
   attestedBy: string | null
   createdAt: string | null
+}
+
+const PAYOUT_SETTINGS_CACHE_MS = 60 * 60 * 1000
+let payoutSettingsCache: { interval: string; checkedAt: number } | null = null
+
+export async function getPlatformPayoutScheduleState(): Promise<{
+  interval: string
+  ready: boolean
+  error: string | null
+}> {
+  try {
+    if (!payoutSettingsCache || Date.now() - payoutSettingsCache.checkedAt >= PAYOUT_SETTINGS_CACHE_MS) {
+      const settings = await getPaymentRailProvider().retrievePlatformPayoutSettings()
+      payoutSettingsCache = { interval: settings.interval, checkedAt: Date.now() }
+    }
+    return { interval: payoutSettingsCache.interval, ready: payoutSettingsCache.interval === "manual", error: null }
+  } catch (cause) {
+    return {
+      interval: "unavailable",
+      ready: false,
+      error: cause instanceof Error ? cause.message : "Provider payout settings could not be read",
+    }
+  }
 }
 
 export async function requirePaymentLaunchOwner() {
@@ -57,6 +82,42 @@ export async function listPaymentLaunchGateStates(): Promise<PaymentLaunchGateSt
   })
 }
 
+/**
+ * The environment half of launch readiness, as data rather than as a throw.
+ *
+ * `assertPaymentLaunchReady` is the enforcement point and stays a throw. This
+ * exists so the watchdog can *report* the same conditions without triggering
+ * them, which is the difference between an alert and a stack trace.
+ */
+export function readPaymentExecutionConfig(): PaymentExecutionConfig {
+  return {
+    executionEnabled: process.env.FINTECH_PAYMENTS_EXECUTION_ENABLED === "true",
+    reconciliationEnabled: process.env.FINTECH_PAYMENTS_RECONCILIATION_ENABLED === "true",
+    liveModeApproved: process.env.FINTECH_PAYMENTS_LIVE_MODE_APPROVED === "true",
+    mode: process.env.FINTECH_PAYMENTS_MODE ?? null,
+  }
+}
+
+/**
+ * Is any organization actually on the rail?
+ *
+ * The money crons used to assert full launch readiness before checking whether
+ * there was any money to move, so a deployment with the rail switched off
+ * everywhere still failed every five minutes. Nothing about that failure was
+ * true — there was no work, and no builder was affected. Asking this first turns
+ * a no-op tick into a success without weakening anything: the readiness
+ * assertion still runs before a single provider call.
+ */
+export async function hasEnabledPaymentRail(): Promise<boolean> {
+  const supabase = createServiceSupabaseClient()
+  const { count, error } = await supabase
+    .from("payment_rail_policies")
+    .select("org_id", { count: "exact", head: true })
+    .eq("enabled", true)
+  if (error) throw new Error(`Unable to read payment rail policies: ${error.message}`)
+  return (count ?? 0) > 0
+}
+
 export async function assertPaymentLaunchReady() {
   if (process.env.FINTECH_PAYMENTS_EXECUTION_ENABLED !== "true") {
     throw new Error("Electronic payment execution is not enabled in this environment")
@@ -68,6 +129,14 @@ export async function assertPaymentLaunchReady() {
   const incomplete = gates.filter((gate) => gate.decision !== "approved")
   if (incomplete.length > 0) {
     throw new Error(`Electronic payments are awaiting launch approval: ${incomplete.map((gate) => gate.gateKey).join(", ")}`)
+  }
+  const payoutSchedule = await getPlatformPayoutScheduleState()
+  if (!payoutSchedule.ready) {
+    throw new Error(
+      payoutSchedule.error
+        ? `Electronic payments cannot start because the provider payout schedule could not be verified: ${payoutSchedule.error}`
+        : `Electronic payments require the Stripe platform payout schedule to be manual; live interval is ${payoutSchedule.interval}`,
+    )
   }
 }
 

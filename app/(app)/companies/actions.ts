@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache"
 
 import { archiveCompany, createCompany, getCompany, getCompanyProjects, listCompanies, restoreCompany, saveCompanyAccountingVendorLink, updateCompany } from "@/lib/services/companies"
+import { enrollCompanyInCompliance } from "@/lib/services/compliance-documents"
 import { requireOrgContext } from "@/lib/services/context"
 import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 import { getProvider } from "@/lib/integrations/accounting/registry"
@@ -40,6 +41,27 @@ export async function createCompanyAction(input: unknown) {
       const company = await createCompany({ input: parsed })
       revalidatePath("/directory")
       return company
+  })
+}
+
+/**
+ * Put a newly created trade partner on the org's compliance template.
+ *
+ * Separate from `createCompanyAction` on purpose: enrolling needs
+ * `compliance.manage`, which a directory writer may not hold, and a company
+ * that exists but is not being watched is a far better outcome than a create
+ * that fails because the person adding a subcontractor cannot set requirements.
+ * The form reports what happened either way.
+ */
+export async function enrollCompanyInComplianceAction(
+  companyId: string,
+): Promise<ActionResult<{ requirementCount: number; addedCount: number }>> {
+  return run(async () => {
+    const result = await enrollCompanyInCompliance({ companyId })
+    revalidatePath(`/directory/${companyId}/compliance`)
+    revalidatePath(`/directory/${companyId}`)
+    revalidatePath("/directory")
+    return result
   })
 }
 

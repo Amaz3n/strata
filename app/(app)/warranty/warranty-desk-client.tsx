@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { useCallback, useMemo, useState, useTransition } from "react"
 import { AlertTriangle, CalendarClock, PhoneCall, Plus, Trash2 } from "lucide-react"
 import { toast } from "sonner"
@@ -474,7 +475,8 @@ export function WarrantyDeskClient({
           </section>
           <section>
             <h2 className="mb-2 text-sm font-semibold">Warranty cost benchmark</h2>
-            <p className="mb-2 text-xs text-muted-foreground">Includes self-performed technician labor and materials, not only trade recoveries. Industry benchmark is 0.7–1.0% of closed revenue.</p>
+            <Button asChild variant="outline" size="sm"><Link href="/books#warranty-accounting">Review warranty cost accounting</Link></Button>
+            <p className="mb-2 text-xs text-muted-foreground">Approved costs linked to posted expenses, bills and labor, less recoveries. Submitted visit estimates are excluded.</p>
             <div className="overflow-x-auto border border-border">
               <table className="w-full text-sm">
                 <thead className="bg-muted/40 text-left text-xs text-muted-foreground">
@@ -659,7 +661,7 @@ export function WarrantyDeskClient({
 
                   <div className="space-y-2">
                     <Label>Cost basis</Label>
-                    <p className="text-xs text-muted-foreground">Seeded from the internal cost recorded on this request&apos;s visits. Lines must add up to the backcharge total.</p>
+                    <p className="text-xs text-muted-foreground">Seeded from the approved posted costs linked to this request&apos;s visits. Lines must add up to the backcharge total.</p>
                     {costBasis.map((row, index) => (
                       <div key={index} className="flex items-center gap-2">
                         <Input

@@ -39,11 +39,19 @@ export function RemittanceAdviceEmail({
 }: RemittanceAdviceEmailProps) {
   const displayOrgName = orgName ?? "Your customer"
 
+  // A credit is not a payment. Applying one settles an invoice with money the
+  // builder already owed back — a warranty backcharge, an overbilling — and
+  // nothing leaves their account. Telling the vendor "a payment is on its way"
+  // for one guarantees a call when nothing arrives, so it gets its own heading,
+  // its own sentence, and no arrival promise at all.
+  const isCredit = method === "credit"
+
   // An ACH lands in an account and a check has to arrive in the post; promising
   // "a few business days" for a posted check would be the builder's problem the
   // moment it was not true.
-  const arrivalCopy =
-    method === "check"
+  const arrivalCopy = isCredit
+    ? "applied a credit against this invoice. No money was sent — the credit settles the amount below, and any remaining balance is paid separately."
+    : method === "check"
       ? "has sent you a check. Allow normal mail time for it to arrive."
       : "has sent a payment to your bank account. It should appear within a few business days."
 
@@ -55,18 +63,22 @@ export function RemittanceAdviceEmail({
   // Retainage held is named explicitly. A sub who was expecting the full invoice
   // and receives less will otherwise assume a short payment and call about it.
   if (retainageHeldCents > 0) rows.push({ label: "Retainage held", value: `− ${money(retainageHeldCents)}` })
-  rows.push({ label: "Amount paid", value: money(amountPaidCents) })
-  rows.push({ label: "Sent by", value: methodLabel })
+  rows.push({ label: isCredit ? "Credit applied" : "Amount paid", value: money(amountPaidCents) })
+  rows.push({ label: isCredit ? "Settled by" : "Sent by", value: methodLabel })
   if (reference) rows.push({ label: "Reference", value: reference })
 
   return (
     <EmailLayout
-      preview={`Payment sent: ${money(amountPaidCents)}${billNumber ? ` for invoice ${billNumber}` : ""}`}
-      subtitle="Remittance Advice"
+      preview={
+        isCredit
+          ? `Credit applied: ${money(amountPaidCents)}${billNumber ? ` against invoice ${billNumber}` : ""}`
+          : `Payment sent: ${money(amountPaidCents)}${billNumber ? ` for invoice ${billNumber}` : ""}`
+      }
+      subtitle={isCredit ? "Credit Advice" : "Remittance Advice"}
       orgName={orgName}
       orgLogoUrl={orgLogoUrl}
     >
-      <Heading style={heading}>Payment sent</Heading>
+      <Heading style={heading}>{isCredit ? "Credit applied" : "Payment sent"}</Heading>
       <Text style={paragraph}>
         {displayOrgName} {arrivalCopy}
       </Text>

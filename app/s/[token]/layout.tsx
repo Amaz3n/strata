@@ -106,6 +106,7 @@ async function SubPortalLayoutContent({ children, params }: SubPortalLayoutProps
       tokenType="portal"
       claimEmail={claim?.email}
       claimFullName={claim?.fullName}
+      claimPurpose={access.purpose}
     >
       {children}
     </PortalShell>

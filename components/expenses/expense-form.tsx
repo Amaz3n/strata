@@ -28,6 +28,7 @@ type QBOAccountOption = { id: string; name: string; fullyQualifiedName?: string;
 type QBOVendorOption = { id: string; name: string }
 
 interface ExpenseAccountingContext {
+  bookPaymentAccounts?: Array<{ id: string; code: string; name: string; subtype: string }>
   qboConnected: boolean
   accountingProvider?: string | null
   accountingProviderName?: string | null
@@ -224,6 +225,7 @@ function useExpenseFormState() {
   const [tax, setTax] = useState("")
   const [vendor, setVendor] = useState("")
   const [paymentMethod, setPaymentMethod] = useState<CreateMyExpenseInput["paymentMethod"]>(null)
+  const [booksPaymentAccountId, setBooksPaymentAccountId] = useState("")
   const [qboExpenseAccountId, setQboExpenseAccountId] = useState("")
   const [qboPaymentAccountId, setQboPaymentAccountId] = useState("")
   const [qboVendorId, setQboVendorId] = useState("")
@@ -236,6 +238,7 @@ function useExpenseFormState() {
     setTax("")
     setVendor("")
     setPaymentMethod(null)
+    setBooksPaymentAccountId("")
     setQboExpenseAccountId("")
     setQboPaymentAccountId("")
     setQboVendorId("")
@@ -249,6 +252,7 @@ function useExpenseFormState() {
     tax, setTax,
     vendor, setVendor,
     paymentMethod, setPaymentMethod,
+    booksPaymentAccountId, setBooksPaymentAccountId,
     qboExpenseAccountId, setQboExpenseAccountId,
     qboPaymentAccountId, setQboPaymentAccountId,
     qboVendorId, setQboVendorId,
@@ -434,7 +438,7 @@ function AccountingFields({
   context?: ExpenseAccountingContext | null
   form: ReturnType<typeof useExpenseFormState>
 }) {
-  if (!context?.qboConnected) return null
+  if (!context?.qboConnected) return context?.bookPaymentAccounts?.length ? <div className="space-y-2 border p-3"><Label>Paid from</Label><Select value={form.booksPaymentAccountId || "unassigned"} onValueChange={value => { const account = context.bookPaymentAccounts?.find(row => row.id === value); form.setBooksPaymentAccountId(account?.id ?? ""); if (account) form.setPaymentMethod(account.subtype === "credit_card" ? "credit_card" : "cash"); }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="unassigned">Select bank or card account</SelectItem>{context.bookPaymentAccounts.map(account => <SelectItem key={account.id} value={account.id}>{account.code} · {account.name}</SelectItem>)}</SelectContent></Select><p className="text-xs text-muted-foreground">Choose the account that paid this receipt.</p></div> : null
 
   return (
     <div className="space-y-3 rounded-lg border bg-muted/20 p-3">
@@ -745,6 +749,7 @@ function DesktopExpenseSheet({ open, onOpenChange, onSubmit, onExtractReceipt, a
           amountDollars: amountNum,
           taxDollars: Number(form.tax) || 0,
           vendorName: form.vendor.trim() || null,
+          booksPaymentAccountId: form.booksPaymentAccountId || null,
           paymentMethod: paymentMethodFromAccount(paymentAccount, form.paymentMethod),
           qboTransactionType: "purchase",
           qboExpenseAccountId: expenseAccount?.id ?? null,
@@ -922,6 +927,7 @@ function MobileExpenseDrawer({ open, onOpenChange, onSubmit, onExtractReceipt, a
           amountDollars: amountNum,
           taxDollars: Number(form.tax) || 0,
           vendorName: form.vendor.trim() || null,
+          booksPaymentAccountId: form.booksPaymentAccountId || null,
           paymentMethod: paymentMethodFromAccount(paymentAccount, form.paymentMethod),
           qboTransactionType: "purchase",
           qboExpenseAccountId: expenseAccount?.id ?? null,

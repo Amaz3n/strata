@@ -325,7 +325,7 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     titleField: 'application_number',
     subtitleFields: ['status', 'period_end', 'current_payment_due_cents'],
     searchableFields: ['status'],
-    hrefTemplate: '/projects/{project_id}/financials/billing?tab=payapps',
+    hrefTemplate: '/projects/{project_id}/financials/billing?payapp={id}',
     joins: ['LEFT JOIN projects p ON pa.project_id = p.id'],
   },
   invoice: {
@@ -355,7 +355,7 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     titleField: 'id',
     subtitleFields: ['status', 'payment_count', 'total_debit_cents'],
     searchableFields: ['status', 'currency', 'idempotency_key'],
-    hrefTemplate: '/payables?run={id}',
+    hrefTemplate: '/payables/payment-runs/{id}',
   },
   budget: {
     table: 'budgets',

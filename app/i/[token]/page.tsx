@@ -3,7 +3,7 @@ import { notFound } from "next/navigation"
 import { headers } from "next/headers"
 
 import { getInvoiceByToken, recordInvoiceViewed } from "@/lib/services/invoices"
-import { calculatePaymentFeeQuotes, loadPaymentFeePolicy } from "@/lib/payments/fee-engine"
+import { calculatePaymentFeeQuotes, loadPaymentFeePolicy, restrictPaymentFeePolicyToInvoice } from "@/lib/payments/fee-engine"
 import { listReceiptsForInvoice } from "@/lib/services/receipts"
 import { listPublicInvoiceLienWaivers } from "@/lib/services/invoice-lien-waivers"
 import { InvoicePublicWithPay } from "@/components/invoices/invoice-public-with-pay"
@@ -64,7 +64,7 @@ export default async function InvoicePublicPage({ params }: Params) {
       paymentProps = {
         publishableKey,
         token,
-        feeQuotes: calculatePaymentFeeQuotes(balanceDue, policy),
+        feeQuotes: calculatePaymentFeeQuotes(balanceDue, restrictPaymentFeePolicyToInvoice(policy, invoice.metadata)),
       }
     } catch (err) {
       // Gracefully degrade: show read-only invoice if payments not configured or no balance.

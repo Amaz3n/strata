@@ -8,31 +8,17 @@ import {
   requireAnyPermission,
   requirePermission,
 } from "@/lib/services/permissions"
+import {
+  hydrateApproverRoster,
+  loadApproverRosterRows,
+  loadUserSummaries,
+  type PaymentRunApprover,
+} from "@/lib/services/payment-approver-roster"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import {
   setPaymentRunApproversSchema,
   type SetPaymentRunApproversInput,
 } from "@/lib/validation/fintech-payments"
-
-export interface PaymentRunApprover {
-  userId: string
-  name: string
-  email: string | null
-  /** Personal ceiling on the run debit total this approver may decide. */
-  approvalLimitCents: number | null
-  /**
-   * Division this approver is restricted to, or null for org-wide. A ceiling
-   * alone cannot express "approves anything in Westside" — it would have handed
-   * that person authority over every division at the same amount.
-   */
-  divisionId: string | null
-  /**
-   * False when the person is still on the roster but no longer holds
-   * `payment.approve_run` — the roster names people, roles grant the power, and
-   * the UI has to be able to say when the two have drifted apart.
-   */
-  permitted: boolean
-}
 
 export interface PaymentApprovalRouting {
   /** True when the org has named specific approvers rather than any permitted user. */
@@ -45,79 +31,10 @@ export interface PaymentApprovalRouting {
   viewerUserId: string
 }
 
-async function loadUserSummaries(userIds: string[]) {
-  if (userIds.length === 0)
-    return new Map<string, { name: string; email: string | null }>()
-  const supabase = createServiceSupabaseClient()
-  const { data, error } = await supabase
-    .from("app_users")
-    .select("id,full_name,email")
-    .in("id", userIds)
-  if (error)
-    throw new Error(`Unable to load approver profiles: ${error.message}`)
-  return new Map(
-    (data ?? []).map((row) => [
-      row.id as string,
-      {
-        name:
-          (row.full_name as string | null) ??
-          (row.email as string | null) ??
-          "Unknown user",
-        email: (row.email as string | null) ?? null,
-      },
-    ]),
-  )
-}
-
-async function loadRoster(orgId: string) {
-  const supabase = createServiceSupabaseClient()
-  const { data, error } = await supabase
-    .from("payment_run_approvers")
-    .select("user_id,approval_limit_cents,division_id,sort_order")
-    .eq("org_id", orgId)
-    .order("sort_order", { ascending: true })
-    .order("created_at", { ascending: true })
-  if (error)
-    throw new Error(`Unable to load payment approvers: ${error.message}`)
-  return data ?? []
-}
-
-async function hydrateRoster(
-  orgId: string,
-  rows: Array<{
-    user_id: string
-    approval_limit_cents: number | string | null
-    division_id?: string | null
-  }>,
-) {
-  const userIds = rows.map((row) => row.user_id)
-  const [summaries, permissionSets] = await Promise.all([
-    loadUserSummaries(userIds),
-    Promise.all(userIds.map((userId) => getUserPermissions(userId, orgId))),
-  ])
-  return rows.map((row, index) => {
-    const summary = summaries.get(row.user_id)
-    const permissions = permissionSets[index] ?? []
-    return {
-      userId: row.user_id,
-      name: summary?.name ?? "Unknown user",
-      email: summary?.email ?? null,
-      approvalLimitCents:
-        row.approval_limit_cents == null
-          ? null
-          : Number(row.approval_limit_cents),
-      divisionId: row.division_id ?? null,
-      permitted:
-        permissions.includes("*") ||
-        permissions.includes("payment.approve_run"),
-    }
-  })
-}
-
 /**
  * Who this org has designated to approve payment runs, and whether the viewer is
- * one of them. An empty roster means the org never narrowed approval beyond the
- * `payment.approve_run` permission, which stays the fallback.
+ * one of them. An empty roster is deliberately not approvable: a money-release
+ * workflow must name the people who can satisfy it before a run is submitted.
  */
 export async function getPaymentApprovalRouting(
   orgId?: string,
@@ -125,20 +42,20 @@ export async function getPaymentApprovalRouting(
   const context = await requireOrgContext(orgId)
   await requireAnyPermission(["payment.release", "payment.approve_run", "payment.manage_rail"], context)
   const [rows, viewerPermissions] = await Promise.all([
-    loadRoster(context.orgId),
+    loadApproverRosterRows(context.orgId),
     getUserPermissions(context.userId, context.orgId),
   ])
   const viewerHasPermission =
     viewerPermissions.includes("*") ||
     viewerPermissions.includes("payment.approve_run")
-  const approvers = await hydrateRoster(context.orgId, rows)
+  const approvers = await hydrateApproverRoster(context.orgId, rows)
   return {
     rosterConfigured: approvers.length > 0,
     approvers,
     viewerMayApprove:
       viewerHasPermission &&
-      (approvers.length === 0 ||
-        approvers.some((approver) => approver.userId === context.userId)),
+      approvers.length > 0 &&
+      approvers.some((approver) => approver.userId === context.userId),
     viewerUserId: context.userId,
   }
 }
@@ -183,8 +100,8 @@ export async function listPaymentApproverCandidates(
 }
 
 /**
- * Replace the designated-approver roster. Saving an empty roster is allowed and
- * means "anyone with the permission" — the same fallback new orgs start on. The
+ * Replace the designated-approver roster. Saving an empty roster is allowed so
+ * settings can be staged, but payment-run submission remains disabled. The
  * submitted array order is the routing order and is persisted as `sort_order`.
  */
 export async function setPaymentRunApprovers(
@@ -215,7 +132,7 @@ export async function setPaymentRunApprovers(
     }
   }
 
-  const before = await loadRoster(context.orgId)
+  const before = await loadApproverRosterRows(context.orgId)
   const { error: deleteError } = await supabase
     .from("payment_run_approvers")
     .delete()
@@ -263,7 +180,7 @@ export async function setPaymentRunApprovers(
     }),
   ])
 
-  return hydrateRoster(
+  return hydrateApproverRoster(
     context.orgId,
     parsed.approvers.map((approver) => ({
       user_id: approver.user_id,
@@ -290,7 +207,7 @@ export async function assertUserMayApproveRun({
   /** Divisions the run's bills sit in. A run spanning divisions needs org-wide authority. */
   divisionIds?: string[]
 }): Promise<void> {
-  const rows = await loadRoster(orgId)
+  const rows = await loadApproverRosterRows(orgId)
   if (rows.length === 0) return
   const entries = rows.filter((row) => row.user_id === userId)
   if (entries.length === 0)

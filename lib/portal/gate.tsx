@@ -1,8 +1,9 @@
 import type { ReactNode } from "react"
 
 import { PortalAccountGate } from "@/components/portal/account/portal-account-gate"
+import { PortalInvitationExpired } from "@/components/portal/portal-invitation-expired"
 import { PortalPinGate } from "@/components/portal/portal-pin-gate"
-import { isPortalPinVerified, validatePortalToken } from "@/lib/services/portal-access"
+import { describeUnusablePortalToken, isPortalPinVerified, validatePortalToken } from "@/lib/services/portal-access"
 import {
   ensureExternalPortalAccessForToken,
   getExternalPortalGateContext,
@@ -67,6 +68,19 @@ export async function resolvePortalGate({
 }: PortalGateOptions): Promise<PortalGateResult> {
   const access = await validatePortalToken(token)
   if (!access) {
+    // A payout invitation is the one link Arc mails with a deliberate 30-day
+    // fuse, so its most common failure is the vendor arriving late — and the
+    // portal's usual answer to an unusable token, `notFound()`, told them Arc
+    // was broken instead of that they need a fresh email. Deliberately narrow
+    // to payout invitations: confirming a guessed project link exists is a
+    // disclosure, and every other portal keeps failing silently.
+    const unusable = await describeUnusablePortalToken(token)
+    if (unusable?.purpose === "vendor_payout") {
+      return {
+        status: "blocked",
+        element: <PortalInvitationExpired reason={unusable.reason} orgName={unusable.orgName ?? "the builder"} />,
+      }
+    }
     return { status: "invalid" }
   }
 
@@ -115,6 +129,7 @@ export async function resolvePortalGate({
             suggestedFullName={context?.suggestedFullName ?? ""}
             emailLocked={context?.emailLocked}
             hasExistingAccount={claimed}
+            purpose={access.purpose}
           />
         ),
       }

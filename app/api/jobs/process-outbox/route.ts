@@ -1,3 +1,4 @@
+import { finishPayApplicationCertification } from "@/lib/services/pay-applications"
 import { NextRequest, NextResponse } from "next/server"
 
 import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
@@ -39,6 +40,7 @@ import { runDrawingsPipeline } from "@/lib/services/drawings-pipeline"
 import { downloadFilesObject, uploadFilesObject } from "@/lib/storage/files-storage"
 import { reindexEntity, removeFromIndex } from "@/lib/services/search-index"
 import { processInboundBillEmail } from "@/lib/services/payables-email-ingest"
+import { processPayableIntake } from "@/lib/services/payable-intake"
 import { processQuickCaptureDraft } from "@/lib/services/quick-capture"
 import { enrichPhotoFromSource, processPhotoCaption } from "@/lib/services/photo-intelligence"
 import { classifyProjectEmail, processInboundProjectEmail } from "@/lib/services/project-email-ingest"
@@ -46,8 +48,8 @@ import { extractCoiFacts } from "@/lib/services/ap-document-verification"
 import { sendVendorBillWaiverChase } from "@/lib/services/payment-holds"
 import { FLOORPLAN_INTERPRET_JOB, runFloorplanInterpretation } from "@/lib/services/floorplan-models"
 import { propagateApprovalToLedger } from "@/lib/services/cost-plus"
-import { enqueueVendorBillSync } from "@/lib/services/accounting-sync"
-import { INVOICE_ISSUANCE_JOB_TYPE, runInvoiceIssuance } from "@/lib/services/invoices"
+import { enqueueVendorBillSync, recordPayableAccountingEnqueueResult } from "@/lib/services/accounting-sync"
+import { INVOICE_ISSUANCE_JOB_TYPE, SCHEDULED_INVOICE_SEND_JOB_TYPE, runInvoiceIssuance, runScheduledInvoiceSend } from "@/lib/services/invoices"
 import { floorplanTargetSchema } from "@/lib/validation/floorplan"
 import type { SearchEntityType } from "@/lib/services/search-config"
 
@@ -122,6 +124,7 @@ const LEASE_SECONDS = 900
  * is drained by the five-minute payment-release tick, not this hourly one.
  */
 const OUTBOX_JOB_TYPES = [
+  "finish_pay_application_certification",
   "deliver_notification",
   "deliver_push",
   "send_daily_log_mention_email",
@@ -138,6 +141,7 @@ const OUTBOX_JOB_TYPES = [
   "warranty_enroll_coverage",
   "reanchor_takeoff_markups",
   "process_quick_capture",
+  "process_payable_intake",
   "caption_photo",
   "process_inbound_project_email",
   "classify_project_email",
@@ -145,6 +149,7 @@ const OUTBOX_JOB_TYPES = [
   "extract_coi_facts",
   "project_vendor_bill_approval",
   INVOICE_ISSUANCE_JOB_TYPE,
+  SCHEDULED_INVOICE_SEND_JOB_TYPE,
   FLOORPLAN_INTERPRET_JOB,
 ]
 
@@ -518,7 +523,9 @@ async function processOutboxQueue(request: NextRequest) {
 
   for (const job of jobs as any[]) {
     try {
-      if (job.job_type === "deliver_notification") {
+      if (job.job_type === "finish_pay_application_certification") {
+        await finishPayApplicationCertification(job.org_id, job.payload)
+      } else if (job.job_type === "deliver_notification") {
         await deliverNotificationJob(supabase, job)
       } else if (job.job_type === "deliver_push") {
         await deliverPushJob(supabase, job)
@@ -556,6 +563,10 @@ async function processOutboxQueue(request: NextRequest) {
         const revisionId = typeof job.payload?.revision_id === "string" ? job.payload.revision_id : null
         if (!revisionId) throw new Error("Reanchor job is missing revision_id")
         await reanchorRevisionMeasurements(revisionId, job.org_id, supabase)
+      } else if (job.job_type === "process_payable_intake") {
+        const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
+        if (!billId) throw new Error("Invoice intake is missing bill_id")
+        await processPayableIntake(billId, job.org_id)
       } else if (job.job_type === "process_quick_capture") {
         const draftId = typeof job.payload?.draft_id === "string" ? job.payload.draft_id : null
         if (!draftId) throw new Error("Quick-capture job is missing draft_id")
@@ -581,7 +592,10 @@ async function processOutboxQueue(request: NextRequest) {
       } else if (job.job_type === "chase_vendor_bill_waiver") {
         const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
         if (!billId) throw new Error("Waiver chase is missing bill_id")
-        await sendVendorBillWaiverChase(job.org_id, billId)
+        await sendVendorBillWaiverChase(job.org_id, billId, {
+          kind: job.payload?.waiver_kind === "unconditional" ? "unconditional" : "signature",
+          attempt: typeof job.payload?.attempt === "number" ? job.payload.attempt : 1,
+        })
       } else if (job.job_type === "extract_coi_facts") {
         const fileId = typeof job.payload?.file_id === "string" ? job.payload.file_id : null
         if (!fileId) throw new Error("Certificate-of-insurance extraction is missing file_id")
@@ -590,11 +604,20 @@ async function processOutboxQueue(request: NextRequest) {
         await extractCoiFacts(fileId, job.org_id)
       } else if (job.job_type === INVOICE_ISSUANCE_JOB_TYPE) {
         await runInvoiceIssuance(job.org_id, job.payload ?? {})
+      } else if (job.job_type === SCHEDULED_INVOICE_SEND_JOB_TYPE) {
+        await runScheduledInvoiceSend(job.org_id, job.payload ?? {})
       } else if (job.job_type === "project_vendor_bill_approval") {
         const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
         if (!billId) throw new Error("Vendor-bill approval projection is missing bill_id")
         await propagateApprovalToLedger({ source: "vendor_bill", sourceId: billId, orgId: job.org_id })
-        await enqueueVendorBillSync(billId, job.org_id)
+        const syncResult = await enqueueVendorBillSync(billId, job.org_id)
+        await recordPayableAccountingEnqueueResult({
+          orgId: job.org_id,
+          billId,
+          entityType: "vendor_bill",
+          entityId: billId,
+          result: syncResult,
+        })
       } else if (job.job_type === FLOORPLAN_INTERPRET_JOB) {
         const target = floorplanTargetSchema.safeParse(job.payload?.target)
         if (!target.success) throw new Error("Floorplan interpretation has no valid target")
@@ -1035,6 +1058,18 @@ async function processESignExecutionSideEffectsJob(supabase: ReturnType<typeof c
 
   if (error || !document) {
     throw new Error(`Document not found (${error?.message ?? "missing"})`)
+  }
+
+  if (document.metadata?.payable_waiver_request_id) {
+    if (!envelopeId) throw new Error("Missing trade waiver signing envelope")
+    const { completePayableWaiverFromSigning } = await import("@/lib/services/payable-waivers")
+    await completePayableWaiverFromSigning({supabase, orgId, documentId, envelopeId, executedFileId})
+  }
+
+  if (document.metadata?.invoice_lien_waiver_id) {
+    if (!envelopeId) throw new Error("Missing waiver signing envelope")
+    const { completeInvoiceWaiverFromSigning } = await import("@/lib/services/invoice-waiver-signing")
+    await completeInvoiceWaiverFromSigning({supabase, orgId, documentId, envelopeId, executedFileId})
   }
 
   const proposalId =

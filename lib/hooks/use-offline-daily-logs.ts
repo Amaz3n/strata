@@ -1,38 +1,46 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { get, set, del, keys } from "idb-keyval"
 import { toast } from "sonner"
+import { syncOfflineDailyLog } from "@/lib/daily-logs/offline-sync"
 import type { DailyLogInput } from "@/lib/validation/daily-logs"
 import type { FileCategory } from "@/app/(app)/projects/[id]/actions"
 
 export interface PendingOfflineLog {
   id: string
   projectId: string
+  userId?: string
   logInput: DailyLogInput
   files: File[]
   fileContext?: {
     category?: FileCategory
     tags?: string[]
   }
+  createdLogId?: string
+  uploadedFileIndexes?: number[]
   timestamp: number
 }
 
 const OFFLINE_KEY_PREFIX = "offline-daily-log-"
 
-export function useOfflineDailyLogs(projectId: string) {
+export function useOfflineDailyLogs(projectId: string, userId?: string) {
+  const namespace = userId ? `${OFFLINE_KEY_PREFIX}${userId}:${projectId}:` : null
   const [pendingLogs, setPendingLogs] = useState<PendingOfflineLog[]>([])
   const [isOnline, setIsOnline] = useState(true)
   const [isSyncing, setIsSyncing] = useState(false)
 
+  const syncLock = useRef(false)
+
   // Load pending logs from IndexedDB
   const loadPendingLogs = useCallback(async () => {
+    if (!namespace) { setPendingLogs([]); return }
     try {
       const allKeys = await keys()
-      const logKeys = allKeys.filter((k) => typeof k === "string" && k.startsWith(OFFLINE_KEY_PREFIX))
+      const logKeys = allKeys.filter((k) => typeof k === "string" && k.startsWith(namespace))
       
       const loadedLogs: PendingOfflineLog[] = []
       for (const key of logKeys) {
         const log = await get<PendingOfflineLog>(key)
-        if (log && log.projectId === projectId) {
+        if (log && log.projectId === projectId && log.userId === userId) {
           loadedLogs.push(log)
         }
       }
@@ -43,7 +51,7 @@ export function useOfflineDailyLogs(projectId: string) {
     } catch (error) {
       console.error("Failed to load offline logs:", error)
     }
-  }, [projectId])
+  }, [projectId, userId, namespace])
 
   // Initial load & Network event listeners
   useEffect(() => {
@@ -69,10 +77,12 @@ export function useOfflineDailyLogs(projectId: string) {
     fileContext?: { category?: FileCategory; tags?: string[] }
   ) => {
     try {
-      const id = `${OFFLINE_KEY_PREFIX}${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
+      if (!namespace || !userId) throw new Error("Sign in before saving an offline log")
+      const id = `${namespace}${logInput.submission_id ?? crypto.randomUUID()}`
       const pendingLog: PendingOfflineLog = {
         id,
         projectId,
+        userId,
         logInput,
         files,
         fileContext,
@@ -80,11 +90,11 @@ export function useOfflineDailyLogs(projectId: string) {
       }
       
       await set(id, pendingLog)
-      setPendingLogs((prev) => [...prev, pendingLog])
+      setPendingLogs((prev) => [...prev.filter((log) => log.id !== id), pendingLog])
       toast.success("Saved offline. Will sync when connected.")
     } catch (error) {
       console.error("Failed to save log offline:", error)
-      toast.error("Failed to save offline.")
+      throw new Error("Could not save this draft on your device. Your draft is still here.", { cause: error })
     }
   }
 
@@ -94,14 +104,17 @@ export function useOfflineDailyLogs(projectId: string) {
       setPendingLogs((prev) => prev.filter((log) => log.id !== id))
     } catch (error) {
       console.error("Failed to remove offline log:", error)
+      throw error
     }
   }
 
   const syncPendingLogs = async (
-    onCreateLog: (values: DailyLogInput) => Promise<any>,
-    onUploadFiles: (files: File[], context?: any) => Promise<void>
+    onCreateLog: (values: DailyLogInput) => Promise<{ id: string }>,
+    onUploadFiles: (files: File[], context?: { dailyLogId?: string; category?: FileCategory; tags?: string[] }) => Promise<void>
   ) => {
-    if (!isOnline || pendingLogs.length === 0 || isSyncing) return
+    if (!isOnline || pendingLogs.length === 0 || syncLock.current) return
+
+    syncLock.current = true
 
     setIsSyncing(true)
     let successCount = 0
@@ -111,28 +124,14 @@ export function useOfflineDailyLogs(projectId: string) {
 
     for (const pending of logsToSync) {
       try {
-        let createdLogId: string | undefined
-
-        // 1. Create Log if we have content
-        const hasLogContent = Boolean(
-          pending.logInput.summary?.trim() ||
-          pending.logInput.weather ||
-          (pending.logInput.entries && pending.logInput.entries.length > 0)
-        )
-
-        if (hasLogContent || pending.files.length > 0) {
-          const createdLog = await onCreateLog(pending.logInput)
-          createdLogId = createdLog?.id
-        }
-
-        // 2. Upload Files if we have any
-        if (pending.files.length > 0) {
-          await onUploadFiles(pending.files, {
-            dailyLogId: createdLogId,
-            category: pending.fileContext?.category ?? "photos",
-            tags: pending.fileContext?.tags,
-          })
-        }
+        await syncOfflineDailyLog(pending, {
+          createLog: onCreateLog,
+          uploadFiles: onUploadFiles,
+          persist: async (updated) => {
+            await set(updated.id, updated)
+            setPendingLogs((previous) => previous.map((log) => log.id === updated.id ? { ...updated } : log))
+          },
+        })
 
         // 3. Remove from IDB after successful sync
         await removeOfflineLog(pending.id)
@@ -144,21 +143,13 @@ export function useOfflineDailyLogs(projectId: string) {
       }
     }
 
+    syncLock.current = false
     setIsSyncing(false)
     
     if (successCount > 0) {
       toast.success(`Synced ${successCount} offline log${successCount > 1 ? 's' : ''}`)
     }
   }
-
-  // Optionally Auto-sync when coming online
-  useEffect(() => {
-    if (isOnline && pendingLogs.length > 0 && !isSyncing) {
-       // We can't auto-sync here directly unless we pass onCreateLog and onUploadFiles into the hook
-       // It's better to let the UI component handle the sync call, but we can trigger a generic event 
-       // or just let the UI handle it via an effect observing `isOnline` and `pendingLogs.length`
-    }
-  }, [isOnline, pendingLogs.length, isSyncing])
 
   return {
     pendingLogs,

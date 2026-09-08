@@ -965,6 +965,16 @@ export function BudgetTab({
         </div>
       ) : null}
 
+      {(budgetData?.breakdown ?? []).some((row) => row.forecast_below_obligations) ? (
+        <div className="flex items-center gap-3 border-b border-warning/30 bg-warning/5 px-4 py-2.5 sm:px-6">
+          <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
+          <div className="text-sm">
+            The remaining-cost forecast is below known obligations on {(budgetData?.breakdown ?? []).filter((row) => row.forecast_below_obligations).length} budget lines.
+            Review the remaining cost against unpaid commitments and pending costs before relying on projected margin.
+          </div>
+        </div>
+      ) : null}
+
       {activeAlerts.length > 0 ? (
         <div className="flex items-center gap-3 border-b border-warning/30 bg-warning/5 px-4 py-2.5 sm:px-6">
           <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />

@@ -210,3 +210,9 @@ test("the approval queue is capped and scoped to what the caller can decide", ()
   assert.match(source, /creation_state\.neq\.draft/)
   assert.match(source, /source\.neq\.vendor_credit/)
 })
+
+test("mobile payment-run bills expose the same disbursement stage as the desk", () => {
+  const source = readSource("lib/mobile/payment-runs.ts")
+  assert.match(source, /stage: string/)
+  assert.match(source, /stage: item\.stage/)
+})

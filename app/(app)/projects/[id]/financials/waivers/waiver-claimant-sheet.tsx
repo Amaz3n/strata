@@ -4,6 +4,7 @@ import { type CSSProperties, useEffect } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
+import { WAIVER_KINDS, WAIVER_KIND_LABELS } from "@/lib/lien-waivers/coverage"
 
 import type { CommitmentSummary } from "@/lib/services/commitments"
 import { formatLocalDate } from "@/lib/utils"
@@ -43,7 +44,7 @@ const claimantSchema = z.object({
     .min(2, "Enter the supplier or sub-subcontractor name")
     .max(200),
   amount_dollars: z.coerce.number().min(0, "Amount can't be negative"),
-  waiver_type: z.enum(["conditional", "unconditional", "final"]),
+  waiver_type: z.enum(WAIVER_KINDS),
 })
 
 export type ClaimantFormValues = z.infer<typeof claimantSchema>
@@ -52,7 +53,7 @@ const DEFAULTS: ClaimantFormValues = {
   commitment_id: "",
   claimant_company_name: "",
   amount_dollars: 0,
-  waiver_type: "conditional",
+  waiver_type: "conditional_progress",
 }
 
 interface WaiverClaimantSheetProps {
@@ -94,7 +95,12 @@ export function WaiverClaimantSheet({
         side="right"
         mobileFullscreen
         className="sm:max-w-lg sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 fast-sheet-animation"
-        style={{ animationDuration: "150ms", transitionDuration: "150ms" } as CSSProperties}
+        style={
+          {
+            animationDuration: "150ms",
+            transitionDuration: "150ms",
+          } as CSSProperties
+        }
       >
         <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/30">
           <SheetTitle className="flex items-center gap-2">
@@ -102,13 +108,17 @@ export function WaiverClaimantSheet({
             Add sub-tier claimant
           </SheetTitle>
           <SheetDescription className="text-sm text-muted-foreground">
-            Require a supplier or sub-subcontractor waiver for the pay period ending{" "}
-            {formatLocalDate(periodEnd, "MMM d, yyyy")}. The first-tier sub is emailed to collect it.
+            Require a supplier or sub-subcontractor waiver for the pay period
+            ending {formatLocalDate(periodEnd, "MMM d, yyyy")}. The first-tier
+            sub is emailed to collect it.
           </SheetDescription>
         </SheetHeader>
 
         <Form {...form}>
-          <form className="flex-1 flex flex-col overflow-hidden" onSubmit={handleSubmit}>
+          <form
+            className="flex-1 flex flex-col overflow-hidden"
+            onSubmit={handleSubmit}
+          >
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
               <FormField
                 control={form.control}
@@ -145,7 +155,10 @@ export function WaiverClaimantSheet({
                   <FormItem>
                     <FormLabel>Claimant</FormLabel>
                     <FormControl>
-                      <Input placeholder="Supplier or sub-subcontractor" {...field} />
+                      <Input
+                        placeholder="Supplier or sub-subcontractor"
+                        {...field}
+                      />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -184,16 +197,21 @@ export function WaiverClaimantSheet({
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Waiver type</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value}>
+                      <Select
+                        onValueChange={field.onChange}
+                        value={field.value}
+                      >
                         <FormControl>
                           <SelectTrigger className="w-full">
                             <SelectValue />
                           </SelectTrigger>
                         </FormControl>
                         <SelectContent>
-                          <SelectItem value="conditional">Conditional</SelectItem>
-                          <SelectItem value="unconditional">Unconditional</SelectItem>
-                          <SelectItem value="final">Final</SelectItem>
+                          {WAIVER_KINDS.map((kind) => (
+                            <SelectItem key={kind} value={kind}>
+                              {WAIVER_KIND_LABELS[kind]}
+                            </SelectItem>
+                          ))}
                         </SelectContent>
                       </Select>
                       <FormMessage />

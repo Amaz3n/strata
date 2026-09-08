@@ -5,7 +5,7 @@ import {
   getProvider,
   isAccountingProviderKey,
 } from "@/lib/integrations/accounting/registry";
-import { requireAuthorization } from "@/lib/services/authorization";
+import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access";
 import { recordAudit } from "@/lib/services/audit";
 import { requireOrgContext } from "@/lib/services/context";
 import { recordEvent } from "@/lib/services/events";

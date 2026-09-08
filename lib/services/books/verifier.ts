@@ -79,17 +79,17 @@ async function loadGlJobCostCents(orgId: string, asOf: string) {
       service
         .from("journal_lines")
         .select(
-          "debit_cents, credit_cents, entry:journal_entries!inner(status, entry_date), account:gl_accounts!inner(account_type)",
+          "debit_cents, credit_cents, dimensions, entry:journal_entries!inner(status, entry_date), account:gl_accounts!inner(account_type,code)",
         )
         .eq("org_id", orgId)
-        .eq("entry.status", "posted")
+        .in("entry.status", ["posted", "reversed"])
         .lte("entry.entry_date", asOf)
-        .eq("account.account_type", "cogs")
+        .or("account_type.eq.cogs,code.in.(1160,1170)", { referencedTable: "account" })
         .not("project_id", "is", null)
         .range(from, to),
     "GL job cost lines",
   );
-  return rows.reduce(
+  return rows.filter(row => !(row.dimensions && typeof row.dimensions === "object" && Reflect.get(row.dimensions, "warranty_reserve_adjustment") === true)).reduce(
     (sum, row) =>
       sum + Number(row.debit_cents ?? 0) - Number(row.credit_cents ?? 0),
     0,
@@ -309,7 +309,7 @@ async function loadOperationalRegisterBalances(orgId: string, asOf: string) {
       (from, to) =>
         service
           .from("books_fixed_assets")
-          .select("id,status,disposed_on,acquisition_cost_cents")
+          .select("id,status,disposed_on,acquisition_cost_cents,opening_accumulated_depreciation_cents,opening_as_of")
           .eq("org_id", orgId)
           .lte("placed_in_service_on", asOf)
           .range(from, to),
@@ -361,7 +361,7 @@ async function loadOperationalRegisterBalances(orgId: string, asOf: string) {
             (asset.status !== "disposed" || String(asset.disposed_on) > asOf),
         ),
       )
-      .reduce((sum, event) => sum + Number(event.amount_cents ?? 0), 0),
+      .reduce((sum, event) => sum + Number(event.amount_cents ?? 0), assets.filter((asset) => (!asset.opening_as_of || asset.opening_as_of <= asOf) && (asset.status !== "disposed" || String(asset.disposed_on) > asOf)).reduce((sum, asset) => sum + Number(asset.opening_accumulated_depreciation_cents ?? 0), 0)),
   };
 }
 

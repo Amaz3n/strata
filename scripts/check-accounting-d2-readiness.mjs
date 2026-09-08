@@ -68,6 +68,7 @@ function tableFromCall(node) {
 }
 
 const findings = []
+const releaseFindings = []
 let exactTokenLines = 0
 for (const sourceRoot of sourceRoots) {
   for (const absolutePath of walk(path.join(root, sourceRoot))) {
@@ -83,12 +84,36 @@ for (const sourceRoot of sourceRoots) {
       absolutePath.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
     )
 
+    // Resolve constant projections, including template literals and concatenated
+    // DTO select strings: query-only text misses those runtime dependencies.
+    const constants = new Map()
+    const collectConstants = node => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) constants.set(node.name.text, node.initializer)
+      ts.forEachChild(node, collectConstants)
+    }
+    collectConstants(sourceFile)
+    const constantText = (node, seen = new Set()) => {
+      if (!node) return ""
+      if (ts.isStringLiteralLike(node)) return node.text
+      if (ts.isIdentifier(node) && constants.has(node.text) && !seen.has(node.text)) return constantText(constants.get(node.text), new Set([...seen, node.text]))
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) return constantText(node.left, seen) + constantText(node.right, seen)
+      if (ts.isTemplateExpression(node)) return node.head.text + node.templateSpans.map(span => constantText(span.expression, seen) + span.literal.text).join("")
+      return ""
+    }
     const visit = (node) => {
       const table = tableFromCall(node)
       if (table) {
         const query = enclosingQuery(node)
         const queryText = query.getText(sourceFile)
         const columns = dropSet[table].filter((column) => new RegExp(`\\b${column}\\b`).test(queryText))
+        const projections = []
+        const findSelects = candidate => {
+          if (ts.isCallExpression(candidate) && ts.isPropertyAccessExpression(candidate.expression) && ["select", "or", "order", "eq", "neq"].includes(candidate.expression.name.text)) projections.push(constantText(candidate.arguments[0]))
+          ts.forEachChild(candidate, findSelects)
+        }
+        findSelects(query)
+        const resolvedColumns = dropSet[table].filter(column => projections.some(projection => new RegExp(`\\b${column}\\b(?!:)`).test(projection)))
+        if (resolvedColumns.length) releaseFindings.push({ file: relativePath, line: sourceFile.getLineAndCharacterOfPosition(query.getStart(sourceFile)).line + 1, table, columns: resolvedColumns })
         if (columns.length > 0) {
           const line = sourceFile.getLineAndCharacterOfPosition(query.getStart(sourceFile)).line + 1
           findings.push({ file: relativePath, line, table, columns: columns.sort() })
@@ -111,7 +136,25 @@ const counts = Object.fromEntries(
 )
 
 if (process.argv.includes("--json")) {
-  process.stdout.write(`${JSON.stringify({ exactTokenLines, directDependencyStatements: findings.length, counts }, null, 2)}\n`)
+  process.stdout.write(`${JSON.stringify({ exactTokenLines, directDependencyStatements: findings.length, counts, releaseFindings }, null, 2)}\n`)
+  process.exit(0)
+}
+
+if (process.argv.includes("--release")) {
+  const runtime = [...findings, ...releaseFindings]
+  // Dynamic fingerprint projections must be neutral even though .from(config.table)
+  // cannot be resolved to a literal table by the census above.
+  const fingerprints = fs.readFileSync(path.join(root, "lib/integrations/accounting/local-change.ts"), "utf8")
+  const staleFingerprints = /columns:\s*\[[^\]]*\bqbo_/.test(fingerprints) || /row\[legacyColumn\]/.test(fingerprints)
+  const identity = fs.readFileSync(path.join(root, "lib/services/accounting-sync-state.ts"), "utf8")
+  const staleIdentity = /input\.legacyExternalId|if \(invoice\.qbo_id\)/.test(identity)
+  if (runtime.length || staleFingerprints || staleIdentity) {
+    console.error("D2 release blocked: runtime consumers still require dropped business columns.")
+    for (const finding of runtime) console.error(`${finding.file}:${finding.line} ${finding.table}: ${finding.columns.join(",")}`)
+    if (staleFingerprints || staleIdentity) console.error("Dynamic fingerprint or identity helper still reads legacy values")
+    process.exit(1)
+  }
+  console.log("D2 release source gate passed: zero runtime drop-set consumers. Isolated dropped-schema and persisted acceptance gates remain required.")
   process.exit(0)
 }
 

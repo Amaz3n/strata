@@ -13,6 +13,8 @@ import { requireAuthorization } from "@/lib/services/authorization"
 import { getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
 import {
   changeOrderCostTotal,
+  changeOrderBudgetCostCents,
+  changeOrderOwnerPriceCents,
   deriveOwnerUnitPriceCents,
 } from "@/lib/financials/change-order-math"
 import { applyApprovedChangeOrderToSov } from "@/lib/services/prime-sov"
@@ -95,7 +97,7 @@ function normalizeLines(lines: ChangeOrderLineInput[]): ChangeOrderLine[] {
 }
 
 function calculateLineBudgetRevisionCents(line: ChangeOrderLine) {
-  return Math.round((line.quantity ?? 1) * (line.unit_cost_cents ?? 0) + (line.allowance_cents ?? 0))
+  return changeOrderBudgetCostCents(line)
 }
 
 function escapeEmailHtml(value: string): string {
@@ -173,7 +175,7 @@ function buildApprovedChangeOrderFinancialMetadata(changeOrder: ChangeOrder, act
   const budgetDistributions = lines.map((line, index) => {
     const budgetRevisionCents = calculateLineBudgetRevisionCents(line)
     const gmpImpact = normalizeGmpImpact(line.gmp_impact)
-    const gmpDeltaCents = calculateGmpDeltaCents(budgetRevisionCents, gmpImpact)
+    const gmpDeltaCents = calculateGmpDeltaCents(changeOrderOwnerPriceCents(line), gmpImpact)
     return {
       cost_code_id: line.cost_code_id,
       budget_line_id: line.budget_line_id,
@@ -653,7 +655,7 @@ export async function createChangeOrder({ input, orgId }: { input: ChangeOrderIn
     commitment_change_order_id: line.commitment_change_order_id ?? null,
     gmp_classification: line.gmp_classification ?? "inside_gmp",
     gmp_impact: line.gmp_impact ?? "none",
-    gmp_delta_cents: calculateGmpDeltaCents(calculateLineBudgetRevisionCents(line), normalizeGmpImpact(line.gmp_impact)),
+    gmp_delta_cents: calculateGmpDeltaCents(changeOrderOwnerPriceCents(line), normalizeGmpImpact(line.gmp_impact)),
     sort_order: idx,
     metadata: {
       allowance_cents: line.allowance_cents ?? 0,
@@ -663,7 +665,7 @@ export async function createChangeOrder({ input, orgId }: { input: ChangeOrderIn
       taxable: line.taxable ?? true,
       gmp_classification: line.gmp_classification ?? "inside_gmp",
       gmp_impact: line.gmp_impact ?? "none",
-      gmp_delta_cents: calculateGmpDeltaCents(calculateLineBudgetRevisionCents(line), normalizeGmpImpact(line.gmp_impact)),
+      gmp_delta_cents: calculateGmpDeltaCents(changeOrderOwnerPriceCents(line), normalizeGmpImpact(line.gmp_impact)),
     },
   }))
 
@@ -2393,7 +2395,7 @@ export async function updateChangeOrder({
     commitment_change_order_id: line.commitment_change_order_id ?? null,
     gmp_classification: line.gmp_classification ?? "inside_gmp",
     gmp_impact: line.gmp_impact ?? "none",
-    gmp_delta_cents: calculateGmpDeltaCents(calculateLineBudgetRevisionCents(line), normalizeGmpImpact(line.gmp_impact)),
+    gmp_delta_cents: calculateGmpDeltaCents(changeOrderOwnerPriceCents(line), normalizeGmpImpact(line.gmp_impact)),
     sort_order: idx,
     metadata: {
       allowance_cents: line.allowance_cents ?? 0,
@@ -2403,7 +2405,7 @@ export async function updateChangeOrder({
       taxable: line.taxable ?? true,
       gmp_classification: line.gmp_classification ?? "inside_gmp",
       gmp_impact: line.gmp_impact ?? "none",
-      gmp_delta_cents: calculateGmpDeltaCents(calculateLineBudgetRevisionCents(line), normalizeGmpImpact(line.gmp_impact)),
+      gmp_delta_cents: calculateGmpDeltaCents(changeOrderOwnerPriceCents(line), normalizeGmpImpact(line.gmp_impact)),
     },
   }))
 

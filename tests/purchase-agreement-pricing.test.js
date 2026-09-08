@@ -4,6 +4,7 @@ const assert = require("node:assert/strict")
 const test = require("node:test")
 const {
   buildClosingInvoiceLines,
+  buildSettlementStatementLines,
   buildPurchaseAgreementSettlement,
   closingInvoiceLinesTotalCents,
   composePurchaseAgreementPricing,
@@ -194,4 +195,62 @@ test("incentive eligibility enforces window, usage limit, and approval", () => {
   assert.equal(evaluateIncentiveEligibility({ ...base, requiresApproval: true, approvedAt: "2026-05-01T00:00:00.000Z" }, "2026-06-01").eligible, true)
   // An unmetered incentive is never exhausted.
   assert.equal(evaluateIncentiveEligibility({ ...base, maxUses: null }, "2026-06-01", 900).eligible, true)
+})
+
+test("settlement statement groups the sale and reconciles final price to the balance due", () => {
+  const pricing = composePurchaseAgreementPricing({
+    basePriceCents: 41_200_00,
+    lotPremiumCents: 0,
+    structuralOptions: [{ label: "Lanai", priceCents: 850_00, source: "plan_community" }],
+    designSelections: [{ label: "Flooring", priceCents: 2_300_00, source: "plan" }],
+    incentives: [
+      { incentiveId: "fixed", name: "July credit", incentiveType: "fixed_amount", appliesTo: "price", amountCents: 500_00 },
+    ],
+  })
+  const statement = buildSettlementStatementLines({
+    pricing,
+    lotLabel: "12",
+    planLabel: "Willow",
+    approvedChangeOrders: [
+      { id: "co-1", number: 1, title: "Extended lanai", totalCents: 700_00 },
+      { id: "co-2", number: 2, title: "Cancelled scope", totalCents: 0 },
+    ],
+    adjustments: [{ id: "adj-1", label: "Lender assistance", kind: "seller_credit", amountCents: -1_000_00 }],
+    deposits: [
+      { invoiceId: "i1", paymentId: "p1", label: "Earnest deposit", amountCents: 750_00, receivedAt: "2026-05-01T00:00:00.000Z" },
+      { invoiceId: "i2", paymentId: "p2", label: "Additional deposit", amountCents: 250_00 },
+    ],
+  })
+
+  // A zero lot premium and a zero change order never print on a statement the buyer signs.
+  assert.deepEqual(
+    statement.purchasePrice.map((line) => line.description),
+    ["Base price — Willow, Lot 12", "Structural option — Lanai", "Design selection — Flooring", "Incentive — July credit"],
+  )
+  assert.equal(statement.purchasePrice[3].amountCents, -500_00)
+  assert.deepEqual(statement.changeOrders.map((line) => line.description), ["Change order 1 — Extended lanai"])
+  assert.deepEqual(statement.adjustments.map((line) => line.amountCents), [-1_000_00])
+
+  const summed = [...statement.purchasePrice, ...statement.changeOrders, ...statement.adjustments]
+    .reduce((total, line) => total + line.amountCents, 0)
+  assert.equal(statement.finalPriceCents, summed)
+  assert.equal(statement.finalPriceCents, pricing.totalCents + 700_00 - 1_000_00)
+  assert.equal(statement.depositsAppliedCents, 1_000_00)
+  assert.equal(statement.balanceDueCents, statement.finalPriceCents - statement.depositsAppliedCents)
+  assert.equal(statement.deposits[1].receivedAt, null)
+
+  // The closing invoice bills exactly the three groups, in that order.
+  assert.deepEqual(
+    buildClosingInvoiceLines({
+      pricing,
+      lotLabel: "12",
+      planLabel: "Willow",
+      approvedChangeOrders: [
+        { id: "co-1", number: 1, title: "Extended lanai", totalCents: 700_00 },
+        { id: "co-2", number: 2, title: "Cancelled scope", totalCents: 0 },
+      ],
+      adjustments: [{ id: "adj-1", label: "Lender assistance", kind: "seller_credit", amountCents: -1_000_00 }],
+    }),
+    [...statement.purchasePrice, ...statement.changeOrders, ...statement.adjustments],
+  )
 })

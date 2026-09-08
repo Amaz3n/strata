@@ -44,6 +44,7 @@ const PAYMENT_ALERT_LABELS: Record<string, string> = {
   payment_submission_needs_recovery: "Submission needs recovery",
   vendor_transfer_needs_attention: "Vendor transfer stuck",
   payment_operations_alert: "Operations alert",
+  accounting_sync_needs_review: "Accounting sync needs review",
   vendor_payout_destination_changed: "Payout bank changed",
 }
 
@@ -421,16 +422,16 @@ export function OpsClient({
         </div>
 
         {/*
-          Payment operations. These events were emitted for a human — a
+          Payment and accounting operations. These events were emitted for a human — a
           submission that needs recovery, a vendor transfer stuck at the
           provider, a tripped loss ceiling — and had no surface reading them.
           Read-only: each row deep-links to the payable it concerns where it can.
         */}
-        <SectionHeading>Payment operations</SectionHeading>
+        <SectionHeading>Payment &amp; accounting operations</SectionHeading>
         <div className="border-y">
           {paymentAlerts.length === 0 ? (
             <p className="px-4 py-6 text-center text-sm text-muted-foreground">
-              No payment alerts in the last two weeks.
+              No payment or accounting alerts in the last two weeks.
             </p>
           ) : (
             <Table>
@@ -456,7 +457,7 @@ export function OpsClient({
                           bill {alert.billId.slice(0, 8)}
                         </Link>
                       ) : alert.runId ? (
-                        <Link href={`/payables?run=${alert.runId}`} className="underline underline-offset-2 hover:text-foreground">
+                        <Link href={`/payables/payment-runs/${alert.runId}`} className="underline underline-offset-2 hover:text-foreground">
                           run {alert.runId.slice(0, 8)}
                         </Link>
                       ) : alert.disbursementId ? (

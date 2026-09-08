@@ -39,26 +39,43 @@ function relativeDays(days: number): string {
 
 export function complianceRowSignal(item: ComplianceRequirementStatus): ComplianceRowSignal {
   const { state, document, days_until_expiry: days, deficiency, requirement } = item;
+  const renewal = item.pending_replacement;
 
   switch (state) {
     case "met":
-      // Deliberately silent. The dot is the whole report.
-      return {
-        dotClassName: "bg-success",
-        note: null,
-        noteClassName: "",
-        srLabel: "On file",
-      };
+      // Deliberately silent — unless a renewal is sitting in the queue behind a
+      // certificate that is still good, which is the one thing a satisfied row
+      // has to say. Reviewing it is real work, and nothing else reports it.
+      return renewal
+        ? {
+            dotClassName: "bg-success",
+            note: "Renewal waiting on your review",
+            noteClassName: "text-primary",
+            srLabel: "On file, renewal waiting on review",
+          }
+        : {
+            dotClassName: "bg-success",
+            note: null,
+            noteClassName: "",
+            srLabel: "On file",
+          };
 
     case "expiring":
-      return {
-        dotClassName: "bg-warning",
-        note: document?.expiry_date
-          ? `Expires ${formatDay(document.expiry_date)}${days !== null ? ` · ${relativeDays(days)}` : ""}`
-          : "Expiring soon",
-        noteClassName: "text-warning",
-        srLabel: "Expiring soon",
-      };
+      return renewal
+        ? {
+            dotClassName: "bg-primary",
+            note: "Renewal waiting on your review",
+            noteClassName: "text-primary",
+            srLabel: "Expiring soon, renewal waiting on review",
+          }
+        : {
+            dotClassName: "bg-warning",
+            note: document?.expiry_date
+              ? `Expires ${formatDay(document.expiry_date)}${days !== null ? ` · ${relativeDays(days)}` : ""}`
+              : "Expiring soon",
+            noteClassName: "text-warning",
+            srLabel: "Expiring soon",
+          };
 
     case "expired":
       return {
@@ -152,13 +169,14 @@ export function complianceHeadline(summary: {
   missing: number;
   expired: number;
   deficient: number;
-  pending: number;
+  /** Documents waiting on a decision, renewals behind a current one included. */
+  awaitingReview: number;
   expiring: number;
 }): { label: string; className: string } {
   if (!summary.isCompliant) {
     return { label: "Not compliant", className: "border-destructive/40 text-destructive" };
   }
-  if (summary.pending > 0) {
+  if (summary.awaitingReview > 0) {
     return { label: "Awaiting review", className: "border-primary/30 text-primary" };
   }
   if (summary.expiring > 0) {

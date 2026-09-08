@@ -6,6 +6,8 @@ const path = require("node:path")
 const test = require("node:test")
 
 const { accountingPushBlockReason, selectAccountingMap } = require("../lib/services/accounting-rules")
+const { accountingPushTypeForLedgerType } = require("../lib/services/accounting-enqueue")
+const { indexLatestBillPaymentSyncByBillId } = require("../lib/services/accounting-sync-state")
 
 test("accounting target precedence and same-connection dimension inheritance are deterministic", () => {
   const selected = selectAccountingMap([
@@ -29,8 +31,8 @@ test("accounting target resolution supports community, division, default, and un
   assert.equal(selectAccountingMap([{ id: "community", connection_id: "a", scope: "community", dimensions: {} }, { id: "division", connection_id: "a", scope: "division", dimensions: {} }]).winner.id, "community")
 })
 
-test("accounting push orchestration silently skips unconnected and inbound-only records", () => {
-  assert.equal(accountingPushBlockReason({ hasTarget: false, healthy: false, enabled: true }), "unconnected")
+test("accounting push orchestration durably identifies unmapped and inbound-only records", () => {
+  assert.equal(accountingPushBlockReason({ hasTarget: false, healthy: false, enabled: true }), "no_target")
   assert.equal(accountingPushBlockReason({ hasTarget: true, healthy: true, pushable: false, enabled: true }), "inbound_only")
   assert.equal(accountingPushBlockReason({ hasTarget: true, healthy: true, enabled: false }), "disabled")
 })
@@ -39,6 +41,48 @@ test("accounting push orchestration refuses unhealthy or re-homed transactions",
   assert.equal(accountingPushBlockReason({ hasTarget: true, healthy: false, enabled: true }), "connection_unhealthy")
   assert.equal(accountingPushBlockReason({ hasTarget: true, healthy: true, existingConnectionId: "a", targetConnectionId: "b", enabled: true }), "connection_mismatch")
   assert.equal(accountingPushBlockReason({ hasTarget: true, healthy: true, existingConnectionId: "a", targetConnectionId: "a", enabled: true }), null)
+})
+
+test("Phase G reconnect replay maps every supported ledger row back to its push operation", () => {
+  assert.equal(accountingPushTypeForLedgerType("bill"), "vendor_bill")
+  assert.equal(accountingPushTypeForLedgerType("vendor_credit"), "vendor_bill")
+  assert.equal(accountingPushTypeForLedgerType("bill_payment"), "bill_payment")
+  assert.equal(accountingPushTypeForLedgerType("project_expense"), "project_expense")
+  assert.equal(accountingPushTypeForLedgerType("period_summary"), null)
+})
+
+test("Phase G bill-payment badges are indexed by the bill's latest payment without borrowing bill state", () => {
+  const paymentA = { status: "synced", externalId: "qbo-payment-a" }
+  const paymentB = { status: "needs_review", externalId: null }
+  assert.deepEqual(
+    indexLatestBillPaymentSyncByBillId(
+      { "bill-a": "payment-a", "bill-b": "payment-b", "bill-c": "payment-missing" },
+      { "payment-a": paymentA, "payment-b": paymentB },
+    ),
+    { "bill-a": paymentA, "bill-b": paymentB },
+  )
+})
+
+test("Phase G accounting queue and AP callers use the durable sync ledger contract", () => {
+  const queue = fs.readFileSync(path.join(__dirname, "../app/(app)/integrations/accounting-sync-actions.ts"), "utf8")
+  const watchdog = fs.readFileSync(path.join(__dirname, "../lib/services/ops-watchdog.ts"), "utf8")
+  const migration = fs.readFileSync(path.join(__dirname, "../supabase/migrations/20260903113609_phase_g_accounting_sync_truthfulness.sql"), "utf8")
+  const apCallers = [
+    "vendor-bills.ts",
+    "payment-provider-events.ts",
+    "invoice-auto-approval.ts",
+    "po-completions.ts",
+  ].map((name) => fs.readFileSync(path.join(__dirname, "../lib/services", name), "utf8"))
+  apCallers.push(fs.readFileSync(path.join(__dirname, "../app/api/jobs/process-outbox/route.ts"), "utf8"))
+
+  const queueBody = queue.slice(queue.indexOf("export async function listAccountingSyncQueueAction"), queue.indexOf("export async function syncAccountingItemAction"))
+  assert.match(queueBody, /from\("accounting_sync_records"\)/)
+  assert.doesNotMatch(queueBody, /qbo_sync_status/)
+  assert.match(migration, /enqueue_accounting_sync_atomic/)
+  assert.match(migration, /where status = 'pending' and dedupe_key is not null/)
+  assert.match(watchdog, /ACCOUNTING_PENDING_STALE_HOURS = 6/)
+  assert.match(watchdog, /accounting_sync_needs_review/)
+  for (const caller of apCallers) assert.match(caller, /recordPayableAccountingEnqueueResult/)
 })
 
 test("counterparty links are scoped per accounting connection", () => {
@@ -140,11 +184,11 @@ test("the pending D2 finalizer archives legacy values and never overwrites neutr
 
   assert.match(finalizer, /accounting_d2_legacy_archive/)
   assert.match(finalizer, /enable row level security/)
-  assert.match(finalizer, /revoke all .* from public, anon, authenticated/)
-  assert.match(finalizer, /coalesce\(e\.accounting_coding->'expense_account'/)
-  assert.match(finalizer, /coalesce\(b\.accounting_coding->'expense_account'/)
-  assert.match(finalizer, /Patagonia active QBO realm identity changed/)
-  assert.match(finalizer, /non-null legacy\/neutral expense-account conflicts require disposition/)
+  assert.match(finalizer, /revoke all .* from public,\s*anon,\s*authenticated/)
+  assert.match(finalizer, /accounting_d2_fill_missing_coding/)
+  assert.match(finalizer, /accounting_d2_parity_snapshot/)
+  assert.match(finalizer, /expected Patagonia connection identity changed/)
+  assert.match(finalizer, /global identity, counterparty, account, or dimension parity requires review/)
   assert.doesNotMatch(finalizer, /drop\s+(?:table|column|view)/i)
   assert.doesNotMatch(finalizer, /\bcascade\b/i)
 })
@@ -417,13 +461,13 @@ test("the both-sides conflict predicate is false immediately after a sync write"
   assert.equal(arcChangedSinceSync({ storedFingerprint: stamped, currentFingerprint: null }), false)
 
   // Every compared field is covered, for each fingerprinted entity type.
-  const bill = { total_cents: 500_00, bill_date: "2026-01-05", due_date: "2026-02-05", qbo_vendor_id: "42", qbo_expense_account_id: "7" }
+  const bill = { total_cents: 500_00, bill_date: "2026-01-05", due_date: "2026-02-05", accounting_coding: { counterparty: { id: "42" }, expense_account: { id: "7" } } }
   for (const [field, next] of [
     ["total_cents", 600_00],
     ["bill_date", "2026-01-06"],
     ["due_date", "2026-02-06"],
-    ["qbo_vendor_id", "43"],
-    ["qbo_expense_account_id", "8"],
+    ["accounting_coding", { counterparty: { id: "43" }, expense_account: { id: "7" } }],
+    ["accounting_coding", { counterparty: { id: "42" }, expense_account: { id: "8" } }],
   ]) {
     assert.notEqual(
       computeLocalFingerprint("bill", bill),
@@ -465,15 +509,18 @@ test("a failed or held sync never overwrites a recorded external id", () => {
   assert.match(source, /\.insert\(\{[^}]*external_id: ""/s)
   assert.match(source, /markAccountingSyncStatus/)
 
-  // The update branch touches status/error/timestamp only.
-  const updateBranch = source.match(/\.update\(\{ status: input\.status[^}]*\}\)/s)
-  assert.ok(updateBranch, "the existing-row branch must be an update, not an upsert")
-  assert.doesNotMatch(updateBranch[0], /external_id/)
+  // The existing-row branch touches status/error/attempt only.
+  const updateBranch = source.slice(
+    source.indexOf("if (existing?.id)"),
+    source.indexOf("const { error: insertError }", source.indexOf("if (existing?.id)")),
+  )
+  assert.match(updateBranch, /\.update\(/, "the existing-row branch must be an update, not an upsert")
+  assert.doesNotMatch(updateBranch, /external_id/)
 
-  // Both public entry points, and the freeze path that calls one of them.
+  // Both public entry points, and the freeze path through the atomic intent RPC.
   assert.match(source, /export async function markAccountingSyncNeedsReview[\s\S]{0,400}markAccountingSyncStatus/)
   assert.match(source, /export async function markAccountingSyncError[\s\S]{0,400}markAccountingSyncStatus/)
-  assert.match(source, /cutover_freeze_run_id[\s\S]{0,400}markAccountingSyncNeedsReview/)
+  assert.match(source, /cutover_freeze_run_id[\s\S]{0,400}blockedReason: "cutover_freeze"/)
 
   // The adapter's own status writers were already existence-checked; keep them so.
   assert.doesNotMatch(codeOnly("../lib/integrations/accounting/qbo/adapter.ts"), /upsert\([^)]*external_id: ""/s)
@@ -568,7 +615,7 @@ test("a payment create that lost its response is adopted, not posted twice", () 
     assert.equal(adopted, "9001")
     assert.equal(calls[0].entity, "Payment")
     assert.equal(calls[0].marker, "[arc:payment:pay-1]")
-    assert.match(calls[0].opts.sinceDate, /^\d{4}-\d{2}-\d{2}$/)
+    assert.equal(calls[0].opts, undefined, "recovery cannot exclude backdated transactions")
 
     // Nothing there means nothing to adopt; the create proceeds.
     assert.equal(
@@ -581,15 +628,15 @@ test("a payment create that lost its response is adopted, not posted twice", () 
       null,
     )
 
-    // A failed lookup degrades to the old behaviour; it never invents an id.
-    assert.equal(
-      await findAlreadyCreatedQBOTransaction({
+    // An uncertain remote lookup must not authorize another financial create.
+    await assert.rejects(
+      findAlreadyCreatedQBOTransaction({
         client: { async findTransactionByPrivateNote() { throw new Error("timeout") } },
         entity: "Payment",
         entityType: "payment",
         entityId: "pay-3",
       }),
-      null,
+      /timeout/,
     )
   })()
 })
@@ -607,7 +654,7 @@ test("both money-moving creates stamp the marker and look before they create", (
   // A re-posted period summary doubles a whole month, so the mirror journal
   // carries the marker and adopts as well.
   assert.match(adapter, /withArcTransactionMarker\(`\$\{input\.memo\} \[\$\{input\.reference\}\]`, "period_summary", input\.reference\)/)
-  assert.equal((adapter.match(/findAlreadyCreatedQBOTransaction\(\{/g) ?? []).length, 4)
+  for (const entityType of ["project_expense", "vendor_bill", "journal_entry"]) assert.match(adapter, new RegExp(`findAlreadyCreatedQBOTransaction\\(\\{[^\\n]*entityType: "${entityType}"`))
   // The lookup is only paid for on a retry: a sync record with no external id.
   assert.match(adapter, /paymentRetryAfterUnknownOutcome = existingPaymentSync != null/)
   assert.match(adapter, /billPaymentRetryAfterUnknownOutcome = existingSync != null/)
@@ -644,7 +691,8 @@ test("permanent QuickBooks failures become reviewable work instead of retries", 
   // A deleted QuickBooks bill payment cannot be re-synced either, so its
   // conflict says what the person is choosing between.
   const reconcile = fs.readFileSync(path.join(__dirname, "../lib/integrations/accounting/qbo/reconcile.ts"), "utf8")
-  assert.match(reconcile, /Syncing cannot resolve this/)
+  assert.match(reconcile, /reviewed|Review/)
+  assert.match(reconcile, /conflict/)
 })
 
 test("nothing on the neutral seam pins itself to one provider", () => {
@@ -672,8 +720,8 @@ test("an imported multi-invoice payment is consumable by the fact spine", () => 
 
   // One `payments` row per allocated invoice, keyed so a re-import adopts the
   // rows it made last time instead of duplicating the cash.
-  assert.equal(qboImportProviderPaymentId({ kind: "payment", qboId: "1258", split: false, lineId: "payment" }), "qbo_payment_1258")
-  assert.equal(qboImportProviderPaymentId({ kind: "payment", qboId: "1258", split: true, lineId: "201" }), "qbo_payment_1258_201")
+  assert.equal(qboImportProviderPaymentId({ connectionId: "realm-a", kind: "payment", qboId: "1258", split: false, lineId: "payment" }), "qbo_payment_realm-a_1258")
+  assert.equal(qboImportProviderPaymentId({ connectionId: "realm-a", kind: "payment", qboId: "1258", split: true, lineId: "201" }), "qbo_payment_realm-a_1258_201")
 
   const source = codeOnly("../lib/integrations/accounting/qbo/import.ts")
 
@@ -687,8 +735,8 @@ test("an imported multi-invoice payment is consumable by the fact spine", () => 
 
   // Idempotent: only the unclassified shape is converted, and its allocations go
   // with it so `invoice_paid_cents` cannot count the same money twice.
-  assert.match(source, /if \(!consolidated\?\.id \|\| consolidated\.invoice_id \|\| consolidated\.bill_id\) return/)
-  assert.match(source, /from\("payment_allocations"\)\s*\.delete\(\)/)
+  assert.match(source, /existing consolidated payment requires a reviewed domain correction/)
+  assert.doesNotMatch(source, /from\("payment_allocations"\)\s*\.delete\(\)/)
 })
 
 test("an imported bill and its imported payments reach the ledger together", () => {
@@ -724,7 +772,8 @@ test("the job-cost subledger has one writer, and it voids rather than deletes", 
       /from\("job_cost_entries"\)[\s\S]{0,80}\.delete\(\)/,
       `${relative} deletes job_cost_entries directly`,
     )
-    assert.match(source, /voidJobCostEntriesForVendorBill/, `${relative} must route through the subledger service`)
+    if (relative.includes("vendor-bills")) assert.match(source, /voidJobCostEntriesForVendorBill/, `${relative} must route through the subledger service`)
+    else assert.match(source, /postJobCostActualsForVendorBill/, "imports post through the subledger service")
   }
 })
 
@@ -771,7 +820,7 @@ test("the reclaim sweep charges an attempt and dead-letters an event that keeps 
   // increment a poison event cycled processing→retry forever at the head of the
   // oldest-first drain, occupying a batch slot on every run.
   assert.match(source, /const MAX_EVENT_ATTEMPTS = \d+/)
-  assert.match(source, /\.eq\("process_status", "processing"\)\s*\n\s*\.lt\("next_attempt_at", nowIso\)/)
+  assert.match(source, /\.eq\("process_status", "processing"\)[\s\S]*?\.lt\("next_attempt_at", nowIso\)/)
   assert.match(source, /const attempts = \(strandedRow\.attempts \?\? 0\) \+ 1/)
   assert.match(source, /const exhausted = attempts >= MAX_EVENT_ATTEMPTS/)
   assert.match(source, /process_status: exhausted \? "error" : "retry"/)
@@ -795,19 +844,11 @@ test("resolving webhook events after an import is scoped to the entity that was 
   assert.match(source, /\.in\("process_status", \["ignored", "pending", "error"\]\)/)
 })
 
-test("a deferred accounting push is re-scheduled past the create lease, never completed", () => {
+test("deferred accounting work keeps its delivery budget and requeues", () => {
   const source = fs.readFileSync(path.join(__dirname, "../app/api/accounting/process-outbox/route.ts"), "utf8")
-
-  // Another attempt holds the 15-minute create claim. Marking the job completed
-  // would lose the push forever.
-  assert.match(source, /if \(result\.deferred\) \{/)
-  assert.match(source, /const deferRetry = \(job\.retry_count \?\? 0\) \+ 1/)
-  assert.match(source, /const giveUp = deferRetry >= MAX_RETRIES/)
-  assert.match(source, /status: giveUp \? "failed" : "pending"/)
-  // Re-run after the lease has had time to free, not immediately.
-  assert.match(source, /run_at: new Date\(Date\.now\(\) \+ 20 \* 60 \* 1000\)\.toISOString\(\)/)
-  // The deferred branch must return before the completion write below it.
-  assert.match(source, /continue\s*\n\s*\}\s*\n\s*await supabase\.from\("outbox"\)\.update\(\{ status: "completed" \}\)/)
-  // A claim that never frees still exhausts the retry budget and surfaces.
-  assert.match(source, /markAccountingPushExhausted\(\{/)
+  const branch = source.slice(source.indexOf("if (result.deferred)"), source.indexOf("processed++", source.indexOf("if (result.deferred)")))
+  assert.match(branch, /retry_count: job\.retry_count \?\? 0/)
+  assert.match(branch, /status: "pending"/)
+  assert.match(branch, /continue/)
+  assert.doesNotMatch(branch, /giveUp|deferRetry/)
 })

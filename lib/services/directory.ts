@@ -388,3 +388,88 @@ export async function listComplianceWatchCompanies(
   const total = count ?? companies.length
   return { companies, total, truncated: total > companies.length }
 }
+
+/** Who to write to on behalf of a company, and what that address actually is. */
+export interface CompanyRecipient {
+  email: string
+  name: string | null
+  /** Null when the address is the company's own rather than a person's. */
+  contactId: string | null
+  kind: "company" | "contact"
+}
+
+/**
+ * The one answer to "who do we email about this vendor".
+ *
+ * Four callers each had their own version of this — the compliance autopilot,
+ * the decision notice, the document request, and the prequalification invite —
+ * and every one of them found people by `contacts.primary_company_id`. That
+ * column is one of the two disagreeing sources `20260819215644_directory_hygiene`
+ * was written to reconcile; `contact_company_links` is the linkage. A contact
+ * attached from the company side was therefore invisible to all four, which
+ * surfaced to the builder as "No email on file" for a vendor whose contact is
+ * sitting right there on the Contacts tab.
+ *
+ * The company's own address wins when it has one — it is the address the builder
+ * chose to record for correspondence — and otherwise the primary linked contact,
+ * then the earliest linked contact.
+ *
+ * Takes a client because the autopilot runs unattended with no org context.
+ */
+export async function resolveCompanyRecipients(
+  supabase: SupabaseClient,
+  orgId: string,
+  companyIds: string[],
+): Promise<Map<string, CompanyRecipient>> {
+  const result = new Map<string, CompanyRecipient>()
+  const uniqueIds = Array.from(new Set(companyIds.filter(Boolean)))
+  if (uniqueIds.length === 0) return result
+
+  const [companiesResult, linksResult] = await Promise.all([
+    supabase.from("companies").select("id, name, email").eq("org_id", orgId).in("id", uniqueIds),
+    supabase
+      .from("contact_company_links")
+      .select("company_id, is_primary, created_at, contacts (id, full_name, email)")
+      .eq("org_id", orgId)
+      .in("company_id", uniqueIds)
+      .order("is_primary", { ascending: false })
+      .order("created_at", { ascending: true }),
+  ])
+
+  for (const company of companiesResult.data ?? []) {
+    const email = typeof company.email === "string" ? company.email.trim() : ""
+    if (!email) continue
+    result.set(String(company.id), {
+      email,
+      name: company.name ?? null,
+      contactId: null,
+      kind: "company",
+    })
+  }
+
+  for (const link of linksResult.data ?? []) {
+    const companyId = String(link.company_id)
+    if (result.has(companyId)) continue
+    const contact = Array.isArray(link.contacts) ? link.contacts[0] : link.contacts
+    const email = typeof contact?.email === "string" ? contact.email.trim() : ""
+    if (!email) continue
+    result.set(companyId, {
+      email,
+      name: contact?.full_name ?? null,
+      contactId: contact?.id ? String(contact.id) : null,
+      kind: "contact",
+    })
+  }
+
+  return result
+}
+
+/** One company's recipient, for the callers that only ever ask about one. */
+export async function resolveCompanyRecipient(
+  supabase: SupabaseClient,
+  orgId: string,
+  companyId: string,
+): Promise<CompanyRecipient | null> {
+  const map = await resolveCompanyRecipients(supabase, orgId, [companyId])
+  return map.get(companyId) ?? null
+}

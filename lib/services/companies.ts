@@ -789,11 +789,11 @@ export async function createCompany({ input, orgId }: { input: CompanyInput; org
     status: "active",
   })
 
-  // Org default requirements are deliberately NOT copied onto a new vendor.
-  // `resolveEffectiveRequirements` applies them at read time as the base layer,
-  // and a copy would sit in the vendor-override layer above it — so raising the
-  // org's coverage floor later would silently skip every vendor created before
-  // the change, each one frozen at the policy of the day they were added.
+  // Compliance enrollment is NOT part of creating a company. It needs
+  // `compliance.manage`, which whoever adds a vendor may not hold, and a
+  // material supplier should never inherit an insurance chase. The create form
+  // offers it as a separate, permission-checked step for trade partners —
+  // `enrollCompanyInCompliance`.
 
   if (parsed.qbo_vendor_id) {
     await saveCompanyAccountingVendorLink({

@@ -4,6 +4,7 @@ import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 
 import { SuccessCheck } from "@/components/portal/success-check"
+import { vendorPaymentStage, type VendorPaymentStageLabel } from "@/lib/payments/disbursement-stage"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -36,7 +37,31 @@ const METHOD_LABELS: Record<string, string> = {
   wire: "Wire",
   card: "Card",
   cash: "Cash",
+  // A credit is not a way of sending money, it is the absence of one. Falling
+  // through to the raw key printed "credit" beside an amount the vendor was
+  // never sent.
+  credit: "Credit applied",
   other: "Other",
+}
+
+/**
+ * State colour for one payment stage. Returned money is the one thing on this
+ * page a vendor has to act on, so it is the one thing that is not grey.
+ */
+const STAGE_TONE: Record<VendorPaymentStageLabel, string> = {
+  Submitted: "text-muted-foreground",
+  "Builder debited": "text-muted-foreground",
+  "In transit": "text-foreground",
+  "Paid to your bank": "text-success",
+  Paid: "text-success",
+  "Credit applied": "text-muted-foreground",
+  Returned: "text-destructive",
+  Failed: "text-destructive",
+  Canceled: "text-muted-foreground",
+}
+
+function StageCell({ label }: { label: VendorPaymentStageLabel }) {
+  return <span className={`whitespace-nowrap text-xs font-medium ${STAGE_TONE[label]}`}>{label}</span>
 }
 
 const ROLE_LABELS: Record<VendorEntityMember["role"], string> = {
@@ -65,6 +90,13 @@ export function VendorPaymentSetup({
     : null
   const recipient = linkedEntity?.recipient ?? null
   const isReady = recipient?.status === "ready" && recipient.payoutsEnabled
+  /**
+   * Stripe has everything and is deciding. Offering "Continue verification"
+   * here reopened a hosted form with no fields left to fill in, which reads as
+   * a broken flow and generated the "I did this already" support calls. The
+   * button comes back the moment Stripe asks for something.
+   */
+  const underReview = recipient?.status === "pending_review" && recipient.requirementsCurrentlyDue.length === 0
   const otherBuilders = context.relationships.filter((candidate) => candidate.orgId !== builder.orgId)
   /**
    * A payout account this vendor already verified with another builder. It
@@ -273,6 +305,15 @@ export function VendorPaymentSetup({
               </button>
             </div>
           </>
+        ) : linkedEntity && underReview ? (
+          <>
+            <h2 className="text-base font-semibold">Submitted — Stripe is reviewing</h2>
+            <p className="mt-1 max-w-prose text-sm text-muted-foreground">
+              {linkedEntity.legalName} is with Stripe for review. It usually takes a few minutes and sometimes up to a
+              day. There is nothing for you to do — we will email you, and {builder.orgName} sees the same status. If
+              Stripe needs anything else, a Continue button appears here.
+            </p>
+          </>
         ) : linkedEntity ? (
           <>
             <h2 className="text-base font-semibold">Finish verifying {linkedEntity.legalName}</h2>
@@ -442,6 +483,7 @@ export function VendorPaymentSetup({
                     <th className="px-3 py-2 font-medium">Sent</th>
                     <th className="px-3 py-2 font-medium">Builder</th>
                     <th className="px-3 py-2 font-medium">Invoice</th>
+                    <th className="px-3 py-2 font-medium">Stage</th>
                     <th className="px-3 py-2 font-medium">Expected</th>
                     <th className="px-3 py-2 text-right font-medium">Amount</th>
                   </tr>
@@ -452,6 +494,9 @@ export function VendorPaymentSetup({
                       <td className="whitespace-nowrap px-3 py-3 tabular-nums">{paymentDate(payment.initiatedOn)}</td>
                       <td className="px-3 py-3">{payment.orgName}</td>
                       <td className="px-3 py-3">{payment.billNumber}</td>
+                      <td className="px-3 py-3">
+                        <StageCell label={vendorPaymentStage({ disbursementStatus: payment.status }).label} />
+                      </td>
                       <td className="whitespace-nowrap px-3 py-3 tabular-nums text-muted-foreground">
                         {payment.expectedEarliest === payment.expectedLatest
                           ? paymentDate(payment.expectedEarliest)
@@ -488,6 +533,7 @@ export function VendorPaymentSetup({
                     <th className="px-3 py-2 font-medium">Date</th>
                     <th className="px-3 py-2 font-medium">Builder</th>
                     <th className="px-3 py-2 font-medium">Invoice</th>
+                    <th className="px-3 py-2 font-medium">Stage</th>
                     <th className="px-3 py-2 font-medium">Method</th>
                     <th className="px-3 py-2 text-right font-medium">Retainage held</th>
                     <th className="px-3 py-2 text-right font-medium">Amount</th>
@@ -499,6 +545,9 @@ export function VendorPaymentSetup({
                       <td className="whitespace-nowrap px-3 py-3 tabular-nums">{paymentDate(payment.paidAt)}</td>
                       <td className="px-3 py-3">{payment.orgName}</td>
                       <td className="px-3 py-3">{payment.billNumber}</td>
+                      <td className="px-3 py-3">
+                        <StageCell label={payment.stage} />
+                      </td>
                       <td className="px-3 py-3 text-muted-foreground">
                         {METHOD_LABELS[payment.method] ?? payment.method}
                         {payment.reference ? (

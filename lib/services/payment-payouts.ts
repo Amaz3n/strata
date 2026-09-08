@@ -1,11 +1,11 @@
 import "server-only"
 
 import { getPaymentRailProvider } from "@/lib/integrations/payments/payment-rail-registry"
-import { assertDisbursementTransition } from "@/lib/payments/payment-domain"
+import { assertDisbursementTransition, decideVendorTransferAction, DisbursementStateError } from "@/lib/payments/payment-domain"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { isFeatureEnabledForOrg } from "@/lib/services/feature-flags"
-import { assertPaymentLaunchReady } from "@/lib/services/payment-launch-readiness"
+import { assertPaymentLaunchReady, hasEnabledPaymentRail } from "@/lib/services/payment-launch-readiness"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 /**
@@ -30,18 +30,35 @@ interface MaturedTransferRow {
   amount_cents: number
   currency: string
   provider_charge_id: string | null
+  provider_payment_id: string | null
   recipient_account_id: string | null
   run_id: string
+  transfer_group: string | null
+  provider_transfer_idempotency_key: string
+  transfer_claim_token: string
+  reclaimed: boolean
 }
 
 export async function releaseMaturedVendorTransfers(): Promise<{
   attempted: number
   released: string[]
   failed: Array<{ disbursementId: string; error: string }>
+  skipped?: "execution_disabled" | "no_enabled_rails"
 }> {
   if (process.env.FINTECH_PAYMENTS_EXECUTION_ENABLED !== "true") {
-    return { attempted: 0, released: [], failed: [] }
+    return { attempted: 0, released: [], failed: [], skipped: "execution_disabled" }
   }
+  // Nothing is on the rail, so there is nothing to release and nothing to be
+  // ready for. Asking this before the readiness assertion is what stops a
+  // configuration fault from being reported as a money-movement failure every
+  // five minutes: in production that ordering produced 5,741 identical failures
+  // on a deployment where no organization could pay at all. The watchdog reports
+  // the configuration itself (`detectExecutionConfigMismatch`); this job reports
+  // only whether money moved.
+  if (!(await hasEnabledPaymentRail())) {
+    return { attempted: 0, released: [], failed: [], skipped: "no_enabled_rails" }
+  }
+  // Still the first thing on every path that can reach the provider.
   await assertPaymentLaunchReady()
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase.rpc("claim_matured_vendor_transfers", { p_limit: TRANSFER_SWEEP_LIMIT })
@@ -125,30 +142,66 @@ export async function releaseMaturedVendorTransfers(): Promise<{
       const runItemId = runItemByDisbursement.get(row.disbursement_id)
       const billId = runItemId ? billByRunItem.get(runItemId) : null
       const paymentMemo = billId ? memoByBill.get(billId) : ""
-      const result = await provider.createVendorTransfer({
-        disbursementId: row.disbursement_id,
-        orgId: row.org_id,
-        amountCents: Number(row.amount_cents),
-        currency: String(row.currency ?? "usd"),
-        recipientProviderAccountId: recipient.provider_account_id,
-        providerChargeId: row.provider_charge_id,
-        transferGroup: `payment_run:${row.run_id}`,
-        // Deterministic, so a retry after an ambiguous response reuses the same
-        // key and the provider refuses to create a second transfer. On this rail
-        // a duplicate is a vendor paid twice.
-        idempotencyKey: `disbursement:${row.disbursement_id}:transfer`,
-        memo: paymentMemo || undefined,
-        metadata: { disbursement_id: row.disbursement_id, payment_run_id: row.run_id, ...(paymentMemo ? { payment_memo: paymentMemo } : {}) },
-      })
+      const transferGroup = row.transfer_group || `payment_run:${row.run_id}`
+      // A reclaimed row may represent a provider success followed by a worker
+      // crash. Stripe idempotency expires, so provider discovery—not the old
+      // key—is the durable duplicate-prevention control.
+      const existing = row.reclaimed
+        ? await provider.findVendorTransfer({ transferGroup, disbursementId: row.disbursement_id })
+        : null
+      const action = decideVendorTransferAction(existing?.providerTransferId ?? null)
 
-      assertDisbursementTransition("funds_available", "transfer_pending")
-      const { error: updateError } = await supabase
+      let providerChargeId = row.provider_charge_id
+      if (!providerChargeId) {
+        if (!row.provider_payment_id) throw new Error("Cleared disbursement is missing its provider payment reference")
+        providerChargeId = await provider.resolvePaymentChargeId({ providerPaymentId: row.provider_payment_id })
+        if (!providerChargeId) throw new Error("Provider payment has no cleared source charge; vendor transfer is blocked")
+        const { data: chargeWrite, error: chargeWriteError } = await supabase.from("disbursements")
+          .update({ provider_charge_id: providerChargeId })
+          .eq("org_id", row.org_id)
+          .eq("id", row.disbursement_id)
+          .eq("transfer_claim_token", row.transfer_claim_token)
+          .select("id")
+          .maybeSingle()
+        if (chargeWriteError || !chargeWrite) throw new DisbursementStateError({ orgId: row.org_id, disbursementId: row.disbursement_id, operation: "persisting its source charge" })
+      }
+
+      const result = action === "adopt" && existing
+        ? existing
+        : await provider.createVendorTransfer({
+            disbursementId: row.disbursement_id,
+            orgId: row.org_id,
+            amountCents: Number(row.amount_cents),
+            currency: String(row.currency ?? "usd"),
+            recipientProviderAccountId: recipient.provider_account_id,
+            providerChargeId,
+            transferGroup,
+            idempotencyKey: row.provider_transfer_idempotency_key,
+            memo: paymentMemo || undefined,
+            metadata: { disbursement_id: row.disbursement_id, payment_run_id: row.run_id, ...(paymentMemo ? { payment_memo: paymentMemo } : {}) },
+          })
+
+      // Persist provider identity independently from the state CAS: a webhook
+      // can advance the state before this response returns.
+      const { data: identityWrite, error: identityError } = await supabase
         .from("disbursements")
-        .update({ status: "transfer_pending", provider_transfer_id: result.providerTransferId })
+        .update({ provider_transfer_id: result.providerTransferId })
         .eq("org_id", row.org_id)
         .eq("id", row.disbursement_id)
-        .eq("status", "funds_available")
-      if (updateError) throw new Error(`Unable to record vendor transfer: ${updateError.message}`)
+        .select("id")
+        .maybeSingle()
+      if (identityError || !identityWrite) throw new DisbursementStateError({ orgId: row.org_id, disbursementId: row.disbursement_id, operation: "recording its provider transfer" })
+      assertDisbursementTransition("transfer_claimed", "transfer_pending")
+      const { data: stateWrite, error: updateError } = await supabase
+        .from("disbursements")
+        .update({ status: "transfer_pending", failure_reason: null })
+        .eq("org_id", row.org_id)
+        .eq("id", row.disbursement_id)
+        .eq("status", "transfer_claimed")
+        .eq("transfer_claim_token", row.transfer_claim_token)
+        .select("id")
+        .maybeSingle()
+      if (updateError || !stateWrite) throw new DisbursementStateError({ orgId: row.org_id, disbursementId: row.disbursement_id, operation: "advancing its vendor transfer" })
       await supabase.rpc("resolve_payment_operations_incident", {
         p_org_id: row.org_id,
         p_finding_code: `vendor_transfer_blocked:${row.disbursement_id}`,
@@ -156,7 +209,8 @@ export async function releaseMaturedVendorTransfers(): Promise<{
       released.push(row.disbursement_id)
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "Vendor transfer failed"
-      // The disbursement stays `funds_available` so the next sweep retries it.
+      // The durable claim is reclaimed after 15 minutes. Re-entry first searches
+      // the provider and adopts a transfer created before an ambiguous failure.
       // The builder's money has cleared to Arc and the vendor has not been paid,
       // which is a state a human has to know about rather than a retry loop.
       await supabase

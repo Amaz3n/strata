@@ -70,7 +70,7 @@ export interface ProviderVendorTransferInput {
   currency: string
   recipientProviderAccountId: string
   /** The cleared debit that funds this transfer, when the rail can bind them. */
-  providerChargeId: string | null
+  providerChargeId: string
   transferGroup: string
   idempotencyKey: string
   /** Remittance note. Providers may display this in transfer history; bank statement display is rail-dependent. */
@@ -81,6 +81,16 @@ export interface ProviderVendorTransferInput {
 export interface ProviderVendorTransferResult {
   provider: string
   providerTransferId: string
+}
+
+export interface ProviderPlatformPayoutSettings {
+  interval: string
+}
+
+export interface ProviderDisbursementReference {
+  disbursementId: string | null
+  orgId: string | null
+  arcProduct: string | null
 }
 
 export interface ProviderPlatformChargeInput {
@@ -223,6 +233,15 @@ export interface PaymentRailProvider {
    * is what removed Arc's ability to hold funds through the return window.
    */
   createVendorTransfer(input: ProviderVendorTransferInput): Promise<ProviderVendorTransferResult>
+  reverseVendorTransfer(input: {
+    providerTransferId: string
+    disbursementId: string
+    idempotencyKey: string
+  }): Promise<{ providerReversalId: string }>
+  findVendorTransfer(input: { transferGroup: string; disbursementId: string }): Promise<ProviderVendorTransferResult | null>
+  retrievePlatformPayoutSettings(): Promise<ProviderPlatformPayoutSettings>
+  resolveDisbursementReference(input: { providerPaymentId: string }): Promise<ProviderDisbursementReference>
+  resolvePaymentChargeId(input: { providerPaymentId: string }): Promise<string | null>
   retrieveSettlement(input: { providerPaymentId: string }): Promise<ProviderSettlementSnapshot>
   /**
    * Independently enumerate provider activity so reconciliation can find money

@@ -1,5 +1,7 @@
 'use server'
 
+import { getOrganizationSettings, updateOrganizationSettings, type OrganizationSettingsInput } from "@/lib/services/organization-settings"
+
 import { revalidatePath } from "next/cache"
 import { z } from "zod"
 
@@ -551,9 +553,11 @@ export async function createBillingPortalSessionAction() {
   })
 }
 
-export async function getTeamSettingsDataAction() {
+export async function getTeamSettingsDataAction(input: { offset?: number } = {}) {
+      const { offset } = z.object({ offset: z.number().int().min(0).default(0) }).parse(input)
+      const pageSize = 100
       const [accessState, permissionResult] = await Promise.all([
-        getOrgAccessState().catch(() => ({ status: "unknown", locked: false })),
+        getOrgAccessState(),
         getCurrentUserPermissions(),
       ])
       const permissions = permissionResult?.permissions ?? []
@@ -569,93 +573,28 @@ export async function getTeamSettingsDataAction() {
           canManageMembers: false,
           canEditRoles: false,
           locked: true,
+          hasMore: false,
         }
       }
 
       const [teamMembers, roleOptions, rolePermissions, divisions] = await Promise.all([
-        listTeamMembers(undefined, { includeProjectCounts: false }),
-        listAssignableOrgRoles().catch(() => []),
-        listOrgRolePermissions().catch(() => ({})),
-        listDivisions().catch(() => []),
+        listTeamMembers(undefined, { includeProjectCounts: false, offset, limit: pageSize + 1 }),
+        listAssignableOrgRoles(),
+        listOrgRolePermissions(),
+        listDivisions(),
       ])
       return {
-        teamMembers,
+        teamMembers: teamMembers.slice(0, pageSize),
+        hasMore: teamMembers.length > pageSize,
         roleOptions,
         permissionOptions: TEAM_PERMISSION_OPTIONS,
         rolePermissions,
         divisions,
         currentUserId: permissionResult?.userId ?? null,
-        canManageMembers: permissions.includes("members.manage"),
-        canEditRoles: permissions.includes("org.admin"),
+        canManageMembers: ["members.manage", "org.admin", "*"].some((key) => permissions.includes(key)),
+        canEditRoles: ["org.admin", "*"].some((key) => permissions.includes(key)),
         locked: false,
       }
-}
-
-const organizationDetailsSettingsSchema = z.object({
-  proposalTermsTemplate: z.string().trim().max(8000).optional().default(""),
-  estimateTermsTemplate: z.string().trim().max(8000).optional().default(""),
-  estimateAccentColor: z
-    .string()
-    .trim()
-    .regex(/^#[0-9a-fA-F]{6}$/, "Use a 6-digit hex color like #2563eb.")
-    .optional()
-    .or(z.literal(""))
-    .default(""),
-  estimateFont: z.string().trim().max(40).optional().default(""),
-  estimateIntroTemplate: z.string().trim().max(4000).optional().default(""),
-  estimateBuilderSignerMode: z.enum(["estimate_creator", "prospect_owner", "specific_user"]).optional().default("estimate_creator"),
-  estimateBuilderSignerUserId: z.string().uuid().nullable().optional(),
-})
-
-const invoicingSettingsSchema = z.object({
-  billingEmail: z.string().trim().email("Enter a valid billing email."),
-  // Free-form multi-line remittance address, stored as the address `formatted` block.
-  address: z.string().trim().max(600).optional().default(""),
-  defaultPaymentTermsDays: z.number().min(0).max(365).default(15),
-  defaultInvoiceNote: z.string().trim().max(2000).optional().default(""),
-})
-
-const organizationSettingsSchema = organizationDetailsSettingsSchema.merge(invoicingSettingsSchema)
-
-type InvoicingSettingsInput = z.infer<typeof invoicingSettingsSchema>
-
-type OrgAddress = {
-  formatted?: string
-  street1?: string
-  street2?: string
-  city?: string
-  state?: string
-  postal_code?: string
-  country?: string
-} | null
-
-/**
- * Formatted multi-line address string for display / editing. Prefers `formatted`,
- * reconstructing from structured parts only for older records that predate it.
- */
-function resolveAddressText(address: OrgAddress): string {
-  if (!address) return ""
-  if (address.formatted && address.formatted.trim()) return address.formatted.trim()
-  return [
-    [address.street1, address.street2].filter(Boolean).join(" ").trim(),
-    [address.city, address.state, address.postal_code].filter(Boolean).join(" ").trim(),
-    address.country,
-  ]
-    .filter(Boolean)
-    .join("\n")
-    .trim()
-}
-
-function buildAddressPayload(input: InvoicingSettingsInput): OrgAddress {
-  const formatted = input.address
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .join("\n")
-
-  if (!formatted) return null
-
-  return { formatted }
 }
 
 function resolveLogoPath(logoUrl: string | null | undefined) {
@@ -700,217 +639,14 @@ function extensionForMimeType(type: string) {
 }
 
 export async function getOrganizationSettingsAction() {
-      const { orgId } = await requireOrgMembership()
-      const [permissionResult, orgResult] = await Promise.all([
-        getCurrentUserPermissions(orgId),
-        createServiceSupabaseClient()
-          .from("orgs")
-          .select("id, name, billing_email, address, logo_url")
-          .eq("id", orgId)
-          .maybeSingle(),
-      ])
-
-      if (orgResult.error || !orgResult.data) {
-        throw new Error(orgResult.error?.message ?? "Organization not found.")
-      }
-
-      const permissions = permissionResult?.permissions ?? []
-      const canManageOrganization =
-        permissions.includes("*") ||
-        permissions.includes("org.admin") ||
-        permissions.includes("billing.manage")
-
-      const { data: orgSettingsData } = await createServiceSupabaseClient()
-        .from("org_settings")
-        .select("settings")
-        .eq("org_id", orgId)
-        .maybeSingle()
-      const addressText = resolveAddressText((orgResult.data.address as OrgAddress) ?? null)
-      const settings = (orgSettingsData?.settings as Record<string, any> | null) ?? {}
-      const defaultPaymentTermsDaysRaw = Number(settings.invoice_default_payment_terms_days ?? 15)
-      const defaultPaymentTermsDays = Number.isFinite(defaultPaymentTermsDaysRaw) ? defaultPaymentTermsDaysRaw : 15
-
-      return {
-        id: orgResult.data.id as string,
-        name: (orgResult.data.name as string) ?? "",
-        billingEmail: (orgResult.data.billing_email as string | null) ?? "",
-        address: addressText,
-        defaultPaymentTermsDays,
-        defaultInvoiceNote: String(settings.invoice_default_payment_details ?? settings.invoice_default_note ?? ""),
-        proposalTermsTemplate: String(settings.proposal_terms_template ?? ""),
-        estimateTermsTemplate: String(settings.estimate_terms_template ?? ""),
-        estimateAccentColor: String(settings.estimate_accent_color ?? ""),
-        estimateFont: String(settings.estimate_font ?? ""),
-        estimateIntroTemplate: String(settings.estimate_intro_template ?? ""),
-        estimateBuilderSignerMode:
-          settings.estimate_builder_signer_mode === "prospect_owner" || settings.estimate_builder_signer_mode === "specific_user"
-            ? settings.estimate_builder_signer_mode
-            : "estimate_creator",
-        estimateBuilderSignerUserId:
-          typeof settings.estimate_builder_signer_user_id === "string" ? settings.estimate_builder_signer_user_id : "",
-        logoUrl: (orgResult.data.logo_url as string | null) ?? null,
-        canManageOrganization,
-      }
+  return getOrganizationSettings()
 }
 
-type OrganizationSettingsSection = "organization" | "invoicing" | "all"
-
-export async function updateOrganizationSettingsAction(input: {
-  section?: OrganizationSettingsSection
-  billingEmail?: string
-  address?: string
-  defaultPaymentTermsDays?: number
-  defaultInvoiceNote?: string
-  proposalTermsTemplate?: string
-  estimateTermsTemplate?: string
-  estimateAccentColor?: string
-  estimateFont?: string
-  estimateIntroTemplate?: string
-  estimateBuilderSignerMode?: "estimate_creator" | "prospect_owner" | "specific_user"
-  estimateBuilderSignerUserId?: string | null
-}) {
+export async function updateOrganizationSettingsAction(input: OrganizationSettingsInput) {
   return run(async () => {
-      const section = input.section ?? "all"
-      const schema =
-        section === "organization"
-          ? organizationDetailsSettingsSchema
-          : section === "invoicing"
-            ? invoicingSettingsSchema
-            : organizationSettingsSchema
-
-      const parsed = schema.safeParse(input)
-      if (!parsed.success) {
-        const firstError = parsed.error.errors.at(0)?.message ?? "Invalid organization details."
-        return { error: firstError }
-      }
-
-      const data = parsed.data as Partial<z.infer<typeof organizationSettingsSchema>>
-      const includesOrganizationFields = section === "organization" || section === "all"
-      const includesInvoicingFields = section === "invoicing" || section === "all"
-
-      if (includesOrganizationFields && data.estimateBuilderSignerMode === "specific_user" && !data.estimateBuilderSignerUserId) {
-        return { error: "Choose the Arc user who should countersign client-signed estimates." }
-      }
-
-      const { orgId, user, supabase } = await requireOrgMembership()
-      await requireAnyPermission(["org.admin", "billing.manage"], { orgId, userId: user.id, supabase })
-
-      const service = createServiceSupabaseClient()
-      const [existingOrgResult, existingSettingsResult] = await Promise.all([
-        service
-          .from("orgs")
-          .select("id, name, billing_email, address")
-          .eq("id", orgId)
-          .maybeSingle(),
-        service
-          .from("org_settings")
-          .select("settings")
-          .eq("org_id", orgId)
-          .maybeSingle(),
-      ])
-
-      if (existingOrgResult.error || !existingOrgResult.data) {
-        return { error: existingOrgResult.error?.message ?? "Organization not found." }
-      }
-
-      if (includesOrganizationFields && data.estimateBuilderSignerMode === "specific_user" && data.estimateBuilderSignerUserId) {
-        const { data: signerMembership, error: signerError } = await service
-          .from("memberships")
-          .select("id")
-          .eq("org_id", orgId)
-          .eq("user_id", data.estimateBuilderSignerUserId)
-          .eq("status", "active")
-          .maybeSingle()
-
-        if (signerError || !signerMembership) {
-          return { error: "Choose an active member of this organization as the builder signer." }
-        }
-      }
-
-      const orgUpdate: Record<string, unknown> = {}
-      if (includesInvoicingFields) {
-        orgUpdate.billing_email = data.billingEmail
-        orgUpdate.address = buildAddressPayload(data as InvoicingSettingsInput)
-      }
-
-      if (Object.keys(orgUpdate).length > 0) {
-        const { error } = await service
-          .from("orgs")
-          .update(orgUpdate)
-          .eq("id", orgId)
-
-        if (error) {
-          console.error("Failed to update organization settings", error)
-          return { error: error.message ?? "Failed to update organization settings." }
-        }
-      }
-
-      const settingsPatch: Record<string, unknown> = {}
-      if (includesInvoicingFields) {
-        settingsPatch.invoice_default_payment_terms_days = data.defaultPaymentTermsDays
-        settingsPatch.invoice_default_payment_details = data.defaultInvoiceNote || null
-      }
-      if (includesOrganizationFields) {
-        settingsPatch.proposal_terms_template = data.proposalTermsTemplate || null
-        settingsPatch.estimate_terms_template = data.estimateTermsTemplate || null
-        settingsPatch.estimate_accent_color = data.estimateAccentColor || null
-        settingsPatch.estimate_font = data.estimateFont || null
-        settingsPatch.estimate_intro_template = data.estimateIntroTemplate || null
-        settingsPatch.estimate_builder_signer_mode = data.estimateBuilderSignerMode
-        settingsPatch.estimate_builder_signer_user_id =
-          data.estimateBuilderSignerMode === "specific_user" ? data.estimateBuilderSignerUserId || null : null
-      }
-
-      const { data: mergedSettings, error: settingsError } = await service.rpc("merge_org_settings", {
-        p_org_id: orgId,
-        p_patch: settingsPatch,
-        p_delete_keys: [],
-      })
-
-      if (settingsError) {
-        console.error("Failed to update org billing settings", settingsError)
-        return { error: settingsError.message ?? "Failed to update billing settings." }
-      }
-
-      const { data: updatedOrg } = await service
-        .from("orgs")
-        .select("id, name, billing_email, address")
-        .eq("id", orgId)
-        .maybeSingle()
-
-      await recordAudit({
-        orgId,
-        actorId: user.id,
-        action: "update",
-        entityType: "org_settings",
-        entityId: orgId,
-        before: {
-          org: existingOrgResult.data,
-          settings: (existingSettingsResult.data?.settings as Record<string, unknown> | null) ?? {},
-        },
-        after: {
-          org: updatedOrg ?? existingOrgResult.data,
-          settings: (mergedSettings as Record<string, unknown> | null) ?? {},
-        },
-        source: `settings.${section}`,
-      })
-
-      try {
-        await recordEvent({
-          orgId,
-          actorId: user.id,
-          eventType: "settings_updated",
-          entityType: "org_settings",
-          entityId: orgId,
-          payload: { section },
-          channel: "activity",
-        })
-      } catch (eventError) {
-        console.error("Failed to record settings update event", eventError)
-      }
-
-      revalidatePath("/settings")
-      return { success: true }
+    const settings = await updateOrganizationSettings(input)
+    revalidatePath("/settings")
+    return { settings }
   })
 }
 

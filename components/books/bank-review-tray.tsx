@@ -7,6 +7,7 @@ import { toast } from "sonner";
 
 import {
   categorizeBankTransactionAction,
+  loadBankCostCodingOptionsAction,
   confirmBankMatchAction,
   excludeBankTransactionAction,
   loadBankReviewTrayAction,
@@ -48,6 +49,9 @@ type GlAccount = {
 
 export function BankReviewTray({ accounts }: { accounts: GlAccount[] }) {
   const [data, setData] = useState<BankReviewTray | null>(null);
+  const [coding, setCoding] = useState<{ projects: Array<{ id: string; name: string }>; costCodes: Array<{ id: string; code: string; name: string }> } | null>(null);
+  const [projectByTransaction, setProjectByTransaction] = useState<Record<string, string>>({});
+  const [costCodeByTransaction, setCostCodeByTransaction] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [pending, startTransition] = useTransition();
@@ -69,6 +73,7 @@ export function BankReviewTray({ accounts }: { accounts: GlAccount[] }) {
   }, []);
 
   useEffect(load, [load]);
+  useEffect(() => { let active = true; loadBankCostCodingOptionsAction().then(result => { if (active && result.success) setCoding(result.data); }); return () => { active = false; }; }, []);
 
   const confirmOne = (
     row: BankReviewTray["rows"][number],
@@ -103,6 +108,8 @@ export function BankReviewTray({ accounts }: { accounts: GlAccount[] }) {
       const result = await categorizeBankTransactionAction({
         bankTransactionId: row.transactionId,
         glAccountId,
+        projectId: projectByTransaction[row.transactionId] || null,
+        costCodeId: costCodeByTransaction[row.transactionId] || null,
         appliedRuleId: row.ruleSuggestion?.ruleId ?? null,
       });
       setBusyId(null);
@@ -110,7 +117,7 @@ export function BankReviewTray({ accounts }: { accounts: GlAccount[] }) {
         toast.error(result.error);
         return;
       }
-      toast.success("Categorized and posted");
+      toast.success(projectByTransaction[row.transactionId] ? "Posted to Books and project actuals; customer billing requires a separate review" : "Categorized and posted");
       load();
     });
   };
@@ -325,7 +332,12 @@ export function BankReviewTray({ accounts }: { accounts: GlAccount[] }) {
                         ) : null}
                       </p>
                     </div>
-                    <div className="flex items-center gap-2 sm:justify-end">
+                    <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                      {!row.best && !row.accountUnmapped && coding && <>
+                        <Select value={projectByTransaction[row.transactionId] || "overhead"} disabled={busy || pending} onValueChange={value => { setProjectByTransaction(current => ({ ...current, [row.transactionId]: value === "overhead" ? "" : value })); setCostCodeByTransaction(current => ({ ...current, [row.transactionId]: "" })); }}><SelectTrigger className="max-w-[200px]" aria-label="Project for bank spending"><SelectValue placeholder="Project" /></SelectTrigger><SelectContent><SelectItem value="overhead">No project</SelectItem>{coding.projects.map(project => <SelectItem key={project.id} value={project.id}>{project.name}</SelectItem>)}</SelectContent></Select>
+                        {projectByTransaction[row.transactionId] && <Select value={costCodeByTransaction[row.transactionId] || "uncoded"} disabled={busy || pending} onValueChange={value => setCostCodeByTransaction(current => ({ ...current, [row.transactionId]: value === "uncoded" ? "" : value }))}><SelectTrigger className="max-w-[200px]" aria-label="Cost code for bank spending"><SelectValue placeholder="Cost code" /></SelectTrigger><SelectContent><SelectItem value="uncoded">Unassigned cost code</SelectItem>{coding.costCodes.map(code => <SelectItem key={code.id} value={code.id}>{code.code} · {code.name}</SelectItem>)}</SelectContent></Select>}
+                      </>}
+
                       <span className="font-mono text-sm tabular-nums">
                         {formatMoneyCentsExact(row.amountCents)}
                       </span>

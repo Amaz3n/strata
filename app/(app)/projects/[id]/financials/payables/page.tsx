@@ -1,107 +1,52 @@
+import { parsePayablesBookQuery } from "@/lib/financials/payables-book"
 import { Suspense } from "react"
-
-import { fetchPayablesTabDataAction } from "@/app/(app)/projects/[id]/financials/actions"
+import { notFound } from "next/navigation"
+import { getProjectAction } from "@/app/(app)/projects/[id]/actions"
 import { FinancialSetupStatusBanner } from "@/components/financials/financial-setup-status-banner"
-import { PayablesTab } from "@/components/financials/payables-tab"
+import { PayablesDesk } from "@/components/payables/payables-desk"
 import { PageLayout } from "@/components/layout/page-layout"
-import { Skeleton } from "@/components/ui/skeleton"
+import LoadingPayables from "@/app/(app)/payables/loading"
 import { getProjectFinancialSetupStatusForProject } from "@/lib/services/project-financial-setup"
-import { loadFinancialsOverviewData } from "../page-data"
-import { evaluateHolds } from "@/lib/services/payment-holds"
+import { loadOrgPayablesDesk } from "@/lib/services/org-payables"
 import { isVendorPayoutSetupOpen } from "@/lib/services/payment-rail-setup"
 import { getPaymentApprovalRouting } from "@/lib/services/payment-approvers"
 import { requireOrgContext } from "@/lib/services/context"
 
-import { unwrapAction } from "@/lib/action-result"
+type Query = Record<string, string | undefined> & { tab?: string; queue?: string; due?: string; q?: string; page?: string; pageSize?: string; bill?: string }
 
-
-interface PageProps {
+export default async function FinancialsPayablesPage({ params, searchParams }: {
   params: Promise<{ id: string }>
-  searchParams: Promise<{ queue?: string; due?: string; q?: string; page?: string; pageSize?: string; bill?: string }>
-}
-
-export default async function FinancialsPayablesPage({ params, searchParams }: PageProps) {
+  searchParams: Promise<Query>
+}) {
   const [{ id }, query] = await Promise.all([params, searchParams])
-
-  return (
-    <Suspense fallback={<FinancialsChildSkeleton title="Payables" />}>
-      <FinancialsPayablesData id={id} query={query} />
-    </Suspense>
-  )
+  return <Suspense fallback={<PageLayout title="Payables" fullBleed><LoadingPayables /></PageLayout>}>
+    <ProjectPayablesData id={id} query={query} />
+  </Suspense>
 }
 
-async function FinancialsPayablesData({ id, query }: { id: string; query: { queue?: string; due?: string; q?: string; page?: string; pageSize?: string; bill?: string } }) {
-  const [{ project }, data, setupStatus, paymentContext] = await Promise.all([
-    loadFinancialsOverviewData(id),
-    fetchPayablesTabDataAction(id, { queue: query.queue, due: query.due, search: query.q, billId: query.bill, page: Number(query.page) || 1, pageSize: Number(query.pageSize) || 50 }),
+async function ProjectPayablesData({ id, query }: { id: string; query: Query }) {
+  const { orgId, userId } = await requireOrgContext()
+  const [project, setup, data, payment] = await Promise.all([
+    getProjectAction(id),
     getProjectFinancialSetupStatusForProject(id),
-    requireOrgContext().then(async ({ orgId, userId }) => ({
-      railOpen: await isVendorPayoutSetupOpen(orgId),
-      viewerUserId: userId,
+    loadOrgPayablesDesk([id], {
+      ...parsePayablesBookQuery(query), search: query.q, billId: query.bill,
+      page: Number(query.page) || 1, pageSize: Number(query.pageSize) || 25,
+      projectScope: true,
+    }),
+    isVendorPayoutSetupOpen(orgId).then(async (railOpen) => ({
+      railOpen,
+      routing: railOpen ? await getPaymentApprovalRouting(orgId) : null,
     })),
   ])
-  const { railOpen, viewerUserId } = paymentContext
-  const paymentRouting = railOpen
-    ? await getPaymentApprovalRouting().catch(() => null)
-    : null
-  // Only the open payable's holds. `holdEvaluations` feeds the detail pane and
-  // nothing in the list, so evaluating every row cost roughly seven queries per
-  // bill plus a compliance lookup on every render — 350+ round trips for a page
-  // showing one. The org desk already loads this per bill on selection.
-  const openBillId = data.selectedBill?.id ?? null
-  const openBillHolds = openBillId ? await evaluateHolds(openBillId).catch(() => null) : null
-  const holdEvaluations = openBillId && openBillHolds ? { [openBillId]: openBillHolds } : {}
-
-  return (
-    <PageLayout
-      title="Payables"
-      breadcrumbs={[
-        { label: project.name, href: `/projects/${project.id}` },
-        { label: "Financials", href: `/projects/${project.id}/financials` },
-        { label: "Payables" },
-      ]}
-      fullBleed
-    >
-      <FinancialSetupStatusBanner setup={setupStatus} />
-      <PayablesTab
-        projectId={project.id}
-        vendorBills={data.vendorBills}
-        selectedBill={data.selectedBill}
-        pagination={data.vendorBillsPage}
-        queueTotals={data.vendorBillsPage.tabs}
-        summaryTruncated={data.vendorBillsPage.summaryTruncated}
-        initialQueue={data.vendorBillsPage.query.queue}
-        initialDue={data.vendorBillsPage.query.due}
-        initialSearch={data.vendorBillsPage.query.search}
-        costCodes={data.costCodes}
-        budgetLines={data.budgetLines}
-        costCodesEnabled={setupStatus.costCodesEnabled}
-        billingModel={setupStatus.billingModel}
-        complianceRules={data.complianceRules}
-        complianceStatusByCompanyId={data.complianceStatusByCompanyId}
-        loadErrors={data.errors}
-        holdEvaluations={holdEvaluations}
-        railOpen={railOpen}
-        paymentReadinessByCompanyId={data.paymentReadinessByCompanyId}
-        runMembershipByBillId={data.runMembershipByBillId}
-        viewerMayApproveRuns={Boolean(paymentRouting?.viewerMayApprove)}
-        approvalViewer={{ userId: viewerUserId, approvers: paymentRouting?.approvers ?? [] }}
-      />
-    </PageLayout>
-  )
-}
-
-function FinancialsChildSkeleton({ title }: { title: string }) {
-  return (
-    <PageLayout title={title} breadcrumbs={[{ label: "Project" }, { label: "Financials" }, { label: title }]} fullBleed>
-      <div className="w-full">
-        <div className="flex min-h-14 items-center border-b px-4 sm:px-6 lg:px-8">
-          <Skeleton className="h-8 w-full max-w-3xl" />
-        </div>
-        <div className="p-4 sm:p-6 lg:p-8">
-          <Skeleton className="h-80 w-full rounded-md" />
-        </div>
-      </div>
-    </PageLayout>
-  )
+  if (!project) notFound()
+  return <PageLayout title="Payables" breadcrumbs={[
+    { label: project.name, href: `/projects/${id}` }, { label: "Payables" },
+  ]} fullBleed>
+    <FinancialSetupStatusBanner setup={setup} />
+    <PayablesDesk key={id} data={data}
+      project={{ id, name: project.name, billingModel: setup.billingModel, costCodesEnabled: setup.costCodesEnabled }}
+      railOpen={payment.railOpen} viewerMayApproveRuns={Boolean(payment.routing?.viewerMayApprove)}
+      approvalViewer={{ userId, approvers: payment.routing?.approvers ?? [] }} />
+  </PageLayout>
 }

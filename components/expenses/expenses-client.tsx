@@ -537,7 +537,7 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
     startTransition(async () => {
       try {
         unwrapAction(await syncProjectExpenseToQBOAction(projectId, expenseId))
-        toast.success(`Expense synced to ${accountingProviderName}`)
+        toast.success(`Expense queued for ${accountingProviderName}`)
         refresh()
       } catch (error: any) {
         toast.error(`Could not sync to ${accountingProviderName}`, {
@@ -565,7 +565,7 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
           toast.error(error?.message ?? `${accountingProviderName} sync failed`, { description: vendorOf(expense) })
         }
       }
-      if (synced > 0) toast.success(`${synced} expense${synced === 1 ? "" : "s"} synced`)
+      if (synced > 0) toast.success(`${synced} expense${synced === 1 ? "" : "s"} queued`)
       setSelectedIds([])
       refresh()
     })
@@ -720,7 +720,7 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
             <DropdownMenuItem asChild>
               <Link href={`/projects/${projectId}/financials/cost-inbox`}>Open in Cost Inbox</Link>
             </DropdownMenuItem>
-          ) : canSync ? (
+          ) : canSync && accountingContext?.qboConnected ? (
             <DropdownMenuItem onClick={() => syncExpense(expense.id)}>Sync to {accountingProviderName}</DropdownMenuItem>
           ) : (
             <DropdownMenuItem disabled>No actions available</DropdownMenuItem>
@@ -929,10 +929,10 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
             </div>
           </div>
           <div className="flex w-full gap-2 sm:w-auto">
-            <Button type="button" variant="outline" onClick={() => setSyncSheetOpen(true)} className="w-full sm:w-auto">
+            {accountingContext?.qboConnected ? <Button type="button" variant="outline" onClick={() => setSyncSheetOpen(true)} className="w-full sm:w-auto">
               <RefreshCcw className="mr-2 h-4 w-4" />
               {accountingProviderName}
-            </Button>
+            </Button> : accountingContext?.accountingMode.ledger === "official" ? <Button asChild variant="outline"><Link href="/books/ledger">Arc Books</Link></Button> : null}
             {allowCreate ? (
               <Button onClick={openBlankExpense} className="w-full sm:w-auto">
                 <Plus className="mr-2 h-4 w-4" />
@@ -952,6 +952,7 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
                 type="button"
                 variant="outline"
                 size="sm"
+                className={!accountingContext?.qboConnected ? "hidden" : undefined}
                 disabled={isPending || bulkSyncable.length === 0 || !accountingContext?.qboConnected}
                 onClick={() => bulkSyncExpenses(bulkSyncable)}
               >
@@ -1003,7 +1004,7 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
                       </div>
                       <div className="mt-1">
                         <AccountingSyncBadge
-                          status={expense.qbo_sync_status}
+                          status={accountingContext?.qboConnected ? expense.qbo_sync_status : null}
                           error={expense.qbo_sync_error}
                           provider={accountingContext?.accountingProvider}
                           providerLabel={accountingContext?.accountingProviderName}

@@ -62,6 +62,21 @@ const paymentAccessStatusSchema = z.enum(["active", "suspended", "revoked"])
  * that authorises payouts for this builder, and a revoke tears it down with the
  * relationship; the vendor-facing payment surface reads the same relationship
  * status, so it closes at the same moment.
+ *
+ * **And neither is restore.** A revoke that tore down the claim used to leave
+ * "restore" reactivating a relationship whose mapping was gone: the vendor's
+ * Continue button then threw "This vendor claim was revoked" and the only way
+ * out was SQL. Restore re-verifies the claim in the same call, before the
+ * relationship moves, because `vendor_payment_relationships_claim_live` refuses
+ * an `active` relationship whose claim is not live — the invariant is the
+ * database's, not this function's.
+ *
+ * The claim is restored **in place** rather than appended. `vendor_company_claims`
+ * carries a unique `(org_id, company_id)` — one live mapping per builder-vendor
+ * pair is what lets every reader ask for it with `maybeSingle()` — and the row's
+ * identity (which global entity claimed which vendor record) does not change
+ * when access is re-opened. The history of the withdrawal and the restore lives
+ * in `audit_log`, which is where Arc keeps history.
  */
 export async function setCompanyPaymentAccessStatus(
   input: { companyId: string; status: z.infer<typeof paymentAccessStatusSchema> },
@@ -84,14 +99,45 @@ export async function setCompanyPaymentAccessStatus(
     .maybeSingle()
   if (error || !relationship) throw new Error("Vendor payment relationship was not found")
   const beforeStatus = relationship.status
-  let nextStatus: string = parsed.status
-  if (parsed.status === "active") {
-    const recipient = Array.isArray(relationship.recipient) ? relationship.recipient[0] : relationship.recipient
-    nextStatus = recipient?.status === "ready" && recipient.payouts_enabled ? "active" : "onboarding"
-  }
-  if (beforeStatus === nextStatus) return { status: nextStatus }
-
   const now = new Date().toISOString()
+  let nextStatus: string = parsed.status
+  let claimRestored = false
+
+  if (parsed.status === "active") {
+    const { data: claim, error: claimReadError } = relationship.vendor_company_claim_id
+      ? await supabase
+        .from("vendor_company_claims")
+        .select("id,status")
+        .eq("org_id", context.orgId)
+        .eq("id", relationship.vendor_company_claim_id)
+        .maybeSingle()
+      : { data: null, error: null }
+    if (claimReadError) throw new Error(`Unable to read the vendor claim: ${claimReadError.message}`)
+    if (claim?.status === "rejected") {
+      throw new Error("This vendor claim was rejected. The vendor has to be re-invited before payment access can be restored.")
+    }
+    const recipient = Array.isArray(relationship.recipient) ? relationship.recipient[0] : relationship.recipient
+    // No claim means the vendor never finished — the honest restore is back to
+    // the invitation, which is the only status the relationship's own
+    // claim-required check accepts without one.
+    nextStatus = !claim
+      ? "invited"
+      : recipient?.status === "ready" && recipient.payouts_enabled
+        ? "active"
+        : "onboarding"
+
+    if (claim && claim.status !== "verified") {
+      const { error: restoreError } = await supabase
+        .from("vendor_company_claims")
+        .update({ status: "verified", verified_at: now, revoked_at: null })
+        .eq("org_id", context.orgId)
+        .eq("id", claim.id)
+      if (restoreError) throw new Error(`Unable to restore the vendor claim: ${restoreError.message}`)
+      claimRestored = true
+    }
+  }
+
+  if (beforeStatus === nextStatus) return { status: nextStatus }
   const { data: updatedRelationship, error: updateError } = await supabase
     .from("vendor_payment_relationships")
     .update({
@@ -144,6 +190,7 @@ export async function setCompanyPaymentAccessStatus(
       after: {
         status: nextStatus,
         ...(nextStatus === "revoked" ? { claim_status: "revoked" } : {}),
+        ...(claimRestored ? { claim_status: "verified" } : {}),
         ...(parsed.status === "active" ? { accepted_at: now, new_vendor_hold_rearmed: true } : {}),
       },
     }),
@@ -165,9 +212,13 @@ const LIVE_RELATIONSHIP_STATUSES = ["invited", "claim_pending", "onboarding", "a
  * — the mirror image of the bug `cascadeGrantStatusForPortalToken` fixed for
  * account grants. One status, every layer it authorised.
  *
- * Deliberately narrow: only the token that CLAIMED the vendor company cascades.
- * A second contact's sub link is that person's access to a project, and losing
- * it must not stop the company being paid — the person is the unit.
+ * Deliberately narrow on both axes. Only a **payout invitation**
+ * (`purpose = 'vendor_payout'`) cascades: a project sub link is that person's
+ * access to a job, and a PM pausing it must not stop the company being paid on
+ * every other job — which is exactly what happened while the payout invite rode
+ * the contact's project link. And only the token that CLAIMED the vendor
+ * company cascades, because a second contact's link is a second person's
+ * access, not the company's authority.
  *
  * Deliberately one-way: resuming a paused token does NOT restore payment
  * access. Re-opening money movement is `setCompanyPaymentAccessStatus`, which
@@ -184,6 +235,14 @@ export async function cascadeVendorPaymentAccessForPortalToken({
 }) {
   if (status === "active") return
   const supabase = createServiceSupabaseClient()
+  const { data: token, error: tokenError } = await supabase
+    .from("portal_access_tokens")
+    .select("purpose")
+    .eq("org_id", orgId)
+    .eq("id", tokenId)
+    .maybeSingle()
+  if (tokenError) throw new Error(`Unable to read this access record: ${tokenError.message}`)
+  if (token?.purpose !== "vendor_payout") return
   const { data: claims, error } = await supabase
     .from("vendor_company_claims")
     .select("id,company_id,status")
@@ -278,8 +337,15 @@ export async function listCompanyPaymentReadiness(
   return readiness
 }
 
+/** How long a payout invitation stays good before the vendor needs a new one. */
+const PAYOUT_INVITE_TTL_DAYS = 30
+
+function payoutInviteExpiry() {
+  return new Date(Date.now() + PAYOUT_INVITE_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString()
+}
+
 /**
- * The sub portal link one named contact follows to set up payout.
+ * The payout invitation one named contact follows to set up direct deposit.
  *
  * Deliberately per-person, never per-company. A payment invitation used to mint
  * a single contact-less token and mail the same bearer URL to up to five people:
@@ -290,48 +356,68 @@ export async function listCompanyPaymentReadiness(
  * (`requireVendorPayoutPortalAccess`). This is CLAUDE.md's doctrine applied to
  * money: the person is the unit, the link is a field.
  *
- * Reusing this contact's existing sub link is still right — the row IS their
- * access, and the token string is only how it is delivered — but it is now
- * matched on `contact_id`, so a company-wide link can never be handed back.
+ * **It is its own access record, never a project link.** Reusing the contact's
+ * sub link made a project's sharing row the entire provenance of org-wide
+ * payment authority: a PM pausing that link tore down payout access for every
+ * project, and resuming it did not bring it back. A `purpose = 'vendor_payout'`
+ * row is company-scoped (`project_id` null), requires an Arc account, and
+ * expires in 30 days — an invitation, not a standing credential.
  *
- * `portal_access_tokens.project_id` is NOT NULL, so a company-level ask still
- * has to ride a project-scoped credential; a newly minted one is scoped to the
- * project the builder most recently did business with this vendor on.
+ * Reuse is still right for a *live* payout link — the row IS that person's
+ * access, and the token string is only how it is delivered — so a re-invite
+ * refreshes the window on a healthy row and replaces an unusable one.
  */
-async function resolveContactPayoutLink(input: {
+async function resolvePayoutInviteLink(input: {
   orgId: string
   companyId: string
   contactId: string
   userId: string
-}) {
+}): Promise<{ token: string; replaced: boolean }> {
   const supabase = createServiceSupabaseClient()
   const { data: existing } = await supabase
     .from("portal_access_tokens")
-    .select("token_encrypted")
+    .select("id,token_encrypted,expires_at,paused_at,revoked_at,access_count,max_access_count")
     .eq("org_id", input.orgId)
     .eq("company_id", input.companyId)
     .eq("contact_id", input.contactId)
-    .eq("portal_type", "sub")
-    .is("revoked_at", null)
-    .is("paused_at", null)
-    .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
+    .eq("purpose", "vendor_payout")
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()
-  const reusable = decryptPortalToken(existing?.token_encrypted ?? null)
-  if (reusable) return reusable
 
-  const { data: bill } = await supabase
-    .from("vendor_bills")
-    .select("project_id")
-    .eq("org_id", input.orgId)
-    .eq("company_id", input.companyId)
-    .not("project_id", "is", null)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
-  if (!bill?.project_id) {
-    throw new Error("This vendor has no portal access and no project history yet. Share a sub portal link from a project first.")
+  const now = new Date()
+  const nowIso = now.toISOString()
+  // Compared as instants, not as strings: Postgres hands back `+00:00` and
+  // `toISOString()` produces `.000Z`, so a lexicographic comparison of the two
+  // is not a comparison of times.
+  const unusable = Boolean(
+    existing &&
+      (existing.revoked_at ||
+        existing.paused_at ||
+        (existing.expires_at && new Date(existing.expires_at) <= now) ||
+        (existing.max_access_count != null && Number(existing.access_count ?? 0) >= Number(existing.max_access_count))),
+  )
+  const reusable = unusable ? null : decryptPortalToken(existing?.token_encrypted ?? null)
+  if (existing && reusable) {
+    // A re-invite is a fresh ask, so it gets a fresh window. Handing back a link
+    // with four days left on it is how a vendor ends up on the expired page the
+    // day they finally sit down to do it.
+    await supabase
+      .from("portal_access_tokens")
+      .update({ expires_at: payoutInviteExpiry() })
+      .eq("org_id", input.orgId)
+      .eq("id", existing.id)
+    return { token: reusable, replaced: false }
+  }
+
+  // An unusable link is revoked rather than left standing beside its
+  // replacement: two live payout links for one person is two credentials.
+  if (existing) {
+    await supabase
+      .from("portal_access_tokens")
+      .update({ revoked_at: existing.revoked_at ?? nowIso })
+      .eq("org_id", input.orgId)
+      .eq("id", existing.id)
   }
 
   const plaintextToken = generatePortalToken()
@@ -339,14 +425,54 @@ async function resolveContactPayoutLink(input: {
     token_hash: hashPortalToken(plaintextToken),
     token_encrypted: encryptPortalToken(plaintextToken),
     org_id: input.orgId,
-    project_id: bill.project_id,
+    // Company-scoped on purpose: payout authority is the `(org, company)`
+    // relationship, and `portal_access_tokens_scope_present` accepts a company
+    // without a project.
+    project_id: null,
     company_id: input.companyId,
     contact_id: input.contactId,
     portal_type: "sub",
+    purpose: "vendor_payout",
+    require_account: true,
+    expires_at: payoutInviteExpiry(),
+    max_access_count: null,
     created_by: input.userId,
   })
-  if (error) throw new Error(`Unable to create the vendor portal link: ${error.message}`)
-  return plaintextToken
+  if (error) throw new Error(`Unable to create the vendor payout invitation: ${error.message}`)
+  return { token: plaintextToken, replaced: Boolean(existing) }
+}
+
+/**
+ * Everyone at this vendor who can be asked to set up payouts.
+ *
+ * `contact_company_links` is the only person-to-company linkage in the
+ * directory (CLAUDE.md), and `is_primary` orders it. Reading
+ * `contacts.primary_company_id` — a legacy column being dropped by a gated
+ * migration — meant a contact attached from the company side was invisible
+ * here, and the builder was told the vendor had no email address while the
+ * contact sat on the company's Contacts tab.
+ */
+async function listPayoutInviteContacts(orgId: string, companyId: string) {
+  const supabase = createServiceSupabaseClient()
+  const { data: links, error } = await supabase
+    .from("contact_company_links")
+    .select("contact_id,is_primary,contact:contacts(id,email,full_name)")
+    .eq("org_id", orgId)
+    .eq("company_id", companyId)
+    .order("is_primary", { ascending: false })
+    .limit(25)
+  if (error) throw new Error(`Unable to read the vendor's contacts: ${error.message}`)
+  const seen = new Set<string>()
+  const recipients: Array<{ id: string; email: string; fullName: string | null }> = []
+  for (const link of links ?? []) {
+    const contact = Array.isArray(link.contact) ? link.contact[0] : link.contact
+    const email = contact?.email?.trim()
+    if (!contact?.id || !email || seen.has(contact.id)) continue
+    seen.add(contact.id)
+    recipients.push({ id: contact.id, email, fullName: contact.full_name ?? null })
+    if (recipients.length === 5) break
+  }
+  return recipients
 }
 
 /**
@@ -381,17 +507,10 @@ export async function inviteCompanyToPaymentSetup(input: { companyId: string }, 
     throw new Error(`${company.name}'s payment access is ${relationship.status}. Restore it before re-inviting.`)
   }
 
-  const [{ data: contacts }, { data: org }] = await Promise.all([
-    supabase
-      .from("contacts")
-      .select("id,email,full_name")
-      .eq("org_id", context.orgId)
-      .eq("primary_company_id", company.id)
-      .not("email", "is", null)
-      .limit(5),
+  const [recipients, { data: org }] = await Promise.all([
+    listPayoutInviteContacts(context.orgId, company.id),
     supabase.from("orgs").select("name,slug,logo_url").eq("id", context.orgId).maybeSingle(),
   ])
-  const recipients = (contacts ?? []).filter((contact): contact is { id: string; email: string; full_name: string | null } => Boolean(contact.email))
   if (recipients.length === 0) {
     throw new Error(`${company.name} has no contact with an email address. Add one in the directory first.`)
   }
@@ -423,7 +542,7 @@ export async function inviteCompanyToPaymentSetup(input: { companyId: string }, 
   // forwarded to, because the claim path enforces the bound contact's email.
   const baseUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "https://arcnaples.com").replace(/\/$/, "")
   const deliveries = await Promise.all(recipients.map(async (contact) => {
-    const token = await resolveContactPayoutLink({
+    const link = await resolvePayoutInviteLink({
       orgId: context.orgId,
       companyId: company.id,
       contactId: contact.id,
@@ -431,12 +550,16 @@ export async function inviteCompanyToPaymentSetup(input: { companyId: string }, 
     })
     return sendVendorPaymentInviteEmail({
       to: [contact.email],
-      recipientName: contact.full_name,
+      recipientName: contact.fullName,
       companyName: company.name,
       orgName: org?.name ?? "Your builder",
       orgSlug: org?.slug ?? null,
       orgLogoUrl: org?.logo_url ?? null,
-      setupUrl: `${baseUrl}/s/${token}/payments`,
+      setupUrl: `${baseUrl}/s/${link.token}/payments`,
+      // A vendor who kept the first email has to be told which link works, or
+      // they will follow the dead one and land on the expired page.
+      replacedPreviousLink: link.replaced,
+      expiresInDays: PAYOUT_INVITE_TTL_DAYS,
     })
   }))
   const sent = deliveries.some(Boolean)

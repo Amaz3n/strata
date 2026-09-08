@@ -1,5 +1,9 @@
 "use client";
 
+import { WarrantyAccounting } from "@/components/books/warranty-accounting";
+import { InventoryWorkspace } from "@/components/books/inventory-workspace";
+import { PayrollSettlement } from "@/components/books/payroll-settlement";
+import { ClearingSupport } from "@/components/books/clearing-support";
 import Script from "next/script";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -19,6 +23,7 @@ import { BooksJournals } from "@/components/books/books-journals";
 import { ManualBankImport } from "@/components/books/manual-bank-import";
 import { OpeningBalancesWizard } from "@/components/books/opening-balances-wizard";
 import { BooksStatements } from "@/components/books/books-statements";
+import { FundingAccounts } from "@/components/books/funding-accounts";
 import { ExternalAccountMapping } from "@/components/books/external-account-mapping";
 import { CustomerDeposits } from "@/components/books/customer-deposits";
 import { BooksRegisters } from "@/components/books/books-registers";
@@ -1009,7 +1014,7 @@ export function BooksClient({
               </section>
             </div>
             {workspace.capabilities.adjust ? <CustomerDeposits /> : null}
-            {workspace.capabilities.adjust ? <BooksRegisters /> : null}
+            {workspace.capabilities.adjust ? <><InventoryWorkspace canManage={workspace.capabilities.manage} /><WarrantyAccounting /><BooksRegisters /></> : null}
             <section className="border bg-background p-5">
               <div className="flex flex-wrap items-end justify-between gap-3">
                 <div>
@@ -1051,6 +1056,7 @@ export function BooksClient({
 
         {section === "banking" && (
           <div className="space-y-5 py-5">
+            {workspace.capabilities.manage ? <FundingAccounts /> : null}
               <>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
@@ -1199,6 +1205,7 @@ export function BooksClient({
                 </div>
                 <BankReconciliationDesk workspace={workspace} />
                 {workspace.capabilities.reconcile ? <DepositBatches /> : null}
+                {workspace.capabilities.adjust && <PayrollSettlement />}
                 {workspace.capabilities.reconcile ? (
                   <BankReviewTray accounts={workspace.accounts} />
                 ) : (
@@ -1556,6 +1563,7 @@ export function BooksClient({
                           </div>
                         )}
                         <div className="mt-4 flex flex-wrap gap-2">
+                          {period.status !== "closed" && workspace.capabilities.close && <ClearingSupport periodId={period.id} />}
                           <Button asChild size="sm" variant="ghost">
                             <Link href={`/books/close/${period.id}`}>
                               Open period
@@ -1927,6 +1935,9 @@ export function BooksClient({
                             "Jurisdiction",
                             "Invoice count",
                             "Taxable sales cents",
+                            "Exempt sales cents",
+                            "Unclassified sales cents",
+                            "Adjustment count",
                             "Tax cents",
                             "Use tax cents",
                           ],
@@ -1934,6 +1945,9 @@ export function BooksClient({
                             row.jurisdiction,
                             row.invoiceCount,
                             row.taxableSalesCents,
+                            row.exemptSalesCents,
+                            row.unclassifiedSalesCents,
+                            row.adjustmentCount,
                             row.taxCents,
                             row.useTaxCents,
                           ]),

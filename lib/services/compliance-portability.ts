@@ -2,6 +2,8 @@ import "server-only"
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 
+import { isExpiredOn } from "@/lib/compliance/dates"
+import { revalidateDirectoryParty } from "@/lib/directory/cache"
 import { recordEvent } from "@/lib/services/events"
 import { downloadFilesObject, uploadFilesObject } from "@/lib/storage/files-storage"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -107,7 +109,6 @@ export async function listPortableComplianceDocuments(params: {
   const foreign = identityCompanies.filter((pair) => pair.orgId !== params.targetOrgId)
   if (foreign.length === 0) return []
 
-  const today = new Date().toISOString().slice(0, 10)
   const [{ data: documents }, { data: targetTypes }, { data: shares }] = await Promise.all([
     supabase
       .from("compliance_documents")
@@ -144,7 +145,7 @@ export async function listPortableComplianceDocuments(params: {
 
   return (documents ?? [])
     .filter((row: any) => foreignOrgByCompany.get(row.company_id) === row.org_id)
-    .filter((row: any) => !row.expiry_date || row.expiry_date >= today)
+    .filter((row: any) => !isExpiredOn(row.expiry_date))
     .map((row: any) => {
       const type = Array.isArray(row.compliance_document_types)
         ? row.compliance_document_types[0]
@@ -311,15 +312,11 @@ export async function shareComplianceDocumentToOrg(params: {
 
   if (createError || !created) throw new Error("Could not file the shared document")
 
-  await supabase
-    .from("compliance_documents")
-    .update({ superseded_by_id: created.id })
-    .eq("org_id", params.targetOrgId)
-    .eq("company_id", params.targetCompanyId)
-    .eq("document_type_id", targetType.id)
-    .neq("id", created.id)
-    .is("superseded_by_id", null)
-
+  // Deliberately does NOT supersede what the receiving builder already holds.
+  // A shared certificate arrives as an ordinary pending submission, and until
+  // their reviewer approves it, whatever they had on file is still the answer.
+  // Superseding here took a compliant vendor out of compliance the moment they
+  // offered a document, which is the opposite of the point.
   await supabase.from("vendor_document_shares").insert({
     source_org_id: source.org_id,
     source_document_id: source.id,
@@ -336,6 +333,10 @@ export async function shareComplianceDocumentToOrg(params: {
     .eq("org_id", params.targetOrgId)
     .eq("id", params.targetCompanyId)
     .maybeSingle()
+
+  // Same reason as the portal upload path: this writes into the receiving
+  // builder's org from a request that never touches their pages.
+  revalidateDirectoryParty(params.targetCompanyId)
 
   await recordEvent({
     orgId: params.targetOrgId,

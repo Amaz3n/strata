@@ -6,7 +6,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { postJobCostActualsForVendorBill } from "@/lib/services/job-cost-actuals"
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
-import { enqueueVendorBillSync } from "@/lib/services/accounting-sync"
+import { enqueueVendorBillSync, recordPayableAccountingEnqueueResult } from "@/lib/services/accounting-sync"
 import { rejectPoCompletionSchema, reportPoCompletionSchema, type ReportPoCompletionInput } from "@/lib/validation/po-completions"
 
 export type PoCompletionStatus = "reported" | "verified" | "approved" | "rejected" | "billed" | "void"
@@ -199,7 +199,14 @@ export async function approvePoCompletion(completionId: string, orgId?: string) 
     throw new Error(`Completion approval was rolled back because AP posting failed: ${ledgerError instanceof Error ? ledgerError.message : String(ledgerError)}`)
   }
   try {
-    await enqueueVendorBillSync(data.vendor_bill_id, resolvedOrgId)
+    const syncResult = await enqueueVendorBillSync(data.vendor_bill_id, resolvedOrgId)
+    await recordPayableAccountingEnqueueResult({
+      orgId: resolvedOrgId,
+      billId: data.vendor_bill_id,
+      entityType: "vendor_bill",
+      entityId: data.vendor_bill_id,
+      result: syncResult,
+    })
   } catch (syncError) {
     // The approved bill and ledger posting are authoritative. QBO delivery is
     // retryable infrastructure and must not unwind completed job-cost history.

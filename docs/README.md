@@ -24,7 +24,9 @@ then the reference docs below.
 | [`database-overview.md`](database-overview.md) | Schema reference. Live schema via Supabase MCP `list_tables` always wins. |
 | [`production-org-playbook.md`](production-org-playbook.md) | Role/surface map: who lives on which desk and what they mutate. |
 | [`books-revenue-recognition.md`](books-revenue-recognition.md) | Arc Books' full contract-lifecycle entry set, traced from the posting rules, with a worked percentage-of-completion example. **Carries the construction-CPA sign-off block that gates any org leaving `shadow` mode.** Read before changing anything in `lib/services/books/posting-rules.ts`. |
+| [`accounting-sync.md`](accounting-sync.md) | Provider boundaries, durable delivery/import, and the gated D2 release and acceptance process. |
 | [`mobile-api-v1.openapi.yaml`](mobile-api-v1.openapi.yaml) | Mobile API contract. Enforced by `pnpm test:mobile`. |
+| [`reference/payable-waivers.md`](reference/payable-waivers.md) | Incoming waiver preparation, review, payment/closeout integration, and migration/QA status. |
 | [`report-export-api.md`](report-export-api.md) | Report export route contract. |
 | [`repository-health.md`](repository-health.md) | Continuous reachability, deletion, dependency, and plan-lifecycle rules. |
 | [`takeoff-model.md`](takeoff-model.md) | The quantity model: reporting unit vs measured unit, axis factors, what counts and what deliberately does not, count by example. Read before touching `lib/drawings/measure.ts` or `lib/services/takeoff*.ts`. |

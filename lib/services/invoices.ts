@@ -11,7 +11,7 @@ import {
   type InvoiceDiscountInput,
 } from "@/lib/financials/invoice-totals"
 import { dollarsToCents } from "@/lib/financials/money"
-import { getProjectPosture, type ProductTier, type ProjectPosture } from "@/lib/product-tier"
+import { getProjectPosture, normalizeProductTier, type ProductTier, type ProjectPosture } from "@/lib/product-tier"
 import { getReceivablesPosturePolicy } from "@/lib/receivables/policy"
 import { createApprovedCostInvoiceFromPreview } from "@/lib/services/approved-cost-invoicing"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
@@ -36,6 +36,7 @@ import { completeOutboxJob, enqueueOutboxJob } from "@/lib/services/outbox"
 import { receivablesWriter } from "@/lib/services/receivables-writer"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { releaseInvoiceFromBillingPeriod } from "@/lib/services/billing-periods"
+import { resolveLedgerAuthority } from "@/lib/services/books/authority"
 import {
   getAccountingSyncState,
   getAccountingSyncStates,
@@ -124,9 +125,50 @@ async function requireInvoicePermission(params: {
   })
 }
 
+async function assertInvoiceBudgetLinks(
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"],
+  orgId: string,
+  projectId: string | null | undefined,
+  lines: InvoiceLineInput[],
+) {
+  const ids = [...new Set(lines.flatMap(line => line.budget_line_id ? [line.budget_line_id] : []))]
+  if (!ids.length) return
+  if (!projectId) throw new Error("A project is required for budget allocations")
+  const { data, error } = await supabase.from("budget_lines")
+    .select("id, budgets!inner(project_id)").eq("org_id", orgId)
+    .eq("budgets.project_id", projectId).in("id", ids)
+  if (error) throw new Error(`Unable to validate budget allocations: ${error.message}`)
+  if ((data ?? []).length !== ids.length) throw new Error("Invoice budget allocations must belong to this project")
+}
+
+async function assertInvoiceAccountingAccounts(
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"],
+  orgId: string,
+  lines: InvoiceLineInput[],
+) {
+  const nativeIds = [...new Set(lines.flatMap((line) => line.arc_books_gl_account_id ? [line.arc_books_gl_account_id] : []))]
+  const authority = await resolveLedgerAuthority(orgId)
+  if (authority !== "arc") {
+    if (nativeIds.length) throw new Error("Arc Books income accounts are available only when Arc Books is the official ledger")
+    return
+  }
+  if (!nativeIds.length) return
+  const { data, error } = await supabase
+    .from("gl_accounts")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("active", true)
+    .eq("account_type", "income")
+    .in("id", nativeIds)
+  if (error || (data ?? []).length !== nativeIds.length) {
+    throw new Error("Choose an active Arc Books income account")
+  }
+}
+
 function normalizeLines(lines: InvoiceLineInput[]): InvoiceLine[] {
   return lines.map((line) => ({
     cost_code_id: line.cost_code_id ?? null,
+    budget_line_id: line.budget_line_id ?? null,
     description: line.description,
     quantity: line.quantity,
     unit: line.unit ?? "unit",
@@ -135,6 +177,8 @@ function normalizeLines(lines: InvoiceLineInput[]): InvoiceLine[] {
     tax_rate_percent: line.tax_rate_percent ?? null,
     qbo_income_account_id: line.qbo_income_account_id ?? null,
     qbo_income_account_name: line.qbo_income_account_name ?? null,
+    arc_books_gl_account_id: line.arc_books_gl_account_id ?? null,
+    arc_books_gl_account_name: line.arc_books_gl_account_name ?? null,
     billable_cost_ids: line.billable_cost_ids ?? undefined,
     cost_cents: line.cost_cents ?? null,
     markup_cents: line.markup_cents ?? null,
@@ -145,6 +189,7 @@ function normalizeLines(lines: InvoiceLineInput[]): InvoiceLine[] {
 function invoiceLineRows(lines: InvoiceLine[], sourceType: string) {
   return lines.map((line) => ({
     cost_code_id: line.cost_code_id ?? null,
+    budget_line_id: line.budget_line_id ?? null,
     description: line.description,
     quantity: line.quantity,
     unit: line.unit,
@@ -154,6 +199,8 @@ function invoiceLineRows(lines: InvoiceLine[], sourceType: string) {
       tax_rate_percent: line.tax_rate_percent ?? null,
       qbo_income_account_id: line.qbo_income_account_id ?? null,
       qbo_income_account_name: line.qbo_income_account_name ?? null,
+      arc_books_gl_account_id: line.arc_books_gl_account_id ?? null,
+      arc_books_gl_account_name: line.arc_books_gl_account_name ?? null,
       system_generated_kind: isSystemGeneratedRetainageLine(line) ? "retainage_hold" : null,
       source_type: sourceType === "fee" ? "fee" : null,
       billable_cost_ids: line.billable_cost_ids ?? null,
@@ -217,6 +264,7 @@ export function buildApprovedCostInvoicePreview({
     groupBy: "cost_code" as const,
     lines: lines.map((line, index) => ({
       cost_code_id: line.cost_code_id ?? null,
+    budget_line_id: line.budget_line_id ?? null,
       description: line.description,
       unit: line.unit ?? null,
       cost_cents: line.cost_cents ?? line.unit_cost_cents,
@@ -835,11 +883,14 @@ function mapInvoiceWithLines(row: any, accountingState?: AccountingSyncState | n
   const mappedLines = rawLines.map((l: any) => ({
     ...l,
     cost_code_id: l.cost_code_id ?? null,
+    budget_line_id: l.budget_line_id ?? null,
     unit_cost_cents: l.unit_price_cents,
     taxable: (l.metadata as any)?.taxable ?? l.taxable ?? undefined,
     tax_rate_percent: (l.metadata as any)?.tax_rate_percent ?? null,
     qbo_income_account_id: (l.metadata as any)?.qbo_income_account_id ?? null,
     qbo_income_account_name: (l.metadata as any)?.qbo_income_account_name ?? null,
+    arc_books_gl_account_id: (l.metadata as any)?.arc_books_gl_account_id ?? null,
+    arc_books_gl_account_name: (l.metadata as any)?.arc_books_gl_account_name ?? null,
     billable_cost_ids: (l.metadata as any)?.billable_cost_ids ?? undefined,
     cost_cents: (l.metadata as any)?.cost_cents ?? null,
     markup_cents: (l.metadata as any)?.markup_cents ?? null,
@@ -853,7 +904,7 @@ function mapInvoiceWithLines(row: any, accountingState?: AccountingSyncState | n
 }
 
 const INVOICE_LIST_COLUMNS =
-  "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, sent_at, sent_to_emails, product_posture, approval_status, delivery_status, issued_snapshot"
+  "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, source_type, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, sent_at, sent_to_emails, product_posture, approval_status, delivery_status, issued_snapshot"
 
 /**
  * The billing queues. These are the operational buckets a person actually works —
@@ -864,6 +915,10 @@ const INVOICE_LIST_COLUMNS =
  */
 export type InvoiceQueueKey =
   | "all"
+  /** Everything a person still has to act on: drafts and issued invoices with a balance. */
+  | "active"
+  /** Settled and cancelled invoices — the record, not the work. */
+  | "history"
   | "preparing"
   | "awaiting_approval"
   | "ready"
@@ -920,6 +975,10 @@ function applyInvoiceQueueFilter<Q extends InvoiceFilterable<Q>>(
   todayIso: string,
 ): Q {
   switch (queue) {
+    case "active":
+      return query.in("status", ["draft", ...OPEN_AR_INVOICE_STATUSES])
+    case "history":
+      return query.in("status", ["paid", "void"])
     case "preparing":
       return query.eq("status", "draft").in("approval_status", ["not_required", "draft"])
     case "awaiting_approval":
@@ -1044,6 +1103,8 @@ export async function getInvoiceQueueCounts({
 
   const counts = Object.fromEntries(results) as Record<InvoiceQueueKey, number>
   counts.void = 0
+  counts.active = counts.preparing + counts.awaiting_approval + counts.ready + counts.open + counts.overdue
+  counts.history = counts.paid
   return counts
 }
 
@@ -1154,6 +1215,8 @@ export async function createInvoice({
     permission: authorizationPermission,
     projectId: input.project_id,
   })
+  await assertInvoiceBudgetLinks(supabase, resolvedOrgId, input.project_id, input.lines)
+  await assertInvoiceAccountingAccounts(supabase, resolvedOrgId, input.lines)
   const shouldIssue = input.issue === true
   if (shouldIssue) {
     await requireInvoicePermission({
@@ -1529,6 +1592,8 @@ export async function updateInvoice({
   const sourceDrawId = input.source_draw_id ?? (existing.metadata as any)?.source_draw_id ?? null
   const sourceChangeOrderId = input.source_change_order_id ?? (existing.metadata as any)?.source_change_order_id ?? null
   const projectId = existing.project_id ?? null
+  await assertInvoiceBudgetLinks(supabase, resolvedOrgId, projectId, input.lines)
+  await assertInvoiceAccountingAccounts(supabase, resolvedOrgId, input.lines)
   const productPosture = await resolveInvoicePosture({
     supabase,
     projectId,
@@ -1624,6 +1689,7 @@ export async function updateInvoice({
     metadata: {
       ...(existing.metadata ?? {}),
       ...(input.metadata ?? {}),
+      waiver_packet: (existing.metadata as any)?.waiver_packet,
       lines,
       totals,
       tax_rate: input.tax_rate,
@@ -1656,6 +1722,8 @@ export async function updateInvoice({
     sent_at: sentAt,
     sent_to_emails: sentTo,
   }
+
+  if (shouldIssue) await (await import("@/lib/services/invoice-waiver-packet")).assertInvoiceWaiverPacketReady(supabase,resolvedOrgId,{...payload,id:invoiceId})
 
   const service = createServiceSupabaseClient()
   const { data: rpcResult, error } = await service.rpc("update_invoice_atomic", {
@@ -1730,7 +1798,154 @@ export async function issueInvoice({
   recipients?: string[]
   orgId?: string
 }) {
-  const { supabase, orgId: resolvedOrgId, userId, productTier } = await requireOrgContext(orgId)
+  const context = await requireOrgContext(orgId)
+  await issueInvoiceWithContext(context, { invoiceId, recipients })
+  const fresh = await getInvoiceWithLines(invoiceId, context.orgId)
+  if (!fresh) throw new Error("Invoice was issued but could not be reloaded")
+  return fresh
+}
+
+export const SCHEDULED_INVOICE_SEND_JOB_TYPE = "issue_invoice_scheduled"
+
+/**
+ * Issue an invoice at a chosen moment. The draft records when it is due to go
+ * out and to whom; an outbox job carries the same timestamp and sends only if
+ * the draft still says so, which is how cancelling works: clear the timestamp
+ * and the job finds nothing to do.
+ */
+export async function scheduleInvoiceSend({
+  invoiceId,
+  recipients,
+  sendAt,
+  orgId,
+}: {
+  invoiceId: string
+  recipients: string[]
+  sendAt: string
+  orgId?: string
+}) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const when = new Date(sendAt)
+  if (Number.isNaN(when.getTime())) throw new Error("Pick a valid send time")
+  if (when.getTime() < Date.now() + 60_000) throw new Error("Pick a time at least a minute from now")
+  if (recipients.length === 0) throw new Error("Add at least one recipient before scheduling")
+
+  const { data: existing, error } = await supabase
+    .from("invoices")
+    .select("id, project_id, status, metadata")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", invoiceId)
+    .maybeSingle()
+  if (error || !existing) throw new Error(error?.message ?? "Invoice not found")
+  await requireInvoicePermission({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    permission: "invoice.send",
+    projectId: existing.project_id,
+    invoiceId,
+  })
+  if (isIssuedInvoiceStatus(existing.status)) throw new Error("This invoice has already been issued.")
+
+  const sendAtIso = when.toISOString()
+  const metadata = { ...((existing.metadata as Record<string, unknown> | null) ?? {}), scheduled_send_at: sendAtIso }
+  const service = createServiceSupabaseClient()
+  const { error: updateError } = await service
+    .from("invoices")
+    .update({ metadata, sent_to_emails: recipients })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", invoiceId)
+  if (updateError) throw new Error(`Could not schedule the invoice: ${updateError.message}`)
+
+  await enqueueOutboxJob({
+    orgId: resolvedOrgId,
+    jobType: SCHEDULED_INVOICE_SEND_JOB_TYPE,
+    payload: { invoice_id: invoiceId, scheduled_send_at: sendAtIso, recipients, actor_id: userId },
+    runAt: sendAtIso,
+  })
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "invoice",
+    entityId: invoiceId,
+    before: { scheduled_send_at: (existing.metadata as Record<string, unknown> | null)?.scheduled_send_at ?? null },
+    after: { scheduled_send_at: sendAtIso, recipients },
+  })
+  return { scheduledSendAt: sendAtIso }
+}
+
+export async function cancelScheduledInvoiceSend({ invoiceId, orgId }: { invoiceId: string; orgId?: string }) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const { data: existing, error } = await supabase
+    .from("invoices")
+    .select("id, project_id, metadata")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", invoiceId)
+    .maybeSingle()
+  if (error || !existing) throw new Error(error?.message ?? "Invoice not found")
+  await requireInvoicePermission({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    permission: "invoice.send",
+    projectId: existing.project_id,
+    invoiceId,
+  })
+  const metadata = { ...((existing.metadata as Record<string, unknown> | null) ?? {}) }
+  const previous = metadata.scheduled_send_at ?? null
+  delete metadata.scheduled_send_at
+  const service = createServiceSupabaseClient()
+  const { error: updateError } = await service
+    .from("invoices")
+    .update({ metadata })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", invoiceId)
+  if (updateError) throw new Error(`Could not cancel the scheduled send: ${updateError.message}`)
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "invoice",
+    entityId: invoiceId,
+    before: { scheduled_send_at: previous },
+    after: { scheduled_send_at: null },
+  })
+}
+
+/** The outbox side of `scheduleInvoiceSend`. Sends only if the draft still asks to be sent then. */
+export async function runScheduledInvoiceSend(orgId: string, payload: Record<string, unknown>) {
+  const invoiceId = typeof payload.invoice_id === "string" ? payload.invoice_id : null
+  const actorId = typeof payload.actor_id === "string" ? payload.actor_id : null
+  const scheduledFor = typeof payload.scheduled_send_at === "string" ? payload.scheduled_send_at : null
+  const recipients = Array.isArray(payload.recipients) ? payload.recipients.filter((value): value is string => typeof value === "string") : []
+  if (!invoiceId || !actorId || !scheduledFor) throw new Error("Scheduled invoice send is missing its payload")
+
+  const service = createServiceSupabaseClient()
+  const [{ data: invoice }, { data: org }] = await Promise.all([
+    service.from("invoices").select("id, status, metadata").eq("org_id", orgId).eq("id", invoiceId).maybeSingle(),
+    service.from("orgs").select("product_tier").eq("id", orgId).maybeSingle(),
+  ])
+  if (!invoice) return
+  const stillScheduled = (invoice.metadata as Record<string, unknown> | null)?.scheduled_send_at === scheduledFor
+  if (!stillScheduled || isIssuedInvoiceStatus(invoice.status)) return
+
+  await issueInvoiceWithContext(
+    { supabase: service, orgId, userId: actorId, productTier: normalizeProductTier(org?.product_tier) },
+    { invoiceId, recipients },
+  )
+}
+
+/**
+ * Issue on behalf of an actor who is not the caller: the scheduler, and an
+ * owner certifying a pay application in their portal. The actor is the org
+ * member who set the send in motion, so permission is checked against them.
+ */
+export async function issueInvoiceWithContext(
+  context: { supabase: SupabaseClient; orgId: string; userId: string; productTier: ProductTier },
+  { invoiceId, recipients }: { invoiceId: string; recipients?: string[] },
+) {
+  const { supabase, orgId: resolvedOrgId, userId, productTier } = context
   const { data: existing, error } = await supabase
     .from("invoices")
     .select(
@@ -1766,6 +1981,8 @@ export async function issueInvoice({
   ) {
     throw new Error(`${policy.customerLabel} billing must be approved before it can be issued.`)
   }
+
+  await (await import("@/lib/services/invoice-waiver-packet")).assertInvoiceWaiverPacketReady(supabase,resolvedOrgId,existing)
 
   const sentTo = recipients && recipients.length > 0 ? recipients : existing.sent_to_emails ?? []
   if (sentTo.length === 0) {
@@ -1808,6 +2025,7 @@ export async function issueInvoice({
       sent_to_emails: sentTo,
       delivery_status: "queued",
       issued_snapshot: issuedSnapshot,
+      metadata: { ...existingMetadata, scheduled_send_at: null },
     })
     .eq("org_id", resolvedOrgId)
     .eq("id", invoiceId)
@@ -1836,10 +2054,6 @@ export async function issueInvoice({
     dueDate: (issued.due_date as string | null) ?? existing.due_date ?? null,
     recipients: sentTo,
   })
-
-  const fresh = await getInvoiceWithLines(invoiceId, resolvedOrgId)
-  if (!fresh) throw new Error("Invoice was issued but could not be reloaded")
-  return fresh
 }
 
 export async function requestInvoiceApproval({
@@ -2296,7 +2510,7 @@ export async function reviseInvoice({ invoiceId, orgId }: { invoiceId: string; o
     throw new Error("This invoice has already been voided.")
   }
 
-  const next = await getNextInvoiceNumber(resolvedOrgId)
+  const next = await getNextInvoiceNumber(resolvedOrgId, original.project_id)
   try {
     // Permission is checked with the caller's request client above; only the
     // trusted service boundary may execute the atomic database mutation.
@@ -2371,7 +2585,7 @@ export async function getInvoiceForPortal(invoiceId: string, orgId: string, proj
   const { data, error } = await supabase
     .from("invoices")
     .select(
-      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, sent_at, sent_to_emails, product_posture, approval_status, delivery_status, issued_snapshot, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
+      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, sent_at, sent_to_emails, product_posture, approval_status, delivery_status, issued_snapshot, invoice_lines (id, cost_code_id, budget_line_id, description, quantity, unit, unit_price_cents, metadata)",
     )
     .eq("id", invoiceId)
     .eq("org_id", orgId)
@@ -2392,7 +2606,7 @@ export async function getInvoiceByToken(token: string) {
   const { data, error } = await supabase
     .from("invoices")
     .select(
-      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, sent_at, sent_to_emails, product_posture, approval_status, delivery_status, issued_snapshot, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
+      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, sent_at, sent_to_emails, product_posture, approval_status, delivery_status, issued_snapshot, invoice_lines (id, cost_code_id, budget_line_id, description, quantity, unit, unit_price_cents, metadata)",
     )
     .eq("token", token)
     .eq("client_visible", true)
@@ -2414,7 +2628,7 @@ export async function getInvoiceWithLines(invoiceId: string, orgId?: string): Pr
   const { data, error } = await supabase
     .from("invoices")
     .select(
-      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, sent_at, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, product_posture, approval_status, delivery_status, issued_snapshot, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
+      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, sent_at, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, product_posture, approval_status, delivery_status, issued_snapshot, invoice_lines (id, cost_code_id, budget_line_id, description, quantity, unit, unit_price_cents, metadata)",
     )
     .eq("id", invoiceId)
     .eq("org_id", resolvedOrgId)
@@ -2723,6 +2937,10 @@ async function deliverIssuedInvoice(params: {
 
 /** The issuance job body. Idempotent; safe to run again after a partial failure. */
 export async function runInvoiceIssuance(orgId: string, payload: InvoiceIssuanceJobPayload) {
+  const packetClient = createServiceSupabaseClient()
+  const {data:packetInvoice,error:packetError}=await packetClient.from("invoices").select("*").eq("org_id",orgId).eq("id",payload.invoice_id).single()
+  if(packetError||!packetInvoice)throw new Error("Could not verify invoice packet for delivery")
+  await (await import("@/lib/services/invoice-waiver-packet")).assertInvoiceWaiverPacketReady(packetClient,orgId,packetInvoice)
   const invoiceId = payload.invoice_id
   if (!invoiceId) throw new Error("Invoice issuance job is missing invoice_id")
 
@@ -2793,6 +3011,11 @@ async function sendInvoiceEmail({
     throw new Error("Add at least one recipient before issuing this invoice.")
   }
 
+  const { data: waiverRows, error: waiverError } = await supabase.from("invoice_lien_waivers").select("status,waiver_type,metadata").eq("org_id",orgId).eq("invoice_id",invoiceId).neq("status","void")
+  if (waiverError) throw new Error("Could not load invoice packet documents")
+  const { isWaiverPublic, readWaiverWorkflow } = await import("@/lib/lien-waivers/invoice-waiver")
+  const includesWaiver = (waiverRows ?? []).some(w => isWaiverPublic(w) && readWaiverWorkflow(w)?.lifecycle === "signed")
+
   const issueKey = invoice.sent_at ?? new Date().toISOString()
   const deliveryKeyFor = (recipient: string) => `${invoiceId}:${issueKey}:${recipient.toLowerCase()}`
 
@@ -2846,7 +3069,7 @@ async function sendInvoiceEmail({
     .eq("id", invoiceId)
     .eq("org_id", orgId)
 
-  const subject = `Invoice ${invoice.invoice_number}: ${invoice.title ?? "New invoice"}`
+  const subject = `${includesWaiver ? "Invoice & waiver" : "Invoice"} ${invoice.invoice_number}: ${invoice.title ?? "New invoice"}`
   const amount =
     totalCents != null
       ? `$${(totalCents / 100).toLocaleString("en-US", {
@@ -2865,6 +3088,7 @@ async function sendInvoiceEmail({
 
   const html = await renderEmailTemplate(
     InvoiceEmail({
+      includesWaiver,
       invoiceNumber: invoice.invoice_number,
       invoiceTitle: invoice.title ?? "New invoice",
       projectName: (Array.isArray(invoice.project) ? invoice.project[0] : invoice.project)?.name ?? "Project",
@@ -2926,4 +3150,3 @@ async function sendInvoiceEmail({
       .eq("org_id", orgId)
   }
 }
-

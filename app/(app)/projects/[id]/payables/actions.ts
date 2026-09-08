@@ -11,15 +11,19 @@ import {
   deleteVendorBill,
   reassignImportedPayable,
   approveVendorBillsAtomic,
+  submitVendorBillsForApproval,
+  type BulkOperationMode,
+  type VendorBillBulkOutcome,
   type VendorBillSummary,
+  ensureVendorBillCompany,
 } from "@/lib/services/vendor-bills";
 import { releaseRetainage } from "@/lib/services/ap-retainage";
 import { listProjectCommitments } from "@/lib/services/commitments";
 import { listProjectBudgetLines } from "@/lib/services/budgets";
 import { listCostCodes } from "@/lib/services/cost-codes";
 import { getProjectCostCodesEnabled } from "@/lib/financials/cost-codes-enabled";
-import { createCompany, getCompany } from "@/lib/services/companies";
 import { requireOrgContext } from "@/lib/services/context";
+import { requirePermission } from "@/lib/services/permissions";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import {
   AuthorizationError,
@@ -29,7 +33,7 @@ import { resolveAccountingTarget } from "@/lib/services/accounting-target";
 import { getProvider } from "@/lib/integrations/accounting/registry";
 import { DIMENSION_LABELS } from "@/lib/integrations/accounting/catalog";
 import { getAccountingSyncStates } from "@/lib/services/accounting-sync-state";
-import { processAccountingPush } from "@/lib/services/accounting-sync";
+import { requestAccountingPush } from "@/lib/services/accounting-requests";
 import { accountingReference } from "@/lib/services/accounting-coding";
 import { suggestCoding } from "@/lib/services/books/coding-rules";
 import { resolveLedgerAuthority } from "@/lib/services/books/authority";
@@ -60,13 +64,23 @@ export type PayableMutationResult<T = VendorBillSummary> =
 
 export async function approveVendorBillsAtomicAction(
   items: Array<{ id: string; expected_updated_at?: string }>,
-): Promise<ActionResult<{ approvedCount: number }>> {
+  mode: BulkOperationMode = "all_or_nothing",
+): Promise<ActionResult<{ approvedCount: number; outcomes: VendorBillBulkOutcome[] }>> {
   return run(async () => {
-    const result = await approveVendorBillsAtomic(items);
+    const result = await approveVendorBillsAtomic(items, undefined, mode);
     revalidatePath("/payables");
     revalidatePath("/projects/[id]/financials/payables", "page");
     return result;
   });
+}
+
+export async function submitVendorBillsForApprovalAction(ids: string[]): Promise<ActionResult<VendorBillBulkOutcome[]>> {
+  return run(async () => {
+    const result = await submitVendorBillsForApproval(ids)
+    revalidatePath("/payables")
+    revalidatePath("/projects/[id]/financials/payables", "page")
+    return result
+  })
 }
 
 /**
@@ -210,85 +224,7 @@ export async function ensureProjectVendorCompanyForPayableAction(
   billId: string,
 ) {
   return run(async () => {
-    const { orgId } = await requireOrgContext();
-    const supabase = createServiceSupabaseClient();
-
-    const { data: bill, error: billError } = await supabase
-      .from("vendor_bills")
-      .select(
-        "id, org_id, project_id, company_id, commitment_id, metadata, qbo_vendor_id, qbo_vendor_name, commitment:commitments(company_id)",
-      )
-      .eq("org_id", orgId)
-      .eq("project_id", projectId)
-      .eq("id", billId)
-      .maybeSingle();
-
-    if (billError || !bill) {
-      throw new Error("Payable not found");
-    }
-
-    const existingCompanyId =
-      (bill.company_id as string | null | undefined) ??
-      ((bill.commitment as any)?.company_id as string | null | undefined);
-    if (existingCompanyId) {
-      return getCompany(existingCompanyId, orgId);
-    }
-
-    const metadata = (bill.metadata as Record<string, any> | null) ?? {};
-    const vendorName = String(
-      metadata.vendor_name ?? bill.qbo_vendor_name ?? "",
-    ).trim();
-    if (!vendorName) {
-      throw new Error(
-        "This payable does not have a vendor name to turn into an Arc vendor.",
-      );
-    }
-
-    const { data: existingCompany, error: companyLookupError } = await supabase
-      .from("companies")
-      .select("id")
-      .eq("org_id", orgId)
-      .ilike("name", vendorName)
-      .is("metadata->>archived_at", null)
-      .limit(1)
-      .maybeSingle();
-
-    if (companyLookupError) {
-      throw new Error(
-        `Unable to find matching vendor: ${companyLookupError.message}`,
-      );
-    }
-
-    const company = existingCompany?.id
-      ? await getCompany(existingCompany.id as string, orgId)
-      : await createCompany({
-          orgId,
-          input: {
-            name: vendorName,
-            role_key: "vendor",
-            qbo_vendor_id: bill.qbo_vendor_id || undefined,
-            qbo_vendor_name: bill.qbo_vendor_name || undefined,
-            qbo_vendor_synced_at: bill.qbo_vendor_id
-              ? new Date().toISOString()
-              : undefined,
-            qbo_vendor_sync_status: bill.qbo_vendor_id ? "linked" : undefined,
-          },
-        });
-
-    const { error: updateError } = await supabase
-      .from("vendor_bills")
-      .update({
-        company_id: company.id,
-        qbo_vendor_id: company.qbo_vendor_id ?? bill.qbo_vendor_id ?? null,
-        qbo_vendor_name:
-          company.qbo_vendor_name ?? bill.qbo_vendor_name ?? vendorName,
-      })
-      .eq("org_id", orgId)
-      .eq("id", billId);
-
-    if (updateError) {
-      throw new Error(`Unable to link payable vendor: ${updateError.message}`);
-    }
+    const company = await ensureVendorBillCompany({ projectId, billId });
 
     revalidatePayablesPages(projectId);
     revalidatePath(`/companies/${company.id}`);
@@ -426,8 +362,9 @@ export async function suggestPayableCreationCodingAction(
   }
 }
 
-export async function getPayablesAccountingContextAction(projectId?: string) {
-  const { orgId, supabase } = await requireOrgContext();
+export async function getPayablesAccountingContextAction(projectId?: string, options: { includeVendors?: boolean } = {}) {
+  const { orgId, supabase, userId } = await requireOrgContext();
+  await requireAuthorization({ permission: "bill.read", userId, orgId, projectId, supabase, resourceType: projectId ? "project" : "vendor_bill", resourceId: projectId ?? "payables-accounting" });
   // Separate from `enabled` on purpose. `enabled` means "a connection is
   // routed here, so coding pickers and pushes make sense". This means "this
   // org has an accounting integration at all" — which is the right gate for
@@ -439,10 +376,7 @@ export async function getPayablesAccountingContextAction(projectId?: string) {
     .eq("org_id", orgId);
   const hasAnyConnection = (connectionCount ?? 0) > 0;
 
-  const [target, ledgerAuthority] = await Promise.all([
-    resolveAccountingTarget({ orgId, projectId }),
-    resolveLedgerAuthority(orgId),
-  ]);
+  const ledgerAuthority = await resolveLedgerAuthority(orgId);
   if (ledgerAuthority === "arc") {
     const { data: accounts, error: accountsError } = await supabase
       .from("gl_accounts")
@@ -477,7 +411,7 @@ export async function getPayablesAccountingContextAction(projectId?: string) {
       }));
     return {
       enabled: true,
-      hasAnyConnection,
+      hasAnyConnection: false,
       provider: "arc_books",
       providerName: "Arc Books",
       connectionLabel: "Arc Books",
@@ -496,6 +430,7 @@ export async function getPayablesAccountingContextAction(projectId?: string) {
       },
     };
   }
+  const target = await resolveAccountingTarget({ orgId, projectId });
   if (!target) {
     return {
       enabled: false,
@@ -516,18 +451,16 @@ export async function getPayablesAccountingContextAction(projectId?: string) {
   const [expenseAccounts, apAccounts, vendors, dimensionValues] =
     await Promise.all([
       provider
-        .listAccounts({ connectionId: target.connection.id, kind: "expense" })
-        .catch(() => []),
+        .listAccounts({ connectionId: target.connection.id, kind: "expense" }),
       provider
-        .listAccounts({ connectionId: target.connection.id, kind: "ap" })
-        .catch(() => []),
-      provider
+        .listAccounts({ connectionId: target.connection.id, kind: "ap" }),
+      options.includeVendors ? provider
         .searchCounterparties?.({
           connectionId: target.connection.id,
           role: "vendor",
           term: "",
         })
-        .catch(() => []) ?? Promise.resolve([]),
+        .catch(() => []) ?? Promise.resolve([]) : Promise.resolve([]),
       Promise.all(
         provider.capabilities.dimensions
           .filter((kind) => kind !== "customer")
@@ -565,14 +498,23 @@ export async function getPayablesAccountingContextAction(projectId?: string) {
 }
 
 export async function getPayablesAccountingSyncStatesAction(billIds: string[]) {
-  const ids = Array.from(new Set(billIds)).slice(0, 500);
-  const { orgId, supabase } = await requireOrgContext();
-  const states = await getAccountingSyncStates(supabase, {
-    orgId,
-    entityType: "bill",
-    entityIds: ids,
-  });
-  return Object.fromEntries(states);
+  const ids = z.array(z.string().uuid()).max(500).parse(Array.from(new Set(billIds)));
+  const { orgId, supabase, userId } = await requireOrgContext();
+  await requirePermission("bill.read", { orgId, supabase, userId });
+  const { data, error } = ids.length ? await supabase.from("payments").select("id,bill_id,created_at").eq("org_id", orgId).in("bill_id", ids).order("created_at", { ascending: false }) : { data: [], error: null }
+  if (error) throw new Error(`Unable to load bill payments: ${error.message}`)
+  const paymentByBillId = new Map<string, string>()
+  for (const payment of data ?? []) if (payment.bill_id && !paymentByBillId.has(payment.bill_id)) paymentByBillId.set(payment.bill_id, payment.id)
+  const [billStates, creditStates, paymentStates] = await Promise.all([
+    getAccountingSyncStates(supabase, { orgId, entityType: "bill", entityIds: ids }),
+    getAccountingSyncStates(supabase, { orgId, entityType: "vendor_credit", entityIds: ids }),
+    getAccountingSyncStates(supabase, { orgId, entityType: "bill_payment", entityIds: [...paymentByBillId.values()] }),
+  ])
+  return {
+    bills: Object.fromEntries([...billStates, ...creditStates]),
+    billPayments: Object.fromEntries(paymentStates),
+    latestPaymentIdByBillId: Object.fromEntries(paymentByBillId),
+  }
 }
 
 export async function syncProjectVendorBillToAccountingAction(
@@ -581,14 +523,35 @@ export async function syncProjectVendorBillToAccountingAction(
 ) {
   return run(async () => {
     const { orgId } = await requireOrgContext();
-    const result = await processAccountingPush({
-      orgId,
+    const result = await requestAccountingPush({
+      projectId,
       entityType: "vendor_bill",
       entityId: billId,
     });
     revalidatePayablesPages(projectId);
     return result;
   });
+}
+
+export async function syncProjectVendorBillsToAccountingAction(
+  projectId: string,
+  billIds: string[],
+): Promise<ActionResult<Array<{ billId: string; success: boolean; error?: string }>>> {
+  return run(async () => {
+    const parsed = z.object({ projectId: z.string().uuid(), billIds: z.array(z.string().uuid()).min(1).max(100) }).parse({ projectId, billIds: [...new Set(billIds)] })
+    const { orgId } = await requireOrgContext()
+    const results = []
+    for (const billId of parsed.billIds) {
+      try {
+        await requestAccountingPush({ projectId, entityType: "vendor_bill", entityId: billId })
+        results.push({ billId, success: true })
+      } catch (error) {
+        results.push({ billId, success: false, error: error instanceof Error ? error.message : "Accounting sync failed" })
+      }
+    }
+    revalidatePayablesPages(parsed.projectId)
+    return results
+  })
 }
 
 export async function deleteProjectVendorBillAction(

@@ -22,7 +22,7 @@ import {
 import {
   formatMoneyInput,
   parseMoneyToCents,
-} from "@/components/companies/account/compliance-dialogs";
+} from "@/components/compliance/document-fact-fields";
 import { StatusChip } from "@/components/companies/company-detail-ui";
 import { cn } from "@/lib/utils";
 import type {

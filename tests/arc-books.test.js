@@ -7,6 +7,7 @@ const test = require("node:test");
 
 const {
   classifyPaymentPosting,
+  postApFeeCharge,
   postBillPayment,
   postClosingInvoice,
   postCustomerInvoice,
@@ -201,6 +202,34 @@ test("Arc Books golden postings are balanced in integer cents", () => {
       ["2010", 0, 12500],
     ],
   );
+});
+
+test("Arc Pay projects three vendor debits and one separate fee debit", () => {
+  const lineAmounts = (draft) => Object.fromEntries(draft.lines.map((line) => [line.accountCode, line.debitCents - line.creditCents]));
+  const vendorAmounts = [45_000, 72_500, 18_250];
+  const vendorDrafts = vendorAmounts.map((amountCents, index) => draftFromFact({
+    sourceType: "bill_payment",
+    sourceId: `00000000-0000-4000-8000-00000000010${index}`,
+    accountingDate: "2026-09-01",
+    payload: { amount_cents: amountCents, fee_cents: 999, project_id: PROJECT_ID },
+    sourceVersion: 1,
+    projectionVersion: 1,
+    policyVersion: 1,
+  }));
+  const feeDraft = draftFromFact({
+    sourceType: "ap_fee_charge",
+    sourceId: "00000000-0000-4000-8000-000000000200",
+    accountingDate: "2026-09-01",
+    payload: { amount_cents: 1_375 },
+    sourceVersion: 1,
+    projectionVersion: 1,
+    policyVersion: 1,
+  });
+  assert.deepEqual(vendorDrafts.map((draft) => -lineAmounts(draft)["1000"]), vendorAmounts);
+  assert.deepEqual(lineAmounts(feeDraft), { 6050: 1_375, 1000: -1_375 });
+  assert.equal([...vendorDrafts, feeDraft].length, 4);
+  for (const draft of [...vendorDrafts, feeDraft]) assertBalancedJournalDraft(draft);
+  assert.deepEqual(lineAmounts(postApFeeCharge({ ...common(), amountCents: 1_375 })), { 6050: 1_375, 1000: -1_375 });
 });
 
 test("customer deposits stay liabilities until applied or refunded", () => {
@@ -3429,15 +3458,12 @@ test("receivables migrations preserve payment idempotency and Books tax ownershi
   );
 });
 
-test("deleted QuickBooks customer payments create durable Arc reversals", () => {
-  const reconcile = fs.readFileSync(
-    path.join(__dirname, "../lib/integrations/accounting/qbo/reconcile.ts"),
-    "utf8",
-  );
-  assert.match(reconcile, /async function reverseDeletedQboPayment/);
-  assert.match(reconcile, /providerReversalId = `qbo-delete:/);
-  assert.match(reconcile, /recalc_invoice_balance_atomic/);
-  assert.match(reconcile, /eventType: "payment_reversed_from_qbo"/);
+test("deleted QuickBooks payments preserve posted cash and create visible conflicts", () => {
+  const reconcile = fs.readFileSync(path.join(__dirname, "../lib/integrations/accounting/qbo/reconcile.ts"), "utf8")
+  assert.match(reconcile, /reconcilePaymentFacts/)
+  assert.match(reconcile, /conflict/)
+  assert.doesNotMatch(reconcile, /providerReversalId = `qbo-delete:/)
+  assert.doesNotMatch(reconcile, /eventType: "payment_reversed_from_qbo"/)
 });
 
 test("a source that leaves the projectable set is retired, and retirement is idempotent", () => {
@@ -3530,11 +3556,11 @@ test("retirement handles touched lifecycle changes incrementally and deletions o
   // treating every untouched source as gone.
   assert.match(
     projector,
-    /if \(options\.full\) \{[\s\S]{0,500}?retireDepartedSources\(\s*orgId,\s*liveSourceKeys,\s*policyVersion,?\s*\)/,
+    /if \(options\.full && !requestedKeys\) \{[\s\S]{0,500}?retireDepartedSources\(\s*orgId,\s*liveSourceKeys,\s*policyVersion,?\s*\)/,
   );
   assert.match(
     projector,
-    /else if \(retirementSourceKeys\.size > 0\)[\s\S]{0,500}?retireDepartedSources\([\s\S]{0,200}?retirementSourceKeys/,
+    /else if \(!requestedKeys && retirementSourceKeys\.size > 0\)[\s\S]{0,500}?retireDepartedSources\([\s\S]{0,200}?retirementSourceKeys/,
   );
   assert.equal(
     projector.match(/retireDepartedSources\(/g).length,
@@ -3675,10 +3701,7 @@ test("revenue recognition is as-of, and names the projects it could not answer f
     poc,
     /export function orderPocSnapshotsLatestFirst[\s\S]*?\.order\("as_of", \{ ascending: false \}\)\s*\n\s*\.order\("created_at", \{ ascending: false \}\)\s*\n\s*\.order\("id", \{ ascending: false \}\)/,
   );
-  for (const file of [
-    "../lib/services/reports/wip-over-under.ts",
-    "../lib/services/dashboard.ts",
-  ]) {
+  for (const file of ["../lib/services/reports/wip-over-under.ts"]) {
     const source = withoutComments(
       fs.readFileSync(path.join(__dirname, file), "utf8"),
     );
@@ -3693,6 +3716,22 @@ test("revenue recognition is as-of, and names the projects it could not answer f
       `${file} must not re-declare the snapshot ordering`,
     );
   }
+
+  // The control tower reads the same position in SQL, so the tiebreak travels
+  // as a `distinct on` rather than as a helper call. Same three keys, same
+  // order — a desk that picked a different snapshot would report a different
+  // over/under than the WIP report for the same job on the same day.
+  const rollup = fs.readFileSync(
+    path.join(
+      __dirname,
+      "../supabase/migrations/20260903120000_control_tower_rollup.sql",
+    ),
+    "utf8",
+  );
+  assert.match(
+    rollup,
+    /order by ps\.project_id, ps\.as_of desc, ps\.created_at desc, ps\.id desc/,
+  );
 });
 
 test("statement lines are paged, so the trial balance cannot stop summing", () => {

@@ -1,10 +1,19 @@
+import { requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
-import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
+import {
+  requireAnyPermission,
+  requirePermission,
+} from "@/lib/services/permissions"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { getProjectPosture } from "@/lib/product-tier"
-import { closeoutItemInputSchema, closeoutItemUpdateSchema, type CloseoutItemInput, type CloseoutItemUpdate } from "@/lib/validation/closeout"
+import {
+  closeoutItemInputSchema,
+  closeoutItemUpdateSchema,
+  type CloseoutItemInput,
+  type CloseoutItemUpdate,
+} from "@/lib/validation/closeout"
 import type { CloseoutItem, CloseoutPackage } from "@/lib/types"
 
 const defaultItems = [
@@ -21,11 +30,15 @@ const baseCloseoutItemSelect =
 const extendedCloseoutItemSelect =
   "id, org_id, project_id, closeout_package_id, title, status, file_id, due_date, responsible_party, notes, created_at, updated_at"
 
-function isMissingCloseoutOptionalColumnError(error: { message?: string } | null | undefined) {
+function isMissingCloseoutOptionalColumnError(
+  error: { message?: string } | null | undefined,
+) {
   const message = error?.message ?? ""
   return (
     message.includes("column closeout_items.due_date does not exist") ||
-    message.includes("column closeout_items.responsible_party does not exist") ||
+    message.includes(
+      "column closeout_items.responsible_party does not exist",
+    ) ||
     message.includes("column closeout_items.notes does not exist")
   )
 }
@@ -93,10 +106,30 @@ async function ensurePackage(projectId: string, orgId: string) {
   return mapPackage(created)
 }
 
-export async function getCloseoutPackage(projectId: string, orgId?: string): Promise<{ package: CloseoutPackage; items: CloseoutItem[] }> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
+export async function getCloseoutPackage(
+  projectId: string,
+  orgId?: string,
+): Promise<{ package: CloseoutPackage; items: CloseoutItem[] }> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId)
+  await requireAnyPermission(["org.member", "org.read"], {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  })
 
+  await requireAuthorization({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    permission: "closeout.read",
+    projectId,
+    resourceType: "project",
+    resourceId: projectId,
+  })
   const pkg = await ensurePackage(projectId, resolvedOrgId)
 
   const loadItems = async (selectClause: string) =>
@@ -132,7 +165,9 @@ export async function getCloseoutPackage(projectId: string, orgId?: string): Pro
       .in("entity_id", itemIds)
 
     if (linksError) {
-      throw new Error(`Failed to load closeout file counts: ${linksError.message}`)
+      throw new Error(
+        `Failed to load closeout file counts: ${linksError.message}`,
+      )
     }
 
     for (const link of links ?? []) {
@@ -141,9 +176,35 @@ export async function getCloseoutPackage(projectId: string, orgId?: string): Pro
     }
   }
 
+  const { getProjectWaiverReadiness } =
+    await import("@/lib/services/waiver-register")
+  const readiness = await getProjectWaiverReadiness(
+    projectId,
+    "closeout.read",
+    resolvedOrgId,
+  )
+  for (const item of itemRows)
+    if (item.title === "Final lien waivers") {
+      item.status = readiness.ready ? "complete" : "missing"
+      item.notes = readiness.ready
+        ? "Waiver obligations satisfied"
+        : `Outstanding: ${readiness.missing.join(", ")}. Review in Payables → Waivers.`
+    }
   return {
-    package: pkg,
-    items: itemRows.map((item) => mapItem({ ...item, attachment_count: attachmentCounts.get(item.id as string) ?? 0 })),
+    package: {
+      ...pkg,
+      status:
+        itemRows.length > 0 &&
+        itemRows.every((item) => item.status === "complete")
+          ? "complete"
+          : "in_progress",
+    },
+    items: itemRows.map((item) =>
+      mapItem({
+        ...item,
+        attachment_count: attachmentCounts.get(item.id as string) ?? 0,
+      }),
+    ),
   }
 }
 
@@ -155,8 +216,16 @@ export async function createCloseoutItem({
   orgId?: string
 }): Promise<CloseoutItem> {
   const parsed = closeoutItemInputSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId)
+  await requirePermission("org.member", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  })
 
   const pkg = parsed.closeout_package_id
     ? { id: parsed.closeout_package_id }
@@ -175,7 +244,9 @@ export async function createCloseoutItem({
       responsible_party: parsed.responsible_party?.trim() || null,
       notes: parsed.notes?.trim() || null,
     })
-    .select("id, org_id, project_id, closeout_package_id, title, status, file_id, due_date, responsible_party, notes, created_at, updated_at")
+    .select(
+      "id, org_id, project_id, closeout_package_id, title, status, file_id, due_date, responsible_party, notes, created_at, updated_at",
+    )
     .single()
 
   if (error && isMissingCloseoutOptionalColumnError(error)) {
@@ -193,7 +264,9 @@ export async function createCloseoutItem({
       .single()
 
     if (fallback.error || !fallback.data) {
-      throw new Error(`Failed to create closeout item: ${fallback.error?.message ?? error.message}`)
+      throw new Error(
+        `Failed to create closeout item: ${fallback.error?.message ?? error.message}`,
+      )
     }
 
     data = fallback.data as any
@@ -234,8 +307,16 @@ export async function updateCloseoutItem({
   orgId?: string
 }): Promise<CloseoutItem> {
   const parsed = closeoutItemUpdateSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId)
+  await requirePermission("org.member", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  })
 
   const { data: existing, error: existingError } = await supabase
     .from("closeout_items")
@@ -262,13 +343,31 @@ export async function updateCloseoutItem({
     throw new Error("Closeout item not found")
   }
 
+  await requireAuthorization({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    permission: "closeout.write",
+    projectId: existingItem.project_id,
+    resourceType: "closeout_item",
+    resourceId: itemId,
+  })
+  if (
+    existingItem.title === "Final lien waivers" &&
+    (parsed.status !== undefined || parsed.title !== undefined)
+  )
+    throw new Error(
+      "Final waiver readiness is calculated from Payables → Waivers",
+    )
   const updateData: Record<string, any> = {}
   if (parsed.title !== undefined) updateData.title = parsed.title
   if (parsed.status !== undefined) updateData.status = parsed.status
   if (parsed.file_id !== undefined) updateData.file_id = parsed.file_id
   if (parsed.due_date !== undefined) updateData.due_date = parsed.due_date
-  if (parsed.responsible_party !== undefined) updateData.responsible_party = parsed.responsible_party?.trim() || null
-  if (parsed.notes !== undefined) updateData.notes = parsed.notes?.trim() || null
+  if (parsed.responsible_party !== undefined)
+    updateData.responsible_party = parsed.responsible_party?.trim() || null
+  if (parsed.notes !== undefined)
+    updateData.notes = parsed.notes?.trim() || null
   updateData.updated_at = new Date().toISOString()
 
   const { data, error } = await supabase
@@ -295,14 +394,13 @@ export async function updateCloseoutItem({
       .select(baseCloseoutItemSelect)
       .single()
 
-      updatedItem = fallback.data as any
-      updateError = fallback.error
-      }
+    updatedItem = fallback.data as any
+    updateError = fallback.error
+  }
 
-      if (updateError || !updatedItem) {
-      throw new Error(`Failed to update closeout item: ${updateError?.message}`)
-      }
-
+  if (updateError || !updatedItem) {
+    throw new Error(`Failed to update closeout item: ${updateError?.message}`)
+  }
 
   await recordEvent({
     orgId: resolvedOrgId,
@@ -325,13 +423,26 @@ export async function updateCloseoutItem({
   if (updatedItem.closeout_package_id) {
     const { data: items } = await supabase
       .from("closeout_items")
-      .select("status")
+      .select("title,status")
       .eq("org_id", resolvedOrgId)
       .eq("closeout_package_id", updatedItem.closeout_package_id)
 
+    const { getProjectWaiverReadiness } =
+      await import("@/lib/services/waiver-register")
+    const readiness = await getProjectWaiverReadiness(
+      updatedItem.project_id,
+      "closeout.write",
+      resolvedOrgId,
+    )
+    for (const item of items ?? [])
+      if (item.title === "Final lien waivers")
+        item.status = readiness.ready ? "complete" : "missing"
     const total = items?.length ?? 0
-    const completed = (items ?? []).filter((item) => item.status === "complete").length
-    const nextStatus = total > 0 && completed === total ? "complete" : "in_progress"
+    const completed = (items ?? []).filter(
+      (item) => item.status === "complete",
+    ).length
+    const nextStatus =
+      total > 0 && completed === total ? "complete" : "in_progress"
 
     const { data: pkg } = await supabase
       .from("closeout_packages")
@@ -343,15 +454,20 @@ export async function updateCloseoutItem({
     // The package reaching complete is substantial completion, and for projects that
     // never close it's what starts the warranty clock. Stamped once — reopening an
     // item later doesn't move a date coverage was already snapshotted from.
-    const reachedCompletion = nextStatus === "complete" && !pkg?.substantial_completion_date
-    const completionDate = reachedCompletion ? new Date().toISOString().slice(0, 10) : null
+    const reachedCompletion =
+      nextStatus === "complete" && !pkg?.substantial_completion_date
+    const completionDate = reachedCompletion
+      ? new Date().toISOString().slice(0, 10)
+      : null
 
     await supabase
       .from("closeout_packages")
       .update({
         status: nextStatus,
         updated_at: new Date().toISOString(),
-        ...(completionDate ? { substantial_completion_date: completionDate } : {}),
+        ...(completionDate
+          ? { substantial_completion_date: completionDate }
+          : {}),
       })
       .eq("org_id", resolvedOrgId)
       .eq("id", updatedItem.closeout_package_id)
@@ -393,12 +509,17 @@ async function enrollWarrantyCoverageOnCompletion({
     .eq("id", projectId)
     .maybeSingle()
 
-  if (getProjectPosture(project?.property_type, productTier) === "production") return
+  if (getProjectPosture(project?.property_type, productTier) === "production")
+    return
 
   await enqueueOutboxJob({
     orgId,
     jobType: "warranty_enroll_coverage",
-    payload: { project_id: projectId, effective_date: completionDate, source: "completion" },
+    payload: {
+      project_id: projectId,
+      effective_date: completionDate,
+      source: "completion",
+    },
     dedupeByPayloadKeys: ["project_id"],
   })
 }

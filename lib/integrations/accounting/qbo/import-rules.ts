@@ -8,10 +8,7 @@ export function qboImportCents(value: unknown): number {
 }
 
 export async function collectPaginatedRows<T>(
-  fetchPage: (
-    from: number,
-    to: number,
-  ) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+  fetchPage: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
   options: { pageSize?: number; label?: string } = {},
 ): Promise<T[]> {
   const pageSize = Math.max(1, options.pageSize ?? 1000)
@@ -36,9 +33,7 @@ export function qboPurchaseIsCredit(purchase: any): boolean {
   if (purchase?.Credit === true) return true
   if (String(purchase?.Credit ?? "").toLowerCase() === "true") return true
   if (qboImportCents(purchase?.TotalAmt) < 0) return true
-  const lineAmounts = ((purchase?.Line ?? []) as any[])
-    .map((line) => qboImportCents(line?.Amount))
-    .filter((amount) => amount !== 0)
+  const lineAmounts = ((purchase?.Line ?? []) as any[]).map((line) => qboImportCents(line?.Amount)).filter((amount) => amount !== 0)
   return lineAmounts.length > 0 && lineAmounts.every((amount) => amount < 0)
 }
 
@@ -46,10 +41,7 @@ export function qboPurchaseCreditCents(value: unknown): number {
   return -Math.abs(qboImportCents(value))
 }
 
-export function qboJournalEntryLineAmounts(
-  value: unknown,
-  postingType: unknown,
-): { storedCents: number; signedCents: number } {
+export function qboJournalEntryLineAmounts(value: unknown, postingType: unknown): { storedCents: number; signedCents: number } {
   const storedCents = Math.abs(qboImportCents(value))
   const isCredit = String(postingType ?? "").toLowerCase() === "credit"
   return {
@@ -86,15 +78,17 @@ export function extractLinkedQboAmounts(
 }
 
 export function qboImportProviderPaymentId(params: {
+  connectionId: string
   kind: "payment" | "billpayment"
   qboId: string
   split: boolean
   lineId: string
   vendorCredit?: boolean
 }): string {
+  if (!params.connectionId) throw new Error("Payment import requires a connection identity")
   const prefix = params.kind === "payment" ? "qbo_payment" : "qbo_billpayment"
   const suffix = params.split ? `_${params.lineId}` : ""
-  return `${prefix}_${params.qboId}${suffix}${params.vendorCredit ? "_vc" : ""}`
+  return `${prefix}_${params.connectionId}_${params.qboId}${suffix}${params.vendorCredit ? "_vc" : ""}`
 }
 
 export function isUsableQboPaymentMapping(

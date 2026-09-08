@@ -197,8 +197,8 @@ export async function getProductionPortfolioReport(
   const lotRows: Array<ProductionLotPnlRow & { communityId: string }> = (lots ?? []).map((lot: any) => {
     const contract = contracts.get(lot.project_id)
     const closing: any = closings.get(lot.project_id)
-    const settlementTotal = Number(closing?.settlement?.final_price_cents ?? 0)
-    const revenueCents = settlementTotal || Number(contract?.total_cents ?? 0)
+    const settlementTotal = closing?.settlement?.finalPriceCents ?? closing?.settlement?.final_price_cents
+    const revenueCents = Number(settlementTotal ?? contract?.total_cents ?? 0)
     const budgetCents = budgets.get(lot.project_id) ?? 0
     const actualCostCents = costs.get(lot.project_id) ?? 0
     const vpoCents = vpos.get(lot.project_id) ?? 0

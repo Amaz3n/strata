@@ -328,6 +328,35 @@ export async function listProjects(
   return listProjectsWithClient(supabase, resolvedOrgId, visibleProjectIds, { includePrecon })
 }
 
+/** Minimal project records needed by the cross-project billing desk. */
+export async function listBillingDeskProjects(
+  orgId?: string,
+  context?: OrgServiceContext,
+): Promise<Project[]> {
+  const { supabase, orgId: resolvedOrgId, userId } = context || await requireOrgContext(orgId)
+  const visibleProjectIds = await resolveVisibleProjectIds({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    includePrecon: false,
+  })
+  if (visibleProjectIds?.length === 0) return []
+  let query = supabase
+    .from("projects")
+    .select(`
+      id, org_id, name, status, phase, property_type, division_id, created_at, updated_at,
+      project_financial_settings(billing_model, fixed_price_billing_basis),
+      contracts(id, org_id, project_id, status, contract_type, total_cents, currency, fixed_fee_cents, gmp_cents, open_book, requires_client_cost_approval, snapshot, created_at, updated_at)
+    `)
+    .eq("org_id", resolvedOrgId)
+    .eq("phase", "delivery")
+    .order("name")
+  if (visibleProjectIds) query = query.in("id", visibleProjectIds)
+  const { data, error } = await query
+  if (error) throw new Error(`Failed to list billing projects: ${error.message}`)
+  return (data ?? []).map((row) => mapProject(row))
+}
+
 export async function listProjectSummaries(
   orgId?: string,
   context?: OrgServiceContext,

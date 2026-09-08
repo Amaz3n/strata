@@ -1,73 +1,19 @@
 import "server-only";
+import { EXPORT_TABLES, verifyBooksExportBundle } from "@/lib/services/books/export-contract";
+export { verifyBooksExportBundle } from "@/lib/services/books/export-contract";
 
+import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { z } from "zod";
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
-import { requireAuthorization } from "@/lib/services/authorization";
+import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access";
 import { booksDigest } from "@/lib/services/books/hash";
 import { requireOrgContext } from "@/lib/services/context";
 import { recordEvent } from "@/lib/services/events";
-import { uploadFilesObject } from "@/lib/storage/files-storage";
+import { uploadFilesObject, getFilesObjectStream } from "@/lib/storage/files-storage";
 
-const EXPORT_TABLES = [
-  "books_settings",
-  "accounting_policies",
-  "accounting_account_mappings",
-  "gl_accounts",
-  "accounting_facts",
-  "journal_entries",
-  "journal_lines",
-  "accounting_periods",
-  "accounting_reconciliation_runs",
-  "accounting_reconciliation_items",
-  "poc_snapshots",
-  "books_comparison_runs",
-  "books_comparison_items",
-  "opening_balance_batches",
-  "opening_balance_lines",
-  "opening_balance_approvals",
-  "bank_accounts",
-  "bank_transactions",
-  "bank_transaction_revisions",
-  "bank_transaction_matches",
-  "bank_reconciliations",
-  "bank_reconciliation_items",
-  "bank_rules",
-  "coding_rules",
-  "books_debt_instruments",
-  "books_debt_events",
-  "books_fixed_assets",
-  "books_fixed_asset_events",
-  "books_tax_jurisdictions",
-  "books_tax_filings",
-  "books_greenfield_launches",
-  "books_journal_proposals",
-  "books_cutover_runs",
-  "books_cutover_approvals",
-  "books_close_items",
-  "recurring_posting_templates",
-  "recurring_posting_lines",
-  "financial_statement_snapshots",
-  "tax_policy_versions",
-  "companies",
-  "contacts",
-  "projects",
-  "invoices",
-  "invoice_lines",
-  "payments",
-  "payment_allocations",
-  "payment_reversals",
-  "vendor_bills",
-  "bill_lines",
-  "project_expenses",
-  "project_expense_lines",
-  "job_cost_entries",
-  "billable_costs",
-  "retainage",
-  "files",
-  "audit_log",
-] as const;
+
 
 async function requireExportContext(orgId?: string) {
   const context = await requireOrgContext(orgId);
@@ -102,6 +48,7 @@ async function fetchAllRows(table: string, orgId: string) {
 }
 
 function redact(table: string, rows: Record<string, unknown>[]) {
+  if (table === "org_funding_sources") return rows.map((row) => Object.fromEntries(["id", "org_id", "provider", "bank_name", "account_type", "last4", "status", "books_gl_account_id", "created_at", "updated_at"].map(key => [key, row[key]])));
   if (table !== "companies") return rows;
   return rows.map((row) => ({
     ...row,
@@ -111,37 +58,6 @@ function redact(table: string, rows: Record<string, unknown>[]) {
   }));
 }
 
-export function verifyBooksExportBundle(bundle: {
-  tables: Record<string, Record<string, unknown>[]>;
-}) {
-  const entries = bundle.tables.journal_entries ?? [];
-  const postedEntryIds = new Set(
-    entries
-      .filter((entry) => entry.status === "posted")
-      .map((entry) => String(entry.id)),
-  );
-  const totals = new Map<string, { debit: number; credit: number }>();
-  for (const line of bundle.tables.journal_lines ?? []) {
-    const entryId = String(line.entry_id);
-    if (!postedEntryIds.has(entryId)) continue;
-    const current = totals.get(entryId) ?? { debit: 0, credit: 0 };
-    current.debit += Number(line.debit_cents ?? 0);
-    current.credit += Number(line.credit_cents ?? 0);
-    totals.set(entryId, current);
-  }
-  const unbalancedEntryIds = Array.from(totals.entries())
-    .filter(([, total]) => total.debit <= 0 || total.debit !== total.credit)
-    .map(([entryId]) => entryId);
-  const missingLineEntryIds = Array.from(postedEntryIds).filter(
-    (entryId) => !totals.has(entryId),
-  );
-  return {
-    valid: unbalancedEntryIds.length === 0 && missingLineEntryIds.length === 0,
-    postedEntryCount: postedEntryIds.size,
-    unbalancedEntryIds,
-    missingLineEntryIds,
-  };
-}
 
 export async function createCompleteBooksExport(input: {
   exportType?: "complete" | "accountant" | "cutover" | "period";
@@ -154,7 +70,7 @@ export async function createCompleteBooksExport(input: {
     .insert({
       org_id: context.orgId,
       export_type: input.exportType ?? "complete",
-      schema_version: 1,
+      schema_version: 2,
       status: "generating",
       requested_by: context.userId,
     })
@@ -167,15 +83,30 @@ export async function createCompleteBooksExport(input: {
     const tables: Record<string, Record<string, unknown>[]> = {};
     for (const table of EXPORT_TABLES)
       tables[table] = redact(table, await fetchAllRows(table, context.orgId));
+    // Hash storage bytes, not only the database's claimed checksum. Process one
+    // stream at a time so evidence size does not multiply export memory usage.
+    for (const file of tables.files ?? []) {
+      if (typeof file.storage_path !== "string" || !file.storage_path) throw new Error(`Supporting file ${file.id} has no storage path`);
+      const object = await getFilesObjectStream({ supabase: service, orgId: context.orgId, path: file.storage_path });
+      const digest = createHash("sha256"); let bytes = 0;
+      if ("getReader" in object.body) {
+        const reader = object.body.getReader();
+        try { for (;;) { const chunk = await reader.read(); if (chunk.done) break; digest.update(chunk.value); bytes += chunk.value.byteLength; } } finally { reader.releaseLock(); }
+      } else { for await (const chunk of object.body) { digest.update(chunk); bytes += chunk.length; } }
+      const checksum = digest.digest("hex");
+      if (file.checksum && file.checksum !== checksum) throw new Error(`Supporting file checksum mismatch: ${file.id}`);
+      if (file.size_bytes != null && Number(file.size_bytes) !== bytes) throw new Error(`Supporting file size mismatch: ${file.id}`);
+      file.checksum = checksum; file.size_bytes = bytes;
+    }
     const generatedAt = new Date().toISOString();
     const manifest = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       orgId: context.orgId,
       generatedAt,
       tables: Object.fromEntries(
         Object.entries(tables).map(([table, rows]) => [
           table,
-          { rows: rows.length },
+          { rows: rows.length, checksum: booksDigest(rows) },
         ]),
       ),
       redactions: [
@@ -192,7 +123,7 @@ export async function createCompleteBooksExport(input: {
         mimeType: file.mime_type,
       })),
       restoreInstructions:
-        "Restore into an empty isolated organization, preserve UUIDs, verify every supporting-file checksum, then run the ledger rebuild drill before access is enabled.",
+        "This data bundle includes a verified manifest of supporting storage objects. Copy those objects separately using the manifest paths, preserving bytes. Restore data into an empty isolated organization, preserve UUIDs, verify the copied file checksums, and run ledger rebuild and subledger tie-outs before enabling access. Credentials and full tax identities must be re-established separately.",
     };
     const bundle = { manifest, tables };
     const verification = verifyBooksExportBundle(bundle);

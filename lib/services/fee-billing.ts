@@ -186,7 +186,7 @@ async function loadProjectFeeContext(args: { supabase: SupabaseClient; orgId: st
       .maybeSingle(),
     args.supabase
       .from("projects")
-      .select("id, name, qbo_customer_id, qbo_customer_name")
+      .select("id, name")
       .eq("org_id", args.orgId)
       .eq("id", args.projectId)
       .maybeSingle(),
@@ -201,9 +201,7 @@ async function loadProjectFeeContext(args: { supabase: SupabaseClient; orgId: st
   const fixedFeeCents =
     Number(contract?.fixed_fee_cents ?? contract?.snapshot?.fixed_fee_cents ?? settings?.metadata?.fixed_fee_cents ?? 0) || 0
 
-  // Customer identity lives in the entity map now; projects.qbo_customer_* is
-  // only written by pre-cutover data. Without this, fee invoices for any
-  // project mapped after the cutover carried no customer name.
+  // Customer identity belongs to the effective accounting route.
   const accountingTarget = await resolveAccountingTarget({ orgId: args.orgId, projectId: args.projectId })
   const accountingCustomer = accountingTarget?.dimensions.customer ?? null
 
@@ -212,8 +210,8 @@ async function loadProjectFeeContext(args: { supabase: SupabaseClient; orgId: st
     contract,
     project: {
       ...projectResult.data,
-      qbo_customer_id: accountingCustomer?.id ?? projectResult.data.qbo_customer_id,
-      qbo_customer_name: accountingCustomer?.name ?? projectResult.data.qbo_customer_name,
+      qbo_customer_id: accountingCustomer?.id ?? null,
+      qbo_customer_name: accountingCustomer?.name ?? null,
     },
     billingModel: settings?.billing_model ?? contract?.snapshot?.billing_model ?? null,
     fixedFeeCents,
@@ -790,7 +788,7 @@ export async function createProjectFeeInvoice(input: CreateFeeInvoiceInput, orgI
     amountCents,
   })
 
-  const nextNumber = await getNextInvoiceNumber(resolvedOrgId)
+  const nextNumber = await getNextInvoiceNumber(resolvedOrgId, parsed.projectId)
   const today = new Date().toISOString().slice(0, 10)
   const issueDate = parsed.issueDate ?? today
   const dueDate = parsed.dueDate ?? issueDate

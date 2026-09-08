@@ -1,3 +1,4 @@
+import { AccountingDeliveryError } from "@/lib/services/accounting-delivery"
 import { logQBO } from "@/lib/services/accounting-logger"
 
 export const QBO_DELETED_REVIEW_MESSAGE = "Deleted in QuickBooks — resync manually to recreate."
@@ -14,8 +15,8 @@ type QBOEntityReader = {
  * The token Arc stamps into a created transaction's PrivateNote so it can
  * recognise its own work later.
  *
- * QuickBooks accepts no idempotency key, so "did my create actually land?" can
- * only be answered by looking. A lost response near the function timeout used to
+ * Existing Arc writes do not persist an operation-scoped QuickBooks requestid,
+ * so historical unknown create outcomes must be recovered by looking. A lost response near the function timeout used to
  * mean the +15m retry created a SECOND payment in the customer's books, with
  * nothing in Arc able to detect it: duplicate suppression was the sync record's
  * external id, and the sync record is exactly what a lost response fails to
@@ -38,7 +39,6 @@ type QBOTransactionFinder = {
   findTransactionByPrivateNote(
     entity: QBOAdoptableEntity,
     marker: string,
-    opts?: { sinceDate?: string | null },
   ): Promise<{ Id?: string } | null>
 }
 
@@ -47,24 +47,23 @@ type QBOTransactionFinder = {
  *
  * Called only when Arc has evidence of a prior attempt (a sync record exists for
  * the entity but carries no external id), so the happy path pays nothing for it.
- * The search window is generous rather than exact — a retry can be minutes or,
- * after a manual resync, weeks later — because the marker is unique and a wider
- * window only costs one query.
+ * Search the complete company history: a backdated transaction can be much older
+ * than the attempt that created it. Failed or incomplete searches block creation.
  */
 export async function findAlreadyCreatedQBOTransaction(params: {
   client: QBOTransactionFinder
   entity: QBOAdoptableEntity
   entityType: string
   entityId: string
-  windowDays?: number
   logContext?: Record<string, unknown>
 }): Promise<string | null> {
-  const windowDays = params.windowDays ?? 120
-  const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
   const marker = arcTransactionMarker(params.entityType, params.entityId)
   try {
-    const found = await params.client.findTransactionByPrivateNote(params.entity, marker, { sinceDate: since })
-    if (!found?.Id) return null
+    const found = await params.client.findTransactionByPrivateNote(params.entity, marker)
+    if (found === null) return null
+    if (!found?.Id?.toString().trim()) {
+      throw new AccountingDeliveryError("QuickBooks recovery match has no transaction identity", true, "invalid_recovery_response")
+    }
     logQBO("warn", "qbo_create_adopted_existing", {
       entity: params.entity,
       entityId: params.entityId,
@@ -73,16 +72,15 @@ export async function findAlreadyCreatedQBOTransaction(params: {
     })
     return String(found.Id)
   } catch (error) {
-    // A failed lookup must not block the push: it degrades to the old behaviour,
-    // it does not invent one. The create below is still guarded by the sync
-    // record, and the outbox will retry.
+    // Preserve the provider error classification; an uncertain lookup is never
+    // evidence that the previous create failed.
     logQBO("warn", "qbo_create_adoption_lookup_failed", {
       entity: params.entity,
       entityId: params.entityId,
       error: error instanceof Error ? error.message : String(error),
       ...params.logContext,
     })
-    return null
+    throw error
   }
 }
 

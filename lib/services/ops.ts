@@ -590,14 +590,15 @@ function summarizeDrawingsJobPayload(
 }
 
 // ============================================================================
-// Payment operational alerts
+// Payment and accounting operational alerts
 // ============================================================================
 
-/** Event types that mean a human needs to look at a payment. */
+/** Event types that mean a human needs to look at money movement or its accounting handoff. */
 const PAYMENT_ALERT_EVENT_TYPES = [
   "payment_submission_needs_recovery",
   "vendor_transfer_needs_attention",
   "payment_operations_alert",
+  "accounting_sync_needs_review",
   "vendor_payout_destination_changed",
 ] as const
 
@@ -621,7 +622,7 @@ export interface PaymentOperationsAlert {
 }
 
 /**
- * Recent payment events that were emitted for a human and, until now, had no
+ * Recent payment/accounting events that were emitted for a human and, until now, had no
  * surface reading them: recovery-needed submissions, vendor transfers stuck at
  * the provider, and platform alerts like a tripped return-loss ceiling.
  * Read-only — every one deep-links to the payable it concerns where it can.

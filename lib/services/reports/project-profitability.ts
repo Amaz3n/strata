@@ -1,3 +1,4 @@
+import { accountingReference } from "@/lib/services/accounting-coding"
 import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
 import { requireOrgContext } from "@/lib/services/context"
 import { requireProjectPermission } from "@/lib/services/permissions"
@@ -235,26 +236,29 @@ export async function getProjectProfitabilityReport({
       : supabase.from("cost_codes").select("id, code, name, category, division").eq("org_id", resolvedOrgId).in("id", codeIds),
     billIds.size === 0
       ? Promise.resolve({ data: [] as any[], error: null })
-      : supabase.from("vendor_bills").select("id, qbo_expense_account_name").eq("org_id", resolvedOrgId).in("id", Array.from(billIds)),
+      : supabase.from("vendor_bills").select("id, accounting_coding").eq("org_id", resolvedOrgId).in("id", Array.from(billIds)),
     expenseIds.size === 0
       ? Promise.resolve({ data: [] as any[], error: null })
       : supabase
           .from("project_expenses")
-          .select("id, qbo_expense_account_name")
+          .select("id, accounting_coding")
           .eq("org_id", resolvedOrgId)
           .in("id", Array.from(expenseIds)),
   ])
 
   if ((costCodesResult as any).error) throw new Error(`Failed to load cost codes: ${(costCodesResult as any).error.message}`)
 
+  if (billAccountsResult.error) throw new Error(`Failed to load bill accounting: ${billAccountsResult.error.message}`)
+  if (expenseAccountsResult.error) throw new Error(`Failed to load expense accounting: ${expenseAccountsResult.error.message}`)
+
   const costCodeMeta = new Map<string, { category: string | null; division: string | null }>()
   for (const code of (costCodesResult as any).data ?? []) {
     costCodeMeta.set(code.id, { category: code.category ?? null, division: code.division ?? null })
   }
   const billAccountById = new Map<string, string | null>()
-  for (const b of (billAccountsResult as any).data ?? []) billAccountById.set(b.id, b.qbo_expense_account_name ?? null)
+  for (const b of (billAccountsResult as any).data ?? []) billAccountById.set(b.id, accountingReference(b.accounting_coding, "expense_account")?.name ?? null)
   const expenseAccountById = new Map<string, string | null>()
-  for (const x of (expenseAccountsResult as any).data ?? []) expenseAccountById.set(x.id, x.qbo_expense_account_name ?? null)
+  for (const x of (expenseAccountsResult as any).data ?? []) expenseAccountById.set(x.id, accountingReference(x.accounting_coding, "expense_account")?.name ?? null)
 
   function categoryForCode(codeId: string): { key: string; label: string } {
     const meta = costCodeMeta.get(codeId)
@@ -268,7 +272,7 @@ export async function getProjectProfitabilityReport({
   function accountNameForEntry(e: CostEntry): string | null {
     if (e.sourceType === "vendor_bill_line") {
       const billName = e.metadata?.bill_id ? billAccountById.get(String(e.metadata.bill_id)) : null
-      return billName ?? (e.metadata?.qbo_expense_account_name as string | undefined) ?? null
+      return billName ?? accountingReference(e.metadata?.accounting_coding, "expense_account")?.name ?? null
     }
     if (e.sourceType === "project_expense") {
       return (e.sourceId ? expenseAccountById.get(e.sourceId) : null) ?? null

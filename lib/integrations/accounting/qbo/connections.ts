@@ -8,9 +8,10 @@ import {
   refreshAccessToken,
 } from "@/lib/integrations/accounting/qbo/auth"
 import { logQBO } from "@/lib/services/accounting-logger"
-import type { QBOConnectionStatus } from "@/lib/services/accounting-connections"
+import type { AccountingConnectionStatus } from "@/lib/services/accounting-connections"
 import { recordEvent } from "@/lib/services/events"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { requeueAccountingSyncAfterReconnect } from "@/lib/services/accounting-enqueue"
 
 /**
  * QuickBooks connection and credential machinery.
@@ -39,7 +40,7 @@ type QBOConnectionTokenRow = {
   token_expires_at: string | null
   refresh_token_expires_at?: string | null
   refresh_failure_count?: number | null
-  status?: QBOConnectionStatus
+  status?: AccountingConnectionStatus
   client_id?: string | null
 }
 
@@ -160,7 +161,7 @@ async function refreshConnectionTokens(
     const shouldExpire = invalidGrant || nextFailureCount >= MAX_TRANSIENT_REFRESH_FAILURES
     const errorMessage = String(error ?? "Token refresh failed").slice(0, 500)
 
-    const { data: expiredRow } = await supabase
+    const { data: expiredRow, error: failureWriteError } = await supabase
       .from("accounting_connections")
       .update({
         status: shouldExpire ? "expired" : "active",
@@ -169,8 +170,24 @@ async function refreshConnectionTokens(
       })
       .eq("id", connection.id)
       .eq("status", "active")
+      .eq("refresh_token", connection.refresh_token)
+      .eq("external_account_id", connection.external_account_id)
       .select("id, org_id")
       .maybeSingle()
+
+    if (failureWriteError) {
+      logQBO("error", "token_refresh_failure_persist_failed", { connectionId: connection.id, error: failureWriteError.message })
+      return null
+    }
+    if (!expiredRow) {
+      const { data: latest, error: latestError } = await supabase
+        .from("accounting_connections")
+        .select("access_token, external_account_id, status")
+        .eq("id", connection.id)
+        .maybeSingle()
+      if (latestError || latest?.status !== "active") return null
+      return { token: decryptToken(latest.access_token), realmId: latest.external_account_id }
+    }
 
     // The moment sync dies is the moment somebody has to hear about it — a
     // status flip plus a log line left connections dead for days with the only
@@ -182,7 +199,11 @@ async function refreshConnectionTokens(
         eventType: "accounting_connection_expired",
         entityType: "accounting_connection",
         entityId: connection.id,
-        payload: { provider: "qbo", reason: invalidGrant ? "authorization_revoked_or_expired" : "repeated_refresh_failures", error: errorMessage },
+        payload: {
+          provider: "qbo",
+          reason: invalidGrant ? "authorization_revoked_or_expired" : "repeated_refresh_failures",
+          error: errorMessage,
+        },
         channel: "notification",
       }).catch((eventError) => {
         logQBO("error", "connection_expired_event_failed", { connectionId: connection.id, error: String(eventError) })
@@ -213,7 +234,9 @@ export async function getQBOAccessToken(
   const supabase = createServiceSupabaseClient()
   let query = supabase
     .from("accounting_connections")
-    .select("id, org_id, external_account_id, access_token, refresh_token, token_expires_at, refresh_token_expires_at, refresh_failure_count, client_id")
+    .select(
+      "id, org_id, external_account_id, access_token, refresh_token, token_expires_at, refresh_token_expires_at, refresh_failure_count, client_id",
+    )
     .eq("org_id", orgId)
     .eq("provider", "qbo")
     .eq("status", "active")
@@ -241,6 +264,7 @@ export async function getQBOAccessTokenForConnection(connectionId: string, optio
 }
 
 export async function upsertQBOConnection(input: {
+  connectionId?: string
   orgId: string
   realmId: string
   accessToken: string
@@ -280,12 +304,17 @@ export async function upsertQBOConnection(input: {
     throw new Error(`Failed to inspect existing QBO connection: ${priorError.message}`)
   }
 
-  const existingConnection =
-    priorConnections?.find((connection) => connection.status === "active") ??
-    priorConnections?.[0] ??
-    null
-  const existingSettings =
-    (existingConnection?.settings as Record<string, unknown> | null) ?? {}
+  const existingConnection = input.connectionId
+    ? priorConnections?.find((connection) => connection.id === input.connectionId)
+    : (priorConnections?.find((connection) => connection.status === "active") ?? priorConnections?.[0] ?? null)
+  if (input.connectionId && !existingConnection) throw new Error("The reconnect target no longer matches this company")
+  if (
+    input.connectionId &&
+    priorConnections?.some((connection) => connection.id !== input.connectionId && connection.status === "active")
+  ) {
+    throw new Error("This company is already active on another connection")
+  }
+  const existingSettings = (existingConnection?.settings as Record<string, unknown> | null) ?? {}
   const connectionPayload = {
     org_id: input.orgId,
     provider: "qbo",
@@ -321,13 +350,28 @@ export async function upsertQBOConnection(input: {
         .update(connectionPayload)
         .eq("id", existingConnection.id)
         .eq("org_id", input.orgId)
+        .eq("external_account_id", input.realmId)
     : supabase.from("accounting_connections").insert(connectionPayload)
-  const { data, error } = await saveQuery
-    .select("id")
-    .single()
+  const { data, error } = await saveQuery.select("id").single()
 
   if (error) {
     throw new Error(`Failed to save QBO connection: ${error.message}`)
+  }
+
+  if (data?.id) {
+    const replay = await requeueAccountingSyncAfterReconnect({
+      orgId: input.orgId,
+      connectionId: data.id,
+    })
+    if (replay.failed > 0) {
+      logQBO("warn", "accounting_reconnect_requeue_incomplete", {
+        orgId: input.orgId,
+        connectionId: data.id,
+        found: replay.found,
+        queued: replay.queued,
+        failed: replay.failed,
+      })
+    }
   }
 
   try {
@@ -362,7 +406,9 @@ export async function refreshQBOConnectionsDueForKeepalive(limit = 10) {
   // occupy the window, starving genuinely due connections behind them.
   const { data: candidates, error } = await supabase
     .from("accounting_connections")
-    .select("id, org_id, external_account_id, access_token, refresh_token, token_expires_at, refresh_token_expires_at, refresh_failure_count, client_id")
+    .select(
+      "id, org_id, external_account_id, access_token, refresh_token, token_expires_at, refresh_token_expires_at, refresh_failure_count, client_id",
+    )
     .eq("status", "active")
     .eq("provider", "qbo")
     .or(`refresh_token_expires_at.is.null,refresh_token_expires_at.lte.${keepaliveHorizonIso}`)

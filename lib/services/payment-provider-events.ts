@@ -6,21 +6,28 @@ import type {
   PaymentRailProvider,
 } from "@/lib/integrations/payments/payment-rail-provider"
 import {
-  addBusinessHours,
   assertDisbursementTransition,
   assertPaymentRunTransition,
+  classifyReturnStage,
+  isPaymentRunTerminal,
   planDisbursementAdvance,
   resolveRunItemStatus,
   resolveRunStatus,
+  scheduleTransferRelease,
   type DisbursementStatus,
   type UnpaidTerminalStatus,
 } from "@/lib/payments/payment-domain"
-import { enqueueBillPaymentSync, voidBillPaymentInAccounting } from "@/lib/services/accounting-sync"
+import {
+  enqueueBillPaymentSync,
+  enqueueBillPaymentVoid,
+  recordPayableAccountingEnqueueResult,
+} from "@/lib/services/accounting-sync"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import {
   postApFeeChargeReversalLedger,
   postApReturnLossLedger,
+  postApReturnLossRecoveryLedger,
   postDisbursementPaidLedger,
   postDisbursementReturnLedger,
   postDisbursementSubmissionReversalLedger,
@@ -30,7 +37,7 @@ import {
   resolvePaymentOperationsIncident,
 } from "@/lib/services/ops-watchdog"
 import { syncVendorRecipient } from "@/lib/services/payment-rail-setup"
-import { sendVendorRemittanceAdvice } from "@/lib/services/vendor-remittance"
+import { sendVendorPaymentReturnNotice, sendVendorRemittanceAdvice } from "@/lib/services/vendor-remittance"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 /** Page size for the return-loss ledger sum. */
@@ -142,13 +149,15 @@ async function rollUpTerminalDisbursement(disbursement: Record<string, unknown>,
   const itemStatus = resolveRunItemStatus((payees ?? []).map((payee) => payee.status), target)
   await supabase.from("payment_run_items").update({ status: itemStatus, ...(reason ? { failure_reason: reason } : {}) }).eq("org_id", orgId).eq("id", runItemId)
   const { data: items } = await supabase.from("payment_run_items").select("status").eq("org_id", orgId).eq("run_id", runId)
-  const runStatus = resolveRunStatus((items ?? []).map((item) => item.status))
+  const itemStatuses = (items ?? []).map((item) => item.status)
+  const runStatus = resolveRunStatus(itemStatuses)
+  const allTerminal = isPaymentRunTerminal(itemStatuses)
   await transitionPaymentRunStatus({
     supabase,
     orgId,
     runId,
     toStatus: runStatus,
-    extraPatch: ["paid", "partially_failed", "failed"].includes(runStatus) ? { completed_at: new Date().toISOString() } : undefined,
+    extraPatch: ["paid", "failed"].includes(runStatus) || (runStatus === "partially_failed" && allTerminal) ? { completed_at: new Date().toISOString() } : undefined,
   })
 }
 
@@ -172,20 +181,59 @@ async function advanceDisbursement(disbursementId: string, orgId: string, target
   return { id: disbursementId, status: target }
 }
 
-async function resolveDisbursementByPaymentId(provider: string, providerPaymentId: string) {
+async function resolveDisbursementByPaymentId(provider: PaymentRailProvider, providerPaymentId: string) {
   const supabase = createServiceSupabaseClient()
-  const { data } = await supabase.from("disbursements").select("*").eq("provider", provider).eq("provider_payment_id", providerPaymentId).maybeSingle()
-  return data
+  const { data } = await supabase.from("disbursements").select("*").eq("provider", provider.key).eq("provider_payment_id", providerPaymentId).maybeSingle()
+  if (data) return { disbursement: data, reference: null }
+  const reference = await provider.resolveDisbursementReference({ providerPaymentId })
+  if (!reference.disbursementId) return { disbursement: null, reference }
+  const { data: byMetadata } = await supabase.from("disbursements").select("*")
+    .eq("provider", provider.key)
+    .eq("id", reference.disbursementId)
+    .maybeSingle()
+  return { disbursement: byMetadata, reference }
+}
+
+async function rejectUnattributedRailEvent(input: {
+  event: NormalizedPaymentRailEvent
+  reference: { orgId: string | null; disbursementId: string | null; arcProduct: string | null } | null
+  startedAt: string
+}): Promise<never> {
+  const orgId = input.reference?.orgId ?? null
+  const detail = `Provider-tagged AP event ${input.event.providerEventId} could not be attributed to disbursement ${input.reference?.disbursementId ?? "unknown"}`
+  const stored = await recordProviderEvent({
+    provider: input.event.provider,
+    providerEventId: input.event.providerEventId,
+    providerAccountId: input.event.providerAccountId,
+    orgId,
+    // The metadata id is precisely the row we failed to resolve. Persisting it
+    // as the FK would make the dead-letter write fail and lose the incident.
+    disbursementId: null,
+    eventType: input.event.providerEventType,
+    eventCreatedAt: input.event.occurredAt,
+    payload: input.event.payload,
+  })
+  if (orgId) {
+    const code = `unattributed_rail_event:${input.event.providerEventId}`
+    const shouldNotify = await openPaymentOperationsIncident({ orgId, code, detail })
+    if (shouldNotify) await recordEvent({ orgId, eventType: "payment_operations_alert", entityType: "provider_event", entityId: input.event.providerEventId, payload: { findings: [{ code: "unattributed_rail_event", detail }] } })
+  }
+  await recordProcessingAttempt({ providerEventId: stored.id, outcome: "failed", error: detail, startedAt: input.startedAt })
+  throw new Error(detail)
 }
 
 async function processDisbursementPaid(input: { disbursement: Record<string, unknown>; providerEventId: string; providerPayoutId: string; paidAt: string }) {
   const supabase = createServiceSupabaseClient()
   const disbursementId = String(input.disbursement.id)
   const orgId = String(input.disbursement.org_id)
+  const providerPaymentId = input.disbursement.provider_payment_id
+  if (typeof providerPaymentId !== "string" || providerPaymentId.length === 0) {
+    throw new Error(`Disbursement ${disbursementId} is missing its provider payment id`)
+  }
   const { data, error } = await supabase.rpc("record_ap_payment_atomic", {
     p_org_id: orgId,
     p_disbursement_id: disbursementId,
-    p_provider_payment_id: String(input.disbursement.provider_payment_id),
+    p_provider_payment_id: providerPaymentId,
     p_provider_charge_id: input.disbursement.provider_charge_id ?? null,
     p_provider_transfer_id: input.disbursement.provider_transfer_id ?? null,
     p_provider_payout_id: input.providerPayoutId,
@@ -204,7 +252,34 @@ async function processDisbursementPaid(input: { disbursement: Record<string, unk
   const result = data as Record<string, unknown>
   // The outbox is deduplicated. Enqueue even when the money mutation was a
   // duplicate so a crash between settlement and enqueue repairs itself.
-  if (typeof result.payment_id === "string") await enqueueBillPaymentSync(result.payment_id, orgId)
+  if (typeof result.payment_id === "string") {
+    const syncResult = await enqueueBillPaymentSync(result.payment_id, orgId)
+    await recordPayableAccountingEnqueueResult({
+      orgId,
+      billId: String(input.disbursement.bill_id),
+      entityType: "bill_payment",
+      entityId: result.payment_id,
+      result: syncResult,
+    })
+  }
+
+  // Repair rather than announcement: a post-transfer return that pays out anyway
+  // closes its own incident, and a replay is exactly when a crash between the
+  // RPC and this line gets healed. Resolving an already-resolved incident is a
+  // no-op, so it runs ahead of the duplicate check below.
+  if (input.disbursement.status === "returned_after_transfer") {
+    await resolvePaymentOperationsIncident({ orgId, code: `post_transfer_return:${disbursementId}` })
+  }
+
+  // A replay settled nothing: the RPC found the payment it wrote the first time
+  // and returned it untouched. Everything below announces the settlement — a
+  // remittance email to the vendor and a `vendor_payment_paid` event that fans
+  // out to the builder — and announcing it again for money that moved once is
+  // the duplicate-notification bug, not idempotency. The mailer's own
+  // idempotency key is the second line of defence; this is the first, and it is
+  // the one that keeps the event log honest about how often a vendor was paid.
+  if (result.duplicate === true) return
+
   // Tell the vendor what the deposit covers. Never let a failure here fail the
   // webhook: the money has moved, and a bounced email is not a reason to
   // reprocess a settlement.
@@ -219,8 +294,12 @@ async function processDisbursementReturn(input: { disbursement: Record<string, u
   const supabase = createServiceSupabaseClient()
   const orgId = String(input.disbursement.org_id)
   const disbursementId = String(input.disbursement.id)
-  const wasPaid = input.disbursement.status === "paid"
-  if (wasPaid) {
+  const amountCents = Number(input.disbursement.amount_cents)
+  const currency = String(input.disbursement.currency)
+  const stage = classifyReturnStage(String(input.disbursement.status))
+  let paymentIdToVoid: string | null = null
+
+  if (stage === "post_payout") {
     const { data, error } = await supabase.rpc("record_ap_payment_reversal_atomic", {
       p_org_id: orgId,
       p_disbursement_id: disbursementId,
@@ -231,23 +310,23 @@ async function processDisbursementReturn(input: { disbursement: Record<string, u
       p_metadata: { provider_event_id: input.providerEventId },
     })
     if (error || !data) throw new Error(`Unable to record AP return: ${error?.message}`)
-    // Arc has just reopened the bill. Until the accounting system agrees, the
-    // two ledgers disagree about whether this vendor was paid, so the reversal
-    // is pushed inline and a failure retries the webhook rather than being
-    // swallowed. Only a settled payment was ever pushed, so only that path
-    // has anything to reverse.
     const reversal = data as Record<string, unknown>
-    const paymentId = typeof reversal.payment_id === "string" ? reversal.payment_id : null
-    if (paymentId) {
-      await voidBillPaymentInAccounting({ orgId, paymentId, reason: input.reason })
-    }
+    paymentIdToVoid = typeof reversal.payment_id === "string" ? reversal.payment_id : null
+    await postDisbursementReturnLedger({ orgId, disbursementId, providerEventId: input.providerEventId, amountCents, currency, effectiveAt: input.occurredAt })
+  } else if (stage === "post_transfer") {
+    await advanceDisbursement(disbursementId, orgId, "returned_after_transfer", {
+      failure_reason: input.reason,
+      returned_at: input.occurredAt,
+    })
+    // The builder's debit came back, but the vendor transfer may still pay out.
+    await postDisbursementSubmissionReversalLedger({ orgId, disbursementId, providerEventId: input.providerEventId, vendorAmountCents: amountCents, currency, effectiveAt: input.occurredAt })
   } else {
-    // `planDisbursementAdvance` routes a pre-settlement return through
-    // funds_available on its own, so this no longer pre-walks by hand.
     await advanceDisbursement(disbursementId, orgId, "returned", {
       failure_reason: input.reason,
       returned_at: input.occurredAt,
     })
+    await postDisbursementSubmissionReversalLedger({ orgId, disbursementId, providerEventId: input.providerEventId, vendorAmountCents: amountCents, currency, effectiveAt: input.occurredAt })
+    await rollUpTerminalDisbursement(input.disbursement, "returned", input.reason)
   }
   // Stripe invalidates an ACH mandate when the account holder disputes the
   // debit. Fail closed even for the rare post-succeeded failure: the builder
@@ -267,17 +346,56 @@ async function processDisbursementReturn(input: { disbursement: Record<string, u
     after: { status: "disabled", mandate_status: "invalid", verification_status: "failed", reason: input.reason },
     source: `${String(input.disbursement.provider)}_webhook`,
   })
-  if (wasPaid) {
-    await postDisbursementReturnLedger({ orgId, disbursementId, providerEventId: input.providerEventId, amountCents: Number(input.disbursement.amount_cents), currency: String(input.disbursement.currency), effectiveAt: input.occurredAt })
-    // The vendor already has the money and the builder's bank took it back, so
-    // this one survived the payout hold and is a real loss. Book it, then check
-    // whether this org has now cost enough to stop paying through Arc.
-    await postApReturnLossLedger({ orgId, disbursementId, providerEventId: input.providerEventId, amountCents: Number(input.disbursement.amount_cents), currency: String(input.disbursement.currency), effectiveAt: input.occurredAt })
+  if (stage !== "pre_transfer") {
+    await postApReturnLossLedger({ orgId, disbursementId, providerEventId: input.providerEventId, amountCents, currency, effectiveAt: input.occurredAt })
     await enforceReturnLossCeiling(orgId, String(input.disbursement.provider))
-  } else {
-    await postDisbursementSubmissionReversalLedger({ orgId, disbursementId, providerEventId: input.providerEventId, vendorAmountCents: Number(input.disbursement.amount_cents), currency: String(input.disbursement.currency), effectiveAt: input.occurredAt })
+    const detail = `ACH debit returned after Arc created the vendor transfer (${stage}). Do not create a replacement payment while recovery is pending.`
+    await openPaymentOperationsIncident({ orgId, code: `post_transfer_return:${disbursementId}`, detail })
   }
-  await recordEvent({ orgId, eventType: "vendor_payment_returned", entityType: "disbursement", entityId: disbursementId, payload: { bill_id: input.disbursement.bill_id, reason: input.reason } })
+  // Own state, ledger, funding control, incident, and notification are durable
+  // before any external accounting mutation is queued.
+  await recordEvent({ orgId, eventType: "vendor_payment_returned", entityType: "disbursement", entityId: disbursementId, payload: { bill_id: input.disbursement.bill_id, reason: input.reason, return_stage: stage } })
+
+  // The vendor was told the money was on its way; they are owed the correction.
+  // Only once Arc had released it toward them — a pre-transfer return never
+  // reached the vendor and there is nothing for them to reconcile. Best effort
+  // by design: the money state is already durable above and a bounced email is
+  // not a reason to reprocess a return.
+  if (stage !== "pre_transfer") {
+    await sendVendorPaymentReturnNotice({ orgId, disbursementId, stage }).catch(() => undefined)
+  }
+
+  if (paymentIdToVoid) {
+    const queued = await enqueueBillPaymentVoid({ orgId, paymentId: paymentIdToVoid, reason: input.reason })
+    if (!queued.enqueued && queued.reason !== "duplicate") throw new Error("Unable to enqueue the accounting bill-payment void")
+  }
+
+  if (stage === "post_transfer" && typeof input.disbursement.provider_transfer_id === "string") {
+    let transferReversed = false
+    try {
+      const provider = getPaymentRailProvider(String(input.disbursement.provider))
+      await provider.reverseVendorTransfer({
+        providerTransferId: input.disbursement.provider_transfer_id,
+        disbursementId,
+        idempotencyKey: `disbursement:${disbursementId}:transfer-reversal`,
+      })
+      transferReversed = true
+    } catch {
+      // Insufficient connected-account balance is expected after payout. The
+      // loss and incident remain open; payout.paid will close the state gap.
+    }
+    if (transferReversed) {
+      const { error: recoveryError } = await supabase.rpc("complete_post_transfer_return_recovery_atomic", {
+        p_org_id: orgId,
+        p_disbursement_id: disbursementId,
+        p_reason: input.reason,
+        p_returned_at: input.occurredAt,
+      })
+      if (recoveryError) throw new Error(`Unable to complete transfer-return recovery: ${recoveryError.message}`)
+      await postApReturnLossRecoveryLedger({ orgId, disbursementId, providerEventId: input.providerEventId, amountCents, currency, effectiveAt: input.occurredAt })
+      await resolvePaymentOperationsIncident({ orgId, code: `post_transfer_return:${disbursementId}` })
+    }
+  }
 }
 
 /**
@@ -399,7 +517,7 @@ async function resolvePayoutHoldExpiry(orgId: string, clearedAt: string): Promis
   const supabase = createServiceSupabaseClient()
   const { data } = await supabase.from("payment_rail_policies").select("payout_hold_hours").eq("org_id", orgId).maybeSingle()
   const hours = Math.max(Number(data?.payout_hold_hours ?? 48), 48)
-  return addBusinessHours(clearedAt, hours).toISOString()
+  return scheduleTransferRelease(clearedAt, hours)
 }
 
 /**
@@ -586,8 +704,12 @@ async function processNormalizedRailEvent(
   }
 
   if (event.kind === "disbursement.authorization_inquiry") {
-    const disbursement = await resolveDisbursementByPaymentId(event.provider, event.providerPaymentId)
-    if (!disbursement) return { handled: false }
+    const resolved = await resolveDisbursementByPaymentId(provider, event.providerPaymentId)
+    if (!resolved.disbursement) {
+      if (event.attribution === "provider_tagged" || resolved.reference?.arcProduct === "vendor_payments") await rejectUnattributedRailEvent({ event, reference: resolved.reference, startedAt })
+      return { handled: false }
+    }
+    const disbursement = resolved.disbursement
     const orgId = String(disbursement.org_id)
     const disbursementId = String(disbursement.id)
     const providerEvent = await recordProviderEvent({
@@ -636,10 +758,15 @@ async function processNormalizedRailEvent(
   const supabase = createServiceSupabaseClient()
 
   if (event.kind === "disbursement.status") {
-    const disbursement = event.disbursementId
+    const direct = event.disbursementId
       ? await supabase.from("disbursements").select("*").eq("provider", event.provider).eq("id", event.disbursementId).maybeSingle().then((result) => result.data)
-      : await resolveDisbursementByPaymentId(event.provider, event.providerPaymentId)
-    if (!disbursement) return { handled: false }
+      : null
+    const resolved = direct ? { disbursement: direct, reference: null } : await resolveDisbursementByPaymentId(provider, event.providerPaymentId)
+    if (!resolved.disbursement) {
+      if (event.attribution === "provider_tagged" || resolved.reference?.arcProduct === "vendor_payments") await rejectUnattributedRailEvent({ event, reference: resolved.reference, startedAt })
+      return { handled: false }
+    }
+    const disbursement = resolved.disbursement
     disbursements = [disbursement]
     targetStatus = event.status
     providerTransferId = event.providerTransferId
@@ -718,15 +845,23 @@ async function processNormalizedRailEvent(
       throw error
     }
   } else if (event.kind === "disbursement.returned") {
-    const disbursement = await resolveDisbursementByPaymentId(event.provider, event.providerPaymentId)
-    if (!disbursement) return { handled: false }
+    const resolved = await resolveDisbursementByPaymentId(provider, event.providerPaymentId)
+    if (!resolved.disbursement) {
+      if (event.attribution === "provider_tagged" || resolved.reference?.arcProduct === "vendor_payments") await rejectUnattributedRailEvent({ event, reference: resolved.reference, startedAt })
+      return { handled: false }
+    }
+    const disbursement = resolved.disbursement
     disbursements = [disbursement]
     targetStatus = "returned"
     providerReversalId = event.providerReversalId
     returnReason = event.reason
   } else if (event.kind === "disbursement.charge_settled") {
-    const disbursement = await resolveDisbursementByPaymentId(event.provider, event.providerPaymentId)
-    if (!disbursement) return { handled: false }
+    const resolved = await resolveDisbursementByPaymentId(provider, event.providerPaymentId)
+    if (!resolved.disbursement) {
+      if (event.attribution === "provider_tagged" || resolved.reference?.arcProduct === "vendor_payments") await rejectUnattributedRailEvent({ event, reference: resolved.reference, startedAt })
+      return { handled: false }
+    }
+    const disbursement = resolved.disbursement
     const platformFeeCents = Number(disbursement.platform_fee_cents ?? 0)
     // What the builder was quoted and charged, frozen on the approved run. Kept
     // apart from the actual below because they answer different questions.
@@ -810,7 +945,6 @@ async function processNormalizedRailEvent(
         await resolvePaymentOperationsIncident({ orgId, code: `vendor_payout_failed:${disbursementId}` })
       } else if (targetStatus === "returned" && providerReversalId) {
         await processDisbursementReturn({ disbursement, providerEventId: providerEvent.id, providerReversalId, reason: returnReason, occurredAt: event.occurredAt })
-        if (disbursement.status !== "paid") await rollUpTerminalDisbursement(disbursement, "returned", returnReason)
       } else if (targetStatus) {
         const patch: Record<string, unknown> = {}
         if (providerTransferId) patch.provider_transfer_id = providerTransferId

@@ -14,16 +14,26 @@
     "dev:webpack": "next dev --webpack",
     "dev:fresh": "rm -rf .next && next dev --turbo",
     "db:schema:check": "bash ./scripts/check-schema-sync.sh",
+    "db:ledger:check": "node ./scripts/check-migration-ledger.mjs",
+    "qa:evidence:check": "node ./scripts/qa/validate-ap-payment-evidence.mjs",
     "test:db": "supabase test db --local",
-    "accounting:d2:check": "node ./scripts/check-accounting-d2-readiness.mjs",
+    "test:db:payments": "supabase test db supabase/tests/payment_lifecycle.test.sql --local",
+    "test:db:phase-b": "supabase test db supabase/tests/payment_phase_b.test.sql --local",
+    "test:db:phase-c": "supabase test db supabase/tests/payment_phase_c.test.sql --local",
+    "test:db:phase-d": "supabase test db supabase/tests/payment_phase_d.test.sql --local",
+    "test:db:phase-e": "supabase test db supabase/tests/payment_phase_e.test.sql --local",
+    "test:db:phase-f": "supabase test db supabase/tests/payment_phase_f.test.sql --local",
+    "test:db:phase-g": "supabase test db supabase/tests/payment_phase_g.test.sql --local",
+    "accounting:d2:check": "node ./scripts/check-accounting-d2-readiness.mjs --release",
     "lint": "eslint . --quiet",
     "lint:tokens": "eslint app components --ext .tsx",
     "test": "pnpm test:node && pnpm test:bun",
     "test:node": "node --test --test-reporter=dot tests/*.test.js",
     "test:bun": "bun test --preload ./scripts/bun-test-setup.js lib",
-    "test:financials": "node --test tests/financials-regression.test.js tests/ledger-definition-parity.test.js tests/invoice-reconcile.test.js tests/pdf-raster-plan.test.js tests/field-provenance.test.js tests/qbo-import-reliability.test.js tests/accounting-abstraction.test.js tests/accounting-qbo-adapter.test.js tests/pay-app-math.test.js tests/change-order-math.test.js tests/commitment-position.test.js tests/prequalification-program.test.js tests/budget-transfer-math.test.js tests/plan-pricing.test.js tests/takeoff-import.test.js tests/takeoff-measure.test.js tests/takeoff-scale.test.js tests/takeoff-rollup.test.js tests/option-catalog-design-studio.test.js tests/price-resolution.test.js tests/po-generation-math.test.js tests/vpo-approval-thresholds.test.js tests/production-margin.test.js tests/billing-cycle-summary.test.js tests/purchase-agreement-pricing.test.js tests/spec-inventory-aging.test.js tests/community-traffic-capture.test.js tests/selection-variance-orders.test.js tests/purchasing-hardening.test.js tests/warranty-service.test.js tests/warranty-operations.test.js tests/fintech-payment-domain.test.js tests/arc-books.test.js tests/payable-line-match.test.js tests/payable-approval-signals.test.js tests/payment-notification-coverage.test.js tests/compliance-system.test.js",
-    "test:auth": "node --test tests/authorization-policy.test.js tests/ai-grounding.test.js tests/numeric-audit.test.js tests/search-visibility.test.js tests/answer-cache-key.test.js tests/eval-scoring.test.js",
+    "test:financials": "node --test tests/accounting-experience.test.js tests/pay-app-entry.test.js tests/pay-app-certification.test.js tests/commercial-budget.test.js tests/financials-regression.test.js tests/control-tower.test.js tests/ledger-definition-parity.test.js tests/invoice-reconcile.test.js tests/pdf-raster-plan.test.js tests/field-provenance.test.js tests/qbo-import-reliability.test.js tests/accounting-abstraction.test.js tests/accounting-qbo-adapter.test.js tests/pay-app-math.test.js tests/pay-app-lifecycle.test.js tests/waiver-chase-policy.test.js tests/lien-waiver-forms.test.js tests/waiver-register.test.js tests/change-order-math.test.js tests/commitment-position.test.js tests/prequalification-program.test.js tests/budget-transfer-math.test.js tests/plan-pricing.test.js tests/takeoff-import.test.js tests/takeoff-measure.test.js tests/takeoff-scale.test.js tests/takeoff-rollup.test.js tests/option-catalog-design-studio.test.js tests/price-resolution.test.js tests/po-generation-math.test.js tests/vpo-approval-thresholds.test.js tests/production-margin.test.js tests/billing-cycle-summary.test.js tests/purchase-agreement-pricing.test.js tests/spec-inventory-aging.test.js tests/community-traffic-capture.test.js tests/selection-variance-orders.test.js tests/purchasing-hardening.test.js tests/warranty-service.test.js tests/warranty-operations.test.js tests/fintech-payment-domain.test.js tests/fintech-payment-phase-behavior.test.js tests/fintech-payment-guards.test.js tests/arc-books.test.js tests/payable-line-matching-math.test.js tests/even-flow-and-schedule-advisories.test.js tests/payment-notification-coverage.test.js tests/phase-e-vendor.test.js tests/compliance-system.test.js",
+    "test:auth": "node --test tests/authorization-policy.test.js tests/ai-grounding.test.js tests/numeric-audit.test.js tests/search-visibility.test.js tests/answer-cache-key.test.js tests/eval-scoring.test.js tests/payment-action-hygiene.test.js",
     "test:mobile": "node --test tests/mobile-api-contract.test.js",
+    "test:phase-d": "node --test tests/phase-d-builder.test.js tests/mobile-api-contract.test.js",
     "test:navigation": "node --test tests/instant-navigation-contract.test.js tests/project-read-model.test.js",
     "test:schedule": "node --test tests/schedule-calc.test.js",
     "test:land": "node --test tests/product-posture-terminology.test.js tests/directory-party-roles.test.js tests/land-foundation.test.js tests/land-runway.test.js tests/land-plat.test.js tests/land-scope.test.js tests/land-supply.test.js",
@@ -139,12 +149,15 @@
     "lodash": "4.18.1",
     "markdown-it": "14.2.0",
     "postcss": "$postcss",
-    "qs": "6.15.2",
+    "qs": "6.16.0",
     "ws": "8.21.0"
   },
   "pnpm": {
     "overrides": {
-      "nanoid": "3.3.18"
+      "nanoid": "3.3.18",
+      "fast-uri": "3.1.6",
+      "qs": "6.16.0",
+      "@xmldom/xmldom": "0.8.15"
     }
   }
 }

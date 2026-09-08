@@ -25,7 +25,7 @@ export interface DuplicateSuspicion {
 
 /** Case, spacing and separator differences are not different invoice numbers. */
 export function normalizeBillNumber(value: string) {
-  return value.trim().toLowerCase().replace(/[\s._-]+/g, "")
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "")
 }
 
 export function detectDuplicateSuspicion({

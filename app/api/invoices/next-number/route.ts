@@ -1,13 +1,14 @@
-import { NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 import { unstable_rethrow } from "next/navigation"
 
 import { getNextInvoiceNumber } from "@/lib/services/invoice-numbers"
-import { requireOrgContext } from "@/lib/services/context"
+import { z } from "zod"
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    await requireOrgContext()
-    const result = await getNextInvoiceNumber()
+    const projectId = request.nextUrl.searchParams.get("projectId")
+    if (projectId && !z.string().uuid().safeParse(projectId).success) return NextResponse.json({ error: "Invalid project ID" }, { status: 400 })
+    const result = await getNextInvoiceNumber(undefined, projectId)
     return NextResponse.json(result)
   } catch (error: any) {
     unstable_rethrow(error)

@@ -32,6 +32,7 @@ const DEFAULTS: PortalPermissions = {
   can_view_daily_logs: false,
   can_view_budget: false,
   can_view_invoices: true,
+  can_certify_pay_applications: false,
   can_pay_invoices: false,
   can_view_rfis: true,
   can_respond_rfis: true,
@@ -76,6 +77,7 @@ const PERMISSION_GROUPS = [
   {
     label: "Actions",
     permissions: [
+      { key: "can_certify_pay_applications", label: "Certify / return pay applications", icon: CheckSquare },
       { key: "can_pay_invoices", label: "Pay invoices", icon: CreditCard },
       { key: "can_respond_rfis", label: "Respond to RFIs", icon: Edit },
       { key: "can_submit_submittals", label: "Submit submittals", icon: Layers },

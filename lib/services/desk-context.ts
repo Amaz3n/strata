@@ -1,9 +1,10 @@
 import "server-only"
 
+import { cache } from "react"
 import { cookies } from "next/headers"
 
 import { getDivisionAccessForUser } from "@/lib/services/authorization"
-import { listCommunities } from "@/lib/services/communities"
+import { listCommunityOptions } from "@/lib/services/communities"
 import { listMyCommunityIds } from "@/lib/services/community-assignments"
 import { requireOrgContext } from "@/lib/services/context"
 import { listDivisions, type DivisionDTO } from "@/lib/services/divisions"
@@ -36,7 +37,7 @@ export interface AmbientDeskContext {
   pinnableCommunities: AmbientCommunity[]
 }
 
-export async function getAmbientDeskContext(): Promise<AmbientDeskContext> {
+export const getAmbientDeskContext = cache(async function getAmbientDeskContext(): Promise<AmbientDeskContext> {
   const context = await requireOrgContext()
   const [cookieStore, divisions, access] = await Promise.all([
     cookies(),
@@ -54,7 +55,7 @@ export async function getAmbientDeskContext(): Promise<AmbientDeskContext> {
       : undefined
 
   const [communityRows, assignedIds] = await Promise.all([
-    listCommunities({}, context.orgId),
+    listCommunityOptions(context.orgId),
     listMyCommunityIds(context.orgId).catch(() => [] as string[]),
   ])
   const assigned = new Set(assignedIds)
@@ -89,4 +90,4 @@ export async function getAmbientDeskContext(): Promise<AmbientDeskContext> {
     communityId,
     pinnableCommunities,
   }
-}
+})

@@ -3,7 +3,7 @@ import "server-only";
 import { z } from "zod";
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
-import { requireAuthorization } from "@/lib/services/authorization";
+import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access";
 import { booksDigest } from "@/lib/services/books/hash";
 import { buildTrialBalance } from "@/lib/services/books/statements";
 import { requireOrgContext } from "@/lib/services/context";

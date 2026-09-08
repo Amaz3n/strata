@@ -1,6 +1,8 @@
+import { booksDigest as booksDigestForDimensions } from "@/lib/services/books/hash";
 import { SYSTEM_ACCOUNT_CODES } from "@/lib/services/books/chart-of-accounts";
 import {
   postBillPayment,
+  postApFeeCharge,
   postClosingInvoice,
   postCustomerDepositApplication,
   postCustomerDepositReceipt,
@@ -47,11 +49,12 @@ const ECONOMIC_KEYS_BY_SOURCE: Record<string, readonly string[]> = {
   customer_deposit_receipt: ["amount_cents", "gross_cents", "fee_cents", "project_id"],
   customer_deposit_application: ["amount_cents", "project_id", "deposit_payment_id"],
   customer_deposit_reversal: ["amount_cents", "project_id"],
-  bill_payment: ["amount_cents", "fee_cents", "discount_cents", "project_id"],
-  expense: ["amount_cents", "project_id", "vendor_company_id", "cost_lines"],
-  payment_reversal: ["amount_cents", "side", "project_id"],
+  bill_payment: ["amount_cents", "discount_cents", "project_id", "cash_account_code"],
+  ap_fee_charge: ["amount_cents", "cash_account_code"],
+  expense: ["amount_cents", "project_id", "vendor_company_id", "cost_lines", "payment_account_code"],
+  payment_reversal: ["amount_cents", "side", "project_id", "cash_account_code"],
   receivable_adjustment: ["amount_cents", "tax_cents", "adjustment_type", "project_id", "revenue_basis"],
-  labor_cost: ["amount_cents", "project_id"],
+  labor_cost: ["amount_cents", "project_id", "cost_account_code"],
   retirement: ["retired", "retired_source_version"],
 };
 
@@ -64,6 +67,8 @@ export function hashableFactPayload(
     throw new Error(`No economic fact allowlist exists for ${sourceType}`);
   const economic: Record<string, unknown> = {};
   for (const key of keys) if (key in payload) economic[key] = payload[key];
+  if (payload.project_dimensions && typeof payload.project_dimensions === "object") economic.project_dimensions = Object.fromEntries(Object.entries(payload.project_dimensions).map(([projectId, dimensions]) => [projectId, Object.fromEntries(Object.entries(dimensions as Record<string, unknown>).filter(([key]) => !key.endsWith("_name")))]));
+  if (payload.dimensions) economic.dimensions = payload.dimensions;
   return economic;
 }
 
@@ -73,6 +78,7 @@ export type FactCostLine = {
   description?: string;
   /** Arc Books chart code selected on the payable line, when one was chosen. */
   account_code?: string;
+  dimensions?: Record<string, unknown>;
 };
 
 function compareText(left: string, right: string) {
@@ -99,6 +105,7 @@ export function sortFactCostLines(lines: FactCostLine[]): FactCostLine[] {
       compareText(left.project_id ?? "", right.project_id ?? "") ||
       compareText(left.account_code ?? "", right.account_code ?? "") ||
       compareText(left.description ?? "", right.description ?? "") ||
+      compareText(JSON.stringify(left.dimensions ?? {}), JSON.stringify(right.dimensions ?? {})) ||
       left.amount_cents - right.amount_cents,
   );
 }
@@ -190,6 +197,7 @@ function costLinesValue(
         ? (entry as Record<string, unknown>)
         : {};
     return {
+      dimensions: row.dimensions && typeof row.dimensions === "object" ? row.dimensions as Record<string, unknown> : undefined,
       amountCents: centsValue(row.amount_cents),
       accountCode:
         typeof row.account_code === "string" ? row.account_code : undefined,
@@ -210,7 +218,7 @@ export type FactDraftInput = {
   policyVersion: number;
 };
 
-export function draftFromFact(input: FactDraftInput): JournalEntryDraft | null {
+function baseDraftFromFact(input: FactDraftInput): JournalEntryDraft | null {
   const row = input.payload;
   const projectId = optionalId(row.project_id);
   const common = {
@@ -324,10 +332,19 @@ export function draftFromFact(input: FactDraftInput): JournalEntryDraft | null {
   if (input.sourceType === "bill_payment") {
     return postBillPayment({
       ...common,
+      cashAccountCode: textValue(row.cash_account_code, "") || undefined,
       memo: textValue(row.memo, "Vendor bill payment"),
       amountCents: centsValue(row.amount_cents),
-      feeCents: centsValue(row.fee_cents),
       discountCents: centsValue(row.discount_cents),
+    });
+  }
+
+  if (input.sourceType === "ap_fee_charge") {
+    return postApFeeCharge({
+      ...common,
+      cashAccountCode: textValue(row.cash_account_code, "") || undefined,
+      memo: textValue(row.memo, "Arc Pay fees"),
+      amountCents: centsValue(row.amount_cents),
     });
   }
 
@@ -337,6 +354,7 @@ export function draftFromFact(input: FactDraftInput): JournalEntryDraft | null {
     return projectId || costLines.some((line) => line.projectId)
       ? postExpenseFromCostLines({
           ...common,
+          paymentAccountCode: textValue(row.payment_account_code, "") || undefined,
           companyId: optionalId(row.vendor_company_id),
           memo: textValue(row.memo, "Expense"),
           amountCents,
@@ -344,6 +362,7 @@ export function draftFromFact(input: FactDraftInput): JournalEntryDraft | null {
         })
       : postExpense({
           ...common,
+          paymentAccountCode: textValue(row.payment_account_code, "") || undefined,
           companyId: optionalId(row.vendor_company_id),
           memo: textValue(row.memo, "Expense"),
           amountCents,
@@ -356,6 +375,7 @@ export function draftFromFact(input: FactDraftInput): JournalEntryDraft | null {
       row.side === "bill_payment" ? "bill_payment" : "invoice_payment";
     return postPaymentReversal({
       ...common,
+      cashAccountCode: textValue(row.cash_account_code, "") || undefined,
       memo: textValue(row.memo, "Payment reversal"),
       amountCents: centsValue(row.amount_cents),
       side,
@@ -366,9 +386,32 @@ export function draftFromFact(input: FactDraftInput): JournalEntryDraft | null {
     return postLaborCost({
       ...common,
       memo: textValue(row.memo, "Field labor"),
+      costAccountCode: textValue(row.cost_account_code, "") || undefined,
       amountCents: centsValue(row.amount_cents),
     });
   }
 
   return null;
+}
+
+/** Dimensions are captured in the immutable fact so historical replay does not read today's project relationships. */
+export function draftFromFact(input: FactDraftInput): JournalEntryDraft | null {
+  const draft = baseDraftFromFact(input);
+  if (!draft) return null;
+  const byProject = (input.payload.project_dimensions ?? {}) as Record<string, Record<string, unknown>>;
+  const sourceDimensions = (input.payload.dimensions ?? {}) as Record<string, unknown>;
+  return { ...draft, lines: draft.lines.map(line => {
+    const dimensions = { ...(line.projectId ? byProject[line.projectId] : {}), ...sourceDimensions, ...line.dimensions };
+    return Object.keys(dimensions).length ? { ...line, dimensions } : line;
+  }) };
+}
+
+/** Enrich new economic revisions without recoding an unchanged, closed history at rollout. */
+export function preserveLegacyDimensionPayload(sourceType: string, accountingDate: string, payload: Record<string, unknown>, previous: { accounting_date: string; payload_hash: string; payload: Record<string, unknown> } | null) {
+  if (!previous || previous.accounting_date !== accountingDate || previous.payload.project_dimensions || previous.payload.dimensions || (Array.isArray(previous.payload.cost_lines) && previous.payload.cost_lines.some(line => line?.dimensions))) return payload;
+  const legacy = { ...payload };
+  delete legacy.project_dimensions; delete legacy.dimensions;
+  if (Array.isArray(legacy.cost_lines)) legacy.cost_lines = sortFactCostLines(legacy.cost_lines.map(line => { const copy = { ...line }; delete copy.dimensions; return copy; }));
+  const economic = hashableFactPayload(sourceType, legacy);
+  return [booksDigestForDimensions(economic), booksDigestForDimensions({ accountingDate, payload: economic })].includes(previous.payload_hash) ? previous.payload : payload;
 }

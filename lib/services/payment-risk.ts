@@ -22,6 +22,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
  */
 
 const RISK_QUEUE_LIMIT = 100
+type LatestRiskReviewRow = { id: string; run_id: string | null; decision: string; review_type: string; risk_score: number | null; signals: unknown; created_at: string }
 
 export interface PaymentRiskSignal {
   code: string
@@ -57,23 +58,13 @@ export async function listBlockedPaymentRuns(orgId?: string): Promise<BlockedPay
   await requireAnyPermission(["payment.approve_run", "payment.reconcile"], context)
   const supabase = createServiceSupabaseClient()
 
-  const { data: reviews, error } = await supabase
-    .from("payment_risk_reviews")
-    .select("id,run_id,decision,review_type,risk_score,signals,created_at")
-    .eq("org_id", context.orgId)
-    .not("run_id", "is", null)
-    .order("created_at", { ascending: false })
-    .limit(RISK_QUEUE_LIMIT * 4)
+  const { data: reviews, error } = await supabase.rpc("latest_payment_risk_reviews", {
+    p_org_id: context.orgId,
+    p_run_ids: null,
+  })
   if (error) throw new Error(`Unable to load payment risk reviews: ${error.message}`)
 
-  // Only the latest review per run matters — an older block that a reviewer has
-  // since allowed is history, not a queue item.
-  const latestByRun = new Map<string, (typeof reviews)[number]>()
-  for (const review of reviews ?? []) {
-    if (!review.run_id || latestByRun.has(review.run_id)) continue
-    latestByRun.set(review.run_id, review)
-  }
-  const blocked = [...latestByRun.values()].filter((review) => review.decision === "block").slice(0, RISK_QUEUE_LIMIT)
+  const blocked = ((reviews ?? []) as LatestRiskReviewRow[]).filter((review) => review.decision === "block").slice(0, RISK_QUEUE_LIMIT)
   if (blocked.length === 0) return []
 
   const { data: runs } = await supabase

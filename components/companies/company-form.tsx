@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Select,
   SelectContent,
@@ -21,8 +22,10 @@ import {
 } from "@/components/ui/select"
 import type { Company } from "@/lib/types"
 import { RoleSelect } from "@/components/directory/role-select"
+import { isTradePartnerRoleKey } from "@/lib/directory/roles"
 import {
   createCompanyAction,
+  enrollCompanyInComplianceAction,
   createAccountingVendorForCompanyAction,
   getCompanyAccountingVendorContextAction,
   linkCompanyAccountingVendorAction,
@@ -90,6 +93,7 @@ const VENDOR_LINK_STATUS_LABELS: Record<string, string> = {
 
 export function CompanyForm({ company, initialName, onSubmitted, onCancel, payablesMode = false }: CompanyFormProps) {
   const [isPending, startTransition] = useTransition()
+  const [enrollCompliance, setEnrollCompliance] = useState(true)
   const [isAccountingPending, startAccountingTransition] = useTransition()
   const { toast } = useToast()
   const router = useRouter()
@@ -196,8 +200,25 @@ export function CompanyForm({ company, initialName, onSubmitted, onCancel, payab
         const saved = company
           ? unwrapAction(await updateCompanyAction(company.id, payload))
           : unwrapAction(await createCompanyAction(payload))
+
+        // Enrollment is its own call because it needs `compliance.manage`,
+        // which whoever is adding a subcontractor may not hold. A company that
+        // exists but is not being watched beats a create that fails.
+        let enrollmentNote: string | undefined
+        if (!company && enrollCompliance && isTradePartnerRoleKey(formState.role_key)) {
+          const enrolled = await enrollCompanyInComplianceAction(saved.id)
+          enrollmentNote = enrolled.success
+            ? enrolled.data.requirementCount > 0
+              ? `Compliance monitoring on, ${enrolled.data.requirementCount} ${enrolled.data.requirementCount === 1 ? "requirement" : "requirements"} set.`
+              : "Compliance monitoring on. Nothing is required yet — set requirements on the Compliance tab."
+            : `Created, but compliance was not enrolled: ${enrolled.error}`
+        }
+
         router.refresh()
-        toast({ title: company ? "Company updated" : "Company created" })
+        toast({
+          title: company ? "Company updated" : "Company created",
+          description: enrollmentNote,
+        })
         onSubmitted?.(saved)
       } catch (error) {
         console.error(error)
@@ -298,6 +319,27 @@ export function CompanyForm({ company, initialName, onSubmitted, onCancel, payab
           </div>
         )}
       </div>
+
+      {/* Only for the roles that actually do construction work. A generic payee
+          inheriting an insurance chase is what explicit enrollment was for; a
+          subcontractor nobody enrolled is what it cost. */}
+      {!company && isTradePartnerRoleKey(formState.role_key) ? (
+        <label className="flex items-start gap-2.5 border px-3 py-2.5 text-sm">
+          <Checkbox
+            className="mt-0.5"
+            checked={enrollCompliance}
+            disabled={isPending}
+            onCheckedChange={(checked) => setEnrollCompliance(checked === true)}
+          />
+          <span>
+            Track compliance for this vendor
+            <span className="block text-xs text-muted-foreground">
+              Applies your org&apos;s document template and starts watching expiry dates. You can
+              change what is required on their Compliance tab.
+            </span>
+          </span>
+        </label>
+      ) : null}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="space-y-2">

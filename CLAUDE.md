@@ -194,7 +194,13 @@ Judgment rules:
   - `list_tables` to check real schema before writing queries or migrations
   - `execute_sql` for read-only inspection (PRODUCTION — **SELECTs only**)
   - `get_logs` / `get_advisors` when debugging, before changing anything
-  - `apply_migration` — only when the human explicitly asks, never on your own
+  - `apply_migration` — only when the human explicitly asks, never on your own.
+    Prefer the Supabase CLI for repository migrations because MCP always stamps
+    a fresh ledger version. If the human explicitly chooses MCP, pass the full
+    repository filename stem as the migration name (e.g.
+    `20260901120000_payment_run_submit_execute_lockdown`) so the ledger row can
+    still be mapped back by name, then reconcile the stamped version before any
+    `db push`. `pnpm db:ledger:check` guards exact production parity.
 - Multi-tenant: all tables `org_id`-scoped with RLS. Events → `events`,
   audit → `audit_log`, async work → `outbox`, cron telemetry → `job_runs`.
 
@@ -325,6 +331,116 @@ Then the suites your change touches:
   not renderable anywhere. Captions are enqueued from the preview job, the single
   path every image takes, and gated on the org's AI flag. `photos.visibility =
   'client'` is the client portal feed, served through `/api/portal/files/:token/:fileId`.
+- **Control tower is one query.** `/` at residential/commercial posture is
+  `components/control-tower/*`, and the whole desk — every active job's schedule,
+  cost, cash and paperwork position, the org money rollup, the decision
+  candidates, and the 7-day field lookahead with its trade/assignee collisions —
+  comes from ONE call to `control_tower_rollup`. It replaced ~30 PostgREST calls
+  chained four deep where nothing painted until the slowest landed, so **never
+  add a `.from(...)` read to `lib/services/control-tower.ts`**: extend the SQL
+  function instead (`tests/control-tower.test.js` fails the build if a band
+  starts querying tables again). SQL only aggregates; every judgment — risk
+  score, signal wording, decision ranking, collision severity — is pure and
+  tested in `lib/control-tower/model.ts`, so thresholds move without a
+  migration. Decisions rank on **money and lateness together** on a log dollar
+  scale; severity buckets used to be assigned before the money was read, which
+  buried every large fresh item under every small stale one. The function is
+  service-role only and takes the caller's already-authorized project scope
+  (`null` = whole org, never flattened to an empty list), and it restates the
+  ledger status sets and `payableOutstandingCents` because SQL cannot import
+  them — `tests/ledger-definition-parity.test.js` compares those literally.
+- **Billing is one book, three bands.** `/projects/[id]/financials/billing` is
+  `BillingBook` (`components/invoices/billing-book.tsx`): UP NEXT (planned
+  billing events from `getProjectBillingUpNext()` + drafts), OPEN (issued with a
+  balance), HISTORY (paid/void, loaded on expand). There are no artifact tabs,
+  queue chips or KPI tiles; the setup surfaces (draw schedule, SOV, pay
+  applications, retainage ledger) open over the book from `?manage=` and load
+  when opened. How a project bills is resolved ONCE by `resolveBillingProfile()`
+  (`lib/financials/billing-profile.ts`) from the feature config and the posture
+  policy — never read those in a component. The page's numbers come from one
+  scan (`getProjectBillingSummary()`), never per-queue counts. **Selection is
+  `useWorkspaceParam("invoice")`** (history.replaceState); a `router.replace`
+  onto a page that reads search params re-runs every loader on the page.
+  Invoice detail is one round trip (attachments included) cached by id and
+  `updated_at` in `use-invoice-detail-cache.ts`, with hover and neighbour
+  prefetch; the inspector header paints from the list row. The composer
+  opens OVER the book (`?compose=new` or `?compose=<draftId>`, never a route
+  of its own — `/billing/new` is a redirect): a form on the left and the live
+  `ArcInvoiceDocument` on the right, fed from the editor's snapshot so the
+  preview is the customer's document, not a second layout. Its data is one
+  bootstrap action warmed on hover; sending persists through the editor's ref
+  and issues that id; "Schedule send" writes `metadata.scheduled_send_at` and an
+  `issue_invoice_scheduled` outbox job that sends only while that timestamp still
+  stands. `metadata.memo` prints under the invoice title; `metadata.payment_methods`
+  narrows (never widens) the org's online payment policy on the pay pages. The
+  document layout lives in TWO renderers that move together: `lib/pdfs/invoice.tsx`
+  and `components/invoices/arc-invoice-document.tsx`. Cost-driven periods are billed
+  from the Up next row in `BillCostsWorkspace` (ticks left, server-priced live
+  document right) through `generateInvoiceFromCosts` (the result is
+  system-controlled and not editable), not through the composer. Retainage,
+  recurring invoices, draws and the SOV are `?manage=` sheets over the book;
+  pay applications are a takeover, below. The owner SOV is the sell-side
+  billing structure; the budget is the cost/forecast structure. They remain
+  separate but connect through `prime_sov_budget_links` (one SOV line may use
+  several cost buckets), which supplies evidence without letting cost changes
+  rewrite the contract value. SOV saves and invoice budget mappings use
+  revision-checked database transactions.
+- **Progress billing: the pay application is the document, not a form.**
+  Whether a project bills this way is `profile.progressBilling`, resolved from
+  the posture AND the data (`getProjectBillingFacts()` — does it have a schedule
+  of values, does it have applications), never from
+  `fixed_price_billing_basis` alone: that flag is set by hand in project setup,
+  and gating on it is why commercial jobs opened on draw billing with their pay
+  applications invisible. The workspace is a takeover on `?payapp=<id|new>`
+  (`components/financials/pay-application-workspace.tsx`) — the G703 grid on the
+  left, the live G702 on the right — mirroring the composer; the register behind
+  `?manage=payapps` lists and opens, it never edits. Stage is derived, never
+  stored: `derivePayApplicationStage()` (`lib/financials/pay-app-lifecycle.ts`)
+  turns the row, its metadata and its invoice into draft / returned / submitted /
+  awaiting certification / certified / billed / paid / void, and every surface
+  reads `PAY_APPLICATION_STAGE_LABELS` rather than inventing a vocabulary.
+  **Submit** refuses while the SOV does not foot to the contract sum, then files
+  the G702 PDF and the builder's conditional progress waiver. **Send** either
+  emails the owner a link to certify (`approvalMode === "required_review"`) or
+  issues the invoice; **certifying issues the invoice** under the member who
+  submitted it, so the receivable exists the moment the owner says the money is
+  due. Partial certification is recorded as explained net-payment deferrals by
+  SOV line: Arc preserves the original request, issues only the certified
+  receivable, and carries each deferral into the next application without
+  changing contractual retainage. A fully rejected certificate is a **return**,
+  which reverses the SOV rollups, voids the
+  invoice and its unpaid waiver, and sends the application back to draft as the
+  next revision **keeping its number**. The document lives in TWO renderers that
+  move together: `lib/pdfs/pay-application-g702.tsx` and
+  `components/financials/pay-application-document.tsx`. Owners read and certify
+  at `/p/[token]/pay-applications`. Draft edits autosave with an optimistic
+  version guard; accepted progress suggestions retain their approved-bill
+  provenance until the work amount is manually changed.
+- **Every money surface resolves one accounting experience.**
+  `getFinancialAccountingMode()` and `accountingExperience()` separate ledger
+  authority from presentation. `official` means Arc Books owns posting and
+  reconciliation; `shadow` and `parallel` keep the connected provider
+  authoritative while exposing Arc's journal evidence; `external` shows only
+  provider sync. A retained external mapping never makes official Arc Books
+  depend on that connection unless outbound mirroring is explicitly enabled.
+  Journal and sync receipts come from persisted records through
+  `FinancialRecordAccounting`; UI labels must never infer a posting from a
+  workflow status. Arc GL account IDs live in `arc_books_gl_account_id` metadata
+  and never share the external-provider account namespace.
+- **Lien waivers share infrastructure, not obligations.** Incoming trade waivers
+  remain in `lien_waivers`; outgoing builder waivers remain in `invoice_lien_waivers`.
+  Both use company templates, PDF preparation, and native document signing. Template
+  applicability and property jurisdiction must match. Payables → Waivers is the
+  incoming register; the old project waiver URL redirects there. A signed PDF and
+  a human coverage review are separate requirements. Never set “received” manually
+  or manufacture evidence from a typed signature. All replacement documents retain
+  history. `waiverCoverage()` is shared by the register and payment gates; work
+  through dates come from billing coverage, never due dates. Final and unconditional
+  types are explicit; retainage alone never determines either. Native execution
+  binds the exact executed file and leaves coverage review pending. Lower-tier
+  uploads also need actual signature dates and review. Final readiness is derived
+  for closeout and closing, and checked again at settlement. Do not apply pending
+  waiver lifecycle migrations without the database authorization required above.
 - **Portals** are token-based public routes: `app/p` (client/buyer), `app/s`
   (sub), `app/b` (bid), `app/proposal`, `app/i` (invoice), plus `app/d`, `app/e`,
   `app/f`, `app/r`, `app/t`. The workspace portals (`p`, `s`, `r`) share one

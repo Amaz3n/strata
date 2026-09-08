@@ -58,7 +58,11 @@ test("retainage releases preserve neutral accounting coding without legacy QBO c
   const retainage = read("lib/services/ap-retainage.ts")
 
   assert.match(retainage, /status,accounting_coding/)
-  assert.match(retainage, /accounting_coding: bill\.accounting_coding \?\? \{\}/)
+  assert.match(retainage, /"release_retainage_atomic"/)
+  const migration = read("supabase/migrations/20260908015053_payable_waiver_lifecycle.sql")
+  const release = migration.slice(migration.indexOf("create or replace function public.release_retainage_atomic"))
+  assert.ok(release.includes("create or replace function public.release_retainage_atomic"), "retainage definition must exist")
+  assert.match(release, /p_amount_cents,v_bill\.currency,v_bill\.accounting_coding/)
   assert.doesNotMatch(retainage, /qbo_(?:expense|ap)_account_(?:id|name)/)
   assert.doesNotMatch(retainage, /qbo_vendor_(?:id|name)/)
 })

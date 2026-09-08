@@ -1225,7 +1225,7 @@ function InboxHeader({
           Adjustment
         </Button>
         <Button size="sm" asChild>
-          <Link href={`/projects/${projectId}/financials/billing?tab=close`}>Close &amp; Bill</Link>
+          <Link href={`/projects/${projectId}/financials/billing`}>Bill approved costs</Link>
         </Button>
       </div>
     </div>

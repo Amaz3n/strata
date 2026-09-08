@@ -1,3 +1,4 @@
+import { waiverCoverage } from "@/lib/lien-waivers/coverage"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { recordAudit } from "@/lib/services/audit"
@@ -29,6 +30,7 @@ import {
   type PaymentHoldKind,
   type PaymentHoldOverrideInput,
 } from "@/lib/validation/payment-holds"
+import type { WaiverChaseKind } from "@/lib/payments/waiver-chase-policy"
 
 export {
   evaluatePaymentHoldFacts,
@@ -122,11 +124,11 @@ async function resolveBillCompany(supabase: SupabaseClient, orgId: string, compa
 export async function evaluateHolds(
   billId: string,
   orgId?: string,
-  options: { enqueueWaiverChase?: boolean; skipAuthorization?: boolean } = {},
+  options: { enqueueWaiverChase?: boolean; skipAuthorization?: boolean; amountCents?: number } = {},
 ): Promise<PaymentHoldEvaluation> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const { data: bill, error } = await supabase.from("vendor_bills")
-    .select("id,project_id,company_id,commitment_id,lien_waiver_status,retainage_cents,total_cents,funding_invoice_id,metadata")
+    .select("id,project_id,company_id,commitment_id,lien_waiver_status,retainage_cents,retainage_released_cents,total_cents,paid_cents,status,funding_invoice_id,metadata")
     .eq("org_id", resolvedOrgId).eq("id", billId).maybeSingle()
   if (error || !bill) throw new Error("Vendor bill not found")
   if (!options.skipAuthorization) {
@@ -181,6 +183,14 @@ export async function evaluateHolds(
     todayIso: new Date().toISOString().slice(0, 10),
     fallbackCompliant: compliance?.is_compliant ?? true,
   })
+  const { data: signedWaivers, error: evidenceError } = await supabase.from("lien_waivers")
+    .select("id,waiver_type,status,amount_cents,through_date,signed_at,signed_file_id,document_file_id,metadata")
+    .eq("org_id",resolvedOrgId).eq("bill_id",billId)
+  if(evidenceError) throw new Error("Could not evaluate waiver evidence")
+  const period = String(bill.metadata?.billing_period_end??bill.metadata?.through_date??"")
+  const missingSubtiers = projectControls?.require_subtier_waivers && bill.commitment_id && period
+    ? await listMissingSubtierWaiversForBill({orgId:resolvedOrgId,projectId:bill.project_id,commitmentId:bill.commitment_id,periodEnd:period}) : []
+  const coverage = waiverCoverage({...bill,company_id:companyId},signedWaivers??[],Boolean(rules.require_lien_waiver || projectControls?.require_subtier_waivers),missingSubtiers.length,Boolean(projectControls?.require_subtier_waivers&&!bill.commitment_id),options.amountCents)
   const evaluation = evaluatePaymentHoldFacts({
     projectId: bill.project_id,
     companyId,
@@ -195,7 +205,7 @@ export async function evaluateHolds(
     // "received" is the schema's only waiver-in-hand state. The legacy value
     // "signed" is normalized to "received" at the validation boundary
     // (lib/validation/vendor-bills.ts) and backfilled in the data.
-    waiverSigned: bill.lien_waiver_status === "received",
+    waiverSigned: coverage.reasons.length === 0,
     // Read-only: the claim is computed when the waiver is signed, never here.
     // A bill with no stored verification passes `null` and raises nothing.
     waiverVerification: readWaiverVerificationFact((bill.metadata ?? {}) as Record<string, unknown>),
@@ -205,6 +215,7 @@ export async function evaluateHolds(
     overrides,
     policy: parsePaymentHoldPolicy(projectPolicy?.conditions ?? orgPolicy?.conditions),
   })
+  for(const hold of evaluation.holds) if(hold.kind === "waiver_signed") hold.detail = coverage.reasons.join("; ")
   const waiverAutoChase = projectPolicy?.waiver_auto_chase ?? orgPolicy?.waiver_auto_chase ?? true
   if (bill.project_id && options.enqueueWaiverChase && waiverAutoChase && evaluation.holds.some((hold) => hold.kind === "waiver_signed" && !hold.overridden)) {
     await enqueueOutboxJob({ orgId: resolvedOrgId, jobType: "chase_vendor_bill_waiver", payload: { bill_id: billId, project_id: bill.project_id }, dedupeByPayloadKeys: ["bill_id"] })
@@ -220,12 +231,12 @@ export async function evaluateHolds(
 export async function assertBillReleasable(
   billId: string,
   orgId?: string,
-  options: { excludePaymentRunId?: string } = {},
+  options: { excludePaymentRunId?: string; amountCents?: number } = {},
 ): Promise<PaymentReleaseEvidence> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const { data: bill, error } = await supabase
     .from("vendor_bills")
-    .select("id,project_id,company_id,commitment_id,bill_date,due_date,total_cents,metadata,lien_waiver_status")
+    .select("id,project_id,company_id,commitment_id,bill_date,due_date,total_cents,paid_cents,retainage_cents,retainage_released_cents,status,metadata,lien_waiver_status")
     .eq("org_id", resolvedOrgId)
     .eq("id", billId)
     .maybeSingle()
@@ -241,7 +252,7 @@ export async function assertBillReleasable(
     resourceId: billId,
   })
 
-  const holdEvaluation = await evaluateHolds(billId, resolvedOrgId, { enqueueWaiverChase: true, skipAuthorization: true })
+  const holdEvaluation = await evaluateHolds(billId, resolvedOrgId, { enqueueWaiverChase: true, skipAuthorization: true, amountCents: options.amountCents })
   if (!holdEvaluation.releasable) {
     const reasons = holdEvaluation.holds
       .filter((hold) => hold.level === "block" && !hold.overridden)
@@ -284,14 +295,12 @@ export async function assertBillReleasable(
 
   let missingSubtierWaiverCount = 0
   if (projectControls?.require_subtier_waivers) {
-    if (bill.lien_waiver_status !== "received") {
-      throw new Error("First-tier lien waiver required before payment")
-    }
+
     if (!bill.commitment_id) {
       throw new Error("A commitment is required to validate sub-tier lien waivers before payment")
     }
     const metadata = (bill.metadata as Record<string, unknown> | null) ?? {}
-    const periodEnd = String(metadata.billing_period_end ?? bill.due_date ?? bill.bill_date ?? "")
+    const periodEnd = String(metadata.billing_period_end ?? metadata.through_date ?? "")
     if (!/^\d{4}-\d{2}-\d{2}$/.test(periodEnd)) {
       throw new Error("Set the payable period end before validating sub-tier lien waivers")
     }
@@ -308,9 +317,7 @@ export async function assertBillReleasable(
   }
 
   if (bill.project_id && rules.block_payment_on_missing_docs) {
-    if (rules.require_lien_waiver && bill.lien_waiver_status !== "received") {
-      throw new Error("Lien waiver required before payment")
-    }
+
     if (companyId) {
       const compliance = await getCompanyComplianceStatusWithClient(
         supabase,
@@ -323,18 +330,15 @@ export async function assertBillReleasable(
   }
 
   const waiverRequired = Boolean(bill.project_id) && (Boolean(rules.require_lien_waiver) || Boolean(projectControls?.require_subtier_waivers))
-  const { data: waiverRow, error: waiverError } = await supabase.from("lien_waivers")
-    .select("id,waiver_type,status,amount_cents,through_date,signed_at,signed_file_id,signature_data")
+  const { data: waiverRows, error: waiverError } = await supabase.from("lien_waivers")
+    .select("id,waiver_type,status,amount_cents,through_date,signed_at,signed_file_id,document_file_id,signature_data,metadata")
     .eq("org_id", resolvedOrgId).eq("bill_id", billId).eq("status", "signed")
-    .in("waiver_type", ["conditional", "final"])
-    .order("signed_at", { ascending: false }).limit(1).maybeSingle()
+    .order("signed_at", { ascending: false })
   if (waiverError) throw new Error(`Unable to validate signed lien waiver evidence: ${waiverError.message}`)
-  if (waiverRequired && !waiverRow) throw new Error("A signed, bill-linked conditional lien waiver is required before payment")
+  const coverage = waiverCoverage({...bill,company_id:companyId}, waiverRows ?? [], waiverRequired, missingSubtierWaiverCount, false, options.amountCents)
+  if (coverage.reasons.length) throw new Error(coverage.reasons.join("; "))
+  const waiverRow = waiverRows?.find(row => row.id === coverage.conditionalId) ?? null
   const metadata = (bill.metadata as Record<string, unknown> | null) ?? {}
-  const billingPeriodEnd = String(metadata.billing_period_end ?? bill.due_date ?? bill.bill_date ?? "")
-  if (waiverRequired && waiverRow && /^\d{4}-\d{2}-\d{2}$/.test(billingPeriodEnd) && waiverRow.through_date < billingPeriodEnd) {
-    throw new Error("Lien waiver through-date does not cover this payable period")
-  }
 
   let constructionEvidence: PaymentReleaseEvidence["constructionEvidence"] = null
   if (bill.commitment_id) {
@@ -410,9 +414,25 @@ export async function overridePaymentHold(input: PaymentHoldOverrideInput, orgId
   return evaluateHolds(parsed.bill_id, resolvedOrgId, { skipAuthorization: true })
 }
 
-export async function sendVendorBillWaiverChase(orgId: string, billId: string) {
+/**
+ * Ask a vendor for the waiver this payable still owes.
+ *
+ * Two documents, two conversations. The SIGNATURE chase is about money the sub
+ * is waiting on, and says so. The UNCONDITIONAL chase happens after they have
+ * been paid, blocks nothing, and asks for the record the builder owes the
+ * owner and the lender. Which one, and how insistent, is decided by
+ * `lib/payments/waiver-chase-policy.ts`; this only writes the email and
+ * records that it went.
+ */
+export async function sendVendorBillWaiverChase(
+  orgId: string,
+  billId: string,
+  options: { kind?: WaiverChaseKind; attempt?: number } = {},
+) {
+  const kind: WaiverChaseKind = options.kind === "unconditional" ? "unconditional" : "signature"
+  const attempt = Number.isFinite(options.attempt) && Number(options.attempt) > 0 ? Math.floor(Number(options.attempt)) : 1
   const client = createServiceSupabaseClient()
-  const { data: bill } = await client.from("vendor_bills").select("id,project_id,company_id,bill_number,commitment:commitments(company_id),company:companies(name,email),project:projects(name),org:orgs(name,slug)").eq("org_id", orgId).eq("id", billId).maybeSingle()
+  const { data: bill } = await client.from("vendor_bills").select("id,project_id,company_id,bill_number,metadata,commitment:commitments(company_id),company:companies(name,email),project:projects(name),org:orgs(name,slug)").eq("org_id", orgId).eq("id", billId).maybeSingle()
   if (!bill) throw new Error("Vendor bill not found for waiver chase")
   const commitment = Array.isArray(bill.commitment) ? bill.commitment[0] : bill.commitment
   const companyId = bill.company_id ?? commitment?.company_id
@@ -422,12 +442,29 @@ export async function sendVendorBillWaiverChase(orgId: string, billId: string) {
     company = result.data
   }
   if (!companyId || !company?.email) throw new Error("Vendor has no email for waiver chase")
-  const base = await ensurePortalLink({ supabase: client, orgId, projectId: bill.project_id, portalType: "sub", companyId, capabilities: { can_view_bills: true }, fallbackPath: `/projects/${bill.project_id}/financials/payables` })
-  const url = `${base}/waivers/${bill.id}`
-  const project = Array.isArray(bill.project) ? bill.project[0] : bill.project
-  const org = Array.isArray(bill.org) ? bill.org[0] : bill.org
-  const html = renderStandardEmailLayout({ title: "Lien waiver signature required", messageHtml: `<p>Sign the conditional lien waiver for invoice ${bill.bill_number ?? bill.id} on ${project?.name ?? "the project"} so payment can be released.</p>`, buttonText: "Review and sign waiver", buttonUrl: url, orgName: org?.name, showManageSettings: false })
-  const sent = await sendEmail({ from: getOrgSenderEmail(org?.slug, org?.name), to: [company.email], subject: `Lien waiver required: ${bill.bill_number ?? "invoice"}`, html })
-  if (!sent) throw new Error("Waiver chase email was not sent")
-  await recordEvent({ orgId, eventType: "vendor_bill_waiver_chased", entityType: "vendor_bill", entityId: bill.id, payload: { project_id: bill.project_id, company_id: companyId } })
+  const {data:prepared,error:preparedError}=await client.from("lien_waivers").select("id,status,metadata,waiver_type").eq("org_id",orgId).eq("bill_id",billId).order("created_at",{ascending:false})
+  if(preparedError)throw new Error("Could not load waiver request")
+  const native=prepared?.find(w=>w.metadata?.document_id && (kind === "unconditional" ? w.waiver_type.startsWith("unconditional") : w.waiver_type.startsWith("conditional")))
+  if(native){
+    if(native.status === "signed")return
+    const {data:requests,error:requestError}=await client.from("document_signing_requests").select("id,status,sent_to_email,sequence,required,envelope_id").eq("org_id",orgId).eq("document_id",native.metadata.document_id).in("status",["sent","viewed"]).order("sequence")
+    if(requestError)throw new Error("Could not load signing recipients")
+    if(!requests?.length)throw new Error("Prepare and send the waiver from Payables before requesting a reminder")
+    const {issueSigningLinkForRequest,sendSignerRequestEmail}=await import("@/lib/services/signature-delivery")
+    const sequence=requests[0].sequence
+    for(const request of requests.filter(r=>r.sequence===sequence)){
+      if(!request.sent_to_email)throw new Error("Signer email missing")
+      const link=await issueSigningLinkForRequest(client,{orgId,requestId:request.id,markSent:false})
+      await sendSignerRequestEmail({orgId,toEmail:request.sent_to_email,documentTitle:`Waiver · ${bill.bill_number??"Payable"}`,signingUrl:link.url,isReminder:true})
+    }
+    const {error:recordError}=await client.from("vendor_bills").update({metadata:{...bill.metadata,waiver_chase:{kind,attempt,at:new Date().toISOString(),delivery:"sent"}}}).eq("org_id",orgId).eq("id",billId)
+    if(recordError)throw new Error("Reminder delivered; could not record delivery")
+    return
+  }
+  // No document has been prepared for this stage. Create internal follow-up,
+  // not a misleading invitation to the retired generic signing form.
+  const now=new Date().toISOString()
+  const {error:followupError}=await client.from("vendor_bills").update({metadata:{...bill.metadata,waiver_chase:{kind,attempt,at:now,delivery:"needs_preparation"}}}).eq("org_id",orgId).eq("id",billId)
+  if(followupError)throw new Error("Could not record waiver preparation follow-up")
+  await recordEvent({orgId,eventType:"waiver_preparation_required",entityType:"vendor_bill",entityId:billId,payload:{project_id:bill.project_id,waiver_kind:kind,href:`/projects/${bill.project_id}/financials/payables/waivers`}})
 }

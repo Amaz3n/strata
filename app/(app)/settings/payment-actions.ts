@@ -2,14 +2,15 @@
 
 import { revalidatePath } from "next/cache"
 
-import { actionError, type ActionResult } from "@/lib/action-result"
+import { actionError, runAction, type ActionResult } from "@/lib/action-result"
 import {
   completeOrgFundingSetup,
   createOrgFundingSetup,
   decidePaymentControlChange,
   updatePaymentRailPolicy,
 } from "@/lib/services/payment-rail-setup"
-import { setPaymentRunApprovers, type PaymentRunApprover } from "@/lib/services/payment-approvers"
+import { type PaymentRunApprover } from "@/lib/services/payment-approver-roster"
+import { setPaymentRunApprovers } from "@/lib/services/payment-approvers"
 import {
   deleteAutoApprovalRule,
   listAutoApprovalRules,
@@ -59,7 +60,7 @@ export async function decidePaymentControlChangeAction(input: { changeRequestId:
 }
 
 export async function listAutoApprovalRulesAction(): Promise<ActionResult<AutoApprovalRule[]>> {
-  return run(() => listAutoApprovalRules())
+  return runAction(() => listAutoApprovalRules())
 }
 
 export async function upsertAutoApprovalRuleAction(input: AutoApprovalRuleInput): Promise<ActionResult<{ id: string }>> {

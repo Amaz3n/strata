@@ -2,7 +2,7 @@ import Image from "next/image"
 
 import { ExternalWorkspaceSwitcher } from "@/components/portal/external-workspace-switcher"
 import { PortalClaimAccount } from "./portal-claim-account"
-import type { ExternalPortalWorkspaceContext } from "@/lib/types"
+import type { ExternalPortalWorkspaceContext, PortalTokenPurpose } from "@/lib/types"
 
 export interface PortalIdentity {
   orgName: string
@@ -19,6 +19,7 @@ interface PortalBrandHeaderProps {
   tokenType?: "portal" | "bid"
   claimEmail?: string
   claimFullName?: string
+  claimPurpose?: PortalTokenPurpose
 }
 
 /**
@@ -33,6 +34,7 @@ export function PortalBrandHeader({
   tokenType,
   claimEmail = "",
   claimFullName = "",
+  claimPurpose = "portal",
 }: PortalBrandHeaderProps) {
   const initials = identity.orgName.slice(0, 2).toUpperCase()
 
@@ -75,6 +77,7 @@ export function PortalBrandHeader({
               tokenType={tokenType}
               email={claimEmail}
               suggestedFullName={claimFullName}
+              purpose={claimPurpose}
             />
           ) : null}
         </div>

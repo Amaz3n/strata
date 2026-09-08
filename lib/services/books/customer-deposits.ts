@@ -3,7 +3,7 @@ import "server-only"
 import { z } from "zod"
 
 import { recordAudit } from "@/lib/services/audit"
-import { requireAuthorization } from "@/lib/services/authorization"
+import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access"
 import { projectJournal } from "@/lib/services/books/projector"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"

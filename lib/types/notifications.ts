@@ -139,7 +139,6 @@ export type NotificationType =
   | "payment_run_approvers_updated"
   | "payment_hold_overridden"
   | "payment_reversed"
-  | "payment_reversed_from_qbo"
   | "vendor_bill_payment_reversed"
   | "vendor_credit_applied"
   | "vendor_payout_destination_changed"
@@ -400,13 +399,6 @@ export const EMAIL_NOTIFICATION_TYPES = [
     category: "accounting",
     label: "Customer payment reversed",
     description: "Email me when a return or correction reopens a customer invoice balance.",
-  },
-  {
-    key: "payment_reversed_from_qbo",
-    category: "accounting",
-    label: "Customer payment reversed in QuickBooks",
-    description:
-      "Email me when a customer payment is deleted in QuickBooks and Arc reopens the invoice balance to match.",
   },
   {
     key: "vendor_bill_payment_reversed",

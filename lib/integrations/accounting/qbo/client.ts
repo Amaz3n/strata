@@ -1,3 +1,4 @@
+import { accountingDeliveryDeadline, AccountingDeliveryError } from "@/lib/services/accounting-delivery"
 import { getQBOAccessToken, getQBOAccessTokenForConnection } from "@/lib/integrations/accounting/qbo/connections"
 import { logQBO } from "@/lib/services/accounting-logger"
 import { qboCompanyBaseUrl, qboEnvironmentLabel } from "@/lib/integrations/accounting/qbo/config"
@@ -78,6 +79,7 @@ const REQUEST_TIMEOUT_MS = 45_000
 const refreshInFlight = new Map<string, Promise<{ token: string; realmId: string } | null>>()
 
 function sleep(ms: number) {
+  if (Date.now() + ms >= (accountingDeliveryDeadline() ?? Infinity)) throw new AccountingDeliveryError("Accounting delivery deadline reached", true, "deadline")
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
@@ -94,7 +96,7 @@ export function pickHighestDocNumber(docNumbers: Array<string | undefined | null
   for (const raw of docNumbers) {
     const value = typeof raw === "string" ? raw.trim() : ""
     if (!value) continue
-    if (highest === null || value.localeCompare(highest, undefined, { numeric: true, sensitivity: "base" }) > 0) {
+    if (highest === null || value.localeCompare(highest, undefined, { numeric: true }) > 0) {
       highest = value
     }
   }
@@ -286,6 +288,8 @@ export class QBOClient {
       headers?: Record<string, string>
     },
   ): Promise<Response> {
+    const remaining = (accountingDeliveryDeadline() ?? Date.now() + REQUEST_TIMEOUT_MS) - Date.now()
+    if (remaining <= 0) throw new AccountingDeliveryError("Accounting delivery deadline reached", true, "deadline")
     const url = `${qboCompanyBaseUrl}/${this.realmId}/${endpoint}`
     return fetch(url, {
       method,
@@ -298,7 +302,7 @@ export class QBOClient {
       // A hung Intuit socket must not consume the whole function budget — a
       // timed-out create is recoverable via the PrivateNote marker; a silent
       // hang past the platform limit is not.
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(Math.max(1, Math.min(REQUEST_TIMEOUT_MS, remaining))),
     })
   }
 
@@ -371,11 +375,16 @@ export class QBOClient {
   }
 
   async getLastInvoiceNumber(): Promise<string> {
-    // The most recently *created* invoice is not necessarily the highest-numbered one
-    // (backdated or imported invoices), so scan a window and take the numeric max.
-    const query = `SELECT DocNumber FROM Invoice ORDERBY MetaData.CreateTime DESC MAXRESULTS 100`
-    const result = await this.request<QueryInvoiceResponse>("GET", `query?query=${encodeURIComponent(query)}`)
-    return pickHighestDocNumber((result.QueryResponse.Invoice ?? []).map((row) => row.DocNumber)) ?? "0"
+    // Imported/backdated invoices can carry the highest number. Request only
+    // DocNumber, in full pages, rather than trusting the last 100 creations.
+    let highest: string | null = null
+    for (let start = 1; ; start += 1000) {
+      const query = `SELECT DocNumber FROM Invoice ORDERBY MetaData.CreateTime DESC STARTPOSITION ${start} MAXRESULTS 1000`
+      const result = await this.request<QueryInvoiceResponse>("GET", `query?query=${encodeURIComponent(query)}`)
+      const rows = result.QueryResponse.Invoice ?? []
+      highest = pickHighestDocNumber([highest ?? undefined, ...rows.map((row) => row.DocNumber)])
+      if (rows.length < 1000) return highest ?? "0"
+    }
   }
 
   async findCustomerByName(displayName: string): Promise<QBOCustomer | null> {
@@ -1087,34 +1096,60 @@ export class QBOClient {
    * Find a transaction this company file already holds that carries `marker` in
    * its PrivateNote.
    *
-   * QuickBooks has no idempotency key on create. When a create succeeds but its
+   * Existing Arc creates have no durable operation-scoped requestid. When a create succeeds but its
    * response is lost — a timeout near the function cap is the usual way — the
    * retry has no way to tell "never created" from "created, never heard back",
    * and posts the money a second time. Arc stamps its own transaction id into
    * PrivateNote on create so the retry can look for its own work and adopt it.
    *
-   * PrivateNote is not a filterable field in the QBO query language, so the
-   * filter is on TxnDate (which is) and the marker is matched here. `SELECT *`
-   * is deliberate: QBO rejects queries that name complex columns.
+   * PrivateNote cannot be filtered, so scan every page without a transaction-date
+   * cutoff. Only a complete scan can authorize another create. The inherited
+   * delivery deadline bounds the scan; malformed, overlapping, or failed pages
+   * leave the previous create unresolved and must be retried or reviewed.
    */
   async findTransactionByPrivateNote(
     entity: "Payment" | "BillPayment" | "Invoice" | "Bill" | "Purchase" | "VendorCredit" | "JournalEntry",
     marker: string,
-    opts?: { sinceDate?: string | null },
   ): Promise<{ Id?: string; SyncToken?: string; PrivateNote?: string } | null> {
     const normalizedMarker = String(marker ?? "").trim()
-    if (!normalizedMarker) return null
-    const since =
-      opts?.sinceDate && /^\d{4}-\d{2}-\d{2}$/.test(opts.sinceDate)
-        ? `TxnDate >= '${this.toQboStringLiteral(opts.sinceDate)}'`
-        : undefined
-
-    const rows = await this.queryEntity<{ Id?: string; SyncToken?: string; PrivateNote?: string }>(entity, {
-      whereClause: since,
-      orderBy: "TxnDate DESC",
-      maxResults: 1000,
-    })
-    return rows.find((row) => String(row?.PrivateNote ?? "").includes(normalizedMarker)) ?? null
+    if (!normalizedMarker) throw new AccountingDeliveryError("QuickBooks recovery marker is missing", false, "invalid_recovery_marker")
+    type Transaction = { Id?: string; SyncToken?: string; PrivateNote?: string }
+    const deadline = accountingDeliveryDeadline() ?? Date.now() + 85_000
+    const assertDeadline = () => {
+      if (Date.now() >= deadline) throw new AccountingDeliveryError("Accounting recovery deadline reached", true, "deadline")
+    }
+    const seenIds = new Set<string>()
+    let match: Transaction | null = null
+    let startPosition = 1
+    for (;;) {
+      assertDeadline()
+      const query = `SELECT * FROM ${entity} ORDERBY TxnDate DESC STARTPOSITION ${startPosition} MAXRESULTS 1000`
+      // Validate the envelope here: the generic list helper treats a missing
+      // QueryResponse as empty, which cannot prove absence for create recovery.
+      const result = await this.request<{ QueryResponse?: Record<string, unknown> }>("GET", `query?query=${encodeURIComponent(query)}`)
+      assertDeadline()
+      const response = result?.QueryResponse
+      if (!response || typeof response !== "object" || Array.isArray(response)) {
+        throw new AccountingDeliveryError("QuickBooks recovery returned an invalid query response", true, "invalid_recovery_response")
+      }
+      const page = Object.prototype.hasOwnProperty.call(response, entity) ? response[entity] : []
+      if (!Array.isArray(page)) throw new AccountingDeliveryError("QuickBooks recovery returned an invalid transaction page", true, "invalid_recovery_response")
+      if (page.length === 0) {
+        if (Number(response.totalCount ?? 0) > 0) throw new AccountingDeliveryError("QuickBooks recovery returned an incomplete transaction page", true, "invalid_recovery_response")
+        return match
+      }
+      for (const row of page as Transaction[]) {
+        const id = row?.Id?.toString().trim()
+        if (!id) throw new AccountingDeliveryError("QuickBooks recovery returned a transaction without an identity", true, "invalid_recovery_response")
+        if (seenIds.has(id)) throw new AccountingDeliveryError("QuickBooks recovery pages overlap; retry the complete lookup", true, "unstable_recovery_page")
+        seenIds.add(id)
+        if (String(row.PrivateNote ?? "").includes(normalizedMarker)) {
+          if (match) throw new AccountingDeliveryError("Multiple QuickBooks transactions carry the same Arc identity; review required", false, "ambiguous_remote_identity")
+          match = row
+        }
+      }
+      startPosition += page.length
+    }
   }
 
   async uploadAttachmentForEntity(params: {

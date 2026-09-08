@@ -440,7 +440,6 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
     ? await computeCommitmentOverBudget(supabase, { orgId, commitmentId, totalCents })
     : false
 
-  const { data: company } = companyId ? await supabase.from("companies").select("qbo_vendor_id, qbo_vendor_name, name").eq("id", companyId).maybeSingle() : { data: null }
   const codingSuggestion = await suggestCodingForService({
     orgId,
     companyId,
@@ -462,8 +461,6 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
       bill_date: extraction?.billDate ?? new Date().toISOString().slice(0, 10),
       due_date: extraction?.dueDate ?? null,
       file_id: fileId,
-      qbo_vendor_id: company?.qbo_vendor_id ?? null,
-      qbo_vendor_name: company?.qbo_vendor_name ?? company?.name ?? null,
       metadata: {
         source: "email_ingest",
         resend_email_id: emailId,
@@ -551,22 +548,28 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
     createdBy: null,
   }).catch((error) => console.error("payables-email-ingest: attach failed", error))
 
-  await recordEvent({
-    orgId,
-    eventType: "vendor_bill_submitted",
-    entityType: "vendor_bill",
-    entityId: billId,
-    payload: {
-      project_id: projectId,
-      company_id: companyId,
-      bill_number: extraction?.billNumber ?? null,
-      total_cents: totalCents,
-      source: "email_ingest",
-      from_email: fromAddress,
-      creation_state: extractionIncomplete ? "draft" : "ready",
-      sender_unverified: senderUnverified,
-    },
-  })
+  // An emailed invoice Arc could not read is a draft, and a draft is not waiting
+  // for a decision — it is waiting for a person to finish it. The flagged-intake
+  // notification below is what that person gets; paging every approver as well
+  // trained them to ignore the queue. Completing the draft raises the submission.
+  if (!extractionIncomplete) {
+    await recordEvent({
+      orgId,
+      eventType: "vendor_bill_submitted",
+      entityType: "vendor_bill",
+      entityId: billId,
+      payload: {
+        project_id: projectId,
+        company_id: companyId,
+        bill_number: extraction?.billNumber ?? null,
+        total_cents: totalCents,
+        source: "email_ingest",
+        from_email: fromAddress,
+        creation_state: "ready",
+        sender_unverified: senderUnverified,
+      },
+    })
+  }
 
   // Flagged intake gets a direct human notification on top of the submitted
   // event, naming exactly what to verify before anyone approves it.

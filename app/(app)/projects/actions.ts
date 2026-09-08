@@ -21,6 +21,12 @@ import { getProvider } from "@/lib/integrations/accounting/registry"
 import type { Contact, ProjectScheduleSummary, ScheduleItem } from "@/lib/types"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
+import { getProjectDirectoryEditor } from "@/lib/services/project-directory"
+import { readAllRows } from "@/lib/land/paging"
+
+export async function getProjectDirectoryEditorAction(projectId: string) {
+  return getProjectDirectoryEditor(projectId)
+}
 
 async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   try {
@@ -57,19 +63,15 @@ export async function getProjectScheduleItemsAction(projectId: string): Promise<
 
 export async function listProjectClientContactsAction(): Promise<Contact[]> {
       const { supabase, orgId } = await requireOrgContext()
-
-      const { data, error } = await supabase
+      const result = await readAllRows<Contact>((from, to) => supabase
         .from("contacts")
         .select("id, org_id, full_name, email, phone, role, contact_type, primary_company_id, created_at, updated_at")
         .eq("org_id", orgId)
         .in("contact_type", ["client", "consultant", "vendor"])
-        .order("full_name", { ascending: true })
-
-      if (error) {
-        throw new Error(`Failed to list client contacts: ${error.message}`)
-      }
-
-      return (data ?? []) as Contact[]
+        .order("full_name", { ascending: true }).order("id").range(from, to),
+        { cap: 20000, label: "Failed to list client contacts" })
+      if (result.truncated) throw new Error("Contact catalog is too large; use directory search")
+      return result.rows
 }
 
 async function projectAccountingProvider(orgId: string, connectionId?: string | null) {

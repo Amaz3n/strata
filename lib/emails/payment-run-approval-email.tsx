@@ -1,5 +1,10 @@
 import { Button, Link, Section, Text } from "@react-email/components"
 
+import {
+  approvedReleaseSentence,
+  type PaymentRunReleaseKind,
+} from "@/lib/payments/payment-run-notification-copy"
+
 import { EmailLayout } from "./email-layout"
 import {
   button,
@@ -43,14 +48,36 @@ export interface PaymentRunApprovalEmailProps {
   remainingCount: number
   /** Populated on a rejection. */
   reason?: string | null
+  /**
+   * What the approval actually did to the money. An approved run is not a
+   * released run: it can be scheduled for a later business day, queued for the
+   * release sweep, or held by a gate.
+   */
+  release?: PaymentRunReleaseKind
+  /** Why a release was queued or blocked, in the approver's words. */
+  releaseReason?: string | null
   actionUrl: string
 }
 
 const KIND_LABEL: Record<PaymentRunEmailKind, string> = {
   awaiting: "Approval Required",
-  approved: "Payment Released",
+  approved: "Payment Approved",
   rejected: "Payment Rejected",
   recorded: "Approval Recorded",
+}
+
+/** The banner for an approved run, which is not the same as a released one. */
+function approvedLabel(release: PaymentRunReleaseKind): string {
+  switch (release) {
+    case "released":
+      return "Payment Released"
+    case "scheduled":
+      return "Payment Scheduled"
+    case "blocked":
+      return "Payment Held"
+    default:
+      return "Payment Approved"
+  }
 }
 
 export function PaymentRunApprovalEmail({
@@ -71,6 +98,8 @@ export function PaymentRunApprovalEmail({
   lines = [],
   remainingCount = 0,
   reason = null,
+  release = "none",
+  releaseReason = null,
   actionUrl = "#",
 }: PaymentRunApprovalEmailProps) {
   const displayOrgName = orgName ?? "Arc"
@@ -79,11 +108,20 @@ export function PaymentRunApprovalEmail({
   const vendorsLabel = `${vendorCount} vendor${vendorCount === 1 ? "" : "s"}`
   const dualApproval = (approvalsRequired ?? 1) > 1
 
+  const approvedHeading =
+    release === "released"
+      ? `${totalDebitLabel} released`
+      : release === "scheduled"
+        ? `${totalDebitLabel} approved and scheduled`
+        : release === "blocked"
+          ? `${totalDebitLabel} approved but held`
+          : `${totalDebitLabel} approved`
+
   const heading =
     kind === "awaiting"
       ? `Release ${totalDebitLabel}?`
       : kind === "approved"
-        ? `${totalDebitLabel} released`
+        ? approvedHeading
         : kind === "rejected"
           ? `${totalDebitLabel} was not released`
           : `Approval recorded on ${totalDebitLabel}`
@@ -92,7 +130,14 @@ export function PaymentRunApprovalEmail({
     kind === "awaiting"
       ? `${billsLabel} to ${vendorsLabel}. Nothing leaves the bank until this run has every approval it needs.`
       : kind === "approved"
-        ? `${billsLabel} to ${vendorsLabel} are on their way. Vendors are paid on the provider's normal ACH timing.`
+        // One sentence, shared with the in-app notification, so the two can
+        // never tell the builder different stories about the same run.
+        ? `${billsLabel} to ${vendorsLabel} — ${approvedReleaseSentence({
+            eventType: "payment_run_approved",
+            release,
+            releaseScheduledFor: null,
+            releaseReason,
+          })}`
         : kind === "rejected"
           ? `${billsLabel} to ${vendorsLabel} stayed put. No money moved and the payables are back in the queue.`
           : `${billsLabel} to ${vendorsLabel}. This run still needs another approval before it can release.`
@@ -100,12 +145,16 @@ export function PaymentRunApprovalEmail({
   return (
     <EmailLayout
       preview={`${heading} · ${billsLabel} · ${displayOrgName}`}
-      subtitle={`Arc Pay · ${KIND_LABEL[kind]}`}
+      subtitle={`Arc Pay · ${kind === "approved" ? approvedLabel(release) : KIND_LABEL[kind]}`}
       orgName={orgName}
       orgLogoUrl={orgLogoUrl}
       footerNote={<>{displayOrgName} vendor payments</>}
     >
       <Text style={paragraph}>{greeting}</Text>
+      {/* The one line that says what happened. It was computed and never
+          rendered, so the only place this email named the outcome was a subject
+          line that said "Payment Released" for a run that had not released. */}
+      <Text style={paragraph}>{heroMeta}</Text>
 
       <Section style={sectionCard}>
         <Text style={sectionTitle}>The Run</Text>

@@ -1,13 +1,15 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
-import { useRouter, useSearchParams } from "next/navigation"
+import Link from "next/link"
+import { visibleSettingsSections as getVisibleSettingsSections } from "@/lib/settings/sections"
+
+import { useMemo } from "react"
+import { useSearchParams } from "next/navigation"
 import { AnimatePresence, motion } from "framer-motion"
 import { OptimisticLink, useOptimisticNavigate, useOptimisticPathname } from "@/lib/navigation/optimistic-pathname"
 import {
   ArrowLeft,
   BarChart3,
-  Bell,
   Bug,
   Building2,
   CalendarDays,
@@ -20,8 +22,6 @@ import {
   Gavel,
   HardHat,
   Home,
-  KeyRound,
-  Link2,
   Layers,
   MapPin,
   Receipt,
@@ -29,9 +29,7 @@ import {
   Shield,
   ShieldCheck,
   SlidersHorizontal,
-  Tag,
   Target,
-  User as UserIcon,
   Users,
   Wallet,
 } from "@/components/icons"
@@ -73,7 +71,6 @@ interface AppSidebarProps {
   canAccessPlatform?: boolean
   permissions?: string[]
   productTier?: ProductTier
-  hasDivisions?: boolean
   showProductionNavigation?: boolean
   showPurchasingNavigation?: boolean
   showPipelineNavigation?: boolean
@@ -84,51 +81,6 @@ type SidebarNavSubItem = ProjectNavSubItem
 type SidebarNavItem = ProjectNavItem
 type SidebarNavGroup = ProjectNavGroup
 
-interface SidebarNavSection {
-  label: string
-  items: SidebarNavItem[]
-}
-
-const settingsSections: SidebarNavSection[] = [
-  {
-    label: "You",
-    items: [
-      { title: "Profile", url: "/settings?tab=profile", icon: UserIcon },
-      { title: "Notifications", url: "/settings?tab=notifications", icon: Bell },
-    ],
-  },
-  {
-    label: "Organization",
-    items: [
-      { title: "Organization", url: "/settings?tab=organization", icon: Building2 },
-      { title: "Team", url: "/settings?tab=team", icon: Users },
-      { title: "External access", url: "/settings?tab=external-access", icon: KeyRound, requiredAny: ["project.manage"] },
-      { title: "Divisions", url: "/settings/divisions", icon: Layers },
-      { title: "Billing", url: "/settings?tab=billing", icon: CreditCard },
-    ],
-  },
-  {
-    label: "Financial",
-    items: [
-      { title: "Invoicing", url: "/settings?tab=invoicing", icon: Receipt },
-      { title: "Accounting", url: "/settings?tab=accounting", icon: FileSpreadsheet },
-      { title: "Cost coding", url: "/settings/cost-coding", icon: Tag },
-      { title: "Vendor compliance", url: "/settings?tab=compliance", icon: ShieldCheck },
-      { title: "Vendor payments", url: "/settings?tab=payments", icon: Wallet, requiredAny: ["payment.release"] },
-      { title: "Payment reconciliation", url: "/payables/reconciliation", icon: FileSpreadsheet, requiredAny: ["payment.reconcile"] },
-      { title: "Integrations", url: "/settings?tab=integrations", icon: Link2 },
-    ],
-  },
-  {
-    label: "Operations",
-    items: [
-      { title: "Templates", url: "/settings/templates", icon: FileText },
-      { title: "Takeoff", url: "/settings/takeoff", icon: Ruler, requiredAny: ["takeoff.read"] },
-      { title: "Warranty", url: "/settings/warranty", icon: ClipboardCheck, requiredAny: ["warranty.manage"] },
-      { title: "Data imports", url: "/settings/imports", icon: FileSpreadsheet, requiredAny: ["import.manage"] },
-    ],
-  },
-]
 
 function canAccess(requiredAny: string[] | undefined, permissions: Set<string>) {
   if (!requiredAny || requiredAny.length === 0) return true
@@ -370,7 +322,6 @@ export function AppSidebar({
   canAccessPlatform,
   permissions = [],
   productTier = "residential",
-  hasDivisions = false,
   showProductionNavigation = false,
   showPurchasingNavigation = false,
   showPipelineNavigation = true,
@@ -385,7 +336,6 @@ export function AppSidebar({
     whatsNewUnreadCount,
   } = useNavigationBadges()
   const pathname = useOptimisticPathname()
-  const router = useRouter()
   const navigate = useOptimisticNavigate()
   const searchParams = useSearchParams()
   const isSettings = pathname.startsWith("/settings")
@@ -398,30 +348,13 @@ export function AppSidebar({
     [projects, projectId],
   )
 
-  const [activeSettingsTab, setActiveSettingsTab] = useState(searchParams.get("tab") ?? "profile")
+  const activeSettingsTab = searchParams.get("tab") ?? "profile"
   const settingsReturnTo = searchParams.get("returnTo") || "/"
-  const settingsHref = (tab: string) => {
-    const params = new URLSearchParams()
-    params.set("tab", tab)
-    if (settingsReturnTo) params.set("returnTo", settingsReturnTo)
-    return `/settings?${params.toString()}`
-  }
-  const navigateSettingsItem = (item: SidebarNavItem) => {
+  const settingsItemHref = (item: SidebarNavItem) => {
     const tab = new URLSearchParams(item.url.split("?")[1] ?? "").get("tab")
-    const isDirty = Boolean((window as typeof window & { __arcSettingsDirty?: boolean }).__arcSettingsDirty)
-    if (isDirty && !window.confirm("Discard unsaved settings changes?")) return
-
-    if (tab) {
-      setActiveSettingsTab(tab)
-      router.replace(settingsHref(tab), { scroll: false })
-      return
-    }
-
-    navigate(item.url)
+    if (!tab) return item.url
+    return `/settings?${new URLSearchParams({ tab, returnTo: settingsReturnTo })}`
   }
-  useEffect(() => {
-    setActiveSettingsTab(searchParams.get("tab") ?? "profile")
-  }, [searchParams])
 
   const navGroups = useMemo(() => {
     if (isSettings) return [] as SidebarNavGroup[]
@@ -455,16 +388,7 @@ export function AppSidebar({
       isActive: !item.disabled && (item.isActive || pathname === item.url),
     })),
   }))
-  const visibleSettingsSections = settingsSections
-    .map((section) => ({
-      ...section,
-      items: section.items.filter(
-        (item) =>
-          canAccess(item.requiredAny, permissionSet) &&
-          (item.title !== "Divisions" || showProductionNavigation || hasDivisions),
-      ),
-    }))
-    .filter((section) => section.items.length > 0)
+  const visibleSettingsSections = getVisibleSettingsSections(permissions, productTier)
 
   const orgData = {
     name: "Arc Construction",
@@ -534,10 +458,16 @@ export function AppSidebar({
                       <SidebarMenuButton
                         tooltip={item.title}
                         isActive={item.url.includes("?tab=") ? activeSettingsTab === new URLSearchParams(item.url.split("?")[1] ?? "").get("tab") : pathname.startsWith(item.url.split("?")[0])}
-                        onClick={() => navigateSettingsItem(item)}
+                        asChild
                       >
-                        {item.icon && <item.icon />}
-                        <span>{item.title}</span>
+                        <Link href={settingsItemHref(item)} prefetch="auto" onClick={(event) => {
+                          if (pathname !== "/settings" || !item.url.includes("?tab=") || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+                          event.preventDefault()
+                          window.history.pushState(null, "", settingsItemHref(item))
+                        }}>
+                          {item.icon && <item.icon />}
+                          <span>{item.title}</span>
+                        </Link>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
                   ))}

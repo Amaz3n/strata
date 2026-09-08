@@ -16,6 +16,7 @@ import {
   renderStandardEmailLayout,
   sendEmail,
 } from "@/lib/services/mailer"
+import { readReleaseKind } from "@/lib/payments/payment-run-notification-copy"
 import { formatDigestMoney } from "@/lib/services/books/reconciliation-digest"
 import { loadReconciliationDigest } from "@/lib/services/books/reconciliation"
 import { EMAIL_NOTIFICATION_TYPES } from "@/lib/types/notifications"
@@ -104,11 +105,11 @@ function buildNotificationHref(payload: Record<string, unknown>): string | null 
   // stripped the button off the emails that most needed one.
   switch (entityType) {
     case "payment_run":
-      return billId ? `/payables?bill=${billId}` : entityId ? `/payables?run=${entityId}` : "/payables"
+      return entityId ? `/payables/payment-runs/${entityId}` : billId ? `/payables?bill=${billId}` : "/payables"
     case "disbursement":
       // A disbursement has no surface of its own; it resolves to the payable it
       // paid, or to the run that carried it.
-      return billId ? `/payables?bill=${billId}` : runId ? `/payables?run=${runId}` : "/payables"
+      return runId ? `/payables/payment-runs/${runId}` : billId ? `/payables?bill=${billId}` : "/payables"
     case "payment_reconciliation_run":
       return "/payables/reconciliation"
     case "payment_recipient_account":
@@ -370,6 +371,8 @@ async function renderPaymentRunEmail(args: {
       lines,
       remainingCount: Math.max(0, paymentCount - lines.length),
       reason: readString(args.payload, "reason"),
+      release: readReleaseKind(args.payload.release),
+      releaseReason: readString(args.payload, "release_reason"),
       actionUrl: args.actionUrl,
     }),
   )
@@ -380,7 +383,6 @@ const PAYMENT_RETURN_EMAIL_KIND: Record<string, PaymentReturnKind> = {
   vendor_transfer_needs_attention: "transfer_blocked",
   vendor_bill_payment_reversed: "vendor_unrecorded",
   payment_reversed: "customer_reversed",
-  payment_reversed_from_qbo: "qbo_reversed",
 }
 
 /**

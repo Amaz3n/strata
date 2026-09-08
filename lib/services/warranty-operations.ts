@@ -30,7 +30,6 @@ import { normalizeProductTier, type ProductTier } from "@/lib/product-tier"
 import type { WarrantyRequest } from "@/lib/types"
 import {
   assertBackchargeTransition,
-  buildCostBasisFromVisits,
   buildCoverageSnapshot,
   classifyCoverage,
   computeVisitInternalCost,
@@ -1184,19 +1183,9 @@ export async function findOriginatingCommitments({ projectId, costCodeId, compan
 export async function getWarrantyRequestCostBasis(requestId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
-  const { data, error } = await supabase.from("warranty_service_visits").select("id,visit_number,labor_hours,labor_rate_cents,internal_labor_cents,internal_material_cents,assigned_user:app_users!warranty_service_visits_assigned_user_id_fkey(full_name)").eq("org_id", resolvedOrgId).eq("request_id", requestId).neq("status", "canceled").order("visit_number").limit(100)
-  if (error) throw new Error(`Failed to load warranty visit costs: ${error.message}`)
-  return buildCostBasisFromVisits((data ?? []).map((row) => {
-    const user = relationOne(row.assigned_user)
-    return {
-      id: String(row.id), visit_number: Number(row.visit_number),
-      assigned_user_name: typeof user?.full_name === "string" ? user.full_name : null,
-      labor_hours: row.labor_hours === null || row.labor_hours === undefined ? null : Number(row.labor_hours),
-      labor_rate_cents: row.labor_rate_cents === null || row.labor_rate_cents === undefined ? null : Number(row.labor_rate_cents),
-      internal_labor_cents: Number(row.internal_labor_cents ?? 0),
-      internal_material_cents: Number(row.internal_material_cents ?? 0),
-    }
-  }))
+  const { data, error } = await supabase.from("warranty_service_visits").select("id,visit_number,books_approved_cost_cents").eq("org_id", resolvedOrgId).eq("request_id", requestId).not("books_cost_approved_at", "is", null).order("visit_number")
+  if (error) throw new Error(`Failed to load approved warranty costs: ${error.message}`)
+  return (data ?? []).filter(row => Number(row.books_approved_cost_cents) > 0).map(row => ({ label: `Approved posted costs — Visit ${row.visit_number}`, amount_cents: Number(row.books_approved_cost_cents), ref_type: "warranty_service_visit", ref_id: row.id }))
 }
 
 export interface WarrantyDefectAnalysisRow {

@@ -1,3 +1,4 @@
+import { PAYABLE_BANDS, parsePayableSort, payableBandPage, type PayableBandKey, type PayableSort } from "@/lib/financials/payables-book"
 import { getCodingAutomationStats, type CodingAutomationStats } from "@/lib/services/books/coding-rules"
 import { getCompaniesComplianceStatus } from "@/lib/services/compliance-documents"
 import { getComplianceRules } from "@/lib/services/compliance"
@@ -21,7 +22,9 @@ import {
 } from "@/lib/services/vendor-payment-invitations"
 import { payableOutstandingCents } from "@/lib/financials/payables-rules"
 import { requesterMayApprovePaymentRun } from "@/lib/payments/payment-domain"
+import { assertJurisdictionEnabled } from "@/lib/payments/payment-hold-policy"
 import { listActivePayableRunItems } from "@/lib/services/payable-run-items"
+import { disbursementStage } from "@/lib/payments/disbursement-stage"
 import {
   ACTIVE_PAYABLE_RUN_ITEM_STATUSES,
   PAYABLE_QUEUES,
@@ -81,6 +84,8 @@ export interface PayableRunMembership {
   runId: string
   /** The run item's status — draft through partially_paid means in flight. */
   status: string
+  /** Current money-movement stage, shared by the desk, detail, and mobile. */
+  stage: string
   /** The parent run's own status, which is what the viewer can act on. */
   runStatus: string
   /** True when the viewer prepared this run, and so can never approve it. */
@@ -94,6 +99,8 @@ export interface PayableRunMembership {
 
 export interface PayablePaymentDecorations {
   paymentReadinessByCompanyId: Record<string, CompanyPaymentReadinessStatus>
+  /** Bill-level rail readiness; company enrollment alone cannot make an unsupported state payable. */
+  electronicReadinessByBillId: Record<string, { readiness: "ready" | "jurisdiction_not_enabled" | "jurisdiction_unknown"; message: string | null }>
   runMembershipByBillId: Record<string, PayableRunMembership>
 }
 
@@ -106,11 +113,15 @@ export interface PayablePaymentDecorations {
  * ready, scheduled, or awaiting approval.
  */
 export async function loadPayablePaymentDecorations(
-  bills: Array<{ id: string; company_id?: string | null }>,
+  bills: Array<{ id: string; company_id?: string | null; project_id?: string | null }>,
   orgId?: string,
 ): Promise<PayablePaymentDecorations> {
   if (bills.length === 0) {
-    return { paymentReadinessByCompanyId: {}, runMembershipByBillId: {} }
+    return {
+      paymentReadinessByCompanyId: {},
+      electronicReadinessByBillId: {},
+      runMembershipByBillId: {},
+    }
   }
 
   const context = await requireOrgContext(orgId)
@@ -124,9 +135,28 @@ export async function loadPayablePaymentDecorations(
     ),
   ]
 
-  const [readiness, runItemsResult] = await Promise.all([
+  const projectIds = [
+    ...new Set(
+      bills
+        .map((bill) => bill.project_id)
+        .filter((projectId): projectId is string => Boolean(projectId)),
+    ),
+  ]
+  const [readiness, runItemsResult, policyResult, projectsResult] = await Promise.all([
     listCompanyPaymentReadiness(companyIds, context.orgId),
     listActivePayableRunItems(supabase, context.orgId, { billIds }),
+    supabase
+      .from("payment_rail_policies")
+      .select("enabled_jurisdictions")
+      .eq("org_id", context.orgId)
+      .maybeSingle(),
+    projectIds.length > 0
+      ? supabase
+          .from("projects")
+          .select("id,location")
+          .eq("org_id", context.orgId)
+          .in("id", projectIds)
+      : Promise.resolve({ data: [], error: null }),
   ])
 
   const runItems = runItemsResult.filter(
@@ -164,6 +194,7 @@ export async function loadPayablePaymentDecorations(
     runMembershipByBillId[item.bill_id as string] = {
       runId: item.run_id as string,
       status: item.status,
+      stage: disbursementStage(item.disbursement_status ?? item.status).label,
       runStatus: (run?.status as string) ?? item.status,
       preparedByViewer: run?.requested_by === context.userId,
       requesterMayApprove: requesterMayApprovePaymentRun(run?.control_snapshot),
@@ -172,10 +203,34 @@ export async function loadPayablePaymentDecorations(
     }
   }
 
-  return { paymentReadinessByCompanyId, runMembershipByBillId }
+  const projectById = new Map(
+    (projectsResult.data ?? []).map((project) => [project.id, project]),
+  )
+  const policy = policyResult.data ?? { enabled_jurisdictions: ["FL"] }
+  const electronicReadinessByBillId: PayablePaymentDecorations["electronicReadinessByBillId"] = {}
+  for (const bill of bills) {
+    const jurisdiction = assertJurisdictionEnabled(
+      policy,
+      bill.project_id ? projectById.get(bill.project_id) : null,
+    )
+    electronicReadinessByBillId[bill.id] = jurisdiction.enabled
+      ? { readiness: "ready", message: null }
+      : { readiness: jurisdiction.reason, message: jurisdiction.message }
+  }
+
+  return {
+    paymentReadinessByCompanyId,
+    electronicReadinessByBillId,
+    runMembershipByBillId,
+  }
 }
 
 export interface OrgPayablesDeskData {
+  /** Populated only by the lightweight bulk-selection read. */
+  selectionIds?: string[]
+  bands?: Array<{ key: PayableBandKey; billIds: string[]; total: number; page: number; pageCount: number }>
+  sort?: PayableSort
+  direction?: "asc" | "desc"
   /** Every payable on the desk: open first (by due date), then recently settled. */
   bills: VendorBillSummary[]
   /** URL-selected payable, even when it lives on another tab or page. */
@@ -185,6 +240,8 @@ export interface OrgPayablesDeskData {
   complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>
   /** Company id → whether this builder can pay them electronically yet. */
   paymentReadinessByCompanyId: Record<string, CompanyPaymentReadinessStatus>
+  /** Bill id → whether the job's jurisdiction is enabled for Arc Pay. */
+  electronicReadinessByBillId: PayablePaymentDecorations["electronicReadinessByBillId"]
   /** Bill id → the active payment run that already claims it, when one does. */
   runMembershipByBillId: Record<string, PayableRunMembership>
   /** True when more open payables exist than were fetched. */
@@ -237,6 +294,16 @@ export async function loadOrgPayablesDesk(
     page?: number
     pageSize?: number
     billId?: string
+    due?: string
+    /** Explicit project pages include jobs excluded from portfolio reporting. */
+    projectScope?: boolean
+    /** Internal bulk-selection read: same query, IDs only, no enrichment. */
+    selectionOnly?: boolean
+    banded?: boolean
+    includePaid?: boolean
+    bandPages?: Partial<Record<PayableBandKey, number>>
+    sort?: string
+    direction?: string
   } = {},
 ): Promise<OrgPayablesDeskData> {
   const { supabase, orgId, userId } = await requireOrgContext()
@@ -247,14 +314,14 @@ export async function loadOrgPayablesDesk(
   })
 
   const excludedProjectIds =
-    projectIds === null
+    projectIds === null || input.projectScope
       ? []
       : await getReportingExcludedProjectIds(supabase, orgId)
   const tab = parsePayableQueue(input.tab)
   const search = String(input.search ?? "").trim().slice(0, 120)
   const searchFilter = search.replace(/[,%()]/g, " ").trim()
-  const page = Math.max(1, Math.floor(input.page ?? 1))
-  const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(10, Math.floor(input.pageSize ?? DEFAULT_PAGE_SIZE)))
+  const page = Math.max(1, Math.floor(Number.isFinite(input.page) ? input.page! : 1))
+  const pageSize = input.selectionOnly ? 500 : Math.min(input.banded ? 50 : MAX_PAGE_SIZE, Math.max(10, Math.floor(Number.isFinite(input.pageSize) ? input.pageSize! : input.banded ? 25 : DEFAULT_PAGE_SIZE)))
   const from = (page - 1) * pageSize
 
   const scoped = (select: string, count = false) => {
@@ -284,16 +351,16 @@ export async function loadOrgPayablesDesk(
    * and a round trip spent waiting is the difference between a filter and a page
    * load. `.then` is what actually dispatches a Supabase builder.
    */
-  const orgPromise = supabase.from("orgs").select("slug").eq("id", orgId).maybeSingle().then((result) => result)
-  const summaryPromise = scoped(SUMMARY_SELECT)
+  const orgPromise = input.selectionOnly ? Promise.resolve({ data: null }) : supabase.from("orgs").select("slug").eq("id", orgId).maybeSingle().then((result) => result)
+  const summaryPromise = input.selectionOnly ? Promise.resolve({ data: [], count: 0 }) : scoped(SUMMARY_SELECT)
     .not("status", "in", `(${[...CLOSED_STATUSES, "paid"].join(",")})`)
     // Ordered so that if the scan ever truncates, what it covers is the most
     // urgent 2,000 rather than an arbitrary 2,000.
     .order("due_date", { ascending: true, nullsFirst: false })
     .limit(SUMMARY_SCAN_LIMIT)
     .then((result: unknown) => result)
-  const paidCountPromise = workingScope(scoped("id", true)).eq("status", "paid").then((result: unknown) => result)
-  const allCountPromise = scoped("id", true)
+  const paidCountPromise = input.selectionOnly ? Promise.resolve({ count: 0 }) : workingScope(scoped("id", true)).eq("status", "paid").then((result: unknown) => result)
+  const allCountPromise = input.selectionOnly ? Promise.resolve({ count: 0 }) : scoped("id", true)
     .not("status", "in", `(${CLOSED_STATUSES.join(",")})`)
     .then((result: unknown) => result)
 
@@ -304,12 +371,14 @@ export async function loadOrgPayablesDesk(
   const inRunBillIds = new Set(runItems.map((item) => item.bill_id as string))
   const inRunList = Array.from(inRunBillIds)
 
-  const applyTab = (query: any, key: PayableTabKey) => {
-    if (key === "drafts") return query.eq("metadata->>creation_state", "draft")
+  const unclaimed = (query: any) => inRunList.length > 0 ? query.not("id", "in", `(${inRunList.join(",")})`) : query
+  const applyTab = (query: any, key: PayableTabKey | "credits") => {
+    if (key === "credits") return query.eq("metadata->>source", "vendor_credit").neq("status", "rejected")
+    if (key === "drafts") return query.eq("metadata->>creation_state", "draft").or("metadata->>source.is.null,metadata->>source.neq.vendor_credit")
     if (key === "paid") return workingScope(query).eq("status", "paid")
     if (key === "inflight")
-      return workingScope(query).in("id", inRunList.length > 0 ? inRunList : [NIL_UUID])
-    if (key === "approval") return workingScope(query).eq("status", "pending")
+      return workingScope(query).not("status", "in", "(paid,rejected)").in("id", inRunList.length > 0 ? inRunList : [NIL_UUID])
+    if (key === "approval") return unclaimed(workingScope(query).eq("status", "pending"))
     if (key === "ready") {
       const ready = workingScope(query).in("status", ["approved", "partial"])
       return inRunList.length > 0
@@ -340,10 +409,38 @@ export async function loadOrgPayablesDesk(
     ].join(","))
   }
 
-  const pageQuery = applySearch(applyTab(scoped(vendorBillSelect), tab))
-    .order(tab === "paid" ? "paid_at" : "due_date", { ascending: tab !== "paid", nullsFirst: false })
-    .order("created_at", { ascending: false })
-    .range(from, from + pageSize - 1)
+  const applyDue = (query: any) => {
+    if (input.due !== "overdue" && input.due !== "due_soon") return query
+    const today = new Date().toISOString().slice(0, 10)
+    const open = query.neq("status", "paid")
+    return input.due === "overdue" ? open.lt("due_date", today)
+      : open.gte("due_date", today).lte("due_date", new Date(Date.now() + 7 * DAY_MS).toISOString().slice(0, 10))
+  }
+  const sort = parsePayableSort(input.sort)
+  const ascending = input.direction !== "desc"
+  const orderRows = (query: any) => {
+    const column = { vendor: "company(name)", project: "project(name)", invoice: "bill_number", due: "due_date", amount: "total_cents", status: "status" }[sort]
+    return query.order(column, { ascending, nullsFirst: false })
+      .order("qbo_vendor_name", { ascending, nullsFirst: false })
+      .order("id", { ascending: true })
+  }
+  const select = input.selectionOnly ? "id,company:companies!vendor_bills_company_id_fkey(name),project:projects(name)" : vendorBillSelect
+  const keys = PAYABLE_BANDS.filter((key) => key !== "paid" || input.includePaid)
+  const bandResults: Array<{ key: PayableBandKey; billIds: string[]; total: number; page: number; pageCount: number }> = []
+  const pageQuery = input.banded && !input.selectionOnly
+    ? Promise.all(keys.map(async (key) => {
+        const page = payableBandPage(input.bandPages?.[key])
+        const result = await orderRows(applySearch(applyTab(scoped(select), key))).range((page - 1) * pageSize, page * pageSize - 1)
+        if (result.error) throw new Error(`Failed to load ${key} payables: ${result.error.message}`)
+        bandResults.push({ key, billIds: (result.data ?? []).map((row: { id: string }) => row.id), total: result.count ?? 0, page, pageCount: Math.max(1, Math.ceil((result.count ?? 0) / pageSize)) })
+        return result
+      })).then((results) => ({ data: results.flatMap((result) => result.data ?? []), error: null, count: results.reduce((sum, result) => sum + (result.count ?? 0), 0) }))
+    : (() => {
+        let query = applyDue(applySearch(applyTab(scoped(select), input.banded ? "all" : tab)))
+        if (input.selectionOnly) query = query.or("metadata->>source.is.null,metadata->>source.neq.vendor_credit")
+        if (input.banded && !input.includePaid) query = query.neq("status", "paid")
+        return orderRows(query).range(from, from + pageSize - 1)
+      })()
   const selectedBillPromise = input.billId
     ? scoped(vendorBillSelect).eq("id", input.billId).maybeSingle().then((result: unknown) => result)
     : Promise.resolve({ data: null, error: null })
@@ -364,6 +461,10 @@ export async function loadOrgPayablesDesk(
     { data: unknown | null; error: { message: string } | null },
   ]
 
+  for (const result of [summaryResult, paidCount, allCount]) {
+    const error = (result as { error?: { message: string } }).error
+    if (error) throw new Error(`Failed to load payable totals: ${error.message}`)
+  }
   if (pageResult.error) throw new Error(`Failed to load payables: ${pageResult.error.message}`)
   if (selectedBillResult.error) throw new Error(`Failed to open payable: ${selectedBillResult.error.message}`)
 
@@ -386,6 +487,7 @@ export async function loadOrgPayablesDesk(
       retainage_cents: row.retainage_cents,
     })
 
+    if (isCredit) continue
     if (isDraft) {
       tabs.drafts.count += 1
       tabs.drafts.amountCents += outstanding
@@ -405,11 +507,21 @@ export async function loadOrgPayablesDesk(
     bucket.amountCents += outstanding
   }
 
+  if (input.selectionOnly) {
+    return {
+      bills: [], selectionIds: (pageResult.data as Array<{ id: string }> ?? []).map((row) => row.id),
+      selectedBill: null, costCodes: [], complianceRules: DEFAULT_COMPLIANCE_RULES,
+      complianceStatusByCompanyId: {}, paymentReadinessByCompanyId: {}, electronicReadinessByBillId: {}, runMembershipByBillId: {},
+      truncated: false, pagination: { page, pageSize, total: pageResult.count ?? 0, pageCount: 1 },
+      query: { tab, search }, tabs, summaryTruncated: false, inboundBillsEmail: null, codingAutomation: null,
+    }
+  }
   const rows = pageResult.data ?? []
-  const bills = await hydrateVendorBills(supabase, orgId, rows)
-  const selectedBill = selectedBillResult.data
-    ? (await hydrateVendorBills(supabase, orgId, [selectedBillResult.data]))[0] ?? null
-    : null
+  const selectedRow = selectedBillResult.data as { id: string } | null
+  const combinedRows = selectedRow && !rows.some((row: any) => row.id === selectedRow.id) ? [...rows, selectedRow] : rows
+  const hydrated = await hydrateVendorBills(supabase, orgId, combinedRows)
+  const bills = hydrated.slice(0, rows.length)
+  const selectedBill = selectedRow ? hydrated.find((bill) => bill.id === selectedRow.id) ?? null : null
   const decorationBills = selectedBill && !bills.some((bill) => bill.id === selectedBill.id)
     ? [...bills, selectedBill]
     : bills
@@ -420,6 +532,7 @@ export async function loadOrgPayablesDesk(
 
   const pageRunItems = runItems.filter((item) => billIds.has(item.bill_id as string))
   const pageRunIds = [...new Set(pageRunItems.map((item) => item.run_id as string))]
+  const decorationProjectIds = [...new Set(decorationBills.map((bill) => bill.project_id).filter((id): id is string => Boolean(id)))]
 
   // The desk stays readable when a supporting lookup fails — the payables themselves
   // are the page, everything else only decorates or codes them.
@@ -430,6 +543,8 @@ export async function loadOrgPayablesDesk(
     readinessResult,
     runsResult,
     codingAutomationResult,
+    jurisdictionPolicyResult,
+    jurisdictionProjectsResult,
   ] = await Promise.allSettled([
     listCostCodes(orgId),
     getComplianceRules(orgId),
@@ -447,7 +562,9 @@ export async function loadOrgPayablesDesk(
           .eq("org_id", orgId)
           .in("id", pageRunIds)
       : Promise.resolve({ data: [] as Array<Record<string, unknown>> }),
-    getCodingAutomationStats(orgId),
+    input.projectScope ? Promise.resolve(null) : getCodingAutomationStats(orgId),
+    supabase.from("payment_rail_policies").select("enabled_jurisdictions").eq("org_id", orgId).maybeSingle(),
+    decorationProjectIds.length > 0 ? supabase.from("projects").select("id,location").eq("org_id", orgId).in("id", decorationProjectIds) : Promise.resolve({ data: [] }),
   ])
 
   const paymentReadinessByCompanyId: Record<
@@ -473,6 +590,7 @@ export async function loadOrgPayablesDesk(
       runMembershipByBillId[item.bill_id as string] = {
         runId: item.run_id as string,
         status: item.status,
+        stage: disbursementStage(item.disbursement_status ?? item.status).label,
         runStatus: (run?.status as string) ?? item.status,
         preparedByViewer: run?.requested_by === userId,
         requesterMayApprove: requesterMayApprovePaymentRun(run?.control_snapshot),
@@ -481,8 +599,20 @@ export async function loadOrgPayablesDesk(
       }
     }
   }
+  const policy = jurisdictionPolicyResult.status === "fulfilled" ? jurisdictionPolicyResult.value.data : null
+  const jurisdictionProjects = jurisdictionProjectsResult.status === "fulfilled" ? jurisdictionProjectsResult.value.data ?? [] : []
+  const jurisdictionProjectById = new Map(jurisdictionProjects.map((project) => [project.id, project]))
+  const electronicReadinessByBillId: OrgPayablesDeskData["electronicReadinessByBillId"] = {}
+  for (const bill of decorationBills) {
+    const result = assertJurisdictionEnabled(policy ?? { enabled_jurisdictions: ["FL"] }, bill.project_id ? jurisdictionProjectById.get(bill.project_id) : null)
+    electronicReadinessByBillId[bill.id] = result.enabled
+      ? { readiness: "ready", message: null }
+      : { readiness: result.reason, message: result.message }
+  }
 
   return {
+    bands: input.banded ? PAYABLE_BANDS.flatMap((key) => bandResults.filter((band) => band.key === key)) : undefined,
+    sort, direction: ascending ? "asc" : "desc",
     bills,
     selectedBill,
     costCodes:
@@ -496,6 +626,7 @@ export async function loadOrgPayablesDesk(
         ? complianceStatusResult.value
         : {},
     paymentReadinessByCompanyId,
+    electronicReadinessByBillId,
     runMembershipByBillId,
     truncated: (pageResult.count ?? 0) > from + pageSize,
     pagination: { page, pageSize, total: pageResult.count ?? 0, pageCount: Math.max(1, Math.ceil((pageResult.count ?? 0) / pageSize)) },

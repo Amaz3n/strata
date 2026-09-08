@@ -18,6 +18,7 @@ import type { AttachedFile } from "@/components/files"
 import { PayableDocumentPane } from "@/components/payables/payable-document-pane"
 import { WorkspaceShell } from "@/components/financials/workspace/workspace-shell"
 import { WorkspaceListPanel, type WorkspaceQueue } from "@/components/financials/workspace/workspace-list-panel"
+import { FinancialRecordAccounting } from "@/components/accounting/financial-record-accounting"
 import { AccountingSyncBadge } from "@/components/accounting/accounting-sync-badge"
 import { accountingProviderLabel } from "@/components/accounting/provider-label"
 import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
@@ -60,6 +61,7 @@ type SplitLine = {
   description: string
   amountDollars: string
   qboExpenseAccountId: string
+  arcBooksAccountId: string
 }
 
 function dollarsToCents(input: string) {
@@ -121,6 +123,7 @@ export function ExpenseWorkspace({
   const [expenseDate, setExpenseDate] = useState("")
   const [paymentMethod, setPaymentMethod] = useState("")
   const [memo, setMemo] = useState("")
+  const [booksPaymentAccountId, setBooksPaymentAccountId] = useState("")
   const [qboPaymentAccountId, setQboPaymentAccountId] = useState("")
   const [qboVendorId, setQboVendorId] = useState<string>(AUTO_QBO_VENDOR)
   const [splitLines, setSplitLines] = useState<SplitLine[]>([])
@@ -134,6 +137,8 @@ export function ExpenseWorkspace({
   const accountingProvider = accountingContext?.accountingProvider ?? null
   const providerName = accountingProviderLabel(accountingProvider, accountingContext?.accountingProviderName)
   const expenseAccounts = accountingContext?.expenseAccounts ?? []
+  const bookExpenseAccounts = accountingContext?.bookExpenseAccounts ?? []
+  const booksCoding = ["official", "parallel", "shadow"].includes(accountingContext?.accountingMode?.ledger ?? "")
   const paymentAccounts = accountingContext?.paymentAccounts ?? []
   const vendors = accountingContext?.vendors ?? []
   const costCodes = (accountingContext?.costCodes ?? []) as { id: string; code?: string | null; name?: string | null }[]
@@ -203,6 +208,7 @@ export function ExpenseWorkspace({
           : accountingContext?.defaults?.paymentAccountId) ??
         "",
     )
+    setBooksPaymentAccountId(selectedExpense.metadata?.books_payment_account_id ?? "")
     setQboVendorId(selectedExpense.qbo_vendor_id ?? AUTO_QBO_VENDOR)
 
     const defaultAccountId = selectedExpense.qbo_expense_account_id ?? accountingContext?.defaults?.expenseAccountId ?? ""
@@ -218,6 +224,7 @@ export function ExpenseWorkspace({
             description: line.description ?? selectedExpense.description ?? "",
             amountDollars: ((line.amount_cents ?? 0) / 100).toFixed(2),
             qboExpenseAccountId: line.qbo_expense_account_id ?? defaultAccountId,
+            arcBooksAccountId: line.metadata?.arc_books_gl_account_id ?? "",
           }))
         : [
             {
@@ -228,6 +235,7 @@ export function ExpenseWorkspace({
               description: selectedExpense.description ?? "",
               amountDollars: (total / 100).toFixed(2),
               qboExpenseAccountId: defaultAccountId,
+              arcBooksAccountId: "",
             },
           ],
     )
@@ -359,8 +367,7 @@ export function ExpenseWorkspace({
       }
     }
 
-    const lines = isSplit
-      ? splitLines.map((line) => ({
+    const lines = splitLines.map((line) => ({
           project_id: line.projectId || projectId,
           cost_code_id: costCodesEnabled ? line.costCodeId || null : null,
           budget_line_id: costCodesEnabled ? null : line.budgetLineId || null,
@@ -368,8 +375,8 @@ export function ExpenseWorkspace({
           amount_cents: dollarsToCents(line.amountDollars) ?? 0,
           qbo_expense_account_id: line.qboExpenseAccountId || null,
           qbo_expense_account_name: getExpenseAccountName(line.qboExpenseAccountId) ?? null,
+          arc_books_gl_account_id: line.arcBooksAccountId || null,
         }))
-      : []
 
     startTransition(async () => {
       try {
@@ -378,6 +385,7 @@ export function ExpenseWorkspace({
             description: memo,
             expenseDate: expenseDate || undefined,
             paymentMethod: paymentMethod || null,
+            booksPaymentAccountId: booksPaymentAccountId || null,
             // When split, per-line coding drives job costing; keep the single-line code only otherwise.
             ...(costCodesEnabled && !isSplit ? { costCodeId: firstLine?.costCodeId || null } : {}),
             ...(!costCodesEnabled && !isSplit ? { budgetLineId: firstLine?.budgetLineId || null } : {}),
@@ -414,6 +422,7 @@ export function ExpenseWorkspace({
         description: memo,
         amountDollars: "0.00",
         qboExpenseAccountId: prev[0]?.qboExpenseAccountId ?? accountingContext?.defaults?.expenseAccountId ?? "",
+        arcBooksAccountId: prev[0]?.arcBooksAccountId ?? "",
       },
     ])
 
@@ -627,6 +636,13 @@ export function ExpenseWorkspace({
                 </SelectContent>
               </Select>
             </div>
+            {booksCoding ? <div className="space-y-1.5"><Label className="microlabel">Arc Books payment account</Label>
+              <Select value={booksPaymentAccountId || "__unassigned__"} onValueChange={value => setBooksPaymentAccountId(value === "__unassigned__" ? "" : value)}>
+                <SelectTrigger><SelectValue placeholder="Choose bank or card" /></SelectTrigger><SelectContent>
+                  <SelectItem value="__unassigned__">Choose bank or card</SelectItem>
+                  {(accountingContext?.bookPaymentAccounts ?? []).map(account => <SelectItem key={account.id} value={account.id}>{account.code} · {account.name}</SelectItem>)}
+                </SelectContent></Select>
+            </div> : null}
             <div className="space-y-1.5">
               <Label className="microlabel">Paid from</Label>
               <Select value={qboPaymentAccountId || undefined} onValueChange={setQboPaymentAccountId}>
@@ -772,6 +788,23 @@ export function ExpenseWorkspace({
                     </Select>
                   </div>
                 ) : null}
+                {booksCoding ? (
+                  <div className="mt-3 border-t pt-3">
+                    <Label className="microlabel mb-1 block">Arc Books cost account</Label>
+                    <Select value={line.arcBooksAccountId || "__default__"}
+                      onValueChange={(value) => setSplitLines((prev) => prev.map((item) => item.id === line.id
+                        ? { ...item, arcBooksAccountId: value === "__default__" ? "" : value } : item))}>
+                      <SelectTrigger className="h-9 w-full text-xs"><SelectValue placeholder="Use posting rule" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__default__" className="text-xs">Use Arc Books posting rule</SelectItem>
+                        {bookExpenseAccounts.map((account) => <SelectItem key={account.id} value={account.id} className="text-xs">
+                          {account.code} — {account.name}
+                        </SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                    <p className="mt-1 text-[11px] text-muted-foreground">This override is stored in the Arc ledger namespace and never sent as an external account ID.</p>
+                  </div>
+                ) : null}
               </div>
             ))}
           </div>
@@ -783,6 +816,8 @@ export function ExpenseWorkspace({
             </div>
           ) : null}
         </section>
+
+        <FinancialRecordAccounting type="expense" id={selectedExpense.id} version={`${selectedExpense.status}:${selectedExpense.qbo_sync_status ?? ""}:${selectedExpense.amount_cents ?? 0}`} />
 
         {/* Workflow actions */}
         {isSubmitted ? (
@@ -805,14 +840,14 @@ export function ExpenseWorkspace({
 
       {/* Footer */}
       <div className="flex items-center justify-between gap-3 border-t bg-muted/10 px-4 py-3 sm:px-6">
-        <Button
+        {qboConnected ? <Button
           variant="ghost"
-          disabled={isPending || !canSync || !qboConnected}
-          onClick={() => runAction(() => syncProjectExpenseToQBOAction(projectId, selectedExpense.id).then(unwrapAction), `Expense synced to ${providerName}`)}
+          disabled={isPending || !canSync}
+          onClick={() => runAction(() => syncProjectExpenseToQBOAction(projectId, selectedExpense.id).then(unwrapAction), `Expense queued for ${providerName}`)}
         >
           <ExternalLink className="mr-2 h-4 w-4" />
           Sync to {providerName}
-        </Button>
+        </Button> : <span />}
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={() => onSelect(null)}>
             Close

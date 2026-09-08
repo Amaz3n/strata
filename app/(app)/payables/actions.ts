@@ -1,6 +1,7 @@
 "use server"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { z } from "zod"
 import { recordExtractionCorrection } from "@/lib/services/vendor-extraction-memory"
 import { revalidatePath } from "next/cache"
 
@@ -17,16 +18,19 @@ import {
 import type { DecidePaymentRunInput } from "@/lib/validation/fintech-payments"
 import { actionError, type ActionResult } from "@/lib/action-result"
 import {
-  cancelPaymentRun,
+  discardPaymentRunDraft,
   getPaymentRunSetupData,
+  listPaymentRuns,
   submitPaymentRun,
 } from "@/lib/services/payment-runs"
+
 import type { PaymentApprovalRouting } from "@/lib/services/payment-approvers"
 import type { ProviderSettlementWindow } from "@/lib/payments/settlement-estimate"
 import type { ApFeePolicy } from "@/lib/payments/fee-engine"
 import { decidePaymentRiskReview, type DecidePaymentRiskInput } from "@/lib/services/payment-risk"
 import { listProjectBudgetLines } from "@/lib/services/budgets"
 import { requireOrgContext } from "@/lib/services/context"
+import { requirePermission } from "@/lib/services/permissions"
 import {
   evaluateHolds,
   overridePaymentHold,
@@ -40,7 +44,29 @@ import { getVendorPayableProfile, type VendorPayableProfile } from "@/lib/servic
 import type { PaymentHoldOverrideInput } from "@/lib/validation/payment-holds"
 import type { BudgetLineOption } from "@/lib/types"
 import { listEntityAuditTrail, type EntityAuditEntry } from "@/lib/services/audit"
-import { applyVendorCreditToBill, getVendorCreditApplicationWorkspace } from "@/lib/services/vendor-bills"
+import { applyVendorCreditToBill, getVendorCreditApplicationWorkspace, listVendorBillsByIds } from "@/lib/services/vendor-bills"
+
+export async function listPaymentRunsAction() {
+  try { return { success: true as const, data: await listPaymentRuns() } }
+  catch (error) { return actionError(error) }
+}
+
+export async function selectMatchingPayableIdsAction(input: { tab?: string; search?: string; projectId?: string; communityId?: string; due?: string; banded?: boolean; includePaid?: boolean; sort?: string; direction?: string }) {
+  try {
+    const parsed = z.object({ tab: z.string().optional(), search: z.string().trim().max(120).optional(), projectId: z.string().uuid().optional(), communityId: z.string().uuid().optional(), due: z.string().optional(), banded: z.boolean().optional(), includePaid: z.boolean().optional(), sort: z.string().optional(), direction: z.enum(["asc", "desc"]).optional() }).parse(input)
+    const { loadOrgPayablesDesk } = await import("@/lib/services/org-payables")
+    const { resolveProductionDeskScope } = await import("@/lib/services/production-desk-scope")
+    const projectIds = parsed.projectId ? [parsed.projectId] : (await resolveProductionDeskScope({ communityId: parsed.communityId })).projectIds
+    const data = await loadOrgPayablesDesk(projectIds, { ...parsed, projectScope: Boolean(parsed.projectId), selectionOnly: true })
+    const ids = data.selectionIds ?? []
+    return { success: true as const, data: { ids: [...new Set(ids)], cap: 500, runCap: 200 } }
+  } catch (error) { return actionError(error) }
+}
+
+export async function getSelectedPayablesAction(ids: string[]) {
+  try { return { success: true as const, data: await listVendorBillsByIds(ids) } }
+  catch (error) { return actionError(error) }
+}
 
 export async function getVendorCreditApplicationWorkspaceAction(creditBillId: string) {
   try {
@@ -229,6 +255,9 @@ export async function getPayableVendorProfileAction(
  */
 export interface PayableBatchEligibleBill {
   id: string
+  vendorName: string
+  readiness: string
+  readinessMessage: string | null
   /**
    * The early-pay discount still available on this bill, if any — computed by
    * `getPaymentRunSetupData` so the preparer sees the money before choosing to
@@ -238,7 +267,7 @@ export interface PayableBatchEligibleBill {
   discount: { byDate: string; amountCents: number; netAmountCents: number } | null
 }
 
-export async function getPayableBatchSetupAction(): Promise<
+export async function getPayableBatchSetupAction(options: { includeEligibleBills?: boolean } = {}): Promise<
   ActionResult<{
     fundingSources: Array<{ id: string; label: string; isDefault: boolean }>
     routing: PaymentApprovalRouting
@@ -247,10 +276,14 @@ export async function getPayableBatchSetupAction(): Promise<
     settlementWindow: ProviderSettlementWindow
     feePolicy: ApFeePolicy
     eligibleBills: PayableBatchEligibleBill[]
+    truncation: {
+      fundingSources: { truncated: boolean; cap: number }
+      bills: { truncated: boolean; cap: number }
+    }
   }>
 > {
   try {
-    const setup = await getPaymentRunSetupData()
+    const setup = await getPaymentRunSetupData(undefined, null, options)
     return {
       success: true,
       data: {
@@ -260,7 +293,8 @@ export async function getPayableBatchSetupAction(): Promise<
         requesterMayApprove: setup.requesterMayApprove,
         settlementWindow: setup.settlementWindow,
         feePolicy: setup.feePolicy,
-        eligibleBills: setup.eligibleBills.map((entry) => ({ id: entry.id, discount: entry.discount })),
+        eligibleBills: setup.eligibleBills.map((entry) => ({ id: entry.id, vendorName: entry.vendorName, readiness: entry.readiness, readinessMessage: entry.readinessMessage, discount: entry.discount })),
+        truncation: setup.truncation,
       },
     }
   } catch (error) {
@@ -287,7 +321,7 @@ export async function submitPayableBatchAction(
 /** Discard a prepared run the preparer backed out of, so its bills free up again. */
 export async function discardPayableBatchAction(runId: string): Promise<ActionResult<{ id: string }>> {
   try {
-    await cancelPaymentRun(runId)
+    await discardPaymentRunDraft(runId)
     revalidatePath("/payables")
     return { success: true, data: { id: runId } }
   } catch (error) {
@@ -332,4 +366,11 @@ export async function recordExtractionCorrectionAction(input: {
     console.warn("[PayableExtraction] Could not record correction", error)
     return { success: true, data: { recorded: true } }
   }
+}
+
+export async function getPayableNativeFundingAccountsAction(billId: string) {
+  try {
+    const { getPayableNativeFundingAccounts } = await import("@/lib/services/books/funding");
+    return { success: true as const, data: await getPayableNativeFundingAccounts(billId) };
+  } catch (error) { return { success: false as const, error: error instanceof Error ? error.message : "Failed to load payment accounts" }; }
 }

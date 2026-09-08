@@ -580,8 +580,9 @@ capture wired into the nightly `forecast-snapshots` cron; a monthly over/under j
    a period closed after its end date now freezes the position as of period end rather
    than as of the day someone happened to run the close. That is the correct behaviour
    and the close checklist already blocks on POC snapshots existing through period end.
-   The control-tower over/under band is built (`control-tower-wip.tsx`), reading
-   snapshots rather than the report — one indexed query instead of a budget load per
+   The control tower reports over/under billing per job, read from snapshots rather
+   than from the report — the position is aggregated inside `control_tower_rollup`
+   (a `distinct on` over `poc_snapshots`) instead of costing a budget load per
    project, with an honest `asOf` instead of a number pretending to be live.
    Under-billing leads because it is the actionable half.
 4. ~~**Write the real regression fixture.**~~ **DONE 2026-08-08.** The WIP arithmetic as

@@ -2,7 +2,9 @@ import type { Invoice } from "@/lib/types"
 
 /**
  * HTML rendition of the canonical Arc invoice PDF (`lib/pdfs/invoice.tsx`). Kept visually in sync
- * with that template so the on-page preview at /i/[token] matches the downloaded / emailed PDF.
+ * with that template so the on-page preview at /i/[token], the portal, and the composer's live
+ * preview all match the downloaded / emailed PDF. The invoice memo is the builder's own note and
+ * never appears here.
  */
 
 export type ArcInvoiceLine = {
@@ -23,9 +25,12 @@ export type ArcInvoiceDocumentData = {
   billToLines: string[]
   notes?: string | null
   payUrl?: string | null
+  /** Ways the customer can pay online, as printed labels. Empty hides the line. */
+  paymentMethods?: string[] | null
   subtotalCents: number
   taxCents: number
   totalCents: number
+  amountDueCents?: number | null
   taxRate?: number | null
   discountCents?: number | null
   discountPercent?: number | null
@@ -40,6 +45,24 @@ export type ArcInvoiceBranding = {
   payUrl?: string | null
 }
 
+/** The labels printed for each online payment method the invoice allows. */
+export const PAYMENT_METHOD_LABELS = { ach: "Bank transfer (ACH)", card: "Card" } as const
+
+/** Which online methods an invoice allows; both unless it says otherwise. */
+export function invoicePaymentMethods(metadata: Record<string, unknown> | null | undefined): { ach: boolean; card: boolean } {
+  const raw = metadata?.payment_methods
+  if (!raw || typeof raw !== "object") return { ach: true, card: true }
+  const record = raw as Record<string, unknown>
+  return { ach: record.ach !== false, card: record.card !== false }
+}
+
+export function paymentMethodLabels(methods: { ach: boolean; card: boolean }): string[] {
+  const labels: string[] = []
+  if (methods.ach) labels.push(PAYMENT_METHOD_LABELS.ach)
+  if (methods.card) labels.push(PAYMENT_METHOD_LABELS.card)
+  return labels
+}
+
 function money(cents: number) {
   return ((cents ?? 0) / 100).toLocaleString("en-US", {
     style: "currency",
@@ -51,9 +74,9 @@ function money(cents: number) {
 
 function formatDate(value?: string | null) {
   if (!value) return "-"
-  const d = new Date(value)
+  const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T12:00:00` : value)
   if (Number.isNaN(d.getTime())) return value
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+  return d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
 }
 
 // Matches `cleanLines` in lib/pdfs/invoice.tsx so From/To blocks break identically.
@@ -123,9 +146,11 @@ export function toArcInvoiceData(invoice: Invoice, branding?: ArcInvoiceBranding
       (typeof invoice.notes === "string" && invoice.notes.trim().length > 0 ? invoice.notes : (metadata.payment_details as string | undefined)) ||
       null,
     payUrl: branding?.payUrl ?? null,
+    paymentMethods: paymentMethodLabels(invoicePaymentMethods(metadata)),
     subtotalCents: invoice.subtotal_cents ?? invoice.totals?.subtotal_cents ?? 0,
     taxCents: invoice.tax_cents ?? invoice.totals?.tax_cents ?? 0,
     totalCents: invoice.total_cents ?? invoice.totals?.total_cents ?? 0,
+    amountDueCents: invoice.balance_due_cents ?? invoice.totals?.balance_due_cents ?? null,
     taxRate: invoice.totals?.tax_rate ?? (metadata.tax_rate as number | undefined) ?? null,
     discountCents: invoice.totals?.discount_cents ?? null,
     discountPercent: invoice.totals?.discount_type === "percent" ? invoice.totals?.discount_value ?? null : null,
@@ -163,86 +188,91 @@ export function ArcInvoiceDocument({
 }) {
   const fromLines = cleanLines(data.fromLines)
   const billToLines = cleanLines(data.billToLines)
-  const notesText = data.notes?.trim() || "-"
+  const amountDue = data.amountDueCents ?? data.totalCents
+  const subtitle = data.projectName?.trim() || ""
+  const notes = data.notes?.trim() ?? ""
+  const methods = (data.paymentMethods ?? []).filter(Boolean)
+  const showTax = data.taxCents > 0 || (typeof data.taxRate === "number" && data.taxRate > 0)
 
   return (
     <div
       className="flex flex-col bg-white text-[#111111]"
-      style={{ width, height, paddingTop: 44, paddingBottom: 42, paddingLeft: 52, paddingRight: 52, fontSize: 13 }}
+      style={{ width, height, paddingTop: 58, paddingBottom: 52, paddingLeft: 64, paddingRight: 64, fontSize: 13 }}
     >
-      {/* Header */}
-      <div className="flex items-end justify-between">
-        <div className="flex min-h-[100px] flex-col justify-end" style={{ width: "58%" }}>
-          <h1 className="font-bold leading-none tracking-tight" style={{ fontSize: 42 }}>
-            Invoice
-          </h1>
-          {data.projectName ? <p className="mt-2 text-[15px] text-[#4B5563]">{data.projectName}</p> : null}
+      {/* Title + memo, logo */}
+      <div className="flex items-start justify-between gap-6">
+        <div className="min-w-0 flex-1">
+          <h1 className="text-[29px] font-bold leading-none tracking-tight">Invoice</h1>
+          {subtitle ? <p className="mt-1.5 text-[14px] leading-snug text-[#6B7280]">{subtitle}</p> : null}
         </div>
-        <div className="flex min-h-[100px] items-end justify-end" style={{ width: "42%" }}>
-          {data.logoUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={data.logoUrl} alt="" className="max-h-[100px] w-auto object-contain" style={{ maxWidth: 260 }} />
-          ) : null}
+        {data.logoUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={data.logoUrl} alt="" className="max-h-[74px] w-auto object-contain" style={{ maxWidth: 212 }} />
+        ) : null}
+      </div>
+
+      {/* Meta as label/value rows */}
+      <div className="mt-7 space-y-1.5 text-[13px]">
+        <div className="flex">
+          <span className="w-32 text-[12.5px] text-[#6B7280]">Invoice number</span>
+          <span>{data.invoiceNumber || "-"}</span>
+        </div>
+        <div className="flex">
+          <span className="w-32 text-[12.5px] text-[#6B7280]">Date of issue</span>
+          <span>{formatDate(data.issueDate)}</span>
+        </div>
+        <div className="flex">
+          <span className="w-32 text-[12.5px] text-[#6B7280]">Date due</span>
+          <span>{formatDate(data.dueDate)}</span>
         </div>
       </div>
 
-      {/* From / To */}
-      <div className="mt-8 flex justify-between gap-8">
-        <div style={{ width: "47%" }}>
-          <p className="mb-2 text-[12px] text-[#4B5563]">From</p>
+      {/* From / Bill to */}
+      <div className="mt-9 flex gap-10">
+        <div className="flex-1">
+          <p className="mb-1.5 text-[12.5px] text-[#6B7280]">From</p>
           {fromLines.map((line, idx) => (
-            <p key={`from-${idx}`} className="mb-0.5 text-[13.5px] leading-snug">
+            <p key={`from-${idx}`} className="text-[13px] leading-snug">
               {line}
             </p>
           ))}
         </div>
-        <div className="flex flex-col items-end text-right" style={{ width: "47%" }}>
-          <p className="mb-2 text-[12px] text-[#4B5563]">To</p>
+        <div className="flex-1">
+          <p className="mb-1.5 text-[12.5px] text-[#6B7280]">Bill to</p>
           {billToLines.map((line, idx) => (
-            <p key={`to-${idx}`} className="mb-0.5 text-[13.5px] leading-snug">
+            <p key={`to-${idx}`} className="text-[13px] leading-snug">
               {line}
             </p>
           ))}
         </div>
       </div>
 
-      {/* Meta */}
-      <div className="mt-6 flex justify-between gap-8">
-        <div className="flex-1">
-          <p className="mb-1.5 text-[12px] text-[#4B5563]">Invoice #</p>
-          <p className="text-[14px]">{data.invoiceNumber || "-"}</p>
-        </div>
-        <div className="flex-1">
-          <p className="mb-1.5 text-[12px] text-[#4B5563]">Issue date</p>
-          <p className="text-[14px]">{formatDate(data.issueDate)}</p>
-        </div>
-        <div className="flex flex-1 flex-col items-end text-right">
-          <p className="mb-1.5 text-[12px] text-[#4B5563]">Due date</p>
-          <p className="text-[14px]">{formatDate(data.dueDate)}</p>
-        </div>
-      </div>
+      {/* Headline */}
+      <p className="mt-11 text-[21px] font-bold tracking-tight">
+        {money(amountDue)} due {data.dueDate ? formatDate(data.dueDate) : "on receipt"}
+      </p>
 
       {/* Line items */}
-      <div className="mt-8">
-        <div className="flex items-center border-b border-[#E5E7EB] pb-2.5 text-[12px] text-[#4B5563]">
-          <span style={{ flex: 2.25 }}>Description</span>
-          <span className="text-right" style={{ flex: 0.55 }}>
+      <div className="mt-4">
+        <div className="flex border-b border-[#111111] pb-2 text-[12px] text-[#6B7280]">
+          <span style={{ flex: 2.4 }}>Description</span>
+          <span className="text-right" style={{ flex: 0.5 }}>
             Qty
           </span>
-          <span className="text-right" style={{ flex: 0.85 }}>
-            Rate
+          <span className="text-right" style={{ flex: 0.9 }}>
+            Unit price
           </span>
           <span className="text-right" style={{ flex: 0.9 }}>
             Amount
           </span>
         </div>
         {lines.map((line, idx) => (
-          <div key={`line-${idx}`} className="flex items-center border-b border-[#E5E7EB] py-2.5 text-[14px]">
-            <span style={{ flex: 2.25 }}>{line.description || "-"}</span>
-            <span className="text-right" style={{ flex: 0.55 }}>
+          <div key={`line-${idx}`} className="flex border-b border-[#E5E7EB] py-2.5 text-[13px]">
+            <span style={{ flex: 2.4 }}>{line.description || "-"}</span>
+            <span className="text-right" style={{ flex: 0.5 }}>
               {line.quantity}
             </span>
-            <span className="text-right" style={{ flex: 0.85 }}>
+            <span className="text-right" style={{ flex: 0.9 }}>
               {money(line.unitCostCents)}
             </span>
             <span className="text-right" style={{ flex: 0.9 }}>
@@ -250,50 +280,57 @@ export function ArcInvoiceDocument({
             </span>
           </div>
         ))}
+      </div>
 
-        {/* Totals */}
-        <div className="ml-auto mt-3" style={{ width: 280 }}>
-          <div className="mt-2.5 flex justify-between text-[13px]">
-            <span className="text-[#4B5563]">Subtotal</span>
-            <span>{money(data.subtotalCents)}</span>
+      {/* Totals */}
+      <div className="ml-auto mt-4 w-[320px] text-[13px]">
+        <div className="flex justify-between py-1">
+          <span className="text-[12.5px] text-[#6B7280]">Subtotal</span>
+          <span>{money(data.subtotalCents)}</span>
+        </div>
+        {data.discountCents && data.discountCents > 0 ? (
+          <div className="flex justify-between py-1">
+            <span className="text-[12.5px] text-[#6B7280]">
+              Discount{typeof data.discountPercent === "number" ? ` (${data.discountPercent}%)` : ""}
+            </span>
+            <span>-{money(data.discountCents)}</span>
           </div>
-          {data.discountCents && data.discountCents > 0 ? (
-            <div className="mt-2.5 flex justify-between text-[13px]">
-              <span className="text-[#4B5563]">
-                Discount{typeof data.discountPercent === "number" ? ` (${data.discountPercent}%)` : ""}
-              </span>
-              <span>-{money(data.discountCents)}</span>
-            </div>
-          ) : null}
-          <div className="mt-2.5 flex justify-between text-[13px]">
-            <span className="text-[#4B5563]">Tax{typeof data.taxRate === "number" ? ` (${data.taxRate}%)` : ""}</span>
+        ) : null}
+        {showTax ? (
+          <div className="flex justify-between py-1">
+            <span className="text-[12.5px] text-[#6B7280]">Tax{typeof data.taxRate === "number" ? ` (${data.taxRate}%)` : ""}</span>
             <span>{money(data.taxCents)}</span>
           </div>
-          <div className="mt-3 flex justify-between border-t border-[#E5E7EB] pt-2.5">
-            <span className="font-bold text-[#4B5563]">Total</span>
-            <span className="text-[16px] font-bold">{money(data.totalCents)}</span>
-          </div>
+        ) : null}
+        <div className="flex justify-between py-1">
+          <span className="text-[12.5px] text-[#6B7280]">Total</span>
+          <span>{money(data.totalCents)}</span>
+        </div>
+        <div className="mt-1.5 flex justify-between border-t border-[#111111] pt-2 font-bold">
+          <span>Amount due</span>
+          <span className="text-[14px]">{money(amountDue)} USD</span>
         </div>
       </div>
 
       {/* Footer */}
       <div className="mt-auto pt-6">
-        <div className="border-t border-[#E5E7EB]" />
-        <div className="mt-3 flex items-center justify-between gap-4">
-          <div className="flex-1">
-            <p className="text-[12px] text-[#4B5563]">Payment details</p>
-            <p className="mt-1 whitespace-pre-line text-[13.5px] leading-relaxed">{notesText}</p>
+        {notes ? (
+          <div className="mb-4">
+            <p className="text-[12.5px] font-bold">Payment details</p>
+            <p className="mt-1 whitespace-pre-line text-[12.5px] leading-relaxed">{notes}</p>
           </div>
-          {data.payUrl ? (
+        ) : null}
+        {data.payUrl ? (
+          <div className="flex items-center gap-3">
             <a
               href={data.payUrl}
-              className="w-[130px] border border-[#93C5FD] bg-[#EFF6FF] py-1.5 text-center text-[13px] font-bold text-[#1D4ED8] no-underline"
+              className="border border-[#111111] px-3.5 py-1.5 text-[12.5px] font-bold text-[#111111] no-underline"
             >
               Pay online
             </a>
-          ) : null}
-        </div>
-        <div className="mt-3.5 border-t border-[#E5E7EB]" />
+            {methods.length > 0 ? <span className="text-[12px] text-[#6B7280]">{methods.join(" · ")}</span> : null}
+          </div>
+        ) : null}
       </div>
     </div>
   )

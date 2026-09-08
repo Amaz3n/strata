@@ -8,6 +8,7 @@ import {
   getTimeEntryApprovalBlockingReasons,
   loadApprovalGateSettings,
 } from "@/lib/financials/approval-gates";
+import { validateBooksExpensePaymentAccount } from "@/lib/services/books/funding";
 import { assertCostSourceCanEnterBillableLedger } from "@/lib/financials/billable-ledger-rules";
 import { allocateAdditionalCostCents } from "@/lib/financials/job-cost-calculations";
 import { resolveGmpClassificationForCostSource } from "@/lib/financials/gmp-classification";
@@ -1496,7 +1497,7 @@ export async function propagateApprovalToLedger(args: {
 
   const { data: entry, error } = await supabase
     .from("time_entries")
-    .select("id, project_id")
+    .select("id, project_id, status")
     .eq("org_id", resolvedOrgId)
     .eq("id", args.sourceId)
     .maybeSingle();
@@ -1507,7 +1508,7 @@ export async function propagateApprovalToLedger(args: {
     resolvedOrgId,
     entry.project_id,
   );
-  if (isCostPlusContract(contract)) {
+  if (isCostPlusContract(contract) && (!contract.requires_client_cost_approval || ["client_approved", "locked"].includes(entry.status))) {
     await upsertBillableCostFromTimeEntry({
       timeEntryId: args.sourceId,
       orgId: resolvedOrgId,
@@ -1752,15 +1753,7 @@ export async function updateTimeEntry(
         `Failed to void time entry billable cost: ${voidCostError.message}`,
       );
 
-    const contract = await getProjectCostContract(
-      supabase,
-      resolvedOrgId,
-      data.project_id,
-    );
-    const canPostApprovedTime =
-      data.status === "client_approved" ||
-      (data.status === "pm_approved" &&
-        !contract?.requires_client_cost_approval);
+    const canPostApprovedTime = ["pm_approved", "client_approved", "locked"].includes(data.status);
     if (canPostApprovedTime) {
       await propagateApprovalToLedger({
         source: "time_entry",
@@ -1804,11 +1797,6 @@ export async function approveTimeEntry(timeEntryId: string, orgId?: string) {
     getTimeEntryApprovalBlockingReasons(before, gateSettings),
   );
 
-  const contract = await getProjectCostContract(
-    supabase,
-    resolvedOrgId,
-    before.project_id,
-  );
   // PM approval is the canonical internal approval state; client-gated projects
   // stay here until the client approval token moves them to `client_approved`.
   const nextStatus = "pm_approved";
@@ -1843,13 +1831,8 @@ export async function approveTimeEntry(timeEntryId: string, orgId?: string) {
     payload: { project_id: data.project_id },
   });
 
-  if (!contract?.requires_client_cost_approval) {
-    await propagateApprovalToLedger({
-      source: "time_entry",
-      sourceId: data.id,
-      orgId: resolvedOrgId,
-    });
-  }
+  // Employer cost is incurred at PM approval; client approval gates invoicing only.
+  await propagateApprovalToLedger({ source: "time_entry", sourceId: data.id, orgId: resolvedOrgId });
   return data;
 }
 
@@ -2157,6 +2140,7 @@ export interface ProjectExpenseLineInput {
   amount_cents: number;
   qbo_expense_account_id?: string | null;
   qbo_expense_account_name?: string | null;
+  arc_books_gl_account_id?: string | null;
 }
 
 /**
@@ -2177,7 +2161,7 @@ export async function replaceProjectExpenseLines(args: {
 
   const { data: expense, error: expenseError } = await supabase
     .from("project_expenses")
-    .select("id, project_id, amount_cents, tax_cents, status")
+    .select("id, project_id, amount_cents, tax_cents, status, accounting_coding")
     .eq("org_id", resolvedOrgId)
     .eq("id", args.expenseId)
     .maybeSingle();
@@ -2259,6 +2243,15 @@ export async function replaceProjectExpenseLines(args: {
         throw new Error("Cost code not found");
       }
     }
+    const bookAccountIds = Array.from(new Set(lines.map((line) => line.arc_books_gl_account_id)
+      .filter((id): id is string => typeof id === "string" && id.length > 0)));
+    if (bookAccountIds.length > 0) {
+      const { data: accounts, error: accountsError } = await supabase.from("gl_accounts").select("id")
+        .eq("org_id", resolvedOrgId).eq("active", true).eq("account_type", "cogs").in("id", bookAccountIds);
+      if (accountsError || (accounts ?? []).length !== bookAccountIds.length) {
+        throw new Error("Arc Books cost account not found");
+      }
+    }
   }
 
   const { error: deleteError } = await supabase
@@ -2278,8 +2271,8 @@ export async function replaceProjectExpenseLines(args: {
       budget_line_id: line.budget_line_id ?? null,
       description: line.description?.trim() || null,
       amount_cents: Math.round(Number(line.amount_cents ?? 0)),
-      qbo_expense_account_id: line.qbo_expense_account_id ?? null,
-      qbo_expense_account_name: line.qbo_expense_account_name ?? null,
+      accounting_coding: buildAccountingCoding({ expenseAccountId: line.qbo_expense_account_id, expenseAccountName: line.qbo_expense_account_name }),
+      metadata: line.arc_books_gl_account_id ? { arc_books_gl_account_id: line.arc_books_gl_account_id } : {},
       sort_order: index,
     }));
     const { error: insertError } = await supabase
@@ -2291,18 +2284,19 @@ export async function replaceProjectExpenseLines(args: {
       );
 
     // Keep the parent's primary coding coherent with the first split so single-line
-    // consumers (budget rollups, QBO fallbacks) still resolve sensibly.
+    // consumers and budget rollups resolve the neutral account consistently.
     const first = rows[0];
-    await supabase
+    const expenseAccount = first.accounting_coding.expense_account ?? null;
+    const { error: codingError } = await supabase
       .from("project_expenses")
       .update({
         cost_code_id: first.cost_code_id,
         budget_line_id: first.budget_line_id,
-        qbo_expense_account_id: first.qbo_expense_account_id,
-        qbo_expense_account_name: first.qbo_expense_account_name,
+        accounting_coding: { ...expense.accounting_coding, expense_account: expenseAccount },
       })
       .eq("org_id", resolvedOrgId)
       .eq("id", args.expenseId);
+    if (codingError) throw new Error(`Failed to update expense coding: ${codingError.message}`);
   }
 
   // If the expense has already entered the cost ledger, re-post it against the new
@@ -2480,6 +2474,7 @@ export async function createProjectExpense(
     }
   }
 
+  if (parsed.booksPaymentAccountId) await validateBooksExpensePaymentAccount(resolvedOrgId, parsed.booksPaymentAccountId);
   const payload = {
     org_id: resolvedOrgId,
     project_id: parsed.projectId,
@@ -2493,6 +2488,7 @@ export async function createProjectExpense(
     description: parsed.description ?? null,
     amount_cents: parsed.amountCents,
     tax_cents: parsed.taxCents ?? 0,
+    metadata: parsed.booksPaymentAccountId ? { books_payment_account_id: parsed.booksPaymentAccountId } : {},
     payment_method: parsed.paymentMethod ?? null,
     receipt_file_id: parsed.receiptFileId ?? null,
     is_billable: parsed.isBillable,
@@ -2510,15 +2506,6 @@ export async function createProjectExpense(
           counterpartyId: parsed.qboVendorId,
           counterpartyName: parsed.qboVendorName,
         }),
-    qbo_transaction_type: parsed.qboTransactionType ?? null,
-    qbo_expense_account_id: parsed.qboExpenseAccountId ?? null,
-    qbo_expense_account_name: parsed.qboExpenseAccountName ?? null,
-    qbo_payment_account_id: parsed.qboPaymentAccountId ?? null,
-    qbo_payment_account_name: parsed.qboPaymentAccountName ?? null,
-    qbo_ap_account_id: parsed.qboApAccountId ?? null,
-    qbo_ap_account_name: parsed.qboApAccountName ?? null,
-    qbo_vendor_id: parsed.qboVendorId ?? null,
-    qbo_vendor_name: parsed.qboVendorName ?? null,
     submitted_by_user_id: userId,
     status: "submitted",
   };
@@ -3796,7 +3783,7 @@ export async function generateInvoiceFromCosts(
   if (parsed.dryRun || refreshedCosts.length === 0) return resultBase;
 
   const costIds = refreshedCosts.map((cost) => cost.id);
-  const invoiceNumber = await getNextInvoiceNumber(resolvedOrgId);
+  const invoiceNumber = await getNextInvoiceNumber(resolvedOrgId, parsed.projectId);
   const token = randomUUID();
   const approvedCostInvoice = await createApprovedCostInvoiceFromPreview({
     supabase,

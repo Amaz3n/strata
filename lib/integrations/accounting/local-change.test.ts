@@ -28,12 +28,12 @@ const codedBill = {
 }
 
 describe("computeLocalFingerprint", () => {
-  it("hashes the same values identically whether they come from accounting_coding or the legacy columns", () => {
+  it("preserves the established material hash using only neutral coding", () => {
     // This is the D2 column-drop guard: hashing the legacy qbo_* columns
     // directly would have flipped every fingerprint the day they drop and
     // routed the entire QuickBooks change feed to needs_review.
     for (const entityType of ["bill", "vendor_credit"]) {
-      expect(computeLocalFingerprint(entityType, codedBill)).toBe(computeLocalFingerprint(entityType, legacyBill))
+      expect(computeLocalFingerprint(entityType, codedBill)).toBe("39511755027b65ecae90415b0b1ba094")
     }
   })
 
@@ -44,12 +44,12 @@ describe("computeLocalFingerprint", () => {
     expect(computeLocalFingerprint("bill", dualWritten)).not.toBe(computeLocalFingerprint("bill", legacyOnlyStale))
   })
 
-  it("falls back to the legacy column when accounting_coding carries no id", () => {
+  it("does not recover identity from removed legacy columns when neutral coding is incomplete", () => {
     const partial = { ...legacyBill, accounting_coding: { counterparty: { name: "No id here" }, expense_account: null } }
-    expect(computeLocalFingerprint("bill", partial)).toBe(computeLocalFingerprint("bill", legacyBill))
+    expect(computeLocalFingerprint("bill", partial)).toBe(computeLocalFingerprint("bill", { total_cents: legacyBill.total_cents, bill_date: legacyBill.bill_date, due_date: legacyBill.due_date }))
   })
 
-  it("matches the same expense whichever source supplied the references", () => {
+  it("preserves the established expense hash and ignores removed column values", () => {
     const legacyExpense = {
       amount_cents: 4_200,
       tax_cents: 300,
@@ -63,7 +63,8 @@ describe("computeLocalFingerprint", () => {
       expense_date: "2026-02-05",
       accounting_coding: { counterparty: { id: "v-1" }, expense_account: { id: "a-1" } },
     }
-    expect(computeLocalFingerprint("project_expense", codedExpense)).toBe(computeLocalFingerprint("project_expense", legacyExpense))
+    expect(computeLocalFingerprint("project_expense", codedExpense)).toBe("f630096db9b43f9fd7b62952cbcb9d4d")
+    expect(computeLocalFingerprint("project_expense", { ...codedExpense, ...legacyExpense, qbo_vendor_id: "stale" })).toBe(computeLocalFingerprint("project_expense", codedExpense))
   })
 
   it("is stable for the same row and moves when a material value moves", () => {

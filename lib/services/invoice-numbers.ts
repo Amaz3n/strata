@@ -1,185 +1,118 @@
+import { compareInvoiceNumbers, incrementInvoiceNumber, pickLatestInvoiceNumber, type AccountingNumberSettings } from "@/lib/invoices/invoice-number-format"
+export { compareInvoiceNumbers, incrementInvoiceNumber } from "@/lib/invoices/invoice-number-format"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
 import { resolveAccountingTarget } from "@/lib/services/accounting-target"
+import { resolveLedgerAuthority } from "@/lib/services/books/authority"
 import { getProvider } from "@/lib/integrations/accounting/registry"
-
-interface AccountingNumberSettings {
-  invoice_number_pattern?: "numeric" | "prefix" | "custom"
-  invoice_number_prefix?: string | null
-}
 
 export interface NextInvoiceNumber {
   number: string
   source: "accounting" | "local"
   reservation_id?: string
+  warning?: string
 }
 
-function extractInvoiceSequenceValue(current: string, settings?: AccountingNumberSettings | null): number {
-  const normalized = String(current ?? "").trim()
-  if (!normalized) return 0
+// Coalesce concurrent external reads, and reuse a fresh provider cursor briefly.
+// Uniqueness always comes from database reservations, never from this cache.
+const providerCursors = new Map<string, { expires: number; value: Promise<string | null> }>()
 
-  const explicitPrefix = settings?.invoice_number_pattern === "prefix" ? settings.invoice_number_prefix ?? "" : ""
-  if (explicitPrefix && normalized.startsWith(explicitPrefix)) {
-    const numericPortion = normalized.slice(explicitPrefix.length).replace(/\D/g, "")
-    if (numericPortion) return Number.parseInt(numericPortion, 10)
+async function readProviderCursor(connectionId: string, read: () => Promise<string | null>) {
+  let cached = providerCursors.get(connectionId)
+  if (!cached || cached.expires <= Date.now()) {
+    for (const [key, entry] of providerCursors) if (entry.expires <= Date.now()) providerCursors.delete(key)
+    const entry = { expires: Date.now() + 120_000, value: Promise.resolve(null) as Promise<string | null> }
+    entry.value = read().then((value) => {
+      entry.expires = Date.now() + 60_000
+      return value
+    }).catch((error) => {
+      if (providerCursors.get(connectionId) === entry) providerCursors.delete(connectionId)
+      throw error
+    })
+    providerCursors.set(connectionId, entry)
+    cached = entry
   }
-
-  const yearMatch = normalized.match(/^(\d{4}-)(\d+)$/)
-  if (yearMatch) {
-    return Number.parseInt(yearMatch[2], 10)
-  }
-
-  const suffixMatch = normalized.match(/(\d+)(?!.*\d)/)
-  if (suffixMatch) {
-    return Number.parseInt(suffixMatch[1], 10)
-  }
-
-  return 0
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      cached.value,
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Accounting number lookup timed out")), 5000) }),
+    ])
+  } finally { clearTimeout(timer) }
 }
 
-export function compareInvoiceNumbers(a: string, b: string, settings?: AccountingNumberSettings | null): number {
-  const aSeq = extractInvoiceSequenceValue(a, settings)
-  const bSeq = extractInvoiceSequenceValue(b, settings)
-  if (aSeq !== bSeq) return aSeq - bSeq
-  return String(a ?? "").localeCompare(String(b ?? ""))
-}
-
-function pickLatestInvoiceNumber(candidates: Array<string | null | undefined>, settings?: AccountingNumberSettings | null) {
-  return candidates
-    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-    .reduce<string | null>((latest, candidate) => {
-      if (!latest) return candidate.trim()
-      return compareInvoiceNumbers(candidate, latest, settings) > 0 ? candidate.trim() : latest
-    }, null)
-}
-
-export async function getNextInvoiceNumber(orgId?: string): Promise<NextInvoiceNumber> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  const serviceSupabase = createServiceSupabaseClient()
-
-  await cleanupExpiredReservations(resolvedOrgId)
-
-  const target = await resolveAccountingTarget({ orgId: resolvedOrgId })
+export async function getNextInvoiceNumber(orgId?: string, projectId?: string | null): Promise<NextInvoiceNumber> {
+  const { orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const db = createServiceSupabaseClient()
+  const nativeBooks = (await resolveLedgerAuthority(resolvedOrgId, db)) === "arc"
+  const target = nativeBooks ? null : await resolveAccountingTarget({ orgId: resolvedOrgId, projectId })
   const connection = target?.connection ?? null
-  const { data: existingUserReservation } = await serviceSupabase
-    .from("qbo_invoice_reservations")
-    .select("id, reserved_number")
-    .eq("org_id", resolvedOrgId)
-    .eq("reserved_by", userId)
-    .eq("status", "reserved")
-    .order("reserved_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
+  const settings = connection?.settings
+  let warning: string | undefined
+  let source: NextInvoiceNumber["source"] = "local"
 
-  if (existingUserReservation?.id && existingUserReservation.reserved_number) {
-    return {
-      number: existingUserReservation.reserved_number,
-      source: connection && connection.settings?.invoice_number_sync !== false ? "accounting" : "local",
-      reservation_id: existingUserReservation.id,
+  const externalCursor = async () => {
+    if (!connection || connection.settings?.invoice_number_sync === false) return null
+    const provider = getProvider(connection.provider)
+    if (!provider.getLastInvoiceNumber) return null
+    try {
+      const cursor = await readProviderCursor(connection.id, () => provider.getLastInvoiceNumber!({ connectionId: connection.id }))
+      source = "accounting"
+      return cursor
+    } catch {
+      warning = "Accounting couldn't confirm its latest number. This number is reserved in Arc; check it against your accounting system before sending."
+      const remembered = connection.settings?.last_known_invoice_number
+      return typeof remembered === "string" ? remembered : null
     }
   }
 
-  if (connection && connection.settings?.invoice_number_sync !== false) {
-    const provider = target ? getProvider(target.connection.provider) : null
-    if (provider?.getLastInvoiceNumber) {
-      try {
-        const [qboLastNumber, lastInvoice, latestReservation] = await Promise.all([
-          provider.getLastInvoiceNumber({ connectionId: target!.connection.id }).catch(() => null),
-          supabase
-            .from("invoices")
-            .select("invoice_number")
-            .eq("org_id", resolvedOrgId)
-            .order("created_at", { ascending: false })
-            .limit(1)
-            .maybeSingle(),
-          serviceSupabase
-            .from("qbo_invoice_reservations")
-            .select("reserved_number")
-            .eq("org_id", resolvedOrgId)
-            .eq("status", "reserved")
-            .order("reserved_at", { ascending: false })
-            .limit(1)
-            .maybeSingle(),
-        ])
-
-        let cursor =
-          pickLatestInvoiceNumber(
-            [
-              qboLastNumber,
-              lastInvoice.data?.invoice_number ?? null,
-              latestReservation.data?.reserved_number ?? null,
-            ],
-            connection.settings,
-          ) ?? "0"
-
-        for (let attempt = 0; attempt < 25; attempt += 1) {
-          const nextNumber = incrementInvoiceNumber(cursor, connection.settings)
-          const { data, error } = await serviceSupabase
-            .from("qbo_invoice_reservations")
-            .insert({
-              org_id: resolvedOrgId,
-              reserved_number: nextNumber,
-              reserved_by: userId,
-              expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-            })
-            .select("id")
-            .single()
-
-          if (!error && data?.id) {
-            return {
-              number: nextNumber,
-              source: "accounting",
-              reservation_id: data.id,
-            }
-          }
-
-          const errorText = String(error?.message ?? "").toLowerCase()
-          const duplicateReservation =
-            error?.code === "23505" ||
-            errorText.includes("duplicate") ||
-            errorText.includes("unique")
-
-          if (!duplicateReservation) {
-            throw error
-          }
-
-          cursor = nextNumber
-        }
-        throw new Error("Unable to reserve a unique accounting invoice number.")
-      } catch (err) {
-        console.warn("Failed to reserve accounting invoice number, falling back to local sequence", err)
+  // Read every page: creation order is not sequence order (imports, backdated
+  // invoices, custom numbers). Used reservations also keep the cursor monotonic.
+  const readLocalCursor = async () => {
+    await cleanupExpiredReservations(resolvedOrgId)
+    let latest: string | null = null
+    for (const table of ["invoices", "qbo_invoice_reservations"] as const) {
+      const field = table === "invoices" ? "invoice_number" : "reserved_number"
+      for (let offset = 0; ; offset += 1000) {
+        const { data, error } = await db.from(table).select(field).eq("org_id", resolvedOrgId)
+          .order("id").range(offset, offset + 999)
+        if (error) throw new Error(`Unable to read invoice numbering: ${error.message}`)
+        latest = pickLatestInvoiceNumber([latest, ...(data ?? []).map((row) => (row as unknown as Record<string, string>)[field])], settings)
+        if (!data || data.length < 1000) break
       }
     }
+    return latest
   }
-
-  const { data: lastInvoice } = await supabase
-    .from("invoices")
-    .select("invoice_number")
-    .eq("org_id", resolvedOrgId)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
-  const { data: latestReservation } = await serviceSupabase
-    .from("qbo_invoice_reservations")
-    .select("reserved_number")
-    .eq("org_id", resolvedOrgId)
-    .eq("status", "reserved")
-    .order("reserved_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
-  const lastNumber =
-    pickLatestInvoiceNumber(
-      [lastInvoice?.invoice_number ?? null, latestReservation?.reserved_number ?? null],
-      connection?.settings,
-    ) ?? "0"
-  const nextNumber = incrementInvoiceNumber(lastNumber, connection?.settings)
-
-  return {
-    number: nextNumber,
-    source: "local",
+  const [external, local] = await Promise.all([externalCursor(), readLocalCursor()])
+  const remembered = connection?.settings?.invoice_number_sync !== false && typeof connection?.settings?.last_known_invoice_number === "string" ? connection.settings.last_known_invoice_number : null
+  let cursor = pickLatestInvoiceNumber([external, local, remembered], settings) ?? "0"
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const number = incrementInvoiceNumber(cursor, settings)
+    cursor = number
+    const { data: existing, error: existingError } = await db.from("invoices").select("id")
+      .eq("org_id", resolvedOrgId).eq("invoice_number", number).limit(1)
+    if (existingError) throw new Error(`Unable to check invoice number: ${existingError.message}`)
+    if (existing?.length) continue
+    // One reservation per composer, including multiple tabs belonging to one user.
+    // The legacy table name is retained for compatibility with invoice-save RPCs.
+    const { data, error } = await db.from("qbo_invoice_reservations").insert({
+      org_id: resolvedOrgId, reserved_number: number, reserved_by: userId,
+      expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
+    }).select("id").single()
+    if (error?.code === "23505") continue
+    if (error || !data) throw new Error(`Unable to reserve invoice number: ${error?.message ?? "No reservation returned"}`)
+    // A concurrent invoice save may have consumed a reservation between our
+    // existence check and insert. Recheck before offering the number to a user.
+    const { data: collision, error: collisionError } = await db.from("invoices").select("id")
+      .eq("org_id", resolvedOrgId).eq("invoice_number", number).limit(1)
+    if (collisionError || collision?.length) {
+      await releaseInvoiceNumberReservation(data.id, resolvedOrgId)
+      if (collisionError) throw new Error(`Unable to verify reserved number: ${collisionError.message}`)
+      continue
+    }
+    return { number, source, reservation_id: data.id, warning }
   }
+  throw new Error("Unable to reserve a unique invoice number. Please retry.")
 }
 
 export async function releaseInvoiceNumberReservation(reservationId: string, orgId?: string) {
@@ -216,54 +149,6 @@ export async function markReservationUsed(reservationId: string, invoiceId: stri
   await query
 }
 
-export function incrementInvoiceNumber(
-  current: string,
-  settings?: AccountingNumberSettings | null,
-): string {
-  const pattern = settings?.invoice_number_pattern
-  const prefix = settings?.invoice_number_prefix ?? ""
-
-  // Explicit prefix or year-based prefix patterns
-  if (pattern === "prefix" && prefix) {
-    const numericPortion = current.replace(prefix, "")
-    const paddedLength = numericPortion.length > 0 ? numericPortion.length : 4
-    const next = parseInt(numericPortion || "0", 10) + 1
-    return `${prefix}${String(next).padStart(paddedLength, "0")}`
-  }
-
-  // Numeric only (default)
-  const numericMatch = current.match(/^(\d+)$/)
-  if (numericMatch) {
-    return String(parseInt(numericMatch[1], 10) + 1)
-  }
-
-  // Prefix + digits (generic)
-  const prefixMatch = current.match(/^([A-Za-z-]+)(\d+)$/)
-  if (prefixMatch) {
-    const foundPrefix = prefixMatch[1]
-    const num = parseInt(prefixMatch[2], 10) + 1
-    const padLength = prefixMatch[2].length
-    return `${foundPrefix}${String(num).padStart(padLength, "0")}`
-  }
-
-  // Year prefix
-  const yearMatch = current.match(/^(\d{4}-)(\d+)$/)
-  if (yearMatch) {
-    const year = yearMatch[1]
-    const num = parseInt(yearMatch[2], 10) + 1
-    const padLength = yearMatch[2].length
-    return `${year}${String(num).padStart(padLength, "0")}`
-  }
-
-  // Fallback: strip non-digits and increment
-  const numericPortion = current.replace(/\D/g, "")
-  if (numericPortion) {
-    return String(parseInt(numericPortion, 10) + 1)
-  }
-
-  return "1001"
-}
-
 export async function cleanupExpiredReservations(orgId?: string) {
   const supabase = createServiceSupabaseClient()
   const query = supabase
@@ -276,7 +161,8 @@ export async function cleanupExpiredReservations(orgId?: string) {
     query.eq("org_id", orgId)
   }
 
-  await query
+  const { error } = await query
+  if (error) throw new Error(`Unable to expire invoice reservations: ${error.message}`)
 }
 
 export async function rememberAccountingInvoiceNumberCursor(connectionId: string, orgId: string, invoiceNumber: string) {

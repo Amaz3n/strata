@@ -1,6 +1,7 @@
 import "server-only"
 
 import { z } from "zod"
+import { collectBooksRows } from "@/lib/services/books/paging"
 
 import { convertToCashBasis } from "@/lib/services/books/cash-basis-rules"
 import { allocateCashMovement } from "@/lib/services/books/cash-flow-rules"
@@ -16,7 +17,11 @@ const accountSchema = z.object({
   normal_balance: z.enum(["debit", "credit"]),
   cash_flow_category: z.enum(["operating", "investing", "financing", "cash"]).nullable(),
 })
-const entrySchema = z.object({ id: z.string().uuid(), entry_date: z.string(), memo: z.string() })
+const entrySchema = z.object({
+  id: z.string().uuid(), entry_date: z.string(), memo: z.string(),
+  entry_kind: z.string(), source_type: z.string().nullable(),
+  reversal_of_entry_id: z.string().uuid().nullable(),
+})
 const lineSchema = z.object({
   id: z.string().uuid(),
   entry_id: z.string().uuid(),
@@ -26,23 +31,24 @@ const lineSchema = z.object({
   debit_cents: z.number().int(),
   credit_cents: z.number().int(),
   description: z.string().nullable(),
+  dimensions: z.record(z.unknown()).optional(),
 })
 
-type LoadedLedger = {
+export type LoadedLedger = {
   accounts: z.infer<typeof accountSchema>[]
   entries: z.infer<typeof entrySchema>[]
   lines: z.infer<typeof lineSchema>[]
 }
 
-async function loadPostedLedger(orgId: string, endDate: string, startDate?: string): Promise<LoadedLedger> {
+export async function loadPostedLedger(orgId: string, endDate: string, startDate?: string): Promise<LoadedLedger> {
   const service = createServiceSupabaseClient()
   const entries: z.infer<typeof entrySchema>[] = []
   for (let from = 0; ; from += 1000) {
     let query = service
       .from("journal_entries")
-      .select("id, entry_date, memo")
+      .select("id, entry_date, memo, entry_kind, source_type, reversal_of_entry_id")
       .eq("org_id", orgId)
-      .eq("status", "posted")
+      .in("status", ["posted", "reversed"])
       .lte("entry_date", endDate)
       .order("entry_date")
       .order("id")
@@ -67,7 +73,7 @@ async function loadPostedLedger(orgId: string, endDate: string, startDate?: stri
     for (let from = 0; ; from += 1000) {
       const { data, error } = await service
         .from("journal_lines")
-        .select("id, entry_id, account_id, project_id, company_id, debit_cents, credit_cents, description")
+        .select("id, entry_id, account_id, project_id, company_id, debit_cents, credit_cents, description, dimensions")
         .eq("org_id", orgId)
         .in("entry_id", ids)
         .order("entry_id")
@@ -80,13 +86,32 @@ async function loadPostedLedger(orgId: string, endDate: string, startDate?: stri
     }
   }
 
-  const { data: accountsData, error: accountError } = await service
-    .from("gl_accounts")
+  const accountsData = await collectBooksRows((from, to) => service.from("gl_accounts")
     .select("id, code, name, account_type, subtype, normal_balance, cash_flow_category")
-    .eq("org_id", orgId)
-    .order("code")
-  if (accountError) throw new Error(`Failed to load chart of accounts: ${accountError.message}`)
-  return { accounts: z.array(accountSchema).parse(accountsData ?? []), entries, lines }
+    .eq("org_id", orgId).order("code").order("id").range(from, to))
+  return { accounts: z.array(accountSchema).parse(accountsData), entries, lines }
+
+}
+
+/** Closing and its reversing entry transfer earnings; neither is operating activity. */
+function ledgerWindow(ledger: LoadedLedger, endDate: string, startDate?: string, operating = false): LoadedLedger {
+  const closingIds = new Set(ledger.entries.filter((entry) => entry.entry_kind === "closing").map((entry) => entry.id))
+  const entries = ledger.entries.filter((entry) => entry.entry_date <= endDate
+    && (!startDate || entry.entry_date >= startDate)
+    && (!operating || (!closingIds.has(entry.id) && !closingIds.has(entry.reversal_of_entry_id ?? ""))))
+  const ids = new Set(entries.map((entry) => entry.id))
+  const byId = new Map(ledger.entries.map((entry) => [entry.id, entry]))
+  const classifiedEntries = entries.map((entry) => ({ ...entry, source_type: entry.source_type ?? byId.get(entry.reversal_of_entry_id ?? "")?.source_type ?? null }))
+  return { accounts: ledger.accounts, entries: classifiedEntries, lines: ledger.lines.filter((line) => ids.has(line.entry_id)) }
+}
+
+/** Financial statement signs follow the category, including contra accounts. */
+function statementRows(ledger: LoadedLedger) {
+  return accountRows(ledger).map((row) => ({
+    ...row,
+    balanceCents: ["asset", "cogs", "expense"].includes(row.accountType)
+      ? row.debitCents - row.creditCents : row.creditCents - row.debitCents,
+  }))
 }
 
 /** Lines carrying no project are real: org overhead is not job cost. */
@@ -95,6 +120,7 @@ export const UNASSIGNED_PROJECT_LABEL = "Unassigned"
 async function loadProjectNames(orgId: string, projectIds: string[]) {
   const names = new Map<string, string>()
   const unique = Array.from(new Set(projectIds))
+  if (unique.length === 0) return names
   const service = createServiceSupabaseClient()
   for (let from = 0; from < unique.length; from += 200) {
     const { data, error } = await service
@@ -162,8 +188,8 @@ function accountRows(ledger: LoadedLedger) {
   }).filter((row) => row.debitCents !== 0 || row.creditCents !== 0)
 }
 
-export async function buildTrialBalance(orgId: string, asOf: string) {
-  const ledger = await loadPostedLedger(orgId, asOf)
+export async function buildTrialBalance(orgId: string, asOf: string, snapshot?: LoadedLedger) {
+  const ledger = ledgerWindow(snapshot ?? await loadPostedLedger(orgId, asOf), asOf)
   const rows = accountRows(ledger)
   return {
     statement: "trial_balance" as const,
@@ -185,9 +211,9 @@ const INCOME_STATEMENT_TYPES = new Set(["income", "cogs", "expense"])
  * lines already carry `project_id`, so the breakdown is a second grouping over
  * rows that are already loaded — no extra ledger read.
  */
-export async function buildProfitAndLoss(orgId: string, startDate: string, endDate: string) {
-  const ledger = await loadPostedLedger(orgId, endDate, startDate)
-  const rows = accountRows(ledger).filter((row) => INCOME_STATEMENT_TYPES.has(row.accountType))
+export async function buildProfitAndLoss(orgId: string, startDate: string, endDate: string, snapshot?: LoadedLedger) {
+  const ledger = ledgerWindow(snapshot ?? await loadPostedLedger(orgId, endDate), endDate, startDate, true)
+  const rows = statementRows(ledger).filter((row) => INCOME_STATEMENT_TYPES.has(row.accountType))
   const accountById = new Map(ledger.accounts.map((account) => [account.id, account]))
 
   const totalsByAccountProject = new Map<string, Map<string, { debitCents: number; creditCents: number }>>()
@@ -217,7 +243,7 @@ export async function buildProfitAndLoss(orgId: string, startDate: string, endDa
     const byProject = totalsByAccountProject.get(row.accountId) ?? new Map()
     const projects: StatementProjectAmount[] = Array.from(byProject.entries())
       .map(([key, total]) => {
-        const balanceCents = account?.normal_balance === "credit"
+        const balanceCents = account?.account_type === "income"
           ? total.creditCents - total.debitCents
           : total.debitCents - total.creditCents
         const summary = summaries.get(key) ?? {
@@ -255,11 +281,32 @@ export async function buildProfitAndLoss(orgId: string, startDate: string, endDa
       left.projectId === null ? 1 : right.projectId === null ? -1 : right.netIncomeCents - left.netIncomeCents,
     )
 
+  const byDimension: Record<string, Array<{ key: string; label: string; revenueCents: number; cogsCents: number; expenseCents: number; netIncomeCents: number }>> = {};
+  for (const dimension of ["division_id", "community_id", "lot_id", "contract_id", "cost_code_id", "cost_type", "organization_id"]) {
+    const groups = new Map<string, { key: string; label: string; revenueCents: number; cogsCents: number; expenseCents: number; netIncomeCents: number }>();
+    const accounts = new Map(ledger.accounts.map(account => [account.id, account]));
+    for (const line of ledger.lines) {
+      const account = accounts.get(line.account_id);
+      if (!account || !["income", "cogs", "expense"].includes(account.account_type)) continue;
+      const key = typeof line.dimensions?.[dimension] === "string" ? String(line.dimensions[dimension]) : "Unassigned";
+      const labelKey = dimension.replace(/_id$/, "_name");
+      const label = typeof line.dimensions?.[labelKey] === "string" ? String(line.dimensions[labelKey]) : key;
+      const group = groups.get(key) ?? { key, label, revenueCents: 0, cogsCents: 0, expenseCents: 0, netIncomeCents: 0 };
+      if (account.account_type === "income") group.revenueCents += line.credit_cents - line.debit_cents;
+      else if (account.account_type === "cogs") group.cogsCents += line.debit_cents - line.credit_cents;
+      else group.expenseCents += line.debit_cents - line.credit_cents;
+      group.netIncomeCents = group.revenueCents - group.cogsCents - group.expenseCents;
+      groups.set(key, group);
+    }
+    byDimension[dimension] = [...groups.values()];
+  }
+
   return {
     statement: "profit_loss" as const,
     startDate,
     endDate,
     rows: rowsWithProjects,
+    byDimension,
     byProject,
     revenueCents,
     cogsCents,
@@ -269,10 +316,31 @@ export async function buildProfitAndLoss(orgId: string, startDate: string, endDa
   }
 }
 
-export async function buildBalanceSheet(orgId: string, asOf: string) {
-  const ledger = await loadPostedLedger(orgId, asOf)
-  const rows = accountRows(ledger).filter((row) => new Set(["asset", "liability", "equity"]).has(row.accountType))
-  const incomeRows = accountRows(ledger).filter((row) => new Set(["income", "cogs", "expense"]).has(row.accountType))
+export async function buildBalanceSheet(orgId: string, asOf: string, snapshot?: LoadedLedger) {
+  const ledger = ledgerWindow(snapshot ?? await loadPostedLedger(orgId, asOf), asOf)
+  const rows = statementRows(ledger).filter((row) => new Set(["asset", "liability", "equity"]).has(row.accountType))
+  // The control ledger stays intact. Presentation nets each contract/project's
+  // asset and liability, then sums debit positions separately from credit positions.
+  const contractAccounts = new Set(ledger.accounts.filter((account) => new Set<string>([SYSTEM_ACCOUNT_CODES.contractAsset, SYSTEM_ACCOUNT_CODES.contractLiability]).has(account.code)).map((account) => account.id))
+  const contractNet = new Map<string, number>()
+  const contractProjects = new Map<string, string | null>()
+  const unallocatedContractProjects = new Set(ledger.lines.filter(line => contractAccounts.has(line.account_id) && typeof line.dimensions?.contract_id !== "string").map(line => line.project_id))
+  for (const line of ledger.lines) {
+    if (!contractAccounts.has(line.account_id)) continue
+    const contractKey = !unallocatedContractProjects.has(line.project_id) && typeof line.dimensions?.contract_id === "string" ? `contract:${line.dimensions.contract_id}` : `project:${line.project_id ?? "unassigned"}`
+    contractProjects.set(contractKey, line.project_id)
+    contractNet.set(contractKey, (contractNet.get(contractKey) ?? 0) + line.debit_cents - line.credit_cents)
+  }
+  const contractAssetCents = [...contractNet.values()].reduce((sum, net) => sum + Math.max(net, 0), 0)
+  const contractLiabilityCents = [...contractNet.values()].reduce((sum, net) => sum + Math.max(-net, 0), 0)
+  for (const [code, balanceCents] of [[SYSTEM_ACCOUNT_CODES.contractAsset, contractAssetCents], [SYSTEM_ACCOUNT_CODES.contractLiability, contractLiabilityCents]] as const) {
+    const account = ledger.accounts.find((item) => item.code === code)
+    if (!account) { if (balanceCents !== 0) throw new Error(`Missing contract presentation account ${code}`); continue }
+    const existing = rows.find((row) => row.accountId === account.id)
+    if (existing) existing.balanceCents = balanceCents
+    else if (balanceCents !== 0) rows.push({ accountId: account.id, code, name: account.name, accountType: account.account_type, subtype: account.subtype, debitCents: 0, creditCents: 0, balanceCents })
+  }
+  const incomeRows = statementRows(ledger).filter((row) => new Set(["income", "cogs", "expense"]).has(row.accountType))
   const currentEarningsCents = incomeRows.reduce((sum, row) => {
     if (row.accountType === "income") return sum + row.balanceCents
     return sum - row.balanceCents
@@ -285,6 +353,8 @@ export async function buildBalanceSheet(orgId: string, asOf: string) {
     asOf,
     rows,
     currentEarningsCents,
+    unallocatedContractProjectIds: [...unallocatedContractProjects],
+    contractPositions: [...contractNet].map(([key, netCents]) => ({ projectId: contractProjects.get(key) ?? null, contractId: key.startsWith("contract:") ? key.slice(9) : null, assetCents: Math.max(netCents, 0), liabilityCents: Math.max(-netCents, 0) })),
     assetCents,
     liabilityCents,
     equityCents,
@@ -292,42 +362,40 @@ export async function buildBalanceSheet(orgId: string, asOf: string) {
   }
 }
 
-export async function buildCashFlowStatement(orgId: string, startDate: string, endDate: string) {
-  const ledger = await loadPostedLedger(orgId, endDate, startDate)
+function cashEntryAllocations(ledger: LoadedLedger) {
   const accountById = new Map(ledger.accounts.map((account) => [account.id, account]))
+  const entryById = new Map(ledger.entries.map((entry) => [entry.id, entry]))
   const linesByEntry = new Map<string, z.infer<typeof lineSchema>[]>()
   for (const line of ledger.lines) {
     const rows = linesByEntry.get(line.entry_id) ?? []
     rows.push(line)
     linesByEntry.set(line.entry_id, rows)
   }
-  const categories = { operating: 0, investing: 0, financing: 0 }
-  for (const lines of linesByEntry.values()) {
-    const cashLines = lines.filter((line) => accountById.get(line.account_id)?.cash_flow_category === "cash")
-    const cashMovement = cashLines.reduce((sum, line) => sum + line.debit_cents - line.credit_cents, 0)
-    if (cashMovement === 0) continue
-    const allocation = allocateCashMovement(
-      cashMovement,
-      lines
-        .filter((line) => accountById.get(line.account_id)?.cash_flow_category !== "cash")
-        .map((line) => ({
-          weightCents: line.debit_cents + line.credit_cents,
-          category: accountById.get(line.account_id)?.cash_flow_category ?? null,
-        })),
-    )
-    categories.operating += allocation.operating
-    categories.investing += allocation.investing
-    categories.financing += allocation.financing
-  }
-  return {
-    statement: "cash_flow" as const,
-    startDate,
-    endDate,
-    operatingCents: categories.operating,
-    investingCents: categories.investing,
-    financingCents: categories.financing,
-    netChangeInCashCents: categories.operating + categories.investing + categories.financing,
-  }
+  return [...linesByEntry].map(([entryId, lines]) => {
+    const sourceType = entryById.get(entryId)?.source_type
+    const cashMovement = lines.filter((line) => accountById.get(line.account_id)?.cash_flow_category === "cash")
+      .reduce((sum, line) => sum + line.debit_cents - line.credit_cents, 0)
+    const counterparts = lines.filter((line) => accountById.get(line.account_id)?.cash_flow_category !== "cash")
+    const allocation = allocateCashMovement(cashMovement, counterparts.map((line) => ({
+      weightCents: line.debit_cents + line.credit_cents, cashOffsetCents: line.credit_cents - line.debit_cents,
+      category: accountById.get(line.account_id)?.cash_flow_category ?? null,
+    })), sourceType)
+    const customer = sourceType?.startsWith("invoice") || sourceType?.startsWith("customer_deposit") || counterparts.some((line) => {
+      const account = accountById.get(line.account_id)
+      return account && new Set<string>([SYSTEM_ACCOUNT_CODES.accountsReceivable, SYSTEM_ACCOUNT_CODES.retainageReceivable, SYSTEM_ACCOUNT_CODES.contractLiability]).has(account.code)
+    })
+    const vendor = ["expense", "bill_payment", "ap_fee_charge", "labor_cost"].includes(sourceType ?? "")
+    const receipt = customer || (!vendor && allocation.operating > 0)
+    return { ...allocation, receipts: receipt ? allocation.operating : 0, payments: receipt ? 0 : -allocation.operating }
+  })
+}
+
+export async function buildCashFlowStatement(orgId: string, startDate: string, endDate: string, snapshot?: LoadedLedger) {
+  const ledger = ledgerWindow(snapshot ?? await loadPostedLedger(orgId, endDate), endDate, startDate)
+  const categories = cashEntryAllocations(ledger).reduce((sum, entry) => ({ operating: sum.operating + entry.operating, investing: sum.investing + entry.investing, financing: sum.financing + entry.financing }), { operating: 0, investing: 0, financing: 0 })
+  return { statement: "cash_flow" as const, startDate, endDate, operatingCents: categories.operating,
+    investingCents: categories.investing, financingCents: categories.financing,
+    netChangeInCashCents: categories.operating + categories.investing + categories.financing }
 }
 
 /**
@@ -343,8 +411,8 @@ export async function buildCashFlowStatement(orgId: string, startDate: string, e
  * so this needs no second ledger read and cannot disagree with the accrual
  * figures it is presented beside.
  */
-export async function buildCashBasisStatement(orgId: string, startDate: string, endDate: string) {
-  const ledger = await loadPostedLedger(orgId, endDate, startDate)
+export async function buildCashBasisStatement(orgId: string, startDate: string, endDate: string, snapshot?: LoadedLedger) {
+  const ledger = ledgerWindow(snapshot ?? await loadPostedLedger(orgId, endDate), endDate, startDate, true)
   const accountById = new Map(ledger.accounts.map((account) => [account.id, account]))
 
   const movementByCode = new Map<string, number>()
@@ -354,7 +422,7 @@ export async function buildCashBasisStatement(orgId: string, startDate: string, 
   for (const line of ledger.lines) {
     const account = accountById.get(line.account_id)
     if (!account) continue
-    const signed = account.normal_balance === "credit"
+    const signed = ["income", "liability", "equity"].includes(account.account_type)
       ? line.credit_cents - line.debit_cents
       : line.debit_cents - line.credit_cents
     if (account.account_type === "income") accrualRevenueCents += signed
@@ -364,7 +432,9 @@ export async function buildCashBasisStatement(orgId: string, startDate: string, 
   }
   const movement = (code: string) => movementByCode.get(code) ?? 0
 
+  const cash = cashEntryAllocations(ledger)
   const statement = convertToCashBasis({
+    actualCash: { receiptsCents: cash.reduce((sum, row) => sum + row.receipts, 0), paidCents: cash.reduce((sum, row) => sum + row.payments, 0) },
     accrualRevenueCents,
     accrualCogsCents,
     accrualExpenseCents,
@@ -382,8 +452,8 @@ export async function buildCashBasisStatement(orgId: string, startDate: string, 
   return { statement: "cash_basis" as const, startDate, endDate, ...statement }
 }
 
-export async function buildGeneralLedger(orgId: string, startDate: string, endDate: string) {
-  const ledger = await loadPostedLedger(orgId, endDate, startDate)
+export async function buildGeneralLedger(orgId: string, startDate: string, endDate: string, snapshot?: LoadedLedger) {
+  const ledger = ledgerWindow(snapshot ?? await loadPostedLedger(orgId, endDate), endDate, startDate)
   const accountById = new Map(ledger.accounts.map((account) => [account.id, account]))
   const entryById = new Map(ledger.entries.map((entry) => [entry.id, entry]))
   return {
@@ -397,4 +467,3 @@ export async function buildGeneralLedger(orgId: string, startDate: string, endDa
     })),
   }
 }
-

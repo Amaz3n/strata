@@ -1,7 +1,12 @@
 import { cache } from "react"
 import { cacheLife, cacheTag } from "next/cache"
 
-import { resolvePartyCapabilities, type PartyCapabilities, type PartyRole } from "@/lib/directory/roles"
+import {
+  resolvePartyCapabilities,
+  TRADE_PARTNER_ROLE_KEYS,
+  type PartyCapabilities,
+  type PartyRole,
+} from "@/lib/directory/roles"
 import { canEditDirectory } from "@/lib/directory/permissions"
 import { nullIfNotFound } from "@/lib/not-found-error"
 import { getCompany, getClientCompanyReceivables } from "@/lib/services/companies"
@@ -121,7 +126,7 @@ export async function loadDirectoryPartyHeader(
     roles: entry.roles,
     capabilities: {
       isVendor,
-      isTradePartner: ["subcontractor", "supplier"].some((key) => keys.has(key)),
+      isTradePartner: TRADE_PARTNER_ROLE_KEYS.some((key) => keys.has(key)),
       isClient: categories.has("client"),
       isDesign: categories.has("design"),
       isInternal: categories.has("internal"),

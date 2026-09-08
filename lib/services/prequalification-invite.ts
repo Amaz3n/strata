@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { requireOrgContext } from "@/lib/services/context"
+import { resolveCompanyRecipient } from "@/lib/services/directory"
 import { recordEvent } from "@/lib/services/events"
 import { requireAnyPermission } from "@/lib/services/permissions"
 import { ensureVendorAccountPortalToken } from "@/lib/services/portal-access"
@@ -314,17 +315,12 @@ async function resolveRecipientContact({
     }
   }
 
-  const { data } = await supabase
-    .from("contacts")
-    .select("id, full_name, email")
-    .eq("org_id", orgId)
-    .eq("primary_company_id", companyId)
-    .not("email", "is", null)
-    .order("created_at", { ascending: true })
-    .limit(1)
-  const first = data?.[0]
-  return first?.email
-    ? { id: first.id, full_name: first.full_name ?? null, email: String(first.email).trim() }
+  // `contact_company_links` is the linkage, not `contacts.primary_company_id` —
+  // a contact attached from the company side was invisible here, and the
+  // builder saw "no email on file" for a vendor whose contact is on the tab.
+  const recipient = await resolveCompanyRecipient(supabase, orgId, companyId)
+  return recipient?.kind === "contact" && recipient.contactId
+    ? { id: recipient.contactId, full_name: recipient.name, email: recipient.email }
     : null
 }
 

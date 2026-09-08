@@ -144,6 +144,7 @@ export function InvoiceStatusBadge({ invoice }: { invoice: Invoice }) {
  * and the date an invoice was cut answers no question anybody has.
  */
 export type InvoiceNextAction =
+  | { key: "scheduled"; label: string; tone: "primary" }
   | { key: "resume"; label: string; tone: "default" }
   | { key: "approve"; label: string; tone: "warning" }
   | { key: "issue"; label: string; tone: "primary" }
@@ -162,6 +163,8 @@ export function nextActionFor(invoice: Invoice): InvoiceNextAction {
   }
 
   if (status === "draft") {
+    const scheduledFor = scheduledSendAtOf(invoice)
+    if (scheduledFor) return { key: "scheduled", label: `Sends ${formatScheduledSend(scheduledFor)}`, tone: "primary" }
     if (invoice.approval_status === "pending") return { key: "approve", label: "Awaiting approval", tone: "warning" }
     if (invoice.approval_status === "rejected") return { key: "resume", label: "Approval rejected", tone: "default" }
     if (invoice.approval_status === "approved" || invoice.approval_status === "not_required") {
@@ -179,6 +182,19 @@ export function nextActionFor(invoice: Invoice): InvoiceNextAction {
   if (untilDue === null) return { key: "collect", label: "No due date", tone: "default" }
   if (untilDue === 0) return { key: "collect", label: "Due today", tone: "default" }
   return { key: "collect", label: `Due in ${untilDue}d`, tone: "default" }
+}
+
+/** When a draft is set to send itself, or null. */
+export function scheduledSendAtOf(invoice: Invoice): string | null {
+  const value = (invoice.metadata as Record<string, unknown> | undefined)?.scheduled_send_at
+  if (typeof value !== "string") return null
+  return Number.isNaN(new Date(value).getTime()) ? null : value
+}
+
+const SCHEDULED_FORMAT = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+
+export function formatScheduledSend(value: string) {
+  return SCHEDULED_FORMAT.format(new Date(value))
 }
 
 export const NEXT_ACTION_TONES: Record<InvoiceNextAction["tone"], string> = {
@@ -218,7 +234,7 @@ export function invoiceProvenanceLabel(invoice: Invoice): string {
     case "fee":
       return "Fee schedule"
     default:
-      return "Prepared by hand"
+      return "Manual invoice"
   }
 }
 

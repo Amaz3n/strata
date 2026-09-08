@@ -252,12 +252,6 @@ function buildFinancialSubs(
       requiredAny: ["bill.read", "commitment.read"],
     },
     {
-      title: "Lien Waivers",
-      url: url("/financials/waivers"),
-      isActive: section === "financials-waivers",
-      requiredAny: ["bill.read", "commitment.read"],
-    },
-    {
       title: "Expenses",
       url: url("/expenses"),
       isActive: section === "expenses",

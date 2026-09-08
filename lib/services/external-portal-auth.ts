@@ -25,6 +25,7 @@ import type {
   ExternalPortalWorkspaceContext,
   ExternalPortalWorkspaceItem,
   ExternalPortalWorkspaceOrg,
+  PortalTokenPurpose,
 } from "@/lib/types"
 
 const SESSION_COOKIE = "external_portal_session"
@@ -73,6 +74,7 @@ interface ResolvedExternalTokenContext {
   suggestedFullName?: string | null
   orgName?: string | null
   projectName?: string | null
+  purpose?: PortalTokenPurpose
 }
 
 export interface ExternalPortalGateContext {
@@ -81,6 +83,13 @@ export interface ExternalPortalGateContext {
   expectedEmail?: string | null
   suggestedFullName?: string | null
   emailLocked: boolean
+  /**
+   * What the person is being asked to claim. A payout invitation is not a
+   * project invitation, and the account wall is the first thing a vendor sees —
+   * "create an account to view this project" for a link about getting paid is
+   * how a vendor decides the email was a mistake.
+   */
+  purpose: PortalTokenPurpose
 }
 
 const IDENTITY_COLUMNS =
@@ -260,9 +269,10 @@ async function resolveTokenContext(
       .from("portal_access_tokens")
       .select(
         `
-        id, org_id, paused_at, revoked_at, expires_at, max_access_count, access_count,
+        id, org_id, paused_at, revoked_at, expires_at, max_access_count, access_count, purpose,
         contact:contacts(full_name, email),
         project:projects(name),
+        company:companies(name),
         org:orgs(name)
       `,
       )
@@ -275,14 +285,19 @@ async function resolveTokenContext(
     ) return null
     const contact = firstRelation(data.contact as any)
     const project = firstRelation(data.project as any)
+    const company = firstRelation(data.company as any)
     const org = firstRelation(data.org as any)
+    const purpose: PortalTokenPurpose = data.purpose === "vendor_payout" ? "vendor_payout" : "portal"
     return {
       tokenId: data.id as string,
       orgId: data.org_id as string,
       expectedEmail: contact?.email ?? null,
       suggestedFullName: contact?.full_name ?? null,
-      projectName: project?.name ?? null,
+      // A payout invitation is company-scoped and has no project. The vendor's
+      // own company is the thing being named on the gate.
+      projectName: purpose === "vendor_payout" ? company?.name ?? null : project?.name ?? null,
       orgName: org?.name ?? null,
+      purpose,
     }
   }
 
@@ -339,12 +354,14 @@ export async function getExternalPortalGateContext({
 
   const normalizedExpectedEmail = tokenContext.expectedEmail?.trim().toLowerCase() ?? null
 
+  const purpose = tokenContext.purpose ?? "portal"
   return {
     orgName: tokenContext.orgName ?? "the builder",
-    projectName: tokenContext.projectName ?? "this project",
+    projectName: tokenContext.projectName ?? (purpose === "vendor_payout" ? "your company" : "this project"),
     expectedEmail: normalizedExpectedEmail,
     suggestedFullName: tokenContext.suggestedFullName ?? null,
     emailLocked: !!normalizedExpectedEmail,
+    purpose,
   }
 }
 

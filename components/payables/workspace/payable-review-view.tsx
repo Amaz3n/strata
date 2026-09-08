@@ -1,40 +1,45 @@
-"use client"
+"use client";
 
-import { useEffect, useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react";
 import {
   ArrowLeft,
   CheckCircle2,
   Landmark,
   ShieldCheck,
   TriangleAlert,
-} from "lucide-react"
-import { toast } from "sonner"
+} from "lucide-react";
+import { toast } from "sonner";
 
 import {
   decidePayableApprovalAction,
   getPayableApprovalDetailAction,
-} from "@/app/(app)/payables/actions"
-import { Button } from "@/components/ui/button"
-import { Label } from "@/components/ui/label"
-import { Textarea } from "@/components/ui/textarea"
-import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
-import { estimateSettlement } from "@/lib/payments/settlement-estimate"
-import { usePaymentStepUp } from "@/components/payments/payment-step-up"
-import type { PayableApprovalDetail, PayableApprovalOutcome } from "@/lib/services/payable-approvals"
-import type { PaymentHoldEvaluation } from "@/lib/services/payment-holds"
-import type { VendorBillSummary } from "@/lib/services/vendor-bills"
-import { cn } from "@/lib/utils"
-import { vendorLabel } from "../payables-ui"
+} from "@/app/(app)/payables/actions";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers";
+import { estimateSettlement } from "@/lib/payments/settlement-estimate";
+import { usePaymentStepUp } from "@/components/payments/payment-step-up";
+import type {
+  PayableApprovalDetail,
+  PayableApprovalOutcome,
+} from "@/lib/services/payable-approvals";
+import type { PaymentHoldEvaluation } from "@/lib/services/payment-holds";
+import type { VendorBillSummary } from "@/lib/services/vendor-bills";
+import { cn } from "@/lib/utils";
+import { vendorLabel } from "../payables-ui";
 
-type ReviewStep = "review" | "confirm" | "reject" | "done"
+type ReviewStep = "review" | "confirm" | "reject" | "done";
 /** A release that did not happen is not a success, and must not look like one. */
-type ReviewOutcomeTone = "success" | "warning"
+type ReviewOutcomeTone = "success" | "warning";
 
 /** Bare `YYYY-MM-DD` in, readable date out — never routed through a local timezone. */
 function readableDate(iso: string) {
-  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(
-    new Date(`${iso}T00:00:00Z`),
-  )
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(`${iso}T00:00:00Z`));
 }
 
 /**
@@ -56,36 +61,41 @@ function outcomeCopy(
       return {
         tone: "success",
         title: "Payment released",
-        body: detail.items.length > 1
-          ? `${formatMoneyFromCents(detail.totalDebitCents)} is on its way to ${detail.items.length} vendors. Each bill updates itself as the provider confirms each stage.`
-          : `${formatMoneyFromCents(detail.vendorAmountCents)} is on its way to ${vendorName}. The bill updates itself as the provider confirms each stage.`,
-      }
+        body:
+          detail.items.length > 1
+            ? `${formatMoneyFromCents(detail.totalDebitCents)} is on its way to ${detail.items.length} vendors. Each bill updates itself as the provider confirms each stage.`
+            : `${formatMoneyFromCents(detail.vendorAmountCents)} is on its way to ${vendorName}. The bill updates itself as the provider confirms each stage.`,
+      };
     case "rejected":
       return {
         tone: "success",
         title: "Payment rejected",
         body: `${vendorName} was not paid. The preparer has been notified with your reason.`,
-      }
+      };
     case "recorded":
       return {
         tone: "success",
         title: "Approval recorded",
         body: "Your approval is on the record. This payment still needs another approver before it goes out.",
-      }
+      };
     case "scheduled":
       return {
         tone: "success",
         title: "Approved — releases on schedule",
         body: `Fully approved. ${formatMoneyFromCents(detail.totalDebitCents)} goes out on ${readableDate(outcome.scheduledFor)}, the date the preparer chose. Nothing else is needed from you.`,
-      }
+      };
     case "release_queued":
-      return { tone: "success", title: "Approved — release is on its way", body: outcome.reason }
+      return {
+        tone: "success",
+        title: "Approved — release is on its way",
+        body: outcome.reason,
+      };
     case "approved_release_pending":
       return {
         tone: "warning",
         title: "Approved — release is still gated",
         body: `${outcome.reason} The approval stands and Arc keeps retrying the release.`,
-      }
+      };
   }
 }
 
@@ -102,88 +112,94 @@ export function PayableReviewView({
   onClose,
   onDecided,
 }: {
-  bill: VendorBillSummary
-  open: boolean
-  holds?: PaymentHoldEvaluation
-  onClose: () => void
-  onDecided: () => void
+  bill: VendorBillSummary;
+  open: boolean;
+  holds?: PaymentHoldEvaluation;
+  onClose: () => void;
+  onDecided: () => void;
 }) {
-  const [detail, setDetail] = useState<PayableApprovalDetail | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [step, setStep] = useState<ReviewStep>("review")
-  const [reason, setReason] = useState("")
+  const [detail, setDetail] = useState<PayableApprovalDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [step, setStep] = useState<ReviewStep>("review");
+  const [reason, setReason] = useState("");
   const [outcome, setOutcome] = useState<{
-    title: string
-    body: string
-    tone: ReviewOutcomeTone
-  } | null>(null)
-  const [isPending, startTransition] = useTransition()
-  const { requireStepUp, stepUpPrompt } = usePaymentStepUp()
+    title: string;
+    body: string;
+    tone: ReviewOutcomeTone;
+  } | null>(null);
+  const [isPending, startTransition] = useTransition();
+  const { requireStepUp, stepUpPrompt } = usePaymentStepUp();
 
   useEffect(() => {
-    if (!open) return
-    let cancelled = false
-    setLoading(true)
-    setStep("review")
-    setReason("")
-    setOutcome(null)
+    if (!open) return;
+    let cancelled = false;
+    setLoading(true);
+    setDetail(null);
+    setStep("review");
+    setReason("");
+    setOutcome(null);
     getPayableApprovalDetailAction(bill.id)
       .then((result) => {
-        if (cancelled) return
+        if (cancelled) return;
         if (!result.success) {
-          toast.error(result.error)
-          return
+          toast.error(result.error);
+          return;
         }
-        setDetail(result.data)
+        setDetail(result.data);
       })
       .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
+        if (!cancelled) setLoading(false);
+      });
     return () => {
-      cancelled = true
-    }
-  }, [open, bill.id])
+      cancelled = true;
+    };
+  }, [open, bill.id]);
 
   const decide = (decision: "approved" | "rejected") => {
-    if (!detail?.contentHash) return
+    if (!detail?.contentHash) return;
     startTransition(async () => {
       const result = await decidePayableApprovalAction({
         run_id: detail.runId,
         decision,
         content_hash: detail.contentHash!,
         ...(decision === "rejected" ? { reason: reason.trim() } : {}),
-      })
+      });
       if (!result.success) {
-        toast.error(result.error)
-        return
+        toast.error(result.error);
+        return;
       }
-      const data = result.data
-      setOutcome(outcomeCopy(data, detail, vendorLabel(bill)))
-      setStep("done")
-      onDecided()
-    })
-  }
+      const data = result.data;
+      setOutcome(outcomeCopy(data, detail, vendorLabel(bill)));
+      setStep("done");
+      onDecided();
+    });
+  };
 
   // A run with several payables makes the item-level figures misleading on their
   // own: the approver is signing for the whole envelope, so the summary reports
   // the run and the per-payable lines carry the detail.
-  const isBatch = (detail?.items.length ?? 0) > 1
-  const runProcessorFeeCents = detail?.items.reduce((sum, item) => sum + item.processorFeeCents, 0) ?? 0
-  const runPlatformFeeCents = detail?.items.reduce((sum, item) => sum + item.platformFeeCents, 0) ?? 0
-  const releasedAmountCents = isBatch ? (detail?.totalDebitCents ?? 0) : (detail?.vendorAmountCents ?? 0)
+  const isBatch = (detail?.items.length ?? 0) > 1;
+  const runProcessorFeeCents =
+    detail?.items.reduce((sum, item) => sum + item.processorFeeCents, 0) ?? 0;
+  const runPlatformFeeCents =
+    detail?.items.reduce((sum, item) => sum + item.platformFeeCents, 0) ?? 0;
+  const releasedAmountCents = isBatch
+    ? (detail?.totalDebitCents ?? 0)
+    : (detail?.vendorAmountCents ?? 0);
 
   const blockingHolds =
     holds?.holds.filter((hold) => hold.level === "block" && !hold.overridden) ??
-    []
-  const overriddenHolds = holds?.holds.filter((hold) => hold.overridden) ?? []
+    [];
+  const overriddenHolds = holds?.holds.filter((hold) => hold.overridden) ?? [];
   // An unscheduled run releases the moment approval completes, so today is the
   // right anchor for the estimate the approver is looking at.
   const settlement = detail
     ? estimateSettlement({
-        initiatedOn: detail.scheduledFor ?? new Date().toISOString().slice(0, 10),
+        initiatedOn:
+          detail.scheduledFor ?? new Date().toISOString().slice(0, 10),
         window: detail.settlementWindow,
       })
-    : null
+    : null;
 
   return (
     <div className="flex h-full flex-col">
@@ -274,20 +290,28 @@ export function PayableReviewView({
                       Provider processing cost
                     </span>
                     <span className="font-mono text-sm tabular-nums text-muted-foreground">
-                      {formatMoneyFromCents(isBatch ? runProcessorFeeCents : detail.processorFeeCents)}
+                      {formatMoneyFromCents(
+                        isBatch
+                          ? runProcessorFeeCents
+                          : detail.processorFeeCents,
+                      )}
                     </span>
                   </div>
                   <div className="mt-1.5 flex items-baseline justify-between">
                     <span className="text-sm text-muted-foreground">
                       Arc fee
-                      {(isBatch ? runPlatformFeeCents : detail.platformFeeCents) === 0 ? (
+                      {(isBatch
+                        ? runPlatformFeeCents
+                        : detail.platformFeeCents) === 0 ? (
                         <span className="ml-2 text-xs text-muted-foreground/80">
                           No Arc markup
                         </span>
                       ) : null}
                     </span>
                     <span className="font-mono text-sm tabular-nums text-muted-foreground">
-                      {formatMoneyFromCents(isBatch ? runPlatformFeeCents : detail.platformFeeCents)}
+                      {formatMoneyFromCents(
+                        isBatch ? runPlatformFeeCents : detail.platformFeeCents,
+                      )}
                     </span>
                   </div>
                 </div>
@@ -342,15 +366,23 @@ export function PayableReviewView({
                   </div>
                   <ul className="max-h-56 divide-y overflow-y-auto">
                     {detail.items.map((item) => (
-                      <li key={item.billId} className="flex items-baseline justify-between gap-3 px-4 py-2 text-xs">
+                      <li
+                        key={item.billId}
+                        className="flex items-baseline justify-between gap-3 px-4 py-2 text-xs"
+                      >
                         <span className="min-w-0 truncate">
-                          <span className="text-foreground">{item.billNumber ?? "Payable"}</span>{" "}
+                          <span className="text-foreground">
+                            {item.billNumber ?? "Payable"}
+                          </span>{" "}
                           <span className="text-muted-foreground">
                             · {item.vendorName}
                             {item.projectName ? ` · ${item.projectName}` : ""}
                           </span>
                           {item.releasableAtSubmission ? null : (
-                            <span className="text-warning"> · review release evidence</span>
+                            <span className="text-warning">
+                              {" "}
+                              · review release evidence
+                            </span>
                           )}
                         </span>
                         <span className="shrink-0 font-mono tabular-nums">
@@ -413,7 +445,7 @@ export function PayableReviewView({
 
               <p className="flex items-start gap-2 text-xs text-muted-foreground">
                 <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                The invoice and its documents are in the pane beside this one.
+                Open Invoice to check the bill and its supporting documents.
                 These amounts were frozen when the payment was prepared; if
                 anything about the bill changed since, approval is invalidated
                 and it comes back here.
@@ -445,8 +477,9 @@ export function PayableReviewView({
               ) : step === "confirm" ? (
                 <div className="space-y-3 border border-primary/30 bg-primary/5 p-4">
                   <p className="text-sm font-medium">
-                    Release {formatMoneyFromCents(detail.vendorAmountCents)} to{" "}
-                    {vendorLabel(bill)}?
+                    {isBatch
+                      ? `Approve ${detail.items.length} payments totaling ${formatMoneyFromCents(detail.totalDebitCents)}?`
+                      : `Approve payment of ${formatMoneyFromCents(detail.vendorAmountCents)} to ${vendorLabel(bill)}?`}
                   </p>
                   <p className="text-xs text-muted-foreground">
                     {formatMoneyFromCents(detail.totalDebitCents)} will be
@@ -474,9 +507,17 @@ export function PayableReviewView({
                     <Button
                       className="h-10 flex-1"
                       disabled={isPending}
-                      onClick={() => void requireStepUp(() => decide("approved"))}
+                      onClick={() =>
+                        void requireStepUp(() => decide("approved"))
+                      }
                     >
-                      {isPending ? "Releasing…" : "Confirm & release"}
+                      {isPending
+                        ? "Approving…"
+                        : detail.requiredApprovals > detail.approvalCount + 1
+                          ? "Confirm approval"
+                          : detail.scheduledFor
+                            ? "Approve scheduled payment"
+                            : "Confirm & release"}
                     </Button>
                   </div>
                 </div>
@@ -505,7 +546,9 @@ export function PayableReviewView({
                       className={cn("h-10 flex-1")}
                       variant="destructive"
                       disabled={isPending || reason.trim().length < 8}
-                      onClick={() => void requireStepUp(() => decide("rejected"))}
+                      onClick={() =>
+                        void requireStepUp(() => decide("rejected"))
+                      }
                     >
                       {isPending ? "Rejecting…" : "Reject payment"}
                     </Button>
@@ -517,5 +560,5 @@ export function PayableReviewView({
         </div>
       </div>
     </div>
-  )
+  );
 }

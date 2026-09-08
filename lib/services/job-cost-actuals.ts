@@ -31,7 +31,9 @@ export type JobCostSourceType =
   | "vendor_bill_line"
   | "project_expense"
   | "project_expense_line"
-  | "time_entry";
+  | "time_entry"
+  | "bank_transaction"
+  | "inventory_event";
 
 /** An entry is `posted` from birth; the only transition is voiding it. */
 export type JobCostEntryStatus = "posted" | "voided";

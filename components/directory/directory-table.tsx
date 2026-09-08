@@ -130,9 +130,23 @@ function ContactMethods({ email, phone }: { email?: string; phone?: string }) {
   );
 }
 
-/** Exception reporting: a compliant vendor says nothing, because that is expected. */
+/**
+ * Exception reporting: a compliant vendor says nothing, because that is expected.
+ *
+ * A vendor nobody enrolled is a third case, and it is not silence. `is_compliant`
+ * is true for them — nothing is outstanding because nothing was ever asked — so
+ * this row used to look identical to a vendor with a current certificate on file.
+ */
 function ComplianceFlag({ status }: { status?: ComplianceStatusSummary }) {
-  if (!status || status.is_compliant) return null;
+  if (!status) return null;
+  if (status.enrollment === "unenrolled") {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+        Compliance not enrolled
+      </span>
+    );
+  }
+  if (status.is_compliant) return null;
   return (
     <span className="inline-flex items-center gap-1 text-[11px] font-medium text-warning">
       <AlertTriangle className="h-3 w-3" />

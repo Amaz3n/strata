@@ -46,7 +46,7 @@ function DeferredTabAttention({
     }
   } else if (tab.label === "Compliance") {
     const severe = value.complianceMissing > 0 || value.complianceExpired > 0;
-    if (value.complianceReady === false || value.w9NeedsAction) {
+    if (value.complianceState === "action_required" || value.w9NeedsAction) {
       attention = severe ? "destructive" : "warning";
       label = [
         value.complianceMissing > 0 ? `${value.complianceMissing} missing` : null,

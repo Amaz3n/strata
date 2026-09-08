@@ -16,6 +16,8 @@ export type CashFlowCategory = "operating" | "investing" | "financing"
 export type CashFlowCounterpart = {
   /** Gross size of the line — debit plus credit, since only magnitude matters here. */
   weightCents: number
+  /** Credit minus debit: the signed cash offset, when read from an actual journal. */
+  cashOffsetCents?: number
   category: CashFlowCategory | "cash" | null
 }
 
@@ -40,9 +42,24 @@ function emptyAllocation(): CashFlowAllocation {
 export function allocateCashMovement(
   cashMovementCents: number,
   counterparts: CashFlowCounterpart[],
+  sourceType?: string | null,
 ): CashFlowAllocation {
   const allocation = emptyAllocation()
   if (cashMovementCents === 0) return allocation
+  if (sourceType === "books_fixed_asset") {
+    allocation.investing = cashMovementCents
+    return allocation
+  }
+  // Signed counterparts preserve principal/interest splits and cancel noncash
+  // debits/credits. Gross weighting distorts compound entries such as disposals.
+  if (counterparts.length > 0 && counterparts.every((row) => row.cashOffsetCents !== undefined)) {
+    for (const row of counterparts) {
+      const category = row.category === "investing" || row.category === "financing" ? row.category : "operating"
+      allocation[category] += row.cashOffsetCents ?? 0
+    }
+    if (allocation.operating + allocation.investing + allocation.financing !== cashMovementCents) throw new Error("Cash entry counterparts do not reconcile")
+    return allocation
+  }
 
   const weighted = counterparts.filter((counterpart) => counterpart.weightCents > 0)
   const totalWeight = weighted.reduce((sum, counterpart) => sum + counterpart.weightCents, 0)

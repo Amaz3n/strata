@@ -1,3 +1,4 @@
+import { z } from "zod"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { createHash, randomBytes } from "node:crypto"
@@ -479,24 +480,14 @@ export async function createOrgMemberInvite(input: {
   return data
 }
 
-async function mapMfaEnabledByUser(serviceClient: SupabaseClient, userIds: string[]) {
+async function mapMfaEnabledByUser(serviceClient: SupabaseClient, userIds: string[], orgId: string) {
   if (userIds.length === 0) return {}
-  const output: Record<string, boolean> = {}
-
-  await Promise.all(
-    userIds.map(async (memberUserId) => {
-      const { data, error } = await serviceClient.auth.admin.mfa.listFactors({ userId: memberUserId })
-      if (error) {
-        console.error("Failed to load member MFA factors", { memberUserId, error })
-        output[memberUserId] = false
-        return
-      }
-
-      output[memberUserId] = (data.factors ?? []).some((factor) => factor.status === "verified")
-    }),
-  )
-
-  return output
+  const { data, error } = await serviceClient.rpc("get_org_member_mfa_status", {
+    p_org_id: orgId, p_user_ids: userIds,
+  })
+  if (error) throw new Error("Unable to load team security status.")
+  const rows = z.array(z.object({ user_id: z.string(), enabled: z.boolean() })).parse(data)
+  return Object.fromEntries(rows.map((row) => [row.user_id, row.enabled]))
 }
 
 async function mapPermissionOverrides(serviceClient: SupabaseClient, membershipIds: string[]) {
@@ -709,7 +700,7 @@ function mapTeamMember(
 
 export async function listTeamMembers(
   orgId?: string,
-  options?: { includeProjectCounts?: boolean },
+  options?: { includeProjectCounts?: boolean; offset?: number; limit?: number },
 ): Promise<TeamMember[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const memberDecision = await authorize({
@@ -736,7 +727,7 @@ export async function listTeamMembers(
   const includeProjectCounts = options?.includeProjectCounts ?? true
   const projectCounts = includeProjectCounts ? await mapProjectCounts(serviceClient, resolvedOrgId) : {}
 
-  const { data, error } = await serviceClient
+  let query = serviceClient
     .from("memberships")
     .select(
       `
@@ -749,6 +740,12 @@ export async function listTeamMembers(
     )
     .eq("org_id", resolvedOrgId)
     .order("created_at", { ascending: true })
+    .order("id", { ascending: true })
+  if (options?.limit) {
+    const offset = Math.max(0, options.offset ?? 0)
+    query = query.range(offset, offset + options.limit - 1)
+  }
+  const { data, error } = await query
 
   if (error) {
     throw new Error(`Failed to list team members: ${error.message}`)
@@ -760,10 +757,12 @@ export async function listTeamMembers(
       return user?.id as string | undefined
     })
     .filter((id: string | undefined): id is string => Boolean(id))
-  const mfaEnabledByUser = await mapMfaEnabledByUser(serviceClient, userIds)
   const membershipIds = (data ?? []).map((row: any) => row.id).filter(Boolean)
-  const permissionOverridesByMembership = await mapPermissionOverrides(serviceClient, membershipIds)
-  const divisionIdsByMembership = await mapMembershipDivisions(serviceClient, membershipIds)
+  const [mfaEnabledByUser, permissionOverridesByMembership, divisionIdsByMembership] = await Promise.all([
+    mapMfaEnabledByUser(serviceClient, userIds, resolvedOrgId),
+    mapPermissionOverrides(serviceClient, membershipIds),
+    mapMembershipDivisions(serviceClient, membershipIds),
+  ])
 
   return (data ?? []).map((row) => mapTeamMember(row, projectCounts, mfaEnabledByUser, permissionOverridesByMembership, divisionIdsByMembership))
 }
@@ -1020,7 +1019,7 @@ export async function inviteTeamMember({
 
   const projectCounts = await mapProjectCounts(serviceClient, resolvedOrgId)
   const selectedUser = Array.isArray((data as any).user) ? (data as any).user[0] : (data as any).user
-  const mfaEnabledByUser = await mapMfaEnabledByUser(serviceClient, [selectedUser?.id].filter(Boolean))
+  const mfaEnabledByUser = await mapMfaEnabledByUser(serviceClient, [selectedUser?.id].filter(Boolean), resolvedOrgId)
   return mapTeamMember(
     data,
     projectCounts,
@@ -1126,7 +1125,7 @@ export async function updateMemberRole({
 
   const projectCounts = await mapProjectCounts(supabase, resolvedOrgId)
   const selectedUser = Array.isArray((data as any).user) ? (data as any).user[0] : (data as any).user
-  const mfaEnabledByUser = await mapMfaEnabledByUser(serviceClient, [selectedUser?.id].filter(Boolean))
+  const mfaEnabledByUser = await mapMfaEnabledByUser(serviceClient, [selectedUser?.id].filter(Boolean), resolvedOrgId)
   return mapTeamMember(
     data,
     projectCounts,
@@ -1190,7 +1189,7 @@ async function updateMemberStatus(membershipId: string, status: "active" | "invi
 
   const projectCounts = await mapProjectCounts(supabase, resolvedOrgId)
   const selectedUser = Array.isArray((data as any).user) ? (data as any).user[0] : (data as any).user
-  const mfaEnabledByUser = await mapMfaEnabledByUser(createServiceSupabaseClient(), [selectedUser?.id].filter(Boolean))
+  const mfaEnabledByUser = await mapMfaEnabledByUser(createServiceSupabaseClient(), [selectedUser?.id].filter(Boolean), resolvedOrgId)
   return mapTeamMember(data, projectCounts, mfaEnabledByUser)
 }
 
@@ -1491,4 +1490,18 @@ export async function acceptInviteByToken(
     orgId: inviteDetails.orgId,
     orgName: inviteDetails.orgName,
   }
+}
+
+/** Signer pickers need identity only, never the roster's security or permission enrichment. */
+export async function listOrganizationSigners(): Promise<Pick<TeamMember, "user" | "status">[]> {
+  const context = await requireOrgContext()
+  const { data, error } = await context.supabase.from("memberships")
+    .select("status,user:app_users!memberships_user_id_fkey(id,email,full_name,avatar_url)")
+    .eq("org_id", context.orgId).eq("status", "active").order("id").limit(1000)
+  if (error) throw new Error("Unable to load organization signers.")
+  return (data ?? []).map((row) => {
+    const user = Array.isArray(row.user) ? row.user[0] : row.user
+    if (!user) throw new Error("Unable to load member identity.")
+    return { status: "active", user: { id: user.id, email: user.email, full_name: user.full_name ?? user.email, avatar_url: user.avatar_url ?? undefined } }
+  })
 }

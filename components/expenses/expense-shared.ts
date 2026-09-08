@@ -13,6 +13,7 @@ export interface ProjectExpenseLine {
   amount_cents: number
   qbo_expense_account_id?: string | null
   qbo_expense_account_name?: string | null
+  metadata?: { arc_books_gl_account_id?: string | null } | null
   sort_order?: number | null
 }
 

@@ -1,5 +1,6 @@
 import "server-only"
 
+import { payableIntakeError } from "@/lib/payables/intake"
 import { z } from "zod"
 
 import {
@@ -437,7 +438,7 @@ function extractionError(
   const noun = kind === "invoice" ? "Invoice" : "Receipt"
   switch (result.reason) {
     case "not_configured":
-      return new Error(`${noun} scanning is not configured. Set a model for document extraction in Admin -> AI.`)
+      return new Error(`${noun} scanning is not configured: ${payableIntakeError(result.message)} Check the provider API key and Admin → AI settings.`)
     case "disabled":
       return new Error("AI features are turned off for this organization.")
     case "timeout":
@@ -449,7 +450,7 @@ function extractionError(
     default:
       // Provider-side problems (model unavailable, quota, rate limit) are the
       // operator's to fix, so say where to look rather than blaming the file.
-      return new Error(`Could not scan ${kind === "invoice" ? "invoice" : "receipt"} — the AI provider rejected the request. Check Admin -> AI for the configured models.`)
+      return new Error(`AI provider error: ${payableIntakeError(result.message)}. Check Admin → AI.`)
   }
 }
 
@@ -462,33 +463,26 @@ function extractionError(
  */
 export async function extractPayableInvoiceFromFile(
   file: File,
-  options: { orgId?: string; entityId?: string; projectId?: string | null; companyId?: string | null } = {},
+  options: { orgId?: string; entityId?: string; projectId?: string | null; companyId?: string | null; onPartial?: (value: unknown) => void | Promise<void> } = {},
 ): Promise<ExtractedPayableInvoice> {
-  const filePart = await toFilePart(file, "an invoice")
-
-  // Everything Arc already knows, loaded before the model looks at the page.
-  // Best-effort: a failure here means an unaided read, not a failed scan.
-  let expectations = EMPTY_EXPECTATIONS
-  if (options.orgId) {
-    expectations = await loadExtractionExpectations({
-      supabase: createServiceSupabaseClient(),
-      orgId: options.orgId,
-      projectId: options.projectId ?? null,
-    }).catch(() => EMPTY_EXPECTATIONS)
-  }
+  const [filePart, expectations, vendorHints] = await Promise.all([
+    toFilePart(file, "an invoice"),
+    options.orgId ? loadExtractionExpectations({
+      supabase: createServiceSupabaseClient(), orgId: options.orgId, projectId: options.projectId ?? null,
+    }).catch(() => EMPTY_EXPECTATIONS) : Promise.resolve(EMPTY_EXPECTATIONS),
+    options.orgId && options.companyId ? loadVendorExtractionHints({
+      supabase: createServiceSupabaseClient(), orgId: options.orgId, companyId: options.companyId,
+    }).catch(() => "") : Promise.resolve(""),
+  ])
   const expectationBlock = formatExpectationsForPrompt(expectations)
-  // What a human previously had to fix on this vendor's invoices.
-  const vendorHints = options.orgId && options.companyId
-    ? await loadVendorExtractionHints({
-        supabase: createServiceSupabaseClient(),
-        orgId: options.orgId,
-        companyId: options.companyId,
-      }).catch(() => "")
-    : ""
 
   const result = await runAiObject({
     feature: "document_extraction",
+    maxAttemptsPerTier: 1,
+    timeoutMs: 35_000,
+    totalTimeoutMs: 90_000,
     schema: invoiceSchema,
+    onPartial: options.onPartial,
     system: INVOICE_SYSTEM,
     prompt: [
       "First decide what this document is, then extract it.",

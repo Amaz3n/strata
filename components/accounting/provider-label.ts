@@ -14,7 +14,7 @@ const SHORT_LABELS: Record<AccountingProviderKey, string> = {
  * Label for surfaces that genuinely cannot know which provider is connected.
  * Derived from the catalog so the string lives in exactly one place.
  */
-export const DEFAULT_ACCOUNTING_PROVIDER_LABEL = ACCOUNTING_PROVIDERS.qbo.name
+export const DEFAULT_ACCOUNTING_PROVIDER_LABEL = "Accounting"
 
 export function isAccountingProviderKey(value: string | null | undefined): value is AccountingProviderKey {
   return typeof value === "string" && value in ACCOUNTING_PROVIDERS
@@ -26,6 +26,7 @@ export function isAccountingProviderKey(value: string | null | undefined): value
  * are not in the catalog (Arc Books) or connections carrying a custom name.
  */
 export function accountingProviderLabel(provider?: string | null, fallback?: string | null): string {
+  if (provider === "arc_books") return "Arc Books"
   if (isAccountingProviderKey(provider)) return ACCOUNTING_PROVIDERS[provider].name
   const trimmed = fallback?.trim()
   return trimmed ? trimmed : DEFAULT_ACCOUNTING_PROVIDER_LABEL
@@ -33,7 +34,8 @@ export function accountingProviderLabel(provider?: string | null, fallback?: str
 
 /** Short form of {@link accountingProviderLabel}, for chips and id prefixes. */
 export function accountingProviderShortLabel(provider?: string | null, fallback?: string | null): string {
+  if (provider === "arc_books") return "Arc Books"
   if (isAccountingProviderKey(provider)) return SHORT_LABELS[provider]
   const trimmed = fallback?.trim()
-  return trimmed ? trimmed : SHORT_LABELS.qbo
+  return trimmed ? trimmed : "Accounting"
 }

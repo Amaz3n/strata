@@ -4,7 +4,7 @@ import { z } from "zod"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
-import { requireAuthorization } from "@/lib/services/authorization"
+import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access"
 import { requireBooksWorkspaceEnabled } from "@/lib/services/books/module"
 import { GL_ACCOUNT_SUBTYPES, GL_ACCOUNT_SUBTYPE_TYPES, normalBalanceForSubtype } from "@/lib/services/books/types"
 import { requireOrgContext } from "@/lib/services/context"

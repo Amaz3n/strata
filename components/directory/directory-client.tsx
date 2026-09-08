@@ -140,6 +140,7 @@ function DeferredComplianceAlert({
   const data = use(vendorData);
   return (
     <ComplianceAlert
+      reviewQueue={data.complianceReviewQueue}
       companies={data.complianceWatchCompanies}
       complianceStatusByCompanyId={data.complianceStatusByCompanyId}
       watchTruncated={data.complianceWatchTruncated}

@@ -849,16 +849,17 @@ async function resolveUniqueFileName({
   return candidate
 }
 
-async function resolveUploadFileName(params: {
+export async function resolveUploadFileName(params: {
   supabase: SupabaseClient
   orgId: string
   projectId?: string | null
   folderPath?: string | null
   fileName: string
   checksum?: string | null
+  allowDuplicateContent?: boolean
 }): Promise<string> {
   const [, resolvedFileName] = await Promise.all([
-    assertNoDuplicateFile(params),
+    params.allowDuplicateContent ? Promise.resolve() : assertNoDuplicateFile(params),
     resolveUniqueFileName(params),
   ])
   return resolvedFileName
@@ -918,6 +919,8 @@ async function persistUploadedFile(input: PersistUploadedFileInput): Promise<Fil
 }
 
 export interface CreateFileFromUploadInput {
+  /** Invoice intake keeps duplicate detection advisory; filenames still remain unique. */
+  allowDuplicateContent?: boolean
   file: File
   projectId?: string | null
   category?: FileCategory
@@ -971,6 +974,7 @@ export async function createFileFromUpload(
     folderPath,
     fileName: input.file.name,
     checksum,
+    allowDuplicateContent: input.allowDuplicateContent,
   })
 
   const storagePath = buildFilesStoragePath({ orgId: resolvedOrgId, projectId, fileName })

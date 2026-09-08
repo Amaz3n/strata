@@ -54,12 +54,6 @@ const BLOCKING_STATES = new Set<ComplianceRequirementState>([
   "rejected",
 ])
 
-function daysUntil(date: string): number {
-  const parsed = parseLocalDate(date)
-  if (!parsed) return Number.POSITIVE_INFINITY
-  return Math.ceil((parsed.getTime() - Date.now()) / 86_400_000)
-}
-
 function formatDay(value?: string | null) {
   const parsed = parseLocalDate(value)
   if (!parsed) return null
@@ -109,6 +103,7 @@ export function ComplianceClient({
           deficiencies: item.deficiency ? [item.deficiency.message] : [],
           expiresIn: item.days_until_expiry,
           state: item.state,
+          renewalPending: Boolean(item.pending_replacement),
           history: item.history,
         }
       }),
@@ -359,7 +354,12 @@ export function ComplianceClient({
                         </a>
                       </Button>
                     ) : null}
-                    {canUpload && state !== "waived" ? (
+                    {/* A renewal already with the builder is not something to
+                        send again — offering Replace here is how a vendor ends
+                        up submitting the same certificate three times. */}
+                    {row.renewalPending ? (
+                      <span className="text-xs text-primary">Renewal sent</span>
+                    ) : canUpload && state !== "waived" ? (
                       <Button
                         size="sm"
                         variant={state === "met" ? "ghost" : "outline"}

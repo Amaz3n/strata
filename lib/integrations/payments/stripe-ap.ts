@@ -28,6 +28,30 @@ const PAYOUT_CHARGE_CONCURRENCY = 8
 /** Rail movements that are not a payment, a transfer, or a payout. */
 const FEE_ADJUSTMENT_BALANCE_TYPES = ["stripe_fee", "adjustment", "reserve_transaction", "payout_failure"] as const
 
+const DEFINITIVE_SUBMISSION_CODES = new Set([
+  "account_closed",
+  "bank_account_unusable",
+  "customer_cash_balance_transactional_currency_mismatch",
+  "payment_method_customer_decline",
+  "payment_method_microdeposit_verification_attempts_exceeded",
+  "payment_method_microdeposit_verification_timeout",
+  "payment_method_not_available",
+  "payment_method_provider_decline",
+  "payment_method_unactivated",
+  "resource_missing",
+])
+
+/** Whether retrying the same idempotency key is recovery or a known rejection. */
+export function classifyStripeSubmissionError(error: unknown): "definitive" | "ambiguous" {
+  if (!error || typeof error !== "object") return "ambiguous"
+  const code = typeof Reflect.get(error, "code") === "string" ? Reflect.get(error, "code") : null
+  const declineCode = typeof Reflect.get(error, "decline_code") === "string" ? Reflect.get(error, "decline_code") : null
+  const type = typeof Reflect.get(error, "type") === "string" ? Reflect.get(error, "type") : null
+  if ((code && DEFINITIVE_SUBMISSION_CODES.has(code)) || (declineCode && DEFINITIVE_SUBMISSION_CODES.has(declineCode))) return "definitive"
+  if (type === "StripeCardError" || type === "StripeInvalidRequestError") return "definitive"
+  return "ambiguous"
+}
+
 let stripeSingleton: Stripe | null = null
 
 function stripeClient() {
@@ -329,12 +353,54 @@ export const stripeApProvider: PaymentRailProvider = {
       // Binds the transfer to the specific charge that funded it, so Stripe
       // draws on those funds rather than whatever happens to be on the platform
       // balance — and so a reconciliation can trace vendor money to its debit.
-      ...(input.providerChargeId ? { source_transaction: input.providerChargeId } : {}),
+      source_transaction: input.providerChargeId,
       transfer_group: input.transferGroup,
       description: input.memo,
       metadata: { ...input.metadata, arc_product: "vendor_payments" },
     }, { idempotencyKey: input.idempotencyKey })
     return { provider: "stripe", providerTransferId: transfer.id }
+  },
+
+  async reverseVendorTransfer(input) {
+    assertStripeExecutionMode()
+    const reversal = await stripeClient().transfers.createReversal(
+      input.providerTransferId,
+      { metadata: { disbursement_id: input.disbursementId, arc_product: "vendor_payments" } },
+      { idempotencyKey: input.idempotencyKey },
+    )
+    return { providerReversalId: reversal.id }
+  },
+
+  async findVendorTransfer(input) {
+    // A run can contain more than one Stripe page of vendors. Walk the whole
+    // transfer group: missing an older transfer on reclaim would turn the
+    // adoption safety check into a second payment.
+    for await (const transfer of stripeClient().transfers.list({ transfer_group: input.transferGroup, limit: 100 })) {
+      if (transfer.metadata.disbursement_id === input.disbursementId) {
+        return { provider: "stripe", providerTransferId: transfer.id }
+      }
+    }
+    return null
+  },
+
+  async retrievePlatformPayoutSettings() {
+    const account = await stripeClient().accounts.retrieve()
+    if (account.deleted) throw new Error("Stripe platform account was deleted")
+    return { interval: account.settings?.payouts?.schedule?.interval ?? "unknown" }
+  },
+
+  async resolveDisbursementReference(input) {
+    const intent = await stripeClient().paymentIntents.retrieve(input.providerPaymentId)
+    return {
+      disbursementId: intent.metadata.disbursement_id || null,
+      orgId: intent.metadata.org_id || null,
+      arcProduct: intent.metadata.arc_product || null,
+    }
+  },
+
+  async resolvePaymentChargeId(input) {
+    const intent = await stripeClient().paymentIntents.retrieve(input.providerPaymentId)
+    return typeof intent.latest_charge === "string" ? intent.latest_charge : intent.latest_charge?.id ?? null
   },
 
   async submitPlatformCharge(input) {

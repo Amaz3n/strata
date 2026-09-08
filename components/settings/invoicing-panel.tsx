@@ -1,5 +1,7 @@
 "use client"
 
+import { useSettingsDrafts } from "./settings-drafts"
+
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react"
 import { addDays, format } from "date-fns"
 import { toast } from "sonner"
@@ -8,7 +10,6 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
-import { Spinner } from "@/components/ui/spinner"
 import { SettingsError, SettingsField } from "@/components/settings/settings-section"
 import {
   ArcInvoiceDocument,
@@ -44,13 +45,6 @@ type FormState = {
   defaultInvoiceNote: string
 }
 
-const EMPTY_FORM: FormState = {
-  billingEmail: "",
-  address: "",
-  defaultPaymentTermsDays: 15,
-  defaultInvoiceNote: "",
-}
-
 function toForm(data: Awaited<ReturnType<typeof getOrganizationSettingsAction>>): FormState {
   return {
     billingEmail: data.billingEmail ?? "",
@@ -62,16 +56,18 @@ function toForm(data: Awaited<ReturnType<typeof getOrganizationSettingsAction>>)
 
 const accordionTriggerClass = "py-3.5 hover:no-underline"
 
-export function InvoicingPanel() {
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
-  const [canManage, setCanManage] = useState(false)
-  const [orgName, setOrgName] = useState("")
+export function InvoicingPanel({ initialSettings, onSettingsSaved }: {
+  initialSettings: Awaited<ReturnType<typeof getOrganizationSettingsAction>>
+  onSettingsSaved: (settings: Awaited<ReturnType<typeof getOrganizationSettingsAction>>) => void
+}) {
+  const drafts = useSettingsDrafts()
+  const [canManage, setCanManage] = useState(initialSettings.canManageOrganization)
+  const [orgName, setOrgName] = useState(initialSettings.name)
   // Pulled from the org; the logo is swapped on the Organization tab, not here.
-  const [logoUrl, setLogoUrl] = useState<string | null>(null)
-  const [form, setForm] = useState<FormState>(EMPTY_FORM)
+  const [logoUrl, setLogoUrl] = useState<string | null>(initialSettings.logoUrl)
+  const [form, setForm] = useState<FormState>(() => drafts.get(initialSettings.id) ?? toForm(initialSettings))
 
-  const [dirty, setDirty] = useState(false)
+  const [dirty, setDirty] = useState(() => Boolean(drafts.get(initialSettings.id)))
   const [saveError, setSaveError] = useState<string | null>(null)
   const [isSaving, startSaving] = useTransition()
 
@@ -84,46 +80,19 @@ export function InvoicingPanel() {
   }, [])
 
   useEffect(() => {
-    let active = true
-    setLoading(true)
-    setLoadError(null)
-    getOrganizationSettingsAction()
-      .then((data) => {
-        if (active) applyData(data)
-      })
-      .catch((error) => {
-        console.error("Failed to load invoicing settings", error)
-        if (active) setLoadError("Unable to load invoicing settings.")
-      })
-      .finally(() => {
-        if (active) setLoading(false)
-      })
-    return () => {
-      active = false
-    }
-  }, [applyData])
-
-  // Publish unsaved-edit state on window.__arcSettingsDirty — the settings nav and
-  // sidebar read it to guard navigation — and warn before a full page unload.
-  useEffect(() => {
-    const w = window as typeof window & { __arcSettingsDirty?: boolean }
-    w.__arcSettingsDirty = dirty
-    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      event.preventDefault()
-      event.returnValue = ""
-    }
-    if (dirty) window.addEventListener("beforeunload", handleBeforeUnload)
-    return () => {
-      window.removeEventListener("beforeunload", handleBeforeUnload)
-      w.__arcSettingsDirty = false
-    }
-  }, [dirty])
+    setOrgName(initialSettings.name)
+    setLogoUrl(initialSettings.logoUrl)
+    setCanManage(initialSettings.canManageOrganization)
+    if (!drafts.get(initialSettings.id)) setForm(toForm(initialSettings))
+  }, [initialSettings, drafts])
 
   const updateField = useCallback(<K extends keyof FormState>(field: K, value: FormState[K]) => {
-    setForm((prev) => ({ ...prev, [field]: value }))
+    const next = { ...form, [field]: value }
+    drafts.set(initialSettings.id, next)
+    setForm(next)
     setDirty(true)
     setSaveError(null)
-  }, [])
+  }, [form, drafts, initialSettings.id])
 
   const handleSave = () => {
     if (!canManage || isSaving) return
@@ -139,12 +108,9 @@ export function InvoicingPanel() {
             defaultInvoiceNote: form.defaultInvoiceNote,
           }),
         )
-        if (outcome && "error" in outcome && outcome.error) {
-          setSaveError(outcome.error)
-          toast.error("Couldn't save invoice settings", { description: outcome.error })
-          return
-        }
-        applyData(await getOrganizationSettingsAction())
+        drafts.clear(initialSettings.id)
+        applyData(outcome.settings)
+        onSettingsSaved(outcome.settings)
         toast.success("Invoice settings saved")
       } catch (error) {
         const message = error instanceof Error ? error.message : "Please try again."
@@ -203,24 +169,7 @@ export function InvoicingPanel() {
     const observer = new ResizeObserver(update)
     observer.observe(el)
     return () => observer.disconnect()
-  }, [loading])
-
-  if (loading) {
-    return (
-      <div className="flex min-h-0 flex-1 items-center justify-center gap-3 text-muted-foreground">
-        <Spinner className="size-4" />
-        <span className="text-sm">Loading invoice settings…</span>
-      </div>
-    )
-  }
-
-  if (loadError) {
-    return (
-      <div className="flex min-h-0 flex-1 items-center justify-center px-6">
-        <SettingsError>{loadError}</SettingsError>
-      </div>
-    )
-  }
+  }, [])
 
   return (
     // Mobile stacks and scrolls as one page; lg splits into two independently-scrolling panes.
@@ -249,7 +198,7 @@ export function InvoicingPanel() {
                       value={form.billingEmail}
                       onChange={(event) => updateField("billingEmail", event.target.value)}
                       placeholder="billing@company.com"
-                      disabled={!canManage}
+                      disabled={!canManage || isSaving}
                     />
                   </SettingsField>
                   <SettingsField
@@ -264,7 +213,7 @@ export function InvoicingPanel() {
                       placeholder={"Your Company LLC\n123 Main St, Suite 400\nNaples, FL 34102"}
                       rows={4}
                       className="min-h-[92px]"
-                      disabled={!canManage}
+                      disabled={!canManage || isSaving}
                     />
                   </SettingsField>
                 </div>
@@ -292,7 +241,7 @@ export function InvoicingPanel() {
                         value={form.defaultPaymentTermsDays}
                         onChange={(event) => updateField("defaultPaymentTermsDays", Number(event.target.value || 0))}
                         className="w-20 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                        disabled={!canManage}
+                        disabled={!canManage || isSaving}
                       />
                       <span className="text-sm text-muted-foreground">days</span>
                     </div>
@@ -308,7 +257,7 @@ export function InvoicingPanel() {
                       onChange={(event) => updateField("defaultInvoiceNote", event.target.value)}
                       placeholder={"Make checks payable to Your Company LLC.\nACH: Routing 000000000 · Account 0000000000"}
                       className="min-h-[92px]"
-                      disabled={!canManage}
+                      disabled={!canManage || isSaving}
                     />
                   </SettingsField>
                 </div>

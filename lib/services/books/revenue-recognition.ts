@@ -71,7 +71,7 @@ async function loadRecognizedRevenueByProject(orgId: string, asOf: string) {
       .select("id, project_id, debit_cents, credit_cents, entry:journal_entries!inner(status, entry_date), account:gl_accounts!inner(code)")
       .eq("org_id", orgId)
       .eq("account.code", SYSTEM_ACCOUNT_CODES.constructionRevenue)
-      .eq("entry.status", "posted")
+      .in("entry.status", ["posted", "reversed"])
       .lte("entry.entry_date", asOf)
       .order("id", { ascending: true })
       .range(from, from + RECOGNIZED_REVENUE_PAGE_SIZE - 1)

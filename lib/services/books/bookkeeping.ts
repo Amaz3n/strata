@@ -3,11 +3,10 @@ import "server-only";
 import { z } from "zod";
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
-import { requireAuthorization } from "@/lib/services/authorization";
+import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access";
 import { booksDigest } from "@/lib/services/books/hash";
 import {
   postBooksJournalEntry,
-  postBooksJournalEntryForService,
 } from "@/lib/services/books/ledger";
 import type {
   JournalEntryDraft,
@@ -529,111 +528,25 @@ export async function createRecurringPostingTemplate(input: {
   return templateId;
 }
 
-function nextRunDate(
-  current: string,
-  frequency: "weekly" | "monthly" | "quarterly" | "annually",
-) {
-  const date = new Date(`${current}T00:00:00Z`);
-  if (frequency === "weekly") date.setUTCDate(date.getUTCDate() + 7);
-  else if (frequency === "monthly") date.setUTCMonth(date.getUTCMonth() + 1);
-  else if (frequency === "quarterly") date.setUTCMonth(date.getUTCMonth() + 3);
-  else date.setUTCFullYear(date.getUTCFullYear() + 1);
-  return date.toISOString().slice(0, 10);
-}
-
-export async function processRecurringPostings(
-  asOf = new Date().toISOString().slice(0, 10),
-) {
+export async function processRecurringPostings(asOf = new Date().toISOString().slice(0, 10)) {
   const service = createServiceSupabaseClient();
-  const { data, error } = await service
-    .from("recurring_posting_templates")
-    .select(
-      "id, org_id, name, memo, frequency, next_run_on, end_on, auto_post, requires_approval, last_notified_on, lines:recurring_posting_lines(debit_cents, credit_cents, description, project_id, company_id, account:gl_accounts(code))",
-    )
-    .eq("status", "active")
-    .lte("next_run_on", asOf)
-    .limit(250);
-  if (error)
-    throw new Error(`Failed to load recurring postings: ${error.message}`);
-  const orgIds = Array.from(
-    new Set((data ?? []).map((template) => template.org_id)),
-  );
-  const { data: settingsRows, error: settingsError } =
-    orgIds.length > 0
-      ? await service
-          .from("books_settings")
-          .select("org_id, active_policy_version")
-          .eq("workspace_enabled", true)
-          .in("org_id", orgIds)
-      : { data: [], error: null };
-  if (settingsError)
-    throw new Error(
-      `Failed to load recurring posting policies: ${settingsError.message}`,
-    );
-  const policyByOrg = new Map(
-    (settingsRows ?? []).map((settings) => [
-      settings.org_id,
-      Number(settings.active_policy_version),
-    ]),
-  );
+  const { data, error } = await service.from("recurring_posting_templates").select("id,org_id,name")
+    .eq("status", "active").lte("next_run_on", asOf).order("next_run_on").order("id").limit(250);
+  if (error) throw new Error(`Failed to load recurring postings: ${error.message}`);
   let posted = 0;
   let awaitingApproval = 0;
   for (const template of data ?? []) {
-    if (!policyByOrg.has(template.org_id)) continue;
-    if (!template.auto_post || template.requires_approval) {
-      if (template.last_notified_on === template.next_run_on) continue;
-      await recordEvent({
-        orgId: template.org_id,
-        eventType: "books.recurring_posting_due",
-        entityType: "recurring_posting_template",
-        entityId: template.id,
-        payload: { name: template.name, due_on: template.next_run_on },
-        channel: "notification",
-      });
-      await service
-        .from("recurring_posting_templates")
-        .update({ last_notified_on: template.next_run_on })
-        .eq("org_id", template.org_id)
-        .eq("id", template.id)
-        .eq("next_run_on", template.next_run_on);
-      awaitingApproval += 1;
-      continue;
-    }
-    const lines = (template.lines ?? []).map((row) => {
-      const account = Array.isArray(row.account) ? row.account[0] : row.account;
-      if (!account) throw new Error("Recurring line has no GL account");
-      return {
-        accountCode: account.code,
-        debitCents: Number(row.debit_cents),
-        creditCents: Number(row.credit_cents),
-        description: row.description ?? undefined,
-        projectId: row.project_id ?? undefined,
-        companyId: row.company_id ?? undefined,
-      };
+    const { data: occurrence, error: occurrenceError } = await service.rpc("generate_books_recurring_occurrence", {
+      p_org_id: template.org_id, p_template_id: template.id, p_as_of: asOf,
     });
-    await postBooksJournalEntryForService(
-      {
-        entryDate: template.next_run_on,
-        entryKind: "adjusting",
-        memo: template.memo,
-        postingKey: `recurring:${template.id}:${template.next_run_on}`,
-        projectionVersion: 1,
-        policyVersion: policyByOrg.get(template.org_id) ?? 1,
-        sourceType: "recurring_posting_template",
-        sourceId: template.id,
-        lines,
-      },
-      template.org_id,
-    );
-    const next = nextRunDate(template.next_run_on, template.frequency);
-    const completed = Boolean(template.end_on && next > template.end_on);
-    await service
-      .from("recurring_posting_templates")
-      .update({ next_run_on: next, status: completed ? "completed" : "active" })
-      .eq("org_id", template.org_id)
-      .eq("id", template.id)
-      .eq("next_run_on", template.next_run_on);
-    posted += 1;
+    if (occurrenceError) throw new Error(`Failed to generate ${template.name}: ${occurrenceError.message}`);
+    const result = z.object({ status: z.enum(["not_due", "completed", "disabled", "posted", "awaiting_approval"]), id: z.string().uuid().optional(), due_on: z.string().optional() }).parse(occurrence);
+    if (result.status === "posted") posted += 1;
+    if (result.status === "awaiting_approval") {
+      awaitingApproval += 1;
+      await recordEvent({ orgId: template.org_id, eventType: "books.journal_proposed", entityType: "books_journal_proposal", entityId: result.id,
+        payload: { recurring_template_id: template.id, name: template.name, due_on: result.due_on }, channel: "notification" });
+    }
   }
   return { attempted: data?.length ?? 0, posted, awaitingApproval };
 }

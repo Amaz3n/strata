@@ -1,7 +1,11 @@
 "use server"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
+import { validateBooksExpensePaymentAccount } from "@/lib/services/books/funding";
 import { revalidatePath } from "next/cache"
 
+import { getFinancialAccountingMode } from "@/lib/services/financial-accounting"
+import { accountingExperience } from "@/lib/financials/accounting-experience"
 import { requireOrgContext } from "@/lib/services/context"
 import { listProjects } from "@/lib/services/projects"
 import { getProjectFinancialSettings } from "@/lib/services/project-financial-setup"
@@ -19,7 +23,8 @@ import {
 import { accountingProviderLabel } from "@/components/accounting/provider-label"
 import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 import { getProvider } from "@/lib/integrations/accounting/registry"
-import { markAccountingEntityPending, processAccountingPush } from "@/lib/services/accounting-sync"
+import { requestAccountingPush } from "@/lib/services/accounting-requests"
+import { markAccountingEntityPending } from "@/lib/services/accounting-sync"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { accountingReference, buildAccountingCoding } from "@/lib/services/accounting-coding"
 import { recordCodingTouch } from "@/lib/services/books/coding-rules"
@@ -94,6 +99,7 @@ async function recordExpenseCodingTouch(input: {
 }
 
 export interface CreateMyExpenseInput {
+  booksPaymentAccountId?: string | null
   expenseDate: string
   amountDollars: number
   taxDollars?: number
@@ -127,6 +133,7 @@ export interface UpdateExpenseAccountingInput {
 }
 
 export interface UpdateExpenseDetailsInput {
+  booksPaymentAccountId?: string | null
   description?: string | null
   costCodeId?: string | null
   budgetLineId?: string | null
@@ -290,6 +297,7 @@ export async function createMyExpenseAction(projectId: string, formData: FormDat
         taxCents: moneyToCents(payload.taxDollars),
         vendorNameText: vendorName,
         paymentMethod: payload.paymentMethod ?? null,
+        booksPaymentAccountId: payload.booksPaymentAccountId ?? null,
         qboTransactionType: "purchase",
         qboExpenseAccountId: payload.qboExpenseAccountId ?? null,
         qboExpenseAccountName: payload.qboExpenseAccountName ?? null,
@@ -542,8 +550,11 @@ export async function listProjectExpensesPageAction(projectId: string, input: Ex
 }
 
 export async function getExpenseAccountingContextAction(projectId?: string) {
-      const { supabase, orgId } = await requireOrgContext()
-      const target = await resolveAccountingTarget({ orgId, projectId })
+      const { supabase, orgId, userId } = await requireOrgContext()
+      await requireAuthorization({ permission: "bill.read", userId, orgId, projectId, supabase, resourceType: "project_expense", resourceId: projectId ?? "expense-accounting" })
+      const accountingMode = await getFinancialAccountingMode(orgId, projectId)
+      const experience = accountingExperience(accountingMode)
+      const target = experience.canRequestExternalSync ? await resolveAccountingTarget({ orgId, projectId }) : null
       const settings = (target?.connection.settings as Record<string, any> | null) ?? {}
       const projectSettings = projectId ? await getProjectFinancialSettings({ supabase, orgId, projectId }).catch(() => null) : null
       const costCodesEnabled = projectSettings?.cost_codes_enabled ?? (await getOrgCostCodesEnabled(supabase, orgId))
@@ -559,13 +570,24 @@ export async function getExpenseAccountingContextAction(projectId?: string) {
       const budgetLines = !costCodesEnabled && projectId
         ? await loadProjectBudgetLines(supabase, orgId, projectId)
         : []
+      const { data: bookExpenseAccounts } = experience.showBooks
+        ? await createServiceSupabaseClient().from("gl_accounts").select("id, code, name")
+            .eq("org_id", orgId).eq("active", true).eq("account_type", "cogs").order("code")
+        : { data: [] }
+      const { data: bookPaymentAccounts, error: bookPaymentError } = experience.showBooks
+        ? await createServiceSupabaseClient().from("gl_accounts").select("id,code,name,account_type,subtype").eq("org_id",orgId).eq("active",true).in("subtype",["cash","credit_card"]).order("code")
+        : { data: [], error: null }
+      if (bookPaymentError) throw new Error(`Failed to load native payment accounts: ${bookPaymentError.message}`)
       const provider = target ? getProvider(target.connection.provider) : null
       const providerName = target ? accountingProviderLabel(target.connection.provider, target.connection.label) : null
       if (!target || !provider) {
         return {
+          accountingMode,
           qboConnected: false,
-          accountingProvider: null,
-          accountingProviderName: null,
+          accountingProvider: accountingMode.ledger === "official" ? "arc_books" : null,
+          accountingProviderName: accountingMode.ledger === "official" ? "Arc Books" : null,
+          bookExpenseAccounts: bookExpenseAccounts ?? [],
+          bookPaymentAccounts: bookPaymentAccounts ?? [],
           expenseAccounts: [],
           paymentAccounts: [],
           apAccounts: [],
@@ -587,9 +609,12 @@ export async function getExpenseAccountingContextAction(projectId?: string) {
         ])
 
         return {
+          accountingMode,
           qboConnected: true,
           accountingProvider: target.connection.provider,
           accountingProviderName: providerName,
+          bookExpenseAccounts: bookExpenseAccounts ?? [],
+          bookPaymentAccounts: bookPaymentAccounts ?? [],
           expenseAccounts,
           paymentAccounts,
           apAccounts,
@@ -607,9 +632,12 @@ export async function getExpenseAccountingContextAction(projectId?: string) {
         }
       } catch (error: any) {
         return {
+          accountingMode,
           qboConnected: true,
           accountingProvider: target.connection.provider,
           accountingProviderName: providerName,
+          bookExpenseAccounts: bookExpenseAccounts ?? [],
+          bookPaymentAccounts: bookPaymentAccounts ?? [],
           expenseAccounts: [],
           paymentAccounts: [],
           apAccounts: [],
@@ -765,7 +793,7 @@ export async function updateProjectExpenseWorkspaceAction(
 
       const { data: existing, error: existingError } = await supabase
         .from("project_expenses")
-        .select("id, cost_code_id, budget_line_id, accounting_coding")
+        .select("id, cost_code_id, budget_line_id, accounting_coding, metadata")
         .eq("org_id", orgId)
         .eq("project_id", projectId)
         .eq("id", expenseId)
@@ -793,6 +821,10 @@ export async function updateProjectExpenseWorkspaceAction(
       if ("expenseDate" in details && details.expenseDate) updateData.expense_date = details.expenseDate
       if ("paymentMethod" in details) updateData.payment_method = details.paymentMethod || null
 
+      if ("booksPaymentAccountId" in details) {
+        if (details.booksPaymentAccountId) await validateBooksExpensePaymentAccount(orgId, details.booksPaymentAccountId)
+        updateData.metadata = { ...(existing.metadata ?? {}), books_payment_account_id: details.booksPaymentAccountId || null }
+      }
       const existingCoding = (existing.accounting_coding as Record<string, unknown> | null) ?? {}
       const codingChanged =
         (existingCoding.transaction_type ?? null) !== (nextAccountingCoding.transaction_type ?? null) ||
@@ -885,7 +917,7 @@ export async function updateProjectExpenseAccountingAction(
         .eq("id", expenseId)
 
       if (error) {
-        throw new Error(`Failed to update QuickBooks coding: ${error.message}`)
+        throw new Error(`Failed to update accounting coding: ${error.message}`)
       }
 
       if (changed) {
@@ -901,7 +933,7 @@ export async function updateProjectExpenseAccountingAction(
 export async function syncProjectExpenseToQBOAction(projectId: string, expenseId: string) {
   return run(async () => {
       const { orgId } = await requireOrgContext()
-      const result = await processAccountingPush({ orgId, entityType: "project_expense", entityId: expenseId })
+      const result = await requestAccountingPush({ projectId, entityType: "project_expense", entityId: expenseId })
       revalidate(projectId)
       return result
   })

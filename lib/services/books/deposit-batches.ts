@@ -1,11 +1,10 @@
 import "server-only";
 
+import { z } from "zod";
+
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
-import { requireAuthorization } from "@/lib/services/authorization";
+import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access";
 import { requireOrgContext } from "@/lib/services/context";
-import { SYSTEM_ACCOUNT_CODES } from "@/lib/services/books/chart-of-accounts";
-import { postBooksJournalEntryForService } from "@/lib/services/books/ledger";
-import { confirmBankMatch } from "@/lib/services/books/bank-reconciliation";
 import { recordAudit } from "@/lib/services/audit";
 import { recordEvent } from "@/lib/services/events";
 
@@ -138,72 +137,15 @@ export async function createDepositBatch(input: {
   if (input.paymentIds.length === 0) throw new Error("Select at least one receipt");
   if (new Set(input.paymentIds).size !== input.paymentIds.length) throw new Error("A receipt can be selected only once");
   const service = createServiceSupabaseClient();
-  const [{ data: transaction }, { data: payments }, { data: settings }] = await Promise.all([
-    service
-      .from("bank_transactions")
-      .select("id,bank_account_id,transaction_date,amount_cents,direction,bank_account:bank_accounts(gl_account_id)")
-      .eq("org_id", context.orgId)
-      .eq("id", input.bankTransactionId)
-      .single(),
-    service
-      .from("payments")
-      .select("id,amount_cents,gross_cents,net_cents,fee_cents,status")
-      .eq("org_id", context.orgId)
-      .in("id", input.paymentIds),
-    service.from("books_settings").select("active_policy_version").eq("org_id", context.orgId).single(),
-  ]);
-  if (!transaction || transaction.direction !== "inflow") throw new Error("Choose an incoming bank deposit");
-  if ((payments ?? []).length !== input.paymentIds.length) throw new Error("One or more receipts were not found");
-  if ((payments ?? []).some((payment) => !["succeeded", "completed", "paid"].includes(payment.status))) throw new Error("Only settled receipts may be deposited");
-  const totalCents = (payments ?? []).reduce((sum, payment) => sum + depositAmount(payment), 0);
-  if (totalCents !== Number(transaction.amount_cents)) throw new Error("Selected receipts must equal the bank deposit exactly");
-  const bankAccount = Array.isArray(transaction.bank_account) ? transaction.bank_account[0] : transaction.bank_account;
-  if (!bankAccount?.gl_account_id) throw new Error("Map the bank account to a GL control account first");
-  const { data: controlAccount } = await service.from("gl_accounts").select("id,code").eq("org_id", context.orgId).eq("id", bankAccount.gl_account_id).single();
-  if (!controlAccount) throw new Error("The bank control account could not be resolved");
-
-  const { data: existing } = await service.from("books_deposit_batches").select("id,journal_entry_id,status").eq("org_id", context.orgId).eq("bank_transaction_id", transaction.id).maybeSingle();
-  let batchId = existing?.id as string | undefined;
-  if (!batchId) {
-    const { data: batch, error } = await service.from("books_deposit_batches").insert({
-      org_id: context.orgId,
-      bank_transaction_id: transaction.id,
-      bank_account_id: transaction.bank_account_id,
-      deposited_on: transaction.transaction_date,
-      total_cents: totalCents,
-      reference: input.reference?.trim() || null,
-      created_by: context.userId,
-    }).select("id").single();
-    if (error || !batch) throw new Error(`Failed to create deposit batch: ${error?.message}`);
-    batchId = batch.id;
-    const { error: itemError } = await service.from("books_deposit_batch_items").insert(input.paymentIds.map((paymentId) => ({ org_id: context.orgId, batch_id: batchId, payment_id: paymentId, amount_cents: depositAmount((payments ?? []).find((payment) => payment.id === paymentId)!) })));
-    if (itemError) throw new Error(`Failed to group deposit receipts: ${itemError.message}`);
-  } else if (existing?.status === "posted") {
-    return { id: batchId, duplicate: true };
-  }
-
-  const journal = await postBooksJournalEntryForService({
-    entryDate: transaction.transaction_date,
-    entryKind: "operational",
-    memo: `Bank deposit${input.reference?.trim() ? ` · ${input.reference.trim()}` : ""}`,
-    postingKey: `deposit_batch:${batchId}`,
-    projectionVersion: 1,
-    policyVersion: Number(settings?.active_policy_version ?? 1),
-    sourceType: "deposit_batch",
-    sourceId: batchId,
-    lines: [
-      { accountCode: controlAccount.code, debitCents: totalCents, creditCents: 0, description: "Bank deposit" },
-      { accountCode: SYSTEM_ACCOUNT_CODES.undepositedFunds, debitCents: 0, creditCents: totalCents, description: `${input.paymentIds.length} customer receipt${input.paymentIds.length === 1 ? "" : "s"}` },
-    ],
-  }, context.orgId);
-  const { data: bankLine } = await service.from("journal_lines").select("id").eq("org_id", context.orgId).eq("journal_entry_id", journal.id).eq("account_id", controlAccount.id).single();
-  if (!bankLine) throw new Error("The deposit bank line could not be matched");
-  await confirmBankMatch({ bankTransactionId: transaction.id, journalLineId: bankLine.id, amountCents: totalCents, matchType: "exact", confidence: 1, orgId: context.orgId });
-  const { error: updateError } = await service.from("books_deposit_batches").update({ status: "posted", journal_entry_id: journal.id }).eq("org_id", context.orgId).eq("id", batchId);
-  if (updateError) throw new Error(`Failed to finish deposit batch: ${updateError.message}`);
+  const { data, error } = await service.rpc("create_books_deposit_batch_atomic", {
+    p_org_id: context.orgId, p_transaction_id: input.bankTransactionId,
+    p_payment_ids: input.paymentIds, p_reference: input.reference?.trim() || null, p_actor_id: context.userId,
+  });
+  if (error) throw new Error(`Failed to post deposit batch: ${error.message}`);
+  const result = z.object({ id: z.string().uuid(), duplicate: z.boolean() }).parse(data);
   await Promise.all([
-    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "deposit_batch", entityId: batchId, after: { total_cents: totalCents, payment_ids: input.paymentIds, bank_transaction_id: transaction.id }, source: "books.deposit_batch" }),
-    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "books.deposit_batch_posted", entityType: "deposit_batch", entityId: batchId, payload: { total_cents: totalCents, receipt_count: input.paymentIds.length } }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "deposit_batch", entityId: result.id, after: { payment_ids: input.paymentIds, bank_transaction_id: input.bankTransactionId }, source: "books.deposit_batch" }),
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "books.deposit_batch_posted", entityType: "deposit_batch", entityId: result.id, payload: { receipt_count: input.paymentIds.length } }),
   ]);
-  return { id: batchId, duplicate: false };
+  return result;
 }

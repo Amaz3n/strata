@@ -11,7 +11,7 @@ implemented in code. The foundation migration has been applied; the 2026-08-12
 hardening migrations were applied to the Arc Supabase project through the Supabase
 MCP and verified in production. Money movement is disabled, no org has the rail
 enabled, and the external STOP gates remain closed.
-**Updated:** 2026-08-12.
+**Updated:** 2026-09-03.
 **Audience:** product, engineering, operations, risk, and legal.
 **Companions:** `docs/plans/arc-books-gameplan.md`, `docs/plans/procore-parity-gameplan.md`, and
 `docs/plans/tech-frontier-gameplan.md`.
@@ -81,7 +81,8 @@ Not enabled or represented as complete:
   pricing, Florida-generated waiver language, and QA acceptance;
 - vendor-identity recovery and vendor-admin step-up, whose authentication/recovery
   channel must be selected before implementation;
-- cards, capital/early pay, and treasury, which remain later gated programs.
+- cards and the Column-sponsored Rail v2 programs (FBO balances, direct ACH,
+  retainage escrow, and early pay), which remain separately gated.
 
 ---
 
@@ -97,8 +98,9 @@ The money product should extend that control point:
 3. One or two people other than the preparer approve the run, by org policy.
 4. A regulated provider debits the builder and pays each vendor.
 5. Arc reconciles every provider event to an append-only, double-entry subledger.
-6. Arc Books consumes the resulting accounting events; it does not infer them from
-   mutable payment status fields.
+6. Arc Books projects from the `payments` and `payment_reversals` fact rows written
+   once by the atomic settlement and reversal RPCs. The rail subledger never feeds
+   the Books projector, and mutable payment status is not its source of truth.
 
 The payable enters this control system through one creation workspace: invoice and
 supporting document on one side; invoice facts, construction coding, payment terms,
@@ -109,14 +111,30 @@ it. Vision and AI suggestions accelerate preparation but never release money or
 bypass the existing hold and approval gates.
 
 This creates a defensible system of control and record around the moment money moves.
-Cards, early pay, capital referrals, and treasury are possible expansions, but they
-must follow a reliable AP rail rather than compete with it for initial focus.
+Cards, early pay, capital referrals, and account-based treasury services are possible
+expansions, but they must follow a reliable AP rail rather than compete with it for
+initial focus. Early pay and escrow belong to Rail v2; they are not features of the
+Stripe pilot rail.
 
 ### What Arc is and is not
 
 Arc is the workflow, control, orchestration, and evidence layer. A regulated partner
-is the payment rail. Arc does not intentionally hold customer funds or operate an
-Arc-owned FBO account in this plan.
+is the payment rail.
+
+**Rail v1** is the implemented Stripe separate-charges-and-transfers model. It is a
+controlled pilot rail for proving payment operations, reconciliation, loss controls,
+and customer demand. It does not use an Arc-owned bank account or FBO ledger, but it
+must not be described as a flow in which Arc never holds funds: after the builder's
+ACH debit clears and before the delayed vendor transfer, those funds sit on Arc's
+Stripe platform balance. The platform payout schedule must remain manual and the
+reserve/balance sweep policy must be approved under the WS-B5 launch gate so the
+hold window cannot be bypassed by an automatic platform payout.
+
+**Rail v2** is the confirmed strategic direction: pursue sponsorship with Column
+N.A. for FBO accounts, direct ACH origination, and provider book transfers. It is a
+future regulated program, not an assertion that Arc already has sponsor approval or
+may offer stored balances. Retainage escrow and early pay are Rail v2 programs and
+remain unavailable on Rail v1.
 
 That architecture reduces regulatory scope; it does **not** justify claims that Arc
 has no payment, return, fraud, dispute, reserve, credit, or licensing exposure.
@@ -124,10 +142,11 @@ Destination-charge and ACH-return allocation depends on the final provider contr
 and account configuration. Marketing and contracts must describe the approved model,
 not an architectural aspiration.
 
-**STOP — provider and legal approval:** No customer money may move until Stripe (or a
-replacement provider), payments counsel, finance, and risk approve the exact flow of
-funds, controller properties, return allocation, reserves, disclosures, and prohibited
-use cases.
+**STOP — Rail v1 provider and legal approval (owners: Head of Payments, General
+Counsel, Controller, and Risk owner):** No customer money may move until Stripe,
+payments counsel, finance, and risk approve the exact flow of funds, Connect
+controller properties, platform-balance hold, payout schedule, return allocation,
+reserves, disclosures, and prohibited use cases.
 
 ---
 
@@ -135,6 +154,16 @@ use cases.
 
 These decisions are settled for the foundation and should not be silently changed:
 
+- **Two-rail sequence:** Stripe separate charges and delayed transfers are Rail v1,
+  used for the controlled pilot and a measurable controls track record. Column bank
+  sponsorship is Rail v2, pursued only through the approval gates in phases 7–9.
+- **Rail v1 flow of funds:** the builder debit and vendor transfer are separate
+  provider operations. Cleared funds remain on Arc's Stripe platform balance during
+  the approved return-risk hold; the platform payout schedule is manual and governed
+  by the documented reserve/balance policy.
+- **Rail v2 direction:** pursue Column sponsorship for FBO accounts, direct ACH
+  origination, and book transfers. This direction does not pre-approve the program,
+  its compliance allocation, or any customer launch.
 - **Vendor onboarding:** Stripe Connect Express is the first provider adapter.
 - **One-time vendor onboarding:** a vendor legal entity creates one Arc-wide recipient
   account, then explicitly claims relationships with individual builders.
@@ -150,8 +179,9 @@ These decisions are settled for the foundation and should not be silently change
   identity.
 - **No automatic entity merging:** never join vendors across builders using email,
   company name, EIN fragments, bank fingerprints, or fuzzy matching alone.
-- **Provider-neutral core:** payment runs, controls, events, ledger, fees, and
-  reconciliation are Arc concepts. Stripe IDs are adapter references.
+- **Provider-neutral core:** payment runs, approvals, controls, holds, relationships,
+  provider events, ledger, fees, and reconciliation are Arc concepts. Stripe and
+  Column IDs are opaque adapter references.
 - **Approval choice:** each org selects `sole` or `dual`. Sole means one approver;
   dual means two distinct approvers. The payment-run preparer cannot approve their
   own run in either mode.
@@ -163,8 +193,9 @@ These decisions are settled for the foundation and should not be silently change
   unvalidated flat per-payment markup is enabled by default.
 - **Lien waivers:** Florida first. Other jurisdictions stay disabled until separately
   reviewed and implemented.
-- **Go-live sequence:** provider-neutral foundation first; Stripe test mode only for
-  the QA org after the migration and external approvals.
+- **Go-live sequence:** provider-neutral foundation first; Stripe test mode for the QA
+  org, then a gated Rail v1 pilot. Rail v2 cannot inherit Rail v1 approval: the bank
+  program, compliance allocation, operations, and reconciliation gates are separate.
 
 ### One decision intentionally deferred
 
@@ -175,9 +206,10 @@ Before live payout-bank changes, choose the second-reviewer operating model:
 
 The schema supports either. Engineering must not choose between them implicitly.
 
-**STOP — bank-change operating model:** No live payout-destination edit can be enabled
-until the human selects the reviewer model and operations documents recovery,
-escalation, and fraud-loss ownership.
+**STOP — bank-change operating model (owners: Head of Payments Operations and
+Security owner):** No live payout-destination edit can be enabled until those owners
+select the reviewer model and document recovery, escalation, and fraud-loss
+ownership.
 
 ---
 
@@ -231,22 +263,51 @@ not own or edit the vendor's global payout account.
 
 ### 4.2 Provider adapter boundary
 
-The application service boundary should expose provider-neutral operations:
+The next adapter revision is a design contract only; do not change the implemented
+Rail v1 interface until a Column integration is approved and both adapters can be
+tested against the same conformance suite. The domain boundary is organized around
+these provider-neutral nouns:
+
+- **counterparty:** a builder, vendor, or other legal party known to a rail;
+- **verification status:** Arc's normalized view of a counterparty's eligibility and
+  outstanding requirements;
+- **funding debit:** an instruction to pull money from a builder into the rail;
+- **credit:** an instruction that makes funds available to a vendor or other
+  counterparty;
+- **book transfer:** movement between accounts on the same rail without pretending it
+  is an external ACH;
+- **return event:** a normalized reversal or return tied to the original movement.
+
+The provider-neutral contract should read conceptually as:
 
 ```ts
 interface PaymentRailProvider {
-  createRecipientOnboarding(input: RecipientOnboardingInput): Promise<OnboardingLink>
-  syncRecipient(input: SyncRecipientInput): Promise<RecipientSnapshot>
-  createFundingSetup(input: FundingSetupInput): Promise<FundingSetupSession>
-  submitDisbursement(input: SubmitDisbursementInput): Promise<ProviderDisbursement>
-  parseWebhook(input: RawWebhookInput): Promise<NormalizedProviderEvent>
-  fetchReconciliation(input: ReconciliationInput): Promise<ProviderBalanceActivity[]>
+  registerCounterparty(input: CounterpartyInput): Promise<CounterpartyReference>
+  getVerificationStatus(input: CounterpartyReference): Promise<VerificationStatus>
+  originateFundingDebit(input: FundingDebitInput): Promise<FundingDebit>
+  creditCounterparty(input: CreditInput): Promise<Credit>
+  createBookTransfer(input: BookTransferInput): Promise<BookTransfer>
+  normalizeReturnEvent(input: RawProviderEvent): Promise<ReturnEvent | null>
+  fetchReconciliation(input: ReconciliationInput): Promise<RailActivity[]>
 }
 ```
 
-The Stripe implementation may use PaymentIntents, transfers, payouts, Connect
-accounts, and Financial Connections, but those object types must not become the
-domain status vocabulary.
+Stripe-shaped mechanics stay adapter-private: SetupIntent client secrets, hosted
+Connect onboarding links, PaymentIntents, Transfers, Payouts, connected accounts,
+customers, payment methods, and mandates. A Stripe adapter maps those objects onto
+the nouns above. A Column adapter may instead use entities, deposit/FBO accounts, ACH
+originations, and book transfers; those shapes also stay private. Neither vocabulary
+becomes a payment-run state or database-wide service contract.
+
+The layers that carry from Rail v1 to Rail v2 unchanged are payment runs, immutable
+approval evidence, maker/checker policy, exposure limits, holds, builder/vendor
+relationships, the provider-event inbox, the balanced payment ledger,
+reconciliation findings, accounting sync, audit history, and operations ownership.
+The layers Rail v2 replaces are Stripe Express vendor KYC/KYB, Stripe-hosted builder
+bank collection, Stripe customer/payment-method/mandate references, PaymentIntent
+funding debits, Connect transfers/payouts, and Stripe platform-balance release
+controls. Replacement happens behind the adapter; it does not create a second run,
+approval, ledger, or reconciliation model.
 
 ### 4.3 Operational records versus accounting evidence
 
@@ -359,11 +420,12 @@ waiver policy rather than a boolean `waiver_signed` shortcut:
 The payment-run item stores a snapshot of the waiver evidence reviewed. Signed source
 documents remain immutable.
 
-**STOP — Florida legal approval:** Before generating customer-facing waiver language,
-Florida construction counsel must approve templates, timing, electronic-signature
-language, retention, and the exact relationship between payment confirmation and an
-unconditional waiver. The product may collect uploaded waivers before approval, but
-must not represent generated language as legally sufficient.
+**STOP — Florida legal approval (owner: General Counsel):** Before generating
+customer-facing waiver language, Florida construction counsel must approve templates,
+timing, electronic-signature language, retention, and the exact relationship between
+payment confirmation and an unconditional waiver; the General Counsel records the
+enabled scope. The product may collect uploaded waivers before approval, but must not
+represent generated language as legally sufficient.
 
 ---
 
@@ -385,10 +447,11 @@ reconciliation operations, and willingness to pay.
 
 ### Fee engine
 
-Create one fee engine for AR ACH, AR card, AP disbursement, card interchange, and
-early-pay spread. Migrate existing AR gross-up math without changing current customer
-quotes. Delete the existing dead fee helper only after call-site coverage proves it is
-unused.
+Create one extensible fee engine for AR ACH, AR card, and AP disbursement. Card
+interchange and early-pay spread may join it only when their separately gated programs
+exist; early-pay pricing is Rail v2-only. Migrate existing AR gross-up math without
+changing current customer quotes. Delete the existing dead fee helper only after
+call-site coverage proves it is unused.
 
 ---
 
@@ -437,10 +500,11 @@ and recovery channel. The builder-side payment MFA path is implemented.
 
 No money moves in this phase.
 
-**STOP — Stripe program configuration:** Confirm the exact supported Connect account
-controller configuration, platform liability, ACH debit flow, transfers, payouts,
-webhook routing, reserves, and pricing in writing. Do not reuse an unsupported
-controller combination from an older draft.
+**STOP — Stripe program configuration (owners: Head of Payments and Risk owner):**
+Those owners must confirm with Stripe the exact supported Connect account controller
+configuration, platform liability, ACH debit flow, transfers, payouts, webhook
+routing, reserves, and pricing in writing. Do not reuse an unsupported controller
+combination from an older draft.
 
 ### Phase 3 — Payment runs and ledger (implemented; execution gated)
 
@@ -472,46 +536,102 @@ Enable with a platform-controlled flag for the QA org only. Test:
 - reconciliation balanced and exception cases;
 - least-privilege/RLS isolation.
 
-**STOP — customer enablement:** A human reviews QA evidence, provider/legal approvals,
-incident runbooks, reconciliation ownership, support procedures, and feature-flag
-scope before any customer org is enabled.
+**STOP — customer enablement (owner: Head of Payments Operations):** The owner reviews
+QA evidence, provider/legal approvals, incident runbooks, the Controller's
+reconciliation ownership, support procedures, and feature-flag scope before any
+customer org is enabled.
 
 ### Phase 5 — Florida waiver automation
 
 After Florida legal approval, add versioned templates and the conditional → payment
 confirmed → unconditional workflow. Do not silently expand to another state.
 
-### Phase 6 — Existing-card ingestion
+### Phase 6 — Rail v1 pilot and controls track record
 
-Before issuing Arc cards, ingest and reconcile customers' existing corporate-card
-transactions. Auto-suggest project, cost code, commitment, receipt, and accounting
-coding. This delivers spend visibility without immediately taking on a card program.
+Operate Stripe separate charges and delayed transfers only for the approved pilot
+cohort. Keep the platform payout schedule manual, enforce the payout hold, and measure
+daily reconciliation, returns, payout failures, open exceptions, operational touches,
+support load, loss exposure, and vendor receipt timing. Rail v1's purpose is to prove
+the control system and operating model; it does not promise balances, escrow, direct
+ACH origination, or early pay.
 
-### Phase 7 — Arc cards
+**STOP — Rail v1 pilot enablement (owner: Head of Payments Operations):** The owner
+may enable a pilot org only after the provider, legal, risk/reserve, operations, and
+production-QA launch attestations are current and the approved customer limits are
+finite. The Controller owns daily reconciliation sign-off during the pilot.
 
-Cards are a gated later expansion for field spend and controlled material purchases,
-not the primary construction-spend rail. Require issuer/program approval and a
-provider-specific design for funding, fraud, disputes, cardholder verification,
-authorization latency, and loss ownership.
+### Phase 7 — Column sponsorship and program allocation
 
-**STOP — cards:** Do not build or promise live Issuing until a human approves the
-program partner and commercial/risk model. Never assume Arc can fund a shared balance
-or front customer spend.
+Pursue a sponsored banking program with Column N.A. Define the exact FBO account
+structure, direct ACH flow, book transfers, return handling, safeguarding, customer
+agreements, funds availability, statements, complaints, and permissible use cases.
+Rail v1 evidence informs this review but does not satisfy it.
 
-### Phase 8 — Capital and early pay
+**STOP — bank partner approval (owners: Bank Partnerships lead and Head of
+Payments):** Do not build against or market the sponsored program until Column has
+approved the written program, flow of funds, account structure, transaction types,
+limits, reserves, and launch stages.
 
-Build a permissioned underwriting data package for selected partners: contract,
-change-order, draw, receivable, payable, schedule, variance, and payment-performance
-signals with lineage. Start with partner referrals and customer consent.
+**STOP — BSA/AML program (owner: designated BSA/AML Compliance Officer):** Do not
+onboard a Rail v2 customer until the officer and Column approve the risk assessment,
+CIP/CDD, sanctions, transaction monitoring, case escalation, SAR responsibility,
+record retention, testing, and training allocation.
 
-Do not lend from Arc's balance sheet. Do not launch early-pay discounting until legal,
-accounting, tax, disclosure, credit-loss, and partner-funding models are approved.
+**STOP — KYB/KYC ownership (owners: Compliance Officer and Head of Payments
+Operations):** Do not replace Stripe Express onboarding until Column and Arc document
+which party collects, verifies, refreshes, restricts, and supports every builder,
+vendor, beneficial owner, and controlling person.
 
-### Phase 9 — Treasury
+**STOP — state money-transmission analysis (owner: General Counsel):** Do not offer
+Rail v2 in a state until payments counsel records the money-transmission, stored-value,
+escrow/trust, unclaimed-property, and construction-funds conclusions for that state
+and the General Counsel approves the enabled-jurisdiction list.
 
-Do not build treasury, deposits, or an Arc-owned FBO account. Revisit only with a bank
-partner, a clear customer problem, proven AP volume, legal analysis, and board-level
-risk approval.
+### Phase 8 — Rail v2 FBO, direct ACH, and bank-ledger operations
+
+Implement the Column adapter behind the provider-neutral contract. Add sponsored FBO
+accounts, direct ACH origination, provider book transfers, normalized returns,
+provider balance/activity ingestion, statements, and bank-to-Arc ledger tie-outs.
+Reuse the Rail v1 runs, approvals, holds, relationships, ledger, reconciliation,
+accounting sync, and operations surfaces; replace only the provider-private
+verification, bank collection, debit, credit, transfer, and payout mechanics.
+
+**STOP — daily bank-ledger reconciliation (owners: Controller and Head of Payments
+Operations):** Do not move customer funds until named operators own a seven-day
+calendar, evidence retention, exception SLA, bank escalation path, customer-impact
+communications, and an independently reviewed daily tie-out from Column balances and
+transactions to Arc's subledger and FBO customer positions.
+
+**STOP — dual-control operations (owners: Head of Payments Operations and Security
+owner):** No production operator may unilaterally create or alter counterparties,
+bank accounts, limits, release holds, book transfers, returns, or reconciliation
+adjustments. Production access, break-glass use, and every manual money action require
+documented maker/checker controls and audit review.
+
+### Phase 9 — Rail v2 programs and adjacent products
+
+Retainage escrow and early pay are Rail v2 programs, not Rail v1 feature flags.
+Retainage escrow requires approved legal trust/escrow treatment, project-level
+beneficial ownership, release authority, statements, escheatment, and reconciliation.
+Early pay requires an approved capital source, underwriting and adverse-action model,
+pricing/disclosures, true-sale or credit characterization, loss ownership, accounting,
+tax treatment, and customer consent. Arc does not lend from its balance sheet unless
+the board separately approves that regulated risk.
+
+Existing-card ingestion, Arc cards, and capital referrals remain optional adjacent
+programs. They may reuse coding and ledger infrastructure but do not inherit Rail v2
+approval. Card issuing requires issuer approval and a specific funding, fraud,
+dispute, cardholder-verification, authorization, and loss model.
+
+**STOP — escrow and early pay (owners: General Counsel, Controller, Risk owner, and
+Head of Payments):** Do not market, contract, or enable either program until its bank
+partner, legal, compliance, accounting/tax, funding, credit-loss, operations, and
+customer-disclosure package is approved in writing.
+
+**STOP — cards (owners: Head of Payments, Risk owner, and issuer-program owner):** Do
+not build or promise live issuing until those owners approve the program partner and
+commercial/risk model. Never assume Arc may fund a shared balance or front customer
+spend.
 
 ---
 
@@ -540,9 +660,11 @@ risk approval.
 
 ## 10. Minimum production readiness
 
-Production enablement requires all of the following:
+Rail v1 production pilot enablement requires all of the following:
 
 - provider and payments-counsel sign-off;
+- written confirmation that the Stripe platform payout schedule is manual, with an
+  approved reserve/platform-balance sweep policy for the hold window;
 - approved bank-change reviewer model;
 - Florida waiver approval for any generated waiver feature;
 - QA evidence for sole and dual approvals;
@@ -555,7 +677,33 @@ Production enablement requires all of the following:
 - measured unit economics and approved pricing;
 - accounting export behavior verified with Arc Books.
 
-The launch metric is not payment volume alone. Track activation, percent of eligible
-bills paid through Arc, time from approval to vendor receipt, return/failure rate,
-manual exception rate, reconciliation breaks, support contacts, fraud loss, gross
-margin, and vendor onboarding reuse across builders.
+Rail v2 has a separate readiness decision. It cannot be enabled merely because Rail
+v1 is healthy. Before any sponsored FBO account or direct ACH transaction is offered,
+all of the following must be approved and evidenced:
+
+- Column bank-partner approval for the exact program and flow of funds;
+- the designated BSA/AML Compliance Officer's approved program and responsibility
+  matrix with Column;
+- explicit builder/vendor/beneficial-owner KYB/KYC ownership and support procedures;
+- General Counsel's state-by-state money-transmission, stored-value, escrow/trust,
+  construction-funds, and unclaimed-property analysis;
+- Controller-owned daily reconciliation from Column activity through Arc's subledger
+  to every customer FBO position, with staffed exception SLAs;
+- production dual control for onboarding, account changes, limits, releases, book
+  transfers, returns, reconciliation adjustments, and break-glass access;
+- customer agreements, disclosures, statements, complaints, funds-availability,
+  privacy, security, incident, and regulatory-reporting operations;
+- a Rail v2 adapter conformance suite proving that provider replacement did not fork
+  runs, approvals, holds, ledger, accounting, or reconciliation semantics.
+
+Escrow and early pay each require their Phase 9 approval package after Rail v2 itself
+is ready. Neither may appear in Rail v1 sales claims, configuration, or launch
+checklists.
+
+The launch metric is not payment volume alone. For both rails track activation,
+percent of eligible bills paid through Arc, time from approval to vendor receipt,
+return/failure rate, manual exception rate, reconciliation breaks, support contacts,
+fraud loss, gross margin, and vendor onboarding reuse across builders. For Rail v2
+also track unmatched bank activity, FBO position breaks, monitoring alerts, manual
+money operations, complaints, and time-to-close for compliance and reconciliation
+cases.

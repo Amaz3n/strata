@@ -61,10 +61,11 @@ export async function resolveAccountingTarget(input: { orgId: string; projectId?
   let communityId: string | null = null
 
   if (input.projectId) {
-    const [{ data: project }, { data: lot }] = await Promise.all([
+    const [{ data: project, error: projectError }, { data: lot, error: lotError }] = await Promise.all([
       supabase.from("projects").select("division_id").eq("org_id", input.orgId).eq("id", input.projectId).maybeSingle(),
       supabase.from("lots").select("community_id").eq("org_id", input.orgId).eq("project_id", input.projectId).maybeSingle(),
     ])
+    if (projectError || lotError || !project) throw new Error("Unable to resolve accounting routing scope")
     divisionId = project?.division_id ?? null
     communityId = lot?.community_id ?? null
   }

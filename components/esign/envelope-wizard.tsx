@@ -149,6 +149,9 @@ type EnvelopeWizardSendResult = {
 }
 
 interface EnvelopeWizardProps {
+  continueToSign?: boolean
+  embedded?: boolean
+  onBusyChange?: (busy: boolean) => void
   open: boolean
   onOpenChange: (open: boolean) => void
   sourceEntity: EnvelopeWizardSourceEntity | null
@@ -248,6 +251,9 @@ function uploadFileToSignedUrl(input: {
 }
 
 export function EnvelopeWizard({
+  continueToSign = false,
+  embedded = false,
+  onBusyChange,
   open,
   onOpenChange,
   sourceEntity,
@@ -263,6 +269,7 @@ export function EnvelopeWizard({
   defaultProjectName = null,
   onSourceEntitySelect,
 }: EnvelopeWizardProps) {
+  const [draftReady, setDraftReady] = useState(!resumeDocumentId)
   const [prepareStep, setPrepareStep] = useState<PrepareStep>("envelope")
   const [documentTitle, setDocumentTitle] = useState("")
   const [signingOrderEnabled, setSigningOrderEnabled] = useState(true)
@@ -485,6 +492,7 @@ export function EnvelopeWizard({
   useEffect(() => {
     if (!open || !resumeDocumentId) return
 
+    setDraftReady(false)
     const hydrationId = draftHydrationRef.current + 1
     draftHydrationRef.current = hydrationId
 
@@ -571,6 +579,7 @@ export function EnvelopeWizard({
       } finally {
         if (hydrationId === draftHydrationRef.current) {
           setHydratingDraft(false)
+          setDraftReady(true)
         }
       }
     })()
@@ -580,6 +589,7 @@ export function EnvelopeWizard({
     if (resumeDocumentId) return
     if (!open || !sourceEntityId || !sourceEntityType) return
 
+    setDraftReady(false)
     const hydrationId = draftHydrationRef.current + 1
     draftHydrationRef.current = hydrationId
 
@@ -675,6 +685,7 @@ export function EnvelopeWizard({
       } finally {
         if (hydrationId === draftHydrationRef.current) {
           setHydratingDraft(false)
+          setDraftReady(true)
         }
       }
     })()
@@ -683,6 +694,7 @@ export function EnvelopeWizard({
   useEffect(() => {
     if (!open || resumeDocumentId || !sourceEntity?.standalone) return
 
+    setDraftReady(false)
     const hydrationId = draftHydrationRef.current + 1
     draftHydrationRef.current = hydrationId
 
@@ -722,6 +734,7 @@ export function EnvelopeWizard({
       } finally {
         if (hydrationId === draftHydrationRef.current) {
           setHydratingDraft(false)
+          setDraftReady(true)
         }
       }
     })()
@@ -782,6 +795,10 @@ export function EnvelopeWizard({
       return prev.filter((recipient) => recipient.id !== id)
     })
   }
+
+  useEffect(() => {
+    onBusyChange?.(sendingEnvelope || uploadingPdf || movingToFields)
+  }, [sendingEnvelope, uploadingPdf, movingToFields, onBusyChange])
 
   const closeWizard = (nextOpen: boolean) => {
     if (!nextOpen) {
@@ -1320,7 +1337,7 @@ export function EnvelopeWizard({
         documentId: viewerDocument.id,
         envelopeId: result?.envelopeId ?? null,
       })
-      toast.success("Envelope sent")
+      if (!continueToSign) toast.success("Envelope sent")
       closeWizard(false)
     } catch (error: any) {
       console.error(error)
@@ -1410,22 +1427,13 @@ export function EnvelopeWizard({
     signatureCompliance.block &&
     !signatureCompliance.isCompliant
 
-  return (
-    <Sheet open={open} onOpenChange={closeWizard}>
-      <SheetContent
-        side="right"
-        mobileFullscreen
-        className={cn(
-          "sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0",
-          "transition-[max-width] duration-400 ease-[cubic-bezier(0.32,0.72,0,1)]",
-        )}
-        style={{
-          maxWidth: prepareStep === "fields" ? "min(84rem, calc(100vw - 2rem))" : "42rem",
-        }}
-      >
+  const content = resumeDocumentId && !draftReady ? (
+    <div className="flex min-h-0 flex-1 items-center justify-center gap-3 text-sm text-muted-foreground" role="status"><Loader2 className="size-4 animate-spin motion-reduce:animate-none"/>Opening your prepared document…</div>
+  ) : (
+    <>
         {needsSourceSelection ? (
           <>
-            <SheetHeader className="px-6 py-5 border-b bg-muted/30">
+            {!embedded && <SheetHeader className="px-6 py-5 border-b bg-muted/30">
               <SheetTitle className="flex items-center gap-2">
                 <FileText className="h-5 w-5" />
                 New signature packet
@@ -1433,7 +1441,7 @@ export function EnvelopeWizard({
               <SheetDescription>
                 Link this packet to an existing record, or send a standalone document.
               </SheetDescription>
-            </SheetHeader>
+            </SheetHeader>}
 
             <ScrollArea className="flex-1 min-h-0">
               <div className="space-y-5 px-6 py-4">
@@ -1496,7 +1504,7 @@ export function EnvelopeWizard({
           </>
         ) : (
           <>
-            <SheetHeader className="px-6 py-5 border-b bg-muted/30">
+            {!embedded && <SheetHeader className="px-6 py-5 border-b bg-muted/30">
               <SheetTitle className="flex items-center gap-2">
                 <FileText className="h-5 w-5" />
                 {prepareStep === "fields" ? viewerDocument?.title || "Document" : sheetTitle}
@@ -1504,7 +1512,7 @@ export function EnvelopeWizard({
               {prepareStep === "envelope" && (
                 <SheetDescription>{sheetDescription}</SheetDescription>
               )}
-            </SheetHeader>
+            </SheetHeader>}
 
         {prepareStep === "envelope" ? (
           <>
@@ -1857,7 +1865,7 @@ export function EnvelopeWizard({
                 onSend={() => void handleSendEnvelope()}
                 sendDisabled={sendingEnvelope || signatureComplianceBlocksSend}
                 sendLoading={sendingEnvelope}
-                sendLabel={sendingEnvelope ? "Sending..." : signatureComplianceBlocksSend ? "Compliance blocked" : "Send"}
+                sendLabel={sendingEnvelope ? (continueToSign ? "Preparing…" : "Sending...") : signatureComplianceBlocksSend ? "Compliance blocked" : continueToSign ? "Continue to sign" : "Send"}
                 embedded
                 className="h-full"
                 onBack={() => setPrepareStep("envelope")}
@@ -1867,7 +1875,9 @@ export function EnvelopeWizard({
         )}
           </>
         )}
-      </SheetContent>
+    </>
+  )
+  const templateDialog = (
       <Dialog open={saveTemplateOpen} onOpenChange={setSaveTemplateOpen}>
         <DialogContent>
           <DialogHeader>
@@ -1907,6 +1917,16 @@ export function EnvelopeWizard({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+  )
+  if (embedded) return <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{content}{templateDialog}</div>
+  return (
+    <Sheet open={open} onOpenChange={closeWizard}>
+      <SheetContent side="right" mobileFullscreen
+        className="sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 transition-[max-width] duration-400 ease-[cubic-bezier(0.32,0.72,0,1)]"
+        style={{maxWidth: prepareStep === "fields" ? "min(84rem, calc(100vw - 2rem))" : "42rem"}}>
+        {content}
+      </SheetContent>
+      {templateDialog}
     </Sheet>
   )
 }

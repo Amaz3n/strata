@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import { recordAudit } from "@/lib/services/audit";
-import { requireAuthorization } from "@/lib/services/authorization";
+import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access";
 import { requireBooksWorkspaceEnabled } from "@/lib/services/books/module";
 import { requireOrgContext } from "@/lib/services/context";
 import { recordEvent } from "@/lib/services/events";
@@ -83,7 +83,7 @@ export async function getBooksRegisters(orgId?: string) {
     service
       .from("books_fixed_assets")
       .select(
-        "id,asset_number,name,placed_in_service_on,acquisition_cost_cents,salvage_value_cents,useful_life_months,status,asset_account_id,accumulated_depreciation_account_id,depreciation_expense_account_id,funding_account_id",
+        "id,asset_number,name,placed_in_service_on,acquisition_cost_cents,opening_accumulated_depreciation_cents,opening_as_of,salvage_value_cents,useful_life_months,status,asset_account_id,accumulated_depreciation_account_id,depreciation_expense_account_id,funding_account_id",
       )
       .eq("org_id", context.orgId)
       .order("asset_number"),
@@ -138,7 +138,7 @@ export async function getBooksRegisters(orgId?: string) {
       .filter((event) =>
         ["depreciation", "impairment"].includes(event.event_type),
       )
-      .reduce((sum, event) => sum + Number(event.amount_cents ?? 0), 0);
+      .reduce((sum, event) => sum + Number(event.amount_cents ?? 0), Number(asset.opening_accumulated_depreciation_cents ?? 0));
     return {
       ...asset,
       depreciationCents,
@@ -525,7 +525,7 @@ export async function postFixedAssetDepreciation(
   const { data: asset, error } = await service
     .from("books_fixed_assets")
     .select(
-      "id,asset_number,name,acquisition_cost_cents,salvage_value_cents,useful_life_months,depreciation_expense_account_id,accumulated_depreciation_account_id,status",
+      "id,asset_number,name,acquisition_cost_cents,opening_accumulated_depreciation_cents,opening_as_of,salvage_value_cents,useful_life_months,depreciation_expense_account_id,accumulated_depreciation_account_id,status",
     )
     .eq("org_id", context.orgId)
     .eq("id", parsed.assetId)
@@ -544,9 +544,11 @@ export async function postFixedAssetDepreciation(
     );
   const depreciable =
     Number(asset.acquisition_cost_cents) - Number(asset.salvage_value_cents);
+  if (asset.opening_as_of && parsed.throughDate <= asset.opening_as_of)
+    throw new Error("Depreciation must be dated after the opening cutover");
   const taken = (prior ?? []).reduce(
     (sum, row) => sum + Number(row.amount_cents),
-    0,
+    Number(asset.opening_accumulated_depreciation_cents ?? 0),
   );
   const remaining = depreciable - taken;
   if (remaining <= 0) throw new Error("The asset is already fully depreciated");
@@ -645,7 +647,7 @@ export async function disposeFixedAsset(
     service
       .from("books_fixed_assets")
       .select(
-        "id,asset_number,name,acquisition_cost_cents,asset_account_id,accumulated_depreciation_account_id,status",
+        "id,asset_number,name,acquisition_cost_cents,opening_accumulated_depreciation_cents,opening_as_of,asset_account_id,accumulated_depreciation_account_id,status",
       )
       .eq("org_id", context.orgId)
       .eq("id", parsed.assetId)
@@ -667,9 +669,11 @@ export async function disposeFixedAsset(
     .in("event_type", ["depreciation", "impairment"]);
   if (eventError)
     throw new Error(`Failed to load depreciation: ${eventError.message}`);
+  if (asset.opening_as_of && parsed.disposedOn <= asset.opening_as_of)
+    throw new Error("Disposal must be dated after the opening cutover");
   const accumulated = (events ?? []).reduce(
     (sum, event) => sum + Number(event.amount_cents ?? 0),
-    0,
+    Number(asset.opening_accumulated_depreciation_cents ?? 0),
   );
   const cost = Number(asset.acquisition_cost_cents);
   const bookValue = Math.max(0, cost - accumulated);

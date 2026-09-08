@@ -3,7 +3,7 @@ import "server-only"
 import { z } from "zod"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { requireAuthorization } from "@/lib/services/authorization"
+import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
@@ -145,10 +145,10 @@ async function collectConnectionItems(orgId: string): Promise<ReconciliationFind
   // deterministic — `range()` without one can skip or repeat rows between pages — and
   // `id` breaks ties so the sort is total, not just mostly-total.
   //
-  // `accounting_sync_records` has no `updated_at`; selecting it made PostgREST reject
-  // the query and failed the whole org's reconciliation before a single tie-out ran.
-  // The staleness signals it does have are `created_at` (queued) and `last_synced_at`
-  // (last attempt), and for a record that has never synced the second is null.
+  // Reconciliation keeps using the historical clocks (`created_at` for queued,
+  // `last_synced_at` for delivered) because they describe its tie-out window.
+  // Phase G's `updated_at` is the watchdog/current-state clock and is not a
+  // substitute for either one here.
   const syncRecords = await collectPages(
     (from, to) => service
       .from("accounting_sync_records")

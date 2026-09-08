@@ -10,6 +10,8 @@ export type AccountingSyncStatus =
   | "pending"
   | "processing"
   | "synced"
+  | "accrued"
+  | "exported"
   | "error"
   | "conflict"
   | "skipped"
@@ -66,6 +68,18 @@ const STATUS_CONFIG: Record<
     tone: "border-success/20 bg-success/10 text-success",
     tooltip: (provider) => `Synced to ${provider}`,
   },
+  accrued: {
+    icon: Clock,
+    label: () => "Awaiting export",
+    tone: "border-primary/20 bg-primary/10 text-primary",
+    tooltip: () => "Included in an open accounting batch. Export and import the file to record it in the external ledger.",
+  },
+  exported: {
+    icon: CheckCircle2,
+    label: () => "File exported",
+    tone: "border-primary/20 bg-primary/10 text-primary",
+    tooltip: () => "Exported in an accounting file. Posting in the external ledger has not been confirmed.",
+  },
   error: {
     icon: AlertCircle,
     label: () => "Sync error",
@@ -84,7 +98,7 @@ const STATUS_CONFIG: Record<
     icon: CloudOff,
     label: () => "Not synced",
     tone: "border-border bg-muted text-muted-foreground",
-    tooltip: (provider) => `${provider} sync disabled or not connected`,
+    tooltip: (provider) => `No external change was required in ${provider}`,
   },
   needs_review: {
     icon: AlertCircle,

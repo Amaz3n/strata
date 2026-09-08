@@ -1,52 +1,50 @@
-import { Suspense } from "react"
-import { listProjectClientContactsAction, listProjectScheduleSummariesAction, listProjectsAction } from "./actions"
-import { ProjectsClient } from "./projects-client"
-import { PageLayout } from "@/components/layout/page-layout"
-import { Skeleton } from "@/components/ui/skeleton"
+import { Suspense } from "react";
+import { loadProjectDirectory } from "@/lib/services/project-directory";
+import { projectDirectoryQuerySchema } from "@/lib/projects/directory";
+import { ProjectsClient } from "./projects-client";
+import { PageLayout } from "@/components/layout/page-layout";
+import { Skeleton } from "@/components/ui/skeleton";
 
-import { requireOrgContext } from "@/lib/services/context"
+import { requireOrgContext } from "@/lib/services/context";
 
-import { resolveProductionDeskScope } from "@/lib/services/production-desk-scope"
-import { terminology } from "@/lib/terminology"
+import { terminology } from "@/lib/terminology";
 
-
-async function ProjectsData({ communityId }: { communityId?: string }) {
-  const { orgId, productTier } = await requireOrgContext()
-  const [allProjects, clientContacts, scope] = await Promise.all([
-    listProjectsAction(),
-    listProjectClientContactsAction(),
-    resolveProductionDeskScope({ communityId }),
-  ])
-  const allowed = scope.projectIds === null ? null : new Set(scope.projectIds)
-  const projects = allowed ? allProjects.filter((project) => allowed.has(project.id)) : allProjects
-  // Scoped to the rows actually on screen. Scanning every schedule item in the
-  // org and discarding most of them made a one-community desk pay for all of them.
-  const scheduleSummaries = await listProjectScheduleSummariesAction(projects.map((project) => project.id))
-
+async function ProjectsData({
+  params,
+}: {
+  params: Promise<Record<string, string | undefined>>;
+}) {
+  const [context, raw] = await Promise.all([requireOrgContext(), params]);
+  const query = projectDirectoryQuerySchema.parse(raw);
+  const data = await loadProjectDirectory(query, context);
   return (
     <ProjectsClient
-      key={orgId}
-      projects={projects}
-      clientContacts={clientContacts}
-      scheduleSummaries={scheduleSummaries}
-      productTier={productTier}
-      communities={scope.communities}
-      communityId={scope.communityId}
+      key={`${context.orgId}:${data.divisionId ?? "all"}:${data.communityId ?? "all"}`}
+      initialPage={data.page}
+      initialQuery={query}
+      productTier={context.productTier}
+      communities={data.communities}
+      communityId={data.communityId}
+      canReadSchedule={data.canReadSchedule}
     />
-  )
+  );
 }
 
-export default async function ProjectsPage({ searchParams }: { searchParams: Promise<{ community?: string }> }) {
-  const [params, context] = await Promise.all([searchParams, requireOrgContext()])
+export default async function ProjectsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | undefined>>;
+}) {
+  const context = await requireOrgContext();
   return (
     <PageLayout title={terminology(context.productTier).projects}>
       <div className="-m-4 -mt-6 h-[calc(100vh-3.5rem)]">
         <Suspense fallback={<ProjectsSkeleton />}>
-          <ProjectsData communityId={params.community} />
+          <ProjectsData params={searchParams} />
         </Suspense>
       </div>
     </PageLayout>
-  )
+  );
 }
 
 function ProjectsSkeleton() {
@@ -62,5 +60,5 @@ function ProjectsSkeleton() {
         ))}
       </div>
     </div>
-  )
+  );
 }

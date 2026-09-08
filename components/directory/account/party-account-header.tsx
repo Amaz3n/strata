@@ -101,24 +101,35 @@ function DeferredComplianceBadge({
   signals: Promise<DirectoryVendorHeaderSignals>;
   href: string;
 }) {
-  const { complianceReady } = use(signals);
-  if (complianceReady === null) return null;
+  const { complianceState } = use(signals);
+  if (complianceState === null) return null;
+  // "Not enrolled" is deliberately quiet: it is a fact about how this vendor is
+  // set up, not a problem with their paperwork. Saying "Compliant" here, which
+  // is what a two-state badge did, is the actual problem.
+  const tone =
+    complianceState === "compliant"
+      ? "border-success/30 bg-success/[0.06] text-success hover:bg-success/10"
+      : complianceState === "action_required"
+        ? "border-warning/35 bg-warning/[0.07] text-warning hover:bg-warning/10"
+        : "border-border bg-muted/30 text-muted-foreground hover:bg-muted/50";
   return (
     <Link
       href={href}
       className={cn(
         "inline-flex h-5 shrink-0 items-center gap-1.5 border px-1.5 text-[11px] font-medium transition-colors",
-        complianceReady
-          ? "border-success/30 bg-success/[0.06] text-success hover:bg-success/10"
-          : "border-warning/35 bg-warning/[0.07] text-warning hover:bg-warning/10",
+        tone,
       )}
     >
-      {complianceReady ? (
+      {complianceState === "compliant" ? (
         <CheckCircle2 className="h-3 w-3" />
-      ) : (
+      ) : complianceState === "action_required" ? (
         <AlertTriangle className="h-3 w-3" />
-      )}
-      {complianceReady ? "Compliant" : "Action required"}
+      ) : null}
+      {complianceState === "compliant"
+        ? "Compliant"
+        : complianceState === "action_required"
+          ? "Action required"
+          : "Not enrolled"}
     </Link>
   );
 }

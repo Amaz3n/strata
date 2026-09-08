@@ -8,6 +8,7 @@ import { recordEvent } from "@/lib/services/events"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 import { INVOICE_WAIVER_TYPES, type InvoiceLienWaiver, type InvoiceLienWaiverType } from "@/lib/types"
+import { isWaiverPublic } from "@/lib/lien-waivers/invoice-waiver"
 
 /**
  * Receivable-side lien waivers: waivers the builder issues to the client on an
@@ -20,12 +21,18 @@ import { INVOICE_WAIVER_TYPES, type InvoiceLienWaiver, type InvoiceLienWaiverTyp
 export type { InvoiceLienWaiver, InvoiceLienWaiverType }
 
 const WAIVER_SELECT =
-  "id, org_id, project_id, invoice_id, waiver_type, status, amount_cents, through_date, claimant_name, customer_name, property_description, released_at, created_at"
+  "id, org_id, project_id, invoice_id, waiver_type, status, amount_cents, through_date, claimant_name, customer_name, property_description, released_at, created_at, metadata"
 
 const createInvoiceLienWaiverSchema = z.object({
   invoice_id: z.string().uuid(),
   waiver_type: z.enum(INVOICE_WAIVER_TYPES),
   through_date: z.string().optional(),
+  /**
+   * The builder's signature. A waiver the owner receives unsigned is a form,
+   * not a release; every waiver Arc issues carries the name of the member who
+   * issued it and the moment they did.
+   */
+  signer_name: z.string().trim().min(2).max(200).optional(),
 })
 
 function projectLocationText(location: unknown): string | null {
@@ -131,6 +138,13 @@ export async function createInvoiceLienWaiver(
 
   const amountCents = invoice.balance_due_cents ?? invoice.total_cents ?? 0
 
+  let signerName = parsed.signer_name ?? null
+  if (!signerName) {
+    const { data: signer } = await supabase.from("app_users").select("full_name").eq("id", userId).maybeSingle()
+    signerName = signer?.full_name?.trim() || null
+  }
+  const signedAt = new Date().toISOString()
+
   const { data, error } = await supabase
     .from("invoice_lien_waivers")
     .insert({
@@ -145,6 +159,9 @@ export async function createInvoiceLienWaiver(
       customer_name: metadata.customer_name ?? null,
       property_description: propertyDescription,
       created_by: userId,
+      metadata: signerName
+        ? { signature: { signer_name: signerName, signed_at: signedAt, user_id: userId, method: "typed" } }
+        : {},
     })
     .select(WAIVER_SELECT)
     .single()
@@ -199,6 +216,7 @@ export async function voidInvoiceLienWaiver(waiverId: string, orgId?: string): P
     .eq("org_id", resolvedOrgId)
     .eq("id", waiverId)
     .eq("status", "pending_payment")
+    .is("metadata->workflow->>signing_document_id", null)
     .select("id, invoice_id")
     .maybeSingle()
   if (error) {
@@ -256,6 +274,9 @@ export async function releaseInvoiceLienWaiversIfPaid({
       .eq("org_id", orgId)
       .eq("invoice_id", invoiceId)
       .eq("status", "pending_payment")
+      // Reviewed workflows match specific funds explicitly. A zero invoice
+      // balance (including credits/write-offs) must never release their drafts.
+      .is("metadata->workflow", null)
       .select("id, waiver_type")
     if (error || !released || released.length === 0) return
 
@@ -295,7 +316,38 @@ export async function listPublicInvoiceLienWaivers({
     console.error("Failed to list public lien waivers", error)
     return []
   }
-  return ((data ?? []) as InvoiceLienWaiver[]).filter(
-    (waiver) => waiver.status === "released" || waiver.waiver_type.startsWith("conditional"),
-  )
+  return ((data ?? []) as InvoiceLienWaiver[]).filter(isWaiverPublic)
+}
+
+/**
+ * Void every waiver still waiting on payment for an invoice, without a session.
+ * Used when an owner returns a pay application from their portal: the invoice
+ * is voided with it and a conditional waiver on a voided invoice is a release
+ * for money that will never arrive.
+ */
+export async function voidPendingInvoiceLienWaiversWithClient(
+  supabase: SupabaseClient,
+  orgId: string,
+  invoiceId: string,
+): Promise<number> {
+  const { data, error } = await supabase
+    .from("invoice_lien_waivers")
+    .update({ status: "void" })
+    .eq("org_id", orgId)
+    .eq("invoice_id", invoiceId)
+    .eq("status", "pending_payment")
+    .select("id")
+  if (error) throw new Error(`Failed to void invoice lien waivers: ${error.message}`)
+  return (data ?? []).length
+}
+
+/** The signature stamped on a receivable waiver when Arc issued it. */
+export function readInvoiceWaiverSignature(
+  metadata: Record<string, unknown> | null | undefined,
+): { signer_name: string; signed_at: string } | null {
+  const raw = metadata?.signature
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null
+  const record = raw as Record<string, unknown>
+  if (typeof record.signer_name !== "string" || typeof record.signed_at !== "string") return null
+  return { signer_name: record.signer_name, signed_at: record.signed_at }
 }

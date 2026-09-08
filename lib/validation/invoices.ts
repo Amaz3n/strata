@@ -2,6 +2,7 @@ import { z } from "zod"
 
 export const invoiceLineInputSchema = z.object({
   cost_code_id: z.string().uuid().optional(),
+  budget_line_id: z.string().uuid().optional().nullable(),
   description: z.string().min(1, "Description is required"),
   quantity: z.number({ invalid_type_error: "Quantity is required" }).min(0.01, "Quantity must be greater than zero"),
   unit: z.string().max(20).optional().default("unit"),
@@ -12,6 +13,8 @@ export const invoiceLineInputSchema = z.object({
   tax_rate_percent: z.number().min(0).max(20).optional().nullable(),
   qbo_income_account_id: z.string().min(1).optional().nullable(),
   qbo_income_account_name: z.string().max(255).optional().nullable(),
+  arc_books_gl_account_id: z.string().uuid("Invalid Arc Books income account").optional().nullable(),
+  arc_books_gl_account_name: z.string().max(255).optional().nullable(),
   billable_cost_ids: z.array(z.string().uuid()).optional(),
   cost_cents: z.number().optional(),
   markup_cents: z.number().optional(),

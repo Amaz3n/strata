@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import Link from "next/link"
 import { toast } from "sonner"
 
 import {
@@ -36,6 +37,7 @@ import { estimateSettlement, type ProviderSettlementWindow } from "@/lib/payment
 import type { PaymentApprovalRouting } from "@/lib/services/payment-approvers"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import { vendorLabel } from "@/components/payables/payables-ui"
+import { BulkOutcomeList, type BulkOutcome } from "@/components/payables/bulk-outcome-list"
 
 type Setup = {
   fundingSources: Array<{ id: string; label: string; isDefault: boolean }>
@@ -45,6 +47,10 @@ type Setup = {
   settlementWindow: ProviderSettlementWindow
   feePolicy: ApFeePolicy
   eligibleBills: PayableBatchEligibleBill[]
+  truncation: {
+    fundingSources: { truncated: boolean; cap: number }
+    bills: { truncated: boolean; cap: number }
+  }
 }
 
 function readableDate(iso: string) {
@@ -76,6 +82,8 @@ export function PayBatchDialog({
   const [loadError, setLoadError] = React.useState<string | null>(null)
   const [fundingSourceId, setFundingSourceId] = React.useState("")
   const [pending, setPending] = React.useState(false)
+  const [outcomes, setOutcomes] = React.useState<BulkOutcome[]>([])
+  const [splitDraftIds, setSplitDraftIds] = React.useState<string[]>([])
 
   const scheduledPreferences = React.useMemo(
     () => bills.map((bill) => bill.payment_schedule === "scheduled" ? bill.scheduled_payment_date ?? null : null),
@@ -153,6 +161,17 @@ export function PayBatchDialog({
   }, [bills, setup, settlement])
 
   const vendorTotalCents = lines.reduce((sum, line) => sum + line.amountCents, 0)
+  // Runs are split at the hard 200-item boundary. Approval authority is tested
+  // against the largest run an approver will actually sign, not the aggregate
+  // of every run produced by this dialog.
+  const largestRunTotalCents = Math.max(
+    0,
+    ...Array.from(
+      { length: Math.ceil(lines.length / 200) },
+      (_, index) => lines.slice(index * 200, (index + 1) * 200)
+        .reduce((sum, line) => sum + line.amountCents, 0),
+    ),
+  )
   const processorFeeCents = lines.reduce((sum, line) => sum + line.processorFeeCents, 0)
   const platformFeeCents = lines.reduce((sum, line) => sum + line.platformFeeCents, 0)
   const discountAvailableCents = lines.reduce((sum, line) => sum + (line.discount?.amountCents ?? 0), 0)
@@ -162,46 +181,73 @@ export function PayBatchDialog({
     .filter((approver) => preferredApproverIds.length === 0 || preferredApproverIds.includes(approver.userId))
     .map((approver) => approver.name)
     .filter(Boolean) ?? []
+  const eligibleApproverCount = setup?.routing.approvers.filter((approver) =>
+    approver.permitted
+    && (setup.requesterMayApprove || approver.userId !== setup.routing.viewerUserId)
+    && (preferredApproverIds.length === 0 || preferredApproverIds.includes(approver.userId))
+    && (approver.approvalLimitCents == null || approver.approvalLimitCents >= largestRunTotalCents),
+  ).length ?? 0
+  const approvable = Boolean(setup?.routing.rosterConfigured && eligibleApproverCount >= (setup?.requiredApprovals ?? 1))
 
   const submit = async () => {
     if (!fundingSourceId || lines.length === 0 || pending) return
     setPending(true)
-    let runId: string | null = null
+    const activeRunIds: string[] = []
     try {
-      const prepared = await preparePayableApprovalAction({
-        bills: lines.map((line) => ({ bill_id: line.bill.id, amount_cents: line.amountCents })),
-        funding_source_id: fundingSourceId,
-        idempotency_key: crypto.randomUUID(),
-      })
-      if (!prepared.success) {
-        toast.error(prepared.error)
-        return
+      const labels = new Map(bills.map((bill) => [bill.id, bill.bill_number ?? vendorLabel(bill)]))
+      const chunks = Array.from({ length: Math.ceil(lines.length / 200) }, (_, index) => lines.slice(index * 200, (index + 1) * 200))
+      const nextOutcomes: BulkOutcome[] = []
+      let submittedCount = 0
+      for (const chunk of chunks) {
+        const prepared = await preparePayableApprovalAction({ bills: chunk.map((line) => ({ bill_id: line.bill.id, amount_cents: line.amountCents })), funding_source_id: fundingSourceId, idempotency_key: crypto.randomUUID(), mode: "skip_failures" })
+        if (!prepared.success) {
+          nextOutcomes.push(...chunk.map((line) => ({ id: line.bill.id, label: labels.get(line.bill.id) ?? `Payable ${line.bill.id.slice(0, 8)}`, ok: false, reason: prepared.error })))
+          continue
+        }
+        activeRunIds.push(prepared.data.runId)
+        nextOutcomes.push(...prepared.data.outcomes.map((outcome) => ({ ...outcome, label: labels.get(outcome.id) ?? `Payable ${outcome.id.slice(0, 8)}` })))
+        const submitted = await submitPayableBatchAction({ run_id: prepared.data.runId, scheduled_for: scheduledFor })
+        if (!submitted.success) {
+          await discardPayableBatchAction(prepared.data.runId)
+          activeRunIds.splice(activeRunIds.indexOf(prepared.data.runId), 1)
+          for (const outcome of nextOutcomes.filter((outcome) => chunk.some((line) => line.bill.id === outcome.id) && outcome.ok)) { outcome.ok = false; outcome.reason = submitted.error }
+          continue
+        }
+        submittedCount += prepared.data.paymentCount
       }
-      runId = prepared.data.runId
-
-      const submitted = await submitPayableBatchAction({ run_id: prepared.data.runId, scheduled_for: scheduledFor })
-      if (!submitted.success) {
-        // A prepared-but-unsubmitted run would hold every one of these bills
-        // hostage — they read as "in a run" and cannot be selected again.
-        await discardPayableBatchAction(prepared.data.runId)
-        toast.error(submitted.error)
-        return
-      }
-
       toast.success(
         setup?.requesterMayApprove
-          ? `${lines.length} ${lines.length === 1 ? "payment is" : "payments are"} ready for your approval`
-          : `${lines.length} ${lines.length === 1 ? "payment" : "payments"} submitted for approval`,
-        { description: approverNames.length > 0 ? `Routed to ${approverNames.join(", ")}.` : undefined },
+          ? `${submittedCount} ${submittedCount === 1 ? "payment is" : "payments are"} ready for your approval`
+          : `${submittedCount} ${submittedCount === 1 ? "payment" : "payments"} submitted in ${activeRunIds.length} ${activeRunIds.length === 1 ? "run" : "runs"}`,
+        { description: approverNames.length > 0 ? `Routed to ${approverNames.join(", ")}. Runs hold at most 200 bills.` : "Runs hold at most 200 bills." },
       )
-      onOpenChange(false)
+      setOutcomes(nextOutcomes)
+      if (nextOutcomes.every((outcome) => outcome.ok)) onOpenChange(false)
       onSubmitted()
     } catch (error) {
-      if (runId) await discardPayableBatchAction(runId).catch(() => undefined)
+      await Promise.all(activeRunIds.map((runId) => discardPayableBatchAction(runId).catch(() => undefined)))
       toast.error(error instanceof Error ? error.message : "Unable to submit these payments")
     } finally {
       setPending(false)
     }
+  }
+
+  const splitIntoDrafts = async () => {
+    if (!fundingSourceId || pending) return
+    const firstDate = scheduledPreferences.find((date) => date !== null) ?? null
+    const groups = [bills.filter((_, index) => scheduledPreferences[index] === firstDate), bills.filter((_, index) => scheduledPreferences[index] !== firstDate)].filter((group) => group.length > 0)
+    setPending(true)
+    try {
+      const results = []
+      for (const group of groups.slice(0, 2)) {
+        const prepared = await preparePayableApprovalAction({ bills: group.map((bill) => ({ bill_id: bill.id, amount_cents: payableOutstandingCents(bill) })), funding_source_id: fundingSourceId, idempotency_key: crypto.randomUUID(), mode: "skip_failures" })
+        if (!prepared.success) throw new Error(prepared.error)
+        results.push(prepared.data.runId)
+      }
+      setSplitDraftIds(results)
+      toast.success(`${results.length} payment run drafts created`)
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Unable to split these payments") }
+    finally { setPending(false) }
   }
 
   return (
@@ -227,10 +273,22 @@ export function PayBatchDialog({
           </div>
         ) : setup && setup.fundingSources.length === 0 ? (
           <div className="border border-warning bg-warning/10 px-4 py-3 text-sm">
-            No verified funding account yet. Add one in Settings before paying with Arc Pay.
+            No verified funding account yet. <Link className="underline underline-offset-2" href="/settings/payments">Add one in Settings</Link> before paying with Arc Pay.
           </div>
         ) : (
           <div className="space-y-4">
+            <BulkOutcomeList outcomes={outcomes} />
+            {setup?.eligibleBills.some((entry) => bills.some((bill) => bill.id === entry.id) && entry.readiness === "vendor_not_enrolled") ? <section className="border border-warning/40"><p className="border-b px-3 py-2 text-xs font-medium">Vendor not set up</p><div className="divide-y">{setup.eligibleBills.filter((entry) => bills.some((bill) => bill.id === entry.id) && entry.readiness === "vendor_not_enrolled").map((entry) => { const bill = bills.find((candidate) => candidate.id === entry.id); return <div key={entry.id} className="flex items-center justify-between gap-3 px-3 py-2 text-xs"><span>{entry.vendorName} · {bill?.bill_number ?? "Payable"}</span>{bill?.company_id ? <Link href={`/directory/${bill.company_id}?tab=payments`} className="underline underline-offset-2">Invite to Arc Pay</Link> : <Link href={`/payables?bill=${entry.id}`} className="underline underline-offset-2">Add vendor</Link>}</div> })}</div></section> : null}
+            {setup?.truncation.bills.truncated ? (
+              <p className="border border-warning bg-warning/10 px-3 py-2 text-xs text-warning">
+                Showing the first {setup.truncation.bills.cap} eligible payables. Narrow the desk before building this run.
+              </p>
+            ) : null}
+            {setup?.truncation.fundingSources.truncated ? (
+              <p className="border border-warning bg-warning/10 px-3 py-2 text-xs text-warning">
+                Showing the first {setup.truncation.fundingSources.cap} funding accounts.
+              </p>
+            ) : null}
             <ul className="max-h-52 divide-y overflow-y-auto border">
               {lines.map((line) => (
                 <li key={line.bill.id} className="px-3 py-2 text-xs">
@@ -273,7 +331,9 @@ export function PayBatchDialog({
 
             {hasScheduleConflict ? (
               <div className="border border-warning bg-warning/10 px-3 py-2.5 text-xs text-warning">
-                These payables have different payment schedules. Submit them in separate batches so each approved release date is preserved.
+                <p>These payables have different payment schedules.</p>
+                <Button type="button" variant="link" className="mt-1 h-auto rounded-none p-0 text-xs text-warning underline" onClick={() => void splitIntoDrafts()}>Split into two runs</Button>
+                {splitDraftIds.length ? <div className="mt-2 flex gap-3">{splitDraftIds.map((id, index) => <Link key={id} href={`/payables/payment-runs/${id}`} className="underline underline-offset-2">Open draft {index + 1}</Link>)}</div> : null}
               </div>
             ) : scheduledFor ? (
               <p className="text-xs text-muted-foreground">Scheduled payment date: {readableDate(scheduledFor)}.</p>
@@ -334,7 +394,8 @@ export function PayBatchDialog({
               </p>
             ) : (
               <p className="text-xs text-warning">
-                No payment approvers are configured yet, so this cannot be approved until someone is named in Settings.
+                No eligible payment approvers are configured for this amount.{" "}
+                <Link className="underline underline-offset-2" href="/settings/payments#approvers">Configure approvers</Link>.
               </p>
             )}
           </div>
@@ -345,7 +406,7 @@ export function PayBatchDialog({
             Cancel
           </Button>
           <Button
-            disabled={pending || loading || !fundingSourceId || lines.length === 0 || hasScheduleConflict}
+            disabled={pending || loading || !fundingSourceId || lines.length === 0 || hasScheduleConflict || !approvable}
             onClick={() => void submit()}
           >
             {pending

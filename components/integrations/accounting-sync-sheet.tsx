@@ -223,7 +223,7 @@ export function AccountingSyncSheet({ open, onOpenChange, projectId, projectName
       } else if (result.skipped) {
         toast.info("Nothing to push")
       } else {
-        toast.success(`Synced to ${providerName}`)
+        toast.success(`Queued for ${providerName}`)
       }
     } catch (error: any) {
       toast.error("Sync failed", { description: error?.message ?? "Try again." })

@@ -15,6 +15,7 @@ import { ReleaseNotesAnnouncement } from "@/components/layout/release-notes-anno
 import { OrgInactiveScreen } from "@/components/layout/org-inactive-screen"
 import { TrialStatusBanner } from "@/components/layout/trial-status-banner"
 import { DemoUsageTracker } from "@/components/layout/demo-usage-tracker"
+import { SettingsDraftProvider } from "@/components/settings/settings-drafts"
 import { OptimisticPathProvider } from "@/lib/navigation/optimistic-pathname"
 import {
   NavigationBadgeProvider,
@@ -125,7 +126,7 @@ async function AuthenticatedAppChrome({
       }
     >
       <SidebarProvider className="h-svh max-h-svh overflow-hidden">
-        <OptimisticPathProvider>
+        <SettingsDraftProvider key={currentUser?.id}><OptimisticPathProvider>
           <NavigationBadgeProvider valuesPromise={navigationBadgesPromise}>
             <DemoUsageTracker />
             <Suspense fallback={null}>
@@ -137,7 +138,6 @@ async function AuthenticatedAppChrome({
               canAccessPlatform={platformAccess.canAccessPlatform}
               permissions={permissions}
               productTier={productTier}
-              hasDivisions={ambientContext.divisions.length > 0}
               showProductionNavigation={showProductionNavigation}
               showPurchasingNavigation={showPurchasingNavigation}
               showPipelineNavigation={productTier !== "production"}
@@ -172,7 +172,7 @@ async function AuthenticatedAppChrome({
               />
             </MobileActionProvider>
           </NavigationBadgeProvider>
-        </OptimisticPathProvider>
+        </OptimisticPathProvider></SettingsDraftProvider>
       </SidebarProvider>
     </div>
   )

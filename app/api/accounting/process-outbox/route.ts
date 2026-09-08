@@ -8,15 +8,16 @@ import {
   markAccountingPushExhausted,
   markAccountingPushPermanentlyFailed,
   processAccountingPush,
+  voidBillPaymentInAccounting,
   type AccountingPushEntityType,
 } from "@/lib/services/accounting-sync"
-import { classifyQboPermanentFailure } from "@/lib/integrations/accounting/qbo/error-rules"
+import { AccountingDeliveryError, withAccountingDeadline } from "@/lib/services/accounting-delivery"
 import { keepAliveAccountingConnections } from "@/lib/services/accounting-connections"
 import { logAccounting } from "@/lib/services/accounting-logger"
 import { withCronRun } from "@/lib/services/job-runs"
 
 const MAX_RETRIES = 3
-const BATCH_SIZE = 25
+const BATCH_SIZE = 2
 const TOKEN_KEEPALIVE_BATCH_SIZE = 10
 const PROCESSING_TIMEOUT_MINUTES = 20
 const ACCOUNTING_OUTBOX_JOB_TYPES = [...ACCOUNTING_JOB_TYPES]
@@ -31,12 +32,18 @@ type ClaimedJob = {
   run_at?: string | null
 }
 
+async function requirePersisted(query: PromiseLike<{ error: { message: string } | null }>) {
+  const { error } = await query
+  if (error) throw new Error(`Unable to persist accounting job state: ${error.message}`)
+}
+
 async function processAccountingOutbox(request: NextRequest) {
   if (!isAuthorizedCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  const keepalive = await keepAliveAccountingConnections(TOKEN_KEEPALIVE_BATCH_SIZE)
+  const deadline = Date.now() + 85_000
+  const keepalive = await withAccountingDeadline(deadline, () => keepAliveAccountingConnections(TOKEN_KEEPALIVE_BATCH_SIZE))
   const supabase = createServiceSupabaseClient()
 
   // Return leases abandoned by a worker that timed out mid-batch, using the
@@ -49,6 +56,8 @@ async function processAccountingOutbox(request: NextRequest) {
   if (reapError) {
     return NextResponse.json({ error: `reap_stale_outbox_jobs failed: ${reapError.message}` }, { status: 500 })
   }
+  const { error: reconcileError } = await supabase.rpc("reconcile_accounting_exhausted_jobs")
+  if (reconcileError) return NextResponse.json({ error: `Unable to reconcile exhausted accounting jobs: ${reconcileError.message}` }, { status: 500 })
   const reapRow = (Array.isArray(reaped) ? reaped[0] : reaped) as { requeued?: number; exhausted?: number } | null
   const recoveredStale = Number(reapRow?.requeued ?? 0)
   if (recoveredStale > 0) {
@@ -80,56 +89,46 @@ async function processAccountingOutbox(request: NextRequest) {
   for (const job of jobs) {
     const jobId = job.job_id ?? job.id
     const payload = job.payload ?? {}
+    if (Date.now() >= deadline) {
+        const { error } = await supabase.from("outbox").update({ status: "pending", run_at: new Date().toISOString() }).eq("id", jobId)
+        if (error) throw new Error(`Unable to release unstarted accounting job: ${error.message}`)
+        continue
+    }
     try {
       if (!job.org_id) throw new Error("Missing org_id")
+      if (job.job_type === "accounting_void_bill_payment") {
+        const paymentId = payload.payment_id
+        const reason = payload.reason
+        if (typeof paymentId !== "string") throw new Error("Missing payment_id")
+        if (typeof reason !== "string") throw new Error("Missing return reason")
+        const reversal = await voidBillPaymentInAccounting({ orgId: job.org_id, paymentId, reason, connectionId: typeof payload.connection_id === "string" ? payload.connection_id : undefined, deadline })
+        if (!reversal.voided && !["books_authoritative", "never_posted"].includes(reversal.reason)) throw new AccountingDeliveryError(`Accounting reversal blocked: ${reversal.reason}`, reversal.reason === "deferred", reversal.reason)
+        await requirePersisted(supabase.from("outbox").update({ status: "completed" }).eq("id", jobId))
+        processed++
+        continue
+      }
       const normalized = job.job_type.replace(/^qbo_sync_/, "").replace(/^accounting_push_/, "")
       const entityType = normalized as AccountingPushEntityType
       const payloadKey = entityType === "invoice" ? "invoice_id" : entityType === "project_expense" ? "expense_id" : entityType === "vendor_bill" ? "bill_id" : "payment_id"
       const entityId = payload[payloadKey]
       if (typeof entityId !== "string") throw new Error(`Missing ${payloadKey}`)
-      const result = await processAccountingPush({ orgId: job.org_id, entityType, entityId })
+      const result = await processAccountingPush({ orgId: job.org_id, entityType, entityId, connectionId: typeof payload.connection_id === "string" ? payload.connection_id : undefined, deadline })
       if (result.deferred) {
-        // Another attempt holds the create claim (15-minute lease). Completed
-        // would lose the push forever; re-schedule past the lease instead, and
-        // let the normal retry budget stop a claim that never frees.
-        const deferRetry = (job.retry_count ?? 0) + 1
-        const giveUp = deferRetry >= MAX_RETRIES
-        await supabase
-          .from("outbox")
-          .update({
-            status: giveUp ? "failed" : "pending",
-            retry_count: deferRetry,
-            last_error: "Create claim held by a concurrent sync attempt",
-            run_at: new Date(Date.now() + 20 * 60 * 1000).toISOString(),
-          })
-          .eq("id", jobId)
-        if (giveUp) {
-          await markAccountingPushExhausted({
-            orgId: job.org_id,
-            entityType,
-            entityId,
-            message: "Create claim was still held by another sync attempt after repeated tries",
-          }).catch((markError) => logAccounting("error", "process_outbox_mark_exhausted_failed", { error: String(markError) }))
-          failed++
-        }
+        // Contention is not a delivery attempt and never spends its retry budget.
+        await requirePersisted(supabase.from("outbox").update({ status: "pending", retry_count: job.retry_count ?? 0, last_error: "Accounting delivery is owned by another worker", run_at: new Date(Date.now() + 60_000).toISOString() }).eq("id", jobId))
         continue
       }
-      await supabase.from("outbox").update({ status: "completed" }).eq("id", jobId)
+      await requirePersisted(supabase.from("outbox").update({ status: "completed" }).eq("id", jobId))
       processed++
     } catch (err: any) {
       const newRetry = (job.retry_count ?? 0) + 1
       // Some failures are answers, not outages. A QuickBooks 610 for an object
       // somebody deactivated over there will fail identically forever, so it
       // skips the backoff and goes straight to a person with the cure attached.
-      const permanent = classifyQboPermanentFailure({
-        status: err?.status ?? null,
-        faultCode: err?.faultCode ?? null,
-        faultDetail: err?.faultDetail ?? null,
-        message: err?.message ?? null,
-      })
+      const permanent = err instanceof AccountingDeliveryError && !err.retryable ? { message: err.message } : null
       const shouldRetry = !permanent && newRetry < MAX_RETRIES
 
-      await supabase
+      await requirePersisted(supabase
         .from("outbox")
         .update({
           status: shouldRetry ? "pending" : "failed",
@@ -139,12 +138,14 @@ async function processAccountingOutbox(request: NextRequest) {
             ? new Date(Date.now() + Math.pow(3, newRetry) * 5 * 60 * 1000).toISOString()
             : job.run_at ?? new Date().toISOString(),
         })
-        .eq("id", jobId)
+        .eq("id", jobId))
 
       // Giving up is the moment a human inherits the problem, so it is the
       // moment the transaction has to start saying so.
       if (!shouldRetry && job.org_id) {
-        const normalized = job.job_type.replace(/^qbo_sync_/, "").replace(/^accounting_push_/, "")
+        const normalized = job.job_type === "accounting_void_bill_payment"
+          ? "bill_payment"
+          : job.job_type.replace(/^qbo_sync_/, "").replace(/^accounting_push_/, "")
         const entityType = normalized as AccountingPushEntityType
         const payloadKey = entityType === "invoice" ? "invoice_id" : entityType === "project_expense" ? "expense_id" : entityType === "vendor_bill" ? "bill_id" : "payment_id"
         const entityId = payload[payloadKey]

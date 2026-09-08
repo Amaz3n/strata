@@ -21,7 +21,7 @@ values ('20000000-0000-0000-0000-000000000001', 'Payment RPC Test', 'payment-rpc
 insert into public.projects (id, org_id, name, created_by)
 values ('30000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000001', 'Test Project', '10000000-0000-0000-0000-000000000001');
 insert into public.companies (id, org_id, name, company_type)
-values ('40000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000001', 'Test Vendor', 'vendor');
+values ('40000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000001', 'Test Vendor', 'subcontractor');
 insert into public.vendor_portal_identities (id, email, full_name, status, email_verified_at)
 values ('50000000-0000-0000-0000-000000000001', 'vendor-rpc@example.test', 'Vendor Admin', 'active', now());
 insert into public.vendor_entities (id, legal_name, status, created_by_identity_id)
@@ -134,7 +134,7 @@ select throws_ok(
       'ELEC 1', 'approved', current_date, current_date + 30, 10000, 0, 'usd',
       '{"creation_state":"ready"}', now(), '10000000-0000-0000-0000-000000000001'
     )$$,
-  'P0001', 'Duplicate vendor invoice number for this company',
+  'P0001', 'Duplicate vendor invoice number for this vendor',
   'invoice duplicate protection canonicalizes punctuation and spacing'
 );
 

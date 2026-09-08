@@ -2,9 +2,10 @@ import "server-only"
 
 import { z } from "zod"
 
-import { requireAuthorization } from "@/lib/services/authorization"
+import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access"
 import { requireOrgContext } from "@/lib/services/context"
 import {
+  loadPostedLedger,
   buildBalanceSheet,
   buildCashBasisStatement,
   buildCashFlowStatement,
@@ -178,14 +179,15 @@ export async function getStatementsForPeriod(input: {
     }
   }
 
+  const snapshot = await loadPostedLedger(orgId, input.endDate)
   const [profitLoss, balanceSheet, trialBalance, cashFlow, cashBasis, priorProfitLoss, monthlyProfitLoss] = await Promise.all([
-    buildProfitAndLoss(orgId, input.startDate, input.endDate),
-    buildBalanceSheet(orgId, input.endDate),
-    buildTrialBalance(orgId, input.endDate),
-    buildCashFlowStatement(orgId, input.startDate, input.endDate),
-    buildCashBasisStatement(orgId, input.startDate, input.endDate),
-    comparisonRange ? buildProfitAndLoss(orgId, comparisonRange.start, comparisonRange.end) : Promise.resolve(null),
-    Promise.all(monthRanges.map(async (range) => ({ ...range, profitLoss: await buildProfitAndLoss(orgId, range.startDate, range.endDate) }))),
+    buildProfitAndLoss(orgId, input.startDate, input.endDate, snapshot),
+    buildBalanceSheet(orgId, input.endDate, snapshot),
+    buildTrialBalance(orgId, input.endDate, snapshot),
+    buildCashFlowStatement(orgId, input.startDate, input.endDate, snapshot),
+    buildCashBasisStatement(orgId, input.startDate, input.endDate, snapshot),
+    comparisonRange ? buildProfitAndLoss(orgId, comparisonRange.start, comparisonRange.end, snapshot) : Promise.resolve(null),
+    Promise.all(monthRanges.map(async (range) => ({ ...range, profitLoss: await buildProfitAndLoss(orgId, range.startDate, range.endDate, snapshot) }))),
   ])
 
   return {
@@ -263,7 +265,7 @@ async function loadOpeningBalanceCents(args: {
       .from("journal_entries")
       .select("id, lines:journal_lines!inner(debit_cents, credit_cents)")
       .eq("org_id", args.orgId)
-      .eq("status", "posted")
+      .in("status", ["posted", "reversed"])
       .lt("entry_date", args.startDate)
       .eq("lines.account_id", args.accountId)
       .order("id", { ascending: true })
@@ -322,7 +324,7 @@ export async function getAccountActivity(input: {
             "lines:journal_lines!inner(id, account_id, project_id, company_id, debit_cents, credit_cents, description, line_no)",
         )
         .eq("org_id", orgId)
-        .eq("status", "posted")
+        .in("status", ["posted", "reversed"])
         .gte("entry_date", input.startDate)
         .lte("entry_date", input.endDate)
         .eq("lines.account_id", input.accountId)

@@ -10,5 +10,6 @@ export const LEGACY_ACCOUNTING_JOB_TYPES = [
 
 export const ACCOUNTING_JOB_TYPES = [
   "accounting_push_invoice", "accounting_push_payment", "accounting_push_project_expense", "accounting_push_vendor_bill", "accounting_push_bill_payment",
+  "accounting_void_bill_payment",
   ...LEGACY_ACCOUNTING_JOB_TYPES,
 ] as const

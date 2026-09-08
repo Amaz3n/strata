@@ -35,6 +35,7 @@ import {
   type SubcontractExecutionComplianceGate,
 } from "@/lib/services/subcontract-execution"
 import { getOrgSenderEmail, renderEmailTemplate, sendEmail } from "@/lib/services/mailer"
+import { issueSigningLinkForRequest, sendSignerRequestEmail } from "@/lib/services/signature-delivery"
 import { SignatureEmail } from "@/lib/emails/signature-email"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -191,75 +192,6 @@ function getNextRequiredSequence(requests: SigningRequestRoutingRow[]) {
       request.status !== "voided" &&
       request.status !== "expired",
   )
-}
-
-async function issueSigningLinkForRequest(
-  supabase: any,
-  params: { orgId: string; requestId: string; markSent: boolean },
-) {
-  const token = randomBytes(32).toString("hex")
-  const tokenHash = createHmac("sha256", requireDocumentSigningSecret()).update(token).digest("hex")
-  const nowIso = new Date().toISOString()
-  const updatePayload: Record<string, any> = {
-    token_hash: tokenHash,
-    sent_at: nowIso,
-  }
-
-  if (params.markSent) {
-    updatePayload.status = "sent"
-  }
-
-  const { error } = await supabase
-    .from("document_signing_requests")
-    .update(updatePayload)
-    .eq("org_id", params.orgId)
-    .eq("id", params.requestId)
-
-  if (error) {
-    throw new Error(`Failed to issue signing link: ${error.message}`)
-  }
-
-  return {
-    url: buildUnifiedSigningUrl(token),
-    sentAt: nowIso,
-  }
-}
-
-async function sendSignerRequestEmail(input: {
-  orgId: string
-  toEmail: string
-  documentTitle: string
-  signingUrl: string
-  recipientName?: string
-  isReminder?: boolean
-}) {
-  const supabase = createServiceSupabaseClient()
-  const { data: org } = await supabase.from("orgs").select("name, logo_url, slug").eq("id", input.orgId).maybeSingle()
-  const subject = input.isReminder ? `Reminder: Signature requested - ${input.documentTitle}` : `Signature requested: ${input.documentTitle}`
-  const html = await renderEmailTemplate(
-    SignatureEmail({
-      documentTitle: input.documentTitle,
-      signingLink: input.signingUrl,
-      recipientName: input.recipientName,
-      orgName: org?.name ?? null,
-      orgLogoUrl: org?.logo_url ?? null,
-      eventLabel: input.isReminder ? "Signature Reminder" : "Signature Request",
-      headline: input.isReminder ? "Signature still needed" : "Document ready for signature",
-      bodyText: input.isReminder
-        ? "This is a reminder that your signature is still needed."
-        : "You have a document ready for signature.",
-      detailLabel: "Signature",
-      detailText: "Open the document to review all pages, complete required fields, and sign electronically.",
-      buttonText: "Review and Sign",
-    }),
-  )
-
-  await sendEmail({
-    to: [input.toEmail],
-    subject,
-    html,
-    from: getOrgSenderEmail(org?.slug, org?.name),
-  })
 }
 
 export async function createDocumentAction(input: {
@@ -938,7 +870,6 @@ export async function sendDocumentEnvelopeAction(input: {
 }) {
   return run(async () => {
       const { supabase, orgId, userId } = await requireOrgContext()
-      await requirePermission("project.manage", { supabase, orgId, userId })
       await assertUnifiedESignEnabled({ supabase, orgId })
 
       const recipients = normalizeSendEnvelopeRecipients(input.recipients ?? [])
@@ -958,6 +889,16 @@ export async function sendDocumentEnvelopeAction(input: {
       if (documentError || !document) {
         throw new Error(`Failed to load document: ${documentError?.message ?? "Not found"}`)
       }
+
+      let authorizationPermission = "project.manage"
+      if (document.metadata?.invoice_lien_waiver_id && document.metadata?.invoice_id) {
+        const { getInvoiceWaiverRecord } = await import("@/lib/services/invoice-waiver-workflow")
+        const { readWaiverWorkflow } = await import("@/lib/lien-waivers/invoice-waiver")
+        const linked = await getInvoiceWaiverRecord(document.metadata.invoice_id, document.metadata.invoice_lien_waiver_id, "invoice.write")
+        if (linked.ctx.orgId !== orgId || readWaiverWorkflow(linked.waiver)?.signing_document_id !== document.id) throw new Error("Waiver signing document does not match")
+        authorizationPermission = "invoice.write"
+      }
+      await requirePermission(authorizationPermission, { supabase, orgId, userId })
 
       const nowIso = new Date().toISOString()
       const sourceEntityType = isUnifiedSignableEntityType(document.source_entity_type)
@@ -1021,11 +962,16 @@ export async function sendDocumentEnvelopeAction(input: {
       }
 
       const sourceEntityMetadataKey = sourceEntityType ? getSourceEntityMetadataIdKey(sourceEntityType) : undefined
+      const {data:packetSender} = document.metadata?.delivery_mode === "invoice_packet"
+        ? await supabase.from("app_users").select("email").eq("id",userId).maybeSingle()
+        : {data:null}
+      const selfSigningPacket = Boolean(document.metadata?.invoice_lien_waiver_id && packetSender?.email &&
+        signers.every(signer => normalizeEmailForCompare(signer.email) === normalizeEmailForCompare(packetSender.email)))
       const envelopeMetadata = {
         ...(document.metadata ?? {}),
         ...(sourceEntityMetadataKey && sourceEntityId ? { [sourceEntityMetadataKey]: sourceEntityId } : {}),
         reminder_settings: {
-          enabled: input.reminder_enabled === true,
+          enabled: input.reminder_enabled === true && !selfSigningPacket,
           interval_days:
             input.reminder_enabled === true
               ? Math.max(1, Math.min(30, Number(input.reminder_interval_days ?? 3) || 3))
@@ -1044,6 +990,7 @@ export async function sendDocumentEnvelopeAction(input: {
           metadata: envelopeMetadata,
         },
         orgId,
+        authorizationPermission,
       )
 
       const envelopeRecipientRows = recipients.map((recipient, index) => ({
@@ -1065,6 +1012,7 @@ export async function sendDocumentEnvelopeAction(input: {
           recipients: envelopeRecipientRows,
         },
         orgId,
+        authorizationPermission,
       )
 
       const signingRequestsResult = await createEnvelopeSigningRequests(
@@ -1073,6 +1021,7 @@ export async function sendDocumentEnvelopeAction(input: {
           expires_at: input.expires_at ?? undefined,
         },
         orgId,
+        authorizationPermission,
       )
 
       await recordESignEvent({
@@ -1105,7 +1054,7 @@ export async function sendDocumentEnvelopeAction(input: {
             markSent: true,
           })
 
-          await sendSignerRequestEmail({
+          if (!(document.metadata?.delivery_mode === "invoice_packet" && document.metadata?.invoice_lien_waiver_id && normalizeEmailForCompare(request.sent_to_email) === normalizeEmailForCompare(packetSender?.email))) await sendSignerRequestEmail({
             orgId,
             toEmail: request.sent_to_email as string,
             documentTitle: document.title,

@@ -102,6 +102,8 @@ export const createPaymentRunSchema = z.object({
   funding_source_id: z.string().uuid(),
   idempotency_key: z.string().trim().min(8).max(200),
   items: z.array(paymentRunItemSchema).min(1).max(200),
+  /** Browser workbenches continue past bad rows; API/mobile callers keep atomic refusal by default. */
+  mode: z.enum(["all_or_nothing", "skip_failures"]).default("all_or_nothing"),
 })
 
 /**
@@ -180,7 +182,7 @@ export const startVendorPayoutSetupSchema = z.object({
 }).superRefine(requireEntityOrLegalName)
 
 export type UpdatePaymentRailPolicyInput = z.infer<typeof updatePaymentRailPolicySchema>
-export type CreatePaymentRunInput = z.infer<typeof createPaymentRunSchema>
+export type CreatePaymentRunInput = z.input<typeof createPaymentRunSchema>
 export type SubmitPaymentRunInput = z.infer<typeof submitPaymentRunSchema>
 export type DecidePaymentRunInput = z.infer<typeof decidePaymentRunSchema>
 export type VendorClaimInput = z.infer<typeof vendorClaimSchema>

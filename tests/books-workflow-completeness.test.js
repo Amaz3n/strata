@@ -16,10 +16,12 @@ test("multi-invoice receipts preserve one projected payment per invoice", () => 
 
 test("deposit batching clears undeposited funds into the mapped bank line", () => {
   const service = read("lib/services/books/deposit-batches.ts")
-  assert.match(service, /SYSTEM_ACCOUNT_CODES\.undepositedFunds/)
-  assert.match(service, /debitCents: totalCents/)
-  assert.match(service, /creditCents: totalCents/)
-  assert.match(service, /confirmBankMatch/)
+  assert.match(service, /create_books_deposit_batch_atomic/)
+  const migration = read("supabase/migrations/20260908010036_books_bank_integrity.sql")
+  assert.match(migration, /journal_lines.entry_id=deposit_entry_id/)
+  assert.match(migration, /confirm_books_bank_match_atomic/)
+  assert.match(migration, /Retry must use the original receipt membership/)
+  assert.match(migration, /code='1010'/)
 })
 
 test("party activity has one project-client attribution contract and adaptive GL links", () => {

@@ -10,7 +10,7 @@ import { requirePermission } from "@/lib/services/permissions"
 import { recordAudit } from "@/lib/services/audit"
 import { getComplianceRulesWithClient } from "@/lib/services/compliance"
 import { propagateApprovalToLedger } from "@/lib/services/cost-plus"
-import { enqueueVendorBillSync } from "@/lib/services/accounting-sync"
+import { enqueueVendorBillSync, recordPayableAccountingEnqueueResult } from "@/lib/services/accounting-sync"
 import { recordEvent } from "@/lib/services/events"
 import { assertPayableApprovalPeriodOpen } from "@/lib/services/payable-approval-gate"
 import { sendVendorBillDecisionNotice } from "@/lib/services/vendor-bill-notices"
@@ -162,7 +162,14 @@ export async function evaluateAndAutoApproveVendorBill(input: { orgId: string; b
       throw new Error(`Auto-approval was reverted because the project cost ledger could not be updated: ${message}`)
     }
 
-    await enqueueVendorBillSync(bill.id, input.orgId)
+    const syncResult = await enqueueVendorBillSync(bill.id, input.orgId)
+    await recordPayableAccountingEnqueueResult({
+      orgId: input.orgId,
+      billId: bill.id,
+      entityType: "vendor_bill",
+      entityId: bill.id,
+      result: syncResult,
+    })
     await Promise.all([
       recordAudit({
         orgId: input.orgId,

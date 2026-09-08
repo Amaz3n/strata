@@ -28,8 +28,8 @@ function stubModule(request, exports) {
  * where the interesting behaviour lives, so those get real recorders; audit,
  * events and notifications are noise here.
  */
-function installStubs({ supabase, context, instantiate, generatePurchaseOrders, slotTarget = 4 }) {
-  const calls = { instantiate: [], purchaseOrders: [], events: [], notifications: [], projects: [], outbox: [] }
+function installStubs({ supabase, context, instantiate, generatePurchaseOrders, transferLandAtStart, slotTarget = 4 }) {
+  const calls = { instantiate: [], purchaseOrders: [], events: [], notifications: [], projects: [], outbox: [], landTransfers: [] }
 
   stubModule("@/lib/services/context", {
     requireOrgContext: async () => context,
@@ -68,6 +68,13 @@ function installStubs({ supabase, context, instantiate, generatePurchaseOrders, 
   })
   stubModule("@/lib/services/projects", {
     createProject: async ({ input }) => { calls.projects.push(input); return { id: PROJECT } },
+  })
+  stubModule("@/lib/services/books/inventory", {
+    transferLandAtStartForService: async (orgId, lotId, date, actorId) => {
+      const input = { orgId, lotId, date, actorId }
+      calls.landTransfers.push(input)
+      return transferLandAtStart ? transferLandAtStart(input) : undefined
+    },
   })
   stubModule("@/lib/services/starts-pipeline-trigger", { triggerStartsPipeline: async () => undefined })
   stubModule("@/lib/services/even-flow", {

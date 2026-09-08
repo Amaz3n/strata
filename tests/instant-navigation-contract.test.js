@@ -215,7 +215,7 @@ test("the directory owns a local-swap, prefetched instant-navigation contract", 
   assert.doesNotMatch(table, /onPrefetch/)
   assert.match(detailPage, /export const instant = true/)
   assert.match(detailPage, /<Suspense fallback=\{<CompanyTabSkeleton/)
-  assert.match(detailLayout, /const vendorSignals = isVendorCompany \? loadVendorHeaderSignals/)
+  assert.match(detailLayout, /const vendorSignals = isVendorCompany\s*\? loadVendorHeaderSignals/)
   assert.doesNotMatch(detailLayout, /await loadVendorHeaderSignals/)
   assert.match(detailLayout, /await loadDirectoryPartyHeader\(id\)/)
   assert.match(detailData, /getDirectoryEntry\(partyId\)/)
@@ -294,17 +294,20 @@ test("known route props use the asynchronous Next.js request API", () => {
   }
 })
 
-test("one inherited loading boundary covers every authenticated page", () => {
+test("authenticated pages inherit loading coverage and specialized boundaries use skeletons", () => {
   const appRoot = path.join(root, "app", "(app)")
   const boundaries = filesNamed(appRoot, "loading.tsx").map((absolute) =>
     path.relative(root, absolute),
   )
 
-  // A segment's loading.tsx wraps its descendants, so the route-group boundary
-  // already covers every authenticated page. A deeper one does not add
-  // coverage — it overrides, letting a slow navigation change visual language
-  // midway through the wait.
-  assert.deepEqual(boundaries, ["app/(app)/loading.tsx"])
+  // The group boundary guarantees coverage. Specialized heavy workbenches may
+  // override it with a useful skeleton, without fetching or running effects.
+  assert.ok(boundaries.includes("app/(app)/loading.tsx"))
+  for (const boundary of boundaries.filter(file => file !== "app/(app)/loading.tsx")) {
+    const content = source(boundary)
+    assert.match(content, /Skeleton|skeleton/, boundary)
+    assert.doesNotMatch(content, /Loader2|animate-spin|useEffect|fetch\(/, boundary)
+  }
   assert.match(source("app/(app)/loading.tsx"), /AppNavigationFallback/)
 })
 

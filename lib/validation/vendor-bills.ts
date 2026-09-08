@@ -34,6 +34,7 @@ export const vendorBillStatusUpdateSchema = z.object({
         amount_cents: z.number().int(),
         project_id: z.string().uuid("Invalid project").nullable().optional(),
         billable_to_customer: z.boolean().optional(),
+        arc_books_gl_account_id: z.string().uuid("Invalid Arc Books account").optional(),
         qbo_expense_account_id: z.string().optional(),
         qbo_expense_account_name: z.string().optional(),
         qbo_ap_account_id: z.string().optional(),
@@ -44,7 +45,8 @@ export const vendorBillStatusUpdateSchema = z.object({
       }),
     )
     .optional(),
-  qbo_expense_account_id: z.string().optional(),
+  arc_books_gl_account_id: z.string().uuid("Invalid Arc Books account").optional(),
+        qbo_expense_account_id: z.string().optional(),
   qbo_expense_account_name: z.string().optional(),
   qbo_ap_account_id: z.string().optional(),
   qbo_ap_account_name: z.string().optional(),
@@ -57,6 +59,7 @@ export const vendorBillStatusUpdateSchema = z.object({
   payment_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid payment date").optional(),
   payment_amount_cents: z.number().int().min(1).optional(),
   /** Stable across retries so recording a manual payment is exactly-once. */
+  books_payment_account_id: z.string().uuid().nullable().optional(),
   payment_idempotency_key: z.string().trim().min(8).max(200).optional(),
   retainage_percent: z.number().min(0).max(25).optional(),
   /**

@@ -1,5 +1,6 @@
 import "server-only"
 
+import { PaymentReturnVendorEmail } from "@/lib/emails/payment-return-vendor-email"
 import { RemittanceAdviceEmail } from "@/lib/emails/remittance-advice-email"
 import { getOrgSenderEmail, renderEmailTemplate, sendEmail } from "@/lib/services/mailer"
 import { recordEvent } from "@/lib/services/events"
@@ -35,7 +36,17 @@ const METHOD_LABELS: Record<string, string> = {
   wire: "Wire",
   card: "Card",
   cash: "Cash",
+  // A credit is not a way of sending money — it is the absence of one. Without
+  // this entry the template fell through to the raw key and mailed the vendor
+  // "Payment sent: $4,200 · Sent by credit" for money that never left the
+  // builder's account.
+  credit: "Credit applied",
   other: "Other",
+}
+
+/** Nothing was sent, so nothing about the email may say a payment was sent. */
+function isCreditApplication(method: string) {
+  return method === "credit"
 }
 
 /**
@@ -128,17 +139,26 @@ async function deliverRemittance(input: {
       reference: input.reference,
     }),
   )
+  const credit = isCreditApplication(input.method)
   const sent = await sendEmail({
     from: getOrgSenderEmail(org?.slug, org?.name),
     to,
-    subject: `Payment sent: ${money(input.amountCents)}${bill.bill_number ? ` for invoice ${bill.bill_number}` : ""}`,
+    subject: credit
+      ? `Credit applied: ${money(input.amountCents)}${bill.bill_number ? ` against invoice ${bill.bill_number}` : ""}`
+      : `Payment sent: ${money(input.amountCents)}${bill.bill_number ? ` for invoice ${bill.bill_number}` : ""}`,
     html,
+    // One advice per settled thing, whatever the provider replays. Every AP
+    // webhook is delivered at least once and the QA runbook fires each of them
+    // twice on purpose; without a stable key the vendor got a duplicate
+    // remittance for money that moved once, which is exactly the phone call
+    // remittance advice exists to prevent.
+    idempotencyKey: `remittance-${input.entityType}-${input.entityId}`,
   })
   if (!sent) return { sent: false as const, reason: "send_failed" as const }
 
   await recordEvent({
     orgId: input.orgId,
-    eventType: "vendor_remittance_sent",
+    eventType: credit ? "vendor_credit_advice_sent" : "vendor_remittance_sent",
     entityType: input.entityType,
     entityId: input.entityId,
     payload: { bill_id: bill.id, amount_cents: input.amountCents, method: input.method },
@@ -230,4 +250,83 @@ export async function sendManualPaymentRemittanceAdvice(input: { orgId: string; 
     entityType: "payment",
     entityId: payment.id,
   })
+}
+
+/**
+ * Tell the vendor their money came back.
+ *
+ * Same recipients and the same idempotency discipline as remittance advice, and
+ * for the same reason: the return webhook is delivered at least once and
+ * replayed on purpose in the QA runbook, and a vendor told twice that a payment
+ * failed calls twice. Keyed on the disbursement so a `post_transfer` return that
+ * later resolves into a `post_payout` one never mails the same vendor twice
+ * about the same money.
+ *
+ * Only sent once Arc has released the money toward the vendor. A return before
+ * the transfer never reached them, and the deposit they were told about is the
+ * only thing worth correcting.
+ */
+export async function sendVendorPaymentReturnNotice(input: {
+  orgId: string
+  disbursementId: string
+  stage: "post_payout" | "post_transfer"
+}) {
+  const supabase = createServiceSupabaseClient()
+  const { data: disbursement } = await supabase
+    .from("disbursements")
+    .select("id,org_id,bill_id,amount_cents,recipient_account_id")
+    .eq("org_id", input.orgId)
+    .eq("id", input.disbursementId)
+    .maybeSingle()
+  if (!disbursement?.bill_id) return { sent: false as const, reason: "no_bill" as const }
+
+  const [{ data: bill }, { data: org }] = await Promise.all([
+    supabase
+      .from("vendor_bills")
+      .select("id,bill_number,company_id,company:companies(name,email),project:projects(name)")
+      .eq("org_id", input.orgId)
+      .eq("id", disbursement.bill_id)
+      .maybeSingle(),
+    supabase.from("orgs").select("name,slug,logo_url").eq("id", input.orgId).maybeSingle(),
+  ])
+  if (!bill) return { sent: false as const, reason: "no_bill" as const }
+
+  const company = firstRelation(bill.company)
+  const project = firstRelation(bill.project)
+  const to = await resolveRemittanceRecipients({
+    orgId: input.orgId,
+    companyId: bill.company_id,
+    recipientAccountId: disbursement.recipient_account_id ?? null,
+    companyEmail: company?.email ?? null,
+  })
+  if (to.length === 0) return { sent: false as const, reason: "no_recipient_email" as const }
+
+  const amountCents = Number(disbursement.amount_cents)
+  const html = await renderEmailTemplate(
+    PaymentReturnVendorEmail({
+      orgName: org?.name,
+      orgLogoUrl: org?.logo_url,
+      billNumber: bill.bill_number ?? null,
+      projectName: project?.name ?? null,
+      amountCents,
+      stage: input.stage,
+    }),
+  )
+  const sent = await sendEmail({
+    from: getOrgSenderEmail(org?.slug, org?.name),
+    to,
+    subject: `A payment to you was returned: ${money(amountCents)}${bill.bill_number ? ` for invoice ${bill.bill_number}` : ""}`,
+    html,
+    idempotencyKey: `payment-return-disbursement-${disbursement.id}`,
+  })
+  if (!sent) return { sent: false as const, reason: "send_failed" as const }
+
+  await recordEvent({
+    orgId: input.orgId,
+    eventType: "vendor_payment_return_notice_sent",
+    entityType: "disbursement",
+    entityId: disbursement.id,
+    payload: { bill_id: bill.id, amount_cents: amountCents, stage: input.stage },
+  })
+  return { sent: true as const }
 }

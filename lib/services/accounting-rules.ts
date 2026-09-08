@@ -28,7 +28,7 @@ export function accountingPushBlockReason(input: {
   targetConnectionId?: string | null
   enabled: boolean
 }) {
-  if (!input.hasTarget) return "unconnected" as const
+  if (!input.hasTarget) return "no_target" as const
   if (!input.healthy) return "connection_unhealthy" as const
   if (input.pushable === false) return "inbound_only" as const
   if (input.existingConnectionId && input.targetConnectionId && input.existingConnectionId !== input.targetConnectionId) return "connection_mismatch" as const

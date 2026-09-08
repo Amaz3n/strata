@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 
-import { getProvider, isAccountingProviderKey } from "@/lib/integrations/accounting/registry"
+import { getProvider, isAccountingProviderKey, listProviders } from "@/lib/integrations/accounting/registry"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
 import { logAccounting } from "@/lib/services/accounting-logger"
@@ -27,6 +27,7 @@ async function processAccountingCdc(request: NextRequest) {
     .from("accounting_connections")
     .select("id, org_id, provider")
     .eq("status", "active")
+    .in("provider", listProviders().filter(provider => provider.capabilities.supportsCDC && provider.ingestChanges).map(provider => provider.key))
     .order("last_inbound_poll_at", { ascending: true, nullsFirst: true })
     .limit(BATCH_SIZE)
 

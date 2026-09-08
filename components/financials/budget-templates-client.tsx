@@ -1,5 +1,6 @@
 "use client";
 
+import { PresetTemplateWorkspace } from "@/components/settings/preset-template-workspace";
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
 
@@ -9,7 +10,6 @@ import {
   updateBudgetTemplateAction,
 } from "@/app/(app)/settings/templates/actions";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -194,12 +194,38 @@ export function BudgetTemplatesClient({
   return (
     <div className="space-y-4">
       {editingId ? (
-        <Card className="rounded-none">
-          <CardContent className="space-y-5 p-5">
-            <div className="grid gap-4 sm:grid-cols-3">
+        <PresetTemplateWorkspace
+          kind="Budget"
+          name={name}
+          description={[description, propertyType].filter(Boolean).join(" · ")}
+          rows={lines
+            .filter((l) => l.description.trim() || l.costCodeId)
+            .map((l) => ({
+              label:
+                l.description ||
+                costCodes.find((c) => c.id === l.costCodeId)?.name ||
+                "Budget line",
+              detail:
+                l.basis === "quantity"
+                  ? `${l.quantity} ${l.uom} × ${money(cents(l.unitCost))}`
+                  : "Fixed amount",
+              value: money(
+                l.basis === "quantity"
+                  ? Math.round((Number(l.quantity) || 0) * cents(l.unitCost))
+                  : cents(l.amount),
+              ),
+            }))}
+          total={`Resolved total ${money(totalCents)}`}
+          onClose={() => setEditingId(null)}
+          onSave={save}
+          busy={pending}
+        >
+          <div className="space-y-5">
+            <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5">
                 <Label>Name</Label>
                 <Input
+                  aria-label="Template name"
                   value={name}
                   onChange={(event) => setName(event.target.value)}
                   placeholder="Standard production budget"
@@ -208,172 +234,185 @@ export function BudgetTemplatesClient({
               <div className="space-y-1.5">
                 <Label>Property type</Label>
                 <Input
+                  aria-label="Property type"
                   value={propertyType}
                   onChange={(event) => setPropertyType(event.target.value)}
                   placeholder="Optional"
                 />
               </div>
-              <div className="space-y-1.5 sm:col-span-3">
+              <div className="space-y-1.5 col-span-2">
                 <Label>Description</Label>
                 <Textarea
+                  aria-label="Template description"
                   value={description}
                   onChange={(event) => setDescription(event.target.value)}
                 />
               </div>
             </div>
-            <div className="overflow-x-auto border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="min-w-48">Cost code</TableHead>
-                    <TableHead className="min-w-36">Cost type</TableHead>
-                    <TableHead className="min-w-56">Description</TableHead>
-                    <TableHead className="w-32">Basis</TableHead>
-                    <TableHead className="w-28 text-right">
-                      Amount / Qty
-                    </TableHead>
-                    <TableHead className="w-24">UOM</TableHead>
-                    <TableHead className="w-28 text-right">Unit cost</TableHead>
-                    <TableHead className="w-12" />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {lines.map((line, index) => (
-                    <TableRow key={index}>
-                      <TableCell>
-                        <Select
-                          value={line.costCodeId ?? "none"}
-                          onValueChange={(value) =>
-                            patchLine(index, {
-                              costCodeId: value === "none" ? null : value,
-                            })
-                          }
-                        >
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="none">Uncoded</SelectItem>
-                            {costCodes.map((code) => (
-                              <SelectItem key={code.id} value={code.id}>
-                                {code.code} · {code.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </TableCell>
-                      <TableCell>
-                        <Select
-                          value={line.costType ?? "none"}
-                          onValueChange={(value) =>
-                            patchLine(index, {
-                              costType:
-                                value === "none" ? null : (value as CostType),
-                            })
-                          }
-                        >
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="none">Unspecified</SelectItem>
-                            {COST_TYPES.map((type) => (
-                              <SelectItem key={type} value={type}>
-                                {COST_TYPE_LABELS[type]}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </TableCell>
-                      <TableCell>
-                        <Input
-                          value={line.description}
-                          onChange={(event) =>
-                            patchLine(index, {
-                              description: event.target.value,
-                            })
-                          }
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Select
-                          value={line.basis}
-                          onValueChange={(value) =>
-                            patchLine(index, {
-                              basis: value as LineDraft["basis"],
-                            })
-                          }
-                        >
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="amount">Amount</SelectItem>
-                            <SelectItem value="quantity">Qty × unit</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </TableCell>
-                      <TableCell>
-                        <Input
-                          className="text-right tabular-nums"
-                          inputMode="decimal"
-                          value={
-                            line.basis === "amount"
-                              ? line.amount
-                              : line.quantity
-                          }
-                          onChange={(event) =>
-                            patchLine(
-                              index,
-                              line.basis === "amount"
-                                ? { amount: event.target.value }
-                                : { quantity: event.target.value },
-                            )
-                          }
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Input
-                          disabled={line.basis === "amount"}
-                          value={line.uom}
-                          onChange={(event) =>
-                            patchLine(index, { uom: event.target.value })
-                          }
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Input
-                          disabled={line.basis === "amount"}
-                          className="text-right tabular-nums"
-                          inputMode="decimal"
-                          value={line.unitCost}
-                          onChange={(event) =>
-                            patchLine(index, { unitCost: event.target.value })
-                          }
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() =>
-                            setLines((current) =>
-                              current.length === 1
-                                ? current
-                                : current.filter(
-                                    (_, lineIndex) => lineIndex !== index,
-                                  ),
-                            )
-                          }
-                          disabled={lines.length === 1}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+            <div className="space-y-3">
+              {lines.map((line, index) => (
+                <div
+                  key={index}
+                  className="grid grid-cols-2 gap-3 border bg-muted/10 p-4"
+                >
+                  <label className="col-span-2 space-y-1.5">
+                    <span className="text-[11px] text-muted-foreground">
+                      Description
+                    </span>
+                    <Input
+                      aria-label={`Description ${index + 1}`}
+                      value={line.description}
+                      onChange={(event) =>
+                        patchLine(index, {
+                          description: event.target.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="space-y-1.5">
+                    <span className="text-[11px] text-muted-foreground">
+                      Cost code
+                    </span>
+                    <Select
+                      value={line.costCodeId ?? "none"}
+                      onValueChange={(value) =>
+                        patchLine(index, {
+                          costCodeId: value === "none" ? null : value,
+                        })
+                      }
+                    >
+                      <SelectTrigger aria-label={`Cost code ${index + 1}`}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">Uncoded</SelectItem>
+                        {costCodes.map((code) => (
+                          <SelectItem key={code.id} value={code.id}>
+                            {code.code} · {code.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <label className="space-y-1.5">
+                    <span className="text-[11px] text-muted-foreground">
+                      Cost type
+                    </span>
+                    <Select
+                      value={line.costType ?? "none"}
+                      onValueChange={(value) =>
+                        patchLine(index, {
+                          costType:
+                            value === "none" ? null : (value as CostType),
+                        })
+                      }
+                    >
+                      <SelectTrigger aria-label={`Cost type ${index + 1}`}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">Unspecified</SelectItem>
+                        {COST_TYPES.map((type) => (
+                          <SelectItem key={type} value={type}>
+                            {COST_TYPE_LABELS[type]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <label className="space-y-1.5">
+                    <span className="text-[11px] text-muted-foreground">
+                      Basis
+                    </span>
+                    <Select
+                      value={line.basis}
+                      onValueChange={(value) =>
+                        patchLine(index, {
+                          basis: value as LineDraft["basis"],
+                        })
+                      }
+                    >
+                      <SelectTrigger aria-label={`Basis ${index + 1}`}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="amount">Amount</SelectItem>
+                        <SelectItem value="quantity">Qty × unit</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <label className="space-y-1.5">
+                    <span className="text-[11px] text-muted-foreground">
+                      Amount / Quantity
+                    </span>
+                    <Input
+                      aria-label={`Amount / Quantity ${index + 1}`}
+                      className="text-right tabular-nums"
+                      inputMode="decimal"
+                      value={
+                        line.basis === "amount" ? line.amount : line.quantity
+                      }
+                      onChange={(event) =>
+                        patchLine(
+                          index,
+                          line.basis === "amount"
+                            ? { amount: event.target.value }
+                            : { quantity: event.target.value },
+                        )
+                      }
+                    />
+                  </label>
+                  {line.basis === "quantity" && (
+                    <label className="space-y-1.5">
+                      <span className="text-[11px] text-muted-foreground">
+                        Unit
+                      </span>
+                      <Input
+                        aria-label={`Unit ${index + 1}`}
+                        value={line.uom}
+                        onChange={(event) =>
+                          patchLine(index, { uom: event.target.value })
+                        }
+                      />
+                    </label>
+                  )}
+                  {line.basis === "quantity" && (
+                    <label className="space-y-1.5">
+                      <span className="text-[11px] text-muted-foreground">
+                        Unit cost
+                      </span>
+                      <Input
+                        aria-label={`Unit cost ${index + 1}`}
+                        className="text-right tabular-nums"
+                        inputMode="decimal"
+                        value={line.unitCost}
+                        onChange={(event) =>
+                          patchLine(index, { unitCost: event.target.value })
+                        }
+                      />
+                    </label>
+                  )}
+                  <div className="col-span-2 flex justify-end">
+                    <Button
+                      aria-label={`Remove budget line ${index + 1}`}
+                      variant="ghost"
+                      size="icon"
+                      onClick={() =>
+                        setLines((current) =>
+                          current.length === 1
+                            ? current
+                            : current.filter(
+                                (_, lineIndex) => lineIndex !== index,
+                              ),
+                        )
+                      }
+                      disabled={lines.length === 1}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
             </div>
             <div className="flex items-center justify-between">
               <Button
@@ -387,20 +426,8 @@ export function BudgetTemplatesClient({
                 Resolved total {money(totalCents)}
               </span>
             </div>
-            <div className="flex justify-end gap-2">
-              <Button
-                variant="outline"
-                onClick={() => setEditingId(null)}
-                disabled={pending}
-              >
-                Cancel
-              </Button>
-              <Button onClick={save} disabled={pending}>
-                {pending ? "Saving…" : "Save template"}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+          </div>
+        </PresetTemplateWorkspace>
       ) : (
         <Button onClick={startCreate}>
           <Plus className="h-4 w-4" />

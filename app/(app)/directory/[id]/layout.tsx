@@ -65,7 +65,13 @@ async function loadVendorHeaderSignals(
   return {
     overdueCents: summary?.overdue_cents ?? 0,
     overdueBillCount: summary?.overdue_bill_count ?? 0,
-    complianceReady: complianceStatus?.is_compliant ?? null,
+    complianceState: !complianceStatus
+      ? null
+      : complianceStatus.enrollment === "unenrolled"
+        ? "unenrolled"
+        : complianceStatus.is_compliant
+          ? "compliant"
+          : "action_required",
     complianceMissing: complianceStatus?.missing.length ?? 0,
     complianceExpired: complianceStatus?.expired.length ?? 0,
     complianceExpiringSoon: complianceStatus?.expiring_soon.length ?? 0,
@@ -107,8 +113,12 @@ async function PartyAccountHeaderData({ params }: Pick<PartyAccountLayoutProps, 
         hasPrequalificationHistory: false,
       };
   const showTradeWork = capabilities.isTradePartner || programSummary.hasProjectWork;
-  const showCompliance =
-    showTradeWork || programSummary.complianceEnrolled || programSummary.hasComplianceHistory;
+  // Every vendor company gets the tab. Hiding it until the vendor already had
+  // requirements or history meant the one screen that can enroll somebody was
+  // unreachable for exactly the vendors who were not enrolled — and enrollment
+  // is what makes the compliance badge mean anything. The tab's empty state is
+  // the enrollment step.
+  const showCompliance = isVendorCompany;
   const showPrequalification = showTradeWork || programSummary.hasPrequalificationHistory;
   // Started, deliberately not awaited: identity and tabs are useful without
   // ledger/compliance decoration, so those signals stream into small client

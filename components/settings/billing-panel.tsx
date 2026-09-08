@@ -1,11 +1,10 @@
 "use client"
 
-import { type CSSProperties, useCallback, useEffect, useState, useTransition } from "react"
+import { type CSSProperties, useEffect, useState, useTransition } from "react"
 
 import { AlertTriangle, ArrowUpRight, Clock, ExternalLink, Shield } from "@/components/icons"
 import { ArcMark } from "@/components/brand/arc-mark"
 import { Button } from "@/components/ui/button"
-import { Skeleton } from "@/components/ui/skeleton"
 import { InfoRow, SettingsError, SettingsGroup } from "@/components/settings/settings-section"
 import {
   createBillingPortalSessionAction,
@@ -105,33 +104,13 @@ function StatusChip({ status }: { status: string | null | undefined }) {
   )
 }
 
-export function BillingPanel({ canManageBilling }: { canManageBilling: boolean }) {
-  const [billing, setBilling] = useState<Billing | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+export function BillingPanel({ canManageBilling, initialBilling }: { canManageBilling: boolean; initialBilling: Billing | null }) {
+  const [billing, setBilling] = useState<Billing | null>(initialBilling)
   const [actionError, setActionError] = useState<string | null>(null)
   const [checkoutPending, startCheckout] = useTransition()
   const [portalPending, startPortal] = useTransition()
 
-  const load = useCallback(() => {
-    if (!canManageBilling) {
-      setLoading(false)
-      return
-    }
-    setLoading(true)
-    setError(null)
-    getBillingPageDataAction()
-      .then((data) => setBilling(data?.billing ?? null))
-      .catch((cause) => {
-        console.error("Failed to load billing details", cause)
-        setError("We couldn't load your billing details right now.")
-      })
-      .finally(() => setLoading(false))
-  }, [canManageBilling])
-
-  useEffect(() => {
-    load()
-  }, [load])
+  useEffect(() => { setBilling(initialBilling) }, [initialBilling])
 
   const handleCheckout = (planCode: string | null) => {
     if (!planCode) return
@@ -168,45 +147,6 @@ export function BillingPanel({ canManageBilling }: { canManageBilling: boolean }
           <p className="mt-4 max-w-sm text-sm text-muted-foreground">
             You don&apos;t have permission to view billing for this organization.
           </p>
-        </div>
-      </div>
-    )
-  }
-
-  if (loading) {
-    return (
-      <div className={containerClass}>
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3.5">
-            <Skeleton className="size-11 rounded-none" />
-            <div className="space-y-2">
-              <Skeleton className="h-4 w-40" />
-              <Skeleton className="h-3 w-56" />
-            </div>
-          </div>
-          <div className="flex flex-col items-end gap-2">
-            <Skeleton className="h-6 w-24" />
-            <Skeleton className="h-4 w-16" />
-          </div>
-        </div>
-        <div className="space-y-3">
-          <Skeleton className="h-3 w-24" />
-          {Array.from({ length: 4 }).map((_, index) => (
-            <Skeleton key={index} className="h-9 w-full rounded-none" />
-          ))}
-        </div>
-      </div>
-    )
-  }
-
-  if (error) {
-    return (
-      <div className={containerClass}>
-        <div className="flex flex-col items-center justify-center gap-3 py-20 text-center">
-          <p className="max-w-sm text-sm text-destructive">{error}</p>
-          <Button size="sm" variant="outline" onClick={load}>
-            Try again
-          </Button>
         </div>
       </div>
     )

@@ -1,3 +1,6 @@
+import type { ComplianceDocument, ComplianceRequirementStatus } from "@/lib/types"
+import { getCompaniesComplianceStatusWithClient } from "@/lib/services/compliance-documents"
+import { resolveCompanyRecipients, type CompanyRecipient } from "@/lib/services/directory"
 import { recordEvent } from "@/lib/services/events"
 import { findExistingCompanyPortalToken } from "@/lib/services/portal-access"
 import {
@@ -34,7 +37,7 @@ function expiryReminderDays(warningDays: number): number[] {
  */
 const OVERDUE_ESCALATION_DAYS = [1, 7, 14, 30, 60]
 
-type ReminderKind = "missing" | "expiring" | "expired" | "rejected" | "escalation"
+type ReminderKind = "missing" | "expiring" | "expired" | "rejected" | "escalation" | "deficient"
 
 interface OrgRow {
   id: string
@@ -63,32 +66,6 @@ interface RequirementRow {
   } | null
 }
 
-interface ComplianceDocumentRow {
-  id: string
-  company_id: string
-  document_type_id: string
-  status: string
-  expiry_date?: string | null
-  rejection_reason?: string | null
-  revoked_at?: string | null
-  superseded_by_id?: string | null
-  created_at: string
-}
-
-interface WaiverRow {
-  company_id: string
-  document_type_id: string
-  expires_at?: string | null
-  revoked_at?: string | null
-}
-
-interface ContactRow {
-  id: string
-  primary_company_id?: string | null
-  full_name: string
-  email?: string | null
-}
-
 interface PendingGroup {
   companyName: string
   recipientEmail: string
@@ -96,9 +73,11 @@ interface PendingGroup {
   items: Array<{
     deliveryId: string
     documentName: string
-    reminderKind: "missing" | "expiring" | "expired" | "rejected"
+    reminderKind: "missing" | "expiring" | "expired" | "rejected" | "deficient"
     expiryDate: string | null
     rejectionReason: string | null
+    /** What is short about a document that is on file and still not enough. */
+    deficiency: string | null
   }>
 }
 
@@ -116,61 +95,11 @@ export interface ComplianceAutopilotMetrics {
   prequalificationsExpired: number
 }
 
-function utcDateOnly(value: Date | string) {
-  const date = typeof value === "string" ? new Date(`${value}T00:00:00Z`) : value
-  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
-}
-
-function daysUntil(date: string, today: Date) {
-  return Math.floor((utcDateOnly(date) - utcDateOnly(today)) / DAY_MS)
-}
-
 function weekKey(date: Date) {
   const start = Date.UTC(date.getUTCFullYear(), 0, 1)
-  const current = utcDateOnly(date)
+  const current = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
   const week = Math.floor((current - start) / (7 * DAY_MS)) + 1
   return `${date.getUTCFullYear()}-W${String(week).padStart(2, "0")}`
-}
-
-/**
- * The document currently answering each requirement.
- *
- * Withdrawn and superseded submissions are dropped first: taking the newest row
- * regardless meant a revoked certificate silently suppressed the chase for the
- * requirement it no longer satisfies, and a rejected-but-superseded one chased
- * a vendor for paperwork they had already replaced.
- */
-function latestDocumentsByCompanyAndType(rows: ComplianceDocumentRow[]) {
-  const latest = new Map<string, ComplianceDocumentRow>()
-  for (const row of rows) {
-    if (row.revoked_at || row.superseded_by_id) continue
-    const key = `${row.company_id}:${row.document_type_id}`
-    const current = latest.get(key)
-    if (!current || new Date(row.created_at) > new Date(current.created_at)) {
-      latest.set(key, row)
-    }
-  }
-  return latest
-}
-
-function hasActiveWaiver(waivers: WaiverRow[], today: Date) {
-  return waivers.some((waiver) => {
-    if (waiver.revoked_at) return false
-    if (!waiver.expires_at) return true
-    return daysUntil(waiver.expires_at, today) >= 0
-  })
-}
-
-function recipientForCompany(company: RequirementRow["companies"], contacts: ContactRow[]) {
-  const companyEmail = company?.email?.trim()
-  if (companyEmail) {
-    return { email: companyEmail, name: company?.name ?? null, contactId: null }
-  }
-
-  const contact = contacts.find((row) => row.email?.trim())
-  return contact?.email
-    ? { email: contact.email.trim(), name: contact.full_name, contactId: contact.id }
-    : null
 }
 
 function firstRelation<T>(value: T | T[] | null | undefined): T | null {
@@ -178,13 +107,22 @@ function firstRelation<T>(value: T | T[] | null | undefined): T | null {
   return value ?? null
 }
 
+/**
+ * What to chase this vendor about for one requirement, given the verdict the
+ * compliance tab shows for it.
+ *
+ * Driven by `ComplianceRequirementStatus` rather than by "the newest document
+ * of this type", which is what it used to re-derive for itself. That derivation
+ * knew about presence and expiry and nothing else, so a certificate that was on
+ * file, approved, and $500k short of the required $1M produced no chase at all:
+ * the payment hold blocked every payable to that vendor and the only person who
+ * could have fixed it was never told. `deficient` is that case.
+ */
 function buildReminder({
-  requirement,
-  document,
+  status,
   today,
 }: {
-  requirement: RequirementRow
-  document?: ComplianceDocumentRow
+  status: ComplianceRequirementStatus
   today: Date
 }): {
   kind: ReminderKind
@@ -192,62 +130,74 @@ function buildReminder({
   days?: number | null
   expiryDate?: string | null
   rejectionReason?: string | null
+  deficiency?: string | null
 } | null {
-  const docType = requirement.compliance_document_types
-  if (!docType) return null
+  const document = status.document
+  const expiryDate = document?.expiry_date ?? null
 
-  if (!document) {
-    const bucket = `missing:${weekKey(today)}`
-    return { kind: "missing", bucket, days: null, expiryDate: null }
-  }
+  switch (status.state) {
+    // Satisfied, waived, or already with a reviewer. None of these are the
+    // vendor's move to make.
+    case "met":
+    case "waived":
+    case "pending":
+      return null
 
-  if (document.status === "pending_review") {
-    return null
-  }
+    case "missing":
+      return { kind: "missing", bucket: `missing:${weekKey(today)}`, days: null, expiryDate: null }
 
-  // A rejection used to produce no chase at all: the vendor was told nothing
-  // and the autopilot only knew missing and expiring, so a returned certificate
-  // was invisible from both sides until someone opened the portal.
-  if (document.status === "rejected") {
-    return {
-      kind: "rejected",
-      bucket: `rejected:${document.id}:${weekKey(today)}`,
-      days: null,
-      expiryDate: document.expiry_date ?? null,
-      rejectionReason: document.rejection_reason ?? null,
+    // A rejection used to produce no chase at all: the vendor was told nothing
+    // and the autopilot only knew missing and expiring, so a returned
+    // certificate was invisible from both sides until someone opened the portal.
+    case "rejected":
+      return {
+        kind: "rejected",
+        bucket: `rejected:${document?.id ?? status.requirement.id}:${weekKey(today)}`,
+        days: null,
+        expiryDate,
+        rejectionReason: document?.rejection_reason ?? null,
+      }
+
+    case "deficient":
+      return {
+        kind: "deficient",
+        // Keyed on what is wrong, not on the week: a vendor who fixes the
+        // coverage but not the endorsement should hear about the endorsement
+        // rather than nothing, and re-sending the same shortfall weekly is what
+        // the weekly bucket is for.
+        bucket: `deficient:${status.deficiency?.codes.join("+") ?? "unspecified"}:${weekKey(today)}`,
+        days: status.days_until_expiry,
+        expiryDate,
+        deficiency: status.deficiency?.message ?? null,
+      }
+
+    case "expired": {
+      const days = status.days_until_expiry
+      if (days === null || days >= 0 || !expiryDate) return null
+      // Escalate on a schedule rather than once per calendar week, so ignoring
+      // the run-up no longer buys silence.
+      const daysOverdue = Math.abs(days)
+      const step = OVERDUE_ESCALATION_DAYS.filter((mark) => mark <= daysOverdue).pop()
+      if (step === undefined) return null
+      return {
+        kind: daysOverdue >= 14 ? "escalation" : "expired",
+        bucket: `expired:${step}:${expiryDate}`,
+        days,
+        expiryDate,
+      }
     }
-  }
 
-  if (document.status !== "approved") {
-    const bucket = `missing:${weekKey(today)}`
-    return { kind: "missing", bucket, days: null, expiryDate: document.expiry_date ?? null }
-  }
-
-  if (!docType.has_expiry || !document.expiry_date) return null
-
-  const days = daysUntil(document.expiry_date, today)
-  if (days < 0) {
-    // Escalate on a schedule rather than once per calendar week, so ignoring
-    // the run-up no longer buys silence.
-    const daysOverdue = Math.abs(days)
-    const step = OVERDUE_ESCALATION_DAYS.filter((mark) => mark <= daysOverdue).pop()
-    if (step === undefined) return null
-    return {
-      kind: daysOverdue >= 14 ? "escalation" : "expired",
-      bucket: `expired:${step}:${document.expiry_date}`,
-      days,
-      expiryDate: document.expiry_date,
+    case "expiring": {
+      const days = status.days_until_expiry
+      if (days === null || days < 0 || !expiryDate) return null
+      const window = status.requirement.document_type?.expiry_warning_days ?? 30
+      if (!expiryReminderDays(window).includes(days)) return null
+      return { kind: "expiring", bucket: `expiring:${days}:${expiryDate}`, days, expiryDate }
     }
+
+    default:
+      return null
   }
-  if (expiryReminderDays(docType.expiry_warning_days ?? 30).includes(days)) {
-    return {
-      kind: "expiring",
-      bucket: `expiring:${days}:${document.expiry_date}`,
-      days,
-      expiryDate: document.expiry_date,
-    }
-  }
-  return null
 }
 
 /**
@@ -295,18 +245,22 @@ async function createDeliveryIfNeeded(args: {
   supabase: ReturnType<typeof createServiceSupabaseClient>
   orgId: string
   runId: string
-  requirement: RequirementRow
-  document?: ComplianceDocumentRow
+  companyId: string
+  companyName: string | null
+  documentTypeId: string
+  documentTypeName: string | null
+  requirementId: string
+  document: ComplianceDocument | null
   reminder: NonNullable<ReturnType<typeof buildReminder>>
-  recipient: ReturnType<typeof recipientForCompany>
+  recipient: CompanyRecipient | null
   /** Keys already delivered for this org, loaded once per run. */
   alreadyDelivered: Set<string>
 }) {
   const idempotencyKey = [
     "compliance",
     args.reminder.kind,
-    args.requirement.company_id,
-    args.requirement.document_type_id,
+    args.companyId,
+    args.documentTypeId,
     args.reminder.bucket,
   ].join(":")
 
@@ -317,30 +271,31 @@ async function createDeliveryIfNeeded(args: {
   if (args.alreadyDelivered.has(idempotencyKey)) return null
   args.alreadyDelivered.add(idempotencyKey)
 
-  const docType = args.requirement.compliance_document_types
-  const company = args.requirement.companies
   const { data, error } = await args.supabase
     .from("compliance_autopilot_deliveries")
     .insert({
       org_id: args.orgId,
       run_id: args.runId,
-      company_id: args.requirement.company_id,
+      company_id: args.companyId,
       contact_id: args.recipient?.contactId ?? null,
-      document_type_id: args.requirement.document_type_id,
-      requirement_id: args.requirement.id,
+      document_type_id: args.documentTypeId,
+      requirement_id: args.requirementId,
       document_id: args.document?.id ?? null,
       reminder_kind: args.reminder.kind,
       reminder_bucket: args.reminder.bucket,
       recipient_email: args.recipient?.email ?? null,
       recipient_name: args.recipient?.name ?? null,
-      subject: docType ? `${docType.name} ${args.reminder.kind}` : args.reminder.kind,
+      subject: args.documentTypeName
+        ? `${args.documentTypeName} ${args.reminder.kind}`
+        : args.reminder.kind,
       status: args.recipient?.email ? "queued" : "skipped",
       idempotency_key: idempotencyKey,
       payload: {
-        company_name: company?.name ?? null,
-        document_name: docType?.name ?? null,
+        company_name: args.companyName,
+        document_name: args.documentTypeName,
         expiry_date: args.reminder.expiryDate ?? null,
         days_until_expiry: args.reminder.days ?? null,
+        deficiency: args.reminder.deficiency ?? null,
       },
     })
     .select("id")
@@ -423,61 +378,40 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
             completed_at: new Date().toISOString(),
             metrics: {
               requirements: 0,
-              issues: { missing: 0, expiring: 0, expired: 0, rejected: 0, escalation: 0 },
+              issues: { missing: 0, expiring: 0, expired: 0, rejected: 0, escalation: 0, deficient: 0 },
             },
           })
           .eq("id", run.id)
         continue
       }
 
-      const [documentsResult, waiversResult, contactsResult] = await Promise.all([
-        supabase
-          .from("compliance_documents")
-          .select(
-            "id, company_id, document_type_id, status, expiry_date, rejection_reason, revoked_at, superseded_by_id, created_at",
-          )
-          .eq("org_id", org.id)
-          .in("company_id", companyIds),
-        supabase
-          .from("company_compliance_requirement_waivers")
-          .select("company_id, document_type_id, expires_at, revoked_at")
-          .eq("org_id", org.id)
-          .in("company_id", companyIds),
-        supabase
-          .from("contacts")
-          .select("id, primary_company_id, full_name, email")
-          .eq("org_id", org.id)
-          .in("primary_company_id", companyIds),
+      // The verdicts, from the same function the compliance tab renders. Waivers,
+      // supersession, revocation and coverage shortfalls are all decided in
+      // there — this loop used to re-derive the first three and never knew about
+      // the fourth.
+      const [statusByCompany, recipientsByCompany] = await Promise.all([
+        getCompaniesComplianceStatusWithClient(supabase, org.id, companyIds),
+        resolveCompanyRecipients(supabase, org.id, companyIds),
       ])
-
-      const firstLoadError =
-        documentsResult.error || waiversResult.error || contactsResult.error
-      if (firstLoadError) throw firstLoadError
-
-      const latestDocuments = latestDocumentsByCompanyAndType(
-        (documentsResult.data ?? []) as ComplianceDocumentRow[],
+      const companiesById = new Map(
+        requirementRows
+          .map((row) => row.companies)
+          .filter((company): company is NonNullable<RequirementRow["companies"]> => Boolean(company))
+          .map((company) => [company.id, company]),
       )
-      const waiversByKey = new Map<string, WaiverRow[]>()
-      for (const waiver of ((waiversResult.data ?? []) as WaiverRow[])) {
-        const key = `${waiver.company_id}:${waiver.document_type_id}`
-        waiversByKey.set(key, [...(waiversByKey.get(key) ?? []), waiver])
-      }
-      const contactsByCompany = new Map<string, ContactRow[]>()
-      for (const contact of ((contactsResult.data ?? []) as ContactRow[])) {
-        if (!contact.primary_company_id) continue
-        contactsByCompany.set(contact.primary_company_id, [
-          ...(contactsByCompany.get(contact.primary_company_id) ?? []),
-          contact,
-        ])
-      }
-
       // Every reminder this org has already sent, in one read. The per-vendor
       // check that replaced it was a round-trip per requirement, and resolving
       // org defaults multiplies requirements by the whole vendor list.
+      // Bounded to the window the buckets can actually reach: the longest is a
+      // 60-day overdue escalation, and a weekly bucket key changes every week.
+      // Unbounded, this read grows with the org forever and the run gets slower
+      // every night it succeeds.
+      const deliveryHorizon = new Date(today.getTime() - 120 * DAY_MS).toISOString()
       const { data: deliveredRows } = await supabase
         .from("compliance_autopilot_deliveries")
         .select("idempotency_key")
         .eq("org_id", org.id)
+        .gte("created_at", deliveryHorizon)
       const alreadyDelivered = new Set(
         (deliveredRows ?? []).map((row: { idempotency_key: string }) => row.idempotency_key),
       )
@@ -488,28 +422,30 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
         expired: 0,
         rejected: 0,
         escalation: 0,
+        deficient: 0,
       }
       const pendingByCompany = new Map<string, PendingGroup>()
 
-      for (const requirement of requirementRows) {
-        const key = `${requirement.company_id}:${requirement.document_type_id}`
-        if (hasActiveWaiver(waiversByKey.get(key) ?? [], today)) continue
+      for (const [companyId, status] of statusByCompany.entries()) {
+        const company = companiesById.get(companyId) ?? null
+        const recipient = recipientsByCompany.get(companyId) ?? null
 
-        const document = latestDocuments.get(key)
-        const reminder = buildReminder({ requirement, document, today })
+        for (const requirementStatus of status.statuses) {
+        const reminder = buildReminder({ status: requirementStatus, today })
         if (!reminder) continue
+        const documentTypeName = requirementStatus.requirement.document_type?.name ?? null
 
         issueCounts[reminder.kind] += 1
-        const recipient = recipientForCompany(
-          requirement.companies,
-          contactsByCompany.get(requirement.company_id) ?? [],
-        )
         const deliveryId = await createDeliveryIfNeeded({
           supabase,
           orgId: org.id,
           runId: run.id,
-          requirement,
-          document,
+          companyId,
+          companyName: company?.name ?? null,
+          documentTypeId: requirementStatus.requirement.document_type_id,
+          documentTypeName,
+          requirementId: requirementStatus.requirement.id,
+          document: requirementStatus.document,
           reminder,
           recipient,
           alreadyDelivered,
@@ -522,18 +458,38 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
         // is on the email allowlist and a user can switch it on in settings, so
         // it has to actually be emitted — the vendor being chased is no use to
         // the person who has to stop paying them.
+        // The builder's side of a shortfall. Deliberately in-app only: it is
+        // not in EMAIL_NOTIFICATION_TYPES, and wiring a notification without a
+        // settings row to govern it is how the last silent-no-send bug shipped.
+        if (reminder.kind === "deficient") {
+          await recordEvent({
+            orgId: org.id,
+            eventType: "compliance_document_deficient",
+            entityType: "company",
+            entityId: companyId,
+            channel: "notification",
+            payload: {
+              company_id: companyId,
+              company_name: company?.name ?? null,
+              document_name: documentTypeName,
+              document_type_id: requirementStatus.requirement.document_type_id,
+              deficiency: reminder.deficiency ?? null,
+            },
+          }).catch(() => null)
+        }
+
         if (reminder.kind === "expiring" || reminder.kind === "escalation") {
           await recordEvent({
             orgId: org.id,
             eventType: "compliance_document_expiring",
             entityType: "company",
-            entityId: requirement.company_id,
+            entityId: companyId,
             channel: "notification",
             payload: {
-              company_id: requirement.company_id,
-              company_name: requirement.companies?.name ?? null,
-              document_name: requirement.compliance_document_types?.name ?? null,
-              document_type_id: requirement.document_type_id,
+              company_id: companyId,
+              company_name: company?.name ?? null,
+              document_name: documentTypeName,
+              document_type_id: requirementStatus.requirement.document_type_id,
               expiry_date: reminder.expiryDate ?? null,
               days_until_expiry: reminder.days ?? null,
               blocks_payment: reminder.kind === "escalation",
@@ -541,28 +497,30 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
           }).catch(() => null)
         }
 
-        if (!recipient?.email || !requirement.compliance_document_types || !requirement.companies) {
+        if (!recipient?.email || !documentTypeName || !company) {
           metrics.skipped += 1
           continue
         }
 
-        const group = pendingByCompany.get(requirement.company_id) ?? {
-          companyName: requirement.companies.name,
+        const group = pendingByCompany.get(companyId) ?? {
+          companyName: company.name,
           recipientEmail: recipient.email,
           recipientName: recipient.name,
           items: [],
         }
         group.items.push({
           deliveryId,
-          documentName: requirement.compliance_document_types.name,
+          documentName: documentTypeName,
           // An escalation is still an expired document to the vendor reading
           // the email; the distinction is in how often we say it, not in what
           // they have to do about it.
           reminderKind: reminder.kind === "escalation" ? "expired" : reminder.kind,
           expiryDate: reminder.expiryDate ?? null,
           rejectionReason: reminder.rejectionReason ?? null,
+          deficiency: reminder.deficiency ?? null,
         })
-        pendingByCompany.set(requirement.company_id, group)
+        pendingByCompany.set(companyId, group)
+        }
       }
 
       // One email per vendor covering everything outstanding, not one per document.
@@ -625,7 +583,8 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
         issueCounts.expiring +
         issueCounts.expired +
         issueCounts.rejected +
-        issueCounts.escalation
+        issueCounts.escalation +
+        issueCounts.deficient
       if (issueTotal > 0 && today.getUTCDay() === 1) {
         await recordEvent({
           orgId: org.id,
@@ -639,6 +598,7 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
             expiring: issueCounts.expiring,
             expired: issueCounts.expired + issueCounts.escalation,
             rejected: issueCounts.rejected,
+            deficient: issueCounts.deficient,
           },
         }).catch(() => null)
         metrics.digests += 1

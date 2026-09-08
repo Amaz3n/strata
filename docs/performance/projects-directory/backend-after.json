@@ -1,0 +1,51 @@
+{
+  "mode": "after",
+  "measuredAt": "2026-09-07T21:38:19.354Z",
+  "scope": "Live database read path; excludes authentication, community picker, server rendering and browser hydration. After includes deferred progress request.",
+  "samples": [
+    {
+      "ms": 262,
+      "requests": 2,
+      "responseBytes": 10446,
+      "rows": 33
+    },
+    {
+      "ms": 218,
+      "requests": 2,
+      "responseBytes": 10446,
+      "rows": 33
+    },
+    {
+      "ms": 202,
+      "requests": 2,
+      "responseBytes": 10446,
+      "rows": 33
+    },
+    {
+      "ms": 216,
+      "requests": 2,
+      "responseBytes": 10446,
+      "rows": 33
+    },
+    {
+      "ms": 204,
+      "requests": 2,
+      "responseBytes": 10446,
+      "rows": 33
+    },
+    {
+      "ms": 213,
+      "requests": 2,
+      "responseBytes": 10446,
+      "rows": 33
+    },
+    {
+      "ms": 204,
+      "requests": 2,
+      "responseBytes": 10446,
+      "rows": 33
+    }
+  ],
+  "medianMs": 213,
+  "p95Ms": 262
+}

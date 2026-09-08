@@ -114,22 +114,24 @@ test("QBO import dedup pagination loads rows beyond the Supabase response cap", 
 test("QBO payment provider ids are stable across retries and distinct for credit portions", () => {
   assert.equal(
     qboImportProviderPaymentId({
+      connectionId: "realm-a",
       kind: "billpayment",
       qboId: "42",
       split: false,
       lineId: "bill-1",
     }),
-    "qbo_billpayment_42",
+    "qbo_billpayment_realm-a_42",
   )
   assert.equal(
     qboImportProviderPaymentId({
+      connectionId: "realm-a",
       kind: "billpayment",
       qboId: "42",
       split: true,
       lineId: "line-7",
       vendorCredit: true,
     }),
-    "qbo_billpayment_42_line-7_vc",
+    "qbo_billpayment_realm-a_42_line-7_vc",
   )
 })
 
@@ -254,9 +256,10 @@ test("QBO purchase credits import as inbound-only expense credits with negative 
 
   assert.match(importSource, /expense_credit: "Purchase"/)
   assert.match(importSource, /qboPurchaseIsCredit\(row\)/)
-  assert.match(importSource, /repairExistingExpenseCreditRows/)
+  assert.match(importSource, /persistImportRow/)
   assert.doesNotMatch(importExpenseCreditBlock, /if \(existing\?\.id\) return \{ skipped: true as const \}/)
-  assert.match(importSource, /entityType: "project_expense"[\s\S]*pushable: false[\s\S]*metadata: \{ source: "expense_credit" \}/)
+  assert.match(importSource, /source: "expense_credit"/)
+  assert.match(importSource, /pushable: false/)
   // Imported costs post through the subledger service, never hand-rolled rows: that is
   // what gives them GMP classification, budget-line bucketing, and billable linkage.
   assert.match(importSource, /postJobCostEntriesForProjectExpense\(\{ expenseId, orgId: ctx\.orgId, supabase: ctx\.supabase \}\)/)
@@ -324,7 +327,9 @@ test("imported vendor credits can be reassigned without deleting their QBO mappi
   const reassign = source.slice(source.indexOf("export async function reassignImportedPayable"))
 
   assert.match(reassign, /const isVendorCredit = metadata\.source === "vendor_credit"/)
-  assert.match(reassign, /metadata\.imported_from_qbo !== true \|\| !existing\.qbo_id/)
+  assert.match(reassign, /metadata\.imported_from_qbo !== true \|\| !existingSyncState\?\.externalId/)
+  assert.match(reassign, /getAccountingSyncState\(supabase/)
+  assert.doesNotMatch(reassign, /existing\.qbo_id/)
   assert.match(reassign, /voidJobCostEntriesForVendorBill/)
   assert.match(reassign, /from\("bill_lines"\)[\s\S]*project_id: targetProjectId/)
   assert.match(reassign, /from\("vendor_bills"\)[\s\S]*project_id: targetProjectId/)

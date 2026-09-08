@@ -1,29 +1,48 @@
-"use client"
+"use client";
 
-import { type ReactNode } from "react"
-import { format } from "date-fns"
+import { type ReactNode } from "react";
+import { format } from "date-fns";
 
-import { Button } from "@/components/ui/button"
-import { Calendar } from "@/components/ui/calendar"
-import { Input } from "@/components/ui/input"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
-import type { VendorBillSummary } from "@/lib/services/vendor-bills"
-import { cn } from "@/lib/utils"
-import { RecordRow, RecordSection, inlineCell, inlineInput, inlineTrigger } from "./record-section"
-import { normalizeLienWaiverStatus, type PayableFormState } from "./payable-form"
+import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
+import { Input } from "@/components/ui/input";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers";
+import type { VendorBillSummary } from "@/lib/services/vendor-bills";
+import { cn } from "@/lib/utils";
+import {
+  RecordRow,
+  RecordSection,
+  inlineCell,
+  inlineInput,
+  inlineTrigger,
+} from "./record-section";
+import {
+  normalizeLienWaiverStatus,
+  type PayableFormState,
+} from "./payable-form";
 
 const LIEN_WAIVER_LABELS: Record<string, string> = {
   not_required: "Not required",
   requested: "Requested",
   received: "Received",
-}
+};
 
 function parseDate(value?: string | null) {
-  if (!value) return undefined
-  const parsed = new Date(`${value}T00:00:00`)
-  return Number.isNaN(parsed.getTime()) ? undefined : parsed
+  if (!value) return undefined;
+  const parsed = new Date(`${value}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
 }
 
 function InlineDate({
@@ -31,17 +50,21 @@ function InlineDate({
   onChange,
   placeholder,
 }: {
-  value: string
-  onChange: (next: string) => void
-  placeholder: string
+  value: string;
+  onChange: (next: string) => void;
+  placeholder: string;
 }) {
-  const selected = parseDate(value)
+  const selected = parseDate(value);
   return (
     <Popover>
       <PopoverTrigger asChild>
         <button
           type="button"
-          className={cn(inlineCell, "w-full tabular-nums", !selected && "text-muted-foreground")}
+          className={cn(
+            inlineCell,
+            "w-full tabular-nums",
+            !selected && "text-muted-foreground",
+          )}
         >
           {selected ? format(selected, "MMM d, yyyy") : placeholder}
         </button>
@@ -55,18 +78,18 @@ function InlineDate({
         />
       </PopoverContent>
     </Popover>
-  )
+  );
 }
 
 interface PayableTermsProps {
-  bill: VendorBillSummary
-  form: PayableFormState
-  onChange: (patch: Partial<PayableFormState>) => void
-  editable: boolean
-  isVendorCredit: boolean
-  heldRetainageCents: number
-  onReleaseRetainage: () => void
-  isPending: boolean
+  bill: VendorBillSummary;
+  form: PayableFormState;
+  onChange: (patch: Partial<PayableFormState>) => void;
+  editable: boolean;
+  isVendorCredit: boolean;
+  heldRetainageCents: number;
+  onReleaseRetainage: () => void;
+  isPending: boolean;
 }
 
 /**
@@ -88,11 +111,11 @@ export function PayableTerms({
   onReleaseRetainage,
   isPending,
 }: PayableTermsProps) {
-  const numberLabel = isVendorCredit ? "Credit no." : "Invoice no."
-  const dateLabel = isVendorCredit ? "Credit date" : "Invoice date"
-  const waiver = normalizeLienWaiverStatus(bill.lien_waiver_status)
+  const numberLabel = isVendorCredit ? "Credit no." : "Invoice no.";
+  const dateLabel = isVendorCredit ? "Credit date" : "Invoice date";
+  const waiver = normalizeLienWaiverStatus(bill.lien_waiver_status);
 
-  const rows: ReactNode[] = []
+  const rows: ReactNode[] = [];
 
   if (editable || bill.bill_number) {
     rows.push(
@@ -108,7 +131,7 @@ export function PayableTerms({
           <span className="font-medium">{bill.bill_number}</span>
         )}
       </RecordRow>,
-    )
+    );
   }
 
   if (editable || bill.bill_date) {
@@ -126,7 +149,7 @@ export function PayableTerms({
           </span>
         )}
       </RecordRow>,
-    )
+    );
   }
 
   if (!isVendorCredit && (editable || bill.due_date)) {
@@ -144,7 +167,7 @@ export function PayableTerms({
           </span>
         )}
       </RecordRow>,
-    )
+    );
   }
 
   if (bill.commitment_title) {
@@ -152,10 +175,10 @@ export function PayableTerms({
       <RecordRow key="commitment" label="Commitment">
         <span className="block truncate">{bill.commitment_title}</span>
       </RecordRow>,
-    )
+    );
   }
 
-  if (!isVendorCredit && (editable || bill.retainage_percent != null)) {
+  if (!isVendorCredit && (editable || (bill.retainage_percent ?? 0) > 0)) {
     rows.push(
       <RecordRow key="retainage" label="Retainage">
         {editable ? (
@@ -176,8 +199,14 @@ export function PayableTerms({
             {heldRetainageCents > 0 ? (
               <>
                 <span className="font-mono text-xs tabular-nums text-muted-foreground">
-                  {formatMoneyFromCents(heldRetainageCents)} held
+                  {formatMoneyFromCents(heldRetainageCents)} releasable
                 </span>
+                {(bill.retainage_released_cents ?? 0) > 0 ? (
+                  <span className="font-mono text-xs tabular-nums text-muted-foreground">
+                    {formatMoneyFromCents(bill.retainage_released_cents ?? 0)}{" "}
+                    released
+                  </span>
+                ) : null}
                 <Button
                   type="button"
                   variant="link"
@@ -192,30 +221,35 @@ export function PayableTerms({
           </span>
         )}
       </RecordRow>,
-    )
+    );
   }
 
   if (!isVendorCredit && (editable || waiver !== "not_required")) {
     rows.push(
       <RecordRow key="waiver" label="Lien waiver">
         {editable ? (
-          <Select value={form.lienWaiver} onValueChange={(lienWaiver) => onChange({ lienWaiver })}>
+          <Select
+            value={form.lienWaiver}
+            onValueChange={(lienWaiver) => onChange({ lienWaiver })}
+          >
             <SelectTrigger className={cn(inlineTrigger, "-ml-2")}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="not_required">Not required</SelectItem>
               <SelectItem value="requested">Requested</SelectItem>
-              <SelectItem value="received">Received</SelectItem>
+              <SelectItem value="received" disabled>Received · managed in Waivers</SelectItem>
             </SelectContent>
           </Select>
         ) : (
-          <span className={waiver === "received" ? "text-success" : "text-warning"}>
+          <span
+            className={waiver === "received" ? "text-success" : "text-warning"}
+          >
             {LIEN_WAIVER_LABELS[waiver] ?? waiver}
           </span>
         )}
       </RecordRow>,
-    )
+    );
   }
 
   // Who moves the money. This is a real gate on both sides — the payment-run
@@ -224,11 +258,13 @@ export function PayableTerms({
   // payable can get stuck between the two paths with no way out.
   if (!isVendorCredit) {
     rows.push(
-      <RecordRow key="channel" label="Paid by">
+      <RecordRow key="channel" label="Payment channel">
         {editable ? (
           <Select
             value={form.paymentChannel}
-            onValueChange={(value) => onChange({ paymentChannel: value === "arc" ? "arc" : "external" })}
+            onValueChange={(value) =>
+              onChange({ paymentChannel: value === "arc" ? "arc" : "external" })
+            }
           >
             <SelectTrigger className={cn(inlineTrigger, "-ml-2")}>
               <SelectValue placeholder="Not decided" />
@@ -239,12 +275,20 @@ export function PayableTerms({
             </SelectContent>
           </Select>
         ) : (
-          <span className={form.paymentChannel ? undefined : "text-muted-foreground"}>
-            {form.paymentChannel === "arc" ? "Arc Pay" : form.paymentChannel === "external" ? "Paid outside Arc" : "Not decided"}
+          <span
+            className={
+              form.paymentChannel ? undefined : "text-muted-foreground"
+            }
+          >
+            {form.paymentChannel === "arc"
+              ? "Arc Pay"
+              : form.paymentChannel === "external"
+                ? "Paid outside Arc"
+                : "Not decided"}
           </span>
         )}
       </RecordRow>,
-    )
+    );
   }
 
   /*
@@ -263,15 +307,15 @@ export function PayableTerms({
             : ""}
         </span>
       </RecordRow>,
-    )
+    );
   }
 
   // Nothing recorded and nothing fillable — the section itself is the noise.
-  if (rows.length === 0) return null
+  if (rows.length === 0) return null;
 
   return (
-    <RecordSection label="Terms">
-      <div className="grid gap-x-16 gap-y-1 md:grid-cols-2">{rows}</div>
+    <RecordSection label="Bill details">
+      <div className="grid gap-y-1">{rows}</div>
     </RecordSection>
-  )
+  );
 }

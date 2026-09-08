@@ -1,8 +1,10 @@
+import { evidenceAccepted } from "@/lib/lien-waivers/coverage"
 import { receivablesWriter } from "@/lib/services/receivables-writer"
 import { createHash } from "crypto"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import type { Invoice } from "@/lib/types"
+import { isWaiverPublic, readWaiverWorkflow } from "@/lib/lien-waivers/invoice-waiver"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
@@ -280,13 +282,22 @@ async function buildPackageManifest({
     invoice.due_date ??
     invoice.issue_date ??
     new Date().toISOString().slice(0, 10)
-  const { data: waiverRows, error: waiverError } = projectControls?.require_subtier_waivers
+  const { data: incomingWaiverRows, error: waiverError } = projectControls?.require_subtier_waivers
     ? await supabase.from("lien_waivers")
-        .select("id, tier, through_company_id, claimant_company_name, claimant_name, waiver_type, status, amount_cents, through_date, document_file_id, signed_file_id, metadata")
+        .select("id, tier, through_company_id, claimant_company_name, claimant_name, waiver_type, status, amount_cents, through_date, signed_at, document_file_id, signed_file_id, metadata")
         .eq("org_id", orgId).eq("project_id", projectId).eq("status", "signed").eq("through_date", waiverPeriodEnd)
     : { data: [], error: null }
   if (waiverError) throw new Error(`Failed to load full-tier lien waivers: ${waiverError.message}`)
-  const waiverFileIds = uniq((waiverRows ?? []).flatMap((row: any) => [row.signed_file_id, row.document_file_id]))
+  const waiverRows=(incomingWaiverRows??[]).filter(evidenceAccepted)
+  const { data: issuedWaivers, error: issuedWaiverError } = await supabase.from("invoice_lien_waivers")
+    .select("id,waiver_type,status,amount_cents,through_date,claimant_name,metadata")
+    .eq("org_id", orgId).eq("invoice_id", invoice.id).neq("status", "void")
+  if (issuedWaiverError) throw new Error("Could not load the company's invoice waivers")
+  const companyWaivers = (issuedWaivers ?? []).filter((row) => isWaiverPublic(row) && readWaiverWorkflow(row))
+  const waiverFileIds = uniq([
+    ...(waiverRows ?? []).flatMap((row: any) => [row.signed_file_id, row.document_file_id]),
+    ...companyWaivers.map((row) => readWaiverWorkflow(row)!.file_id),
+  ])
   const packageAttachmentIds = uniq([...proofFileIds, ...gcComplianceFileIds, ...waiverFileIds])
   const fileIds = uniq([invoiceFileId, ...packageAttachmentIds])
   const files = await loadFilesById({ supabase, orgId, fileIds })
@@ -381,6 +392,11 @@ async function buildPackageManifest({
       carrier_or_surety: row.carrier_name ?? null,
       coverage_amount_cents: row.coverage_amount_cents == null ? null : Number(row.coverage_amount_cents),
     })),
+    company_lien_waivers: companyWaivers.map((row) => ({
+      id: row.id, claimant_name: row.claimant_name, waiver_type: row.waiver_type,
+      amount_cents: row.amount_cents, through_date: row.through_date,
+      file_id: readWaiverWorkflow(row)!.file_id, sha256: readWaiverWorkflow(row)!.sha256,
+    })),
     lien_waivers: (waiverRows ?? []).map((row: any) => ({
       id: row.id,
       tier: row.tier ?? 1,
@@ -432,6 +448,28 @@ export async function listProjectOwnerBillingPackageSummaries(projectId: string,
     .neq("status", "voided")
     .order("created_at", { ascending: false })
 
+  if (error) throw new Error(`Failed to load owner billing packages: ${error.message}`)
+  return (data ?? []).map(mapPackage).map(summarizeOwnerBillingPackage)
+}
+
+/** Existing backup state for the org receivables desk, loaded in one query. */
+export async function listOrgOwnerBillingPackageSummaries(orgId?: string) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "invoice.read",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: false,
+    resourceType: "org",
+    resourceId: resolvedOrgId,
+  })
+  const { data, error } = await supabase
+    .from("invoice_backup_packages")
+    .select("*, approval_batch:cost_approval_batches(*)")
+    .eq("org_id", resolvedOrgId)
+    .neq("status", "voided")
+    .order("created_at", { ascending: false })
   if (error) throw new Error(`Failed to load owner billing packages: ${error.message}`)
   return (data ?? []).map(mapPackage).map(summarizeOwnerBillingPackage)
 }

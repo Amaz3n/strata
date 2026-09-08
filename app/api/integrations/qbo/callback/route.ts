@@ -3,20 +3,25 @@ import { cookies } from "next/headers"
 
 import { exchangeCodeForTokens, fetchQBOCompanyInfo, verifyQBOOAuthState } from "@/lib/integrations/accounting/qbo/auth"
 import { upsertQBOConnection } from "@/lib/integrations/accounting/qbo/connections"
-import { requireOrgMembership } from "@/lib/auth/context"
+import { requireOrgContext } from "@/lib/services/context"
+import { requirePermission } from "@/lib/services/permissions"
+import { requireAccountingConnectionForOrg } from "@/lib/services/accounting-connections"
+import { accountingOAuthCookieName } from "@/lib/integrations/accounting/oauth-state"
 import { logQBO } from "@/lib/services/accounting-logger"
 
 function completeOAuth(request: NextRequest, redirectPath: string) {
   const response = NextResponse.redirect(new URL(redirectPath, request.url))
-  response.cookies.set({
-    name: "qbo_oauth_state",
-    value: "",
-    httpOnly: true,
-    path: "/",
-    sameSite: "lax",
-    maxAge: 0,
-    secure: request.nextUrl.protocol === "https:",
-  })
+  const state = verifyQBOOAuthState(request.nextUrl.searchParams.get("state") ?? "")
+  if (state)
+    response.cookies.set({
+      name: accountingOAuthCookieName(state),
+      value: "",
+      httpOnly: true,
+      path: "/",
+      sameSite: "lax",
+      maxAge: 0,
+      secure: request.nextUrl.protocol === "https:",
+    })
   return response
 }
 
@@ -35,38 +40,33 @@ export async function GET(request: NextRequest) {
     return completeOAuth(request, "/settings?tab=integrations&error=qbo_invalid")
   }
 
-  // Prefer request-scoped cookies (more reliable on Vercel/edge-adjacent runtimes).
-  let savedState = request.cookies.get("qbo_oauth_state")?.value
-  if (!savedState) {
-    try {
-      const cookieStore = await cookies()
-      savedState = cookieStore.get("qbo_oauth_state")?.value
-    } catch {
-      // ignore
-    }
-  }
-
-  // Signed state only. The unsigned `orgId:nonce` fallback predates
-  // verifyQBOOAuthState and kept a weaker path alive on a credential-issuing
-  // endpoint; the cookie compare remains as defense in depth, not as an
-  // alternative to the signature.
   const verifiedState = verifyQBOOAuthState(state)
-  if (!verifiedState || (savedState && state !== savedState)) {
-    return completeOAuth(request, "/settings?tab=integrations&error=qbo_state_mismatch")
+  if (!verifiedState) return completeOAuth(request, "/settings?tab=integrations&error=qbo_state_mismatch")
+  const cookieName = accountingOAuthCookieName(verifiedState)
+  let savedState = request.cookies.get(cookieName)?.value
+  if (!savedState) {
+    const cookieStore = await cookies()
+    savedState = cookieStore.get(cookieName)?.value
   }
-  const { orgId, nonce } = verifiedState
-
-  if (!orgId || !nonce) {
-    return completeOAuth(request, "/settings?tab=integrations&error=qbo_state_mismatch")
-  }
+  if (!savedState || state !== savedState) return completeOAuth(request, "/settings?tab=integrations&error=qbo_state_mismatch")
+  const { orgId } = verifiedState
   try {
-    const { user } = await requireOrgMembership(orgId)
-    const connectedBy = user.id
+    const ctx = await requireOrgContext(orgId)
+    await requirePermission("org.admin", ctx)
+    if (ctx.userId !== verifiedState.userId) throw new Error("Authorization attempt belongs to another user")
+    if (verifiedState.connectionId) {
+      const existing = await requireAccountingConnectionForOrg(verifiedState.connectionId, orgId, { provider: "qbo" })
+      if (existing.external_account_id !== verifiedState.expectedAccountId || realmId !== existing.external_account_id) {
+        throw new Error("Reconnect company identity changed; start a separate connection instead")
+      }
+    }
+    const connectedBy = ctx.userId
 
     const tokens = await exchangeCodeForTokens(code, realmId)
     const companyInfo = await fetchQBOCompanyInfo(tokens.access_token, realmId)
 
     await upsertQBOConnection({
+      ...(verifiedState.connectionId ? { connectionId: verifiedState.connectionId } : {}),
       orgId,
       realmId,
       accessToken: tokens.access_token,

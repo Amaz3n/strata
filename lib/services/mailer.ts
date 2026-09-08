@@ -383,10 +383,17 @@ export async function sendReminderSMS(payload: ReminderSMSPayload): Promise<stri
 
 export interface ComplianceAutopilotEmailItem {
   documentName: string
-  reminderKind: "missing" | "expiring" | "expired" | "rejected"
+  reminderKind: "missing" | "expiring" | "expired" | "rejected" | "deficient"
   expiryDate?: string | null
   /** The builder's words on why it came back. Only set for a rejection. */
   rejectionReason?: string | null
+  /**
+   * Why a document that IS on file still does not satisfy the requirement —
+   * coverage below the minimum, a missing endorsement. Only set for
+   * `deficient`, and the whole point of that kind: "send us your certificate"
+   * is useless advice to a vendor who already did.
+   */
+  deficiency?: string | null
 }
 
 export interface ComplianceAutopilotEmailPayload {
@@ -424,6 +431,7 @@ function complianceItemStatus(item: ComplianceAutopilotEmailItem): string {
   const date = formatComplianceDate(item.expiryDate)
   if (item.reminderKind === "missing") return "Not on file"
   if (item.reminderKind === "rejected") return "Sent back"
+  if (item.reminderKind === "deficient") return item.deficiency ?? "Does not meet the requirement"
   if (item.reminderKind === "expired") return date ? `Expired ${date}` : "Expired"
   return date ? `Expires ${date}` : "Expiring soon"
 }
@@ -436,6 +444,7 @@ function complianceEmailTitle(items: ComplianceAutopilotEmailItem[]): string {
   if (kind === "expired") return `Compliance ${noun} expired`
   if (kind === "expiring") return `Compliance ${noun} expiring`
   if (kind === "rejected") return `Compliance ${noun} sent back`
+  if (kind === "deficient") return `Compliance ${noun} fall short`
   return `Compliance ${noun} needed`
 }
 
@@ -447,6 +456,9 @@ export function buildComplianceAutopilotSubject(items: ComplianceAutopilotEmailI
     if (item.reminderKind === "missing") return `Compliance request: ${item.documentName} needed`
     if (item.reminderKind === "expired") return `Compliance expired: ${item.documentName}`
     if (item.reminderKind === "rejected") return `Action needed: ${item.documentName} was sent back`
+    if (item.reminderKind === "deficient") {
+      return `Action needed: ${item.documentName} does not meet the requirement`
+    }
     return `Compliance reminder: ${item.documentName} expires soon`
   }
 
@@ -455,6 +467,9 @@ export function buildComplianceAutopilotSubject(items: ComplianceAutopilotEmailI
     if (kind === "missing") return `Compliance request: ${items.length} documents needed`
     if (kind === "expired") return `Compliance expired: ${items.length} documents`
     if (kind === "rejected") return `Action needed: ${items.length} documents were sent back`
+    if (kind === "deficient") {
+      return `Action needed: ${items.length} documents do not meet the requirements`
+    }
     return `Compliance reminder: ${items.length} documents expire soon`
   }
 
@@ -810,6 +825,10 @@ export interface VendorPaymentInviteEmailPayload {
   orgSlug?: string | null
   orgLogoUrl?: string | null
   setupUrl: string
+  /** True when this send replaced a dead link the vendor may still be holding. */
+  replacedPreviousLink?: boolean
+  /** How long the link in this email stays good. */
+  expiresInDays?: number
 }
 
 /**
@@ -834,7 +853,13 @@ export async function sendVendorPaymentInviteEmail(payload: VendorPaymentInviteE
       ${greeting}
       <p style="margin:0 0 14px 0;">${orgName} pays subcontractors through Arc Pay and would like to pay ${escapeMessage(payload.companyName)} by bank transfer instead of by check.</p>
       <p style="margin:0 0 14px 0;">You verify your business and payout bank once. The same account then works with every Arc builder you work with, so if you have already done this for another builder there is nothing to set up again — just confirm your company.</p>
-      <p style="margin:0;">${orgName} never sees or enters your bank details.</p>
+      <p style="margin:0 0 14px 0;">${orgName} never sees or enters your bank details.</p>
+      ${payload.replacedPreviousLink
+        ? `<p style="margin:0 0 14px 0;"><strong>This link replaces the one we sent before.</strong> The earlier link no longer works — use the button below.</p>`
+        : ""}
+      ${payload.expiresInDays
+        ? `<p style="margin:0;color:#666666;font-size:13px;">This invitation is good for ${payload.expiresInDays} days. If it expires, ask ${orgName} to send a new one.</p>`
+        : ""}
     `,
     buttonText: "Set up Arc Pay",
     buttonUrl: payload.setupUrl,

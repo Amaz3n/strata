@@ -83,8 +83,8 @@ export function payableOperationalStatus(
         ? "Awaiting your approval"
         : membership.runStatus === "pending_approval"
           ? "In approval"
-          : membership.runStatus === "processing"
-            ? "Paying"
+          : membership.runStatus === "processing" || membership.runStatus === "partially_paid"
+            ? membership.stage
             : membership.scheduledFor
               ? `Sends ${formatDay(membership.scheduledFor)}`
               : "Scheduled",

@@ -5,8 +5,11 @@ import { listSubtierRequirementsForPortal } from "@/lib/services/lien-waivers"
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { SubtierWaiversClient } from "./subtier-waivers-client"
 
-
-export default async function SubtierWaiversPage({ params }: { params: Promise<{ token: string }> }) {
+export default async function SubtierWaiversPage({
+  params,
+}: {
+  params: Promise<{ token: string }>
+}) {
   const { token } = await params
   let access
   try {
@@ -33,7 +36,10 @@ export default async function SubtierWaiversPage({ params }: { params: Promise<{
         title="Sub-tier lien waivers"
         description="Upload signed waivers from your suppliers and sub-subcontractors for each requested pay period."
       />
-      <SubtierWaiversClient token={token} requirements={requirements as any[]} />
+      <SubtierWaiversClient
+        token={token}
+        requirements={requirements as any[]}
+      />
     </>
   )
 }

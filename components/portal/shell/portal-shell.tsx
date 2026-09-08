@@ -3,7 +3,7 @@ import type { ReactNode } from "react"
 import { PortalBrandHeader, type PortalIdentity } from "./portal-brand-header"
 import { PortalBottomNav, PortalSideNav } from "./portal-nav"
 import type { PortalNavItem } from "./portal-nav-items"
-import type { ExternalPortalWorkspaceContext } from "@/lib/types"
+import type { ExternalPortalWorkspaceContext, PortalTokenPurpose } from "@/lib/types"
 
 interface PortalShellProps {
   identity: PortalIdentity
@@ -15,6 +15,7 @@ interface PortalShellProps {
   tokenType?: "portal" | "bid"
   claimEmail?: string
   claimFullName?: string
+  claimPurpose?: PortalTokenPurpose
   children: ReactNode
 }
 
@@ -32,6 +33,7 @@ export function PortalShell({
   tokenType,
   claimEmail = "",
   claimFullName = "",
+  claimPurpose = "portal",
   children,
 }: PortalShellProps) {
   return (
@@ -46,6 +48,7 @@ export function PortalShell({
         tokenType={tokenType}
         claimEmail={claimEmail}
         claimFullName={claimFullName}
+        claimPurpose={claimPurpose}
       />
 
       <div className="mx-auto flex w-full max-w-6xl flex-1 gap-0 px-4 sm:px-6">

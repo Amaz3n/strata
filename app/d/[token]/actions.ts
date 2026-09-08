@@ -202,6 +202,14 @@ export async function submitDocumentSignatureAction(input: {
     throw new Error(`Failed to load document fields: ${fieldsError.message}`)
   }
 
+  if (document.metadata?.waiver_signing_experience === "review") {
+    const { listWaiverSigners } = await import("@/lib/services/waiver-signers")
+    const member = (await listWaiverSigners(supabase, signingRequest.org_id)).find(person => person.id === document.metadata?.waiver_signer_id)
+    if (!member || member.email.toLowerCase() !== submittedSignerEmail.toLowerCase() || member.email.toLowerCase() !== String(signingRequest.sent_to_email).toLowerCase()) {
+      throw new Error("This signature request is assigned to a different or inactive company member")
+    }
+  }
+
   const visibleFields = (fields ?? []).filter((field) => !field.signer_role || field.signer_role === signerRole)
   const requiredFields = visibleFields.filter((field) => field.required !== false)
   const isFieldComplete = (field: any) => {

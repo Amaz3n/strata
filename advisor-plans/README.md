@@ -5,4 +5,6 @@ These are implementation-oriented product and architecture plans. They are advis
 | Plan | Priority | Status | Summary |
 |---|---:|---|---|
 | [001 — Arc Books: staged QBO independence](001-arc-books-qbo-independence.md) | P0 | Proposed | Expand Books B5 into gated stages that let small builders operate without QuickBooks Online. |
+| [002 — Accounting integration completion record](002-accounting-sync-and-d2-closure.md) | P1 | RELEASE PENDING | All 40 financial decisions repaired. Single retained record of verification and remaining deployment, acceptance and D2 steps. |
 
+Record 002 is independent of the Books-independence proposal. Temporary accounting audit plans and snapshots have been removed; ongoing architecture documentation lives in [docs/accounting-sync.md](../docs/accounting-sync.md).

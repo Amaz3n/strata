@@ -1,3 +1,4 @@
+import { getAccountingSyncStates } from "@/lib/services/accounting-sync-state"
 import { z } from "zod"
 
 import { MobileAPIError } from "@/lib/mobile/api"
@@ -56,7 +57,7 @@ function mapExpense(row: any, url: string | null): MobileExpenseDTO {
     status: row.status ?? "submitted",
     receipt_url: url,
     created_at: row.created_at,
-    accounting_sync_status: row.qbo_sync_status ?? null,
+    accounting_sync_status: row.accounting_sync_status ?? null,
   }
 }
 
@@ -65,8 +66,7 @@ export async function listMobileExpenses(context: MobileOrgContext, projectId: s
   const { data, error } = await context.serviceSupabase
     .from("project_expenses")
     .select(
-      "id, project_id, vendor_name_text, description, expense_date, amount_cents, tax_cents, payment_method, status, receipt_file_id, created_at, qbo_sync_status, " +
-        "receipt:files!project_expenses_receipt_file_id_fkey(id, file_name, storage_path)",
+      "id, project_id, vendor_name_text, description, expense_date, amount_cents, tax_cents, payment_method, status, receipt_file_id, created_at, receipt:files!project_expenses_receipt_file_id_fkey(id, file_name, storage_path)",
     )
     .eq("org_id", context.orgId)
     .eq("project_id", projectId)
@@ -75,10 +75,11 @@ export async function listMobileExpenses(context: MobileOrgContext, projectId: s
     .limit(200)
   if (error) throw new MobileAPIError(500, "expenses_unavailable", "Expenses could not be loaded.")
 
+  const states = await getAccountingSyncStates(context.serviceSupabase, { orgId: context.orgId, entityType: "project_expense", entityIds: (data ?? []).map((row) => row.id) })
   return Promise.all(
     (data ?? []).map(async (row: any) => {
       const file = Array.isArray(row.receipt) ? row.receipt[0] : row.receipt
-      return mapExpense(row, await receiptUrl(context, file))
+      return mapExpense({ ...row, accounting_sync_status: states.get(row.id)?.status ?? null }, await receiptUrl(context, file))
     }),
   )
 }
@@ -123,16 +124,17 @@ export async function createMobileExpense(
   const existing = await context.serviceSupabase
     .from("project_expenses")
     .select(
-      "id, project_id, vendor_name_text, description, expense_date, amount_cents, tax_cents, payment_method, status, created_at, qbo_sync_status, " +
-        "receipt:files!project_expenses_receipt_file_id_fkey(id, file_name, storage_path)",
+      "id, project_id, vendor_name_text, description, expense_date, amount_cents, tax_cents, payment_method, status, created_at, receipt:files!project_expenses_receipt_file_id_fkey(id, file_name, storage_path)",
     )
     .eq("org_id", context.orgId)
     .eq("id", parsed.data.client_id)
     .maybeSingle()
+  if (existing.error) throw new MobileAPIError(500, "expenses_unavailable", "Expenses could not be loaded.")
   if (existing.data) {
+    const states = await getAccountingSyncStates(context.serviceSupabase, { orgId: context.orgId, entityType: "project_expense", entityIds: [existing.data.id] })
     const row = existing.data as any
     const file = Array.isArray(row.receipt) ? row.receipt[0] : row.receipt
-    return mapExpense(row, await receiptUrl(context, file))
+    return mapExpense({ ...row, accounting_sync_status: states.get(row.id)?.status ?? null }, await receiptUrl(context, file))
   }
 
   const receipt = formData.get("receipt")
@@ -155,13 +157,12 @@ export async function createMobileExpense(
       payment_method: parsed.data.payment_method ?? null,
       receipt_file_id: receiptFileId,
       is_billable: true,
-      qbo_transaction_type: "purchase",
+      accounting_coding: { transaction_type: "purchase" },
       submitted_by_user_id: context.user.id,
       status: "submitted",
     })
     .select(
-      "id, project_id, vendor_name_text, description, expense_date, amount_cents, tax_cents, payment_method, status, receipt_file_id, created_at, qbo_sync_status, " +
-        "receipt:files!project_expenses_receipt_file_id_fkey(id, file_name, storage_path)",
+      "id, project_id, vendor_name_text, description, expense_date, amount_cents, tax_cents, payment_method, status, receipt_file_id, created_at, receipt:files!project_expenses_receipt_file_id_fkey(id, file_name, storage_path)",
     )
     .single()
   if (error || !data) throw new MobileAPIError(500, "expense_create_failed", "The expense could not be saved.")

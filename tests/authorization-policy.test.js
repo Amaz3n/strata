@@ -326,8 +326,15 @@ test("payout setup checks who the link is for and what it is for, not just that 
   assert.ok(gate.length > 0, "the payout token gate must exist")
   // 1. bound to a person
   assert.match(gate, /!access\.contact_id/, "a contact-less token must not authorize payout setup")
-  // 2. that person belongs to the company the token is scoped to
-  assert.match(gate, /contact\.primary_company_id !== access\.company_id/)
+  // 2. that person belongs to the company the token is scoped to. Asked of
+  //    `contact_company_links`, the directory's only person-to-company
+  //    linkage — `contacts.primary_company_id` named one company, so a payout
+  //    contact attached from the company side was refused a link the builder
+  //    had just sent them, and the column is dropped by a gated migration.
+  assert.match(gate, /\.from\("contact_company_links"\)/)
+  assert.match(gate, /\.eq\("contact_id", access\.contact_id\)/)
+  assert.match(gate, /\.eq\("company_id", access\.company_id\)/)
+  assert.match(gate, /if \(!link\) \{/, "a contact with no link to the company must not authorize payout setup")
   // 3. the capability is explicit — an RFI token for a company nobody invited
   //    to payments is not a payout-authorization credential
   assert.match(gate, /vendor_payment_relationships/)

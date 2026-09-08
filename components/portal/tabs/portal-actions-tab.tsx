@@ -4,10 +4,15 @@ import { format } from "date-fns"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import type { ClientPortalData } from "@/lib/types"
+import type { PortalPayApplicationSummary } from "@/lib/services/pay-applications"
+import { formatBillingPeriod, payApplicationTitle } from "@/components/portal/pay-applications/pay-application-stage"
+import { formatMoneyCentsExact } from "@/lib/utils"
 
 interface PortalActionsTabProps {
   data: ClientPortalData
   token: string
+  /** Pay applications awaiting this owner's certificate. Empty on most jobs. */
+  payApplications: PortalPayApplicationSummary[]
 }
 
 function formatSelectionPrice(selection: ClientPortalData["pendingSelections"][number]) {
@@ -22,9 +27,39 @@ function formatSelectionPrice(selection: ClientPortalData["pendingSelections"][n
   return amount
 }
 
-export function PortalActionsTab({ data, token }: PortalActionsTabProps) {
+export function PortalActionsTab({ data, token, payApplications }: PortalActionsTabProps) {
   return (
     <div className="space-y-4">
+      {payApplications.length > 0 ? (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Pay applications</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {payApplications.map((application) => (
+              <a
+                key={application.id}
+                href={`/p/${token}/pay-applications/${application.id}`}
+                className="-mx-2 block border-b px-2 py-3 last:border-0 hover:bg-muted/50"
+              >
+                <div className="mb-1 flex items-center justify-between gap-3">
+                  <p className="text-sm font-medium">{payApplicationTitle(application)}</p>
+                  <Badge variant="outline" className="text-xs">
+                    Awaiting certification
+                  </Badge>
+                </div>
+                <p className="text-sm font-semibold tabular-nums">
+                  {formatMoneyCentsExact(application.current_payment_due_cents)}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {formatBillingPeriod(application.period_start, application.period_end)}
+                </p>
+              </a>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
+
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-base">Change Orders</CardTitle>

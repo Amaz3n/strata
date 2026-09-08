@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, useTransition, type CSSProperties } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
@@ -11,8 +11,20 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { AlertTriangle, ChevronRight } from "@/components/icons";
-import { StatusChip } from "@/components/companies/company-detail-ui";
+import { StatusChip, formatMoneyFromCents } from "@/components/companies/company-detail-ui";
+import {
+  ComplianceReviewDialog,
+  factsToInput,
+  type ReviewValues,
+} from "@/components/companies/account/compliance-dialogs";
+import { reviewComplianceDocumentAction } from "@/app/(app)/directory/[id]/compliance/actions";
+import { useToast } from "@/hooks/use-toast";
+import { unwrapAction } from "@/lib/action-result";
 import type { ComplianceStatusSummary } from "@/lib/types";
+import type {
+  ComplianceReviewQueue,
+  PendingComplianceReview,
+} from "@/lib/services/compliance-documents";
 
 type ComplianceWatchItem = {
   companyId: string;
@@ -59,6 +71,7 @@ function toWatchItem(
  * the work it counted.
  */
 export function ComplianceAlert({
+  reviewQueue,
   companies,
   complianceStatusByCompanyId,
   watchTruncated = false,
@@ -67,6 +80,15 @@ export function ComplianceAlert({
   vendorNoun = "vendor",
   vendorNounPlural = "vendors",
 }: {
+  /**
+   * Every compliance document waiting on a decision, org-wide, ranked by the
+   * money its review would release. This is the work itself; the watch list
+   * below it is the vendors who owe something. The service that ranks these has
+   * existed and been tested since the compliance hardening pass and had no
+   * caller at all — reviewing meant opening vendors one at a time and guessing
+   * which one was costing the most.
+   */
+  reviewQueue: ComplianceReviewQueue | null;
   /** Vendor-role companies on the watch list. Narrowed to what the banner
    *  shows, so the directory page no longer loads full company records — and
    *  the vendor test is now the party's role, not a guess from company_type. */
@@ -84,8 +106,40 @@ export function ComplianceAlert({
   vendorNounPlural?: string;
 }) {
   const router = useRouter();
+  const { toast } = useToast();
   const searchParams = useSearchParams();
   const [open, setOpen] = useState(false);
+  const [pending, startTransition] = useTransition();
+  // Deciding happens here rather than on the vendor's tab: the queue exists so
+  // somebody can work through a stack of certificates, and sending them to a
+  // different page per document is what made that a stack in the first place.
+  const [reviewTarget, setReviewTarget] = useState<PendingComplianceReview | null>(null);
+
+  const submitReview = (values: ReviewValues) =>
+    startTransition(async () => {
+      if (!reviewTarget) return;
+      try {
+        unwrapAction(
+          await reviewComplianceDocumentAction(reviewTarget.document.id, {
+            decision: values.decision,
+            notes: values.notes || undefined,
+            rejection_reason: values.rejection_reason || undefined,
+            corrections: factsToInput(values.facts),
+          }),
+        );
+        toast({
+          title: values.decision === "approved" ? "Document approved" : "Sent back to the vendor",
+          description:
+            values.decision === "approved"
+              ? `${reviewTarget.companyName} can be paid for anything this was holding.`
+              : `${reviewTarget.companyName} has been emailed the reason.`,
+        });
+        setReviewTarget(null);
+        router.refresh();
+      } catch (error) {
+        toast({ title: "Something went wrong", description: (error as Error).message });
+      }
+    });
 
   const deepLinked = searchParams.get("compliance") === "pending";
   useEffect(() => {
@@ -132,7 +186,7 @@ export function ComplianceAlert({
     );
   }
 
-  if (watchItems.length === 0) return null;
+  if (watchItems.length === 0 && (reviewQueue?.totalPending ?? 0) === 0) return null;
 
   // Urgent = anything missing, expired, or a live deficiency (needs chasing now).
   const urgentCount = watchItems.filter(
@@ -141,7 +195,9 @@ export function ComplianceAlert({
       item.expiredCount > 0 ||
       item.deficiencyCount > 0,
   ).length;
-  const awaitingReview = watchItems.reduce((sum, item) => sum + item.pendingCount, 0);
+  // The queue is the authority on review work; it counts documents org-wide,
+  // not only the vendors this page happened to load.
+  const awaitingReview = reviewQueue?.totalPending ?? 0;
 
   const watchNoun = watchItems.length === 1 ? vendorNoun : vendorNounPlural;
 
@@ -215,11 +271,68 @@ export function ComplianceAlert({
           <div className="border-b bg-muted/40 px-4 py-3">
             <SheetTitle className="text-sm font-semibold">Compliance attention</SheetTitle>
             <SheetDescription className="mt-0.5 text-xs">
-              Subcontractors and suppliers with something outstanding, worst first.
+              Documents waiting on you first, ranked by the money they release.
             </SheetDescription>
           </div>
 
-          <div className="min-h-0 flex-1 divide-y overflow-y-auto">
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {reviewQueue && reviewQueue.items.length > 0 ? (
+              <section>
+                <div className="microlabel flex items-center justify-between border-b bg-muted/20 px-4 py-1.5">
+                  <span>Waiting on your review</span>
+                  {reviewQueue.heldCents > 0 ? (
+                    <span className="tabular-nums normal-case tracking-normal">
+                      {formatMoneyFromCents(reviewQueue.heldCents)}
+                      {reviewQueue.heldCentsTruncated ? "+" : ""} held
+                    </span>
+                  ) : null}
+                </div>
+                <div className="divide-y">
+                  {reviewQueue.items.map((item) => (
+                    <div
+                      key={item.document.id}
+                      className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/40"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-medium">{item.companyName}</div>
+                        <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                          {item.document.document_type?.name ?? "Document"}
+                          {item.submittedViaPortal ? " · sent by the vendor" : ""}
+                        </div>
+                        {item.blocksPayment ? (
+                          <div className="mt-1 text-xs tabular-nums text-destructive">
+                            {formatMoneyFromCents(item.heldCents)} held
+                          </div>
+                        ) : null}
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 shrink-0"
+                        disabled={pending}
+                        onClick={() => setReviewTarget(item)}
+                      >
+                        Review
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+                {reviewQueue.truncated ? (
+                  <p className="border-b px-4 py-2 text-xs text-muted-foreground">
+                    Showing {reviewQueue.items.length} of {reviewQueue.totalPending}. Decide these
+                    and the rest will appear.
+                  </p>
+                ) : null}
+              </section>
+            ) : null}
+
+            {watchItems.length > 0 ? (
+              <div className="microlabel border-b bg-muted/20 px-4 py-1.5">
+                Vendors with something outstanding
+              </div>
+            ) : null}
+            <div className="divide-y">
             {watchItems.map((item) => (
               <button
                 key={item.companyId}
@@ -265,6 +378,7 @@ export function ComplianceAlert({
                 <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
               </button>
             ))}
+            </div>
           </div>
 
           <div className="shrink-0 border-t bg-muted/40 px-4 py-2.5 text-xs text-muted-foreground">
@@ -272,6 +386,15 @@ export function ComplianceAlert({
           </div>
         </SheetContent>
       </Sheet>
+
+      <ComplianceReviewDialog
+        open={reviewTarget !== null}
+        onOpenChange={(next) => !next && setReviewTarget(null)}
+        document={reviewTarget?.document ?? null}
+        documentType={reviewTarget?.document.document_type}
+        onSubmit={submitReview}
+        busy={pending}
+      />
     </>
   );
 }

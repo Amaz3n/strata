@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import { Checkbox } from "@/components/ui/checkbox"
 import type { PaymentHold, PaymentHoldEvaluation } from "@/lib/services/payment-holds"
 import { cn } from "@/lib/utils"
 
@@ -41,28 +42,25 @@ export function PayableHoldsPanel({
   evaluation: PaymentHoldEvaluation
   onOverridden: (evaluation: PaymentHoldEvaluation) => void
 }) {
-  const [overriding, setOverriding] = useState<PaymentHold | null>(null)
+  const [overriding, setOverriding] = useState<Set<PaymentHold["kind"]>>(() => new Set())
   const [reason, setReason] = useState("")
   const [isPending, startTransition] = useTransition()
 
   if (evaluation.holds.length === 0) return null
 
   const submitOverride = () => {
-    if (!overriding) return
+    if (overriding.size === 0) return
     startTransition(async () => {
-      const result = await overridePaymentHoldAction({
-        bill_id: billId,
-        hold_kind: overriding.kind,
-        reason: reason.trim(),
-      })
-      if (!result.success) {
-        toast.error(result.error)
-        return
+      let latest = evaluation
+      for (const holdKind of overriding) {
+        const result = await overridePaymentHoldAction({ bill_id: billId, hold_kind: holdKind, reason: reason.trim() })
+        if (!result.success) { toast.error(result.error); return }
+        latest = result.data
       }
-      toast.success("Hold overridden", { description: "The override and its reason are recorded on the audit trail." })
-      setOverriding(null)
+      toast.success(`${overriding.size} ${overriding.size === 1 ? "hold" : "holds"} overridden`, { description: "The overrides and typed reason are recorded on the audit trail." })
+      setOverriding(new Set())
       setReason("")
-      onOverridden(result.data)
+      onOverridden(latest)
     })
   }
 
@@ -100,7 +98,7 @@ export function PayableHoldsPanel({
                   </Button>
                 ) : null}
                 {hold.level === "block" ? (
-                  <Button variant="ghost" size="sm" className="h-6 px-2 text-xs text-muted-foreground" onClick={() => setOverriding(hold)}>
+                  <Button variant="ghost" size="sm" className="h-6 px-2 text-xs text-muted-foreground" onClick={() => setOverriding(new Set([hold.kind]))}>
                     Override
                   </Button>
                 ) : null}
@@ -110,15 +108,15 @@ export function PayableHoldsPanel({
         ))}
       </ul>
 
-      <Dialog open={Boolean(overriding)} onOpenChange={(open) => !open && setOverriding(null)}>
+      <Dialog open={overriding.size > 0} onOpenChange={(open) => !open && setOverriding(new Set())}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Override {overriding ? (HOLD_LABELS[overriding.kind] ?? "payment").toLowerCase() : "payment"} hold</DialogTitle>
+            <DialogTitle>Override payment {overriding.size === 1 ? "hold" : "holds"}</DialogTitle>
             <DialogDescription>
-              {overriding?.message}. Overriding releases this payable for payment despite the hold. Your name and reason become part
-              of the permanent audit record.
+              Select every hold covered by the same decision. Your name and typed reason become part of the permanent audit record.
             </DialogDescription>
           </DialogHeader>
+          <div className="divide-y border">{evaluation.holds.filter((hold) => hold.level === "block" && !hold.overridden).map((hold) => <label key={hold.kind} className="flex items-start gap-2 px-3 py-2 text-xs"><Checkbox checked={overriding.has(hold.kind)} onCheckedChange={(checked) => setOverriding((current) => { const next = new Set(current); if (checked) next.add(hold.kind); else next.delete(hold.kind); return next })}/><span><span className="font-medium">{HOLD_LABELS[hold.kind] ?? hold.kind}</span><span className="mt-0.5 block text-muted-foreground">{hold.message}</span></span></label>)}</div>
           <div className="space-y-1.5">
             <Label htmlFor="hold-override-reason" className="microlabel">
               Reason
@@ -135,10 +133,10 @@ export function PayableHoldsPanel({
             ) : null}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setOverriding(null)}>
+            <Button variant="outline" onClick={() => setOverriding(new Set())}>
               Cancel
             </Button>
-            <Button disabled={isPending || reason.trim().length < 8} onClick={submitOverride}>
+            <Button disabled={isPending || overriding.size === 0 || reason.trim().length < 8} onClick={submitOverride}>
               {isPending ? "Recording…" : "Override hold"}
             </Button>
           </DialogFooter>

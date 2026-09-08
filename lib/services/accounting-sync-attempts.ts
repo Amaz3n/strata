@@ -22,21 +22,26 @@ export async function recordAccountingSyncAttempt(input: {
   direction: "outbound" | "inbound"
   outcome: AccountingSyncAttemptOutcome
   message?: string | null
-}): Promise<void> {
+}): Promise<string | null> {
   try {
     const supabase = createServiceSupabaseClient()
-    const { error } = await supabase.from("accounting_sync_attempts").insert({
-      org_id: input.orgId,
-      connection_id: input.connectionId ?? null,
-      provider: input.provider,
-      entity_type: input.entityType,
-      entity_id: input.entityId ?? null,
-      external_id: input.externalId ?? null,
-      direction: input.direction,
-      outcome: input.outcome,
-      message: input.message?.slice(0, 4000) ?? null,
-    })
+    const { data, error } = await supabase
+      .from("accounting_sync_attempts")
+      .insert({
+        org_id: input.orgId,
+        connection_id: input.connectionId ?? null,
+        provider: input.provider,
+        entity_type: input.entityType,
+        entity_id: input.entityId ?? null,
+        external_id: input.externalId ?? null,
+        direction: input.direction,
+        outcome: input.outcome,
+        message: input.message?.slice(0, 4000) ?? null,
+      })
+      .select("id")
+      .single()
     if (error) throw new Error(error.message)
+    return data?.id ?? null
   } catch (error) {
     logAccounting("warn", "sync_attempt_trace_failed", {
       orgId: input.orgId,
@@ -44,5 +49,6 @@ export async function recordAccountingSyncAttempt(input: {
       entityId: input.entityId,
       error: error instanceof Error ? error.message : String(error),
     })
+    return null
   }
 }

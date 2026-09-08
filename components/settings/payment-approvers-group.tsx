@@ -30,7 +30,7 @@ import {
   SettingsField,
   SettingsGroup,
 } from "@/components/settings/settings-section"
-import type { PaymentRunApprover } from "@/lib/services/payment-approvers"
+import type { PaymentRunApprover } from "@/lib/services/payment-approver-roster"
 import { cn } from "@/lib/utils"
 
 type Chain = {

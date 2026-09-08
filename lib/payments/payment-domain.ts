@@ -17,9 +17,11 @@ export const DISBURSEMENT_STATUSES = [
   "submitted",
   "debit_pending",
   "funds_available",
+  "transfer_claimed",
   "transfer_pending",
   "payout_pending",
   "paid",
+  "returned_after_transfer",
   "failed",
   "returned",
   "reversed",
@@ -111,7 +113,10 @@ const PAYMENT_RUN_TRANSITIONS: Record<PaymentRunStatus, readonly PaymentRunStatu
   processing: ["partially_paid", "paid", "partially_failed", "failed"],
   partially_paid: ["paid", "partially_failed"],
   paid: [],
-  partially_failed: [],
+  // A failed payee does not make the run terminal while another payee can still
+  // be submitted or settle. Recovery is therefore allowed to move the run back
+  // through processing and on to the final paid/failed roll-up.
+  partially_failed: ["processing", "partially_paid", "paid", "failed"],
   failed: [],
   canceled: [],
 }
@@ -120,10 +125,12 @@ const DISBURSEMENT_TRANSITIONS: Record<DisbursementStatus, readonly Disbursement
   created: ["submitted", "failed", "canceled"],
   submitted: ["debit_pending", "funds_available", "failed", "canceled"],
   debit_pending: ["funds_available", "failed", "canceled"],
-  funds_available: ["transfer_pending", "payout_pending", "returned", "reversed"],
-  transfer_pending: ["payout_pending", "paid", "failed", "returned", "reversed"],
-  payout_pending: ["paid", "failed", "returned", "reversed"],
+  funds_available: ["transfer_claimed", "transfer_pending", "payout_pending", "returned", "reversed"],
+  transfer_claimed: ["transfer_pending", "returned_after_transfer", "reversed"],
+  transfer_pending: ["payout_pending", "paid", "failed", "returned_after_transfer", "reversed"],
+  payout_pending: ["paid", "failed", "returned_after_transfer", "reversed"],
   paid: ["returned", "reversed"],
+  returned_after_transfer: ["paid", "returned"],
   failed: [],
   returned: [],
   reversed: [],
@@ -181,6 +188,7 @@ export const DISBURSEMENT_FORWARD_PATH: readonly DisbursementStatus[] = [
   "submitted",
   "debit_pending",
   "funds_available",
+  "transfer_claimed",
   "transfer_pending",
   "payout_pending",
   "paid",
@@ -257,10 +265,76 @@ export function resolveRunStatus(itemStatuses: readonly string[]): string {
   const anySettled = itemStatuses.some((status) => status === "paid" || status === "partially_paid")
   const anyFailed = itemStatuses.some(isUnpaidTerminal)
   if (itemStatuses.every((status) => status === "paid")) return "paid"
-  if (anySettled && anyFailed) return "partially_failed"
+  if (anyFailed && !itemStatuses.every(isUnpaidTerminal)) return "partially_failed"
   if (itemStatuses.every(isUnpaidTerminal)) return "failed"
   if (anySettled) return "partially_paid"
   return "processing"
+}
+
+/** Whether every item has reached a state that cannot advance without a new run. */
+export function isPaymentRunTerminal(itemStatuses: readonly string[]): boolean {
+  return itemStatuses.length > 0 && itemStatuses.every((status) => status === "paid" || isUnpaidTerminal(status))
+}
+
+export type ReturnStage = "pre_transfer" | "post_transfer" | "post_payout"
+
+/**
+ * Classify an ACH return by whether Arc can still stop the vendor's money.
+ * `transfer_claimed` is deliberately conservative: a worker may have created
+ * the provider transfer and crashed before persisting its id.
+ */
+export function classifyReturnStage(status: string): ReturnStage {
+  assertKnownStatus(status, DISBURSEMENT_STATUSES, "disbursement")
+  if (["created", "submitted", "debit_pending", "funds_available"].includes(status)) return "pre_transfer"
+  if (["transfer_claimed", "transfer_pending", "payout_pending", "returned_after_transfer"].includes(status)) return "post_transfer"
+  if (status === "paid") return "post_payout"
+  throw new Error(`A return cannot be applied to terminal disbursement status: ${status}`)
+}
+
+export const MAX_SUBMISSION_ATTEMPTS = 5
+export const SUBMISSION_RETRY_MINUTES = [2, 5, 15, 60, 240] as const
+
+export function submissionRetryAt(attempts: number, attemptedAt: string | Date): string | null {
+  if (!Number.isInteger(attempts) || attempts < 1) throw new Error("Submission attempts must be a positive integer")
+  if (attempts >= MAX_SUBMISSION_ATTEMPTS) return null
+  const attempted = new Date(attemptedAt)
+  if (Number.isNaN(attempted.getTime())) throw new Error("Submission attempt time is invalid")
+  attempted.setUTCMinutes(attempted.getUTCMinutes() + SUBMISSION_RETRY_MINUTES[attempts - 1])
+  return attempted.toISOString()
+}
+
+export function isSubmissionRecoveryCandidate(input: {
+  status: string
+  submissionAttempts: number
+  nextSubmissionAt: string | null
+  now?: string | Date
+}) {
+  if (input.status !== "created" || input.submissionAttempts >= MAX_SUBMISSION_ATTEMPTS || !input.nextSubmissionAt) return false
+  const now = new Date(input.now ?? new Date())
+  const due = new Date(input.nextSubmissionAt)
+  return !Number.isNaN(due.getTime()) && due <= now
+}
+
+/** Every path into funds_available uses this one hold calculation. */
+export function scheduleTransferRelease(clearedAt: string | Date, holdBusinessHours: number): string {
+  return addBusinessHours(clearedAt, holdBusinessHours).toISOString()
+}
+
+/** A reclaimed transfer must adopt a provider object before creating anything. */
+export function decideVendorTransferAction(providerTransferId: string | null): "adopt" | "create" {
+  return providerTransferId ? "adopt" : "create"
+}
+
+export class DisbursementStateError extends Error {
+  readonly orgId: string
+  readonly disbursementId: string
+
+  constructor(input: { orgId: string; disbursementId: string; operation: string }) {
+    super(`Disbursement ${input.disbursementId} changed state while ${input.operation}`)
+    this.name = "DisbursementStateError"
+    this.orgId = input.orgId
+    this.disbursementId = input.disbursementId
+  }
 }
 
 export interface LedgerEntryInput {

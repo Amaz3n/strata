@@ -582,7 +582,7 @@ test("commercial pay applications preserve base contract sums and reject unsafe 
   assert.ok(
     source.indexOf(
       "if (overbilledLines.length > 0 && !parsed.allow_overbilling)",
-    ) < source.indexOf("for (const update of pendingUpdates)"),
+    ) < source.indexOf('rpc("save_pay_application_lines_atomic"'),
   );
   assert.match(source, /overbilling_confirmed/);
   assert.match(
@@ -636,10 +636,20 @@ test("commercial claims use executed OCO numbering and reconcile pay-app receiva
   assert.match(changeOrders, /executed_change_order_number/);
   assert.match(changeOrders, /`PCO-\$\{String\(changeOrder\.co_number\)/);
   assert.match(payApps, /permission: "invoice\.approve"/);
+  // The owner's certificate is what moves the application to approved and
+  // stamps `approved_at`, which is what the paid-status trigger keys on.
   assert.match(
     payApps,
-    /update\(\{ status: "approved", approved_at: approvedAt \}\)/,
+    /rpc\("certify_pay_application_atomic"/,
   );
+  // Certifying issues the invoice, so the receivable exists the moment the
+  // owner says the money is due.
+  assert.match(fs.readFileSync(path.join(__dirname, "../supabase/migrations/20260905004132_pay_application_integrity.sql"), "utf8"), /approval_status='approved',status='sent'/);
+  // Partial certification is explained per SOV line and still reconciles the
+  // exact requested, deferred and certified amounts before issuing an invoice.
+  assert.match(payApps, /computePayApplicationCertification\(/);
+  assert.match(payApps, /requested_amount_cents: applied/);
+  assert.match(payApps, /deferred_amount_cents: amounts\.deferredCents/);
 });
 
 test("change-order content edits cannot perform lifecycle transitions", () => {
@@ -752,7 +762,7 @@ test("invoice revisions preserve the original and create a linked replacement dr
     "utf8",
   );
   const client = fs.readFileSync(
-    path.join(__dirname, "../components/invoices/billing-queue.tsx"),
+    path.join(__dirname, "../components/invoices/billing-book.tsx"),
     "utf8",
   );
 
@@ -856,11 +866,11 @@ test("retainage is derived from the active contract and shown before invoice iss
     "utf8",
   );
   const receivables = fs.readFileSync(
-    path.join(__dirname, "../components/financials/billing-tab.tsx"),
+    path.join(__dirname, "../app/(app)/projects/[id]/financials/billing/page.tsx"),
     "utf8",
   );
   const retainageTracker = fs.readFileSync(
-    path.join(__dirname, "../components/projects/retainage-tracker.tsx"),
+    path.join(__dirname, "../components/invoices/retainage-ledger.tsx"),
     "utf8",
   );
 
@@ -879,7 +889,7 @@ test("retainage is derived from the active contract and shown before invoice iss
   assert.match(composer, /billing_contract\?\.retainage_percent/);
   assert.match(composer, /Retainage held/);
   assert.match(receivables, /billing_contract: contract/);
-  assert.match(receivables, /projects=\{\[invoiceProject\]\}/);
+  assert.match(receivables, /contract=\{contract\}/);
   assert.doesNotMatch(retainageTracker, /updateProjectSettingsAction/);
   assert.doesNotMatch(retainageTracker, /Total Project Value/);
 });
@@ -937,7 +947,7 @@ test("fixed-price pay-app packages carry GC compliance and required full-tier wa
     "utf8",
   );
   const payAppUi = fs.readFileSync(
-    path.join(__dirname, "../components/financials/pay-applications-tab.tsx"),
+    path.join(__dirname, "../components/financials/pay-application-workspace.tsx"),
     "utf8",
   );
 
@@ -949,20 +959,28 @@ test("fixed-price pay-app packages carry GC compliance and required full-tier wa
   assert.match(actions, /generatePayApplicationPackageAction/);
   assert.match(actions, /generateSovPayApplicationPdf/);
   assert.match(actions, /generateInvoiceBackupPackage/);
-  assert.match(payAppUi, /Attach our bonds, insurance, and licenses/);
-  assert.match(payAppUi, /Full-tier lien waivers are included automatically/);
+  // The package always carries the builder's bonds, insurance and licences, and
+  // the required full-tier waivers, rather than hiding them behind a checkbox
+  // nobody understood.
+  assert.match(payAppUi, /generatePayApplicationPackageAction\(projectId, application\.id, \{ includeGcCompliance: true \}\)/);
+  assert.match(payAppUi, /Download owner package/);
 });
 
 test("sub-tier waiver queries disambiguate the org-scoped commitment relationship", () => {
-  const waiverService = fs.readFileSync(
-    path.join(__dirname, "../lib/services/lien-waivers.ts"),
-    "utf8",
-  );
-
-  const relationshipHint =
-    "commitments!subtier_requirements_commitment_org_fkey";
-  assert.equal(waiverService.split(relationshipHint).length - 1, 2);
-  assert.doesNotMatch(waiverService, /commitment:commitments\(id, title\)/);
+  const relationshipHint = "commitments!subtier_requirements_commitment_org_fkey";
+  // Joining commitments from `subtier_waiver_requirements` is ambiguous without
+  // the org-scoped foreign key, so the hint is mandatory wherever it happens —
+  // in the service that writes requirements and in the register that reads them.
+  for (const relative of [
+    "../lib/services/lien-waivers.ts",
+  ]) {
+    const source = fs.readFileSync(path.join(__dirname, relative), "utf8");
+    assert.ok(source.includes(relationshipHint), `${relative} must name the org-scoped commitment relationship`);
+    assert.doesNotMatch(source, /commitment:commitments\(id, title\)/, relative);
+  }
+  const register = fs.readFileSync(path.join(__dirname, "../lib/services/waiver-register.ts"), "utf8");
+  assert.match(register, /from\("commitments"\)[\s\S]*?eq\("org_id", ctx\.orgId\)[\s\S]*?eq\("project_id", id\)[\s\S]*?in\("id", commitmentIds/);
+  assert.doesNotMatch(register, /commitment:commitments\(/);
 });
 
 test("the invoice lifecycle is derived by the server, never supplied by a caller", () => {
@@ -1102,7 +1120,7 @@ test("every billing destination is built in one place", () => {
     "utf8",
   );
   const retainage = fs.readFileSync(
-    path.join(__dirname, "../components/projects/retainage-tracker.tsx"),
+    path.join(__dirname, "../components/invoices/retainage-ledger.tsx"),
     "utf8",
   );
   const reconciliation = fs.readFileSync(
@@ -1161,44 +1179,203 @@ test("the invoice inspector is the only invoice detail surface", () => {
   }
 });
 
-test("composing an invoice owns a route instead of a dismissible sheet", () => {
+test("composing an invoice is an in-place takeover with a live document", () => {
   const composer = fs.readFileSync(
     path.join(__dirname, "../components/invoices/invoice-composer.tsx"),
     "utf8",
   );
-  const routeExists = fs.existsSync(
+  const editor = fs.readFileSync(
+    path.join(__dirname, "../components/invoices/invoice-document-editor.tsx"),
+    "utf8",
+  );
+  const book = fs.readFileSync(
+    path.join(__dirname, "../components/invoices/billing-book.tsx"),
+    "utf8",
+  );
+  const legacyRoute = fs.readFileSync(
     path.join(__dirname, "../app/(app)/projects/[id]/financials/billing/new/page.tsx"),
+    "utf8",
   );
 
-  assert.ok(routeExists, "the composer needs its own route");
-  // Review reads the SAVED draft, so what a person approves is what will be issued.
-  assert.match(composer, /getInvoiceDetailAction\(invoiceId\)/);
-  assert.match(composer, /issueInvoiceAction\(invoice\.id, parsedRecipients\)/);
+  // It opens over the book with no navigation, named in the URL so Back closes it.
+  assert.match(book, /useWorkspaceParam\("compose"\)/);
+  assert.match(book, /<InvoiceComposer/);
+  assert.match(composer, /fixed inset-0 z-50/);
+  assert.match(legacyRoute, /redirect\(resumeInvoiceHref\(id, query\.draft\)\)/);
+
+  // Its data arrives in one round trip, warmed while the pointer is on the button.
+  assert.match(composer, /loadInvoiceComposerBootstrapAction/);
+  assert.match(composer, /export function prefetchInvoiceComposer/);
+  assert.match(book, /onPointerEnter=\{warmComposer\}/);
+
+  // The preview is the same renderer the customer's page and the PDF use, fed
+  // from the form as it stands — never a second layout of the invoice.
+  assert.match(composer, /<ArcInvoiceDocument\s+data=\{preview\.data\}\s+lines=\{preview\.lines\}/);
+  assert.match(editor, /preview: \{ data: ArcInvoiceDocumentData; lines: ArcInvoiceLine\[\] \}/);
+
+  // Sending persists the draft through the editor and issues THAT id.
+  assert.match(composer, /await editorRef\.current\?\.persist\(\)/);
+  assert.match(composer, /issueInvoiceAction\(id, parsedRecipients\)/);
   // And the number reservation is only released when no draft was produced.
   assert.match(composer, /if \(!reservationId \|\| draftIdRef\.current\) return/);
 });
 
-test("the billing queue filters, counts and pages in the database", () => {
+test("the invoice document is one layout in two renderers, and an invoice can narrow its payment methods", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../components/invoices/arc-invoice-document.tsx"), "utf8");
+  const pdf = fs.readFileSync(path.join(__dirname, "../lib/pdfs/invoice.tsx"), "utf8");
+  const pdfData = fs.readFileSync(path.join(__dirname, "../lib/pdfs/invoice-data.ts"), "utf8");
+  const feeEngine = fs.readFileSync(path.join(__dirname, "../lib/payments/fee-engine.ts"), "utf8");
+  const publicPage = fs.readFileSync(path.join(__dirname, "../app/i/[token]/page.tsx"), "utf8");
+  const portalPage = fs.readFileSync(path.join(__dirname, "../app/p/[token]/invoices/[id]/page.tsx"), "utf8");
+
+  // The same sections, in the same order, in both renderers.
+  for (const marker of ["Invoice number", "Date of issue", "Date due", "Bill to", "Unit price", "Amount due", "Pay online"]) {
+    assert.match(html, new RegExp(marker));
+    assert.match(pdf, new RegExp(marker));
+  }
+  // The allowed methods reach the PDF from the metadata key the composer writes;
+  // the memo is the builder's own note and never reaches either renderer.
+  assert.match(pdfData, /paymentMethodLabels\(invoicePaymentMethods\(metadata\)\)/);
+  assert.doesNotMatch(pdfData, /metadata\.memo/);
+  assert.doesNotMatch(html, /data\.memo/);
+  assert.doesNotMatch(pdf, /data\.memo/);
+
+  // An invoice can turn a method off but never on: the pay pages narrow the org policy by the invoice.
+  assert.match(feeEngine, /achEnabled: policy\.achEnabled && methods\.ach !== false/);
+  assert.match(publicPage, /restrictPaymentFeePolicyToInvoice\(policy, invoice\.metadata\)/);
+  assert.match(portalPage, /restrictPaymentFeePolicyToInvoice\(policy, invoice\.metadata\)/);
+});
+
+test("a scheduled send is a timestamp on the draft that the outbox honours only while it still stands", () => {
+  const service = fs.readFileSync(path.join(__dirname, "../lib/services/invoices.ts"), "utf8");
+  const route = fs.readFileSync(path.join(__dirname, "../app/api/jobs/process-outbox/route.ts"), "utf8");
+
+  assert.match(service, /export const SCHEDULED_INVOICE_SEND_JOB_TYPE = "issue_invoice_scheduled"/);
+  // Cancelling clears the timestamp; the job compares before it sends.
+  assert.match(service, /stillScheduled = \(invoice\.metadata as Record<string, unknown> \| null\)\?\.scheduled_send_at === scheduledFor/);
+  assert.match(service, /if \(!stillScheduled \|\| isIssuedInvoiceStatus\(invoice\.status\)\) return/);
+  // Issuing from a job uses the same code path as issuing from a click, with the scheduler as actor.
+  assert.match(service, /issueInvoiceWithContext\(\s*\{ supabase: service, orgId, userId: actorId/);
+  assert.match(route, /SCHEDULED_INVOICE_SEND_JOB_TYPE,/);
+  assert.match(route, /runScheduledInvoiceSend\(job\.org_id, job\.payload \?\? \{\}\)/);
+});
+
+test("the billing book filters and pages in the database and sums the book in one scan", () => {
   const service = fs.readFileSync(
     path.join(__dirname, "../lib/services/invoices.ts"),
     "utf8",
   );
-  const queue = fs.readFileSync(
-    path.join(__dirname, "../components/invoices/billing-queue.tsx"),
+  const book = fs.readFileSync(
+    path.join(__dirname, "../components/invoices/billing-book.tsx"),
+    "utf8",
+  );
+  const bookService = fs.readFileSync(
+    path.join(__dirname, "../lib/services/billing-book.ts"),
+    "utf8",
+  );
+  const cache = fs.readFileSync(
+    path.join(__dirname, "../components/invoices/use-invoice-detail-cache.ts"),
     "utf8",
   );
 
-  // Counting a loaded page while the aging strip covers the whole book is how the
-  // two came to disagree on a project with more than one page of invoices.
+  // Rows are filtered and paged by the database, never by combing a loaded page.
   assert.match(service, /export async function listInvoicePage/);
-  assert.match(service, /export async function getInvoiceQueueCounts/);
-  assert.match(service, /\{ count: "exact" \}/);
-  assert.match(queue, /loadInvoiceQueueAction/);
-  assert.doesNotMatch(queue, /invoiceQueueCounts\(/);
+  assert.match(service, /case "active":/);
+  assert.match(service, /case "history":/);
+  assert.match(book, /loadBillingRowsAction/);
+  assert.doesNotMatch(book, /invoiceQueueCounts\(/);
+
+  // The project's counts, outstanding, overdue and aging come from ONE select of
+  // the status columns. Eight count(*) queries was eight ways for the strip to
+  // disagree with the rows, and one of them failing took the whole strip down.
+  assert.match(bookService, /export async function getProjectBillingSummary/);
+  assert.doesNotMatch(bookService, /count: "exact"/);
+  assert.match(bookService, /accumulateArAging\(aging, facts\)/);
 
   // A late response for an invoice the user already left must not overwrite the
   // one they are looking at.
-  assert.match(queue, /if \(seq !== detailSeq\.current\) return/);
+  assert.match(cache, /if \(requestSeq !== seq\.current\) return null/);
+});
+
+test("the org billing desk preserves project posture and accounting routing", () => {
+  const page = fs.readFileSync(path.join(__dirname, "../components/invoices/org-billing-workspace.tsx"), "utf8");
+  const billingRoute = fs.readFileSync(path.join(__dirname, "../app/(app)/billing/page.tsx"), "utf8");
+  const legacyRoute = fs.readFileSync(path.join(__dirname, "../app/(app)/invoices/page.tsx"), "utf8");
+  const book = fs.readFileSync(path.join(__dirname, "../components/invoices/billing-book.tsx"), "utf8");
+  const accounting = fs.readFileSync(path.join(__dirname, "../lib/services/financial-accounting.ts"), "utf8");
+  const summary = fs.readFileSync(path.join(__dirname, "../lib/services/billing-book.ts"), "utf8");
+
+  // The org desk is an explicit scope, not a missing project id whose meaning
+  // changes when the user happens to see exactly one project.
+  assert.match(book, /scope: \{ kind: "org" \} \| \{ kind: "project"; projectId: string \}/);
+  assert.match(page, /scope=\{\{ kind: "org" \}\}/);
+  assert.match(billingRoute, /<OrgBillingWorkspace/);
+  assert.match(legacyRoute, /redirect\(query\.size > 0 \? `\/billing\?/);
+
+  // Mixed orgs resolve billing posture and external accounting per project.
+  assert.match(page, /projectProfiles = Object\.fromEntries/);
+  assert.match(page, /getProjectPosture\(project\.property_type, context\.productTier\)/);
+  assert.match(page, /getFinancialAccountingModesForProjects/);
+  assert.match(page, /loadOrgBillingDeskData/);
+  assert.match(page, /href: entry\.href/);
+  assert.match(book, /profileForInvoice/);
+  assert.match(book, /accountingForInvoice/);
+  assert.match(accounting, /Ledger authority is\s+\* org-wide; only the external routing target varies by project/);
+
+  // Both scopes use the same summary reducer, preventing count/aging drift.
+  assert.match(summary, /function summarizeBillingRows/);
+  assert.match(summary, /export async function getOrgBillingSummary/);
+  assert.match(page, /getOrgBillingSummary/);
+
+  // Project-only setup tools must not render as inert controls on the org desk.
+  assert.match(book, /projectId \? <DropdownMenuItem onSelect=\{\(\) => openManage\("recurring"\)\}/);
+
+  // The wider org table keeps one compact overflow column: its workflow
+  // shortcut moves into the menu instead of forcing horizontal scrolling.
+  assert.match(book, /projectId \? <TableHead className="px-4 py-2\.5">Next<\/TableHead> : null/);
+  assert.match(book, /primaryShortcut=\{primaryShortcut\}/);
+  assert.doesNotMatch(book, /sticky right-0/);
+});
+
+test("selecting an invoice never re-renders the billing page on the server", () => {
+  const book = fs.readFileSync(
+    path.join(__dirname, "../components/invoices/billing-book.tsx"),
+    "utf8",
+  );
+  const cache = fs.readFileSync(
+    path.join(__dirname, "../components/invoices/use-invoice-detail-cache.ts"),
+    "utf8",
+  );
+  const detail = fs.readFileSync(
+    path.join(__dirname, "../app/(app)/invoices/actions.ts"),
+    "utf8",
+  );
+  const inspector = fs.readFileSync(
+    path.join(__dirname, "../components/invoices/invoice-inspector.tsx"),
+    "utf8",
+  );
+
+  // Selection is written with history.replaceState through the shared hook; a
+  // router.replace onto a page that reads search params re-runs every loader
+  // on the page — measured at 16 seconds and 50KB per click on a laptop.
+  assert.match(book, /useWorkspaceParam\("invoice"\)/);
+  assert.doesNotMatch(book, /router\.replace\(/);
+
+  // Bundles are cached by id and invalidated by the row's own updated_at, and
+  // the neighbours of the open row are warmed so j/k is free.
+  assert.match(cache, /const cache = new Map<string, CacheEntry>\(\)/);
+  assert.match(cache, /rowUpdatedAt > entry\.updatedAt/);
+  assert.match(cache, /prefetchInvoiceDetail\(neighbour\.id, neighbour\.updated_at\)/);
+
+  // Opening an invoice is one round trip: attachments ride in the bundle, and the
+  // header paints from the list row while the sections load.
+  const detailBody = detail.slice(
+    detail.indexOf("async function loadInvoiceDetail"),
+    detail.indexOf("export async function createInvoiceLienWaiverAction"),
+  );
+  assert.match(detailBody, /listAttachments\("invoice", invoiceId, orgId\)/);
+  assert.match(inspector, /mapAttachmentLinks\(detail\.attachments \?\? \[\]\)/);
+  assert.match(inspector, /InvoiceInspectorPlaceholder invoice=\{props\.placeholder\}/);
 });
 
 test("an invoice cannot reach `sent` without an immutable record of what was billed", () => {
@@ -1224,7 +1401,7 @@ test("an invoice cannot reach `sent` without an immutable record of what was bil
 
 test("the invoice detail shares the page with the list instead of covering it", () => {
   const queue = fs.readFileSync(
-    path.join(__dirname, "../components/invoices/billing-queue.tsx"),
+    path.join(__dirname, "../components/invoices/billing-book.tsx"),
     "utf8",
   );
   const shell = path.join(__dirname, "../components/financials/workspace/workspace-shell.tsx");
@@ -1241,11 +1418,17 @@ test("the invoice detail shares the page with the list instead of covering it", 
   assert.match(queue, /: "hidden w-0 lg:block"/);
   assert.doesNotMatch(queue, /<InvoiceInspectorEmpty \/>/);
 
-  // The clip that hides the fixed-width contents mid-animation has to sit ON the
-  // sticky element: an overflow ancestor captures a sticky descendant and stops
-  // it sticking, which is silent and only shows up when the table is long.
+  // The page never scrolls: the book is a bounded column, the table scrolls in
+  // its own container and the inspector in its own, so reading the bottom of
+  // the detail never means scrolling the list away from under it.
+  assert.match(queue, /h-\[calc\(100svh-3\.5rem\)\] w-full flex-col/);
+  // …and the scroll box is the table's own container, so the column header and
+  // the band dividers can stick to it while the rows move underneath.
+  assert.match(queue, /containerClassName="min-h-0 flex-1 overflow-auto"/);
+  assert.match(queue, /<TableHeader className="sticky top-0 z-20 bg-background">/);
   const aside = queue.slice(queue.indexOf("<aside"), queue.indexOf("</aside>"));
-  assert.match(aside, /overflow-hidden[^"]*"[\s\S]{0,200}lg:sticky/);
+  assert.doesNotMatch(aside, /lg:sticky/);
+  assert.match(aside, /lg:h-full/);
 
   // The old workspace shell is still used by expenses; it just no longer owns
   // receivables. If that ever changes, this test should be the thing that notices.

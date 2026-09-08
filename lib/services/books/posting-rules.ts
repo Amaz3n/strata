@@ -45,6 +45,7 @@ function line(
   side: "debit" | "credit",
   input: Pick<CommonPostingInput, "projectId" | "companyId"> & {
     description?: string;
+    dimensions?: Record<string, unknown>;
   },
 ): JournalLineDraft {
   assertIntegerCents(amountCents, "Posting amount");
@@ -56,6 +57,7 @@ function line(
     projectId: input.projectId,
     companyId: input.companyId,
     description: input.description,
+    ...(input.dimensions ? { dimensions: input.dimensions } : {}),
   };
 }
 
@@ -79,6 +81,7 @@ function signedLine(
   side: "debit" | "credit",
   input: Pick<CommonPostingInput, "projectId" | "companyId"> & {
     description?: string;
+    dimensions?: Record<string, unknown>;
   },
 ): JournalLineDraft | null {
   assertIntegerCents(amountCents, "Posting amount");
@@ -189,6 +192,7 @@ export function postVendorBillFromCostLines(
       amountCents: number;
       projectId?: string;
       description?: string;
+      dimensions?: Record<string, unknown>;
     }>;
   },
 ) {
@@ -218,6 +222,7 @@ export function postVendorBillFromCostLines(
           projectId: item.projectId ?? input.projectId,
           companyId: input.companyId,
           description: item.description,
+          dimensions: item.dimensions,
         },
       ),
     ),
@@ -319,6 +324,28 @@ export function postBillPayment(
     sourceType: "bill_payment",
     sourceId: input.id,
     lines,
+  });
+}
+
+/** One settled Arc Pay fee debit, separate from every vendor cash line. */
+export function postApFeeCharge(
+  input: CommonPostingInput & { amountCents: number; cashAccountCode?: string; feeAccountCode?: string },
+) {
+  assertIntegerCents(input.amountCents, "AP fee charge amount");
+  if (input.amountCents <= 0) throw new Error("AP fee charge amount must be positive");
+  return complete({
+    entryDate: input.date,
+    entryKind: "operational",
+    memo: input.memo,
+    postingKey: buildPostingKey(`ap_fee_charge:${input.id}`, input),
+    projectionVersion: input.projectionVersion,
+    policyVersion: input.policyVersion,
+    sourceType: "ap_fee_charge",
+    sourceId: input.id,
+    lines: [
+      line(input.feeAccountCode ?? SYSTEM_ACCOUNT_CODES.bankFees, input.amountCents, "debit", input),
+      line(input.cashAccountCode ?? SYSTEM_ACCOUNT_CODES.operatingCash, input.amountCents, "credit", input),
+    ],
   });
 }
 
@@ -750,6 +777,7 @@ export function postExpenseFromCostLines(
       amountCents: number;
       projectId?: string;
       description?: string;
+      dimensions?: Record<string, unknown>;
     }>;
     paymentAccountCode?: string;
   },
@@ -785,6 +813,7 @@ export function postExpenseFromCostLines(
             projectId: item.projectId ?? input.projectId,
             companyId: input.companyId,
             description: item.description,
+          dimensions: item.dimensions,
           },
         ),
       ),

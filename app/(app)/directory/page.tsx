@@ -2,7 +2,10 @@ import { Suspense } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageLayout } from "@/components/layout/page-layout";
 import { getCurrentUserPermissions } from "@/lib/services/permissions";
-import { getCompaniesComplianceStatus } from "@/lib/services/compliance-documents";
+import {
+  getCompaniesComplianceStatus,
+  listPendingComplianceReviews,
+} from "@/lib/services/compliance-documents";
 import { getCompaniesPrequalificationSummary } from "@/lib/services/prequalification";
 import type { PartyKind } from "@/lib/directory/roles";
 import { canEditDirectory } from "@/lib/directory/permissions";
@@ -82,7 +85,7 @@ async function loadVendorData(
     ]),
   );
 
-  const [complianceResult, prequalificationResult] = await Promise.all([
+  const [complianceResult, prequalificationResult, reviewQueueResult] = await Promise.all([
     getCompaniesComplianceStatus(statusCompanyIds, context.orgId).then(
       (value) => ({ ok: true as const, value }),
       () => ({ ok: false as const, value: {} }),
@@ -91,16 +94,26 @@ async function loadVendorData(
       (value) => ({ ok: true as const, value }),
       () => ({ ok: false as const, value: {} }),
     ),
+    // Org-wide and independent of which vendors this page loaded: a document
+    // waiting on a decision is work whether or not its vendor is on screen.
+    listPendingComplianceReviews(context.orgId).then(
+      (value) => ({ ok: true as const, value }),
+      () => ({ ok: false as const, value: null }),
+    ),
   ]);
 
   return {
     complianceStatusByCompanyId: complianceResult.value,
     prequalificationByCompanyId: prequalificationResult.value,
     complianceWatchCompanies: watchResult.value.companies,
+    complianceReviewQueue: reviewQueueResult.value,
     complianceWatchTruncated: watchResult.value.truncated,
     complianceWatchTotal: watchResult.value.total,
     statusUnavailable:
-      !watchResult.ok || !complianceResult.ok || !prequalificationResult.ok,
+      !watchResult.ok ||
+      !complianceResult.ok ||
+      !prequalificationResult.ok ||
+      !reviewQueueResult.ok,
   };
 }
 

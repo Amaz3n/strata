@@ -37,6 +37,7 @@ export const timeEntryUpdateSchema = z.object({
 })
 
 export const projectExpenseInputSchema = z.object({
+  booksPaymentAccountId: z.string().uuid().nullable().optional(),
   projectId: z.string().uuid(),
   costCodeId: z.string().uuid().optional().nullable(),
   vendorCompanyId: z.string().uuid().optional().nullable(),

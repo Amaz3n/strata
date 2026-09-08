@@ -28,8 +28,9 @@ const dailyLogEntrySchema = z.object({
 })
 
 export const dailyLogInputSchema = z.object({
+  submission_id: z.string().uuid().optional(),
   project_id: z.string().uuid("Project is required"),
-  date: z.string().min(1, "Date is required"),
+  date: z.string().date("Use a valid date"),
   summary: z.string().optional(),
   weather: z
     .union([

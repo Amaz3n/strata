@@ -4,7 +4,7 @@ const assert = require("node:assert/strict")
 const test = require("node:test")
 
 const {
-  ACTOR, PACKAGE, PROJECT, RELEASE_STEPS,
+  ACTOR, LOT, ORG, PACKAGE, PROJECT, RELEASE_STEPS,
   buildHarness, releasingFixture, stepsByKey, succeedingInstantiation,
 } = require("./support/starts-harness")
 
@@ -310,4 +310,36 @@ test("cancelling a release keeps what already landed and says so", async () => {
   assert.equal(steps.get("drawings").error, null)
   assert.equal(harness.store.start_packages[0].status, "ready")
   assert.equal(harness.store.start_packages[0].metadata.release_lease_token, null)
+})
+
+
+test("finalization transfers lot basis with the released house's organization, date and actor", async () => {
+  const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
+  await loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5_000 })
+  assert.deepEqual(harness.calls.landTransfers, [{ orgId: ORG, lotId: LOT, date: "2026-09-07", actorId: ACTOR }])
+  assert.equal(harness.store.start_packages[0].status, "released")
+})
+
+test("a failed lot-basis transfer prevents release and retries without regenerating completed work", async () => {
+  let fail = true
+  const harness = buildHarness({
+    purchasing: false,
+    instantiate: succeedingInstantiation(),
+    transferLandAtStart: async () => { if (fail) throw new Error("Lot basis transfer unavailable") },
+  })
+  const pipeline = loadPipeline()
+  await pipeline.runStartsPipeline({ deadlineMs: Date.now() + 5_000 })
+  assert.equal(stepsByKey(harness.store).get("finalize").status, "failed")
+  assert.match(stepsByKey(harness.store).get("finalize").error, /Lot basis transfer unavailable/)
+  assert.equal(harness.store.start_packages[0].status, "releasing")
+  assert.equal(harness.store.lots[0].status, "assigned")
+  assert.equal(harness.store.projects[0].phase, "precon")
+  assert.ok(!harness.calls.events.some(event => event.eventType === "start.released"))
+  const completedWork = harness.calls.instantiate.length
+  fail = false
+  requeue(harness.store)
+  await pipeline.runStartsPipeline({ deadlineMs: Date.now() + 5_000 })
+  assert.equal(harness.store.start_packages[0].status, "released")
+  assert.equal(harness.calls.landTransfers.length, 2)
+  assert.equal(harness.calls.instantiate.length, completedWork)
 })

@@ -5,6 +5,7 @@ export interface PayableFacts {
   total_cents?: number | null
   paid_cents?: number | null
   retainage_cents?: number | null
+  retainage_released_cents?: number | null
   project_amount_cents?: number | null
 }
 
@@ -14,13 +15,15 @@ export function isVendorCredit(payable: Pick<PayableFacts, "payable_type">): boo
 
 export function payableOutstandingCents(payable: PayableFacts): number {
   if (isVendorCredit(payable)) return 0
-  const heldRetainage = Math.max(0, payable.retainage_cents ?? 0)
-  return Math.max(0, (payable.total_cents ?? 0) - heldRetainage - (payable.paid_cents ?? 0))
+  // Retainage releases are separate payables. Releasing must not make the same
+  // money payable a second time on the original bill.
+  const originalRetainage = Math.max(0, payable.retainage_cents ?? 0)
+  return Math.max(0, (payable.total_cents ?? 0) - originalRetainage - (payable.paid_cents ?? 0))
 }
 
 export function payableHeldRetainageCents(payable: PayableFacts): number {
   if (isVendorCredit(payable)) return 0
-  return Math.max(0, payable.retainage_cents ?? 0)
+  return Math.max(0, (payable.retainage_cents ?? 0) - (payable.retainage_released_cents ?? 0))
 }
 
 export function getPayableSyncBlockReason(payable: {

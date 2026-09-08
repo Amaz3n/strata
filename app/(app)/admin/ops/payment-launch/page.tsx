@@ -4,7 +4,7 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { listPaymentLaunchGateStates, requirePaymentLaunchOwner } from "@/lib/services/payment-launch-readiness"
+import { getPlatformPayoutScheduleState, listPaymentLaunchGateStates, requirePaymentLaunchOwner } from "@/lib/services/payment-launch-readiness"
 
 import { attestPaymentLaunchGateAction } from "./actions"
 
@@ -19,7 +19,7 @@ const LABELS = {
 export default async function PaymentLaunchPage() {
   await connection()
   await requirePaymentLaunchOwner()
-  const gates = await listPaymentLaunchGateStates()
+  const [gates, payoutSchedule] = await Promise.all([listPaymentLaunchGateStates(), getPlatformPayoutScheduleState()])
   return (
     <PageLayout title="Payment launch gates" breadcrumbs={[{ label: "Admin", href: "/admin" }, { label: "Ops", href: "/admin/ops" }, { label: "Payment launch" }]}>
       <div className="mx-auto max-w-5xl space-y-6 p-4">
@@ -29,6 +29,16 @@ export default async function PaymentLaunchPage() {
             Approve a gate only after the named owner has completed the work and supplied a durable case, document, test-run, or provider reference. Revocation immediately blocks new payment execution and vendor-transfer release.
           </p>
         </div>
+        <section className="flex flex-wrap items-start justify-between gap-3 border p-4">
+          <div>
+            <h2 className="text-sm font-semibold">Stripe platform payout schedule</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Live interval: {payoutSchedule.interval}. Vendor funds can only be held safely when platform payouts are manual.
+              {payoutSchedule.error ? ` ${payoutSchedule.error}` : ""}
+            </p>
+          </div>
+          <Badge variant={payoutSchedule.ready ? "secondary" : "destructive"}>{payoutSchedule.ready ? "manual" : "blocked"}</Badge>
+        </section>
         <div className="divide-y border">
           {gates.map((gate) => (
             <section key={gate.gateKey} className="space-y-4 p-4">

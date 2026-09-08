@@ -20,6 +20,47 @@ test.describe("authenticated instant navigation", () => {
     await signIn(page)
   })
 
+  test("settings switches immediately and reuses visited panels", async ({ page }) => {
+    const reads: string[] = []
+    page.on("request", (request) => {
+      if (request.url().includes("/api/settings/panel")) reads.push(new URL(request.url()).searchParams.get("tab") ?? "")
+    })
+    await page.goto("/settings?tab=profile")
+    const shell = page.locator('[data-instant-shell="settings"]')
+    await expect(shell).toHaveAttribute("data-settings-tab", "profile")
+    expect(reads).not.toContain("team")
+    expect(reads).not.toContain("payments")
+    await instant(page, async () => {
+      await page.getByRole("link", { name: "Notifications", exact: true }).first().click()
+      await expect(shell).toHaveAttribute("data-settings-tab", "notifications")
+    })
+    await expect(page.getByRole("status", { name: "Loading settings" })).toHaveCount(0)
+    await page.getByRole("link", { name: "Profile", exact: true }).first().click()
+    await expect(shell).toHaveAttribute("data-settings-tab", "profile")
+    const before = reads.length
+    await instant(page, async () => {
+      await page.getByRole("link", { name: "Notifications", exact: true }).first().click()
+      await expect(shell).toHaveAttribute("data-settings-tab", "notifications")
+    })
+    expect(reads).toHaveLength(before)
+    await page.goBack()
+    await expect(shell).toHaveAttribute("data-settings-tab", "profile")
+  })
+
+  test("invoice settings drafts survive back/forward without saving", async ({ page }) => {
+    await page.goto("/settings?tab=invoicing")
+    const emailField = page.getByLabel("Invoice email", { exact: true })
+    await expect(emailField).toBeVisible()
+    test.skip(await emailField.isDisabled(), "This check needs settings edit permission")
+    const original = await emailField.inputValue()
+    await emailField.fill("unsaved-settings-test@example.com")
+    await page.getByRole("link", { name: "Profile", exact: true }).first().click()
+    await page.goBack()
+    await expect(emailField).toHaveValue("unsaved-settings-test@example.com")
+    await emailField.fill(original)
+    // No save: this journey must never mutate the connected organization's settings.
+  })
+
   test("project documents expose a useful instant shell", async ({ page }) => {
     const projectLink = page.locator('a[href^="/projects/"]:not([href="/projects/new"])').first()
     const projectHref = await projectLink.getAttribute("href")

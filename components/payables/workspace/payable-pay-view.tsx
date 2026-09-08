@@ -351,7 +351,7 @@ export function PayablePayView({
                   <div className="border bg-muted/30 px-3 py-2.5 text-sm text-muted-foreground">
                     No verified bank account yet.{" "}
                     <Link
-                      href="/settings"
+                      href="/settings/payments"
                       className="font-medium text-primary hover:underline"
                     >
                       Set one up in Settings → Vendor payments
@@ -559,12 +559,12 @@ export function PayablePayView({
                   )}
                 </p>
                 {shortHandedApprovers ? (
-                  <p className="flex items-start gap-2 text-warning">
+                  <div className="flex items-start gap-2 text-warning">
                     <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                    {requesterMayApprove
-                      ? "Your owner-approval policy uses a restricted list, but you are not an eligible approver for this debit. Ask an administrator to add you or adjust your approval limit in Settings → Vendor payments."
-                      : "Not enough designated approvers can decide this run. Ask an administrator to designate another approver in Settings → Vendor payments."}
-                  </p>
+                    <p>{requesterMayApprove
+                      ? "Your owner-approval policy uses a restricted list, but you are not an eligible approver for this debit."
+                      : "Not enough designated approvers can decide this run."} <Link href="/settings/payments#approvers" className="underline underline-offset-2">Update payment approvers in Settings</Link>.</p>
+                  </div>
                 ) : null}
               </div>
 

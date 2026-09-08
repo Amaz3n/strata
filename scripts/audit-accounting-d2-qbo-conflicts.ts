@@ -1,140 +1,115 @@
+import { closeSync, openSync, writeFileSync } from "node:fs"
+import { resolve } from "node:path"
 import { decryptToken } from "@/lib/integrations/accounting/qbo/auth"
 import { qboCompanyBaseUrl, qboEnvironmentLabel } from "@/lib/integrations/accounting/qbo/config"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { classifyRemoteAccounts, inspectRemoteTransaction } from "./lib/accounting-d2-remote-evidence"
 
-const ORG_NAME = "Patagonia Development LLC"
+const EXPECTED_ORG = "eda817f7-b343-46e4-ad17-f61d9fe2e30d"
+const EXPECTED_CONNECTION = "e6e4122f-bd9e-480c-b03d-6d4a8cba2eb6"
 const EXPECTED_REALM = "9341456671106880"
 const MIN_TOKEN_LIFETIME_MS = 20 * 60 * 1000
-
-function referenceId(coding: unknown, key: string): string | null {
-  if (!coding || typeof coding !== "object") return null
-  const value = (coding as Record<string, any>)[key]
-  return typeof value?.id === "string" ? value.id : null
-}
-
-function remoteExpenseAccounts(transaction: any): Set<string> {
-  return new Set(
-    (Array.isArray(transaction?.Line) ? transaction.Line : [])
-      .map((line: any) => line?.AccountBasedExpenseLineDetail?.AccountRef?.value)
-      .filter((value: unknown): value is string => typeof value === "string" && value.length > 0),
-  )
-}
+const DEADLINE_MS = 12 * 60 * 1000
+const MAX_REQUESTS = 200
+const PAGE_SIZE = 500
+const MAX_ROWS = 20_000
+function object(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {} }
+function referenceId(coding: unknown, key: string): string | null { const id = object(object(coding)[key]).id; return typeof id === "string" ? id : null }
 
 async function run() {
+  const outputPath = process.argv[2]
+  if (!outputPath || process.argv.length !== 3) throw new Error("Usage: audit-accounting-d2-qbo-conflicts <new-private-evidence.json>")
   if (qboEnvironmentLabel !== "production") throw new Error("Audit requires an explicitly configured production QBO endpoint")
-  const supabase = createServiceSupabaseClient()
-  const { data: org, error: orgError } = await supabase.from("orgs").select("id").eq("name", ORG_NAME).single()
-  if (orgError || !org) throw new Error("Patagonia organization identity was not found")
-
-  const { data: connection, error: connectionError } = await supabase
-    .from("accounting_connections")
-    .select("id,external_account_id,access_token,token_expires_at")
-    .eq("org_id", org.id)
-    .eq("provider", "qbo")
-    .eq("status", "active")
-    .single()
-  if (connectionError || !connection) throw new Error("Expected exactly one active Patagonia QBO connection")
-  if (connection.external_account_id !== EXPECTED_REALM) throw new Error("Patagonia QBO realm identity changed")
-  const tokenExpiresAt = Date.parse(connection.token_expires_at ?? "")
-  if (!Number.isFinite(tokenExpiresAt) || tokenExpiresAt - Date.now() < MIN_TOKEN_LIFETIME_MS) {
-    throw new Error("Audit aborted before QBO access: token lifetime is too short to guarantee a no-refresh read")
+  const service = createServiceSupabaseClient()
+  const { data: connection, error } = await service.from("accounting_connections")
+    .select("id,org_id,external_account_id,access_token,token_expires_at,updated_at")
+    .eq("org_id", EXPECTED_ORG).eq("id", EXPECTED_CONNECTION).eq("provider", "qbo").eq("status", "active").single()
+  if (error || !connection || connection.external_account_id !== EXPECTED_REALM) throw new Error("Expected Patagonia connection/realm identity changed or is not active")
+  const expires = Date.parse(connection.token_expires_at ?? "")
+  if (!Number.isFinite(expires) || expires - Date.now() < MIN_TOKEN_LIFETIME_MS) throw new Error("Audit aborted: token lifetime cannot guarantee a no-refresh read")
+  const started = Date.now()
+  const deadline = started + DEADLINE_MS
+  const readRows = async (table: string, columns: string) => {
+    const rows: Array<Record<string, unknown>> = []
+    for (let offset = 0; offset <= MAX_ROWS; offset += PAGE_SIZE) {
+      if (Date.now() >= deadline) throw new Error("Database census exceeded audit deadline")
+      const { data, error, count } = await service.from(table).select(columns, { count: "exact" }).eq("org_id", EXPECTED_ORG).order("id").range(offset, offset + PAGE_SIZE - 1)
+      if (error || count === null || count > MAX_ROWS) throw new Error(`Incomplete ${table} census; no evidence can qualify`)
+      const page = data ?? []
+      rows.push(...page as unknown as Array<Record<string, unknown>>)
+      if (rows.length >= count) { if (rows.length !== count) throw new Error("Census changed during audit; retry from a fresh snapshot"); return rows }
+      if (page.length < PAGE_SIZE) throw new Error("Database row cap prevented a complete audit")
+    }
+    throw new Error("Audit row budget exceeded")
   }
-
-  const [{ data: expenses, error: expenseError }, { data: bills, error: billError }] = await Promise.all([
-    supabase
-      .from("project_expenses")
-      .select("id,qbo_expense_account_id,accounting_coding")
-      .eq("org_id", org.id)
-      .not("qbo_expense_account_id", "is", null)
-      .limit(5000),
-    supabase
-      .from("vendor_bills")
-      .select("id,metadata,qbo_expense_account_id,accounting_coding")
-      .eq("org_id", org.id)
-      .not("qbo_expense_account_id", "is", null)
-      .limit(5000),
+  const [expenses, bills, syncRows] = await Promise.all([
+    readRows("project_expenses", "id,updated_at,qbo_expense_account_id,accounting_coding"),
+    readRows("vendor_bills", "id,updated_at,metadata,qbo_expense_account_id,accounting_coding"),
+    readRows("accounting_sync_records", "id,entity_id,entity_type,connection_id,external_id,external_version,updated_at"),
   ])
-  if (expenseError || billError) throw new Error("Unable to load accounting-coding conflicts")
-
-  const candidates = [
-    ...(expenses ?? []).map((row) => ({ ...row, kind: "expense" as const })),
-    ...(bills ?? []).map((row) => ({ ...row, kind: "bill" as const })),
-  ].flatMap((row) => {
-    const neutral = referenceId(row.accounting_coding, "expense_account")
-    const legacy = row.qbo_expense_account_id
-    const transactionType = (row.accounting_coding as { transaction_type?: string } | null)?.transaction_type ?? null
-    return neutral && legacy && neutral !== legacy ? [{ ...row, neutral, legacy, transactionType }] : []
-  })
-
-  const ids = candidates.map((row) => row.id)
-  const { data: syncRows, error: syncError } = await supabase
-    .from("accounting_sync_records")
-    .select("entity_id,entity_type,external_id")
-    .eq("org_id", org.id)
-    .eq("connection_id", connection.id)
-    .in("entity_id", ids)
-  if (syncError) throw new Error("Unable to load neutral sync identities")
-  const syncByEntity = new Map((syncRows ?? []).map((row) => [row.entity_id, row]))
-
+  const sourceCandidates: Array<Record<string, unknown> & { kind: string }> = [...expenses.map(row => ({ ...row, kind: "project_expense" })), ...bills.map(row => ({ ...row, kind: object(row.metadata).source === "vendor_credit" ? "vendor_credit" : "bill" }))]
+  const candidates: Array<Record<string, unknown> & { kind: string; neutral: string; legacy: string }> = sourceCandidates
+    .flatMap(row => { const neutral = referenceId(row.accounting_coding, "expense_account"); const legacy = row.qbo_expense_account_id; return neutral && typeof legacy === "string" && neutral !== legacy ? [{ ...row, neutral, legacy }] : [] })
+  const fd = openSync(resolve(outputPath), "wx", 0o600)
+  let requests = 0
   const accessToken = decryptToken(connection.access_token)
-  const readTransaction = async (entity: "purchase" | "bill" | "vendorcredit", externalId: string) => {
-    const response = await fetch(
-      `${qboCompanyBaseUrl}/${encodeURIComponent(EXPECTED_REALM)}/${entity}/${encodeURIComponent(externalId)}`,
-      { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } },
-    )
-    if (response.status === 404) return null
-    if (!response.ok) throw new Error(`QBO read failed with HTTP ${response.status}`)
-    const payload = await response.json() as Record<string, unknown>
-    const key = entity === "purchase" ? "Purchase" : entity === "bill" ? "Bill" : "VendorCredit"
-    return payload[key] ?? null
-  }
-
-  const result = {
-    candidates: candidates.length,
-    remote_matches_neutral_only: 0,
-    remote_matches_legacy_only: 0,
-    remote_contains_both: 0,
-    remote_matches_neither: 0,
-    missing_sync_identity: 0,
-    missing_remote_transaction: 0,
-    read_errors: 0,
-  }
-
-  for (const candidate of candidates) {
-    const sync = syncByEntity.get(candidate.id)
-    if (!sync?.external_id) {
-      result.missing_sync_identity += 1
-      continue
+  const cache = new Map<string, unknown>()
+  const remoteRead = async (kind: string, externalId: string): Promise<unknown> => {
+    const key = `${kind}:${externalId}`
+    if (cache.has(key)) return cache.get(key)
+    if (++requests > MAX_REQUESTS || Date.now() >= deadline || expires - Date.now() < 5 * 60 * 1000) throw new Error("audit_budget_exceeded")
+    const response = await fetch(`${qboCompanyBaseUrl}/${encodeURIComponent(EXPECTED_REALM)}/${kind.toLowerCase()}/${encodeURIComponent(externalId)}`, {
+      method: "GET", redirect: "error", signal: AbortSignal.timeout(Math.min(15_000, deadline - Date.now())),
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    })
+    if (response.status === 404) { cache.set(key, null); return null }
+    if (!response.ok) {
+      const body: unknown = await response.json().catch(() => null)
+      const faults = object(object(body).Fault).Error
+      const codes = Array.isArray(faults) ? faults.map(fault => String(object(fault).code ?? "")).filter(code => /^\d{1,6}$/.test(code)).slice(0, 5) : []
+      throw new Error(`remote_http_${response.status}${codes.length ? `_code_${codes.join("_")}` : ""}`)
     }
-    try {
-      const transaction = candidate.kind === "expense"
-        ? candidate.transactionType === "bill"
-          ? await readTransaction("bill", sync.external_id)
-          : await readTransaction("purchase", sync.external_id)
-        : (candidate.metadata as { source?: string } | null)?.source === "vendor_credit"
-          ? await readTransaction("vendorcredit", sync.external_id)
-          : await readTransaction("bill", sync.external_id)
-      if (!transaction) {
-        result.missing_remote_transaction += 1
-        continue
+    const payload: unknown = await response.json()
+    const transaction = object(payload)[kind]
+    if (!transaction || object(transaction).Id !== externalId) throw new Error("remote_identity_or_payload_mismatch")
+    cache.set(key, transaction)
+    return transaction
+  }
+  const records: Array<Record<string, unknown>> = []
+  try {
+    for (const candidate of candidates) {
+      const sync = syncRows.filter(row => row.connection_id === EXPECTED_CONNECTION && row.entity_type === candidate.kind && row.entity_id === candidate.id)
+      const result: Record<string, unknown> = { orgId: EXPECTED_ORG, connectionId: EXPECTED_CONNECTION, entityType: candidate.kind, entityId: candidate.id, localUpdatedAt: candidate.updated_at, neutralAccountId: candidate.neutral, legacyAccountId: candidate.legacy, reviewer: null, disposition: "unreviewed", complete: false }
+      records.push(result)
+      if (sync.length !== 1 || typeof sync[0].external_id !== "string" || !sync[0].external_id) { result.error = "missing_or_ambiguous_neutral_identity"; continue }
+      result.externalId = sync[0].external_id
+      result.localExternalVersion = sync[0].external_version
+      result.syncUpdatedAt = sync[0].updated_at
+      const kind = candidate.kind === "project_expense" ? object(candidate.accounting_coding).transaction_type === "bill" ? "Bill" : "Purchase" : object(candidate.metadata).source === "vendor_credit" ? "VendorCredit" : "Bill"
+      try {
+        const raw = await remoteRead(kind, sync[0].external_id)
+        if (!raw) { result.error = "missing_remote_transaction"; continue }
+        const remote = inspectRemoteTransaction(raw)
+        const accounts: string[] = []
+        const allocations = []
+        for (const line of remote.lines) {
+          let expenseAccountId = line.accountId
+          if (line.itemId) expenseAccountId = String(object(object(await remoteRead("Item", line.itemId)).ExpenseAccountRef).value ?? "") || null
+          if (expenseAccountId) accounts.push(expenseAccountId)
+          allocations.push({ ...line, expenseAccountId })
+        }
+        result.remote = { ...remote, lines: allocations }
+        result.accountMatch = classifyRemoteAccounts(candidate.neutral, candidate.legacy, accounts)
+        result.complete = remote.complete && allocations.every(line => !["AccountBasedExpenseLineDetail", "ItemBasedExpenseLineDetail"].includes(line.detailType ?? "") || !!line.expenseAccountId)
+      } catch (error) {
+        // Deliberately omit provider payloads and exception stacks from the packet.
+        result.error = error instanceof Error && /^(remote_http_\d+(?:_code_[0-9_]+)?|audit_budget_exceeded|remote_identity_or_payload_mismatch)$/.test(error.message) ? error.message : "remote_read_failed"
       }
-      const remoteAccounts = remoteExpenseAccounts(transaction)
-      const matchesNeutral = remoteAccounts.has(candidate.neutral)
-      const matchesLegacy = remoteAccounts.has(candidate.legacy)
-      if (matchesNeutral && matchesLegacy) result.remote_contains_both += 1
-      else if (matchesNeutral) result.remote_matches_neutral_only += 1
-      else if (matchesLegacy) result.remote_matches_legacy_only += 1
-      else result.remote_matches_neither += 1
-    } catch {
-      result.read_errors += 1
     }
-  }
-
-  // Aggregate only: no customer transaction ids, account ids, names, or tokens.
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+    const complete = records.every(row => row.complete === true)
+    writeFileSync(fd, `${JSON.stringify({ version: "accounting-d2-remote-v1", readOnly: true, noRefresh: true, capturedAt: new Date().toISOString(), connectionId: EXPECTED_CONNECTION, realmId: EXPECTED_REALM, requests, complete, checkedCounts: { expenses: expenses.length, bills: bills.length, syncRows: syncRows.length, candidates: candidates.length }, records }, null, 2)}\n`)
+    process.stdout.write(`Read-only evidence written: ${records.length} records, complete=${complete}, requests=${requests}.\n`)
+    if (!complete) process.exitCode = 1
+  } finally { closeSync(fd) }
 }
-
-void run().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error))
-  process.exitCode = 1
-})
+void run().catch(() => { console.error("Read-only QBO audit failed. Check runtime, identity, token lifetime, output path and complete scan prerequisites; no refresh or production mutations were attempted."); process.exitCode = 1 })

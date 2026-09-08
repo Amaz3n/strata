@@ -3,7 +3,7 @@ import "server-only";
 import { z } from "zod";
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
-import { requireAuthorization } from "@/lib/services/authorization";
+import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access";
 import { recordAudit } from "@/lib/services/audit";
 import { CONSTRUCTION_CHART_TEMPLATE } from "@/lib/services/books/chart-of-accounts";
 import { booksDigest } from "@/lib/services/books/hash";
@@ -442,7 +442,7 @@ async function reverseJournalEntryInternal(input: {
     service
       .from("journal_entries")
       .select(
-        "id, entry_date, entry_kind, memo, posting_key, projection_version, policy_version, status",
+        "id, entry_date, entry_kind, memo, posting_key, projection_version, policy_version, status, source_type",
       )
       .eq("org_id", context.orgId)
       .eq("id", input.entryId)
@@ -465,6 +465,7 @@ async function reverseJournalEntryInternal(input: {
       `Failed to load journal lines: ${linesResult.error.message}`,
     );
   const entry = journalRowSchema.parse(entryResult.data);
+  if (entry.entry_kind === "opening" || ["land_acquisition", "inventory_start", "inventory_development_allocation", "inventory_interest", "inventory_completion", "inventory_sale_relief", "warranty_reserve", "warranty_reserve_consumption", "warranty_reserve_recovery"].includes(entryResult.data.source_type ?? "")) throw new Error("This journal belongs to an operational register. It cannot be reversed on its own; the operational record and ledger must be corrected together.");
   if (entry.status === "draft")
     throw new Error("Only a posted journal entry can be reversed");
   const lines = z.array(journalLineRowSchema).parse(linesResult.data ?? []);

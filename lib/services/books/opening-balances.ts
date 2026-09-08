@@ -3,14 +3,9 @@ import "server-only";
 import { z } from "zod";
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
-import { requireAuthorization } from "@/lib/services/authorization";
+import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access";
 import { recordAudit } from "@/lib/services/audit";
 import { booksDigest } from "@/lib/services/books/hash";
-import {
-  postBooksJournalEntry,
-  reverseBooksJournalEntry,
-} from "@/lib/services/books/ledger";
-import type { JournalEntryDraft } from "@/lib/services/books/types";
 import { requireOrgContext } from "@/lib/services/context";
 import { recordEvent } from "@/lib/services/events";
 
@@ -78,6 +73,9 @@ function validateLines(lines: OpeningBalanceLineInput[]) {
     > = {
       "1000": "bank",
       "1100": "ar",
+      "1110": "ar",
+      "2010": "ap",
+      "2300": "deposit",
       "2000": "ap",
       "2100": "credit_card",
       "2400": "loan",
@@ -93,7 +91,11 @@ function validateLines(lines: OpeningBalanceLineInput[]) {
       expected &&
       !line.sourceEntityType &&
       !line.sourceEntityId &&
-      !line.companyId
+      !line.companyId &&
+      !line.projectId &&
+      !line.details?.existing_entity_id &&
+      !line.details?.customer_id &&
+      !line.details?.cash_account_id
     ) {
       throw new Error(
         `Opening line ${index + 1} for control account ${line.accountCode} requires source detail`,
@@ -217,157 +219,23 @@ export async function approveOpeningBalanceBatch(input: {
   const permission =
     input.approvalRole === "owner" ? "books.cutover" : "books.adjust";
   const context = await requireOpeningPermission(permission, input.orgId);
-  const service = createServiceSupabaseClient();
-  const { data: batch, error: batchError } = await service
-    .from("opening_balance_batches")
-    .select("id, status, digest")
-    .eq("org_id", context.orgId)
-    .eq("id", input.batchId)
-    .single();
-  if (
-    batchError ||
-    !batch?.digest ||
-    !new Set(["validated", "approved"]).has(batch.status)
-  ) {
-    throw new Error("Opening balance batch is not ready for approval");
-  }
-  const { error } = await service.from("opening_balance_approvals").insert({
-    org_id: context.orgId,
-    batch_id: input.batchId,
-    approval_role: input.approvalRole,
-    approved_by: context.userId,
-    approved_digest: batch.digest,
+  const { data, error } = await createServiceSupabaseClient().rpc("approve_books_opening_batch", {
+    p_org_id: context.orgId, p_batch_id: z.string().uuid().parse(input.batchId), p_role: input.approvalRole, p_actor_id: context.userId,
   });
-  if (error)
-    throw new Error(`Failed to approve opening balances: ${error.message}`);
-  const { count, error: countError } = await service
-    .from("opening_balance_approvals")
-    .select("id", { count: "exact", head: true })
-    .eq("org_id", context.orgId)
-    .eq("batch_id", input.batchId)
-    .eq("approved_digest", batch.digest);
-  if (countError)
-    throw new Error(
-      `Failed to verify opening approvals: ${countError.message}`,
-    );
-  if (count === 2) {
-    const update = await service
-      .from("opening_balance_batches")
-      .update({
-        status: "approved",
-        approved_by: context.userId,
-        approved_at: new Date().toISOString(),
-      })
-      .eq("org_id", context.orgId)
-      .eq("id", input.batchId)
-      .eq("digest", batch.digest);
-    if (update.error)
-      throw new Error(
-        `Failed to finalize opening approval: ${update.error.message}`,
-      );
-  }
-  return { approvalCount: count ?? 0 };
+  if (error) throw new Error(`Failed to approve opening balances: ${error.message}`);
+  return { approvalCount: z.number().int().parse(data) };
 }
 
 export async function postOpeningBalanceBatch(batchId: string, orgId?: string) {
   const context = await requireOpeningPermission("books.adjust", orgId);
-  const service = createServiceSupabaseClient();
-  const [batchResult, linesResult] = await Promise.all([
-    service
-      .from("opening_balance_batches")
-      .select("id, cutover_date, status, digest, journal_entry_id")
-      .eq("org_id", context.orgId)
-      .eq("id", batchId)
-      .single(),
-    service
-      .from("opening_balance_lines")
-      .select(
-        "line_no, project_id, company_id, description, debit_cents, credit_cents, details, account:gl_accounts!inner(code)",
-      )
-      .eq("org_id", context.orgId)
-      .eq("batch_id", batchId)
-      .order("line_no"),
-  ]);
-  if (batchResult.error)
-    throw new Error(
-      `Failed to load opening batch: ${batchResult.error.message}`,
-    );
-  if (linesResult.error)
-    throw new Error(
-      `Failed to load opening lines: ${linesResult.error.message}`,
-    );
-  if (batchResult.data.journal_entry_id)
-    return batchResult.data.journal_entry_id;
-  if (batchResult.data.status !== "approved" || !batchResult.data.digest)
-    throw new Error("Opening batch requires both approvals");
-  const lineSchema = z.object({
-    project_id: z.string().uuid().nullable(),
-    company_id: z.string().uuid().nullable(),
-    description: z.string().nullable(),
-    debit_cents: z.number().int(),
-    credit_cents: z.number().int(),
-    details: z.record(z.unknown()),
-    account: z.union([
-      z.object({ code: z.string() }),
-      z.array(z.object({ code: z.string() })),
-    ]),
+  const { data, error } = await createServiceSupabaseClient().rpc("post_books_opening_batch", {
+    p_org_id: context.orgId, p_batch_id: z.string().uuid().parse(batchId), p_actor_id: context.userId,
   });
-  const draft: JournalEntryDraft = {
-    entryDate: batchResult.data.cutover_date,
-    entryKind: "opening",
-    memo: `Opening balances at ${batchResult.data.cutover_date}`,
-    postingKey: `opening:${batchId}:${batchResult.data.digest}`,
-    projectionVersion: 1,
-    policyVersion: 1,
-    sourceType: "opening_balance_batch",
-    sourceId: batchId,
-    lines: z
-      .array(lineSchema)
-      .parse(linesResult.data ?? [])
-      .map((line) => {
-        const account = Array.isArray(line.account)
-          ? line.account[0]
-          : line.account;
-        if (!account) throw new Error("Opening line is missing its account");
-        return {
-          accountCode: account.code,
-          projectId: line.project_id ?? undefined,
-          companyId: line.company_id ?? undefined,
-          description: line.description ?? undefined,
-          debitCents: line.debit_cents,
-          creditCents: line.credit_cents,
-          dimensions: line.details,
-        };
-      }),
-  };
-  const posted = await postBooksJournalEntry(draft, {
-    permission: "books.adjust",
-    orgId: context.orgId,
-  });
-  const update = await service
-    .from("opening_balance_batches")
-    .update({
-      status: "posted",
-      journal_entry_id: posted.id,
-      posted_at: new Date().toISOString(),
-    })
-    .eq("org_id", context.orgId)
-    .eq("id", batchId)
-    .eq("status", "approved");
-  if (update.error)
-    throw new Error(
-      `Failed to mark opening batch posted: ${update.error.message}`,
-    );
-  await recordAudit({
-    orgId: context.orgId,
-    actorId: context.userId,
-    action: "update",
-    entityType: "opening_balance_batch",
-    entityId: batchId,
-    after: { status: "posted", journal_entry_id: posted.id },
-    source: "books.opening.post",
-  });
-  return posted.id;
+  if (error) throw new Error(`Failed to initialize opening balances and open items: ${error.message}`);
+  const id = z.string().uuid().parse(data);
+  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "opening_balance_batch", entityId: batchId, after: { status: "posted", journal_entry_id: id }, source: "books.opening.post" });
+  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "books.opening_posted", entityType: "opening_balance_batch", entityId: batchId, payload: { journal_entry_id: id } });
+  return id;
 }
 
 export async function reverseOpeningBalanceBatch(input: {
@@ -378,26 +246,13 @@ export async function reverseOpeningBalanceBatch(input: {
 }) {
   const context = await requireOpeningPermission("books.adjust", input.orgId);
   const service = createServiceSupabaseClient();
-  const { data: batch, error } = await service
-    .from("opening_balance_batches")
-    .select("status, journal_entry_id")
-    .eq("org_id", context.orgId)
-    .eq("id", input.batchId)
-    .single();
-  if (error || batch?.status !== "posted" || !batch.journal_entry_id)
-    throw new Error("Only a posted opening batch can be reversed");
-  const reversal = await reverseBooksJournalEntry({
-    entryId: batch.journal_entry_id,
-    reversalDate: input.reversalDate,
-    reason: input.reason,
-    orgId: context.orgId,
+  const { data, error } = await service.rpc("reverse_books_opening_batch", {
+    p_org_id: context.orgId, p_batch_id: z.string().uuid().parse(input.batchId),
+    p_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).parse(input.reversalDate),
+    p_reason: z.string().trim().min(10).parse(input.reason), p_actor_id: context.userId,
   });
-  const update = await service
-    .from("opening_balance_batches")
-    .update({ status: "reversed", reversed_at: new Date().toISOString() })
-    .eq("org_id", context.orgId)
-    .eq("id", input.batchId);
-  if (update.error)
-    throw new Error(`Failed to reverse opening batch: ${update.error.message}`);
-  return reversal.id;
+  if (error) throw new Error(error.message);
+  const id = z.string().uuid().parse(data);
+  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "opening_balance_batch", entityId: input.batchId, after: { status: "reversed", reversal_entry_id: id, reason: input.reason }, source: "books.opening.reverse" });
+  return id;
 }

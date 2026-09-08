@@ -776,6 +776,7 @@ export interface PortalPermissions {
   can_create_punch_items: boolean
   can_view_warranty?: boolean
   can_view_invoices?: boolean
+  can_certify_pay_applications?: boolean
   can_pay_invoices?: boolean
   can_view_rfis?: boolean
   can_view_submittals?: boolean
@@ -827,6 +828,7 @@ export const REVIEWER_DEFAULT_PERMISSIONS: Partial<PortalPermissions> = {
   can_create_punch_items: false,
   can_view_warranty: false,
   can_view_invoices: false,
+  can_certify_pay_applications: false,
   can_pay_invoices: false,
   can_view_rfis: true,
   can_respond_rfis: true,
@@ -849,6 +851,8 @@ export const REVIEWER_DEFAULT_PERMISSIONS: Partial<PortalPermissions> = {
   can_report_po_completion: false,
 }
 
+export type PortalTokenPurpose = "portal" | "vendor_payout"
+
 export interface PortalAccessToken {
   id: string
   org_id: string
@@ -867,6 +871,13 @@ export interface PortalAccessToken {
   token: string
   name: string
   portal_type: PortalType         // Explicit portal type
+  /**
+   * What this access record is for. `vendor_payout` is a payout invitation:
+   * company-scoped, account-required, expiring, and the only kind whose
+   * lifecycle carries through to vendor payment authority. Everything else is
+   * ordinary portal access.
+   */
+  purpose: PortalTokenPurpose
   reviewer_role?: ReviewerRole | null
   permissions: PortalPermissions
   pin_required: boolean
@@ -1142,6 +1153,7 @@ export interface ChangeOrder {
 }
 
 export interface InvoiceLine {
+  budget_line_id?: string | null
   id?: string
   cost_code_id?: string | null
   description: string
@@ -1153,6 +1165,8 @@ export interface InvoiceLine {
   tax_rate_percent?: number | null
   qbo_income_account_id?: string | null
   qbo_income_account_name?: string | null
+  arc_books_gl_account_id?: string | null
+  arc_books_gl_account_name?: string | null
   billable_cost_ids?: string[]
   cost_cents?: number | null
   markup_cents?: number | null
@@ -1288,6 +1302,7 @@ export interface InvoiceLienWaiver {
   property_description: string | null
   released_at: string | null
   created_at: string
+  metadata?: Record<string, unknown> | null
 }
 
 export type PaymentReversalType = "refund" | "ach_return" | "chargeback" | "dispute" | "correction"
@@ -2128,6 +2143,14 @@ export interface ComplianceRequirementStatus {
   state: ComplianceRequirementState
   /** The document currently answering this requirement, if any. */
   document: ComplianceDocument | null
+  /**
+   * A newer submission waiting on a decision while `document` still answers the
+   * requirement — a renewal that arrived early. The requirement stays met, so
+   * this is the only way either screen can say a renewal is in flight, and it
+   * is why a vendor renewing ahead of time no longer takes themselves out of
+   * compliance.
+   */
+  pending_replacement: ComplianceDocument | null
   /** Every submission for this requirement, newest first. */
   history: ComplianceDocument[]
   /** Days until the answering document expires; negative once past. */
@@ -2135,10 +2158,30 @@ export interface ComplianceRequirementStatus {
   deficiency: ComplianceRequirementDeficiency | null
 }
 
+/**
+ * Whether this vendor is actually being watched, and if so whether anything has
+ * been asked of them.
+ *
+ * `is_compliant` alone cannot say this: a vendor with monitoring off and a
+ * vendor with nothing required both read as compliant, which is true in the
+ * narrow sense that nothing is outstanding and false in every sense a builder
+ * cares about. Since compliance became opt-in, that was the state of every
+ * newly added subcontractor, and the header badge said "Compliant" for all of
+ * them.
+ */
+export type ComplianceEnrollmentState =
+  /** Monitoring is off. Nothing is evaluated and autopilot will not write. */
+  | "unenrolled"
+  /** Monitoring is on, but nobody has said what this vendor owes. */
+  | "no_requirements"
+  /** Monitoring is on and at least one requirement stands. */
+  | "active"
+
 export interface ComplianceStatusSummary {
   company_id: string
   /** Off pauses enforcement and email requests without deleting the record. */
   monitoring_enabled: boolean
+  enrollment: ComplianceEnrollmentState
   requirements: ComplianceRequirement[]
   documents: ComplianceDocument[]
   /** Per-requirement verdicts, in requirement order. */

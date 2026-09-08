@@ -1,12 +1,22 @@
 import "server-only"
 
+import { mapWithConcurrency } from "@/lib/payments/concurrency"
 import {
+  detectExecutionConfigMismatch,
   incidentRenotifyCutoff,
   isPaymentReconciliationStale,
   RECONCILIATION_STALE_HOURS,
 } from "@/lib/payments/operations-monitor"
 import { CRON_JOBS } from "@/lib/services/job-runs"
+import { ACCOUNTING_JOB_TYPES } from "@/lib/services/accounting-job-types"
 import { recordEvent } from "@/lib/services/events"
+import { readPaymentExecutionConfig } from "@/lib/services/payment-launch-readiness"
+import {
+  groupStaleStateByOrg,
+  loadStalePaymentState,
+  STALE_PAYMENT_STATE_HOURS,
+  STALE_PAYMENT_STATE_INCIDENT_CODE,
+} from "@/lib/services/payment-stale-state"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 /**
@@ -36,7 +46,12 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 const LIVENESS_GRACE_MULTIPLIER = 3
 const RECONCILIATION_INCIDENT_CODE = "payment_reconciliation_stale"
 const RELEASE_BACKLOG_INCIDENT_CODE = "payment_release_past_due"
+const EXECUTION_CONFIG_INCIDENT_CODE = "payment_execution_config_mismatch"
 const RAIL_POLICY_PAGE_SIZE = 500
+const ACCOUNTING_SCAN_PAGE_SIZE = 200
+const ACCOUNTING_PENDING_STALE_HOURS = 6
+/** Enough to finish the roster in one round trip's worth of time, low enough to stay polite. */
+const LIVENESS_LOOKUP_CONCURRENCY = 8
 
 export interface WatchdogFinding {
   code:
@@ -44,6 +59,9 @@ export interface WatchdogFinding {
     | "outbox_jobs_failed"
     | "payment_release_past_due"
     | "payment_reconciliation_stale"
+    | "payment_execution_config_mismatch"
+    | "stale_payment_state"
+    | "accounting_sync_needs_review"
   severity: "warn" | "critical"
   detail: string
   context: Record<string, unknown>
@@ -61,6 +79,7 @@ interface WatchdogIncident {
   code: string
   orgIds: string[]
   detail: string
+  eventType?: "payment_operations_alert" | "accounting_sync_needs_review"
 }
 
 interface WatchdogProbeResult {
@@ -176,6 +195,78 @@ async function loadRailEnabledOrgIds(): Promise<string[]> {
 }
 
 /**
+ * The last successful run of each registered job, asked one job at a time.
+ *
+ * This used to be a single scan of the 2,000 most recent successful runs, which
+ * silently became a *time* window rather than a per-job one: the busiest jobs
+ * fire every five minutes, so 2,000 rows covered barely four days, and any job
+ * whose last success fell outside it was reported as having "no successful run
+ * on record". In production that produced false criticals for healthy daily jobs
+ * and made a genuinely dead `payment-release` indistinguishable from
+ * `late-fees`, which had succeeded fourteen hours earlier. A watchdog that cries
+ * wolf about healthy jobs is one nobody reads when a real one dies.
+ *
+ * One indexed lookup per job (`job_runs (job_name, started_at desc)`) is exact
+ * regardless of history, and thirty-odd of them on an hourly job costs nothing.
+ */
+async function loadLastSuccessByJob(): Promise<Map<string, string>> {
+  const supabase = createServiceSupabaseClient()
+  const entries = await mapWithConcurrency(CRON_JOBS, LIVENESS_LOOKUP_CONCURRENCY, async (job) => {
+    const { data, error } = await supabase
+      .from("job_runs")
+      .select("started_at")
+      .eq("job_name", job.name)
+      .eq("status", "success")
+      .order("started_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (error) throw new Error(`Unable to read the ${job.name} heartbeat: ${error.message}`)
+    return [job.name, data?.started_at ?? null] as const
+  })
+  const lastSuccessByJob = new Map<string, string>()
+  for (const [name, startedAt] of entries) {
+    if (typeof startedAt === "string") lastSuccessByJob.set(name, startedAt)
+  }
+  return lastSuccessByJob
+}
+
+/**
+ * Configuration faults, reported as themselves.
+ *
+ * Every other probe here asks whether the world is in the state a healthy job
+ * would have left it in. This one asks whether the jobs can succeed at all. The
+ * distinction earned its own probe the hard way: a deployment with execution on
+ * and reconciliation off failed the money tick every five minutes for twenty
+ * days, and because a configuration fault names no organization, the alert
+ * router had nothing to send and nobody was told.
+ *
+ * So the finding is platform-level and unconditional — it fires whether or not
+ * any rail is enabled, which is exactly the case that was invisible — while the
+ * org-scoped incident is raised only for builders actually on the rail, who are
+ * the only ones whose money is affected.
+ */
+async function checkPaymentExecutionConfig(): Promise<WatchdogProbeResult> {
+  const problem = detectExecutionConfigMismatch(readPaymentExecutionConfig())
+  if (!problem) {
+    return { findings: [], incidents: [{ code: EXECUTION_CONFIG_INCIDENT_CODE, orgIds: [], detail: "" }] }
+  }
+  const orgIds = await loadRailEnabledOrgIds()
+  return {
+    findings: [{
+      code: "payment_execution_config_mismatch",
+      severity: "critical",
+      detail: `${problem.detail} ${problem.remedy}`,
+      context: { affected_org_count: orgIds.length, remedy: problem.remedy },
+    }],
+    incidents: [{
+      code: EXECUTION_CONFIG_INCIDENT_CODE,
+      orgIds,
+      detail: `Vendor payments are configured in a state that cannot process releases. ${problem.detail}`,
+    }],
+  }
+}
+
+/**
  * Liveness, plus the money jobs' incident subjects.
  *
  * A dead cron names no organization of its own, which is exactly why nothing was
@@ -186,20 +277,8 @@ async function loadRailEnabledOrgIds(): Promise<string[]> {
  * by the first one's open incident.
  */
 async function checkCronLiveness(): Promise<WatchdogProbeResult> {
-  const supabase = createServiceSupabaseClient()
   const findings: WatchdogFinding[] = []
-  const { data, error } = await supabase
-    .from("job_runs")
-    .select("job_name,status,started_at")
-    .eq("status", "success")
-    .order("started_at", { ascending: false })
-    .limit(2_000)
-  if (error) throw new Error(`Unable to read job heartbeat: ${error.message}`)
-
-  const lastSuccessByJob = new Map<string, string>()
-  for (const row of data ?? []) {
-    if (!lastSuccessByJob.has(row.job_name)) lastSuccessByJob.set(row.job_name, row.started_at)
-  }
+  const lastSuccessByJob = await loadLastSuccessByJob()
 
   const overdueJobs = new Set<string>()
   for (const job of CRON_JOBS) {
@@ -344,6 +423,40 @@ async function checkReconciliationFreshness(): Promise<WatchdogProbeResult> {
   }
 }
 
+/**
+ * Invariant: money that stopped moving, across the whole deployment.
+ *
+ * The same 96-hour scan runs inside daily reconciliation, where it raises the
+ * exception rows a human works. That copy is unreachable exactly when it matters
+ * most: it is gated on the reconciliation flag and only visits organizations
+ * whose rail is currently enabled. Production held a disbursement at
+ * `transfer_pending` for four weeks with both gates off, so the check written in
+ * response to that very incident could never see it.
+ *
+ * A payment is stuck whether or not the rail is switched on today, so this probe
+ * takes no flag into account. Both callers share one scan and one incident code,
+ * so they agree by construction; the difference is reach. Reconciliation sees a
+ * single organization and can only ever say "still stuck" about it, while this
+ * scan covers the deployment, which is what makes resolving safe here.
+ */
+async function checkStalePaymentStates(): Promise<WatchdogProbeResult> {
+  const state = await loadStalePaymentState()
+  const byOrg = groupStaleStateByOrg(state)
+  return {
+    findings: [...byOrg.entries()].map(([orgId, counts]) => ({
+      code: "stale_payment_state" as const,
+      severity: "critical" as const,
+      detail: `${counts.disbursements} disbursement(s) and ${counts.runs} payment run(s) have been non-terminal for more than ${STALE_PAYMENT_STATE_HOURS} hours`,
+      context: { org_id: orgId, stale_disbursements: counts.disbursements, stale_runs: counts.runs, threshold_hours: STALE_PAYMENT_STATE_HOURS },
+    })),
+    incidents: [{
+      code: STALE_PAYMENT_STATE_INCIDENT_CODE,
+      orgIds: [...byOrg.keys()],
+      detail: `Vendor payments have been in a non-terminal state for more than ${STALE_PAYMENT_STATE_HOURS} hours. Review provider and ledger state before taking corrective action.`,
+    }],
+  }
+}
+
 /** Jobs that exhausted their retries are work a human owns, not noise. */
 async function checkFailedOutboxJobs(): Promise<WatchdogProbeResult> {
   const supabase = createServiceSupabaseClient()
@@ -365,6 +478,145 @@ async function checkFailedOutboxJobs(): Promise<WatchdogProbeResult> {
   }
 }
 
+function appendByOrg(map: Map<string, string[]>, orgId: string, id: string) {
+  const ids = map.get(orgId) ?? []
+  ids.push(id)
+  map.set(orgId, ids)
+}
+
+/**
+ * Accounting invariants are checked independently of the accounting worker.
+ * A worker that is running but dropping intent must not be able to report its
+ * own output as healthy.
+ */
+async function checkAccountingSyncTruthfulness(): Promise<WatchdogProbeResult> {
+  const supabase = createServiceSupabaseClient()
+  const staleCutoff = new Date(Date.now() - ACCOUNTING_PENDING_STALE_HOURS * 60 * 60 * 1000).toISOString()
+  const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+  const staleByOrg = new Map<string, string[]>()
+  const missingByOrg = new Map<string, string[]>()
+  const failedByOrg = new Map<string, string[]>()
+
+  for (let from = 0; ; from += ACCOUNTING_SCAN_PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from("accounting_sync_records")
+      .select("id,org_id")
+      .eq("status", "pending")
+      .lt("updated_at", staleCutoff)
+      .order("org_id", { ascending: true })
+      .order("id", { ascending: true })
+      .range(from, from + ACCOUNTING_SCAN_PAGE_SIZE - 1)
+    if (error) throw new Error(`Unable to check stale accounting sync records: ${error.message}`)
+    for (const row of data ?? []) appendByOrg(staleByOrg, String(row.org_id), String(row.id))
+    if ((data ?? []).length < ACCOUNTING_SCAN_PAGE_SIZE) break
+  }
+
+  // Arc Books deliberately has no outbound bill-payment sync record. Exclude
+  // those orgs so the watchdog does not turn correct sole-ledger behavior into
+  // a permanent false incident.
+  const arcAuthorityOrgIds = new Set<string>()
+  for (let from = 0; ; from += ACCOUNTING_SCAN_PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from("books_settings")
+      .select("org_id")
+      .eq("ledger_authority", "arc")
+      .order("org_id", { ascending: true })
+      .range(from, from + ACCOUNTING_SCAN_PAGE_SIZE - 1)
+    if (error) throw new Error(`Unable to load accounting ledger authority: ${error.message}`)
+    for (const row of data ?? []) arcAuthorityOrgIds.add(String(row.org_id))
+    if ((data ?? []).length < ACCOUNTING_SCAN_PAGE_SIZE) break
+  }
+
+  for (let from = 0; ; from += ACCOUNTING_SCAN_PAGE_SIZE) {
+    const { data: payments, error: paymentsError } = await supabase
+      .from("payments")
+      .select("id,org_id")
+      .not("bill_id", "is", null)
+      .not("provider", "is", null)
+      .like("idempotency_key", "disbursement:%")
+      .eq("status", "succeeded")
+      .order("org_id", { ascending: true })
+      .order("id", { ascending: true })
+      .range(from, from + ACCOUNTING_SCAN_PAGE_SIZE - 1)
+    if (paymentsError) throw new Error(`Unable to check rail-paid bill payments: ${paymentsError.message}`)
+    const eligible = (payments ?? []).filter((payment) => !arcAuthorityOrgIds.has(String(payment.org_id)))
+    if (eligible.length > 0) {
+      const { data: records, error: recordsError } = await supabase
+        .from("accounting_sync_records")
+        .select("entity_id")
+        .eq("entity_type", "bill_payment")
+        .in("entity_id", eligible.map((payment) => payment.id))
+      if (recordsError) throw new Error(`Unable to match bill-payment sync records: ${recordsError.message}`)
+      const recorded = new Set((records ?? []).map((record) => String(record.entity_id)))
+      for (const payment of eligible) {
+        if (!recorded.has(String(payment.id))) appendByOrg(missingByOrg, String(payment.org_id), String(payment.id))
+      }
+    }
+    if ((payments ?? []).length < ACCOUNTING_SCAN_PAGE_SIZE) break
+  }
+
+  for (let from = 0; ; from += ACCOUNTING_SCAN_PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from("outbox")
+      .select("id,org_id")
+      .eq("status", "failed")
+      .in("job_type", [...ACCOUNTING_JOB_TYPES])
+      .gte("updated_at", dayAgo)
+      .order("org_id", { ascending: true })
+      .order("id", { ascending: true })
+      .range(from, from + ACCOUNTING_SCAN_PAGE_SIZE - 1)
+    if (error) throw new Error(`Unable to check failed accounting outbox jobs: ${error.message}`)
+    for (const row of data ?? []) {
+      if (row.org_id) appendByOrg(failedByOrg, String(row.org_id), String(row.id))
+    }
+    if ((data ?? []).length < ACCOUNTING_SCAN_PAGE_SIZE) break
+  }
+
+  const findings: WatchdogFinding[] = [
+    ...[...staleByOrg.entries()].map(([orgId, ids]) => ({
+      code: "accounting_sync_needs_review" as const,
+      severity: "critical" as const,
+      detail: `${ids.length} accounting sync record(s) have remained pending for more than ${ACCOUNTING_PENDING_STALE_HOURS} hours`,
+      context: { org_id: orgId, reason: "pending_stale", sync_record_ids: ids.slice(0, 20) },
+    })),
+    ...[...missingByOrg.entries()].map(([orgId, ids]) => ({
+      code: "accounting_sync_needs_review" as const,
+      severity: "critical" as const,
+      detail: `${ids.length} rail-paid bill payment(s) have no accounting sync record`,
+      context: { org_id: orgId, reason: "bill_payment_record_missing", payment_ids: ids.slice(0, 20) },
+    })),
+    ...[...failedByOrg.entries()].map(([orgId, ids]) => ({
+      code: "accounting_sync_needs_review" as const,
+      severity: "warn" as const,
+      detail: `${ids.length} accounting outbox job(s) exhausted retries in the last 24 hours`,
+      context: { org_id: orgId, reason: "outbox_failed", outbox_ids: ids.slice(0, 20) },
+    })),
+  ]
+  return {
+    findings,
+    incidents: [
+      {
+        code: "accounting_sync_pending_stale",
+        orgIds: [...staleByOrg.keys()],
+        detail: `Accounting sync records have remained pending for more than ${ACCOUNTING_PENDING_STALE_HOURS} hours.`,
+        eventType: "accounting_sync_needs_review",
+      },
+      {
+        code: "accounting_bill_payment_record_missing",
+        orgIds: [...missingByOrg.keys()],
+        detail: "One or more rail-paid bill payments have no durable accounting sync record.",
+        eventType: "accounting_sync_needs_review",
+      },
+      {
+        code: "accounting_outbox_failed",
+        orgIds: [...failedByOrg.keys()],
+        detail: "One or more accounting outbox jobs exhausted retries in the last 24 hours.",
+        eventType: "accounting_sync_needs_review",
+      },
+    ],
+  }
+}
+
 export async function runOpsWatchdog(): Promise<{ findings: WatchdogFinding[] }> {
   // One failing probe must not hide the others — a watchdog that goes dark on
   // its own first error is worse than no watchdog, because it reads as healthy.
@@ -372,7 +624,10 @@ export async function runOpsWatchdog(): Promise<{ findings: WatchdogFinding[] }>
     checkCronLiveness(),
     checkPaymentReleaseBacklog(),
     checkReconciliationFreshness(),
+    checkPaymentExecutionConfig(),
+    checkStalePaymentStates(),
     checkFailedOutboxJobs(),
+    checkAccountingSyncTruthfulness(),
   ])
   const findings: WatchdogFinding[] = []
   const incidents: WatchdogIncident[] = []
@@ -401,20 +656,28 @@ export async function runOpsWatchdog(): Promise<{ findings: WatchdogFinding[] }>
   const synced = await Promise.all(
     incidents.map(async (incident) => ({ incident, notifyOrgIds: await syncPaymentOperationsIncidents(incident) })),
   )
-  const detailByOrg = new Map<string, Array<{ code: string; detail: string }>>()
+  const detailByDestination = new Map<string, {
+    orgId: string
+    eventType: "payment_operations_alert" | "accounting_sync_needs_review"
+    findings: Array<{ code: string; detail: string }>
+  }>()
   for (const { incident, notifyOrgIds } of synced) {
     for (const orgId of notifyOrgIds) {
-      detailByOrg.set(orgId, [...(detailByOrg.get(orgId) ?? []), { code: incident.code, detail: incident.detail }])
+      const eventType = incident.eventType ?? "payment_operations_alert"
+      const key = `${eventType}:${orgId}`
+      const destination = detailByDestination.get(key) ?? { orgId, eventType, findings: [] }
+      destination.findings.push({ code: incident.code, detail: incident.detail })
+      detailByDestination.set(key, destination)
     }
   }
   const alertWrites = await Promise.allSettled(
-    [...detailByOrg.entries()].map(([orgId, orgFindings]) =>
+    [...detailByDestination.values()].map((destination) =>
       recordEvent({
-        orgId,
-        eventType: "payment_operations_alert",
-        entityType: "payment_rail_policy",
-        entityId: orgId,
-        payload: { findings: orgFindings },
+        orgId: destination.orgId,
+        eventType: destination.eventType,
+        entityType: destination.eventType === "accounting_sync_needs_review" ? "accounting_sync_record" : "payment_rail_policy",
+        entityId: destination.orgId,
+        payload: { findings: destination.findings },
       }),
     ),
   )

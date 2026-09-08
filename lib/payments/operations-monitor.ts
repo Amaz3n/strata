@@ -1,4 +1,4 @@
-export const RECONCILIATION_STALE_HOURS = 48
+export const RECONCILIATION_STALE_HOURS = 36
 
 /**
  * How long a still-open payment-operations incident stays quiet before it says
@@ -24,8 +24,8 @@ export interface ReconciliationMonitoringPolicy {
 }
 
 /**
- * A newly enabled rail gets the same 48-hour window as one that last
- * reconciled successfully. A null cursor by itself must not mean "48 hours
+ * A newly enabled rail gets the same 36-hour window as one that last
+ * reconciled successfully. A null cursor by itself must not mean "36 hours
  * stale" immediately after enablement.
  */
 export function isPaymentReconciliationStale(
@@ -46,6 +46,62 @@ export function isPaymentReconciliationStale(
   }, Number.NEGATIVE_INFINITY)
   if (!Number.isFinite(referenceMs)) return false
   return now.getTime() - referenceMs > RECONCILIATION_STALE_HOURS * 60 * 60 * 1000
+}
+
+export interface PaymentExecutionConfig {
+  executionEnabled: boolean
+  reconciliationEnabled: boolean
+  liveModeApproved: boolean
+  mode: string | null
+}
+
+export interface PaymentExecutionConfigProblem {
+  code: "payment_execution_config_mismatch"
+  detail: string
+  remedy: string
+}
+
+/**
+ * The configuration states in which the money tick cannot succeed.
+ *
+ * `assertPaymentLaunchReady` throws on each of these, and every throw lands in
+ * `job_runs` as one more failed release. That is a log line, not an alert: in
+ * production the release job failed every five minutes for twenty days on
+ * "Electronic payments cannot be enabled until daily reconciliation is running"
+ * and nothing told anyone, because a job that fails on a *configuration* fault
+ * fails identically forever and the failure carries no organization to notify.
+ *
+ * Naming the mismatch separately from the throw is what turns 5,741 identical
+ * failures into one incident with a remedy attached. Pure so the watchdog's
+ * judgement can be tested without an environment.
+ */
+export function detectExecutionConfigMismatch(
+  config: PaymentExecutionConfig,
+): PaymentExecutionConfigProblem | null {
+  if (!config.executionEnabled) return null
+  if (!config.reconciliationEnabled) {
+    return {
+      code: "payment_execution_config_mismatch",
+      detail:
+        "FINTECH_PAYMENTS_EXECUTION_ENABLED is true but FINTECH_PAYMENTS_RECONCILIATION_ENABLED is not, so every payment release fails on the launch-readiness assertion.",
+      remedy: "Set FINTECH_PAYMENTS_RECONCILIATION_ENABLED=true, or turn execution off until reconciliation is running.",
+    }
+  }
+  if (config.mode !== "test" && config.mode !== "live") {
+    return {
+      code: "payment_execution_config_mismatch",
+      detail: `FINTECH_PAYMENTS_MODE is ${config.mode ? `"${config.mode}"` : "unset"}; the provider adapter refuses to submit without an explicit test or live mode.`,
+      remedy: "Set FINTECH_PAYMENTS_MODE to test or live to match the configured Stripe credential.",
+    }
+  }
+  if (config.mode === "live" && !config.liveModeApproved) {
+    return {
+      code: "payment_execution_config_mismatch",
+      detail: "FINTECH_PAYMENTS_MODE is live but FINTECH_PAYMENTS_LIVE_MODE_APPROVED is not true, so every live submission is refused by the adapter.",
+      remedy: "Record the launch approval and set FINTECH_PAYMENTS_LIVE_MODE_APPROVED=true, or return the deployment to test mode.",
+    }
+  }
+  return null
 }
 
 export function paymentOperationsAlertDetails(payload: Record<string, unknown>): string[] {

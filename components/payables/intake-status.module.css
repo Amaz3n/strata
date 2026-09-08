@@ -1,0 +1,9 @@
+.status {
+  color: transparent;
+  background: linear-gradient(100deg, var(--muted-foreground) 30%, var(--foreground) 48%, var(--muted-foreground) 65%);
+  background-size: 240% 100%;
+  background-clip: text;
+  animation: shimmer 2s linear infinite;
+}
+@keyframes shimmer { from { background-position: 180% 0; } to { background-position: -80% 0; } }
+@media (prefers-reduced-motion: reduce) { .status { animation: none; color: var(--muted-foreground); } }

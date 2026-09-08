@@ -55,11 +55,14 @@ test("privileged document transport declares explicit document permissions", () 
   assert.match(source("app/api/files/[fileId]/raw/route.ts"), /"docs\.download"/)
 })
 
-test("payment links are persisted and signed payloads are checked against durable state", () => {
+test("public invoice payment amounts and access are checked against durable invoice state", () => {
   const payments = source("lib/services/payments.ts")
-  assert.match(payments, /export async function createPersistedPayLink/)
-  assert.match(payments, /token_hash: hashToken\(token\)/)
-  assert.match(payments, /data\.nonce !== signedPayload\.nonce/)
+  const publicIntent = payments.slice(payments.indexOf("export async function createPublicInvoicePaymentIntent"))
+  assert.match(publicIntent, /from\("invoices"\)[\s\S]*eq\("token", input\.token\)/)
+  assert.match(publicIntent, /invoice\.client_visible === false \|\| invoice\.status === "void"/)
+  assert.match(publicIntent, /requestedCents > invoiceBalanceCents/)
+  assert.match(publicIntent, /requireReadyStripeConnectedAccountForOrg\(\s*invoice\.org_id/)
+  assert.doesNotMatch(payments, /createPersistedPayLink/)
   assert.doesNotMatch(payments, /id: ""/)
 })
 

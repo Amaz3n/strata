@@ -728,7 +728,7 @@ export function InvoicePublicWithPay({ invoice, payment, receipts, branding, lie
                             {INVOICE_WAIVER_TYPE_LABELS[waiver.waiver_type] ?? "Lien waiver"}
                           </span>
                           <span className="block text-xs text-muted-foreground">
-                            {waiver.status === "released" ? "Released — payment received" : "Effective upon payment"}
+                            {waiver.status === "released" ? "Payment recorded" : "Effective upon payment"}
                           </span>
                         </span>
                       </span>
@@ -737,7 +737,7 @@ export function InvoicePublicWithPay({ invoice, payment, receipts, branding, lie
                   ))}
                   {!isPaid && (
                     <p className="text-xs text-muted-foreground">
-                      Conditional waivers release automatically once payment is received in full.
+                      Conditional waivers take effect according to their terms when the covered payment is received.
                     </p>
                   )}
                 </div>

@@ -1,13 +1,15 @@
 import "server-only";
 
 import { z } from "zod";
+import { clearingReviewSchema, loadClearingPosition } from "@/lib/services/books/clearing-support";
+import { clearingSupportMatches } from "@/lib/services/books/clearing-support-rules";
 
 import {
   BILLED_INVOICE_STATUSES,
   PAYABLE_VENDOR_BILL_STATUSES,
 } from "@/lib/financials/ledger-status";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
-import { requireAuthorization } from "@/lib/services/authorization";
+import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access";
 import { recordAudit } from "@/lib/services/audit";
 import { booksDigest } from "@/lib/services/books/hash";
 import {
@@ -17,6 +19,7 @@ import {
   buildProfitAndLoss,
   buildTrialBalance,
 } from "@/lib/services/books/statements";
+import { fiscalYearRangeEndingOn } from "@/lib/services/books/fiscal-calendar";
 import { postBooksJournalEntry } from "@/lib/services/books/ledger";
 import { postYearEndClose } from "@/lib/services/books/posting-rules";
 import { resolveProjectionVersion } from "@/lib/services/books/projector";
@@ -24,7 +27,6 @@ import { loadProjectRevenueBases } from "@/lib/services/books/revenue-basis";
 import { recognizeRevenueForPeriod } from "@/lib/services/books/revenue-recognition";
 import { runLedgerTieOuts } from "@/lib/services/books/verifier";
 import { TIE_OUT_ITEM_CATEGORIES } from "@/lib/services/books/reconciliation-rules";
-import { SYSTEM_ACCOUNT_CODES } from "@/lib/services/books/chart-of-accounts";
 import { requireOrgContext } from "@/lib/services/context";
 import { recordEvent } from "@/lib/services/events";
 import { getApAgingReport } from "@/lib/services/reports/ap-aging";
@@ -208,7 +210,6 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
     openBills,
     taxVendors,
     taxIdentities,
-    closeTrialBalance,
     tieOuts,
     syncBacklog,
     waiverHolds,
@@ -332,7 +333,6 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       .select("company_id")
       .eq("org_id", context.orgId)
       .eq("vault_provider", "supabase_vault"),
-    buildTrialBalance(context.orgId, period.period_end),
     runLedgerTieOuts(context.orgId, period.period_end),
     // Approved work that never reached the external system. Closing a period
     // while the mirror is behind means the two ledgers disagree about a period
@@ -480,14 +480,15 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       (match: { status?: string }) => match.status === "confirmed",
     );
   });
-  const accountBalance = (code: string) =>
-    closeTrialBalance.rows.find((row) => row.code === code)?.balanceCents ?? 0;
-  const clearingBalances = [
-    SYSTEM_ACCOUNT_CODES.undepositedFunds,
-    SYSTEM_ACCOUNT_CODES.payrollClearing,
-  ]
-    .map((code) => ({ code, balanceCents: accountBalance(code) }))
-    .filter((row) => row.balanceCents !== 0);
+  const [clearingPosition, clearingItem] = await Promise.all([
+    loadClearingPosition(context.orgId, period.period_end),
+    service.from("books_close_items").select("support_review").eq("org_id", context.orgId).eq("period_id", period.id).eq("code", "clearing_accounts").maybeSingle(),
+  ]);
+  if (clearingItem.error) throw new Error(`Failed to load clearing support: ${clearingItem.error.message}`);
+  const clearingBalances = clearingPosition.balances;
+  const clearingReview = clearingReviewSchema.safeParse(clearingItem.data?.support_review);
+  const clearingSupported = clearingReview.success && clearingReview.data.ledgerDigest === clearingPosition.ledgerDigest &&
+    clearingSupportMatches(clearingBalances, clearingReview.data.items, period.period_end);
   const uncodedBills = openBills.filter(
     (bill) =>
       !bill.accounting_coding ||
@@ -697,10 +698,10 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       label: "Clearing and undeposited-funds accounts reviewed",
       category: "controls",
       blocking: true,
-      status: clearingBalances.length ? "failed" : "passed",
-      issueCount: clearingBalances.length,
+      status: clearingBalances.length && !clearingSupported ? "failed" : "passed",
+      issueCount: clearingSupported ? 0 : clearingBalances.length,
       href: "/books/chart",
-      evidence: { balances: clearingBalances },
+      evidence: { balances: clearingBalances, ledger_digest: clearingPosition.ledgerDigest, supported: clearingSupported, review: clearingReview.success ? clearingReview.data : null },
     },
     {
       code: "fixed_asset_depreciation",
@@ -884,6 +885,9 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
         `Close blocked: no percentage-of-completion position as of ${period.period_end} for ${withoutPosition.length} project${withoutPosition.length === 1 ? "" : "s"} (${withoutPosition.map((row) => row.projectId).join(", ")})`,
       );
     }
+    if (period.fiscal_period === 12 || period.fiscal_period === 13) {
+      await closeFiscalYearToRetainedEarnings(period.id, context.orgId);
+    }
     const [
       trialBalance,
       profitLoss,
@@ -1036,47 +1040,38 @@ export async function closeFiscalYearToRetainedEarnings(
     throw new Error(
       "Post the retained-earnings entry before closing the period",
     );
-  // A reopened year can shift net income, and posting-key idempotency alone
-  // would let a second, differently-sized closing entry post on top of the
-  // first. Refuse instead: the existing entry has to be reversed deliberately.
-  const { data: existingClose, error: existingCloseError } = await service
-    .from("journal_entries")
-    .select("id")
-    .eq("org_id", context.orgId)
-    .eq("source_type", "year_end_close")
-    .eq("source_id", period.id)
-    .eq("status", "posted")
-    .maybeSingle();
-  if (existingCloseError)
-    throw new Error(
-      `Failed to check for an existing year-end entry: ${existingCloseError.message}`,
-    );
-  if (existingClose)
-    return { created: false, reason: "already_closed" as const };
-  // Versions are resolved the same way every other posting resolves them. Hardcoding
-  // `1` pinned the closing entry to a rule-set version the org may have left behind,
-  // so a re-projection under a new version could not re-derive it.
-  const [profitLoss, versions] = await Promise.all([
-    buildProfitAndLoss(
-      context.orgId,
-      `${period.fiscal_year}-01-01`,
-      period.period_end,
-    ),
+  const { data: settings, error: settingsError } = await service.from("books_settings")
+    .select("fiscal_year_start_month").eq("org_id", context.orgId).single();
+  if (settingsError) throw new Error(`Failed to load fiscal calendar: ${settingsError.message}`);
+  const range = fiscalYearRangeEndingOn(period.period_end, Number(settings.fiscal_year_start_month));
+  if (range.endDate !== period.period_end) throw new Error("The final fiscal period must end on the configured fiscal year end");
+  // Include earlier closing transfers, so reclose posts only residual account
+  // balances. A break-even year still clears nonzero revenue and cost accounts.
+  const [ledger, versions, history] = await Promise.all([
+    buildGeneralLedger(context.orgId, range.startDate, period.period_end),
     resolveBooksVersions(context.orgId),
+    service.from("journal_entries").select("id", { count: "exact", head: true })
+      .eq("org_id", context.orgId).eq("source_type", "year_end_close").eq("source_id", period.id),
   ]);
-  if (profitLoss.netIncomeCents === 0)
-    return { created: false, reason: "zero_net_income" as const };
+  if (history.error) throw new Error(`Failed to load closing history: ${history.error.message}`);
+  const balances = new Map<string, { accountCode: string; accountType: "income" | "cogs" | "expense"; balanceCents: number }>();
+  for (const row of ledger.rows) {
+    const account = row.account;
+    if (!account || (account.account_type !== "income" && account.account_type !== "cogs" && account.account_type !== "expense")) continue;
+    const current = balances.get(account.code) ?? { accountCode: account.code, accountType: account.account_type, balanceCents: 0 };
+    current.balanceCents += account.account_type === "income" ? row.credit_cents - row.debit_cents : row.debit_cents - row.credit_cents;
+    balances.set(account.code, current);
+  }
+  const incomeAccountBalances = [...balances.values()].filter((row) => row.balanceCents !== 0).sort((a,b) => a.accountCode.localeCompare(b.accountCode));
+  if (incomeAccountBalances.length === 0) return { created: false, reason: "no_remaining_balances" as const };
   const draft = postYearEndClose({
     id: period.id,
     date: period.period_end,
     memo: `Close fiscal ${period.fiscal_year} net income to retained earnings`,
     projectionVersion: versions.projectionVersion,
     policyVersion: versions.policyVersion,
-    incomeAccountBalances: profitLoss.rows.map((row) => ({
-      accountCode: row.code,
-      accountType: row.accountType,
-      balanceCents: row.balanceCents,
-    })),
+    sourceVersion: (history.count ?? 0) + 1,
+    incomeAccountBalances,
   });
   return postBooksJournalEntry(draft, {
     permission: "books.adjust",

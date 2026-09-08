@@ -37,9 +37,15 @@ import {
   isInsuranceDocumentTypeName,
   type CoiExtraction,
 } from "@/lib/payments/ap-verification"
+// One clock for every compliance verdict — see the module header for the four
+// it replaced.
+import { daysUntil, isExpiredOn, isWithinDays, todayKey } from "@/lib/compliance/dates"
 // The pure policy module, not the hold service: the hold service reads this one
 // for a vendor's status, and importing it back would close the cycle.
 import { parsePaymentHoldPolicy } from "@/lib/payments/payment-hold-policy"
+import { normalizeComplianceRequirementDefaults } from "@/lib/services/compliance"
+import { revalidateDirectoryParty } from "@/lib/directory/cache"
+import { resolveCompanyRecipient } from "@/lib/services/directory"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
@@ -360,6 +366,71 @@ export async function setCompanyComplianceMonitoring({
   })
 
   return { companyId, enabled: Boolean(data.compliance_monitoring_enabled) }
+}
+
+/**
+ * Put a vendor on the org's standing compliance template and start watching them.
+ *
+ * Enrollment is explicit by design — a material supplier should not inherit an
+ * insurance chase — but "explicit" had come to mean "a click nothing pointed at",
+ * so every subcontractor added since that change sat unenrolled while the badge
+ * read Compliant. This is the one call that turns a template into obligations,
+ * and it is deliberately idempotent: requirements a builder has already tailored
+ * are left exactly as they are, and only the template's missing rows are added.
+ */
+export async function enrollCompanyInCompliance({
+  companyId,
+  orgId,
+}: {
+  companyId: string
+  orgId?: string
+}): Promise<{ requirementCount: number; addedCount: number }> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("compliance.manage", { supabase, orgId: resolvedOrgId, userId })
+
+  const [{ data: org }, existing] = await Promise.all([
+    supabase
+      .from("orgs")
+      .select("default_compliance_requirements")
+      .eq("id", resolvedOrgId)
+      .maybeSingle(),
+    getCompanyRequirements(companyId, resolvedOrgId),
+  ])
+
+  const template = normalizeComplianceRequirementDefaults(
+    (org as { default_compliance_requirements?: unknown } | null)?.default_compliance_requirements,
+  )
+  const existingByTypeId = new Map(existing.map((row) => [row.document_type_id, row]))
+  const merged: ComplianceRequirementInput[] = [
+    ...existing.map((row) => ({
+      document_type_id: row.document_type_id,
+      is_required: row.is_required,
+      min_coverage_cents: row.min_coverage_cents ?? undefined,
+      requires_additional_insured: row.requires_additional_insured,
+      requires_primary_noncontributory: row.requires_primary_noncontributory,
+      requires_waiver_of_subrogation: row.requires_waiver_of_subrogation,
+      notes: row.notes ?? undefined,
+    })),
+    ...template
+      .filter((item) => !existingByTypeId.has(item.document_type_id))
+      // A stored template item has everything optional; a requirement does not.
+      // The normalizer already forces `is_required`, so these are the schema's
+      // own defaults written out rather than a change of meaning.
+      .map((item) => ({
+        document_type_id: item.document_type_id,
+        is_required: item.is_required ?? true,
+        min_coverage_cents: item.min_coverage_cents,
+        requires_additional_insured: item.requires_additional_insured ?? false,
+        requires_primary_noncontributory: item.requires_primary_noncontributory ?? false,
+        requires_waiver_of_subrogation: item.requires_waiver_of_subrogation ?? false,
+        notes: item.notes,
+      })),
+  ]
+
+  const saved = merged.length > 0 ? await setCompanyRequirements({ companyId, requirements: merged, orgId: resolvedOrgId }) : existing
+  await setCompanyComplianceMonitoring({ companyId, enabled: true, orgId: resolvedOrgId })
+
+  return { requirementCount: saved.length, addedCount: merged.length - existing.length }
 }
 
 export async function setCompanyRequirements({
@@ -694,14 +765,14 @@ export async function waiveAllCompanyRequirements({
     throw new Error(`Failed to load compliance waivers: ${waiversResult.error.message}`)
   }
 
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayKey()
   const activelyWaivedTypeIds = new Set(
     (waiversResult.data ?? [])
-      .filter((waiver: any) => !waiver.expires_at || waiver.expires_at >= today)
+      .filter((waiver: any) => !isExpiredOn(waiver.expires_at, today))
       .map((waiver: any) => waiver.document_type_id as string),
   )
   const expiredWaiverTypeIds = (waiversResult.data ?? [])
-    .filter((waiver: any) => waiver.expires_at && waiver.expires_at < today)
+    .filter((waiver: any) => isExpiredOn(waiver.expires_at, today))
     .map((waiver: any) => waiver.document_type_id as string)
   if (expiredWaiverTypeIds.length > 0) {
     const { error } = await supabase
@@ -787,9 +858,18 @@ function documentFactColumns(input: Partial<ComplianceDocumentUploadInput>) {
  * Point every earlier submission for this requirement at the one that replaced
  * it. The old rows stay readable as history; they simply stop being the answer.
  *
- * Best-effort: a document that fails to be marked superseded is still outranked
- * by the newer one at read time, so this improves the record rather than
- * deciding anything.
+ * **Called when a document is APPROVED, never when one is uploaded.** Superseding
+ * on upload is how a vendor renewing early took themselves out of compliance: the
+ * moment the new certificate landed, the approved one stopped answering the
+ * requirement, `is_compliant` went false, and the block-tier
+ * `compliance_docs_approved` hold stopped their payables until somebody opened
+ * the tab. If the renewal was then rejected, the still-valid certificate stayed
+ * superseded and the requirement read "Sent back". The portal's own "Replace"
+ * button on a satisfied row invited exactly that.
+ *
+ * The write must land BEFORE the new row is marked approved, or
+ * `compliance_documents_live_per_requirement_uidx` sees two live approvals for
+ * the same requirement and raises 23505.
  */
 async function supersedePriorDocuments(params: {
   supabase: SupabaseClient
@@ -798,7 +878,7 @@ async function supersedePriorDocuments(params: {
   documentTypeId: string
   newDocumentId: string
 }) {
-  await params.supabase
+  const { error } = await params.supabase
     .from("compliance_documents")
     .update({ superseded_by_id: params.newDocumentId })
     .eq("org_id", params.orgId)
@@ -806,6 +886,10 @@ async function supersedePriorDocuments(params: {
     .eq("document_type_id", params.documentTypeId)
     .neq("id", params.newDocumentId)
     .is("superseded_by_id", null)
+  // No longer best-effort. This runs immediately before an approval, and the
+  // unique index means a failure here turns into a confusing 23505 on the
+  // approval itself rather than a slightly untidy history.
+  if (error) throw new Error(`Failed to supersede the earlier document: ${error.message}`)
 }
 
 export async function listComplianceDocuments(
@@ -927,14 +1011,6 @@ export async function uploadComplianceDocument({
     throw new Error(`Failed to upload compliance document: ${error?.message}`)
   }
 
-  await supersedePriorDocuments({
-    supabase,
-    orgId: resolvedOrgId,
-    companyId,
-    documentTypeId: parsed.document_type_id,
-    newDocumentId: data.id,
-  })
-
   const uploadedType = Array.isArray(data.compliance_document_types)
     ? data.compliance_document_types[0]
     : data.compliance_document_types
@@ -1029,14 +1105,6 @@ export async function uploadComplianceDocumentFromPortal({
     throw new Error(`Failed to upload compliance document: ${error?.message}`)
   }
 
-  await supersedePriorDocuments({
-    supabase,
-    orgId,
-    companyId,
-    documentTypeId: parsed.document_type_id,
-    newDocumentId: data.id,
-  })
-
   const uploadedType = Array.isArray(data.compliance_document_types)
     ? data.compliance_document_types[0]
     : data.compliance_document_types
@@ -1063,6 +1131,11 @@ export async function uploadComplianceDocumentFromPortal({
       submitted_via_portal: true,
     },
   })
+
+  // The builder's account tabs are cached per browser for up to a minute, and
+  // this write comes from the vendor's portal — a request with no path in
+  // common with the builder's page, so `revalidatePath` never covers it.
+  revalidateDirectoryParty(companyId)
 
   // The event above is the activity record. This one is the notification: a
   // vendor's submission used to reach nobody, so a certificate that would have
@@ -1129,6 +1202,20 @@ export async function reviewComplianceDocument({
   // the deficiency check reads what the human confirmed rather than what the
   // vendor typed.
   const corrections = parsed.corrections ? documentFactColumns(parsed.corrections) : {}
+
+  // The approval is the moment this document becomes the answer, so it is the
+  // moment the one it replaces stops being it. Ordered before the status write
+  // because the live-per-requirement unique index would otherwise see two
+  // approved documents at once.
+  if (parsed.decision === "approved") {
+    await supersedePriorDocuments({
+      supabase,
+      orgId: resolvedOrgId,
+      companyId: existing.company_id,
+      documentTypeId: existing.document_type_id,
+      newDocumentId: documentId,
+    })
+  }
 
   const { data, error } = await supabase
     .from("compliance_documents")
@@ -1324,23 +1411,8 @@ async function notifyVendorOfComplianceDecision(params: {
 
   if (!company) return
 
-  let recipientEmail = company.email?.trim() ?? ""
-  let recipientName: string | null = company.name ?? null
-  if (!recipientEmail) {
-    const { data: contact } = await params.supabase
-      .from("contacts")
-      .select("full_name, email")
-      .eq("org_id", params.orgId)
-      .eq("primary_company_id", params.companyId)
-      .not("email", "is", null)
-      .limit(1)
-      .maybeSingle()
-    if (contact?.email) {
-      recipientEmail = String(contact.email).trim()
-      recipientName = contact.full_name ?? recipientName
-    }
-  }
-  if (!recipientEmail) return
+  const recipient = await resolveCompanyRecipient(params.supabase, params.orgId, params.companyId)
+  if (!recipient) return
 
   const portalToken = await findExistingCompanyPortalToken({
     supabase: params.supabase,
@@ -1349,8 +1421,8 @@ async function notifyVendorOfComplianceDecision(params: {
   }).catch(() => null)
 
   await sendComplianceDecisionEmail({
-    to: recipientEmail,
-    recipientName,
+    to: recipient.email,
+    recipientName: recipient.name,
     companyName: company.name ?? "your company",
     documentName: params.documentName,
     decision: params.decision,
@@ -1365,8 +1437,7 @@ async function notifyVendorOfComplianceDecision(params: {
 // ============ Compliance Status ============
 
 function isExpiredDocument(document: ComplianceDocument, now: Date): boolean {
-  if (!document.expiry_date) return false
-  return new Date(document.expiry_date) < now
+  return isExpiredOn(document.expiry_date, now)
 }
 
 function getMostRecentDocument(documents: ComplianceDocument[]): ComplianceDocument | null {
@@ -1404,14 +1475,12 @@ function deficiencyMessage(
   return parts.join("; ")
 }
 
-function todayKey(now = new Date()): string {
-  return now.toISOString().slice(0, 10)
-}
-
 function isActiveWaiver(waiver: ComplianceRequirementWaiver, now = new Date()): boolean {
   if (waiver.revoked_at) return false
   if (!waiver.expires_at) return true
-  return waiver.expires_at >= todayKey(now)
+  // Was a lexicographic string compare, which only worked while every stored
+  // value happened to be a well-formed date key.
+  return !isExpiredOn(waiver.expires_at, now)
 }
 
 /**
@@ -1548,15 +1617,8 @@ async function getProjectRequirementsWithClient(
   }))
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000
 /** Used only for a document type that never declared its own window. */
 const FALLBACK_EXPIRY_WARNING_DAYS = 30
-
-function daysUntil(dateValue: string, now: Date): number {
-  const target = new Date(dateValue)
-  if (Number.isNaN(target.getTime())) return 0
-  return Math.floor((target.getTime() - now.getTime()) / DAY_MS)
-}
 
 /**
  * How far ahead this document type wants to be warned. Stored on the type,
@@ -1611,11 +1673,9 @@ function buildComplianceStatus({
   )
   const requiredApproved = approvedDocs.filter((d) => requiredTypeIds.has(d.document_type_id))
   const expired = requiredApproved.filter((d) => isExpiredDocument(d, now))
-  const expiringSoon = requiredApproved.filter((d) => {
-    if (!d.expiry_date) return false
-    const days = daysUntil(d.expiry_date, now)
-    return days >= 0 && days <= warningDaysFor(d.document_type, d)
-  })
+  const expiringSoon = requiredApproved.filter((d) =>
+    isWithinDays(d.expiry_date, warningDaysFor(d.document_type, d), now),
+  )
 
   const missing: ComplianceDocumentType[] = []
   const waived: ComplianceRequirement[] = []
@@ -1637,6 +1697,7 @@ function buildComplianceStatus({
         requirement,
         state: "waived",
         document: history[0] ?? null,
+        pending_replacement: null,
         history,
         days_until_expiry: null,
         deficiency: null,
@@ -1686,8 +1747,11 @@ function buildComplianceStatus({
         requirement,
         state,
         document: shown,
+        // Nothing answers the requirement here, so a pending document IS the
+        // document, not a replacement for one.
+        pending_replacement: null,
         history,
-        days_until_expiry: shown?.expiry_date ? daysUntil(shown.expiry_date, now) : null,
+        days_until_expiry: daysUntil(shown?.expiry_date, now),
         deficiency: null,
       })
       continue
@@ -1725,14 +1789,21 @@ function buildComplianceStatus({
 
     if (deficiency) deficiencies.push(deficiency)
 
-    const daysLeft = bestDocument.expiry_date ? daysUntil(bestDocument.expiry_date, now) : null
-    const expiringNow =
-      daysLeft !== null && daysLeft >= 0 && daysLeft <= warningDaysFor(requirement.document_type, bestDocument)
+    const daysLeft = daysUntil(bestDocument.expiry_date, now)
+    const expiringNow = isWithinDays(
+      bestDocument.expiry_date,
+      warningDaysFor(requirement.document_type, bestDocument),
+      now,
+    )
 
     statuses.push({
       requirement,
       state: deficiency ? "deficient" : expiringNow ? "expiring" : "met",
       document: bestDocument,
+      pending_replacement:
+        answering.find(
+          (document) => document.status === "pending_review" && document.id !== bestDocument.id,
+        ) ?? null,
       history,
       days_until_expiry: daysLeft,
       deficiency,
@@ -1744,6 +1815,11 @@ function buildComplianceStatus({
   return {
     company_id: companyId,
     monitoring_enabled: true,
+    // Overwritten by `applyComplianceMonitoring`, which is the only thing that
+    // knows whether this vendor is watched at all.
+    enrollment: requirements.some((requirement) => requirement.is_required)
+      ? "active"
+      : "no_requirements",
     requirements,
     documents,
     statuses,
@@ -1767,6 +1843,7 @@ function applyComplianceMonitoring(
   return {
     ...summary,
     monitoring_enabled: false,
+    enrollment: "unenrolled",
     missing: [],
     deficiencies: [],
     expiring_soon: [],
@@ -2114,6 +2191,31 @@ function resolveStatusFromInputs(
  * release. Scope is asked for once and answered in one query for every vendor —
  * never a read per row.
  */
+/**
+ * The same per-vendor verdicts, for a caller that already holds a client and has
+ * no authenticated user to derive org context from — the nightly autopilot.
+ *
+ * It exists so the chase emails and the compliance tab are computed by the same
+ * function. The autopilot used to re-derive "the latest document per type" and
+ * decide from that, which is why it could see a certificate as fine while the
+ * tab called it deficient: only one of them knew about coverage minimums.
+ */
+export async function getCompaniesComplianceStatusWithClient(
+  supabase: SupabaseClient,
+  orgId: string,
+  companyIds: string[],
+): Promise<Map<string, ComplianceStatusSummary>> {
+  const uniqueCompanyIds = Array.from(new Set(companyIds.filter(Boolean)))
+  const result = new Map<string, ComplianceStatusSummary>()
+  if (uniqueCompanyIds.length === 0) return result
+
+  const inputs = await loadCompaniesComplianceInputs(supabase, orgId, uniqueCompanyIds, [])
+  for (const companyId of uniqueCompanyIds) {
+    result.set(companyId, resolveStatusFromInputs(inputs, companyId, null))
+  }
+  return result
+}
+
 export async function getCompaniesComplianceStatus(
   companyIds: string[],
   orgId?: string,
@@ -2541,24 +2643,8 @@ export async function requestComplianceDocuments({
   }
   if (!types || types.length === 0) throw new Error("Those document types no longer exist")
 
-  let recipientEmail = company.email?.trim() ?? ""
-  let recipientName: string | null = company.name ?? null
-  if (!recipientEmail) {
-    const { data: contact } = await supabase
-      .from("contacts")
-      .select("full_name, email")
-      .eq("org_id", resolvedOrgId)
-      .eq("primary_company_id", companyId)
-      .not("email", "is", null)
-      .limit(1)
-      .maybeSingle()
-    if (contact?.email) {
-      recipientEmail = String(contact.email).trim()
-      recipientName = contact.full_name ?? recipientName
-    }
-  }
-
-  if (!recipientEmail) {
+  const recipient = await resolveCompanyRecipient(supabase, resolvedOrgId, companyId)
+  if (!recipient) {
     return { sent: false, recipientEmail: null, documentCount: types.length }
   }
 
@@ -2570,8 +2656,8 @@ export async function requestComplianceDocuments({
   const baseUrl = (process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com").replace(/\/$/, "")
 
   const sent = await sendComplianceAutopilotEmail({
-    to: recipientEmail,
-    recipientName,
+    to: recipient.email,
+    recipientName: recipient.name,
     companyName: company.name ?? "your company",
     items: types.map((type: any) => ({
       documentName: type.name as string,
@@ -2592,12 +2678,12 @@ export async function requestComplianceDocuments({
     entityId: companyId,
     payload: {
       document_type_ids: parsed.document_type_ids,
-      recipient_email: recipientEmail,
+      recipient_email: recipient.email,
       sent,
     },
   })
 
-  return { sent, recipientEmail, documentCount: types.length }
+  return { sent, recipientEmail: recipient.email, documentCount: types.length }
 }
 
 /**
@@ -2625,7 +2711,14 @@ export async function getBidInviteComplianceWarnings(
   const warnings = new Map<string, string>()
   for (const companyId of uniqueIds) {
     const status = statuses[companyId]
-    if (!status || status.is_compliant) continue
+    if (!status) continue
+    // Awarding to a vendor nobody is watching is not the same as awarding to a
+    // compliant one, and `is_compliant` cannot tell them apart.
+    if (status.enrollment === "unenrolled") {
+      warnings.set(companyId, "Compliance is not being tracked for this vendor.")
+      continue
+    }
+    if (status.is_compliant) continue
     const parts = [
       status.missing.length > 0 ? `${status.missing.length} missing` : null,
       status.expired.length > 0 ? `${status.expired.length} expired` : null,

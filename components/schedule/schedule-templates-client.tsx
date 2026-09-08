@@ -1,5 +1,6 @@
 "use client";
 
+import { PresetTemplateWorkspace } from "@/components/settings/preset-template-workspace";
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
 
@@ -159,125 +160,143 @@ export function ScheduleTemplatesClient({
   return (
     <div className="space-y-4">
       {editingId ? (
-        <div className="space-y-4 border p-4">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="space-y-1">
-              <Label>Name</Label>
-              <Input
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-              />
+        <PresetTemplateWorkspace
+          kind="Schedule"
+          name={name}
+          description={description}
+          rows={items
+            .filter((i) => i.name.trim())
+            .map((i) => ({
+              label: i.name,
+              detail: [i.phase, i.trade].filter(Boolean).join(" · "),
+              value: `${i.startOffset.trim() ? `Day ${i.startOffset}` : "Unscheduled"} · ${i.duration || 1} days`,
+            }))}
+          onClose={() => setEditingId(null)}
+          onSave={save}
+          busy={pending}
+        >
+          <div className="space-y-5">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1">
+                <Label>Name</Label>
+                <Input
+                  aria-label="Template name"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>Description</Label>
+                <Input
+                  aria-label="Template description"
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
+                />
+              </div>
             </div>
-            <div className="space-y-1">
-              <Label>Description</Label>
-              <Input
-                value={description}
-                onChange={(event) => setDescription(event.target.value)}
-              />
+            <div className="space-y-3">
+              {items.map((item, index) => (
+                <div
+                  key={index}
+                  className="grid grid-cols-2 gap-3 border bg-muted/10 p-4"
+                >
+                  <label className="col-span-2 space-y-1.5">
+                    <span className="text-[11px] text-muted-foreground">
+                      Activity
+                    </span>
+                    <Input
+                      aria-label={`Activity ${index + 1}`}
+                      value={item.name}
+                      onChange={(event) =>
+                        patchItem(index, { name: event.target.value })
+                      }
+                    />
+                  </label>
+                  <label className="space-y-1.5">
+                    <span className="text-[11px] text-muted-foreground">
+                      Phase
+                    </span>
+                    <Input
+                      aria-label={`Phase ${index + 1}`}
+                      value={item.phase}
+                      onChange={(event) =>
+                        patchItem(index, { phase: event.target.value })
+                      }
+                    />
+                  </label>
+                  <label className="space-y-1.5">
+                    <span className="text-[11px] text-muted-foreground">
+                      Trade
+                    </span>
+                    <Input
+                      aria-label={`Trade ${index + 1}`}
+                      value={item.trade}
+                      onChange={(event) =>
+                        patchItem(index, { trade: event.target.value })
+                      }
+                    />
+                  </label>
+                  <label className="space-y-1.5">
+                    <span className="text-[11px] text-muted-foreground">
+                      Start offset (days)
+                    </span>
+                    <Input
+                      aria-label={`Start offset (days) ${index + 1}`}
+                      type="number"
+                      className="text-right tabular-nums"
+                      value={item.startOffset}
+                      onChange={(event) =>
+                        patchItem(index, {
+                          startOffset: event.target.value,
+                        })
+                      }
+                      placeholder="Undated"
+                    />
+                  </label>
+                  <label className="space-y-1.5">
+                    <span className="text-[11px] text-muted-foreground">
+                      Duration (days)
+                    </span>
+                    <Input
+                      aria-label={`Duration (days) ${index + 1}`}
+                      type="number"
+                      min={1}
+                      className="text-right tabular-nums"
+                      value={item.duration}
+                      onChange={(event) =>
+                        patchItem(index, { duration: event.target.value })
+                      }
+                    />
+                  </label>
+                  <div className="col-span-2 flex justify-end">
+                    <Button
+                      aria-label={`Remove activity ${index + 1}`}
+                      variant="ghost"
+                      size="icon"
+                      disabled={items.length === 1}
+                      onClick={() =>
+                        setItems((current) =>
+                          current.filter((_, itemIndex) => itemIndex !== index),
+                        )
+                      }
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
             </div>
-          </div>
-          <div className="overflow-x-auto border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Activity</TableHead>
-                  <TableHead>Phase</TableHead>
-                  <TableHead>Trade</TableHead>
-                  <TableHead className="w-28 text-right">
-                    Start offset
-                  </TableHead>
-                  <TableHead className="w-28 text-right">Duration</TableHead>
-                  <TableHead className="w-12" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {items.map((item, index) => (
-                  <TableRow key={index}>
-                    <TableCell>
-                      <Input
-                        value={item.name}
-                        onChange={(event) =>
-                          patchItem(index, { name: event.target.value })
-                        }
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Input
-                        value={item.phase}
-                        onChange={(event) =>
-                          patchItem(index, { phase: event.target.value })
-                        }
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Input
-                        value={item.trade}
-                        onChange={(event) =>
-                          patchItem(index, { trade: event.target.value })
-                        }
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Input
-                        type="number"
-                        className="text-right tabular-nums"
-                        value={item.startOffset}
-                        onChange={(event) =>
-                          patchItem(index, { startOffset: event.target.value })
-                        }
-                        placeholder="Undated"
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Input
-                        type="number"
-                        min={1}
-                        className="text-right tabular-nums"
-                        value={item.duration}
-                        onChange={(event) =>
-                          patchItem(index, { duration: event.target.value })
-                        }
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        disabled={items.length === 1}
-                        onClick={() =>
-                          setItems((current) =>
-                            current.filter(
-                              (_, itemIndex) => itemIndex !== index,
-                            ),
-                          )
-                        }
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-          <div className="flex items-center justify-between">
-            <Button
-              variant="outline"
-              onClick={() => setItems((current) => [...current, newItem()])}
-            >
-              <Plus className="h-4 w-4" />
-              Activity
-            </Button>
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={() => setEditingId(null)}>
-                Cancel
+            <div className="flex items-center justify-between">
+              <Button
+                variant="outline"
+                onClick={() => setItems((current) => [...current, newItem()])}
+              >
+                <Plus className="h-4 w-4" />
+                Activity
               </Button>
-              <Button onClick={save} disabled={pending}>
-                {pending ? "Saving…" : "Save template"}
-              </Button>
             </div>
           </div>
-        </div>
+        </PresetTemplateWorkspace>
       ) : (
         <Button onClick={() => edit()}>
           <Plus className="h-4 w-4" />

@@ -13,15 +13,19 @@ import {
   AttachmentTitle,
 } from "@/components/ui/attachment"
 import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
-import { DateField } from "@/components/ui/date-field"
-import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
 import { ResponsiveDialog } from "@/components/ui/responsive-dialog"
 import { formatFileSize } from "@/components/files/types"
 import { cn, formatMoneyCentsExact } from "@/lib/utils"
 import type { ComplianceDocumentType, ComplianceRequirement } from "@/lib/types"
+import {
+  DocumentFactFields,
+  EMPTY_FACTS,
+  factsToInput,
+  parseMoneyToCents,
+  type DocumentFactValues,
+} from "@/components/compliance/document-fact-fields"
 
 interface ComplianceUploadDialogProps {
   open: boolean
@@ -33,14 +37,6 @@ interface ComplianceUploadDialogProps {
   onUploaded: () => void
 }
 
-const INSURANCE_CODES = ["gl", "wc", "auto", "umbrella", "excess", "professional", "pollution"]
-
-function isInsuranceType(type?: ComplianceDocumentType) {
-  if (!type) return false
-  const code = type.code?.toLowerCase() ?? ""
-  return INSURANCE_CODES.some((candidate) => code.includes(candidate))
-}
-
 export function ComplianceUploadDialog({
   open,
   onOpenChange,
@@ -50,30 +46,15 @@ export function ComplianceUploadDialog({
   onUploaded,
 }: ComplianceUploadDialogProps) {
   const [isPending, startTransition] = useTransition()
-  const [expiryDate, setExpiryDate] = useState("")
-  const [policyNumber, setPolicyNumber] = useState("")
-  const [carrierName, setCarrierName] = useState("")
-  const [coverage, setCoverage] = useState("")
-  const [additionalInsured, setAdditionalInsured] = useState(false)
-  const [primaryNoncontributory, setPrimaryNoncontributory] = useState(false)
-  const [waiverOfSubrogation, setWaiverOfSubrogation] = useState(false)
+  const [facts, setFacts] = useState<DocumentFactValues>(EMPTY_FACTS)
   const [file, setFile] = useState<File | null>(null)
   const [progress, setProgress] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const selectedType = documentType ?? requirement.document_type
-  const insurance = isInsuranceType(selectedType)
 
-  // The API only accepts a positive integer, so an empty or zero field must be
-  // omitted rather than sent as 0 and rejected with an opaque 400.
-  const coverageCents = useMemo(() => {
-    const cleaned = coverage.replace(/[^0-9.]/g, "")
-    const parsed = Number.parseFloat(cleaned)
-    if (Number.isNaN(parsed)) return null
-    const cents = Math.round(parsed * 100)
-    return cents > 0 ? cents : null
-  }, [coverage])
+  const coverageCents = useMemo(() => parseMoneyToCents(facts.coverage_amount) ?? null, [facts.coverage_amount])
 
   const coverageShort =
     requirement?.min_coverage_cents != null &&
@@ -82,24 +63,20 @@ export function ComplianceUploadDialog({
 
   const unmetConditions = requirement
     ? [
-        requirement.requires_additional_insured && !additionalInsured ? "additional insured" : null,
-        requirement.requires_primary_noncontributory && !primaryNoncontributory
+        requirement.requires_additional_insured && !facts.additional_insured
+          ? "additional insured"
+          : null,
+        requirement.requires_primary_noncontributory && !facts.primary_noncontributory
           ? "primary & non-contributory"
           : null,
-        requirement.requires_waiver_of_subrogation && !waiverOfSubrogation
+        requirement.requires_waiver_of_subrogation && !facts.waiver_of_subrogation
           ? "waiver of subrogation"
           : null,
       ].filter((value): value is string => value !== null)
     : []
 
   function reset() {
-    setExpiryDate("")
-    setPolicyNumber("")
-    setCarrierName("")
-    setCoverage("")
-    setAdditionalInsured(false)
-    setPrimaryNoncontributory(false)
-    setWaiverOfSubrogation(false)
+    setFacts(EMPTY_FACTS)
     setFile(null)
     setProgress(0)
     setError(null)
@@ -130,13 +107,7 @@ export function ComplianceUploadDialog({
           body: JSON.stringify({
             document_type_id: requirement.document_type_id,
             file_id: fileId,
-            expiry_date: expiryDate || undefined,
-            policy_number: policyNumber || undefined,
-            carrier_name: carrierName || undefined,
-            coverage_amount_cents: coverageCents ?? undefined,
-            additional_insured: additionalInsured,
-            primary_noncontributory: primaryNoncontributory,
-            waiver_of_subrogation: waiverOfSubrogation,
+            ...factsToInput(facts),
           }),
         })
         clearInterval(ticker)
@@ -260,99 +231,31 @@ export function ComplianceUploadDialog({
           )}
         </div>
 
-        {selectedType?.has_expiry ? (
-          <DateField
-            id="doc-expiry"
-            label="Expires on"
-            value={expiryDate}
-            onChange={setExpiryDate}
-            placeholder="Pick the expiry date"
-            clearable
+        {selectedType ? (
+          <DocumentFactFields
+            kind={selectedType.kind}
+            hasExpiry={selectedType.has_expiry}
+            values={facts}
+            onChange={(next) => setFacts((prev) => ({ ...prev, ...next }))}
           />
         ) : null}
 
-        {insurance ? (
-          <div className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label htmlFor="doc-carrier">Carrier</Label>
-                <Input
-                  id="doc-carrier"
-                  value={carrierName}
-                  onChange={(event) => setCarrierName(event.target.value)}
-                  placeholder="Travelers"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="doc-policy">Policy number</Label>
-                <Input
-                  id="doc-policy"
-                  value={policyNumber}
-                  onChange={(event) => setPolicyNumber(event.target.value)}
-                  placeholder="Policy #"
-                />
-              </div>
-            </div>
+        {coverageShort && requirement?.min_coverage_cents ? (
+          <p className="flex items-start gap-1.5 text-xs text-warning">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+            Below the {formatMoneyCentsExact(requirement.min_coverage_cents)} this builder requires.
+            You can still send it — they will review the shortfall.
+          </p>
+        ) : null}
 
-            <div className="space-y-1.5">
-              <Label htmlFor="doc-coverage">Coverage amount</Label>
-              <div className="relative">
-                <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">
-                  $
-                </span>
-                <Input
-                  id="doc-coverage"
-                  inputMode="decimal"
-                  value={coverage}
-                  onChange={(event) => setCoverage(event.target.value)}
-                  placeholder="1,000,000"
-                  className={cn("pl-7 tabular-nums", coverageShort && "border-warning")}
-                />
-              </div>
-              {coverageShort && requirement?.min_coverage_cents ? (
-                <p className="flex items-start gap-1.5 text-xs text-warning">
-                  <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-                  Below the {formatMoneyCentsExact(requirement.min_coverage_cents)} this builder
-                  requires. You can still send it — they will review the shortfall.
-                </p>
-              ) : null}
-            </div>
-
-            <fieldset className="space-y-2.5">
-              <legend className="text-sm font-medium">Endorsements on this policy</legend>
-              <ConditionCheckbox
-                id="doc-ai"
-                label="Additional insured"
-                required={!!requirement?.requires_additional_insured}
-                checked={additionalInsured}
-                onChange={setAdditionalInsured}
-              />
-              <ConditionCheckbox
-                id="doc-pnc"
-                label="Primary & non-contributory"
-                required={!!requirement?.requires_primary_noncontributory}
-                checked={primaryNoncontributory}
-                onChange={setPrimaryNoncontributory}
-              />
-              <ConditionCheckbox
-                id="doc-wos"
-                label="Waiver of subrogation"
-                required={!!requirement?.requires_waiver_of_subrogation}
-                checked={waiverOfSubrogation}
-                onChange={setWaiverOfSubrogation}
-              />
-            </fieldset>
-
-            {unmetConditions.length > 0 ? (
-              <p className="flex items-start gap-1.5 border border-warning/30 bg-warning/10 p-2.5 text-xs text-warning">
-                <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-                <span>
-                  This builder also requires {unmetConditions.join(", ")}. Sending without{" "}
-                  {unmetConditions.length === 1 ? "it" : "them"} will leave the requirement open.
-                </span>
-              </p>
-            ) : null}
-          </div>
+        {unmetConditions.length > 0 ? (
+          <p className="flex items-start gap-1.5 border border-warning/30 bg-warning/10 p-2.5 text-xs text-warning">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+            <span>
+              This builder also requires {unmetConditions.join(", ")}. Sending without{" "}
+              {unmetConditions.length === 1 ? "it" : "them"} will leave the requirement open.
+            </span>
+          </p>
         ) : null}
       </div>
 
@@ -366,31 +269,5 @@ export function ComplianceUploadDialog({
         </Button>
       </div>
     </ResponsiveDialog>
-  )
-}
-
-function ConditionCheckbox({
-  id,
-  label,
-  required,
-  checked,
-  onChange,
-}: {
-  id: string
-  label: string
-  required: boolean
-  checked: boolean
-  onChange: (value: boolean) => void
-}) {
-  return (
-    <div className="flex items-center gap-2.5">
-      <Checkbox id={id} checked={checked} onCheckedChange={(value) => onChange(value === true)} />
-      <Label htmlFor={id} className="font-normal">
-        {label}
-        {required ? (
-          <span className="ml-1.5 text-xs text-warning">required by this builder</span>
-        ) : null}
-      </Label>
-    </div>
   )
 }

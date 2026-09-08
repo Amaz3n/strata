@@ -10,6 +10,8 @@ import {
   getOrCreateInvoiceToken,
   getInvoiceWithLines,
   issueInvoice,
+  scheduleInvoiceSend,
+  cancelScheduledInvoiceSend,
   listInvoicePage,
   listInvoiceViews,
   listInvoices,
@@ -25,7 +27,11 @@ import { isIssuedInvoiceStatus } from "@/lib/financials/invoice-lifecycle"
 import type { InvoiceDelivery } from "@/lib/types"
 import { PROJECT_BILLING_SEGMENT } from "@/lib/financials/invoice-destinations"
 import { listProjects } from "@/lib/services/projects"
-import { processAccountingPush } from "@/lib/services/accounting-sync"
+import { listBillableContacts } from "@/lib/services/contacts"
+import { listCostCodes } from "@/lib/services/cost-codes"
+import { getNextInvoiceNumber } from "@/lib/services/invoice-numbers"
+import { getOrgBilling } from "@/lib/services/orgs"
+import { requestAccountingPush } from "@/lib/services/accounting-requests"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { receivablesWriter } from "@/lib/services/receivables-writer"
 import { requireOrgContext } from "@/lib/services/context"
@@ -40,7 +46,8 @@ import { buildInvoicePdfData } from "@/lib/pdfs/invoice-data"
 import { uploadFilesObject } from "@/lib/storage/files-storage"
 import { createFileRecord } from "@/lib/services/files"
 import { createInitialVersion } from "@/lib/services/file-versions"
-import { attachFile } from "@/lib/services/file-links"
+import { attachFile, listAttachments } from "@/lib/services/file-links"
+import { INVOICE_PDF_LINK_ROLE, isInvoiceAttachment } from "@/lib/invoices/attachment-roles"
 import { accountingProviderLabel, DEFAULT_ACCOUNTING_PROVIDER_LABEL } from "@/components/accounting/provider-label"
 import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 import { getProvider } from "@/lib/integrations/accounting/registry"
@@ -54,7 +61,6 @@ import {
   type CreateReceivableAdjustmentInput,
 } from "@/lib/services/receivable-adjustments"
 import {
-  createInvoiceLienWaiver,
   listInvoiceLienWaivers,
   voidInvoiceLienWaiver,
   type InvoiceLienWaiverType,
@@ -67,6 +73,8 @@ import {
   type InvoiceScheduleFrequency,
 } from "@/lib/services/invoice-schedules"
 import { actionError, type ActionResult } from "@/lib/action-result"
+import { SYSTEM_ACCOUNT_CODES } from "@/lib/services/books/chart-of-accounts"
+import { resolveLedgerAuthority } from "@/lib/services/books/authority"
 
 const INVOICE_PDF_TEMPLATE_VERSION = 2
 
@@ -94,6 +102,35 @@ export async function loadInvoiceQueueAction(projectId: string | undefined, opti
     ])
     return { ...page, counts }
   })
+}
+
+/**
+ * One band of the billing book: the active rows (drafts and open receivables)
+ * or the history (paid and void), filtered and paged in the database.
+ */
+export async function loadBillingRowsAction(
+  projectId: string | undefined,
+  options: { queue: "active" | "history"; search?: string; offset?: number; limit?: number },
+) {
+  return run(() =>
+    listInvoicePage({
+      projectId,
+      queue: options.queue,
+      search: options.search,
+      offset: options.offset,
+      limit: options.limit ?? (options.queue === "active" ? 300 : 50),
+      sort: "activity",
+      sortDirection: "desc",
+    }),
+  )
+}
+
+export async function scheduleInvoiceSendAction(invoiceId: string, recipients: string[], sendAt: string) {
+  return run(() => scheduleInvoiceSend({ invoiceId, recipients, sendAt }))
+}
+
+export async function cancelScheduledInvoiceSendAction(invoiceId: string) {
+  return run(() => cancelScheduledInvoiceSend({ invoiceId }))
 }
 
 export async function issueInvoiceAction(invoiceId: string, recipients?: string[]) {
@@ -336,10 +373,9 @@ function mapDeliveryRows(rows: Array<Record<string, unknown>> | null): InvoiceDe
 async function loadInvoiceDetail(invoiceId: string) {
   if (!invoiceId) throw new Error("Invoice id is required")
 
-  const invoice = await getInvoiceWithLines(invoiceId)
-  if (!invoice) throw new Error("Invoice not found")
-
-  const orgId = invoice.org_id
+  // The org is known before the invoice is: every read below is scoped by it,
+  // so none of them has to wait for the invoice row to come back first.
+  const { orgId } = await requireOrgContext()
   const supabase = createServiceSupabaseClient()
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || "https://arcnaples.com"
   const loadErrors: string[] = []
@@ -349,12 +385,8 @@ async function loadInvoiceDetail(invoiceId: string) {
     loadErrors.push(label)
   }
 
-  // Viewing detail must never mutate lifecycle — only guarantee a token exists
-  // for invoices that were already shared.
-  const needsToken = Boolean(invoice.client_visible || invoice.sent_at || isIssuedInvoiceStatus(invoice.status))
-
   const [
-    tokenResult,
+    invoiceResult,
     viewsResult,
     syncResult,
     deliveriesResult,
@@ -362,8 +394,10 @@ async function loadInvoiceDetail(invoiceId: string) {
     paymentsResult,
     waiversResult,
     auditResult,
+    attachmentsResult,
+    invoiceEntriesResult,
   ] = await Promise.allSettled([
-    needsToken ? getOrCreateInvoiceToken(invoiceId, orgId) : Promise.resolve(invoice.token ?? null),
+    getInvoiceWithLines(invoiceId, orgId),
     listInvoiceViews(invoiceId, orgId),
     supabase
       .from("accounting_sync_records")
@@ -389,11 +423,23 @@ async function loadInvoiceDetail(invoiceId: string) {
       entityId: invoiceId,
       permission: "invoice.read",
       orgId,
-      projectId: invoice.project_id,
     }),
+    listAttachments("invoice", invoiceId, orgId),
+    supabase
+      .from("journal_entries")
+      .select("id, entry_date, status, posting_key, posted_at, reversal_of_entry_id, created_at")
+      .eq("org_id", orgId)
+      .eq("source_type", "invoice")
+      .eq("source_id", invoiceId)
+      .order("created_at", { ascending: false })
+      .limit(10)
+      .throwOnError(),
   ])
 
-  if (tokenResult.status === "rejected") note("share link", tokenResult.reason)
+  if (invoiceResult.status === "rejected") throw invoiceResult.reason
+  const invoice = invoiceResult.value
+  if (!invoice) throw new Error("Invoice not found")
+
   if (viewsResult.status === "rejected") note("client views", viewsResult.reason)
   if (syncResult.status === "rejected") note("accounting sync history", syncResult.reason)
   if (deliveriesResult.status === "rejected") note("delivery history", deliveriesResult.reason)
@@ -401,43 +447,54 @@ async function loadInvoiceDetail(invoiceId: string) {
   if (paymentsResult.status === "rejected") note("payments", paymentsResult.reason)
   if (waiversResult.status === "rejected") note("lien waivers", waiversResult.reason)
   if (auditResult.status === "rejected") note("change history", auditResult.reason)
+  if (attachmentsResult.status === "rejected") note("attachments", attachmentsResult.reason)
+  if (invoiceEntriesResult.status === "rejected") note("Books impact", invoiceEntriesResult.reason)
 
-  const token = tokenResult.status === "fulfilled" ? tokenResult.value : invoice.token ?? null
   const adjustments = adjustmentsResult.status === "fulfilled" ? adjustmentsResult.value : []
   const paymentActivity =
     paymentsResult.status === "fulfilled" ? paymentsResult.value : { payments: [], reversals: [] }
 
-  // Books entries are the one read that genuinely depends on another: a credit
-  // memo posts its own entry, so the adjustment ids have to exist first.
-  let booksEntries: Array<{
-    id: string
-    entry_date: string
-    status: string
-    posting_key: string
-    posted_at?: string | null
-    reversal_of_entry_id?: string | null
-  }> = []
-  try {
-    const { data } = await supabase
-      .from("journal_entries")
-      .select("id, entry_date, status, posting_key, posted_at, reversal_of_entry_id")
-      .eq("org_id", orgId)
-      .in("source_type", ["invoice", "receivable_adjustment"])
-      .in("source_id", [invoiceId, ...adjustments.map((adjustment) => adjustment.id)])
-      .order("created_at", { ascending: false })
-      .limit(10)
-      .throwOnError()
-    booksEntries = (data ?? []).map((row) => ({
+  // Viewing detail must never mutate lifecycle — only guarantee a token exists
+  // for invoices that were already shared. It needs the invoice row, so it is
+  // the one read that waits; it is also the one that is usually a no-op.
+  const needsToken = Boolean(invoice.client_visible || invoice.sent_at || isIssuedInvoiceStatus(invoice.status))
+  const [tokenResult, adjustmentEntriesResult] = await Promise.allSettled([
+    needsToken ? getOrCreateInvoiceToken(invoiceId, orgId) : Promise.resolve(invoice.token ?? null),
+    // A credit memo posts its own entry, so its ids have to exist first. Most
+    // invoices have none, so this second phase is usually skipped entirely.
+    adjustments.length > 0
+      ? supabase
+          .from("journal_entries")
+          .select("id, entry_date, status, posting_key, posted_at, reversal_of_entry_id, created_at")
+          .eq("org_id", orgId)
+          .eq("source_type", "receivable_adjustment")
+          .in("source_id", adjustments.map((adjustment) => adjustment.id))
+          .order("created_at", { ascending: false })
+          .limit(10)
+          .throwOnError()
+      : Promise.resolve({ data: [] as Array<Record<string, unknown>> }),
+  ])
+  if (tokenResult.status === "rejected") note("share link", tokenResult.reason)
+  if (adjustmentEntriesResult.status === "rejected") note("Books impact", adjustmentEntriesResult.reason)
+
+  const token = tokenResult.status === "fulfilled" ? tokenResult.value : invoice.token ?? null
+  const entryRows = [
+    ...(invoiceEntriesResult.status === "fulfilled" ? invoiceEntriesResult.value.data ?? [] : []),
+    ...(adjustmentEntriesResult.status === "fulfilled" ? adjustmentEntriesResult.value.data ?? [] : []),
+  ] as Array<Record<string, unknown>>
+  const booksEntries = entryRows
+    .map((row) => ({
       id: String(row.id),
       entry_date: String(row.entry_date ?? ""),
       status: String(row.status ?? ""),
       posting_key: String(row.posting_key ?? ""),
       posted_at: (row.posted_at as string | null) ?? null,
       reversal_of_entry_id: (row.reversal_of_entry_id as string | null) ?? null,
+      created_at: String(row.created_at ?? ""),
     }))
-  } catch (error) {
-    note("Books impact", error)
-  }
+    .sort((left, right) => right.created_at.localeCompare(left.created_at))
+    .slice(0, 10)
+    .map(({ created_at: _createdAt, ...entry }) => entry)
 
   return {
     invoice: { ...invoice, token },
@@ -454,6 +511,7 @@ async function loadInvoiceDetail(invoiceId: string) {
     adjustments,
     lienWaivers: waiversResult.status === "fulfilled" ? waiversResult.value : [],
     auditTrail: auditResult.status === "fulfilled" ? auditResult.value : [],
+    attachments: attachmentsResult.status === "fulfilled" ? attachmentsResult.value.filter(isInvoiceAttachment) : [],
     loadErrors,
   }
 }
@@ -464,13 +522,9 @@ export async function createInvoiceLienWaiverAction(input: {
   throughDate?: string
 }) {
   return run(async () => {
-    const waiver = await createInvoiceLienWaiver({
-      invoice_id: input.invoiceId,
-      waiver_type: input.waiverType,
-      through_date: input.throughDate,
-    })
-    revalidatePath("/invoices")
-    return waiver
+    // Stale clients must not issue a waiver without the new review/signing step.
+    void input
+    throw new Error("Open Prepare waiver to review and sign this document.")
   })
 }
 
@@ -536,7 +590,7 @@ export async function manualResyncInvoiceAction(invoiceId: string) {
       resourceType: "invoice",
       resourceId: invoiceId,
     })
-    await processAccountingPush({ orgId, entityType: "invoice", entityId: invoiceId })
+    await requestAccountingPush({ entityType: "invoice", entityId: invoiceId })
     revalidatePath("/invoices")
   })
 }
@@ -672,6 +726,67 @@ async function sendInvoiceReminder(invoiceId: string) {
   }
 }
 
+/**
+ * Everything the composer needs that is not the invoice itself, in one round
+ * trip. The billing page warms this on hover of "New invoice", so the takeover
+ * opens with the customer list and the accounting context already in hand.
+ * Number reservation is deliberately separate: warming must never consume a
+ * number the person may not use.
+ */
+export async function loadInvoiceComposerBootstrapAction(input: {
+  projectId: string
+  draftId?: string | null
+  duplicateId?: string | null
+}) {
+  return run(async () => {
+    const context = await requireOrgContext()
+    const [contacts, costCodes, composerContext, draft, duplicate, orgBilling] = await Promise.all([
+      listBillableContacts(context.orgId).catch(() => []),
+      listCostCodes(context.orgId).catch(() => []),
+      loadInvoiceComposerContext(input.projectId),
+      input.draftId ? getInvoiceWithLines(input.draftId, context.orgId) : Promise.resolve(null),
+      input.duplicateId ? getInvoiceWithLines(input.duplicateId, context.orgId) : Promise.resolve(null),
+      getOrgBilling().catch(() => null),
+    ])
+    if (input.draftId && !draft) throw new Error("That draft no longer exists")
+    return {
+      recoveryScope: `${context.orgId}:${context.userId}`,
+      contacts,
+      costCodes,
+      context: composerContext,
+      draft,
+      duplicate,
+      branding: {
+        name: orgBilling?.org?.name ?? null,
+        email: orgBilling?.org?.billing_email ?? null,
+        address: formatOrgAddressLines(orgBilling?.org?.address),
+        logoUrl: orgBilling?.org?.logo_url ?? null,
+      },
+    }
+  })
+}
+
+/** A brand-new invoice reserves its number so two people composing at once never collide. */
+export async function reserveInvoiceNumberAction(projectId?: string) {
+  return run(async () => {
+    const reservation = await getNextInvoiceNumber(undefined, projectId)
+    return { number: String(reservation.number ?? ""), reservationId: reservation.reservation_id ?? null, warning: reservation.warning }
+  })
+}
+
+/** The org's address is stored as a JSON block; the document wants lines of text. */
+function formatOrgAddressLines(address: unknown): string | null {
+  if (typeof address === "string") return address.trim() || null
+  if (!address || typeof address !== "object") return null
+  const record = address as Record<string, unknown>
+  const parts = ["street1", "line1", "street2", "line2", "city", "state", "postal_code"]
+    .map((key) => record[key])
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+  return parts.length > 0 ? parts.join(", ") : null
+}
+
+export type InvoiceComposerContext = Awaited<ReturnType<typeof loadInvoiceComposerContext>>
+
 export async function getInvoiceComposerContextAction(projectId?: string | null) {
   return run(() => loadInvoiceComposerContext(projectId))
 }
@@ -785,8 +900,11 @@ async function loadInvoiceComposerContext(projectId?: string | null) {
 
   // The project's default QBO customer (set in project settings) — used to pre-select the composer's
   // "bill to" picker so invoices and payables attribute to the same customer by default.
-  const accountingTarget = await resolveAccountingTarget({ orgId, projectId })
-  const accountingProviderName = accountingTarget
+  const nativeBooks = (await resolveLedgerAuthority(orgId)) === "arc"
+  const accountingTarget = nativeBooks ? null : await resolveAccountingTarget({ orgId, projectId })
+  const accountingProviderName = nativeBooks
+    ? "Arc Books"
+    : accountingTarget
     ? accountingProviderLabel(accountingTarget.connection.provider, accountingTarget.connection.label)
     : DEFAULT_ACCOUNTING_PROVIDER_LABEL
   const defaultQboCustomer = accountingTarget?.dimensions.customer?.id
@@ -811,12 +929,31 @@ async function loadInvoiceComposerContext(projectId?: string | null) {
     : { data: null }
 
   let qboConnected = Boolean(qboConnection)
-  const qboDefaultIncomeAccountId =
+  let qboDefaultIncomeAccountId =
     typeof (qboConnection?.settings as any)?.default_income_account_id === "string" ? (qboConnection?.settings as any).default_income_account_id : null
 
   let qboIncomeAccounts: Array<{ id: string; name: string; fullyQualifiedName?: string }> = []
   let qboAccountLoadWarning: string | null = null
-  if (qboConnected) {
+  if (nativeBooks) {
+    const { data: accounts, error: accountsError } = await supabase
+      .from("gl_accounts")
+      .select("id,code,name")
+      .eq("org_id", orgId)
+      .eq("active", true)
+      .eq("account_type", "income")
+      .order("code")
+      .limit(500)
+    if (accountsError) {
+      qboAccountLoadWarning = `Unable to load Arc Books income accounts: ${accountsError.message}`
+    } else {
+      qboDefaultIncomeAccountId = (accounts ?? []).find((account) => account.code === SYSTEM_ACCOUNT_CODES.constructionRevenue)?.id ?? null
+      qboIncomeAccounts = (accounts ?? []).map((account) => ({
+        id: account.id,
+        name: `${account.code} · ${account.name}`,
+      }))
+      if (qboIncomeAccounts.length === 0) qboAccountLoadWarning = "Arc Books has no active income accounts."
+    }
+  } else if (qboConnected) {
     try {
       const provider = accountingTarget ? getProvider(accountingTarget.connection.provider) : null
       if (!provider || !accountingTarget) qboConnected = false
@@ -849,7 +986,8 @@ async function loadInvoiceComposerContext(projectId?: string | null) {
     qboConnected,
     qboIncomeAccounts,
     qboDefaultIncomeAccountId,
-    accountingProvider: accountingTarget?.connection.provider ?? null,
+    canCreateIncomeAccount: Boolean(accountingTarget && getProvider(accountingTarget.connection.provider).createAccount),
+    accountingProvider: nativeBooks ? "arc_books" : accountingTarget?.connection.provider ?? null,
     accountingProviderName,
     qboDiagnostics: {
       connectionLastError: (qboConnection as any)?.last_error ?? null,
@@ -858,7 +996,7 @@ async function loadInvoiceComposerContext(projectId?: string | null) {
     },
     settings: {
       defaultPaymentTermsDays: Number(settings.invoice_default_payment_terms_days ?? 15),
-      defaultInvoiceNote: String(settings.invoice_default_payment_details ?? settings.invoice_default_note ?? ""),
+      defaultInvoiceNote: String(settings.invoice_default_payment_details ?? ""),
     },
     taxJurisdictions: taxJurisdictions ?? [],
   }
@@ -1119,7 +1257,7 @@ async function generateInvoicePdf(
     entity_type: "invoice",
     entity_id: invoice.id,
     project_id: invoice.project_id ?? undefined,
-    link_role: "invoice_pdf",
+    link_role: INVOICE_PDF_LINK_ROLE,
   })
 
   await receivablesWriter()

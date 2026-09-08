@@ -24,11 +24,12 @@ async function handler(request: NextRequest) {
     if ((count ?? 0) > 0) {
       return NextResponse.json({
         error: "Payment reconciliation is disabled while payment rails are enabled",
+        reason: "reconciliation_disabled_with_enabled_rails",
         enabledRailCount: count,
         reconciliationEnabled: false,
-      }, { status: 503 })
+      }, { status: 207 })
     }
-    return NextResponse.json({ reconciliations: [], reconciliationEnabled: false })
+    return NextResponse.json({ reconciliations: [], reconciliationEnabled: false, skipped: "no_enabled_rails" })
   }
   const reconciliations = await runScheduledPaymentReconciliations()
   // A deferred org is one this tick ran out of time for, and a failed one is an

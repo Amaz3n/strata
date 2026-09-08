@@ -1,5 +1,7 @@
 'use server'
 
+import { accountingOAuthCookieName, verifyAccountingOAuthState } from "@/lib/integrations/accounting/oauth-state"
+
 import { cookies } from "next/headers"
 
 import { getProvider, isAccountingProviderKey } from "@/lib/integrations/accounting/registry"
@@ -129,19 +131,22 @@ async function listScopes(orgId: string) {
   return { divisions: divisions ?? [], communities: communities ?? [] }
 }
 
-export async function connectAccountingProviderAction(providerKey: AccountingProviderKey) {
+export async function connectAccountingProviderAction(providerKey: AccountingProviderKey, connectionId?: string) {
   return run(async () => {
     const { supabase, orgId, userId } = await requireOrgContext()
     await requirePermission("org.admin", { supabase, orgId, userId })
 
     const provider = getProvider(providerKey)
     if (!provider.getConnectUrl) throw new Error("This accounting provider does not support interactive connection")
-    const { url, state } = await provider.getConnectUrl({ orgId })
+    const existing = connectionId ? await requireAccountingConnectionForOrg(connectionId, orgId, { provider: providerKey }) : null
+    const { url, state } = await provider.getConnectUrl({ orgId, userId, ...(existing ? { connectionId: existing.id, expectedAccountId: existing.external_account_id } : {}) })
+    const verifiedState = verifyAccountingOAuthState(state, providerKey)
+    if (!verifiedState) throw new Error("Provider returned an invalid authorization attempt")
     const cookieStore = await cookies()
     const secure = typeof process.env.VERCEL !== "undefined" || process.env.NODE_ENV === "production"
     if (typeof cookieStore.set === "function") {
       cookieStore.set({
-        name: "qbo_oauth_state",
+        name: accountingOAuthCookieName(verifiedState),
         value: state,
         httpOnly: true,
         sameSite: "lax",

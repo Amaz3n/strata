@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import { format } from "date-fns"
 import { toast } from "sonner"
@@ -10,23 +10,22 @@ import type {
   Invoice,
   InvoiceDelivery,
   InvoiceLienWaiver,
-  InvoiceLienWaiverType,
   InvoiceView,
   Payment,
   PaymentReversal,
   ReceivableAdjustment,
 } from "@/lib/types"
-import { INVOICE_WAIVER_TYPES, INVOICE_WAIVER_TYPE_LABELS } from "@/lib/types"
 import type { EntityAuditEntry } from "@/lib/services/audit"
+import type { FileLinkWithFile } from "@/lib/services/file-links"
+import { receivablesLabels, type ReceivablesAccountingMode } from "@/lib/financials/billing-profile"
 import {
-  createInvoiceLienWaiverAction,
+  cancelScheduledInvoiceSendAction,
   generateInvoicePdfAction,
   getInvoiceDetailAction,
   issueInvoiceAction,
   requestInvoiceApprovalAction,
   sendInvoiceReminderAction,
   updateInvoiceNotesAction,
-  voidInvoiceLienWaiverAction,
   voidReceivableAdjustmentAction,
 } from "@/app/(app)/invoices/actions"
 import { recordPaymentAction } from "@/app/(app)/payments/actions"
@@ -43,7 +42,10 @@ import { qboTxnUrl } from "@/lib/integrations/accounting/qbo/links"
 import { cn } from "@/lib/utils"
 import { AccountingSyncBadge } from "@/components/accounting/accounting-sync-badge"
 import { DEFAULT_ACCOUNTING_PROVIDER_LABEL } from "@/components/accounting/provider-label"
-import { EntityAttachments, type AttachedFile } from "@/components/files"
+import type { AttachedFile } from "@/components/files"
+import { InvoiceAttachmentsField } from "./invoice-attachments-field"
+import { InvoiceWaiverCard } from "./invoice-waiver-card"
+import { isInvoiceAttachment } from "@/lib/invoices/attachment-roles"
 import { useProductTerminology } from "@/components/layout/use-product-terminology"
 import { Button } from "@/components/ui/button"
 import {
@@ -68,7 +70,6 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Textarea } from "@/components/ui/textarea"
 import { MoreHorizontal } from "@/components/icons"
 
-import { ArcInvoiceDocument, toArcInvoiceData, toArcInvoiceLines } from "./arc-invoice-document"
 import { ReceivableAdjustmentDialog } from "./receivable-adjustment-dialog"
 import {
   InvoiceStatusBadge,
@@ -83,7 +84,10 @@ import {
   isEditableInvoice,
   normalizeInvoiceStatus,
   overdueDaysOf,
+  scheduledSendAtOf,
+  formatScheduledSend,
   totalCentsOf,
+  type InvoiceLifecycleStatus,
 } from "./invoice-presentation"
 
 type SyncRecord = { id: string; status: string; last_synced_at: string; error_message?: string | null; qbo_id?: string | null }
@@ -108,14 +112,23 @@ export interface InvoiceDetailBundle {
   adjustments?: ReceivableAdjustment[]
   lienWaivers?: InvoiceLienWaiver[]
   auditTrail?: EntityAuditEntry[]
+  attachments?: FileLinkWithFile[]
   /** Sections that failed to load. Named, never silently rendered as empty. */
   loadErrors?: string[]
 }
 
-type InspectorSection = "summary" | "activity" | "document" | "accounting"
+export type InspectorSection = "summary" | "activity" | "attachments" | "accounting"
 
 interface InvoiceInspectorProps {
   detail: InvoiceDetailBundle | null
+  /**
+   * The list row for the invoice being opened. Everything the header shows is
+   * on it, so the header paints from the row and only the sections wait.
+   */
+  placeholder?: Invoice | null
+  error?: string | null
+  onRetry?: () => void
+  accounting?: ReceivablesAccountingMode
   projectId?: string | null
   projectName?: string | null
   builderInfo?: { name?: string | null; email?: string | null; address?: string | null }
@@ -124,6 +137,8 @@ interface InvoiceInspectorProps {
   onBack?: () => void
   onChanged: () => void | Promise<void>
   onDuplicate?: (invoice: Invoice) => void
+  /** Open the draft in the composer in place; without it the Edit button navigates. */
+  onEdit?: (invoice: Invoice) => void
   onRevise?: (invoice: Invoice) => void
   onVoid?: (invoice: Invoice) => void
   onMakeRecurring?: (invoice: Invoice) => void
@@ -186,7 +201,7 @@ async function openPdfUrl(url: string, fileName?: string) {
 type AttachmentLink = Awaited<ReturnType<typeof listAttachmentsAction>>[number]
 
 function mapAttachmentLinks(links: AttachmentLink[]): AttachedFile[] {
-  return links.map((link) => ({
+  return links.filter(isInvoiceAttachment).map((link) => ({
     id: link.file.id,
     linkId: link.id,
     file_name: link.file.file_name,
@@ -206,6 +221,71 @@ export function InvoiceInspectorEmpty({ message }: { message?: string }) {
       <p className="max-w-xs text-xs text-muted-foreground">
         {message ?? "Pick a row to see its balance, its delivery and payment history, and what has to happen next."}
       </p>
+    </div>
+  )
+}
+
+/**
+ * The header from the row, the body still loading. A number that is already
+ * on screen in the table should never turn into a grey bar on the way over.
+ */
+function InvoiceInspectorPlaceholder({ invoice, onBack }: { invoice: Invoice; onBack?: () => void }) {
+  const status = displayStatusOf(invoice)
+  const balance = balanceCentsOf(invoice)
+  const total = totalCentsOf(invoice)
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-background" aria-busy="true">
+      <div className="shrink-0 border-b">
+        <div className="flex items-center gap-2 px-3 pt-2.5">
+          {onBack ? (
+            <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={onBack} title="Back to list">
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+          ) : null}
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <h2 className="truncate text-sm font-semibold leading-tight">
+              {invoice.invoice_number || invoice.title || "Untitled invoice"}
+            </h2>
+            {status !== "overdue" ? <InvoiceStatusBadge invoice={invoice} /> : null}
+          </div>
+          <Skeleton className="h-8 w-8" />
+        </div>
+        <div className="flex items-center justify-between gap-3 px-4 pb-2 pt-1">
+          <p className="flex min-w-0 items-baseline gap-2">
+            <span
+              className={cn(
+                "font-mono text-xl font-semibold tabular-nums",
+                status === "overdue" && "text-destructive",
+                status === "paid" && "text-success",
+              )}
+            >
+              {formatMoneyFromCents(balance > 0 ? balance : total)}
+            </span>
+            <span className={cn("truncate text-xs", overdueDaysOf(invoice) > 0 ? "text-destructive" : "text-muted-foreground")}>
+              {dueStateLabel(invoice)}
+            </span>
+          </p>
+          <Skeleton className="h-8 w-28" />
+        </div>
+        <div className="flex items-center gap-1 px-2">
+          {["Summary", "Activity", "Attachments", "Accounting"].map((label) => (
+            <span key={label} className="px-2.5 py-2 text-xs font-medium text-muted-foreground/60">
+              {label}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="space-y-6 p-4">
+        <div className="space-y-2 border p-4">
+          {[0, 1, 2, 3].map((row) => (
+            <div key={row} className="flex items-center justify-between gap-4">
+              <Skeleton className="h-3 w-20" />
+              <Skeleton className="h-3 w-24" />
+            </div>
+          ))}
+        </div>
+        <Skeleton className="h-24 w-full" />
+      </div>
     </div>
   )
 }
@@ -238,7 +318,33 @@ export function InvoiceInspectorSkeleton() {
 
 export function InvoiceInspector(props: InvoiceInspectorProps) {
   const invoice = props.detail?.invoice ?? null
-  if (props.loading && !invoice) return <InvoiceInspectorSkeleton />
+  if (props.error && !invoice) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
+        <p className="text-sm font-medium">This invoice could not be loaded.</p>
+        <p className="max-w-xs text-xs text-muted-foreground">{props.error}</p>
+        <div className="flex items-center gap-2">
+          {props.onBack ? (
+            <Button variant="outline" size="sm" onClick={props.onBack}>
+              Back
+            </Button>
+          ) : null}
+          {props.onRetry ? (
+            <Button size="sm" onClick={props.onRetry}>
+              Try again
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    )
+  }
+  if (props.loading && !invoice) {
+    return props.placeholder ? (
+      <InvoiceInspectorPlaceholder invoice={props.placeholder} onBack={props.onBack} />
+    ) : (
+      <InvoiceInspectorSkeleton />
+    )
+  }
   if (!invoice || !props.detail) return <InvoiceInspectorEmpty />
 
   // Keyed on the invoice: switching rows starts a clean inspector rather than
@@ -261,41 +367,25 @@ function InvoiceInspectorBody({
   onBack,
   onChanged,
   onDuplicate,
+  onEdit,
   onRevise,
   onVoid,
   onMakeRecurring,
   onMove,
   onResync,
+  accounting,
   autoOpenPayment,
   onAutoPaymentHandled,
 }: BodyProps) {
   const terms = useProductTerminology()
+  const labels = receivablesLabels(accounting ?? { ledger: "unavailable", external: null })
   const [section, setSection] = useState<InspectorSection>("summary")
   const [busy, setBusy] = useState<string | null>(null)
   const [paymentOpen, setPaymentOpen] = useState(false)
   const [adjusting, setAdjusting] = useState(false)
   const [notesDraft, setNotesDraft] = useState(invoice.notes ?? "")
-  const [attachments, setAttachments] = useState<AttachedFile[]>([])
-  const [attachmentsLoading, setAttachmentsLoading] = useState(true)
-  const [waiverType, setWaiverType] = useState<InvoiceLienWaiverType>("conditional_progress")
-  const [voidingWaiverId, setVoidingWaiverId] = useState<string | null>(null)
+  const [attachments, setAttachments] = useState<AttachedFile[]>(() => mapAttachmentLinks(detail.attachments ?? []))
   const [voidingAdjustmentId, setVoidingAdjustmentId] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    setAttachmentsLoading(true)
-    listAttachmentsAction("invoice", invoice.id)
-      .then((links) => {
-        if (!cancelled) setAttachments(mapAttachmentLinks(links))
-      })
-      .catch((error) => console.error("Failed to load invoice attachments", error))
-      .finally(() => {
-        if (!cancelled) setAttachmentsLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [invoice.id])
 
   // The queue's "Record payment" row action selects the invoice AND asks for the
   // dialog, so the button does what it says instead of merely navigating near it.
@@ -515,34 +605,6 @@ function InvoiceInspectorBody({
     setAttachments(mapAttachmentLinks(await listAttachmentsAction("invoice", invoice.id)))
   }
 
-  const handleCreateWaiver = () =>
-    withBusy("waiver", async () => {
-      try {
-        unwrapAction(await createInvoiceLienWaiverAction({ invoiceId: invoice.id, waiverType }))
-        toast.success("Lien waiver attached")
-        await onChanged()
-      } catch (error) {
-        toast.error("Could not attach the waiver", {
-          description: error instanceof Error ? error.message : "Please try again.",
-        })
-      }
-    })
-
-  async function handleVoidWaiver(waiverId: string) {
-    setVoidingWaiverId(waiverId)
-    try {
-      unwrapAction(await voidInvoiceLienWaiverAction(waiverId))
-      toast.success("Lien waiver voided")
-      await onChanged()
-    } catch (error) {
-      toast.error("Could not void the waiver", {
-        description: error instanceof Error ? error.message : "Please try again.",
-      })
-    } finally {
-      setVoidingWaiverId(null)
-    }
-  }
-
   async function handleVoidAdjustment(adjustment: ReceivableAdjustment) {
     setVoidingAdjustmentId(adjustment.id)
     try {
@@ -558,9 +620,26 @@ function InvoiceInspectorBody({
     }
   }
 
+  const scheduledSendAt = scheduledSendAtOf(invoice)
+  const handleCancelSchedule = () =>
+    withBusy("schedule", async () => {
+      try {
+        unwrapAction(await cancelScheduledInvoiceSendAction(invoice.id))
+        toast.success("Scheduled send cancelled", { description: "The draft stays as it is." })
+        await onChanged()
+      } catch (error) {
+        toast.error("Could not cancel the scheduled send", {
+          description: error instanceof Error ? error.message : "Please try again.",
+        })
+      }
+    })
+
   // One primary action per invoice, chosen by what the invoice actually needs.
   const primary = (() => {
     if (status === "void") return null
+    if (status === "draft" && scheduledSendAt) {
+      return { label: "Cancel scheduled send", onClick: handleCancelSchedule, key: "schedule" }
+    }
     if (editable) {
       if (invoice.approval_status === "draft") {
         return { label: "Send for approval", onClick: handleRequestApproval, key: "approval" }
@@ -575,7 +654,7 @@ function InvoiceInspectorBody({
       return { label: "Resend invoice", onClick: handleReminder, key: "reminder" }
     }
     if (status === "overdue") return { label: "Send reminder", onClick: handleReminder, key: "reminder" }
-    if (balance > 0 && wasIssued) return { label: "Record payment", onClick: () => setPaymentOpen(true), key: "payment" }
+    if (balance > 0 && wasIssued) return { label: labels.recordPayment, onClick: () => setPaymentOpen(true), key: "payment" }
     return null
   })()
 
@@ -588,13 +667,13 @@ function InvoiceInspectorBody({
       case "draw":
         return projectBillingHref(resolvedProjectId, "draws")
       case "pay_application":
-        return projectBillingHref(resolvedProjectId, "payapps")
+        return typeof invoice.metadata?.source_pay_application_id === "string"
+          ? `${projectBillingHref(resolvedProjectId)}?payapp=${encodeURIComponent(invoice.metadata.source_pay_application_id)}`
+          : projectBillingHref(resolvedProjectId)
       case "change_order":
         return `/projects/${resolvedProjectId}/change-orders`
-      case "fee":
-        return projectBillingHref(resolvedProjectId, "fee")
       case "from_costs":
-        return projectBillingHref(resolvedProjectId, "close")
+        return `/projects/${resolvedProjectId}/financials/cost-inbox`
       default:
         return null
     }
@@ -603,124 +682,107 @@ function InvoiceInspectorBody({
   const sections: Array<{ key: InspectorSection; label: string }> = [
     { key: "summary", label: "Summary" },
     { key: "activity", label: "Activity" },
-    { key: "document", label: "Document" },
+    { key: "attachments", label: "Attachments" },
     { key: "accounting", label: "Accounting" },
   ]
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
-      {/* Header: identity, state, and the one thing to do next. */}
+      {/* Header: the number, then the money and the one thing to do next, on two short rows. */}
       <div className="shrink-0 border-b">
-        <div className="flex items-start gap-2 px-4 pt-4">
+        <div className="flex items-center gap-2 px-3 pt-2.5">
           {onBack ? (
-            <Button variant="ghost" size="icon" className="-ml-2 h-8 w-8 shrink-0" onClick={onBack} title="Back to list">
+            <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={onBack} title="Back to list">
               <ArrowLeft className="h-4 w-4" />
             </Button>
           ) : null}
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <h2 className="truncate text-base font-semibold leading-tight">
-                {invoice.invoice_number || invoice.title || "Untitled invoice"}
-              </h2>
-              <InvoiceStatusBadge invoice={invoice} />
-            </div>
-            <p className="mt-0.5 truncate text-xs text-muted-foreground">
-              {customerNameOf(invoice) || `No ${terms.owner.toLowerCase()} on this invoice`}
-            </p>
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <h2 className="truncate text-sm font-semibold leading-tight">
+              {invoice.invoice_number || invoice.title || "Untitled invoice"}
+            </h2>
+            {status !== "overdue" ? <InvoiceStatusBadge invoice={invoice} /> : null}
           </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
-                <MoreHorizontal className="h-4 w-4" />
-                <span className="sr-only">Invoice actions</span>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56">
-              <DropdownMenuItem onSelect={() => void handleDownloadPdf()} disabled={busy === "pdf"}>
-                <Download className="mr-2 h-4 w-4" />
-                Download PDF
-              </DropdownMenuItem>
-              {wasIssued && link ? (
-                <DropdownMenuItem onSelect={() => void handleCopyLink()}>
-                  <Copy className="mr-2 h-4 w-4" />
-                  Copy customer link
-                </DropdownMenuItem>
-              ) : null}
-              {canRecordPayment && primary?.key !== "payment" ? (
-                <DropdownMenuItem onSelect={() => setPaymentOpen(true)}>Record payment</DropdownMenuItem>
-              ) : null}
-              {canAdjust ? (
-                <DropdownMenuItem onSelect={() => setAdjusting(true)}>
-                  <MinusCircle className="mr-2 h-4 w-4" />
-                  Credit or write off
-                </DropdownMenuItem>
-              ) : null}
-              <DropdownMenuSeparator />
-              {onDuplicate ? <DropdownMenuItem onSelect={() => onDuplicate(invoice)}>Duplicate</DropdownMenuItem> : null}
-              {onMakeRecurring ? (
-                <DropdownMenuItem onSelect={() => onMakeRecurring(invoice)} disabled={status === "void"}>
-                  Make recurring…
-                </DropdownMenuItem>
-              ) : null}
-              {onRevise ? (
-                <DropdownMenuItem
-                  onSelect={() => onRevise(invoice)}
-                  disabled={!["sent", "overdue"].includes(status)}
-                >
-                  Revise and reissue
-                </DropdownMenuItem>
-              ) : null}
-              {onMove ? (
-                <DropdownMenuItem onSelect={() => onMove(invoice)} disabled={!editable}>
-                  Move to project…
-                </DropdownMenuItem>
-              ) : null}
-              {onVoid ? (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem
-                    onSelect={() => onVoid(invoice)}
-                    disabled={["paid", "partial", "void"].includes(status)}
-                    className="text-destructive focus:text-destructive"
-                  >
-                    Void invoice
-                  </DropdownMenuItem>
-                </>
-              ) : null}
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <InvoiceActionsMenu
+            invoice={invoice}
+            status={status}
+            editable={editable}
+            wasIssued={wasIssued}
+            hasLink={Boolean(link)}
+            busy={busy}
+            paymentLabel={labels.recordPayment}
+            showPayment={canRecordPayment && primary?.key !== "payment"}
+            showAdjust={canAdjust}
+            onDownloadPdf={() => void handleDownloadPdf()}
+            onCopyLink={() => void handleCopyLink()}
+            onRecordPayment={() => setPaymentOpen(true)}
+            onAdjust={() => setAdjusting(true)}
+            onDuplicate={onDuplicate ? () => onDuplicate(invoice) : undefined}
+            onMakeRecurring={onMakeRecurring ? () => onMakeRecurring(invoice) : undefined}
+            onRevise={onRevise ? () => onRevise(invoice) : undefined}
+            onMove={onMove ? () => onMove(invoice) : undefined}
+            onVoid={onVoid ? () => onVoid(invoice) : undefined}
+          />
         </div>
 
-        <div className="flex items-end justify-between gap-4 px-4 pt-3">
-          <div>
-            <div className="microlabel">{balance > 0 ? "Balance due" : "Invoice total"}</div>
-            <div
+        <div className="flex items-center justify-between gap-3 px-4 pb-2 pt-1">
+          <p className="flex min-w-0 items-baseline gap-2">
+            <span
               className={cn(
-                "font-mono text-2xl font-semibold tabular-nums",
+                "font-mono text-xl font-semibold tabular-nums",
                 status === "overdue" && "text-destructive",
                 status === "paid" && "text-success",
               )}
             >
               {formatMoneyFromCents(balance > 0 ? balance : total)}
-            </div>
-            <p className={cn("mt-0.5 text-xs", overdueDaysOf(invoice) > 0 ? "text-destructive" : "text-muted-foreground")}>
+            </span>
+            <span className={cn("truncate text-xs", overdueDaysOf(invoice) > 0 ? "text-destructive" : "text-muted-foreground")}>
               {dueStateLabel(invoice)}
-            </p>
+            </span>
+          </p>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {/*
+              Edit is always where the eye expects it. A draft edits in place; an
+              issued invoice cannot change, so Edit there means "revise and
+              reissue" and the confirmation says so; a generated draft (from
+              costs, a pay app, the fee schedule) is edited at its source.
+            */}
+            {editable && onEdit ? (
+              <Button variant="outline" size="sm" className="h-8" onClick={() => onEdit(invoice)}>
+                Edit
+              </Button>
+            ) : editable && resolvedProjectId ? (
+              <Button variant="outline" size="sm" className="h-8" asChild>
+                <Link href={resumeInvoiceHref(resolvedProjectId, invoice.id)}>Edit</Link>
+              </Button>
+            ) : status === "draft" && provenanceHref ? (
+              <Button variant="outline" size="sm" className="h-8" asChild title={`Generated from ${invoiceProvenanceLabel(invoice).toLowerCase()} — change it there`}>
+                <Link href={provenanceHref}>Edit at source</Link>
+              </Button>
+            ) : (status === "sent" || status === "overdue") && onRevise ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8"
+                title="Issued invoices don't change. Editing voids this one and opens a replacement draft."
+                onClick={() => onRevise(invoice)}
+              >
+                Edit
+              </Button>
+            ) : null}
+            {primary ? (
+              <Button size="sm" className="h-8" onClick={() => void primary.onClick()} disabled={busy === primary.key}>
+                {busy === primary.key ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
+                {primary.label}
+              </Button>
+            ) : null}
           </div>
-          {primary ? (
-            <Button size="sm" className="mb-1 shrink-0" onClick={() => void primary.onClick()} disabled={busy === primary.key}>
-              {busy === primary.key ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
-              {primary.label}
-            </Button>
-          ) : editable ? null : null}
         </div>
 
-        {editable && resolvedProjectId ? (
-          <div className="px-4 pt-3">
-            <Button variant="outline" size="sm" className="w-full" asChild>
-              <Link href={resumeInvoiceHref(resolvedProjectId, invoice.id)}>Continue editing this draft</Link>
-            </Button>
-          </div>
+        {scheduledSendAt && status === "draft" ? (
+          <p className="mx-4 mt-1 border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-foreground">
+            Sends itself {formatScheduledSend(scheduledSendAt)}
+            {invoice.sent_to_emails?.length ? ` to ${invoice.sent_to_emails.join(", ")}` : ""}. Edit the draft or cancel until then.
+          </p>
         ) : null}
 
         {invoice.approval_status === "pending" ? (
@@ -739,30 +801,17 @@ function InvoiceInspectorBody({
           </p>
         ) : null}
 
-        <nav className="mt-3 flex items-center gap-1 px-2" aria-label="Invoice sections">
-          {sections.map((entry) => (
-            <button
-              key={entry.key}
-              type="button"
-              onClick={() => setSection(entry.key)}
-              aria-current={section === entry.key ? "page" : undefined}
-              className={cn(
-                "border-b-2 px-2.5 py-2 text-xs font-medium transition-colors",
-                section === entry.key
-                  ? "border-primary text-foreground"
-                  : "border-transparent text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {entry.label}
-            </button>
-          ))}
-        </nav>
+        <SectionTabs sections={sections} active={section} onChange={setSection} />
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {section === "summary" ? (
           <div className="space-y-6 p-4">
             <section className="space-y-1 border bg-card p-4">
+              <Row label={terms.owner}>{customerNameOf(invoice) || "—"}</Row>
+              {typeof invoice.metadata?.memo === "string" && invoice.metadata.memo.trim() ? (
+                <Row label="Memo">{invoice.metadata.memo}</Row>
+              ) : null}
               <Row label="Total">
                 <span className="font-mono tabular-nums">{formatMoneyFromCents(total)}</span>
               </Row>
@@ -824,101 +873,9 @@ function InvoiceInspectorBody({
               </section>
             ) : null}
 
-            <section className="space-y-2">
-              <SectionHeading>Backup &amp; attachments</SectionHeading>
-              <div className="border bg-card p-3">
-                <EntityAttachments
-                  entityType="invoice"
-                  entityId={invoice.id}
-                  projectId={invoice.project_id ?? undefined}
-                  attachments={attachments}
-                  onAttach={handleAttach}
-                  onDetach={handleDetach}
-                  readOnly={attachmentsLoading}
-                  compact
-                />
-              </div>
-            </section>
-
-            <section className="space-y-2">
-              <SectionHeading>Lien waivers</SectionHeading>
-              {failed("lien waivers") ? (
-                <p className="border bg-card p-3 text-xs text-warning">Lien waivers could not be loaded.</p>
-              ) : (
-                <div className="space-y-2">
-                  {(detail.lienWaivers ?? []).length > 0 ? (
-                    <div className="divide-y border bg-card">
-                      {(detail.lienWaivers ?? []).map((waiver) => (
-                        <div key={waiver.id} className="flex items-center justify-between gap-2 px-3 py-2 text-xs">
-                          <span className="min-w-0 truncate font-medium">
-                            {INVOICE_WAIVER_TYPE_LABELS[waiver.waiver_type] ?? waiver.waiver_type}
-                          </span>
-                          <span className="flex shrink-0 items-center gap-3">
-                            <span className={waiver.status === "released" ? "text-success" : "text-warning"}>
-                              {waiver.status === "released" ? "Released" : "Pending payment"}
-                            </span>
-                            {link ? (
-                              <a
-                                href={`${link}/waiver/${waiver.id}`}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="underline underline-offset-2 hover:text-foreground"
-                              >
-                                PDF
-                              </a>
-                            ) : null}
-                            {waiver.status === "pending_payment" ? (
-                              <button
-                                type="button"
-                                className="text-destructive underline underline-offset-2 disabled:opacity-50"
-                                disabled={voidingWaiverId === waiver.id}
-                                onClick={() => void handleVoidWaiver(waiver.id)}
-                              >
-                                {voidingWaiverId === waiver.id ? "Voiding…" : "Void"}
-                              </button>
-                            ) : null}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="border border-dashed bg-card p-3 text-xs text-muted-foreground">
-                      No lien waivers attached.
-                    </p>
-                  )}
-                  <div className="grid grid-cols-[1fr_auto] gap-2">
-                    <Select value={waiverType} onValueChange={(value) => setWaiverType(value as InvoiceLienWaiverType)}>
-                      <SelectTrigger className="h-9">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {INVOICE_WAIVER_TYPES.map((type) => (
-                          <SelectItem
-                            key={type}
-                            value={type}
-                            disabled={(detail.lienWaivers ?? []).some((w) => w.waiver_type === type)}
-                          >
-                            {INVOICE_WAIVER_TYPE_LABELS[type]}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={
-                        busy === "waiver" ||
-                        status === "void" ||
-                        (detail.lienWaivers ?? []).some((w) => w.waiver_type === waiverType)
-                      }
-                      onClick={() => void handleCreateWaiver()}
-                    >
-                      {busy === "waiver" ? "Attaching…" : "Attach"}
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </section>
+            <InvoiceWaiverCard invoice={invoice} waivers={detail.lienWaivers ?? []}
+              payments={detail.payments} reversals={detail.reversals} link={link}
+              failed={failed("lien waivers")} onChanged={onChanged} />
 
             <section className="space-y-2">
               <SectionHeading>Internal notes</SectionHeading>
@@ -1063,41 +1020,59 @@ function InvoiceInspectorBody({
           </div>
         ) : null}
 
-        {section === "document" ? (
-          <InvoiceDocumentPreview
-            invoice={invoice}
-            builderInfo={builderInfo}
-            projectName={projectName}
-            link={link}
-            onDownload={() => void handleDownloadPdf()}
-            downloading={busy === "pdf"}
-          />
+        {section === "attachments" ? (
+          <div className="space-y-3 p-4">
+            <p className="text-xs text-muted-foreground">
+              Backup that travels with this invoice — receipts, waivers, signed copies. Files here are for your team; the{" "}
+              {terms.owner.toLowerCase()} sees the invoice itself and what you share to the portal.
+            </p>
+            <InvoiceAttachmentsField
+              attachments={attachments}
+              busy={busy === "attach"}
+              canAttach
+              onAttach={async (files) => {
+                setBusy("attach")
+                try {
+                  await handleAttach(files)
+                } catch (error) {
+                  toast.error("Could not attach the file", { description: error instanceof Error ? error.message : "Please try again." })
+                } finally {
+                  setBusy(null)
+                }
+              }}
+              onDetach={handleDetach}
+            />
+          </div>
         ) : null}
 
         {section === "accounting" ? (
           <div className="space-y-6 p-4">
+            <p className="text-xs text-muted-foreground">{labels.description}</p>
+            {labels.showExternalSync ? (
             <section className="space-y-2">
-              <SectionHeading>Sync status</SectionHeading>
+              <SectionHeading>{accounting?.external?.label ?? DEFAULT_ACCOUNTING_PROVIDER_LABEL} sync</SectionHeading>
               <div className="space-y-2 border bg-card p-3">
                 <div className="flex items-center justify-between gap-2 text-sm">
                   <AccountingSyncBadge
                     status={invoice.qbo_sync_status}
+                    provider={accounting?.external?.provider}
+                    providerLabel={accounting?.external?.label}
                     externalId={invoice.qbo_id ?? undefined}
                     syncedAt={invoice.qbo_synced_at ?? undefined}
                   />
                   <div className="flex items-center gap-3">
-                    {invoice.qbo_id ? (
+                    {accounting?.external?.provider === "qbo" && invoice.qbo_id ? (
                       <a
                         href={qboTxnUrl("invoice", invoice.qbo_id) ?? "#"}
                         target="_blank"
                         rel="noreferrer"
                         className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
                       >
-                        Open in {DEFAULT_ACCOUNTING_PROVIDER_LABEL}
+                        Open in {accounting?.external?.label ?? DEFAULT_ACCOUNTING_PROVIDER_LABEL}
                         <ExternalLink className="h-3 w-3" />
                       </a>
                     ) : null}
-                    {onResync ? (
+                    {onResync && labels.canRequestExternalSync ? (
                       <button
                         type="button"
                         className="text-xs font-medium text-primary hover:underline disabled:opacity-50"
@@ -1115,7 +1090,7 @@ function InvoiceInspectorBody({
                   (detail.syncHistory ?? []).slice(0, 5).map((log) => (
                     <div key={log.id} className="border-t pt-2 text-xs text-muted-foreground">
                       <div className="flex items-center justify-between gap-2">
-                        <AccountingSyncBadge status={log.status} error={log.error_message} />
+                        <AccountingSyncBadge status={log.status} error={log.error_message} provider={accounting?.external?.provider} providerLabel={accounting?.external?.label} />
                         <span>{log.last_synced_at ? new Date(log.last_synced_at).toLocaleDateString() : "—"}</span>
                       </div>
                       {log.error_message ? <p className="mt-0.5 text-destructive">{log.error_message}</p> : null}
@@ -1124,9 +1099,11 @@ function InvoiceInspectorBody({
                 )}
               </div>
             </section>
+            ) : null}
 
+            {labels.showBooks ? (
             <section className="space-y-2">
-              <SectionHeading>Arc Books</SectionHeading>
+              <SectionHeading>{accounting?.ledger === "official" ? "Arc Books · the ledger" : "Arc Books"}</SectionHeading>
               {failed("Books impact") ? (
                 <p className="border border-warning/30 bg-warning/10 p-3 text-xs">Books entries could not be loaded.</p>
               ) : (detail.booksEntries ?? []).length > 0 ? (
@@ -1148,10 +1125,16 @@ function InvoiceInspectorBody({
                 </div>
               ) : (
                 <p className="border border-dashed bg-card p-3 text-xs text-muted-foreground">
-                  {wasIssued ? "Waiting for the next Books projection." : "Nothing posts until the invoice is issued."}
+                  {wasIssued ? "No journal entry has been recorded yet." : "Nothing posts until the invoice is issued."}
                 </p>
               )}
             </section>
+            ) : null}
+            {!labels.showExternalSync && !labels.showBooks ? (
+              <p className="border border-dashed bg-card p-3 text-xs text-muted-foreground">
+                {labels.description}
+              </p>
+            ) : null}
 
             {link ? (
               <section className="space-y-2">
@@ -1189,60 +1172,166 @@ function InvoiceInspectorBody({
   )
 }
 
-function InvoiceDocumentPreview({
-  invoice,
-  builderInfo,
-  projectName,
-  link,
-  onDownload,
-  downloading,
+/**
+ * Section tabs whose underline slides to the active tab instead of blinking
+ * from one to the next. Measured, not computed: tab widths follow their labels.
+ */
+function SectionTabs({
+  sections,
+  active,
+  onChange,
 }: {
-  invoice: Invoice
-  builderInfo?: { name?: string | null; email?: string | null; address?: string | null }
-  projectName?: string | null
-  link?: string
-  onDownload: () => void
-  downloading: boolean
+  sections: Array<{ key: InspectorSection; label: string }>
+  active: InspectorSection
+  onChange: (section: InspectorSection) => void
 }) {
-  const measureRef = useRef<HTMLDivElement>(null)
-  const [width, setWidth] = useState(520)
+  const tabRefs = useRef(new Map<InspectorSection, HTMLButtonElement>())
+  const [indicator, setIndicator] = useState<{ left: number; width: number } | null>(null)
 
-  useEffect(() => {
-    const element = measureRef.current
-    if (!element) return
-    const update = () => setWidth(Math.max(280, Math.min(820, element.clientWidth - 32)))
-    update()
-    const observer = new ResizeObserver(update)
+  useLayoutEffect(() => {
+    const measure = () => {
+      const element = tabRefs.current.get(active)
+      if (!element) return
+      setIndicator({ left: element.offsetLeft, width: element.offsetWidth })
+    }
+    measure()
+    const element = tabRefs.current.get(active)
+    if (!element || typeof ResizeObserver === "undefined") return
+    const observer = new ResizeObserver(measure)
     observer.observe(element)
     return () => observer.disconnect()
-  }, [])
-
-  const data = useMemo(
-    () =>
-      toArcInvoiceData(invoice, {
-        name: builderInfo?.name ?? null,
-        email: builderInfo?.email ?? null,
-        address: builderInfo?.address ?? null,
-        projectName: projectName ?? null,
-        payUrl: link ?? null,
-      }),
-    [invoice, builderInfo, projectName, link],
-  )
-  const lines = useMemo(() => toArcInvoiceLines(invoice), [invoice])
+  }, [active])
 
   return (
-    <div ref={measureRef} className="min-h-full bg-muted/20 p-4">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <p className="text-xs text-muted-foreground">Exactly what the customer sees.</p>
-        <Button variant="outline" size="sm" onClick={onDownload} disabled={downloading}>
-          {downloading ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <Download className="mr-2 h-3.5 w-3.5" />}
-          PDF
+    <nav className="relative mt-1 flex items-center gap-1 px-2" aria-label="Invoice sections">
+      {sections.map((entry) => (
+        <button
+          key={entry.key}
+          ref={(node) => {
+            if (node) tabRefs.current.set(entry.key, node)
+            else tabRefs.current.delete(entry.key)
+          }}
+          type="button"
+          onClick={() => onChange(entry.key)}
+          aria-current={active === entry.key ? "page" : undefined}
+          className={cn(
+            "px-2.5 py-2 text-xs font-medium transition-colors",
+            active === entry.key ? "text-foreground" : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {entry.label}
+        </button>
+      ))}
+      <span
+        aria-hidden
+        className={cn(
+          "absolute bottom-0 h-0.5 bg-primary transition-[left,width] duration-200 ease-out motion-reduce:transition-none",
+          !indicator && "opacity-0",
+        )}
+        style={indicator ? { left: indicator.left, width: indicator.width } : undefined}
+      />
+    </nav>
+  )
+}
+
+/**
+ * Everything else you can do to an invoice, grouped by what it is for and
+ * shown only when it applies. A menu of eight items where five are greyed out
+ * is a menu that has to be read; one with the three that apply can be scanned.
+ */
+function InvoiceActionsMenu({
+  invoice,
+  status,
+  editable,
+  wasIssued,
+  hasLink,
+  busy,
+  paymentLabel,
+  showPayment,
+  showAdjust,
+  onDownloadPdf,
+  onCopyLink,
+  onRecordPayment,
+  onAdjust,
+  onDuplicate,
+  onMakeRecurring,
+  onRevise,
+  onMove,
+  onVoid,
+}: {
+  invoice: Invoice
+  status: InvoiceLifecycleStatus
+  editable: boolean
+  wasIssued: boolean
+  hasLink: boolean
+  busy: string | null
+  paymentLabel: string
+  showPayment: boolean
+  showAdjust: boolean
+  onDownloadPdf: () => void
+  onCopyLink: () => void
+  onRecordPayment: () => void
+  onAdjust: () => void
+  onDuplicate?: () => void
+  onMakeRecurring?: () => void
+  onRevise?: () => void
+  onMove?: () => void
+  onVoid?: () => void
+}) {
+  const canRevise = Boolean(onRevise && ["sent", "overdue"].includes(status))
+  const canMove = Boolean(onMove && editable)
+  const canVoid = Boolean(onVoid && wasIssued && !["paid", "partial", "void"].includes(status))
+  const canRecur = Boolean(onMakeRecurring && status !== "void")
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
+          <MoreHorizontal className="h-4 w-4" />
+          <span className="sr-only">More actions for invoice {invoice.invoice_number}</span>
         </Button>
-      </div>
-      <div className="mx-auto w-fit border bg-background shadow-sm">
-        <ArcInvoiceDocument data={data} lines={lines} width={width} height={width * 1.294} />
-      </div>
-    </div>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-52">
+        <DropdownMenuItem onSelect={onDownloadPdf} disabled={busy === "pdf"}>
+          <Download className="mr-2 h-4 w-4" />
+          Download PDF
+        </DropdownMenuItem>
+        {wasIssued && hasLink ? (
+          <DropdownMenuItem onSelect={onCopyLink}>
+            <Copy className="mr-2 h-4 w-4" />
+            Copy customer link
+          </DropdownMenuItem>
+        ) : null}
+        {showPayment || showAdjust ? (
+          <>
+            <DropdownMenuSeparator />
+            {showPayment ? <DropdownMenuItem onSelect={onRecordPayment}>{paymentLabel}</DropdownMenuItem> : null}
+            {showAdjust ? (
+              <DropdownMenuItem onSelect={onAdjust}>
+                <MinusCircle className="mr-2 h-4 w-4" />
+                Credit or write off
+              </DropdownMenuItem>
+            ) : null}
+          </>
+        ) : null}
+        {onDuplicate || canRecur || canRevise || canMove ? (
+          <>
+            <DropdownMenuSeparator />
+            {onDuplicate ? <DropdownMenuItem onSelect={onDuplicate}>Duplicate</DropdownMenuItem> : null}
+            {canRecur ? <DropdownMenuItem onSelect={onMakeRecurring}>Make recurring…</DropdownMenuItem> : null}
+            {canRevise ? <DropdownMenuItem onSelect={onRevise}>Revise and reissue</DropdownMenuItem> : null}
+            {canMove ? <DropdownMenuItem onSelect={onMove}>Move to project…</DropdownMenuItem> : null}
+          </>
+        ) : null}
+        {canVoid ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onVoid} className="text-destructive focus:text-destructive">
+              Void invoice
+            </DropdownMenuItem>
+          </>
+        ) : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 

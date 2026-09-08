@@ -1,13 +1,25 @@
 "use server"
 
+import { requireAuthorization, getDivisionScopedProjectIds } from "@/lib/services/authorization"
+import { z } from "zod"
+import { requirePermission } from "@/lib/services/permissions"
+import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { ACCOUNTING_JOB_TYPES, enqueueAccountingPush, processAccountingPush, type AccountingPushEntityType } from "@/lib/services/accounting-sync"
+import { ACCOUNTING_JOB_TYPES, enqueueAccountingPush, type AccountingPushEntityType } from "@/lib/services/accounting-sync"
 import { ACCOUNTING_PROVIDERS } from "@/lib/integrations/accounting/catalog"
-import { getProvider, isAccountingProviderKey } from "@/lib/integrations/accounting/registry"
+import { getProvider, isAccountingProviderKey, listProviders } from "@/lib/integrations/accounting/registry"
+
+async function requireAccountingEntityScope(context: Awaited<ReturnType<typeof requireOrgContext>>, entityType: string, entityId: string) {
+  const table = entityType === "invoice" ? "invoices" : entityType === "expense" ? "project_expenses" : entityType === "bill" ? "vendor_bills" : "payments"
+  const { data, error } = await context.supabase.from(table).select("project_id").eq("org_id", context.orgId).eq("id", entityId).maybeSingle()
+  if (error || !data) throw new Error("Accounting transaction not found within your authorized scope")
+  if (data.project_id) await requireAuthorization({ permission: "accounting.entity_map.manage", orgId: context.orgId, userId: context.userId, projectId: data.project_id, supabase: context.supabase, logDecision: true })
+  else if (await getDivisionScopedProjectIds(context) !== null) throw new Error("Organization-wide accounting transaction requires access to all divisions")
+}
 
 /**
- * Row cap per entity type. A 200-active-project org's backlog must not load
+ * Row cap across the ledger queue. A 200-active-project org's backlog must not load
  * the entire invoices table into one server action — the caller is told when
  * the cap truncated (`truncated` on the queue payload).
  */
@@ -17,6 +29,8 @@ export type AccountingSyncEntityType = "invoice" | "expense" | "bill" | "payment
 
 export type AccountingSyncQueueItem = {
   id: string
+  connectionId: string | null
+  provider: string | null
   entityType: AccountingSyncEntityType
   projectId: string | null
   label: string
@@ -39,7 +53,7 @@ export type AccountingSyncQueue = {
    */
   provider: { key: string; name: string; supportsImport: boolean } | null
   items: AccountingSyncQueueItem[]
-  /** True when a per-type row cap trimmed the queue — the counts understate. */
+  /** True when the ledger row cap trimmed the queue — the counts understate. */
   truncated: boolean
   /**
    * Inbound changes that were dropped on the floor with a terminal reason
@@ -71,14 +85,16 @@ function mapStatus(value?: string | null): "pending" | "error" | "needs_review" 
 }
 
 /**
- * Everything waiting to reach the org's accounting system (pending) or that failed
- * (error), across every entity type. Invoices/expenses/bills still carry their own
- * `qbo_sync_status` column from before the accounting abstraction; payments live only
- * in the shared `accounting_sync_records` ledger. Org-scoped on every query, because
- * the service client bypasses RLS.
+ * Everything waiting to reach the org's accounting system (pending) or that
+ * failed (error), across every entity type. The shared
+ * `accounting_sync_records` ledger is the only queue truth. Every query remains
+ * org-scoped because the service client bypasses RLS.
  */
 export async function listAccountingSyncQueueAction(params?: { projectId?: string | null }): Promise<AccountingSyncQueue> {
-  const { orgId } = await requireOrgContext()
+  const context = await requireOrgContext()
+  await requirePermission("invoice.read", context)
+  await requirePermission("bill.read", context)
+  const { orgId } = context
   const supabase = createServiceSupabaseClient()
   const projectId = params?.projectId ?? null
 
@@ -88,7 +104,7 @@ export async function listAccountingSyncQueueAction(params?: { projectId?: strin
     // system this org's backlog is waiting on, and that is exactly the state
     // where naming it matters most.
     supabase.from("accounting_connections").select("provider").eq("org_id", orgId).order("connected_at", { ascending: false }).limit(1),
-    supabase.from("projects").select("id, name").eq("org_id", orgId),
+    context.supabase.from("projects").select("id, name").eq("org_id", orgId),
   ])
   const realmIds = (connections ?? [])
     .map((row) => row.external_account_id)
@@ -116,69 +132,56 @@ export async function listAccountingSyncQueueAction(params?: { projectId?: strin
     ((projectRows ?? []) as any[]).map((row) => [row.id as string, row.name as string]),
   )
 
-  // Every filter runs in SQL with an explicit cap. The previous shape loaded
-  // EVERY invoice/expense/bill in the org into the action and filtered in JS —
-  // on the surface a 200-project org opens most.
-  let invoicesQuery = supabase
-    .from("invoices")
-    .select("id, project_id, invoice_number, title, issue_date, total_cents, qbo_sync_status")
-    .eq("org_id", orgId)
-    .in("qbo_sync_status", ["pending", "error", "needs_review"])
-  if (projectId) invoicesQuery = invoicesQuery.eq("project_id", projectId)
-  let expensesQuery = supabase
-    .from("project_expenses")
-    .select(
-      "id, project_id, description, vendor_name_text, expense_date, amount_cents, tax_cents, qbo_sync_status, qbo_sync_error, vendor_company:companies(name)",
-    )
-    .eq("org_id", orgId)
-    .in("qbo_sync_status", ["pending", "error", "needs_review"])
-  if (projectId) expensesQuery = expensesQuery.eq("project_id", projectId)
-  let billsQuery = supabase
-    .from("vendor_bills")
-    .select(
-      "id, project_id, bill_number, bill_date, total_cents, qbo_sync_status, qbo_sync_error, commitment:commitments(title, company:companies(name))",
-    )
-    .eq("org_id", orgId)
-    .in("qbo_sync_status", ["pending", "error", "needs_review"])
-  if (projectId) billsQuery = billsQuery.eq("project_id", projectId)
-
-  const [invoicesRes, expensesRes, billsRes, paymentRecordsRes, webhookEventsRes, ignoredEventsRes] = await Promise.all([
-    invoicesQuery.order("issue_date", { ascending: false }).limit(QUEUE_ROW_CAP),
-    expensesQuery.order("expense_date", { ascending: false }).limit(QUEUE_ROW_CAP),
-    billsQuery.order("bill_date", { ascending: false }).limit(QUEUE_ROW_CAP),
+  // The neutral sync ledger is the queue. Reading a legacy entity column here
+  // could report a bill as synced even when no enqueue row or job ever existed.
+  const [recordsRes, webhookEventsRes, ignoredEventsRes] = await Promise.all([
     supabase
       .from("accounting_sync_records")
-      .select("entity_id, entity_type, status, error_message, external_id, last_synced_at, created_at")
+      .select("connection_id, provider, entity_id, entity_type, status, error_message, external_id, last_synced_at, created_at, updated_at")
       .eq("org_id", orgId)
-      .in("entity_type", ["payment", "bill_payment"])
-      // "conflict" is how a provider-side deletion of a posted payment is
-      // recorded; leaving it out of the queue made the divergence invisible.
+      .in("entity_type", ["invoice", "project_expense", "bill", "vendor_credit", "payment", "bill_payment"])
       .in("status", ["pending", "error", "needs_review", "conflict"])
-      .limit(QUEUE_ROW_CAP),
-    supabase
-      .from("qbo_webhook_events")
-      .select("id, entity_name, entity_qbo_id, operation, process_error, attempts, received_at, processed_at")
-      .in("realm_id", realmIds.length > 0 ? realmIds : [""])
-      .eq("process_status", "error")
-      .order("received_at", { ascending: false })
-      .limit(25),
-    supabase
-      .from("qbo_webhook_events")
-      .select("process_error")
-      .in("realm_id", realmIds.length > 0 ? realmIds : [""])
-      .eq("process_status", "ignored")
-      .not("process_error", "is", null)
-      .order("received_at", { ascending: false })
-      .limit(200),
+      .order("updated_at", { ascending: false })
+      .limit(QUEUE_ROW_CAP + 1),
+    Promise.all(listProviders().filter(provider => provider.listInboundEvents).map(provider => provider.listInboundEvents!({ orgId, limit: 25 }))).then(pages => ({ data: pages.flat().map(event => ({ ...event, entity_name: event.entityName, entity_qbo_id: event.externalId, process_error: event.error, received_at: event.receivedAt, processed_at: event.processedAt })) })),
+    Promise.resolve({ data: [] }),
   ])
 
+  if (recordsRes.error) throw new Error(`Unable to load accounting queue: ${recordsRes.error.message}`)
+  const loadedRecords = (recordsRes.data ?? []) as any[]
+  const truncated = loadedRecords.length > QUEUE_ROW_CAP
+  const latestRecordsByEntity = new Map<string, any>()
+  for (const record of loadedRecords.slice(0, QUEUE_ROW_CAP)) {
+    const key = `${record.connection_id}:${record.entity_type}:${record.entity_id}`
+    if (!latestRecordsByEntity.has(key)) latestRecordsByEntity.set(key, record)
+  }
+  const syncRecords = [...latestRecordsByEntity.values()]
+  const recordsByType = new Map<string, any[]>()
+  for (const record of syncRecords) {
+    recordsByType.set(record.entity_type, [...(recordsByType.get(record.entity_type) ?? []), record])
+  }
+  const invoiceRecords = recordsByType.get("invoice") ?? []
+  const expenseRecords = recordsByType.get("project_expense") ?? []
+  const billRecords = [...(recordsByType.get("bill") ?? []), ...(recordsByType.get("vendor_credit") ?? [])]
+  const paymentRecords = [...(recordsByType.get("payment") ?? []), ...(recordsByType.get("bill_payment") ?? [])]
+  const [invoicesRes, expensesRes, billsRes, paymentsRes] = await Promise.all([
+    invoiceRecords.length > 0
+      ? supabase.from("invoices").select("id, project_id, invoice_number, title, issue_date, total_cents").eq("org_id", orgId).in("id", invoiceRecords.map((record) => record.entity_id))
+      : Promise.resolve({ data: [] }),
+    expenseRecords.length > 0
+      ? supabase.from("project_expenses").select("id, project_id, description, vendor_name_text, expense_date, amount_cents, tax_cents, vendor_company:companies(name)").eq("org_id", orgId).in("id", expenseRecords.map((record) => record.entity_id))
+      : Promise.resolve({ data: [] }),
+    billRecords.length > 0
+      ? supabase.from("vendor_bills").select("id, project_id, bill_number, bill_date, total_cents, commitment:commitments(title, company:companies(name))").eq("org_id", orgId).in("id", billRecords.map((record) => record.entity_id))
+      : Promise.resolve({ data: [] }),
+    paymentRecords.length > 0
+      ? supabase.from("payments").select("id, amount_cents, received_at, created_at, invoice:invoices(invoice_number, title, project_id), bill:vendor_bills(bill_number, project_id)").eq("org_id", orgId).in("id", paymentRecords.map((record) => record.entity_id))
+      : Promise.resolve({ data: [] }),
+  ])
   const invoices = (invoicesRes.data ?? []) as any[]
   const expenses = (expensesRes.data ?? []) as any[]
   const bills = (billsRes.data ?? []) as any[]
-  const paymentRecords = (paymentRecordsRes.data ?? []) as any[]
   const deadLetterEvents = projectId ? [] : ((webhookEventsRes.data ?? []) as any[])
-  const truncated =
-    invoices.length >= QUEUE_ROW_CAP || expenses.length >= QUEUE_ROW_CAP || bills.length >= QUEUE_ROW_CAP || paymentRecords.length >= QUEUE_ROW_CAP
 
   const ignoredReasonCounts = new Map<string, number>()
   for (const row of (ignoredEventsRes.data ?? []) as Array<{ process_error: string | null }>) {
@@ -194,104 +197,76 @@ export async function listAccountingSyncQueueAction(params?: { projectId?: strin
       .slice(0, 8),
   }
 
-  // Latest sync record per entity (external id / last attempt / error) on invoices, expenses, bills.
-  const recordLookup = new Map<string, { externalId: string | null; lastAttemptAt: string | null; error: string | null }>()
-  const idsByType: Record<string, string[]> = {
-    invoice: invoices.map((i) => i.id),
-    project_expense: expenses.map((e) => e.id as string),
-    bill: bills.map((b) => b.id as string),
-    // Vendor credits live in vendor_bills but their sync records are keyed
-    // "vendor_credit"; without this their state never reached the queue rows.
-    vendor_credit: bills.map((b) => b.id as string),
-  }
-  await Promise.all(
-    Object.entries(idsByType).map(async ([entityType, ids]) => {
-      if (ids.length === 0) return
-      const { data } = await supabase
-        .from("accounting_sync_records")
-        .select("entity_id, external_id, last_synced_at, created_at, error_message")
-        .eq("org_id", orgId)
-        .eq("entity_type", entityType)
-        .in("entity_id", ids)
-        .order("last_synced_at", { ascending: false })
-      for (const record of data ?? []) {
-        const key = `${entityType === "vendor_credit" ? "bill" : entityType}:${record.entity_id}`
-        if (recordLookup.has(key)) continue
-        recordLookup.set(key, {
-          externalId: record.external_id ?? null,
-          lastAttemptAt: (record.last_synced_at ?? record.created_at) as string | null,
-          error: record.error_message ?? null,
-        })
-      }
-    }),
-  )
-
   const items: AccountingSyncQueueItem[] = []
 
-  for (const invoice of invoices) {
-    const record = recordLookup.get(`invoice:${invoice.id}`)
+  for (const record of invoiceRecords) {
+    const invoice = invoices.find(row => row.id === record.entity_id)
+    if (!invoice) continue
+    if (projectId && invoice.project_id !== projectId) continue
     items.push({
+      connectionId: record.connection_id,
+      provider: record.provider,
       id: invoice.id,
       entityType: "invoice",
       projectId: invoice.project_id ?? null,
       label: invoice.invoice_number || invoice.title || "Invoice",
       sublabel: invoice.project_id ? projectName.get(invoice.project_id) ?? null : null,
       amountCents: Number(invoice.total_cents ?? 0),
-      status: mapStatus(invoice.qbo_sync_status),
-      error: record?.error ?? null,
-      externalId: record?.externalId ?? null,
-      lastAttemptAt: record?.lastAttemptAt ?? null,
+      status: mapStatus(record?.status),
+      error: record?.error_message ?? null,
+      externalId: record?.external_id ?? null,
+      lastAttemptAt: record?.updated_at ?? record?.created_at ?? null,
       date: invoice.issue_date ?? null,
     })
   }
 
-  for (const expense of expenses) {
-    const record = recordLookup.get(`project_expense:${expense.id}`)
+  for (const record of expenseRecords) {
+    const expense = expenses.find(row => row.id === record.entity_id)
+    if (!expense) continue
+    if (projectId && expense.project_id !== projectId) continue
     const vendor = (expense.vendor_company as { name?: string } | null)?.name ?? expense.vendor_name_text ?? null
     items.push({
+      connectionId: record.connection_id,
+      provider: record.provider,
       id: expense.id as string,
       entityType: "expense",
       projectId: (expense.project_id as string | null) ?? null,
       label: (expense.description as string)?.trim() || vendor || "Expense",
       sublabel: vendor ?? (expense.project_id ? projectName.get(expense.project_id as string) ?? null : null),
       amountCents: Number(expense.amount_cents ?? 0) + Number(expense.tax_cents ?? 0),
-      status: mapStatus(expense.qbo_sync_status as string),
-      error: (expense.qbo_sync_error as string | null) ?? record?.error ?? null,
-      externalId: record?.externalId ?? null,
-      lastAttemptAt: record?.lastAttemptAt ?? null,
+      status: mapStatus(record?.status),
+      error: record?.error_message ?? null,
+      externalId: record?.external_id ?? null,
+      lastAttemptAt: record?.updated_at ?? record?.created_at ?? null,
       date: (expense.expense_date as string) ?? null,
     })
   }
 
-  for (const bill of bills) {
-    const record = recordLookup.get(`bill:${bill.id}`)
+  for (const record of billRecords) {
+    const bill = bills.find(row => row.id === record.entity_id)
+    if (!bill) continue
+    if (projectId && bill.project_id !== projectId) continue
     const commitment = bill.commitment as { title?: string; company?: { name?: string } } | null
     items.push({
+      connectionId: record.connection_id,
+      provider: record.provider,
       id: bill.id as string,
       entityType: "bill",
       projectId: (bill.project_id as string | null) ?? null,
       label: bill.bill_number ? `Bill ${bill.bill_number}` : commitment?.title || "Vendor bill",
       sublabel: commitment?.company?.name ?? (bill.project_id ? projectName.get(bill.project_id as string) ?? null : null),
       amountCents: Number(bill.total_cents ?? 0),
-      status: mapStatus(bill.qbo_sync_status as string),
-      error: (bill.qbo_sync_error as string | null) ?? record?.error ?? null,
-      externalId: record?.externalId ?? null,
-      lastAttemptAt: record?.lastAttemptAt ?? null,
+      status: mapStatus(record?.status),
+      error: record?.error_message ?? null,
+      externalId: record?.external_id ?? null,
+      lastAttemptAt: record?.updated_at ?? record?.created_at ?? null,
       date: (bill.bill_date as string) ?? null,
     })
   }
 
   // Payments and bill payments — sourced from the sync ledger, enriched from the payments table.
   if (paymentRecords.length > 0) {
-    const paymentIds = paymentRecords.map((record) => record.entity_id as string).filter(Boolean)
-    const { data: paymentRows } = await supabase
-      .from("payments")
-      .select(
-        "id, amount_cents, received_at, created_at, invoice:invoices(invoice_number, title, project_id), bill:vendor_bills(bill_number, project_id)",
-      )
-      .eq("org_id", orgId)
-      .in("id", paymentIds)
-    const paymentById = new Map<string, any>((paymentRows ?? []).map((row) => [row.id as string, row]))
+    const paymentById = new Map<string, any>(((paymentsRes.data ?? []) as any[]).map((row) => [row.id as string, row]))
 
     for (const record of paymentRecords) {
       const payment = paymentById.get(record.entity_id as string)
@@ -304,7 +279,9 @@ export async function listAccountingSyncQueueAction(params?: { projectId?: strin
           : "vendor bill"
         : payment?.invoice?.invoice_number || payment?.invoice?.title || "invoice"
       items.push({
-        id: record.entity_id as string,
+        connectionId: record.connection_id,
+      provider: record.provider,
+      id: record.entity_id as string,
         entityType: isBillPayment ? "bill_payment" : "payment",
         projectId: paymentProjectId,
         label: `Payment · ${reference}`,
@@ -313,7 +290,7 @@ export async function listAccountingSyncQueueAction(params?: { projectId?: strin
         status: mapStatus(record.status as string),
         error: record.error_message ?? null,
         externalId: record.external_id ?? null,
-        lastAttemptAt: (record.last_synced_at ?? record.created_at) as string | null,
+        lastAttemptAt: (record.updated_at ?? record.created_at) as string | null,
         date: (payment?.received_at ?? payment?.created_at) as string | null,
       })
     }
@@ -321,6 +298,8 @@ export async function listAccountingSyncQueueAction(params?: { projectId?: strin
 
   for (const event of deadLetterEvents) {
     items.push({
+      connectionId: event.connectionId ?? null,
+      provider: event.provider ?? null,
       id: event.id as string,
       entityType: "webhook_event",
       projectId: null,
@@ -335,7 +314,9 @@ export async function listAccountingSyncQueueAction(params?: { projectId?: strin
     })
   }
 
-  return { connected, provider, items, truncated, ignoredEvents }
+  const divisionScope = await getDivisionScopedProjectIds(context)
+  const visibleItems = items.filter(item => item.projectId ? projectName.has(item.projectId) : divisionScope === null)
+  return { connected, provider, items: visibleItems, truncated, ignoredEvents }
 }
 
 /**
@@ -347,16 +328,22 @@ export async function syncAccountingItemAction(
   entityType: AccountingSyncEntityType,
   id: string,
 ): Promise<{ skipped: boolean; reason: "books_authoritative" | null }> {
-  const { orgId } = await requireOrgContext()
+  const context = await requireOrgContext()
+  await requirePermission("accounting.entity_map.manage", context)
+  const { orgId } = context
   if (entityType === "webhook_event") {
     const result = await retryQboWebhookEventAction(id)
     if (!result.success) throw new Error(result.error ?? "Unable to retry webhook event")
     return { skipped: false, reason: null }
   }
   const mapped: AccountingPushEntityType = entityType === "expense" ? "project_expense" : entityType === "bill" ? "vendor_bill" : entityType
-  const result = await processAccountingPush({ orgId, entityType: mapped, entityId: id })
-  if (result.skippedReason === "books_authoritative") return { skipped: true, reason: "books_authoritative" }
-  return { skipped: Boolean(result.skipped), reason: null }
+  z.object({ id: z.string().uuid(), entityType: z.enum(["invoice", "expense", "bill", "payment", "bill_payment"]) }).parse({ id, entityType })
+  await requireAccountingEntityScope(context, entityType, id)
+  const result = await enqueueAccountingPush({ orgId, entityType: mapped, entityId: id })
+  if (!result.queued && result.reason === "books_authoritative") return { skipped: true, reason: "books_authoritative" }
+  if (!result.queued) throw new Error(describeEnqueueBlock(result.reason))
+  await recordAudit({ orgId, actorId: context.userId, action: "update", entityType: mapped, entityId: id, source: "accounting_manual_sync", after: { queued: true } })
+  return { skipped: false, reason: null }
 }
 
 /**
@@ -372,7 +359,9 @@ export async function syncAccountingItemAction(
  * them up, and there is nothing to enqueue.
  */
 export async function syncAllAccountingPendingAction(params?: { projectId?: string | null }): Promise<{ queued: number; failed: number; errors: string[] }> {
-  const { orgId } = await requireOrgContext()
+  const context = await requireOrgContext()
+  await requirePermission("accounting.entity_map.manage", context)
+  const { orgId } = context
   const { items } = await listAccountingSyncQueueAction({ projectId: params?.projectId })
 
   // Org-wide "sync everything" also revives dead-lettered outbox jobs — the
@@ -393,6 +382,7 @@ export async function syncAllAccountingPendingAction(params?: { projectId?: stri
         continue
       }
       const mapped: AccountingPushEntityType = item.entityType === "expense" ? "project_expense" : item.entityType === "bill" ? "vendor_bill" : item.entityType
+      await requireAccountingEntityScope(context, item.entityType, item.id)
       const result = await enqueueAccountingPush({ orgId, entityType: mapped, entityId: item.id })
       if (result.queued) {
         queued += 1
@@ -411,7 +401,7 @@ export async function syncAllAccountingPendingAction(params?: { projectId?: stri
 /** Why a transaction could not even be queued, in words a bookkeeper can act on. */
 function describeEnqueueBlock(reason: string): string {
   switch (reason) {
-    case "unconnected":
+    case "no_target":
       return "No accounting connection is mapped to this transaction."
     case "cutover_freeze":
       return "Held by an accounting cutover freeze."
@@ -436,37 +426,19 @@ function describeEnqueueBlock(reason: string): string {
  * has an inbound webhook stream to replay.
  */
 export async function retryQboWebhookEventAction(id: string): Promise<{ success: boolean; error: string | null }> {
-  const { orgId } = await requireOrgContext()
-  const supabase = createServiceSupabaseClient()
-  // `qbo_webhook_events` has no org column, so tenancy is enforced through the
-  // realm: only events belonging to one of THIS org's QuickBooks connections
-  // may be replayed. Without the realm predicate any signed-in user could
-  // replay any tenant's dead-lettered event by id.
-  const { data: realmRows } = await supabase
-    .from("accounting_connections")
-    .select("external_account_id")
-    .eq("org_id", orgId)
-    .eq("provider", "qbo")
-  const realmIds = (realmRows ?? [])
-    .map((row) => row.external_account_id)
-    .filter((value): value is string => typeof value === "string" && value.length > 0)
-  if (realmIds.length === 0) return { success: false, error: "No QuickBooks connection for this organization" }
-
-  const { error } = await supabase
-    .from("qbo_webhook_events")
-    .update({
-      process_status: "pending",
-      process_error: null,
-      attempts: 0,
-      next_attempt_at: null,
-      processed_at: null,
-    })
-    .eq("id", id)
-    .in("realm_id", realmIds)
-    .eq("process_status", "error")
-
-  if (error) return { success: false, error: error.message }
-  return { success: true, error: null }
+  const context = await requireOrgContext()
+  await requirePermission("accounting.entity_map.manage", context)
+  const { orgId } = context
+  z.string().uuid().parse(id)
+  for (const provider of listProviders()) {
+    if (!provider.retryInboundEvent) continue
+    const result = await provider.retryInboundEvent({ orgId, eventId: id })
+    if (result.success) {
+      await recordAudit({ orgId, actorId: context.userId, action: "update", entityType: "accounting_inbound_event", entityId: id, source: "accounting_inbound_retry", after: { provider: provider.key, queued: true } })
+      return result
+    }
+  }
+  return { success: false, error: "No retryable inbound event belongs to this organization" }
 }
 
 /**
@@ -481,30 +453,30 @@ export async function resolveAccountingConflictAction(input: {
   id: string
   resolution: "keep_arc" | "take_remote"
 }): Promise<{ resolved: boolean; error: string | null }> {
-  const { orgId } = await requireOrgContext()
+  const context = await requireOrgContext()
+  await requirePermission("accounting.entity_map.manage", context)
+  const { orgId } = context
+  z.object({ id: z.string().uuid(), entityType: z.enum(["invoice", "expense", "bill"]), resolution: z.enum(["keep_arc", "take_remote"]) }).parse(input)
+  await requireAccountingEntityScope(context, input.entityType, input.id)
   const supabase = createServiceSupabaseClient()
   const mapped: "invoice" | "project_expense" | "bill" = input.entityType === "expense" ? "project_expense" : input.entityType === "bill" ? "bill" : "invoice"
 
-  const { data: record } = await supabase
+  const { data: record, error: recordError } = await supabase
     .from("accounting_sync_records")
-    .select("connection_id, external_id, provider")
+    .select("connection_id, external_id, provider, status")
     .eq("org_id", orgId)
     .eq("entity_type", mapped)
     .eq("entity_id", input.id)
     .maybeSingle()
+  if (recordError) return { resolved: false, error: recordError.message }
   if (!record?.connection_id) return { resolved: false, error: "No sync record found for this transaction" }
 
+  if (!["conflict", "needs_review"].includes(record.status)) return { resolved: false, error: "This transaction no longer has a resolvable conflict" }
+  const auditResolution = () => recordAudit({ orgId, actorId: context.userId, action: "update", entityType: mapped, entityId: input.id, source: "accounting_conflict_resolution", after: { resolution: input.resolution, connectionId: record.connection_id } })
   if (input.resolution === "keep_arc") {
-    const { error } = await supabase
-      .from("accounting_sync_records")
-      .update({ status: "pending", error_message: null })
-      .eq("org_id", orgId)
-      .eq("connection_id", record.connection_id)
-      .eq("entity_type", mapped)
-      .eq("entity_id", input.id)
-    if (error) return { resolved: false, error: error.message }
     const pushType: AccountingPushEntityType = mapped === "bill" ? "vendor_bill" : mapped
     const result = await enqueueAccountingPush({ orgId, entityType: pushType, entityId: input.id })
+    if (result.queued) await auditResolution()
     return result.queued ? { resolved: true, error: null } : { resolved: false, error: describeEnqueueBlock(result.reason) }
   }
 
@@ -518,6 +490,7 @@ export async function resolveAccountingConflictAction(input: {
     entityType: mapped,
     externalId: record.external_id,
   })
+  if (result.reconciled) await auditResolution()
   return result.reconciled ? { resolved: true, error: null } : { resolved: false, error: result.reason ?? "Unable to apply the accounting system's copy" }
 }
 
@@ -531,49 +504,62 @@ export async function resolveAccountingConflictAction(input: {
  * applies from the first re-attempt.
  */
 export async function retryFailedAccountingOutboxAction(): Promise<{ revived: number }> {
-  const { orgId } = await requireOrgContext()
+  const context = await requireOrgContext()
+  await requirePermission("accounting.entity_map.manage", context)
+  const { orgId } = context
   const supabase = createServiceSupabaseClient()
-  const { data, error } = await supabase
-    .from("outbox")
-    .update({ status: "pending", retry_count: 0, last_error: null, run_at: new Date().toISOString() })
-    .eq("org_id", orgId)
-    .eq("status", "failed")
-    .in("job_type", [...ACCOUNTING_JOB_TYPES])
-    .select("id")
+  const scopedProjects = await getDivisionScopedProjectIds(context)
+  if (scopedProjects !== null) throw new Error("Organization-wide retry requires access to all divisions; retry individual project items instead")
+  const { data, error } = await supabase.rpc("retry_failed_accounting_jobs", { p_org_id: orgId, p_job_types: [...ACCOUNTING_JOB_TYPES] })
   if (error) throw new Error(`Unable to retry failed accounting jobs: ${error.message}`)
-  return { revived: (data ?? []).length }
+  await recordAudit({ orgId, actorId: context.userId, action: "update", entityType: "accounting_sync", source: "accounting_bulk_retry", after: { revived: Number(data ?? 0) } })
+  return { revived: Number(data ?? 0) }
 }
 
 export async function listAccountingSyncHistoryAction(params?: { projectId?: string | null; limit?: number }): Promise<AccountingSyncHistoryItem[]> {
-  const { orgId } = await requireOrgContext()
+  const context = await requireOrgContext()
+  await requirePermission("audit.read", context)
+  const { orgId } = context
   const supabase = createServiceSupabaseClient()
   const projectId = params?.projectId ?? null
-  const limit = params?.limit ?? 50
+  const limit = z.number().int().min(1).max(200).parse(params?.limit ?? 50)
+  if (projectId) {
+    z.string().uuid().parse(projectId)
+    await requireAuthorization({ permission: "audit.read", orgId, userId: context.userId, projectId, supabase: context.supabase, logDecision: true })
+  }
+  const scopedProjectIds = projectId ? [projectId] : await getDivisionScopedProjectIds(context)
 
   // Project scope narrows the QUERY, not the org-wide top-N after the fact —
   // the old shape showed "No sync history yet" on any project whose rows fell
   // outside the org's 50 most recent.
-  let recordsQuery = supabase
-    .from("accounting_sync_records")
-    .select("id, entity_type, entity_id, external_id, last_synced_at, sync_direction, status, error_message, created_at")
+  const recordsQuery = () => supabase.from("accounting_sync_attempts")
+    .select("id, provider, connection_id, entity_type, entity_id, external_id, direction, outcome, message, created_at")
     .eq("org_id", orgId)
-  if (projectId) {
-    const [invoiceIds, expenseIds, billIds, paymentIds] = await Promise.all([
-      supabase.from("invoices").select("id").eq("org_id", orgId).eq("project_id", projectId).order("created_at", { ascending: false }).limit(400),
-      supabase.from("project_expenses").select("id").eq("org_id", orgId).eq("project_id", projectId).order("created_at", { ascending: false }).limit(400),
-      supabase.from("vendor_bills").select("id").eq("org_id", orgId).eq("project_id", projectId).order("created_at", { ascending: false }).limit(400),
-      supabase.from("payments").select("id").eq("org_id", orgId).eq("project_id", projectId).order("created_at", { ascending: false }).limit(400),
-    ])
-    const projectEntityIds = [
-      ...(invoiceIds.data ?? []),
-      ...(expenseIds.data ?? []),
-      ...(billIds.data ?? []),
-      ...(paymentIds.data ?? []),
-    ].map((row) => row.id as string)
-    if (projectEntityIds.length === 0) return []
-    recordsQuery = recordsQuery.in("entity_id", projectEntityIds)
+  let records: any[] = []
+  if (scopedProjectIds !== null) {
+    if (scopedProjectIds.length === 0) return []
+    const entityIds = new Set<string>()
+    for (const table of ["invoices", "project_expenses", "vendor_bills", "payments"] as const) {
+      for (let offset = 0; ; offset += 1000) {
+        const { data, error } = await context.supabase.from(table).select("id").eq("org_id", orgId).in("project_id", scopedProjectIds).order("id").range(offset, offset + 999)
+        if (error) throw new Error(`Unable to scope accounting history: ${error.message}`)
+        for (const row of data ?? []) entityIds.add(row.id)
+        if ((data?.length ?? 0) < 1000) break
+      }
+    }
+    const ids = [...entityIds]
+    for (let offset = 0; offset < ids.length; offset += 200) {
+      const { data, error } = await recordsQuery().in("entity_id", ids.slice(offset, offset + 200)).order("created_at", { ascending: false }).limit(limit)
+      if (error) throw new Error(`Unable to load accounting history: ${error.message}`)
+      records.push(...(data ?? []))
+    }
+    records.sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)))
+    records = records.slice(0, limit)
+  } else {
+    const { data, error } = await recordsQuery().order("created_at", { ascending: false }).limit(limit)
+    if (error) throw new Error(`Unable to load accounting history: ${error.message}`)
+    records = data ?? []
   }
-  const { data: records } = await recordsQuery.order("last_synced_at", { ascending: false }).limit(limit)
 
   const rows = (records ?? []) as any[]
   if (rows.length === 0) return []
@@ -633,11 +619,11 @@ export async function listAccountingSyncHistoryAction(params?: { projectId?: str
         entityId,
         projectId: projectIdForRow,
         label,
-        status: row.status ?? "synced",
-        direction: row.sync_direction ?? "outbound",
+        status: row.outcome ?? "synced",
+        direction: row.direction ?? "outbound",
         externalId: row.external_id ?? null,
-        error: row.error_message ?? null,
-        syncedAt: row.last_synced_at ?? row.created_at ?? null,
+        error: row.message ?? null,
+        syncedAt: row.created_at ?? null,
       }
     })
     .filter((item) => !projectId || item.projectId === projectId)

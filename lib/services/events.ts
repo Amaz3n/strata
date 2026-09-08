@@ -4,7 +4,11 @@ import { requireOrgMembership } from "@/lib/auth/context"
 import { requireOrgContext } from "@/lib/services/context"
 import { NotificationService } from "@/lib/services/notifications"
 import { authorize } from "@/lib/services/authorization"
+import { resolvePayableDecisionAudience } from "@/lib/payments/payable-notification-audience"
+import { evaluateRunApprovability } from "@/lib/payments/payment-run-approval-policy"
+import { paymentRunNotificationCopy, readReleaseKind } from "@/lib/payments/payment-run-notification-copy"
 import { paymentOperationsAlertDetails } from "@/lib/payments/operations-monitor"
+import { loadPaymentApproverRoster } from "@/lib/services/payment-approver-roster"
 import type { NotificationType } from "@/lib/services/notifications"
 
 type EventChannel = "activity" | "integration" | "notification"
@@ -36,7 +40,7 @@ export interface ActivityItem {
   createdAt: string
 }
 
-interface EventRecord {
+export interface EventRecord {
   id: string
   org_id: string
   event_type: string
@@ -73,7 +77,6 @@ const VENDOR_RECIPIENT_EVENTS = new Set<string>([
 // audience policy.
 const PAYMENT_REVERSAL_EVENTS = new Set<string>([
   "payment_reversed",
-  "payment_reversed_from_qbo",
   "vendor_bill_payment_reversed",
 ])
 
@@ -98,19 +101,32 @@ export const OPERATIONAL_ONLY_PAYMENT_EVENTS = new Set<string>([
   // the ends.
   "payment_run_created",
   "payment_run_canceled",
+  // Draft cleanup and an operator-requested retry are both visible, immediate
+  // actions. Their eventual submitted / failed / paid lifecycle events carry
+  // the notifications; emailing these clicks would duplicate them.
+  "payment_run_draft_discarded",
+  "payment_run_release_retried",
   "payment_run_execution_started",
+  // A resumed worker is recovery telemetry. The first ambiguous attempt and
+  // terminal item failure already notify the payment operators.
+  "payment_run_execution_resumed",
   // The vendor-facing email IS the notification; a second one to the sender
   // would just restate what they clicked.
   "vendor_payment_invitation_sent",
   "vendor_remittance_sent",
-  "vendor_bill_waiver_chased",
+  // A credit application settles an invoice with money that never moves, so it
+  // gets its own advice rather than riding the payment-sent template. Same
+  // reasoning as remittance: the vendor's email IS the notification.
+  "vendor_credit_advice_sent",
+  // The vendor's copy of a return. The builder is already paged by
+  // `vendor_payment_returned`; this only records that the vendor was told.
+  "vendor_payment_return_notice_sent",
   // The bill's own hold state and approval history already show these; they
   // exist so the audit trail is complete, not so somebody is paged.
   "vendor_bill_auto_approved",
   "vendor_bill_decision_notified",
   "vendor_bill_deleted",
   "vendor_bill_updated",
-  "vendor_bill_waiver_signed",
   "vendor_credit_created",
   // Marking a bill paid by hand is done by the person who is looking at it, and
   // the rail's own settlement notifies as `vendor_payment_paid`.
@@ -292,7 +308,7 @@ function resolveMeta(event: ActivityEvent) {
 }
 
 // Notification creation logic
-async function createNotificationsFromEvent(event: EventRecord, orgId: string) {
+export async function createNotificationsFromEvent(event: EventRecord, orgId: string) {
   const notificationService = new NotificationService()
 
   // Bid events only carry a bid_package_id — hydrate the package title, its
@@ -499,20 +515,67 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     "payment_run_rejected",
   ])
   if (paymentRunEvents.has(event.event_type) && event.entity_id) {
+    const { data: run } = await supabase
+      .from("payment_runs")
+      .select("requested_by, status, total_debit_cents, required_approvals, approval_mode_snapshot, control_snapshot")
+      .eq("org_id", orgId)
+      .eq("id", event.entity_id)
+      .maybeSingle()
+
     if (event.event_type !== "payment_run_submitted") {
-      const { data: run } = await supabase.from("payment_runs").select("requested_by").eq("org_id", orgId).eq("id", event.entity_id).maybeSingle()
+      // A partial approval is news only while the run still needs another one,
+      // and only where a second approval is possible at all. In sole-approval
+      // orgs the preparer was emailed "an approver recorded a decision" a moment
+      // before the decision itself arrived.
+      if (event.event_type === "payment_run_approval_recorded") {
+        const dualApproval =
+          run?.approval_mode_snapshot === "dual" || Number(run?.required_approvals ?? 1) > 1
+        if (!dualApproval || run?.status !== "pending_approval") return []
+      }
       return run?.requested_by && run.requested_by !== actorId ? [run.requested_by] : []
     }
+
+    // Who can actually decide this run, by the same rule the approver's own
+    // screen and `assertUserMayApproveRun` use. Mailing the whole roster meant
+    // paging a $10k-ceiling approver about a $400k run, and a divisional
+    // approver about work outside their division — every one of them a request
+    // the server would refuse.
+    if (run) {
+      const [roster, runDivisionIds] = await Promise.all([
+        loadPaymentApproverRoster(orgId),
+        getPaymentRunDivisionIds(supabase, orgId, event.entity_id),
+      ])
+      if (roster.length > 0) {
+        const eligible = roster
+          .filter(
+            (approver) =>
+              evaluateRunApprovability({
+                viewerId: approver.userId,
+                requestedBy: String(run.requested_by ?? ""),
+                totalDebitCents: Number(run.total_debit_cents ?? 0),
+                runDivisionIds,
+                controlSnapshot: run.control_snapshot,
+                routing: { viewerMayApprove: approver.permitted, approvers: roster },
+              }).mayDecide,
+          )
+          .map((approver) => approver.userId)
+        // Submission already refused a run nobody could approve, so an empty set
+        // here means the roster changed underneath a run that is sitting in
+        // `pending_approval` right now. Telling the designated approvers that it
+        // needs attention beats telling nobody and leaving it to age out.
+        const audience = eligible.length > 0
+          ? eligible
+          : roster.filter((approver) => approver.permitted).map((approver) => approver.userId)
+        return uniqUserIds(audience).filter((id) => id !== actorId)
+      }
+    }
+
     // An org that designated approvers has said who owns this decision; mailing
     // everyone who merely holds the permission would train them to ignore it.
     const routedApprovers = Array.isArray(event.payload?.approver_ids)
       ? uniqUserIds(event.payload.approver_ids.filter((value): value is string => typeof value === "string"))
       : []
     if (routedApprovers.length > 0) return routedApprovers.filter((id) => id !== actorId)
-    const { data: designated } = await supabase.from("payment_run_approvers").select("user_id").eq("org_id", orgId)
-    if ((designated ?? []).length > 0) {
-      return uniqUserIds((designated ?? []).map((row) => row.user_id)).filter((id) => id !== actorId)
-    }
     const { data: roleRows } = await supabase.from("role_permissions").select("role_id").eq("permission_key", "payment.approve_run")
     const roleIds = [...new Set((roleRows ?? []).map((row) => row.role_id).filter(Boolean))]
     if (roleIds.length === 0) return []
@@ -632,6 +695,7 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
       actorId,
       permissions: payablePermissions,
       policyVersion: "payable-lifecycle-v1",
+      includeOrgWide: true,
     })
     if (event.event_type !== "vendor_bill_submitted") {
       const payloadSubmitterId = typeof event.payload?.submitted_by_user_id === "string"
@@ -656,12 +720,8 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
         typeof originalPayload?.actor_id === "string" ? originalPayload.actor_id : null
       )
 
-      // Decisions go back to the person who submitted the payable. Keep the
-      // permission-derived intersection so an archived or de-scoped submitter
-      // cannot receive a link to a bill they can no longer access.
-      return submitterId
-        ? eligibleRecipients.filter((userId) => userId === submitterId)
-        : eligibleRecipients
+      // Decisions go back to the person who submitted the payable.
+      return resolvePayableDecisionAudience({ eligibleRecipients, payloadSubmitterId: submitterId })
     }
 
     // A payable created in the new bill workspace names its intended approvers.
@@ -755,6 +815,96 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
   return uniqUserIds((members ?? []).map((m: any) => m.user_id)).filter((id) => id && id !== actorId)
 }
 
+/**
+ * Active org members whose role grants one of `permissions` and whose membership
+ * is not restricted to explicitly assigned projects.
+ *
+ * A controller with org-wide scope holds `bill.approve` on every project and
+ * appears in no `project_members` row anywhere, so an audience built only from
+ * project membership left the person who actually approves the invoices out of
+ * the notification about it. Their own `authorize()` decision below is still
+ * what admits them; this only widens the candidate list.
+ */
+async function getOrgWideCandidates({
+  supabase,
+  orgId,
+  permissions,
+}: {
+  supabase: ReturnType<typeof createServiceSupabaseClient>
+  orgId: string
+  permissions: string[]
+}) {
+  const { data: roleRows, error: roleError } = await supabase
+    .from("role_permissions")
+    .select("role_id")
+    .in("permission_key", [...permissions, "*"])
+  if (roleError) {
+    console.error("Failed to resolve org-wide notification roles:", roleError)
+    return []
+  }
+  const roleIds = [...new Set((roleRows ?? []).map((row) => row.role_id).filter(Boolean))]
+  if (roleIds.length === 0) return []
+  const { data: memberships, error: membershipError } = await supabase
+    .from("memberships")
+    .select("user_id, project_scope")
+    .eq("org_id", orgId)
+    .eq("status", "active")
+    .in("role_id", roleIds)
+  if (membershipError) {
+    console.error("Failed to resolve org-wide notification members:", membershipError)
+    return []
+  }
+  // `project_scope` is null on memberships written before the column existed,
+  // and null has always meant org-wide — `.neq("project_scope", "assigned")`
+  // would have dropped exactly those people.
+  return uniqUserIds(
+    (memberships ?? [])
+      .filter((row: any) => row.project_scope !== "assigned")
+      .map((row: any) => row.user_id),
+  )
+}
+
+/**
+ * The audience for a project's money events, capped so one fan-out cannot run an
+ * unbounded number of authorization decisions.
+ */
+const FINANCIAL_NOTIFICATION_CANDIDATE_CAP = 200
+
+/**
+ * The divisions a run's payables sit in. A division-scoped approver covers the
+ * run only when every one of them is theirs, so an empty list means the run
+ * touches nothing divisioned and only org-wide authority is relevant.
+ */
+async function getPaymentRunDivisionIds(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  orgId: string,
+  runId: string,
+): Promise<string[]> {
+  const { data: items, error } = await supabase
+    .from("payment_run_items")
+    .select("project_id")
+    .eq("org_id", orgId)
+    .eq("run_id", runId)
+  if (error) {
+    console.error("Failed to resolve payment run divisions for notification:", error)
+    return []
+  }
+  const projectIds = [
+    ...new Set((items ?? []).map((item) => item.project_id).filter((value): value is string => typeof value === "string")),
+  ]
+  if (projectIds.length === 0) return []
+  const { data: projects } = await supabase
+    .from("projects")
+    .select("division_id")
+    .eq("org_id", orgId)
+    .in("id", projectIds)
+  return [
+    ...new Set(
+      (projects ?? []).map((project) => project.division_id).filter((value): value is string => typeof value === "string"),
+    ),
+  ]
+}
+
 async function getProjectFinancialNotificationRecipients({
   supabase,
   orgId,
@@ -762,6 +912,7 @@ async function getProjectFinancialNotificationRecipients({
   actorId,
   permissions = FINANCIAL_NOTIFICATION_PERMISSIONS,
   policyVersion = "payment-notification-v1",
+  includeOrgWide = false,
 }: {
   supabase: ReturnType<typeof createServiceSupabaseClient>
   orgId: string
@@ -770,28 +921,36 @@ async function getProjectFinancialNotificationRecipients({
   /** Any one of these grants the notification. Defaults to read-level finance. */
   permissions?: string[]
   policyVersion?: string
+  /** Also consider org-wide members who hold the permission on every project. */
+  includeOrgWide?: boolean
 }) {
-  const { data: members, error } = await supabase
-    .from("project_members")
-    .select("user_id, status, role:roles(key)")
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
-    .eq("status", "active")
+  const [{ data: members, error }, orgWideUserIds] = await Promise.all([
+    supabase
+      .from("project_members")
+      .select("user_id, status, role:roles(key)")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .eq("status", "active"),
+    includeOrgWide ? getOrgWideCandidates({ supabase, orgId, permissions }) : Promise.resolve<string[]>([]),
+  ])
 
   if (error) {
     console.error("Failed to get project members for payment notification:", error)
     return []
   }
 
-  const candidateUserIds = uniqUserIds(
-    (members ?? [])
+  const candidateUserIds = uniqUserIds([
+    ...(members ?? [])
       .filter((member: any) => {
         const role = Array.isArray(member.role) ? member.role[0] : member.role
         const roleKey = typeof role?.key === "string" ? role.key : null
         return !roleKey || !RESTRICTED_PROJECT_ROLE_KEYS.has(roleKey)
       })
       .map((member: any) => member.user_id),
-  ).filter((id) => id && id !== actorId)
+    ...orgWideUserIds,
+  ])
+    .filter((id) => id && id !== actorId)
+    .slice(0, FINANCIAL_NOTIFICATION_CANDIDATE_CAP)
 
   if (candidateUserIds.length === 0) {
     return []
@@ -1158,12 +1317,15 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
      */
     case "payment_run_execution_failed": {
       const providerStatus = typeof safePayload.provider_status === "string" ? safePayload.provider_status : null
+      const partialFailure = safePayload.partial_failure === true
       return {
         orgId: event.org_id,
         userId,
         type: "payment_run_execution_failed" as NotificationType,
-        title: "Payment run failed during release",
-        message: `An approved payment run could not be submitted to the payment provider${providerStatus ? ` (${providerStatus})` : ""}. No vendor in this run has been paid. Check the funding source and the run's limits before retrying.`,
+        title: partialFailure ? "A payment in this run failed" : "Payment run failed during release",
+        message: partialFailure
+          ? `One payment in this run was rejected by the payment provider${providerStatus ? ` (${providerStatus})` : ""}. Other valid payments continued; review the failed item before creating a replacement run.`
+          : `An approved payment run could not be submitted to the payment provider${providerStatus ? ` (${providerStatus})` : ""}. No vendor in this run has been paid. Check the funding source and the run's limits before retrying.`,
         entityType: entity_type,
         entityId: entity_id,
         eventId: event.id,
@@ -1273,30 +1435,6 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
       }
     }
 
-    /**
-     * QuickBooks, not Arc, decided this payment no longer exists. The copy has
-     * to say that plainly: Arc reopened the balance to stay consistent with the
-     * ledger, and it cannot tell whether money actually went back to the
-     * customer. Re-billing before someone confirms is how a customer gets
-     * invoiced twice.
-     */
-    case "payment_reversed_from_qbo": {
-      const amount = typeof safePayload.amount_cents === "number"
-        ? formatCentsForNotification(safePayload.amount_cents)
-        : null
-      return {
-        orgId: event.org_id,
-        userId,
-        type: "payment_reversed_from_qbo" as NotificationType,
-        title: `Customer payment reversed in QuickBooks${amount ? `: ${amount}` : ""}`,
-        message:
-          "A customer payment was deleted in QuickBooks, so Arc reopened the invoice balance to match. Arc did not initiate this and cannot tell whether the money was returned — confirm the deletion was intentional before re-billing.",
-        projectId: projectId ?? undefined,
-        entityType: entity_type,
-        entityId: entity_id,
-        eventId: event.id,
-      }
-    }
 
     /**
      * The moment the rail starts existing for one vendor. Everything upstream of
@@ -1567,32 +1705,18 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
     case "payment_run_approved":
     case "payment_run_approval_recorded":
     case "payment_run_rejected": {
-      const vendor = typeof safePayload.vendor_name === "string" ? safePayload.vendor_name : "a vendor"
-      const billNumber = typeof safePayload.bill_number === "string" ? safePayload.bill_number : null
-      const project = typeof safePayload.project_name === "string" ? safePayload.project_name : null
-      const amount = typeof safePayload.total_debit_cents === "number"
-        ? formatCentsForNotification(safePayload.total_debit_cents)
-        : null
-      const billCount = typeof safePayload.bill_count === "number" ? safePayload.bill_count : 1
-      const subject = billCount > 1
-        ? `${billCount} vendor bills`
-        : `${vendor}${billNumber ? ` · invoice ${billNumber}` : ""}${project ? ` · ${project}` : ""}`
-      const title =
-        event_type === "payment_run_submitted"
-          ? `Payment needs your approval${amount ? `: ${amount}` : ""}`
-          : event_type === "payment_run_approved"
-            ? `Payment approved${amount ? `: ${amount}` : ""}`
-            : event_type === "payment_run_rejected"
-              ? "Payment rejected"
-              : "Payment approval recorded"
-      const message =
-        event_type === "payment_run_submitted"
-          ? `${subject}. Open it to review the bill and release the payment.`
-          : event_type === "payment_run_approved"
-            ? `${subject} is approved and on its way to the vendor.`
-            : event_type === "payment_run_rejected"
-              ? `${subject} was rejected${typeof safePayload.reason === "string" ? `: ${safePayload.reason}` : "."}`
-              : `An approver recorded a decision on ${subject}.`
+      const { title, message } = paymentRunNotificationCopy({
+        eventType: event_type,
+        vendorName: typeof safePayload.vendor_name === "string" ? safePayload.vendor_name : null,
+        billNumber: typeof safePayload.bill_number === "string" ? safePayload.bill_number : null,
+        projectName: typeof safePayload.project_name === "string" ? safePayload.project_name : null,
+        billCount: typeof safePayload.bill_count === "number" ? safePayload.bill_count : null,
+        totalDebitCents: typeof safePayload.total_debit_cents === "number" ? safePayload.total_debit_cents : null,
+        reason: typeof safePayload.reason === "string" ? safePayload.reason : null,
+        release: readReleaseKind(safePayload.release),
+        releaseScheduledFor: typeof safePayload.release_scheduled_for === "string" ? safePayload.release_scheduled_for : null,
+        releaseReason: typeof safePayload.release_reason === "string" ? safePayload.release_reason : null,
+      })
       return {
         orgId: event.org_id,
         userId,
@@ -1629,9 +1753,16 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
       const billLabel = typeof safePayload.bill_number === "string" && safePayload.bill_number
         ? `Invoice ${safePayload.bill_number}`
         : "A vendor invoice"
-      const amount = typeof safePayload.amount_cents === "number"
-        ? ` for ${formatCentsForNotification(safePayload.amount_cents)}`
-        : ""
+      // Emitters disagree on the key: the create and bulk-submit paths carry
+      // `total_cents`, the lifecycle path `amount_cents`. Reading only one of
+      // them is why "Invoice 1042 is waiting for approval" arrived with no
+      // amount in it.
+      const amountCents = typeof safePayload.amount_cents === "number"
+        ? safePayload.amount_cents
+        : typeof safePayload.total_cents === "number"
+          ? safePayload.total_cents
+          : null
+      const amount = amountCents === null ? "" : ` for ${formatCentsForNotification(amountCents)}`
       const message = event_type === "vendor_bill_submitted"
         ? `${billLabel}${amount} is waiting for approval.`
         : event_type === "vendor_bill_approved"
@@ -1916,8 +2047,6 @@ function titleForEventType(eventType: string): string {
       return "Payment hold overridden"
     case "payment_reversed":
       return "Customer payment reversed"
-    case "payment_reversed_from_qbo":
-      return "Customer payment reversed in QuickBooks"
     case "accounting_connection_expired":
       return "Accounting connection needs re-authorization"
     case "accounting_push_dead_lettered":

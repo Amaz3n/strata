@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import type { ComplianceDocumentStatus } from "@/lib/types"
+import { isExpiredOn, todayKey } from "@/lib/compliance/dates"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
@@ -86,9 +87,6 @@ function defaultExpiryDate(validityDays = 365) {
   return date.toISOString().slice(0, 10)
 }
 
-function today(): string {
-  return new Date().toISOString().slice(0, 10)
-}
 
 // ============ The org program ============
 
@@ -348,7 +346,7 @@ async function resolveDocumentSlots({
     .order("created_at", { ascending: false })
   if (error) throw new Error(`Failed to load prequalification documents: ${error.message}`)
 
-  const now = today()
+  const now = todayKey()
   const rows = data ?? []
 
   return template.documents.map((entry) => {
@@ -770,14 +768,14 @@ export async function reviewPrequalification(
 export async function expirePrequalificationsWithClient(
   supabase: SupabaseClient,
   orgId: string,
-  todayKey: string,
+  asOfDateKey: string,
 ): Promise<number> {
   const { data, error } = await supabase
     .from("prequalifications")
     .select("id, company_id")
     .eq("org_id", orgId)
     .in("status", CURRENT_STATUSES)
-    .lt("expires_at", todayKey)
+    .lt("expires_at", asOfDateKey)
   if (error) throw new Error(`Failed to find expired prequalifications: ${error.message}`)
   if (!data?.length) return 0
 
@@ -823,7 +821,7 @@ export async function getCompanyPrequalificationWarning(args: {
   if (!latest || !CURRENT_STATUSES.includes(latest.status)) {
     return "Vendor does not have a current approved prequalification."
   }
-  if (latest.expires_at && latest.expires_at < today()) {
+  if (isExpiredOn(latest.expires_at)) {
     return "Vendor prequalification has expired."
   }
   if (
@@ -876,13 +874,13 @@ export async function getBidInvitePrequalificationWarnings(
   for (const row of data ?? []) {
     if (!latestByCompany.has(row.company_id)) latestByCompany.set(row.company_id, row)
   }
-  const todayKey = today()
+  const todayNow = todayKey()
   const warnings = new Map<string, string>()
   for (const companyId of uniqueIds) {
     const latest = latestByCompany.get(companyId)
     if (!latest || !CURRENT_STATUSES.includes(latest.status as PrequalificationStatus)) {
       warnings.set(companyId, "Vendor does not have a current approved prequalification.")
-    } else if (latest.expires_at && latest.expires_at < todayKey) {
+    } else if (isExpiredOn(latest.expires_at, todayNow)) {
       warnings.set(companyId, "Vendor prequalification has expired.")
     }
   }

@@ -108,6 +108,11 @@ export function ComplianceWorkspace({
   const [requestOpen, setRequestOpen] = useState(false);
   const [waiveAllOpen, setWaiveAllOpen] = useState(false);
   const [reviewTarget, setReviewTarget] = useState<ComplianceRequirementStatus | null>(null);
+  // A renewal that lands while the current certificate is still good leaves the
+  // requirement met, so the row's own document is not the one being decided.
+  const reviewDocument = reviewTarget
+    ? (reviewTarget.state === "pending" ? reviewTarget.document : reviewTarget.pending_replacement)
+    : null;
   const [waiveTarget, setWaiveTarget] = useState<ComplianceRequirement | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<ComplianceDocument | null>(null);
   const [viewerFileId, setViewerFileId] = useState<string | null>(null);
@@ -116,6 +121,11 @@ export function ComplianceWorkspace({
     const by = (state: ComplianceRequirementStatus["state"]) =>
       status.statuses.filter((item) => item.state === state).length;
     return {
+      // A renewal sitting behind a still-current certificate is a document
+      // waiting on a decision. Counting only `pending` rows hid that work
+      // entirely, because the requirement itself reads as met.
+      awaitingReview:
+        by("pending") + status.statuses.filter((item) => item.pending_replacement).length,
       missing: by("missing"),
       expired: by("expired"),
       deficient: by("deficient"),
@@ -135,7 +145,13 @@ export function ComplianceWorkspace({
   const outstanding = useMemo(
     () =>
       status.statuses.filter(
-        (item) => item.state === "missing" || item.state === "expired" || item.state === "rejected",
+        (item) =>
+          item.state === "missing" ||
+          item.state === "expired" ||
+          item.state === "rejected" ||
+          // On file, approved, and still short of what the requirement asks —
+          // the vendor cannot act on a chase that never mentions it.
+          item.state === "deficient",
       ),
     [status.statuses],
   );
@@ -234,7 +250,7 @@ export function ComplianceWorkspace({
 
   const submitReview = (values: ReviewValues) =>
     run(async () => {
-      const document = reviewTarget?.document;
+      const document = reviewDocument;
       if (!document) return;
       unwrapAction(
         await reviewComplianceDocumentAction(document.id, {
@@ -330,7 +346,7 @@ export function ComplianceWorkspace({
   const onFile = counts.met + counts.expiring;
   const meta = [
     `${onFile} of ${status.statuses.length} on file`,
-    counts.pending > 0 ? `${counts.pending} to review` : null,
+    counts.awaitingReview > 0 ? `${counts.awaitingReview} to review` : null,
     counts.waived > 0 ? `${counts.waived} waived` : null,
   ].filter(Boolean) as string[];
 
@@ -413,7 +429,9 @@ export function ComplianceWorkspace({
               released until this clears.
             </p>
             <Button asChild size="sm" variant="outline" className="h-7">
-              <a href={`/payables?company=${companyId}`}>Payables</a>
+              {/* `q` is the parameter the payables desk actually reads; `company`
+                  was silently ignored, so this button opened an unfiltered list. */}
+              <a href={`/payables?q=${encodeURIComponent(companyName)}`}>Payables</a>
             </Button>
           </div>
         ) : null}
@@ -493,7 +511,9 @@ export function ComplianceWorkspace({
       <ComplianceReviewDialog
         open={reviewTarget !== null}
         onOpenChange={(open) => !open && setReviewTarget(null)}
-        status={reviewTarget}
+        document={reviewDocument}
+        documentType={reviewTarget?.requirement.document_type}
+        isRenewal={Boolean(reviewTarget?.pending_replacement)}
         onSubmit={submitReview}
         busy={pending}
       />
@@ -637,7 +657,7 @@ function RequirementRow({
       </div>
 
       <div className="flex shrink-0 items-center gap-1">
-        {canReview && state === "pending" ? (
+        {canReview && (state === "pending" || item.pending_replacement) ? (
           // The one persistent action: a document waiting on a decision is the
           // whole reason anybody opens this tab.
           <Button size="sm" className="h-6 px-2 text-xs" onClick={onReview}>

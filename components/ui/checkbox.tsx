@@ -78,7 +78,7 @@ const Checkbox = React.forwardRef<HTMLInputElement, CheckboxProps>(function Chec
       <span
         data-slot="checkbox-indicator"
         className={cn(
-          'pointer-events-none absolute inset-0 flex items-center justify-center text-current transition-none',
+          'pointer-events-none absolute inset-0 flex items-center justify-center text-primary-foreground transition-none',
           isChecked || isIndeterminate ? 'opacity-100' : 'opacity-0',
           disabled && 'opacity-50'
         )}

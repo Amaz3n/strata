@@ -1,3 +1,4 @@
+import { forecastBudgetCost, outstandingObligationCents } from "@/lib/financials/budget-forecast"
 import { cache } from "react"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { z } from "zod"
@@ -576,6 +577,8 @@ function emptyBudgetBucket() {
     committed_billed_cents: 0,
     pending_cost_cents: 0,
     pending_change_cost_cents: 0,
+    additional_pending_cents: 0,
+    outstanding_obligations_cents: 0,
     actual_cents: 0,
     invoiced_cents: 0,
     co_adjustment_cents: 0,
@@ -652,6 +655,8 @@ export interface BudgetBreakdownRow {
   variance_percent: number
   percent_complete: number | null
   eac_cents: number
+  known_final_cost_cents?: number
+  forecast_below_obligations?: boolean
   cost_to_complete_cents: number
   variance_at_completion_cents: number
   status: "ok" | "warning" | "over"
@@ -871,7 +876,7 @@ async function getBudgetWithActualsInternal(
       ? { data: [], error: null }
       : supabase
           .from("commitment_lines")
-          .select("cost_code_id, budget_line_id, unit_cost_cents, quantity")
+          .select("commitment_id, cost_code_id, budget_line_id, unit_cost_cents, quantity")
           .eq("org_id", orgId)
           .in("commitment_id", commitmentIds),
     getProjectJobCostActualsByCostCode({ projectId, orgId, supabase, groupBy }),
@@ -886,21 +891,21 @@ async function getBudgetWithActualsInternal(
       ? { data: [], error: null }
       : supabase
           .from("bill_lines")
-          .select("cost_code_id, budget_line_id, unit_cost_cents, quantity")
+          .select("cost_code_id, budget_line_id, unit_cost_cents, quantity, bill:vendor_bills!inner(commitment_id)")
           .eq("org_id", orgId)
           .in("bill_id", pendingBillIds),
     approvedCommitmentBillIds.length === 0
       ? { data: [], error: null }
       : supabase
           .from("bill_lines")
-          .select("cost_code_id, budget_line_id, unit_cost_cents, quantity")
+          .select("cost_code_id, budget_line_id, unit_cost_cents, quantity, bill:vendor_bills!inner(commitment_id)")
           .eq("org_id", orgId)
           .in("bill_id", approvedCommitmentBillIds),
     approvedCommitmentChangeOrderIds.length === 0
       ? { data: [], error: null }
       : supabase
           .from("commitment_change_order_lines")
-          .select("cost_code_id, budget_line_id, amount_cents, unit_cost_cents, quantity")
+          .select("cost_code_id, budget_line_id, amount_cents, unit_cost_cents, quantity, change:commitment_change_orders!inner(commitment_id)")
           .eq("org_id", orgId)
           .in("commitment_change_order_id", approvedCommitmentChangeOrderIds),
     pendingCommitmentChangeOrderIds.length === 0
@@ -914,14 +919,14 @@ async function getBudgetWithActualsInternal(
       ? { data: [], error: null }
       : supabase
           .from("change_order_lines")
-          .select("cost_code_id, budget_line_id, internal_cost_cents")
+          .select("cost_code_id, budget_line_id, internal_cost_cents, commitment_change_order_id")
           .eq("org_id", orgId)
           .in("change_order_id", pendingPrimeChangeOrderIds),
     changeOrderIds.length === 0
       ? { data: [], error: null }
       : supabase
           .from("change_order_lines")
-          .select("cost_code_id, budget_line_id, unit_cost_cents, quantity, metadata")
+          .select("cost_code_id, budget_line_id, unit_cost_cents, internal_cost_cents, quantity, metadata")
           .eq("org_id", orgId)
           .in("change_order_id", changeOrderIds),
   ]))
@@ -986,9 +991,20 @@ async function getBudgetWithActualsInternal(
     costTypeByBucket.set(key, line.cost_type ?? linkedCostCode?.cost_type ?? null)
   }
 
+  const obligations = new Map<string, { bucket: string; committed: number; billed: number; pending: number }>()
+  const addObligation = (commitmentId: string, bucket: string, field: "committed" | "billed" | "pending", cents: number) => {
+    const key = `${commitmentId}:${bucket}`
+    const position = obligations.get(key) ?? { bucket, committed: 0, billed: 0, pending: 0 }
+    position[field] += cents
+    obligations.set(key, position)
+  }
+  const parentCommitmentId = (parent: { commitment_id: string | null } | { commitment_id: string | null }[] | null) =>
+    (Array.isArray(parent) ? parent[0] : parent)?.commitment_id
+
   for (const line of commitments ?? []) {
     const key = bucketKey(line)
     const existing = byCostCode.get(key) ?? emptyBudgetBucket()
+    addObligation(line.commitment_id, key, "committed", (line.unit_cost_cents ?? 0) * (line.quantity ?? 1))
     existing.committed_cents += (line.unit_cost_cents ?? 0) * (line.quantity ?? 1)
     byCostCode.set(key, existing)
   }
@@ -996,6 +1012,8 @@ async function getBudgetWithActualsInternal(
   for (const line of approvedCommitmentCoLines ?? []) {
     const key = bucketKey(line)
     const existing = byCostCode.get(key) ?? emptyBudgetBucket()
+    const commitmentId = parentCommitmentId(line.change)
+    if (commitmentId) addObligation(commitmentId, key, "committed", line.amount_cents ?? (line.unit_cost_cents ?? 0) * (line.quantity ?? 1))
     existing.committed_cents += line.amount_cents ?? (line.unit_cost_cents ?? 0) * (line.quantity ?? 1)
     byCostCode.set(key, existing)
   }
@@ -1018,28 +1036,45 @@ async function getBudgetWithActualsInternal(
   for (const line of pendingBillLines ?? []) {
     const key = bucketKey(line)
     const existing = byCostCode.get(key) ?? emptyBudgetBucket()
-    existing.pending_cost_cents += (line.unit_cost_cents ?? 0) * (line.quantity ?? 1)
+    const cents = (line.unit_cost_cents ?? 0) * (line.quantity ?? 1)
+    const commitmentId = parentCommitmentId(line.bill)
+    if (commitmentId) addObligation(commitmentId, key, "pending", cents)
+    else existing.additional_pending_cents += cents
+    existing.pending_cost_cents += cents
     byCostCode.set(key, existing)
   }
 
   for (const line of approvedCommitmentBillLines ?? []) {
     const key = bucketKey(line)
     const existing = byCostCode.get(key) ?? emptyBudgetBucket()
+    const commitmentId = parentCommitmentId(line.bill)
+    if (commitmentId) addObligation(commitmentId, key, "billed", (line.unit_cost_cents ?? 0) * (line.quantity ?? 1))
     existing.committed_billed_cents += (line.unit_cost_cents ?? 0) * (line.quantity ?? 1)
     byCostCode.set(key, existing)
+  }
+
+  for (const position of obligations.values()) {
+    const existing = byCostCode.get(position.bucket) ?? emptyBudgetBucket()
+    existing.outstanding_obligations_cents += outstandingObligationCents(position.committed, position.billed, position.pending)
+    byCostCode.set(position.bucket, existing)
   }
 
   for (const line of pendingCommitmentCoLines ?? []) {
     const key = bucketKey(line)
     const existing = byCostCode.get(key) ?? emptyBudgetBucket()
+    existing.additional_pending_cents += line.amount_cents ?? (line.unit_cost_cents ?? 0) * (line.quantity ?? 1)
     existing.pending_cost_cents += line.amount_cents ?? (line.unit_cost_cents ?? 0) * (line.quantity ?? 1)
     byCostCode.set(key, existing)
   }
 
+  const accountedChangeIds = new Set([...approvedCommitmentChangeOrderIds, ...pendingCommitmentChangeOrderIds])
   for (const line of pendingPrimeChangeOrderLines ?? []) {
     if (line.internal_cost_cents == null) continue
+    // A linked owner proposal recovers the subcontract cost already counted above.
+    if (line.commitment_change_order_id && accountedChangeIds.has(line.commitment_change_order_id)) continue
     const key = bucketKey(line)
     const existing = byCostCode.get(key) ?? emptyBudgetBucket()
+    existing.additional_pending_cents += Number(line.internal_cost_cents)
     existing.pending_change_cost_cents += Number(line.internal_cost_cents)
     existing.pending_cost_cents += Number(line.internal_cost_cents)
     byCostCode.set(key, existing)
@@ -1057,7 +1092,7 @@ async function getBudgetWithActualsInternal(
       existing.co_adjustment_cents += sourceLine.amount_cents ?? 0
     } else {
       const allowanceCents = metadata.allowance_draw_cents ?? metadata.allowance_cents ?? 0
-      const postedRevisionCents = metadata.budget_revision_cents
+      const postedRevisionCents = sourceLine.internal_cost_cents ?? metadata.budget_revision_cents
       existing.co_adjustment_cents +=
         typeof postedRevisionCents === "number"
           ? postedRevisionCents
@@ -1143,12 +1178,13 @@ async function getBudgetWithActualsInternal(
     const remaining_commitment_cents = values.committed_cents - values.committed_billed_cents
     const isOverbilled = values.committed_cents > 0 && values.committed_billed_cents > values.committed_cents
 
-    // Without a manual CTC, EAC floors at every cost already known: revised
-    // budget, actuals, commitments, AND exposure — pending bills beyond budget
-    // must move the forecast, not just paint the Exposure column red.
-    const eac_cents = values.estimate_remaining_cents != null
-      ? values.actual_cents + values.estimate_remaining_cents
-      : Math.max(adjustedBudget, values.actual_cents, values.committed_cents, exposure_cents)
+    const { eacCents: eac_cents, knownFinalCostCents, belowKnownObligations } = forecastBudgetCost({
+      revisedBudgetCents: adjustedBudget,
+      actualCents: values.actual_cents,
+      outstandingObligationsCents: values.outstanding_obligations_cents,
+      additionalPendingCents: values.additional_pending_cents,
+      estimateRemainingCents: values.estimate_remaining_cents,
+    })
     const cost_to_complete_cents = Math.max(0, eac_cents - values.actual_cents)
     const variance_at_completion_cents = adjustedBudget - eac_cents
 
@@ -1186,6 +1222,8 @@ async function getBudgetWithActualsInternal(
       variance_percent: variancePercent,
       percent_complete: values.percent_complete,
       eac_cents,
+      known_final_cost_cents: knownFinalCostCents,
+      forecast_below_obligations: belowKnownObligations,
       cost_to_complete_cents,
       variance_at_completion_cents,
       status:

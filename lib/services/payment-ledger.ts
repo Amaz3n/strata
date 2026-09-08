@@ -359,3 +359,31 @@ export function postApReturnLossLedger(input: {
     ],
   })
 }
+
+/** Remove Arc's loss when the provider successfully claws the transfer back. */
+export async function postApReturnLossRecoveryLedger(input: {
+  orgId: string
+  disbursementId: string
+  providerEventId: string
+  amountCents: number
+  currency: string
+  effectiveAt: string
+}) {
+  return postPaymentLedgerTransaction({
+    orgId: input.orgId,
+    disbursementId: input.disbursementId,
+    providerEventId: input.providerEventId,
+    sourceType: "provider_event",
+    sourceId: input.providerEventId,
+    transactionType: "reversal",
+    currency: input.currency,
+    idempotencyKey: `disbursement:${input.disbursementId}:return-loss-recovery`,
+    reversesTransactionId: await findLedgerTransactionId(input.orgId, `disbursement:${input.disbursementId}:return-loss`),
+    description: "Vendor transfer reversed; recover ACH return loss",
+    effectiveAt: input.effectiveAt,
+    entries: [
+      { accountCode: "payout_clearing", direction: "debit", amountCents: input.amountCents, currency: input.currency },
+      { accountCode: "ach_return_loss", direction: "credit", amountCents: input.amountCents, currency: input.currency },
+    ],
+  })
+}

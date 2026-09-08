@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
@@ -40,11 +40,11 @@ type Snapshot = {
   emailTypeSettings: EmailNotificationTypeSettings
 }
 
-export function NotificationPreferences() {
-  const [emailEnabled, setEmailEnabled] = useState(true)
-  const [weeklySnapshotEnabled, setWeeklySnapshotEnabled] = useState(false)
-  const [emailTypeSettings, setEmailTypeSettings] = useState<EmailNotificationTypeSettings>(DEFAULT_EMAIL_TYPE_SETTINGS)
-  const [isLoading, setIsLoading] = useState(true)
+export function NotificationPreferences({ initialPreferences }: { initialPreferences: Awaited<ReturnType<typeof getNotificationPreferencesAction>> }) {
+  const [emailEnabled, setEmailEnabled] = useState(initialPreferences.email_enabled !== false)
+  const [weeklySnapshotEnabled, setWeeklySnapshotEnabled] = useState(initialPreferences.weekly_snapshot_enabled === true)
+  const [emailTypeSettings, setEmailTypeSettings] = useState<EmailNotificationTypeSettings>({ ...DEFAULT_EMAIL_TYPE_SETTINGS, ...initialPreferences.email_type_settings })
+  const [isLoading, setIsLoading] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [loadError, setLoadError] = useState(false)
   const [query, setQuery] = useState('')
@@ -70,11 +70,6 @@ export function NotificationPreferences() {
       setIsLoading(false)
     }
   }, [])
-
-  useEffect(() => {
-    if (!user) return
-    void loadPreferences()
-  }, [user, loadPreferences])
 
   const normalizedQuery = query.trim().toLowerCase()
   const visibleGroups = useMemo(() => {

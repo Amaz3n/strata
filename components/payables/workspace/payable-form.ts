@@ -70,6 +70,7 @@ export function normalizeLienWaiverStatus(status?: string | null) {
 }
 
 interface FormContext {
+  nativeBooks?: boolean
   costCodesEnabled: boolean
   qboDefaults: { expenseAccountId?: string; apAccountId?: string }
   defaultBillable: (projectId?: string | null) => boolean
@@ -80,8 +81,13 @@ interface FormContext {
  * is first opened, and what "dirty" is measured against. Both consumers use this
  * one builder so the two can never drift apart.
  */
-export function toFormState(bill: VendorBillSummary, { costCodesEnabled, qboDefaults, defaultBillable }: FormContext): PayableFormState {
-  const existing = bill.actual_lines ?? []
+export function toFormState(bill: VendorBillSummary, { costCodesEnabled, qboDefaults, defaultBillable, nativeBooks = false }: FormContext): PayableFormState {
+  const existing = bill.actual_lines?.length ? bill.actual_lines : (
+    bill.is_draft && bill.extraction_lines?.length ? bill.extraction_lines.map((line, index) => ({
+      id: `scan-${index}`, project_id: bill.project_id, description: line.description,
+      amount_cents: line.amountCents, billable_to_customer: defaultBillable(bill.project_id),
+    })) : []
+  ) as NonNullable<VendorBillSummary["actual_lines"]>
   const splitLines: SplitLine[] =
     existing.length > 0
       ? existing.map((line, index) => ({
@@ -91,7 +97,7 @@ export function toFormState(bill: VendorBillSummary, { costCodesEnabled, qboDefa
           budgetLineId: line.budget_line_id ?? "",
           description: line.description ?? bill.bill_number ?? "Vendor bill",
           amountDollars: ((line.amount_cents ?? 0) / 100).toFixed(2),
-          qboExpenseAccountId: line.qbo_expense_account_id ?? bill.qbo_expense_account_id ?? qboDefaults.expenseAccountId ?? "",
+          qboExpenseAccountId: (nativeBooks ? line.arc_books_gl_account_id ?? bill.arc_books_gl_account_id : line.qbo_expense_account_id ?? bill.qbo_expense_account_id) ?? qboDefaults.expenseAccountId ?? "",
           qboApAccountId: line.qbo_ap_account_id ?? bill.qbo_ap_account_id ?? qboDefaults.apAccountId ?? "",
           accountingDimensions: line.accounting_dimensions ?? {},
           billableToCustomer: line.billable_to_customer === true,
@@ -105,7 +111,7 @@ export function toFormState(bill: VendorBillSummary, { costCodesEnabled, qboDefa
             budgetLineId: "",
             description: bill.bill_number ?? "Vendor bill",
             amountDollars: ((bill.total_cents ?? 0) / 100).toFixed(2),
-            qboExpenseAccountId: bill.qbo_expense_account_id ?? qboDefaults.expenseAccountId ?? "",
+            qboExpenseAccountId: (nativeBooks ? bill.arc_books_gl_account_id : bill.qbo_expense_account_id) ?? qboDefaults.expenseAccountId ?? "",
             qboApAccountId: bill.qbo_ap_account_id ?? qboDefaults.apAccountId ?? "",
             accountingDimensions: {},
             billableToCustomer: defaultBillable(bill.project_id),
@@ -118,7 +124,7 @@ export function toFormState(bill: VendorBillSummary, { costCodesEnabled, qboDefa
     retainage: bill.retainage_percent != null ? String(bill.retainage_percent) : "",
     lienWaiver: normalizeLienWaiverStatus(bill.lien_waiver_status),
     paymentChannel: bill.payment_channel === "arc" ? "arc" : bill.payment_channel === "external" ? "external" : "",
-    qboExpenseAccountId: bill.qbo_expense_account_id ?? qboDefaults.expenseAccountId ?? "",
+    qboExpenseAccountId: (nativeBooks ? bill.arc_books_gl_account_id : bill.qbo_expense_account_id) ?? qboDefaults.expenseAccountId ?? "",
     qboApAccountId: bill.qbo_ap_account_id ?? qboDefaults.apAccountId ?? "",
     splitLines,
   }

@@ -44,7 +44,7 @@ type StatementKey =
 
 const STATEMENTS: Array<{ key: StatementKey; label: string }> = [
   { key: "profit_loss", label: "Profit & loss" },
-  { key: "cash_basis", label: "Cash basis" },
+  { key: "cash_basis", label: "Operating cash" },
   { key: "balance_sheet", label: "Balance sheet" },
   { key: "trial_balance", label: "Trial balance" },
   { key: "cash_flow", label: "Cash flow" },
@@ -265,6 +265,7 @@ export function BooksStatements() {
               monthly={monthly}
             />
           ) : null}
+          {statement === "profit_loss" ? <DimensionBreakdown data={data} /> : null}
           {statement === "balance_sheet" ? (
             <BalanceSheet data={data} onOpen={openAccount} />
           ) : null}
@@ -626,6 +627,7 @@ function BalanceSheet({
         </tr>
       </thead>
       <tbody>
+        {sheet.contractPositions.length > 0 ? <tr className="border-b"><td colSpan={2} className="p-3"><details><summary className="cursor-pointer text-sm font-medium">Contract asset and liability positions</summary><p className="my-2 text-xs text-muted-foreground">Net each identified contract before adding asset and liability positions. Projects with incomplete contract tagging remain grouped at project level.</p>{sheet.contractPositions.map((position, index) => <div key={position.contractId ?? position.projectId ?? index} className="flex justify-between gap-4 py-1 text-xs"><span>{position.contractId ? `Contract ${position.contractId}` : position.projectId ? <Link href={`/projects/${position.projectId}`}>Project {position.projectId}</Link> : "Unassigned"}</span><span>{position.assetCents ? `Asset ${formatMoneyCentsExact(position.assetCents)}` : `Liability ${formatMoneyCentsExact(position.liabilityCents)}`}</span></div>)}</details></td></tr> : null}
         <Group label="Assets" span={2} />
         {section("asset").map((row) => (
           <SimpleAccountRow key={row.accountId} row={row} onOpen={onOpen} />
@@ -857,19 +859,16 @@ function CashBasis({ data }: { data: StatementsForPeriod }) {
             <Money value={cash.accrualNetIncomeCents} muted />
           </tr>
           <tr className="border-t-2 border-t-foreground/20 bg-muted/30 font-semibold">
-            <Td>Net income, cash basis</Td>
+            <Td>Net operating receipts less disbursements</Td>
             <Money value={cash.cashNetIncomeCents} />
           </tr>
         </tfoot>
       </TableShell>
       <p className="text-xs leading-5 text-muted-foreground">
-        Converted from the accrual ledger using the movement in receivables,
-        payables, retainage, billings in excess and payroll clearing over this
-        period. Cost of revenue and operating expenses are converted together,
-        because accounts payable is shared by both and the ledger does not
-        record which payable belongs to which — net income is unaffected. This
-        restates what is in the ledger; it is not a tax return, and says nothing
-        about elections, depreciation schedules or method eligibility.
+        Actual operating cash receipts and disbursements, reconciled to accrual
+        results. Noncash depreciation and investing or financing cash movements
+        are excluded. This is an operating cash report, not taxable income.
+
       </p>
     </>
   );
@@ -1071,4 +1070,14 @@ function StatementSkeleton() {
       </div>
     </div>
   );
+}
+
+function DimensionBreakdown({ data }: { data: StatementsForPeriod }) {
+  const [dimension, setDimension] = useState("division_id");
+  const rows = data.profitLoss.byDimension[dimension] ?? [];
+  return <details className="mt-4 border p-4"><summary className="cursor-pointer text-sm font-medium">Profit and loss by accounting dimension</summary>
+    <p className="my-3 text-xs text-muted-foreground">Unassigned includes historical postings without this dimension. Values use the classification recorded with each posting.</p>
+    <Select value={dimension} onValueChange={setDimension}><SelectTrigger aria-label="Accounting dimension" className="w-60"><SelectValue /></SelectTrigger><SelectContent>{[["division_id","Division"],["community_id","Community"],["lot_id","Lot"],["contract_id","Contract"],["cost_code_id","Cost code"],["cost_type","Cost type"],["organization_id","Organization"]].map(([key,label]) => <SelectItem key={key} value={key}>{label}</SelectItem>)}</SelectContent></Select>
+    <div className="mt-4 overflow-x-auto"><table className="w-full text-xs"><thead><tr className="text-left"><th>Dimension</th><th className="text-right">Revenue</th><th className="text-right">Job costs</th><th className="text-right">Expenses</th><th className="text-right">Net income</th></tr></thead><tbody>{rows.map(row => <tr key={row.key} className="border-t"><td className="py-2" title={row.key}>{row.label}</td>{[row.revenueCents,row.cogsCents,row.expenseCents,row.netIncomeCents].map((value,index) => <td key={index} className="text-right font-mono">{formatMoneyCentsExact(value)}</td>)}</tr>)}</tbody></table></div>
+  </details>;
 }

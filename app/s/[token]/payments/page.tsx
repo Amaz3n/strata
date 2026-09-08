@@ -1,7 +1,12 @@
 import { notFound, redirect } from "next/navigation"
 
+import { PortalAccountGate } from "@/components/portal/account/portal-account-gate"
 import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { isVendorPayoutSetupOpen, reconcileVendorRecipientAfterOnboarding } from "@/lib/services/payment-rail-setup"
+import {
+  getExternalPortalGateContext,
+  hasExternalPortalGrantForToken,
+} from "@/lib/services/external-portal-auth"
 import { validatePortalToken } from "@/lib/services/portal-access"
 import { getVendorPaymentSetupContext, getVendorPortalPaymentAccess } from "@/lib/services/vendor-payment-identities"
 import { VendorPaymentSetup } from "./vendor-payment-setup"
@@ -52,6 +57,41 @@ export default async function VendorPaymentsPage({
           <h2 className="text-base font-semibold text-warning">{copy.title}</h2>
           <p className="mt-2 max-w-prose text-sm text-muted-foreground">{copy.body}</p>
         </section>
+      </>
+    )
+  }
+
+  // The payout gate needs a signed-in identity holding a grant on THIS link, and
+  // it throws when there is none. On a payout invitation the layout's account
+  // wall catches that first (`require_account` is set at mint), but a link
+  // issued before dedicated payout tokens has no such flag — and the vendor got
+  // "Sign in and claim this vendor invitation" rendered into the portal's
+  // generic error card, with no form anywhere on the page. Ask the same
+  // question here and answer it with the account form.
+  const hasGrant = await hasExternalPortalGrantForToken({
+    orgId: access.org_id,
+    tokenId: access.id,
+    tokenType: "portal",
+  })
+  if (!hasGrant) {
+    const gate = await getExternalPortalGateContext({ token, tokenType: "portal" })
+    return (
+      <>
+        <PortalPageHeader
+          title="Get paid through Arc"
+          description="Create your Arc account to set up direct deposit. It takes a minute and your payout bank stays yours."
+        />
+        <PortalAccountGate
+          token={token}
+          tokenType="portal"
+          layout="section"
+          purpose="vendor_payout"
+          orgName={gate?.orgName ?? "the builder"}
+          projectName={gate?.projectName ?? "your company"}
+          initialEmail={gate?.expectedEmail ?? ""}
+          suggestedFullName={gate?.suggestedFullName ?? ""}
+          emailLocked={gate?.emailLocked}
+        />
       </>
     )
   }

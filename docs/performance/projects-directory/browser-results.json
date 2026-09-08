@@ -1,0 +1,305 @@
+{
+  "measuredAt": "2026-09-07T22:00:10.212Z",
+  "scope": "Production-mode React component fixture. Actual UI code with mocked Next navigation/actions and database responses. Excludes auth, server rendering, and real route prefetch.",
+  "results": [
+    {
+      "mode": "before",
+      "size": 33,
+      "medianRenderMs": 190,
+      "p95RenderMs": 531,
+      "samples": [
+        {
+          "renderMs": 531,
+          "readyMs": 1210,
+          "rows": 33,
+          "domNodes": 1139,
+          "eagerActions": [
+            "classes",
+            "costCodes"
+          ],
+          "jsBytes": 621008
+        },
+        {
+          "renderMs": 181,
+          "readyMs": 405,
+          "rows": 33,
+          "domNodes": 1139,
+          "eagerActions": [
+            "classes",
+            "costCodes"
+          ],
+          "jsBytes": 621008
+        },
+        {
+          "renderMs": 204,
+          "readyMs": 418,
+          "rows": 33,
+          "domNodes": 1139,
+          "eagerActions": [
+            "classes",
+            "costCodes"
+          ],
+          "jsBytes": 621008
+        },
+        {
+          "renderMs": 184,
+          "readyMs": 412,
+          "rows": 33,
+          "domNodes": 1139,
+          "eagerActions": [
+            "classes",
+            "costCodes"
+          ],
+          "jsBytes": 621008
+        },
+        {
+          "renderMs": 190,
+          "readyMs": 463,
+          "rows": 33,
+          "domNodes": 1139,
+          "eagerActions": [
+            "classes",
+            "costCodes"
+          ],
+          "jsBytes": 621008
+        },
+        {
+          "renderMs": 190,
+          "readyMs": 418,
+          "rows": 33,
+          "domNodes": 1139,
+          "eagerActions": [
+            "classes",
+            "costCodes"
+          ],
+          "jsBytes": 621008
+        },
+        {
+          "renderMs": 184,
+          "readyMs": 427,
+          "rows": 33,
+          "domNodes": 1139,
+          "eagerActions": [
+            "classes",
+            "costCodes"
+          ],
+          "jsBytes": 621008
+        }
+      ]
+    },
+    {
+      "mode": "after",
+      "size": 33,
+      "medianRenderMs": 143,
+      "p95RenderMs": 190,
+      "samples": [
+        {
+          "renderMs": 190,
+          "readyMs": 396,
+          "rows": 33,
+          "domNodes": 733,
+          "eagerActions": [],
+          "jsBytes": 444619
+        },
+        {
+          "renderMs": 146,
+          "readyMs": 373,
+          "rows": 33,
+          "domNodes": 733,
+          "eagerActions": [],
+          "jsBytes": 444619
+        },
+        {
+          "renderMs": 143,
+          "readyMs": 342,
+          "rows": 33,
+          "domNodes": 733,
+          "eagerActions": [],
+          "jsBytes": 444619
+        },
+        {
+          "renderMs": 138,
+          "readyMs": 300,
+          "rows": 33,
+          "domNodes": 733,
+          "eagerActions": [],
+          "jsBytes": 444619
+        },
+        {
+          "renderMs": 115,
+          "readyMs": 287,
+          "rows": 33,
+          "domNodes": 733,
+          "eagerActions": [],
+          "jsBytes": 444619
+        },
+        {
+          "renderMs": 142,
+          "readyMs": 369,
+          "rows": 33,
+          "domNodes": 733,
+          "eagerActions": [],
+          "jsBytes": 444619
+        },
+        {
+          "renderMs": 152,
+          "readyMs": 349,
+          "rows": 33,
+          "domNodes": 733,
+          "eagerActions": [],
+          "jsBytes": 444619
+        }
+      ]
+    },
+    {
+      "mode": "before",
+      "size": 1205,
+      "medianRenderMs": 2134,
+      "p95RenderMs": 3496,
+      "samples": [
+        {
+          "renderMs": 2134,
+          "readyMs": 2417,
+          "rows": 1205,
+          "domNodes": 38643,
+          "eagerActions": [
+            "classes",
+            "costCodes"
+          ],
+          "jsBytes": 621008
+        },
+        {
+          "renderMs": 3496,
+          "readyMs": 5562,
+          "rows": 1205,
+          "domNodes": 38643,
+          "eagerActions": [
+            "classes",
+            "costCodes"
+          ],
+          "jsBytes": 621008
+        },
+        {
+          "renderMs": 2462,
+          "readyMs": 2632,
+          "rows": 1205,
+          "domNodes": 38643,
+          "eagerActions": [
+            "classes",
+            "costCodes"
+          ],
+          "jsBytes": 621008
+        },
+        {
+          "renderMs": 2075,
+          "readyMs": 2276,
+          "rows": 1205,
+          "domNodes": 38643,
+          "eagerActions": [
+            "classes",
+            "costCodes"
+          ],
+          "jsBytes": 621008
+        },
+        {
+          "renderMs": 2121,
+          "readyMs": 2400,
+          "rows": 1205,
+          "domNodes": 38643,
+          "eagerActions": [
+            "classes",
+            "costCodes"
+          ],
+          "jsBytes": 621008
+        },
+        {
+          "renderMs": 2108,
+          "readyMs": 2398,
+          "rows": 1205,
+          "domNodes": 38643,
+          "eagerActions": [
+            "classes",
+            "costCodes"
+          ],
+          "jsBytes": 621008
+        },
+        {
+          "renderMs": 2138,
+          "readyMs": 2400,
+          "rows": 1205,
+          "domNodes": 38643,
+          "eagerActions": [
+            "classes",
+            "costCodes"
+          ],
+          "jsBytes": 621008
+        }
+      ]
+    },
+    {
+      "mode": "after",
+      "size": 1205,
+      "medianRenderMs": 158,
+      "p95RenderMs": 226,
+      "samples": [
+        {
+          "renderMs": 226,
+          "readyMs": 473,
+          "rows": 50,
+          "domNodes": 1073,
+          "eagerActions": [],
+          "jsBytes": 444619
+        },
+        {
+          "renderMs": 141,
+          "readyMs": 343,
+          "rows": 50,
+          "domNodes": 1073,
+          "eagerActions": [],
+          "jsBytes": 444619
+        },
+        {
+          "renderMs": 144,
+          "readyMs": 435,
+          "rows": 50,
+          "domNodes": 1073,
+          "eagerActions": [],
+          "jsBytes": 444619
+        },
+        {
+          "renderMs": 158,
+          "readyMs": 396,
+          "rows": 50,
+          "domNodes": 1073,
+          "eagerActions": [],
+          "jsBytes": 444619
+        },
+        {
+          "renderMs": 164,
+          "readyMs": 439,
+          "rows": 50,
+          "domNodes": 1073,
+          "eagerActions": [],
+          "jsBytes": 444619
+        },
+        {
+          "renderMs": 143,
+          "readyMs": 367,
+          "rows": 50,
+          "domNodes": 1073,
+          "eagerActions": [],
+          "jsBytes": 444619
+        },
+        {
+          "renderMs": 160,
+          "readyMs": 449,
+          "rows": 50,
+          "domNodes": 1073,
+          "eagerActions": [],
+          "jsBytes": 444619
+        }
+      ]
+    }
+  ],
+  "behaviorChecks": "Pagination, community A→B, all communities, search beyond first page, stale request cancellation, lazy editor catalogs, mobile single-row tree and overflow: passed."
+}

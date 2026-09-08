@@ -141,6 +141,7 @@ const nextConfig = {
         source: "/(.*)",
         headers: securityHeaders,
       },
+      { source: "/d/:token", headers: [{ key: "X-Frame-Options", value: "SAMEORIGIN" }] },
     ]
   },
   async redirects() {

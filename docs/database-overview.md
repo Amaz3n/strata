@@ -273,7 +273,7 @@ overrides (`payment_hold_overrides`) persist. `assertBillReleasable` in
 
 #### QuickBooks Integration
 - **`accounting_connections`** - Accounting provider connections (QBO today; tokens, settings, per-legal-entity labels)
-- **`accounting_sync_records`** - Sync status ledger (external id/version per entity, per connection)
+- **`accounting_sync_records`** - Durable sync-intent and delivery ledger (pending/needs-review/synced state, reason, last attempt, and external id/version; the connection is nullable only for an explicit no-target backlog)
 - **`accounting_entity_map`** - Routes org/division/community/project scopes to a connection + dimensions
 - **`accounting_counterparty_links`** - Connection-scoped vendor/customer links
 - **`qbo_invoice_reservations`** - Invoice number reservations
@@ -529,3 +529,11 @@ RFIs     Submittals  Dailies  Photos    Closeout
 ---
 
 This document provides a comprehensive overview of the Arc database architecture. For specific implementation details, refer to the individual table schemas and migration files.
+
+### Pending settings migration
+
+`20260907214341_settings_atomic_save_and_team_mfa.sql` must be applied before deploying the corresponding settings services. It has not been applied by the implementation task.
+
+- `save_organization_settings` is a service-role-only, security-invoker RPC. Organization billing fields, the section's JSON settings patch, audit evidence, and the activity event commit in one transaction. The service validates inputs and authorizes the actor before invoking it.
+- `get_org_member_mfa_status` is a service-role-only RPC returning verified-factor booleans for requested members of one organization. Its constrained definer access is needed because the service role cannot read `auth.mfa_factors`; factor records are never returned.
+- The migration preserves effective invoice-note values in `invoice_default_payment_details` and removes the retired `invoice_default_note` JSON key. Explicitly empty canonical values remain empty.

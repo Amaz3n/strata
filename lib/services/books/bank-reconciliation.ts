@@ -1,10 +1,10 @@
 import "server-only";
 
+import { collectBooksRows } from "@/lib/services/books/paging";
 import { z } from "zod";
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
-import { requireAuthorization } from "@/lib/services/authorization";
-import { booksDigest } from "@/lib/services/books/hash";
+import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access";
 import { requireOrgContext } from "@/lib/services/context";
 import {
   MATCH_WINDOW_DAYS,
@@ -13,6 +13,7 @@ import {
 } from "@/lib/services/books/bank-match-rules";
 import { selectBankRule } from "@/lib/services/books/bank-rule-matching";
 import { loadBankRuleCandidates } from "@/lib/services/books/bank-rules-data";
+import { recordAudit } from "@/lib/services/audit";
 import { recordEvent } from "@/lib/services/events";
 
 async function requireReconciliationContext(orgId?: string) {
@@ -79,6 +80,11 @@ export type BankReconciliationDetail = {
   differenceCents: number;
   status: string;
   truncated: boolean;
+  bookBalanceCents: number;
+  outstandingBalanceCents: number;
+  bookDifferenceCents: number;
+  evidenceDigest: string | null;
+  outstandingItems: Array<{ journal_line_id: string; amount_cents: number }>;
   items: Array<{
     transactionId: string;
     transactionDate: string;
@@ -100,14 +106,14 @@ export async function getBankReconciliationDetail(
   const service = createServiceSupabaseClient();
   const { data: reconciliation, error: reconciliationError } = await service
     .from("bank_reconciliations")
-    .select("id, bank_account_id, statement_start, statement_end, beginning_balance_cents, ending_balance_cents, cleared_balance_cents, difference_cents, status")
+    .select("id, bank_account_id, statement_start, statement_end, beginning_balance_cents, ending_balance_cents, cleared_balance_cents, difference_cents, status, digest")
     .eq("org_id", context.orgId)
     .eq("id", reconciliationId)
     .single();
   if (reconciliationError || !reconciliation)
     throw new Error("Bank reconciliation not found");
 
-  const { data, error } = await service
+  const data = await collectBooksRows((from, to) => service
     .from("bank_transactions")
     .select("id, transaction_date, description, merchant_name, direction, amount_cents, excluded, matches:bank_transaction_matches(matched_amount_cents,status)")
     .eq("org_id", context.orgId)
@@ -117,10 +123,12 @@ export async function getBankReconciliationDetail(
     .lte("transaction_date", reconciliation.statement_end)
     .order("transaction_date", { ascending: true })
     .order("id", { ascending: true })
-    .limit(5001);
-  if (error) throw new Error(`Failed to load statement transactions: ${error.message}`);
+    .range(from, to));
+  const { data: proof, error: proofError } = await service.rpc("preview_books_bank_reconciliation", { p_org_id: context.orgId, p_reconciliation_id: reconciliationId });
+  if (proofError) throw new Error(proofError.message);
+  const evidence = z.object({ frozen: z.boolean().default(false), book_balance_cents: z.coerce.number(), outstanding_balance_cents: z.coerce.number(), direction_factor: z.number(), items: z.array(z.object({ journal_line_id: z.string().nullable(), amount_cents: z.coerce.number(), item_status: z.string() })) }).parse(proof);
 
-  const rows = (data ?? []).slice(0, 5000).map((transaction) => {
+  const rows = (data ?? []).map((transaction) => {
     const confirmed = (transaction.matches ?? []).filter((match) => match.status === "confirmed");
     const matchedCents = confirmed.reduce((sum, match) => sum + Number(match.matched_amount_cents ?? 0), 0);
     const status = transaction.excluded
@@ -142,7 +150,7 @@ export async function getBankReconciliationDetail(
   const clearedBalanceCents = rows.reduce(
     (balance, row) => row.status !== "cleared"
       ? balance
-      : balance + (row.direction === "inflow" ? row.amountCents : -row.amountCents),
+      : balance + (row.direction === "inflow" ? row.amountCents : -row.amountCents) * evidence.direction_factor,
     Number(reconciliation.beginning_balance_cents),
   );
 
@@ -156,7 +164,12 @@ export async function getBankReconciliationDetail(
     clearedBalanceCents,
     differenceCents: Number(reconciliation.ending_balance_cents) - clearedBalanceCents,
     status: reconciliation.status,
-    truncated: (data ?? []).length > 5000,
+    truncated: false,
+    bookBalanceCents: evidence.book_balance_cents,
+    outstandingBalanceCents: evidence.outstanding_balance_cents,
+    bookDifferenceCents: Number(reconciliation.ending_balance_cents) + evidence.outstanding_balance_cents - evidence.book_balance_cents,
+    evidenceDigest: evidence.frozen ? reconciliation.digest ?? null : null,
+    outstandingItems: evidence.items.filter((item) => item.item_status === "outstanding" && item.journal_line_id).map((item) => ({ journal_line_id: item.journal_line_id!, amount_cents: item.amount_cents })),
     items: rows,
   };
 }
@@ -345,22 +358,20 @@ export async function reviewUnmatchedBankTransactions(
   const candidates =
     mappedGlAccountIds.length > 0 && dates.length > 0
       ? z.array(candidateSchema).parse(
-          (
-            await service
+          await collectBooksRows((from, to) => service
               .from("journal_lines")
               .select(
                 "id, account_id, debit_cents, credit_cents, description, entry:journal_entries!inner(entry_date, status)",
               )
               .eq("org_id", context.orgId)
               .in("account_id", mappedGlAccountIds)
-              .eq("entry.status", "posted")
+              .in("entry.status", ["posted", "reversed"])
               .gte("entry.entry_date", shiftDays(dates[0], -MATCH_WINDOW_DAYS))
               .lte(
                 "entry.entry_date",
                 shiftDays(dates[dates.length - 1], MATCH_WINDOW_DAYS),
               )
-              .limit(2000)
-          ).data ?? [],
+              .order("id").range(from, to)),
         )
       : [];
 
@@ -505,48 +516,15 @@ export async function confirmBankMatch(input: {
   if (!Number.isSafeInteger(input.amountCents) || input.amountCents <= 0)
     throw new Error("Matched amount must be positive integer cents");
   const service = createServiceSupabaseClient();
-  const { data: transaction, error: transactionError } = await service
-    .from("bank_transactions")
-    .select("id, amount_cents, lifecycle_status")
-    .eq("org_id", context.orgId)
-    .eq("id", input.bankTransactionId)
-    .single();
-  if (transactionError || !transaction)
-    throw new Error("Bank transaction not found");
-  if (transaction.lifecycle_status !== "posted")
-    throw new Error("Only posted bank transactions can be confirmed");
-  const { data: existingMatches, error: matchError } = await service
-    .from("bank_transaction_matches")
-    .select("matched_amount_cents")
-    .eq("org_id", context.orgId)
-    .eq("bank_transaction_id", input.bankTransactionId)
-    .eq("status", "confirmed");
-  if (matchError)
-    throw new Error(`Failed to load bank matches: ${matchError.message}`);
-  const alreadyMatched = (existingMatches ?? []).reduce(
-    (sum, row) => sum + Number(row.matched_amount_cents ?? 0),
-    0,
-  );
-  if (alreadyMatched + input.amountCents > Number(transaction.amount_cents)) {
-    throw new Error("Confirmed matches exceed the bank transaction amount");
-  }
-  const { data, error } = await service
-    .from("bank_transaction_matches")
-    .insert({
-      org_id: context.orgId,
-      bank_transaction_id: input.bankTransactionId,
-      journal_line_id: input.journalLineId ?? null,
-      matched_amount_cents: input.amountCents,
-      match_type: input.matchType,
-      confidence: input.confidence ?? null,
-      status: "confirmed",
-      confirmed_by: context.userId,
-      confirmed_at: new Date().toISOString(),
-    })
-    .select("id")
-    .single();
+  const { data, error } = await service.rpc("confirm_books_bank_match_atomic", {
+    p_org_id: context.orgId, p_transaction_id: input.bankTransactionId,
+    p_line_id: input.journalLineId ?? null, p_amount_cents: input.amountCents,
+    p_match_type: input.matchType, p_confidence: input.confidence ?? null, p_actor_id: context.userId,
+  });
   if (error) throw new Error(`Failed to confirm bank match: ${error.message}`);
-  return z.object({ id: z.string().uuid() }).parse(data).id;
+  const id = z.string().uuid().parse(data);
+  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "books.bank_match_confirmed", entityType: "bank_transaction_match", entityId: id, payload: { bank_transaction_id: input.bankTransactionId, journal_line_id: input.journalLineId, amount_cents: input.amountCents } });
+  return id;
 }
 
 export async function closeBankReconciliation(
@@ -555,134 +533,22 @@ export async function closeBankReconciliation(
 ) {
   const context = await requireReconciliationContext(orgId);
   const service = createServiceSupabaseClient();
-  const { data: reconciliationData, error: reconciliationError } = await service
-    .from("bank_reconciliations")
-    .select(
-      "id, bank_account_id, statement_start, statement_end, beginning_balance_cents, ending_balance_cents, status",
-    )
-    .eq("org_id", context.orgId)
-    .eq("id", reconciliationId)
-    .single();
-  if (reconciliationError)
-    throw new Error(
-      `Failed to load bank reconciliation: ${reconciliationError.message}`,
-    );
-  const reconciliation = z
-    .object({
-      id: z.string().uuid(),
-      bank_account_id: z.string().uuid(),
-      statement_start: z.string(),
-      statement_end: z.string(),
-      beginning_balance_cents: z.number().int(),
-      ending_balance_cents: z.number().int(),
-      status: z.string(),
-    })
-    .parse(reconciliationData);
-  if (reconciliation.status === "closed") return reconciliation.id;
+  const { data, error } = await service.rpc("close_books_bank_reconciliation_atomic", {
+    p_org_id: context.orgId, p_reconciliation_id: reconciliationId, p_actor_id: context.userId,
+  });
+  if (error) throw new Error(`Failed to close bank reconciliation: ${error.message}`);
+  const result = z.object({ id: z.string().uuid(), digest: z.string() }).parse(data);
+  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "books.bank_reconciliation_closed", entityType: "bank_reconciliation", entityId: result.id, payload: { digest: result.digest } });
+  return result.id;
+}
 
-  const { data: transactions, error: transactionError } = await service
-    .from("bank_transactions")
-    .select(
-      "id, amount_cents, direction, excluded, matches:bank_transaction_matches(id, journal_line_id, matched_amount_cents, status)",
-    )
-    .eq("org_id", context.orgId)
-    .eq("bank_account_id", reconciliation.bank_account_id)
-    .eq("lifecycle_status", "posted")
-    .gte("transaction_date", reconciliation.statement_start)
-    .lte("transaction_date", reconciliation.statement_end)
-    .limit(5000);
-  if (transactionError)
-    throw new Error(
-      `Failed to load reconciliation transactions: ${transactionError.message}`,
-    );
-  const transactionSchema = z.object({
-    id: z.string().uuid(),
-    amount_cents: z.number().int(),
-    direction: z.enum(["inflow", "outflow"]),
-    excluded: z.boolean(),
-    matches: z.array(
-      z.object({
-        id: z.string().uuid(),
-        journal_line_id: z.string().uuid().nullable(),
-        matched_amount_cents: z.number().int(),
-        status: z.string(),
-      }),
-    ),
-  });
-  const rows = z.array(transactionSchema).parse(transactions ?? []);
-  let clearedBalanceCents = reconciliation.beginning_balance_cents;
-  const items: Array<Record<string, unknown>> = [];
-  for (const transaction of rows) {
-    const confirmed = transaction.matches.filter(
-      (match) => match.status === "confirmed",
-    );
-    const matchedCents = confirmed.reduce(
-      (sum, match) => sum + match.matched_amount_cents,
-      0,
-    );
-    const cleared =
-      transaction.excluded || matchedCents === transaction.amount_cents;
-    if (cleared && !transaction.excluded) {
-      clearedBalanceCents +=
-        transaction.direction === "inflow"
-          ? transaction.amount_cents
-          : -transaction.amount_cents;
-    }
-    items.push({
-      org_id: context.orgId,
-      reconciliation_id: reconciliation.id,
-      bank_transaction_id: transaction.id,
-      journal_line_id:
-        confirmed.length === 1 ? confirmed[0].journal_line_id : null,
-      amount_cents: transaction.amount_cents,
-      item_status: transaction.excluded
-        ? "excluded"
-        : cleared
-          ? "cleared"
-          : "outstanding",
-    });
-  }
-  const differenceCents =
-    reconciliation.ending_balance_cents - clearedBalanceCents;
-  if (differenceCents !== 0)
-    throw new Error(
-      `Reconciliation difference must be zero; current difference is ${differenceCents} cents`,
-    );
-  if (items.length > 0) {
-    const itemResult = await service
-      .from("bank_reconciliation_items")
-      .upsert(items, {
-        onConflict: "reconciliation_id,bank_transaction_id,journal_line_id",
-      });
-    if (itemResult.error)
-      throw new Error(
-        `Failed to save reconciliation items: ${itemResult.error.message}`,
-      );
-  }
-  const digest = booksDigest({ reconciliation, clearedBalanceCents, items });
-  const closeResult = await service
-    .from("bank_reconciliations")
-    .update({
-      cleared_balance_cents: clearedBalanceCents,
-      difference_cents: 0,
-      status: "closed",
-      digest,
-      closed_by: context.userId,
-      closed_at: new Date().toISOString(),
-    })
-    .eq("org_id", context.orgId)
-    .eq("id", reconciliation.id);
-  if (closeResult.error)
-    throw new Error(
-      `Failed to close bank reconciliation: ${closeResult.error.message}`,
-    );
-  await recordEvent({
-    orgId: context.orgId,
-    actorId: context.userId,
-    eventType: "books.bank_reconciliation_closed",
-    entityType: "bank_reconciliation",
-    entityId: reconciliation.id,
-    payload: { statement_end: reconciliation.statement_end, digest },
-  });
-  return reconciliation.id;
+export async function reopenBankReconciliation(input: { reconciliationId: string; reason: string; orgId?: string }) {
+  const parsed = z.object({ reconciliationId: z.string().uuid(), reason: z.string().trim().min(10).max(1000) }).parse(input);
+  const context = await requireOrgContext(input.orgId);
+  await requireAuthorization({ permission: "books.reopen", userId: context.userId, orgId: context.orgId, supabase: context.supabase });
+  const { error } = await createServiceSupabaseClient().rpc("reopen_books_bank_reconciliation", { p_org_id: context.orgId, p_reconciliation_id: parsed.reconciliationId, p_reason: parsed.reason, p_actor_id: context.userId });
+  if (error) throw new Error(error.message);
+  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "bank_reconciliation", entityId: parsed.reconciliationId, after: { status: "draft", reason: parsed.reason }, source: "books.bank_reopen" });
+  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "books.bank_reopened", entityType: "bank_reconciliation", entityId: parsed.reconciliationId, payload: { reason: parsed.reason } });
+  return { id: parsed.reconciliationId };
 }

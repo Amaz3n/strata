@@ -1,0 +1,15 @@
+begin;
+select plan(11);
+select has_function('public','submit_vendor_bills_for_approval',array['uuid','uuid','uuid[]']);
+select has_function('public','approve_vendor_bills_with_outcomes',array['uuid','uuid','jsonb','text']);
+select has_function('public','create_payment_run_with_outcomes',array['uuid','uuid','uuid','text','text','smallint','bigint','bigint','bigint','bigint','jsonb','text','jsonb','text']);
+select function_returns('public','submit_vendor_bills_for_approval',array['uuid','uuid','uuid[]'],'setof record');
+select function_returns('public','approve_vendor_bills_with_outcomes',array['uuid','uuid','jsonb','text'],'setof record');
+select function_returns('public','create_payment_run_with_outcomes',array['uuid','uuid','uuid','text','text','smallint','bigint','bigint','bigint','bigint','jsonb','text','jsonb','text'],'jsonb');
+select ok(not has_function_privilege('anon','public.submit_vendor_bills_for_approval(uuid,uuid,uuid[])','execute') and not has_function_privilege('authenticated','public.submit_vendor_bills_for_approval(uuid,uuid,uuid[])','execute'),'browser roles cannot submit drafts through the bulk RPC');
+select ok(not has_function_privilege('anon','public.approve_vendor_bills_with_outcomes(uuid,uuid,jsonb,text)','execute') and not has_function_privilege('authenticated','public.approve_vendor_bills_with_outcomes(uuid,uuid,jsonb,text)','execute'),'browser roles cannot approve through the outcome RPC');
+select ok(not has_function_privilege('anon','public.create_payment_run_with_outcomes(uuid,uuid,uuid,text,text,smallint,bigint,bigint,bigint,bigint,jsonb,text,jsonb,text)','execute') and not has_function_privilege('authenticated','public.create_payment_run_with_outcomes(uuid,uuid,uuid,text,text,smallint,bigint,bigint,bigint,bigint,jsonb,text,jsonb,text)','execute'),'browser roles cannot create runs through the outcome RPC');
+select ok(pg_get_functiondef('public.submit_vendor_bills_for_approval(uuid,uuid,uuid[])'::regprocedure) like '%return next%','submit RPC returns one outcome per bill');
+select ok(pg_get_functiondef('public.approve_vendor_bills_with_outcomes(uuid,uuid,jsonb,text)'::regprocedure) like '%skip_failures%','approval RPC implements explicit modes');
+select * from finish();
+rollback;

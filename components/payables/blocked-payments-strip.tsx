@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { decidePaymentRiskReviewAction } from "@/app/(app)/payables/actions"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Checkbox } from "@/components/ui/checkbox"
 import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
 import type { BlockedPaymentRun } from "@/lib/services/payment-risk"
 
@@ -28,6 +29,8 @@ export function BlockedPaymentsStrip({
   const [expanded, setExpanded] = React.useState(false)
   const [reasons, setReasons] = React.useState<Record<string, string>>({})
   const [pending, setPending] = React.useState(false)
+  const [selected, setSelected] = React.useState<Set<string>>(() => new Set())
+  const [sharedReason, setSharedReason] = React.useState("")
 
   if (blockedRuns.length === 0) return null
 
@@ -54,6 +57,16 @@ export function BlockedPaymentsStrip({
     }
   }
 
+  const decideSelected = async (decision: "allow" | "block") => {
+    if (sharedReason.trim().length < 12) return toast.error("Say what you verified, in at least a dozen characters")
+    setPending(true)
+    const results = await Promise.all([...selected].map((run_id) => decidePaymentRiskReviewAction({ run_id, decision, reason: sharedReason.trim() })))
+    setPending(false)
+    const failed = results.filter((result) => !result.success).length
+    if (failed) toast.error(`${failed} risk decisions could not be recorded`)
+    else { toast.success(`${results.length} risk decisions recorded`); setSelected(new Set()); setSharedReason(""); onDecided() }
+  }
+
   return (
     <div className="border-b border-destructive/30 bg-destructive/5">
       <button
@@ -70,10 +83,12 @@ export function BlockedPaymentsStrip({
 
       {expanded ? (
         <div className="divide-y divide-destructive/20 border-t border-destructive/20">
+          <div className="flex flex-wrap items-center gap-2 px-4 py-2 sm:px-6"><Checkbox checked={selected.size === blockedRuns.length} onCheckedChange={(checked) => setSelected(checked ? new Set(blockedRuns.filter((run) => !run.preparedByViewer).map((run) => run.runId)) : new Set())}/><span className="text-xs">{selected.size} selected</span><Input value={sharedReason} onChange={(event) => setSharedReason(event.target.value)} placeholder="What did you verify for these runs?" className="h-8 min-w-64 flex-1 text-xs"/><Button size="sm" variant="outline" disabled={pending || selected.size === 0} onClick={() => void decideSelected("allow")}>Release selected</Button><Button size="sm" variant="ghost" disabled={pending || selected.size === 0} onClick={() => void decideSelected("block")}>Keep selected blocked</Button></div>
           {blockedRuns.map((blocked) => (
             <div key={blocked.reviewId} className="px-4 py-3 sm:px-6">
               <div className="flex flex-wrap items-baseline justify-between gap-3">
-                <div className="text-xs">
+                <div className="flex items-center gap-2 text-xs">
+                  {!blocked.preparedByViewer ? <Checkbox checked={selected.has(blocked.runId)} onCheckedChange={(checked) => setSelected((current) => { const next = new Set(current); if (checked) next.add(blocked.runId); else next.delete(blocked.runId); return next })}/> : null}
                   <span className="font-mono text-sm font-medium tabular-nums">
                     {formatMoneyFromCents(blocked.totalDebitCents)}
                   </span>

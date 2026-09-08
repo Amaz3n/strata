@@ -1,4 +1,5 @@
 import "server-only"
+import { transferLandAtStartForService } from "@/lib/services/books/inventory"
 
 import { randomUUID } from "node:crypto"
 
@@ -252,6 +253,7 @@ async function executeRelease(supabase: SupabaseClient, job: ClaimedJob, leaseTo
           failed: dispatches.filter((result) => result.status === "rejected").length,
         }
       } else if (step === "finalize") {
+        await transferLandAtStartForService(job.org_id, pkg.lot_id, pkg.scheduled_start_date, requiredString(job.payload.actor_id, "actor_id"))
         const now = new Date().toISOString()
         // Every one of these is checked. The old version built a four-write
         // Promise.all and destructured two of them, so the project update and

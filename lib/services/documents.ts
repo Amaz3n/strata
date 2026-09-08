@@ -373,6 +373,7 @@ export async function replaceDocumentFields({
   revision = 1,
   fields,
   orgId,
+  authorizationPermission = "project.manage",
 }: {
   documentId: string
   revision?: number
@@ -390,10 +391,11 @@ export async function replaceDocumentFields({
     metadata?: Record<string, any>
   }>
   orgId?: string
+  authorizationPermission?: string
 }) {
   const parsedFields = fields.map((field) => documentFieldInputSchema.parse(field))
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requirePermission(authorizationPermission, { supabase, orgId: resolvedOrgId, userId })
 
   const { error: deleteError } = await supabase
     .from("document_fields")

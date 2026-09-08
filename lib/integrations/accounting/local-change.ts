@@ -50,8 +50,8 @@ type FingerprintConfig = {
   /**
    * Canonical labeled values that get hashed, in order. The labels are part of
    * the hash input and must NEVER change: the counterparty/account identities
-   * are resolved from `accounting_coding` FIRST and fall back to the legacy
-   * `qbo_*` columns, which the dual-write keeps equal — so the hash stays
+   * are resolved exclusively from `accounting_coding`, retaining their established
+   * labels so the hash stays
    * byte-identical today, and stays byte-identical the day the legacy columns
    * drop. (Hashing the legacy columns directly was the D2 landmine: the drop
    * would have flipped every fingerprint at once and routed the entire QBO
@@ -60,8 +60,8 @@ type FingerprintConfig = {
   material: (row: Record<string, unknown>) => Array<[string, unknown]>
 }
 
-const externalRefId = (row: Record<string, unknown>, codingKey: "counterparty" | "expense_account", legacyColumn: string) =>
-  accountingReference(row.accounting_coding, codingKey)?.id ?? row[legacyColumn] ?? null
+const externalRefId = (row: Record<string, unknown>, codingKey: "counterparty" | "expense_account") =>
+  accountingReference(row.accounting_coding, codingKey)?.id ?? null
 
 const FINGERPRINT_FIELDS: Record<string, FingerprintConfig> = {
   invoice: {
@@ -76,24 +76,24 @@ const FINGERPRINT_FIELDS: Record<string, FingerprintConfig> = {
   },
   project_expense: {
     table: "project_expenses",
-    columns: ["amount_cents", "tax_cents", "expense_date", "accounting_coding", "qbo_vendor_id", "qbo_expense_account_id"],
+    columns: ["amount_cents", "tax_cents", "expense_date", "accounting_coding"],
     material: (row) => [
       ["amount_cents", row.amount_cents],
       ["tax_cents", row.tax_cents],
       ["expense_date", row.expense_date],
-      ["qbo_vendor_id", externalRefId(row, "counterparty", "qbo_vendor_id")],
-      ["qbo_expense_account_id", externalRefId(row, "expense_account", "qbo_expense_account_id")],
+      ["qbo_vendor_id", externalRefId(row, "counterparty")],
+      ["qbo_expense_account_id", externalRefId(row, "expense_account")],
     ],
   },
   bill: {
     table: "vendor_bills",
-    columns: ["total_cents", "bill_date", "due_date", "accounting_coding", "qbo_vendor_id", "qbo_expense_account_id"],
+    columns: ["total_cents", "bill_date", "due_date", "accounting_coding"],
     material: (row) => [
       ["total_cents", row.total_cents],
       ["bill_date", row.bill_date],
       ["due_date", row.due_date],
-      ["qbo_vendor_id", externalRefId(row, "counterparty", "qbo_vendor_id")],
-      ["qbo_expense_account_id", externalRefId(row, "expense_account", "qbo_expense_account_id")],
+      ["qbo_vendor_id", externalRefId(row, "counterparty")],
+      ["qbo_expense_account_id", externalRefId(row, "expense_account")],
     ],
   },
   // Vendor credits live in vendor_bills; the push path writes this ledger type
@@ -101,13 +101,13 @@ const FINGERPRINT_FIELDS: Record<string, FingerprintConfig> = {
   // here the both-sides protection was silently off for credits.
   vendor_credit: {
     table: "vendor_bills",
-    columns: ["total_cents", "bill_date", "due_date", "accounting_coding", "qbo_vendor_id", "qbo_expense_account_id"],
+    columns: ["total_cents", "bill_date", "due_date", "accounting_coding"],
     material: (row) => [
       ["total_cents", row.total_cents],
       ["bill_date", row.bill_date],
       ["due_date", row.due_date],
-      ["qbo_vendor_id", externalRefId(row, "counterparty", "qbo_vendor_id")],
-      ["qbo_expense_account_id", externalRefId(row, "expense_account", "qbo_expense_account_id")],
+      ["qbo_vendor_id", externalRefId(row, "counterparty")],
+      ["qbo_expense_account_id", externalRefId(row, "expense_account")],
     ],
   },
 }
@@ -189,6 +189,7 @@ export async function stampLocalFingerprint(params: {
       .maybeSingle(),
   ])
 
+  if (entityResult.error || recordResult.error) throw new Error("Unable to inspect accounting fingerprint state")
   const recordId = recordResult.data?.id
   if (!recordId) return
   const fingerprint = computeLocalFingerprint(params.entityType, entityResult.data as Record<string, unknown> | null)
@@ -198,5 +199,15 @@ export async function stampLocalFingerprint(params: {
   const metadata = existingMetadata && typeof existingMetadata === "object" ? { ...(existingMetadata as Record<string, unknown>) } : {}
   metadata[LOCAL_FINGERPRINT_KEY] = fingerprint
 
-  await params.supabase.from("accounting_sync_records").update({ metadata }).eq("id", recordId)
+  const { error } = await params.supabase.from("accounting_sync_records").update({ metadata }).eq("id", recordId)
+  if (error) throw new Error(`Unable to persist accounting fingerprint: ${error.message}`)
+}
+
+/** Snapshot before dispatch; a later local edit must not become the pushed baseline. */
+export async function readLocalFingerprint(params: { supabase: ServiceClient; orgId: string; entityType: string; entityId: string }) {
+  const config = FINGERPRINT_FIELDS[params.entityType]
+  if (!config) return null
+  const { data, error } = await params.supabase.from(config.table).select(config.columns.join(",")).eq("org_id", params.orgId).eq("id", params.entityId).maybeSingle()
+  if (error || !data) throw new Error("Unable to snapshot accounting source revision")
+  return computeLocalFingerprint(params.entityType, data as unknown as Record<string, unknown>)
 }

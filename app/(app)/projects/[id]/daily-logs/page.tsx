@@ -1,92 +1,57 @@
 import { Suspense } from "react"
 import { notFound } from "next/navigation"
+import { format } from "date-fns"
 import { PageLayout } from "@/components/layout/page-layout"
-import {
-  getProjectAction,
-  getProjectDailyLogsAction,
-  getProjectDailyReportsAction,
-  getProjectFilesAction,
-  getProjectScheduleAction,
-  getProjectTasksAction,
-  listProjectPunchItemsAction,
-  getProjectTeamAction,
-} from "../actions"
+import { getProjectAction } from "../actions"
 import { ProjectDailyLogsClient } from "./project-daily-logs-client"
-import { Skeleton } from "@/components/ui/skeleton"
-
+import { DailyLogsSkeleton } from "@/components/daily-logs/loading"
+import { loadDailyLogDayAction, resolveDailyLogDateAction } from "./actions"
+import { requireOrgContext } from "@/lib/services/context"
 import { unwrapAction } from "@/lib/action-result"
-import { listProjectLocations } from "@/lib/services/locations"
-import { hasPermission } from "@/lib/services/permissions"
 
-interface ProjectDailyLogsPageProps {
+export default async function ProjectDailyLogsPage({
+  params,
+  searchParams,
+}: {
   params: Promise<{ id: string }>
-}
-
-export default async function ProjectDailyLogsPage({ params }: ProjectDailyLogsPageProps) {
+  searchParams: Promise<{ date?: string; logId?: string }>
+}) {
   const { id } = await params
-
   return (
     <>
-      <PageLayout title="Daily Logs" breadcrumbs={[
-        { label: "Project" },
-        { label: "Daily Logs" },
-      ]} fullBleed />
-      <Suspense fallback={
-        <div className="p-6 space-y-4">
-          <Skeleton className="h-8 w-48 mb-6" />
-          <div className="space-y-2">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <Skeleton key={i} className="h-16 w-full rounded-md" />
-            ))}
-          </div>
-        </div>
-      }>
-        <ProjectDailyLogsData id={id} />
+      <PageLayout title="Daily Logs" breadcrumbs={[{ label: "Project" }, { label: "Daily Logs" }]} fullBleed />
+      <Suspense fallback={<DailyLogsSkeleton />}>
+        <ProjectDailyLogsData id={id} searchParams={searchParams} />
       </Suspense>
     </>
   )
 }
 
-async function ProjectDailyLogsData({ id }: { id: string }) {
-  const project = await getProjectAction(id)
-
-  if (!project) {
-    notFound()
-  }
-
-  const [dailyLogs, dailyReports, files, scheduleItems, tasks, punchItems, projectTeam, locations, canManageLocations] = await Promise.all([
-    getProjectDailyLogsAction(id),
-    getProjectDailyReportsAction(id),
-    getProjectFilesAction(id),
-    getProjectScheduleAction(id),
-    getProjectTasksAction(id),
-    listProjectPunchItemsAction(id),
-    getProjectTeamAction(id),
-    listProjectLocations(id),
-    hasPermission("project.manage"),
-  ])
-
+async function ProjectDailyLogsData({
+  id,
+  searchParams,
+}: {
+  id: string
+  searchParams: Promise<{ date?: string; logId?: string }>
+}) {
+  const [project, search, { userId }] = await Promise.all([getProjectAction(id), searchParams, requireOrgContext()])
+  if (!project) notFound()
+  const date = search.logId
+    ? unwrapAction(await resolveDailyLogDateAction(id, search.logId))
+    : (search.date ?? format(new Date(), "yyyy-MM-dd"))
+  const day = unwrapAction(await loadDailyLogDayAction(id, date))
   return (
-    <div className="flex flex-1 flex-col min-h-0">
+    <div className="flex min-h-0 flex-1 flex-col">
       <ProjectDailyLogsClient
+        key={`${project.id}:${userId}`}
         projectId={project.id}
         projectAddress={project.address ?? undefined}
         projectStartDate={project.start_date ?? undefined}
-        initialDailyLogs={dailyLogs}
-        initialDailyReports={dailyReports}
-        initialFiles={files}
-        scheduleItems={scheduleItems}
-        tasks={tasks}
-        punchItems={punchItems}
-        locations={locations}
-        canManageLocations={canManageLocations}
-        mentionableUsers={projectTeam.map((member) => ({
-          id: member.user_id,
-          name: member.full_name,
-          email: member.email,
-          avatar_url: member.avatar_url,
-          role: member.role_label,
-        }))}
+        initialDate={date}
+        initialUserId={userId}
+        initialDailyLogs={day.logs}
+        initialDailyReports={day.reports}
+        initialFiles={day.files}
       />
     </div>
   )

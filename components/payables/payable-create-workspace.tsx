@@ -1,5 +1,7 @@
 "use client"
 
+import Link from "next/link"
+
 import {
   type DragEvent,
   type ReactNode,
@@ -26,7 +28,6 @@ import { toast } from "sonner"
 import { listVendorCompaniesAction } from "@/app/(app)/companies/actions"
 import { uploadFileAction } from "@/app/(app)/documents/actions"
 import {
-  extractPayableInvoiceAction,
   getPayableBatchSetupAction,
   getPayableVendorProfileAction,
   recordExtractionCorrectionAction,
@@ -95,6 +96,7 @@ type CreationContext = {
   costCodes: CostCode[]
   accounting: {
     enabled: boolean
+    provider: string | null
     providerName: string | null
     expenseAccounts: AccountOption[]
     apAccounts: AccountOption[]
@@ -221,6 +223,9 @@ export function PayableCreateWorkspace({
   }, [initialCompanyId, open])
 
   const [file, setFile] = useState<File | null>(null)
+  const [scannedFileId, setScannedFileId] = useState<string | null>(null)
+  const scannedFileProject = useRef<string>("")
+  const scanGeneration = useRef(0)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [isUploading, setIsUploading] = useState(false)
   const [isScanning, setIsScanning] = useState(false)
@@ -234,6 +239,7 @@ export function PayableCreateWorkspace({
   const [lines, setLines] = useState<SplitLine[]>([])
   const [codingSuggestion, setCodingSuggestion] = useState<PayableCreationCodingSuggestion | null>(null)
   const [isSuggestingCoding, setIsSuggestingCoding] = useState(false)
+  const codingGeneration = useRef(0)
   // What the scan read, kept so a human's edits can be learned from on submit.
   const scannedRead = useRef<{ billNumber: string | null; totalDollars: number | null; lineCount: number } | null>(null)
   const lastAutoSuggestionKey = useRef("")
@@ -248,6 +254,9 @@ export function PayableCreateWorkspace({
   const selectedCommitment = commitmentId === NO_COMMITMENT
     ? null
     : commitments.find((commitment) => commitment.id === commitmentId) ?? null
+  const scanState = useRef({ companies, context, selectedProjectId, selectedProject, vendorName, companyId, billNumber, amountDollars, billDate, dueDate, description, lines })
+  scanState.current = { companies, context, selectedProjectId, selectedProject, vendorName, companyId, billNumber, amountDollars, billDate, dueDate, description, lines }
+  useEffect(() => () => { scanGeneration.current += 1 }, [])
   const amountCents = parseDollarsToCents(amountDollars) ?? 0
   const splitTotalCents = lines.reduce((sum, line) => sum + (parseDollarsToCents(line.amountDollars) ?? 0), 0)
   const balanced = lines.length > 0 && splitTotalCents === amountCents
@@ -305,7 +314,7 @@ export function PayableCreateWorkspace({
   useEffect(() => {
     if (!open) return
     let cancelled = false
-    getPayableBatchSetupAction().then((result) => {
+    getPayableBatchSetupAction({ includeEligibleBills: false }).then((result) => {
       if (cancelled) return
       if (!result.success) {
         setPaymentSetupError(result.error)
@@ -563,6 +572,10 @@ export function PayableCreateWorkspace({
   }
 
   async function handleFileSelected(nextFile: File | null) {
+    const generation = ++scanGeneration.current
+    const before = scanState.current
+    setScannedFileId(null)
+    setIsScanning(false)
     setFile(nextFile)
     setAiFields(new Set())
     setProvenance({})
@@ -572,7 +585,16 @@ export function PayableCreateWorkspace({
     try {
       const formData = new FormData()
       formData.append("invoice", nextFile)
-      const result = unwrapAction(await extractPayableInvoiceAction(formData))
+      if (selectedProjectId) formData.append("projectId", selectedProjectId)
+      if (companyId) formData.append("companyId", companyId)
+      const response = await fetch("/api/payables/extract", { method: "POST", body: formData })
+      const result = await response.json() as { ok: boolean; fileId?: string; error: string; data: import("@/lib/services/document-extraction").ExtractedPayableInvoice }
+      if (generation !== scanGeneration.current || before.selectedProjectId !== scanState.current.selectedProjectId) return
+      if (!response.ok) throw new Error(result.error)
+      setScannedFileId(result.fileId ?? null)
+      scannedFileProject.current = before.selectedProjectId
+      const latest = scanState.current
+      const untouched = (key: "vendorName" | "companyId" | "billNumber" | "amountDollars" | "billDate" | "dueDate" | "description" | "lines") => latest[key] === before[key]
       if (!result.ok) {
         toast.error(result.error, { description: "The invoice is still attached. You can enter the details manually." })
         return
@@ -594,22 +616,26 @@ export function PayableCreateWorkspace({
       const filled = new Set<string>()
       // The scan matches the vendor against the org's list, so an exact-name
       // miss ("ABC Plumbing LLC" vs "ABC Plumbing") no longer loses the link.
-      if (data.vendorId) {
-        const known = companies.find((company) => company.id === data.vendorId)
+      if (data.vendorId && untouched("vendorName") && untouched("companyId")) {
+        const known = latest.companies.find((company) => company.id === data.vendorId)
         if (known) { setVendorName(known.name); setCompanyId(known.id); filled.add("vendor") }
       }
-      if (!filled.has("vendor") && data.vendorName) { applyVendor(data.vendorName); filled.add("vendor") }
-      if (data.billNumber) { setBillNumber(data.billNumber); filled.add("billNumber") }
-      if (data.totalDollars !== null) { setAmountDollars(data.totalDollars.toFixed(2)); filled.add("amount") }
-      if (data.billDate) { setBillDate(data.billDate); filled.add("billDate") }
-      if (data.dueDate) { setDueDate(data.dueDate); filled.add("dueDate") }
-      if (data.description) { setDescription(data.description); filled.add("description") }
+      if (!filled.has("vendor") && data.vendorName && untouched("vendorName") && untouched("companyId")) { setVendorName(data.vendorName); setCompanyId(data.vendorId ?? ""); filled.add("vendor") }
+      if (data.billNumber && untouched("billNumber")) { setBillNumber(data.billNumber); filled.add("billNumber") }
+      if (data.totalDollars !== null && untouched("amountDollars")) { setAmountDollars(data.totalDollars.toFixed(2)); filled.add("amount") }
+      if (data.billDate && untouched("billDate")) { setBillDate(data.billDate); filled.add("billDate") }
+      if (data.dueDate && untouched("dueDate")) { setDueDate(data.dueDate); filled.add("dueDate") }
+      if (data.description && untouched("description")) { setDescription(data.description); filled.add("description") }
 
       // Every billed line the scan found becomes a real split, so a 14-line
       // invoice arrives coded-and-splittable instead of as one lump sum the
       // bookkeeper has to re-type. A single-line invoice keeps the existing
       // one-line behaviour, which the amount-sync effect below still owns.
-      if (data.lines.length > 1 && context && selectedProjectId) {
+      const emptyInitialLine = before.lines.length === 0 && latest.lines.length === 1 &&
+        !latest.lines[0].costCodeId && !latest.lines[0].budgetLineId &&
+        (latest.lines[0].amountDollars === "0.00" || latest.lines[0].amountDollars === "") &&
+        (latest.lines[0].description === "Vendor bill" || latest.lines[0].description === "")
+      if (data.lines.length > 1 && latest.selectedProjectId && (untouched("lines") || emptyInitialLine) && untouched("amountDollars")) {
         setLines(data.lines.map((line) => ({
           id: crypto.randomUUID(),
           projectId: selectedProjectId,
@@ -617,8 +643,8 @@ export function PayableCreateWorkspace({
           budgetLineId: "",
           description: line.description || "Vendor bill",
           amountDollars: (line.amountCents / 100).toFixed(2),
-          qboExpenseAccountId: context.accounting.defaults.expenseAccountId ?? "",
-          qboApAccountId: context.accounting.defaults.apAccountId ?? "",
+          qboExpenseAccountId: latest.context?.accounting.defaults.expenseAccountId ?? "",
+          qboApAccountId: latest.context?.accounting.defaults.apAccountId ?? "",
           accountingDimensions: {},
           billableToCustomer: selectedProject?.billingModel !== "fixed_price",
         })))
@@ -653,9 +679,9 @@ export function PayableCreateWorkspace({
         toast.success(`Invoice read${lineNote}`)
       }
     } catch (error) {
-      toast.error((error as Error).message)
+      if (generation === scanGeneration.current) toast.error((error as Error).message)
     } finally {
-      setIsScanning(false)
+      if (generation === scanGeneration.current) setIsScanning(false)
     }
   }
 
@@ -679,6 +705,8 @@ export function PayableCreateWorkspace({
    */
   async function runCodingSuggestion() {
     if (!vendorName.trim() && !description.trim()) return
+    const generation = ++codingGeneration.current
+    const before = scanState.current
     setIsSuggestingCoding(true)
     try {
       const suggestion = unwrapAction(await suggestPayableCreationCodingAction({
@@ -687,24 +715,31 @@ export function PayableCreateWorkspace({
         vendorName: selectedCompany?.name ?? vendorName,
         description,
       }))
-      if (!suggestion) return
+      const latest = scanState.current
+      if (!suggestion || generation !== codingGeneration.current ||
+        latest.selectedProjectId !== before.selectedProjectId || latest.companyId !== before.companyId ||
+        latest.vendorName !== before.vendorName || latest.description !== before.description) return
       setCodingSuggestion(suggestion)
-      setLines((current) => current.map((line, index) => index === 0 ? {
+      setLines((current) => current.map((line, index) => index === 0 && line.id === before.lines[0]?.id ? {
         ...line,
-        costCodeId: suggestion.costCodeId ?? line.costCodeId,
-        budgetLineId: suggestion.budgetLineId ?? line.budgetLineId,
-        qboExpenseAccountId: suggestion.expenseAccountId ?? line.qboExpenseAccountId,
-        qboApAccountId: suggestion.apAccountId ?? line.qboApAccountId,
+        costCodeId: line.costCodeId === before.lines[0].costCodeId ? suggestion.costCodeId ?? line.costCodeId : line.costCodeId,
+        budgetLineId: line.budgetLineId === before.lines[0].budgetLineId ? suggestion.budgetLineId ?? line.budgetLineId : line.budgetLineId,
+        qboExpenseAccountId: line.qboExpenseAccountId === before.lines[0].qboExpenseAccountId ? suggestion.expenseAccountId ?? line.qboExpenseAccountId : line.qboExpenseAccountId,
+        qboApAccountId: line.qboApAccountId === before.lines[0].qboApAccountId ? suggestion.apAccountId ?? line.qboApAccountId : line.qboApAccountId,
       } : line))
     } catch {
       // A missed suggestion is a form the person fills in themselves, which is
       // where they started. Never a toast for it.
     } finally {
-      setIsSuggestingCoding(false)
+      if (generation === codingGeneration.current) setIsSuggestingCoding(false)
     }
   }
 
   function resetForm() {
+    codingGeneration.current += 1
+    setIsSuggestingCoding(false)
+    scanGeneration.current += 1
+    setScannedFileId(null)
     setSelectedProjectId(projectId ?? NO_PROJECT)
     setContext(null)
     setCommitments([])
@@ -747,8 +782,8 @@ export function PayableCreateWorkspace({
     if (!coreValid || (creationState === "ready" && !readyValid) || !context) return
     startTransition(async () => {
       try {
-        let fileId: string | null = null
-        if (file) {
+        let fileId: string | null = scannedFileProject.current === selectedProjectId ? scannedFileId : null
+        if (file && !fileId) {
           setIsUploading(true)
           const formData = new FormData()
           formData.append("file", file)
@@ -782,10 +817,10 @@ export function PayableCreateWorkspace({
             description: line.description.trim() || description.trim() || `Bill ${billNumber.trim()}`,
             amount_cents: parseDollarsToCents(line.amountDollars) ?? 0,
             billable_to_customer: selectedProjectId ? line.billableToCustomer : false,
-            qbo_expense_account_id: line.qboExpenseAccountId || undefined,
-            qbo_expense_account_name: expenseAccountName(line.qboExpenseAccountId),
-            qbo_ap_account_id: line.qboApAccountId || undefined,
-            qbo_ap_account_name: apAccountName(line.qboApAccountId),
+            ...(context.accounting.provider === "arc_books" ? { arc_books_gl_account_id: line.qboExpenseAccountId || undefined } : { qbo_expense_account_id: line.qboExpenseAccountId || undefined }),
+            qbo_expense_account_name: context.accounting.provider === "arc_books" ? undefined : expenseAccountName(line.qboExpenseAccountId),
+            qbo_ap_account_id: context.accounting.provider === "arc_books" ? undefined : line.qboApAccountId || undefined,
+            qbo_ap_account_name: context.accounting.provider === "arc_books" ? undefined : apAccountName(line.qboApAccountId),
             accounting_dimensions: line.accountingDimensions,
           })),
           retainage_percent: selectedProjectId && retainage ? Number(retainage) : undefined,
@@ -1116,7 +1151,7 @@ export function PayableCreateWorkspace({
                         accountingProviderName={context.accounting.providerName}
                         accountingDimensions={context.accounting.dimensions}
                         qboExpenseAccounts={context.accounting.expenseAccounts}
-                        qboApAccounts={context.accounting.apAccounts}
+                        qboApAccounts={context.accounting.provider === "arc_books" ? [] : context.accounting.apAccounts}
                         billTotalCents={amountCents}
                         fallbackProjectId={selectedProjectId}
                         defaultDescription={description || "Vendor bill"}
@@ -1136,7 +1171,7 @@ export function PayableCreateWorkspace({
                         <div className="grid border sm:grid-cols-2">
                           <button type="button" aria-pressed={paymentChannel === "arc"} disabled={!arcPayAvailable} onClick={() => { setPaymentChannelTouched(true); setPaymentChannel("arc") }} className={cn("flex items-start gap-3 px-4 py-3 text-left transition-colors sm:border-r", paymentChannel === "arc" ? "bg-primary/10" : "hover:bg-muted/30", !arcPayAvailable && "cursor-not-allowed opacity-50")}>
                             <Landmark className={cn("mt-0.5 size-4 shrink-0", paymentChannel === "arc" ? "text-primary" : "text-muted-foreground")} />
-                            <span className="min-w-0"><span className="block text-sm font-medium">Pay with Arc Pay</span><span className="mt-0.5 block text-xs text-muted-foreground">{arcPayAvailable ? "Secure bank transfer with approval controls" : "Connect a funding account in Settings to turn this on"}</span></span>
+                            <span className="min-w-0"><span className="block text-sm font-medium">Pay with Arc Pay</span><span className="mt-0.5 block text-xs text-muted-foreground">{arcPayAvailable ? "Secure bank transfer with approval controls" : "A verified funding account is required"}</span></span>
                             <Check className={cn("ml-auto size-4 shrink-0 text-primary", paymentChannel === "arc" ? "opacity-100" : "opacity-0")} />
                           </button>
                           <button type="button" aria-pressed={paymentChannel === "external"} onClick={() => { setPaymentChannelTouched(true); setPaymentChannel("external") }} className={cn("flex items-start gap-3 border-t px-4 py-3 text-left transition-colors sm:border-t-0", paymentChannel === "external" ? "bg-primary/10" : "hover:bg-muted/30")}>
@@ -1145,6 +1180,7 @@ export function PayableCreateWorkspace({
                             <Check className={cn("ml-auto size-4 shrink-0 text-primary", paymentChannel === "external" ? "opacity-100" : "opacity-0")} />
                           </button>
                         </div>
+                        {!arcPayAvailable ? <Link href="/settings/payments" className="mt-2 inline-block text-xs text-primary underline underline-offset-2">Connect a funding account in Settings</Link> : null}
                       </div>
                       {paymentChannel === "external" ? (
                         <div>

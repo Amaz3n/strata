@@ -7,7 +7,7 @@ import {
   isAccountingProviderKey,
 } from "@/lib/integrations/accounting/registry";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
-import { requireAuthorization } from "@/lib/services/authorization";
+import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access";
 import { recordAudit } from "@/lib/services/audit";
 import { hasQuarterOfSilentCorrectness } from "@/lib/services/books/cutover-rules";
 import { booksDigest } from "@/lib/services/books/hash";

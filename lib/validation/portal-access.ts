@@ -12,6 +12,7 @@ export const portalPermissionsSchema = z.object({
   can_create_punch_items: z.boolean().default(false),
   can_view_warranty: z.boolean().default(true),
   can_view_invoices: z.boolean().default(true),
+  can_certify_pay_applications: z.boolean().default(false),
   can_pay_invoices: z.boolean().default(false),
   can_view_rfis: z.boolean().default(true),
   can_view_submittals: z.boolean().default(true),

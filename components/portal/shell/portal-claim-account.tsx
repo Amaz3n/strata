@@ -12,6 +12,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
+import type { PortalTokenPurpose } from "@/lib/types"
 
 interface PortalClaimAccountProps {
   token: string
@@ -19,12 +20,20 @@ interface PortalClaimAccountProps {
   /** Prefilled from the invite; locked when present so the grant still matches. */
   email?: string
   suggestedFullName?: string
+  /**
+   * What this link is for. On a payout invitation the account is not an upsell
+   * — it is the first step of getting paid — so it is named that way and it
+   * stays on screen at every width. Hiding it below `sm` meant the vendor who
+   * opened the email on their phone, which is most of them, had no way through
+   * at all.
+   */
+  purpose?: PortalTokenPurpose
 }
 
 /**
  * Offers a free account to someone who arrived on a direct link, so their portals
- * collect in one workspace. Deliberately a quiet header affordance — it is an
- * upsell, and the sub came here to do a job.
+ * collect in one workspace. Deliberately a quiet header affordance on a project
+ * link — it is an upsell, and the sub came here to do a job.
  *
  * Only ever reached by someone with no Arc account: the gate turns a claimed
  * access into a sign-in wall before the shell renders.
@@ -34,22 +43,29 @@ export function PortalClaimAccount({
   tokenType,
   email = "",
   suggestedFullName = "",
+  purpose = "portal",
 }: PortalClaimAccountProps) {
   const [open, setOpen] = useState(false)
+  const isPayout = purpose === "vendor_payout"
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="outline" size="sm" className="hidden sm:inline-flex">
-          Save my access
+        <Button
+          variant={isPayout ? "default" : "outline"}
+          size="sm"
+          className={isPayout ? "inline-flex" : "hidden sm:inline-flex"}
+        >
+          {isPayout ? "Create account" : "Save my access"}
         </Button>
       </DialogTrigger>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Save your access</DialogTitle>
+          <DialogTitle>{isPayout ? "Create your Arc account" : "Save your access"}</DialogTitle>
           <DialogDescription>
-            Create a free account with your invited email and every portal you are invited to
-            collects in one place — no more hunting for links in email.
+            {isPayout
+              ? "Your account is what keeps your payout bank yours — the builder never sees or enters it, and the same account gets you paid by every Arc builder you work with."
+              : "Create a free account with your invited email and every portal you are invited to collects in one place — no more hunting for links in email."}
           </DialogDescription>
         </DialogHeader>
         <ExternalAuthForm

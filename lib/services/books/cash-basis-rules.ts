@@ -68,6 +68,7 @@ export function convertToCashBasis(input: {
   accrualCogsCents: number
   accrualExpenseCents: number
   movements: CashBasisMovements
+  actualCash?: { receiptsCents: number; paidCents: number }
 }): CashBasisStatement {
   const move = input.movements
   const accrualCostCents = input.accrualCogsCents + input.accrualExpenseCents
@@ -88,10 +89,18 @@ export function convertToCashBasis(input: {
     { label: "Change in payroll clearing", amountCents: -move.payrollClearingCents },
   ].filter((adjustment) => adjustment.amountCents !== 0)
 
-  const cashReceiptsCents =
+  let cashReceiptsCents =
     input.accrualRevenueCents + revenueAdjustments.reduce((sum, item) => sum + item.amountCents, 0)
-  const cashPaidCents = accrualCostCents + costAdjustments.reduce((sum, item) => sum + item.amountCents, 0)
+  let cashPaidCents = accrualCostCents + costAdjustments.reduce((sum, item) => sum + item.amountCents, 0)
 
+  if (input.actualCash) {
+    const receiptDifference = input.actualCash.receiptsCents - cashReceiptsCents
+    const paymentDifference = input.actualCash.paidCents - cashPaidCents
+    if (receiptDifference) revenueAdjustments.push({ label: "Other noncash and non-operating revenue movements", amountCents: receiptDifference })
+    if (paymentDifference) costAdjustments.push({ label: "Other noncash, asset and liability movements", amountCents: paymentDifference })
+    cashReceiptsCents = input.actualCash.receiptsCents
+    cashPaidCents = input.actualCash.paidCents
+  }
   return {
     accrualRevenueCents: input.accrualRevenueCents,
     accrualCostCents,

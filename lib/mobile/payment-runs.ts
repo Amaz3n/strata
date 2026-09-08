@@ -29,7 +29,7 @@ export interface MobilePaymentRunDTO {
   content_hash: string | null
   approvals_recorded: number
   approvals_required: number
-  bills: Array<{ bill_number: string; vendor_name: string; project_name: string; amount_cents: number }>
+  bills: Array<{ bill_number: string; vendor_name: string; project_name: string; amount_cents: number; stage: string }>
 }
 
 export async function listMobilePaymentRuns(context: MobileOrgContext): Promise<MobilePaymentRunDTO[]> {
@@ -54,6 +54,7 @@ export async function listMobilePaymentRuns(context: MobileOrgContext): Promise<
         vendor_name: item.vendorName,
         project_name: item.projectName,
         amount_cents: item.vendorAmountCents,
+        stage: item.stage,
       })),
     }))
 }

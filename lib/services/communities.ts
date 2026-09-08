@@ -273,6 +273,22 @@ function applyCommunityInput(parsed: Partial<CommunityInput>) {
   return patch
 }
 
+/** Names and scope only: dropdowns must not aggregate every lot in the org. */
+export const listCommunityOptions = cache(async (orgId?: string): Promise<CommunityScope[]> => {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("community.read", context)
+  const decision = resolveDivisionScope(await allowedDivisionScope(context.orgId, context.userId))
+  if (decision.kind === "none") return []
+  const result = await readAllRows<{ id: string; name: string; division_id: string | null }>((from, to) => {
+    let query = context.supabase.from("communities").select("id,name,division_id")
+      .eq("org_id", context.orgId).is("archived_at", null).order("name").order("id").range(from, to)
+    if (decision.kind === "limited") query = query.in("division_id", decision.divisionIds)
+    return query
+  }, { cap: COMMUNITY_LIST_CAP, label: "Failed to list community options" })
+  if (result.truncated) throw new Error("Community options exceeded the supported limit")
+  return result.rows.map(row => ({ id: row.id, name: row.name, divisionId: row.division_id }))
+})
+
 export async function listCommunities(
   { divisionId, status }: { divisionId?: string; status?: string } = {},
   orgId?: string,
@@ -615,6 +631,9 @@ export async function closeLotTakedown(id: string, { actualDate }: { actualDate:
     assertLotStatusTransition({ from: lot.status, to: "owned", hasProject: Boolean(lot.project_id) })
   }
 
+  const { data: books, error: booksError } = await createServiceSupabaseClient().from("books_settings").select("workspace_enabled,arc_ledger_mode").eq("org_id", context.orgId).maybeSingle()
+  if (booksError) throw new Error(`Failed to verify land accounting posture: ${booksError.message}`)
+  if (books?.workspace_enabled && books.arc_ledger_mode !== "disabled" && advancing.length > 0) throw new Error("Record the actual land acquisition and funding in Books before closing this takedown. Expected lot prices are not settlement evidence.")
   const closed = await updateLotTakedown(id, { status: "closed", actualDate: parsedDate }, context.orgId)
 
   if (advancing.length > 0) {

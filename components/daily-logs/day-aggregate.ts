@@ -1,4 +1,4 @@
-import { addDays, format, isWeekend, parseISO } from "date-fns"
+import { format, parseISO } from "date-fns"
 
 import type { DailyLog, DailyLogEntry, DailyReport } from "@/lib/types"
 import type { EnhancedFileMetadata } from "@/app/(app)/projects/[id]/actions"
@@ -150,7 +150,8 @@ export function buildDayBuckets(
       commentCount += comments.length
       if (currentUserId) {
         if (logMentions.some((m) => m.mentioned_user_id === currentUserId)) mentionsMe = true
-        if (comments.some((c) => (c.mentions ?? []).some((m) => m.mentioned_user_id === currentUserId))) mentionsMe = true
+        if (comments.some((c) => (c.mentions ?? []).some((m) => m.mentioned_user_id === currentUserId)))
+          mentionsMe = true
       }
     }
 
@@ -202,7 +203,7 @@ export function buildDayBuckets(
 }
 
 // ---------------------------------------------------------------------------
-// Completeness — a day-record has a knowable definition of done.
+// Report completeness for the submission checklist.
 // ---------------------------------------------------------------------------
 
 export interface DayCompleteness {
@@ -214,137 +215,17 @@ export interface DayCompleteness {
 }
 
 export function dayCompleteness(bucket: DayBucket | undefined): DayCompleteness {
-  const hasNarrative =
-    !!bucket && (bucket.logs.some((l) => Boolean(l.notes?.trim())) || bucket.workEntries.length > 0)
+  const hasNarrative = !!bucket && (bucket.logs.some((l) => Boolean(l.notes?.trim())) || bucket.workEntries.length > 0)
   const segments: DayCompleteness["segments"] = [
     { key: "weather", label: "Weather", done: Boolean(bucket?.weather) },
-    { key: "manpower", label: "Manpower", done: (bucket?.manpowerWorkers ?? 0) > 0 || (bucket?.report?.manpower?.length ?? 0) > 0 },
+    {
+      key: "manpower",
+      label: "Manpower",
+      done: (bucket?.manpowerWorkers ?? 0) > 0 || (bucket?.report?.manpower?.length ?? 0) > 0,
+    },
     { key: "narrative", label: "Narrative", done: hasNarrative },
     { key: "photos", label: "Photos", done: (bucket?.photos.length ?? 0) > 0 },
   ]
   const done = segments.filter((s) => s.done).length
   return { segments, done, total: segments.length, missing: segments.filter((s) => !s.done).map((s) => s.label) }
-}
-
-/** First line of the day's first narrative — what the rail leads with. */
-export function daySummaryLine(bucket: DayBucket): string | undefined {
-  for (const log of bucket.logs) {
-    const line = log.notes?.trim().split("\n")[0]?.trim()
-    if (line) return line
-  }
-  const work = bucket.workEntries.find((e) => e.description?.trim())
-  return work?.description?.trim()
-}
-
-// ---------------------------------------------------------------------------
-// Day spine — every calendar day from project start to today. The gap is data:
-// an unlogged workday must be visible, not silently absent.
-// ---------------------------------------------------------------------------
-
-export type SpineRow =
-  | { type: "month"; key: string; date: Date; logged: number; workdays: number }
-  | { type: "day"; key: string; date: Date; bucket: DayBucket }
-  | { type: "missed"; key: string; date: Date }
-  | { type: "weekend"; key: string; from: Date; to: Date }
-  | { type: "gap"; key: string; from: Date; to: Date; count: number }
-
-/** Collapse runs of unlogged workdays longer than this into one expandable row. */
-const GAP_COLLAPSE_AT = 4
-
-export function buildDaySpine(
-  buckets: Map<string, DayBucket>,
-  today: Date,
-  projectStartDate?: string,
-  expandedGaps?: Set<string>,
-): SpineRow[] {
-  const todayKey = format(today, "yyyy-MM-dd")
-  const earliestBucket = Array.from(buckets.keys()).sort()[0]
-  const startKey = [projectStartDate, earliestBucket].filter((k): k is string => Boolean(k && k <= todayKey)).sort()[0] ?? todayKey
-
-  // Walk backwards from today, batching consecutive quiet days.
-  const rows: SpineRow[] = []
-  let monthRows: SpineRow[] = []
-  let monthKey = ""
-  let monthLogged = 0
-  let monthWorkdays = 0
-
-  // Pending runs are collected newest-first (we iterate descending).
-  let weekendRun: Date[] = []
-  let missedRun: Date[] = []
-
-  function flushWeekend() {
-    if (weekendRun.length === 0) return
-    const newest = weekendRun[0]
-    const oldest = weekendRun[weekendRun.length - 1]
-    monthRows.push({ type: "weekend", key: `wk-${format(oldest, "yyyy-MM-dd")}`, from: oldest, to: newest })
-    weekendRun = []
-  }
-
-  function flushMissed() {
-    if (missedRun.length === 0) return
-    const newest = missedRun[0]
-    const oldest = missedRun[missedRun.length - 1]
-    const gapKey = `gap-${format(oldest, "yyyy-MM-dd")}`
-    if (missedRun.length > GAP_COLLAPSE_AT && !expandedGaps?.has(gapKey)) {
-      monthRows.push({ type: "gap", key: gapKey, from: oldest, to: newest, count: missedRun.length })
-    } else {
-      for (const date of missedRun) {
-        monthRows.push({ type: "missed", key: format(date, "yyyy-MM-dd"), date })
-      }
-    }
-    missedRun = []
-  }
-
-  function flushMonth() {
-    if (!monthKey) return
-    flushWeekend()
-    flushMissed()
-    rows.push({
-      type: "month",
-      key: `m-${monthKey}`,
-      date: parseISO(`${monthKey}-01`),
-      logged: monthLogged,
-      workdays: monthWorkdays,
-    })
-    rows.push(...monthRows)
-    monthRows = []
-    monthLogged = 0
-    monthWorkdays = 0
-  }
-
-  for (let date = parseISO(todayKey); ; date = addDays(date, -1)) {
-    const key = format(date, "yyyy-MM-dd")
-    if (key < startKey) break
-
-    const mk = key.slice(0, 7)
-    if (mk !== monthKey) {
-      flushMonth()
-      monthKey = mk
-    }
-
-    const bucket = buckets.get(key)
-    const weekend = isWeekend(date)
-    if (!weekend) {
-      monthWorkdays += 1
-      if (bucket) monthLogged += 1
-    }
-
-    if (bucket) {
-      flushWeekend()
-      flushMissed()
-      monthRows.push({ type: "day", key, date, bucket })
-    } else if (weekend) {
-      flushMissed()
-      weekendRun.push(date)
-    } else if (key === todayKey) {
-      // Today is never a "missed" accusation — it's simply not written yet.
-      monthRows.push({ type: "missed", key, date })
-    } else {
-      flushWeekend()
-      missedRun.push(date)
-    }
-  }
-  flushMonth()
-
-  return rows
 }

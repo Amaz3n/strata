@@ -1,5 +1,29 @@
 import type { PaymentHoldKind, PaymentHoldLevel } from "@/lib/validation/payment-holds"
 
+export type PaymentJurisdictionReadiness =
+  | { enabled: true; state: string }
+  | { enabled: false; state: null; reason: "jurisdiction_unknown"; message: string }
+  | { enabled: false; state: string; reason: "jurisdiction_not_enabled"; message: string }
+
+/** One jurisdiction decision shared by run creation and every later release gate. */
+export function assertJurisdictionEnabled(
+  policy: { enabled_jurisdictions?: readonly string[] | null },
+  project: { location?: unknown } | null | undefined,
+): PaymentJurisdictionReadiness {
+  const rawState = project?.location && typeof project.location === "object" && !Array.isArray(project.location)
+    ? Reflect.get(project.location, "state")
+    : null
+  const state = typeof rawState === "string" && rawState.trim() ? rawState.trim().toUpperCase() : null
+  if (!state) {
+    return { enabled: false, state: null, reason: "jurisdiction_unknown", message: "Not payable electronically: project jurisdiction is unknown" }
+  }
+  const enabled = new Set((policy.enabled_jurisdictions ?? []).map((value) => value.trim().toUpperCase()).filter(Boolean))
+  if (!enabled.has(state)) {
+    return { enabled: false, state, reason: "jurisdiction_not_enabled", message: `Not payable electronically: ${state} is not enabled` }
+  }
+  return { enabled: true, state }
+}
+
 /**
  * Pure AP payment-hold policy. Kept free of server imports so the release gate
  * that decides whether money moves can be tested directly.

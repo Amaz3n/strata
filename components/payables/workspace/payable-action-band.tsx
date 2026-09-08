@@ -1,68 +1,77 @@
-"use client"
+"use client";
 
-import { useState, type ReactNode } from "react"
-import { format } from "date-fns"
-import { ArrowRight } from "lucide-react"
+import { useState, type ReactNode } from "react";
+import { format } from "date-fns";
+import { ArrowRight } from "lucide-react";
 
-import { Button } from "@/components/ui/button"
-import { Label } from "@/components/ui/label"
-import { Textarea } from "@/components/ui/textarea"
-import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
-import type { PaymentHoldEvaluation } from "@/lib/services/payment-holds"
-import type { PayableRunMembership } from "@/lib/services/org-payables"
-import type { CompanyPaymentReadinessStatus } from "@/lib/services/vendor-payment-invitations"
-import type { VendorBillSummary } from "@/lib/services/vendor-bills"
-import { cn } from "@/lib/utils"
-import { PayableHoldsPanel } from "./payable-holds"
-import { VendorPaymentInviteButton } from "./vendor-payment-invite"
-import type { PayableStage } from "./payable-form"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers";
+import type { PaymentHoldEvaluation } from "@/lib/services/payment-holds";
+import type { PayableRunMembership } from "@/lib/services/org-payables";
+import type { CompanyPaymentReadinessStatus } from "@/lib/services/vendor-payment-invitations";
+import type { VendorBillSummary } from "@/lib/services/vendor-bills";
+import { cn } from "@/lib/utils";
+import { PayableHoldsPanel } from "./payable-holds";
+import { VendorPaymentInviteButton } from "./vendor-payment-invite";
+import type { PayableStage } from "./payable-form";
 
 interface PayableActionBandProps {
-  bill: VendorBillSummary
-  stage: PayableStage
-  isPending: boolean
-  blocked: boolean
-  evaluation?: PaymentHoldEvaluation
-  onHoldOverridden: (evaluation: PaymentHoldEvaluation) => void
-  totalCents: number
-  balanceCents: number
-  mayDecideApproval: boolean
-  approvalWaitingLabel?: string
-  onApprove: () => void
-  onReject: (reason: string) => void
-  onReopen: () => void
-  canPayElectronically: boolean
-  railOpen: boolean
-  readiness?: CompanyPaymentReadinessStatus
-  onPayElectronically: () => void
-  recordPaymentOpen: boolean
-  onToggleRecordPayment: () => void
+  bill: VendorBillSummary;
+  stage: PayableStage;
+  isPending: boolean;
+  blocked: boolean;
+  evaluation?: PaymentHoldEvaluation;
+  onHoldOverridden: (evaluation: PaymentHoldEvaluation) => void;
+  mayDecideApproval: boolean;
+  approvalWaitingLabel?: string;
+  onApprove: () => void;
+  onReject: (reason: string) => void;
+  onReopen: () => void;
+  canPayElectronically: boolean;
+  railOpen: boolean;
+  readiness?: CompanyPaymentReadinessStatus;
+  onPayElectronically: () => void;
+  recordPaymentOpen: boolean;
+  onToggleRecordPayment: () => void;
   /** The external-payment form, owned by the workspace that holds its state. */
-  recordPaymentForm: ReactNode
-  runMembership?: PayableRunMembership
+  recordPaymentForm: ReactNode;
+  runMembership?: PayableRunMembership;
   /**
    * Undo a payment recorded by hand. Absent when the viewer cannot release
    * payments, or when the payment came off the rail — that money returns
    * through the provider, not by editing Arc's copy of the story.
    */
-  onReverseManualPayment?: (paymentId: string, reason: string) => void
-  awaitingViewerApproval: boolean
-  onReviewRun: () => void
-  onVendorInvited: () => void
+  onReverseManualPayment?: (paymentId: string, reason: string) => void;
+  awaitingViewerApproval: boolean;
+  onReviewRun: () => void;
+  onVendorInvited: () => void;
 }
 
 /** A quiet single line: the band states a fact and offers nothing. */
 function StatusLine({ children }: { children: ReactNode }) {
   return (
-    <div className="shrink-0 border-y bg-muted/20 px-6 py-2.5 text-sm text-muted-foreground sm:px-8">
+    <div className="rounded-xl bg-muted/40 px-4 py-3 text-sm leading-6 text-muted-foreground">
       {children}
     </div>
-  )
+  );
 }
 
 /** The band with something to do in it. */
 function ActionZone({ children }: { children: ReactNode }) {
-  return <div className="shrink-0 space-y-3 border-y bg-muted/30 px-6 py-4 sm:px-8">{children}</div>
+  return (
+    <div className="space-y-4 rounded-xl bg-muted/35 p-4 [&_button]:rounded-lg">
+      {children}
+    </div>
+  );
 }
 
 /**
@@ -81,8 +90,6 @@ export function PayableActionBand({
   blocked,
   evaluation,
   onHoldOverridden,
-  totalCents,
-  balanceCents,
   mayDecideApproval,
   approvalWaitingLabel,
   onApprove,
@@ -101,14 +108,18 @@ export function PayableActionBand({
   onReviewRun,
   onVendorInvited,
 }: PayableActionBandProps) {
-  const [rejecting, setRejecting] = useState(false)
-  const [rejectionReason, setRejectionReason] = useState("")
-  const [reverseOpen, setReverseOpen] = useState(false)
-  const [reverseReason, setReverseReason] = useState("")
+  const [rejecting, setRejecting] = useState(false);
+  const [rejectionReason, setRejectionReason] = useState("");
+  const [reverseOpen, setReverseOpen] = useState(false);
+  const [reverseReason, setReverseReason] = useState("");
 
   const holds = evaluation ? (
-    <PayableHoldsPanel billId={bill.id} evaluation={evaluation} onOverridden={onHoldOverridden} />
-  ) : null
+    <PayableHoldsPanel
+      billId={bill.id}
+      evaluation={evaluation}
+      onOverridden={onHoldOverridden}
+    />
+  ) : null;
 
   if (stage === "review") {
     if (!mayDecideApproval) {
@@ -116,7 +127,7 @@ export function PayableActionBand({
         <StatusLine>
           {approvalWaitingLabel ?? "Waiting for a designated approver."}
         </StatusLine>
-      )
+      );
     }
     return (
       <ActionZone>
@@ -148,13 +159,15 @@ export function PayableActionBand({
                 className="h-9"
                 disabled={isPending}
                 onClick={() => {
-                  setRejecting(false)
-                  setRejectionReason("")
+                  setRejecting(false);
+                  setRejectionReason("");
                 }}
               >
                 Cancel
               </Button>
-              <span className="ml-auto text-xs text-muted-foreground">The vendor is sent this.</span>
+              <span className="ml-auto text-xs text-muted-foreground">
+                The vendor is sent this.
+              </span>
             </div>
           </div>
         ) : (
@@ -165,12 +178,12 @@ export function PayableActionBand({
               the approver of record without ever asking them to be.
             */}
             <Button
-              className="group h-10 flex-1 justify-between"
+              className="group h-10 gap-6"
               disabled={isPending || blocked}
               onClick={onApprove}
             >
               <span>
-                {blocked ? "Blocked by payment holds" : `Approve · ${formatMoneyFromCents(totalCents)}`}
+                {blocked ? "Blocked by payment holds" : "Approve bill"}
               </span>
               {!blocked ? (
                 <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
@@ -187,7 +200,7 @@ export function PayableActionBand({
           </div>
         )}
       </ActionZone>
-    )
+    );
   }
 
   if (stage === "rejected") {
@@ -200,12 +213,18 @@ export function PayableActionBand({
               {bill.rejection_reason ?? "No reason was recorded."}
             </span>
           </p>
-          <Button variant="outline" size="sm" className="shrink-0" disabled={isPending} onClick={onReopen}>
+          <Button
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            disabled={isPending}
+            onClick={onReopen}
+          >
             {isPending ? "Reopening…" : "Reopen for review"}
           </Button>
         </div>
       </ActionZone>
-    )
+    );
   }
 
   if (stage === "in_run" && runMembership) {
@@ -216,7 +235,7 @@ export function PayableActionBand({
             ? "You submitted this payment — it is with your designated approvers now."
             : `In a payment run · ${runMembership.runStatus.replaceAll("_", " ")} · cannot be edited or paid another way.`}
         </StatusLine>
-      )
+      );
     }
     return (
       <ActionZone>
@@ -224,15 +243,16 @@ export function PayableActionBand({
           <p className="min-w-0 text-[13px]">
             <span className="font-medium">Waiting for your approval.</span>{" "}
             <span className="text-muted-foreground">
-              {formatMoneyFromCents(runMembership.totalDebitCents)} debit across the run.
+              {formatMoneyFromCents(runMembership.totalDebitCents)} debit across
+              the run.
             </span>
           </p>
           <Button size="sm" className="shrink-0" onClick={onReviewRun}>
-            Review &amp; approve
+            Review payment run
           </Button>
         </div>
       </ActionZone>
-    )
+    );
   }
 
   if (stage === "payable") {
@@ -240,34 +260,34 @@ export function PayableActionBand({
       railOpen &&
       !canPayElectronically &&
       bill.company_id &&
-      (readiness === "not_started" || readiness === "invited" || !readiness)
+      (readiness === "not_started" || readiness === "invited" || !readiness);
     return (
       <ActionZone>
         {holds}
         <div className="flex flex-col gap-2 sm:flex-row">
           {canPayElectronically ? (
             <Button
-              className="h-10 flex-1 justify-between"
+              className="h-10 gap-6"
               disabled={isPending || blocked}
               onClick={onPayElectronically}
             >
               <span>
-                {blocked ? "Blocked by payment holds" : `Pay ${formatMoneyFromCents(balanceCents)} by ACH`}
+                {blocked ? "Blocked by payment holds" : "Prepare payment"}
               </span>
               {!blocked ? <ArrowRight className="h-4 w-4" /> : null}
             </Button>
           ) : null}
           <Button
-            variant={canPayElectronically ? "outline" : "default"}
+            variant={canPayElectronically ? "ghost" : "default"}
             className={cn("h-10", canPayElectronically ? "shrink-0" : "flex-1")}
             disabled={isPending || blocked}
             onClick={onToggleRecordPayment}
           >
             {canPayElectronically
-              ? "Record external payment"
+              ? "Record payment…"
               : blocked
                 ? "Blocked by payment holds"
-                : `Record payment · ${formatMoneyFromCents(balanceCents)}`}
+                : "Record payment"}
           </Button>
         </div>
 
@@ -290,31 +310,50 @@ export function PayableActionBand({
           </p>
         ) : null}
 
-        {recordPaymentOpen ? recordPaymentForm : null}
+        <Dialog
+          open={recordPaymentOpen}
+          onOpenChange={(open) => {
+            if (open !== recordPaymentOpen) onToggleRecordPayment();
+          }}
+        >
+          <DialogContent className="max-h-[90dvh] overflow-y-auto rounded-2xl sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Record payment</DialogTitle>
+              <DialogDescription>
+                Record a payment made outside Arc. This does not send money.
+              </DialogDescription>
+            </DialogHeader>
+            {recordPaymentForm}
+          </DialogContent>
+        </Dialog>
       </ActionZone>
-    )
+    );
   }
 
   if (stage === "paid") {
     // `payments` arrives newest-first (hydrateVendorBills orders by
     // `received_at` descending), so the most recent payment is the head.
-    const last = bill.payments[0]
-    if (!last) return null
-    const paidOn = last.received_at ? new Date(last.received_at) : null
-    const reversible = Boolean(onReverseManualPayment) && (last.provider ?? "manual") === "manual"
+    const last = bill.payments[0];
+    if (!last) return null;
+    const paidOn = last.received_at ? new Date(last.received_at) : null;
+    const reversible =
+      Boolean(onReverseManualPayment) &&
+      (last.provider ?? "manual") === "manual";
     const summary = (
       <>
         Paid {formatMoneyFromCents(last.amount_cents)}
         {last.method ? ` by ${last.method}` : ""}
-        {paidOn && !Number.isNaN(paidOn.getTime()) ? ` on ${format(paidOn, "MMM d, yyyy")}` : ""}
+        {paidOn && !Number.isNaN(paidOn.getTime())
+          ? ` on ${format(paidOn, "MMM d, yyyy")}`
+          : ""}
         {last.reference ? ` · ref ${last.reference}` : ""}
       </>
-    )
+    );
 
-    if (!reversible) return <StatusLine>{summary}</StatusLine>
+    if (!reversible) return <StatusLine>{summary}</StatusLine>;
 
     return (
-      <div className="shrink-0 border-y bg-muted/20 px-6 py-2.5 sm:px-8">
+      <div className="rounded-xl bg-muted/40 px-4 py-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-sm text-muted-foreground">{summary}</p>
           <Button
@@ -341,8 +380,9 @@ export function PayableActionBand({
               rows={2}
             />
             <p className="text-xs text-muted-foreground">
-              This reopens the payable for {formatMoneyFromCents(last.amount_cents)} and voids the payment in your
-              accounting system. It does not move money.
+              This reopens the payable for{" "}
+              {formatMoneyFromCents(last.amount_cents)} and voids the payment in
+              your accounting system. It does not move money.
             </p>
             <Button
               type="button"
@@ -350,9 +390,9 @@ export function PayableActionBand({
               variant="destructive"
               disabled={isPending || reverseReason.trim().length < 8}
               onClick={() => {
-                onReverseManualPayment?.(last.id, reverseReason.trim())
-                setReverseOpen(false)
-                setReverseReason("")
+                onReverseManualPayment?.(last.id, reverseReason.trim());
+                setReverseOpen(false);
+                setReverseReason("");
               }}
             >
               Reverse {formatMoneyFromCents(last.amount_cents)}
@@ -360,9 +400,9 @@ export function PayableActionBand({
           </div>
         ) : null}
       </div>
-    )
+    );
   }
 
   // Drafts and vendor credits have no decision waiting on them here.
-  return null
+  return null;
 }

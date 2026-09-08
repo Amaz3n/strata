@@ -1,13 +1,28 @@
+import { requirementCovered } from "@/lib/lien-waivers/coverage"
 import { z } from "zod"
 
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { requireAuthorization } from "@/lib/services/authorization"
 import { requirePermission } from "@/lib/services/permissions"
-import { escapeHtml, getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
+import {
+  escapeHtml,
+  getOrgSenderEmail,
+  renderStandardEmailLayout,
+  sendEmail,
+} from "@/lib/services/mailer"
 
-const waiverTypeSchema = z.enum(["conditional", "unconditional", "final"])
+const waiverTypeSchema = z.enum([
+  "conditional",
+  "unconditional",
+  "final",
+  "conditional_progress",
+  "unconditional_progress",
+  "conditional_final",
+  "unconditional_final",
+])
 
 export const subtierWaiverRequirementSchema = z.object({
   project_id: z.string().uuid(),
@@ -20,16 +35,9 @@ export const subtierWaiverRequirementSchema = z.object({
   period_end: z.string().date(),
 })
 
-export type SubtierWaiverRequirementInput = z.infer<typeof subtierWaiverRequirementSchema>
-
-export type WaiverMatrixRow = {
-  commitment_id: string
-  through_company_id: string
-  through_company_name: string
-  tier_one: any[]
-  tier_two: any[]
-  requirements: Array<any & { received: boolean; matching_waiver_id: string | null }>
-}
+export type SubtierWaiverRequirementInput = z.infer<
+  typeof subtierWaiverRequirementSchema
+>
 
 /**
  * Waivers are anchored to the payable they cover.
@@ -39,8 +47,7 @@ export type WaiverMatrixRow = {
  * `convertToUnconditionalWaiver`) handed out `/sign/lien-waiver/<token>` links
  * to a route that does not exist, and its payment-anchored rows carried
  * `claimant_name: "TBD"` and no `bill_id`, so the release gate — which queries
- * by bill — could never see them. Subs now sign in the portal
- * (`signVendorBillWaiverFromPortal`), and the receivables side is
+ * by bill — could never see them. Subs now sign prepared PDFs through native document signing, and the receivables side is
  * `invoice_lien_waivers`, which is a different document with a different
  * signer.
  */
@@ -71,6 +78,12 @@ export interface PortalVendorBillWaiverContext {
     id: string
     name: string
     property_description?: string | null
+    /**
+     * The raw location. Which state's waiver law governs is the property's
+     * question, and `property_description` has already been flattened to a
+     * display string by the time it gets here.
+     */
+    location: unknown
   }
   /** Every waiver row on this payable, signed or still awaiting signature. */
   waivers: Array<{
@@ -93,13 +106,20 @@ function projectPropertyDescription(project: any): string | null {
   const location = project?.location
   if (typeof location === "string" && location.trim()) return location
   if (location && typeof location === "object") {
-    const address = [location.address, location.city, location.state, location.postal_code]
+    const address = [
+      location.address,
+      location.city,
+      location.state,
+      location.postal_code,
+    ]
       .filter(Boolean)
       .join(", ")
     if (address) return address
   }
   const metadataLocation = project?.metadata?.location
-  return typeof metadataLocation === "string" && metadataLocation.trim() ? metadataLocation : null
+  return typeof metadataLocation === "string" && metadataLocation.trim()
+    ? metadataLocation
+    : null
 }
 
 export async function getVendorBillWaiverForPortal({
@@ -138,12 +158,17 @@ export async function getVendorBillWaiverForPortal({
   const commitment = relationOne((bill as any).commitment)
   const company = relationOne((bill as any).company)
   const project = relationOne((bill as any).project)
-  const billCompanyId = (bill as any).company_id ?? commitment?.company_id ?? company?.id ?? null
+  const billCompanyId =
+    (bill as any).company_id ?? commitment?.company_id ?? company?.id ?? null
   if (billCompanyId !== companyId) return null
   const billMetadata = (bill.metadata as Record<string, unknown> | null) ?? {}
-  const billingPeriodEnd = String(billMetadata.billing_period_end ?? bill.due_date ?? bill.bill_date ?? "")
+  const billingPeriodEnd = String(
+    billMetadata.billing_period_end ?? bill.due_date ?? bill.bill_date ?? "",
+  )
   if (!/^\d{4}-\d{2}-\d{2}$/.test(billingPeriodEnd)) {
-    throw new Error("Set the payable period end before requesting its lien waiver")
+    throw new Error(
+      "Set the payable period end before requesting its lien waiver",
+    )
   }
 
   // Every type, not just the conditional one: a payable with retainage needs a
@@ -187,6 +212,7 @@ export async function getVendorBillWaiverForPortal({
       id: projectId,
       name: project?.name ?? "Project",
       property_description: projectPropertyDescription(project),
+      location: project?.location ?? null,
     },
     waivers: (waivers ?? []).map((waiver) => ({
       id: waiver.id as string,
@@ -201,175 +227,27 @@ export async function getVendorBillWaiverForPortal({
   }
 }
 
-export async function signVendorBillWaiverFromPortal({
-  orgId,
-  projectId,
-  companyId,
-  contactId,
-  portalTokenId,
-  billId,
-  signerName,
-  signatureText,
-  consentAccepted,
-  waiverType = "conditional",
-}: {
-  orgId: string
-  projectId: string
-  companyId: string
-  contactId?: string | null
-  portalTokenId: string
-  billId: string
-  signerName: string
-  signatureText?: string | null
-  consentAccepted: boolean
-  /**
-   * Which document is being signed. Hardcoding "conditional" here meant a
-   * final waiver could not be produced from the portal at all — and
-   * `releaseRetainage` refuses to release without one, so retainage was
-   * unreachable for any org that requires waivers.
-   */
-  waiverType?: WaiverType
-}) {
-  const normalizedSignerName = signerName.trim()
-  const normalizedSignature = signatureText?.trim() || normalizedSignerName
-  if (!consentAccepted || normalizedSignerName.length < 2 || normalizedSignature.length < 2) {
-    throw new Error("Signer name, signature, and electronic consent are required.")
-  }
-  const type = waiverTypeSchema.parse(waiverType)
-
-  const context = await getVendorBillWaiverForPortal({ orgId, projectId, companyId, billId })
-  if (!context) {
-    throw new Error("Payable not found for this portal.")
-  }
-
-  const supabase = createServiceSupabaseClient()
-  const nowIso = new Date().toISOString()
-  // The release gate requires the waiver to cover the payable's billing
-  // period. Signing today is insufficient for a future-dated period end.
-  const throughDate = context.bill.billing_period_end
-  const signatureData = {
-    signer_name: normalizedSignerName,
-    signature_text: normalizedSignature,
-    consent_accepted: true,
-    signed_at: nowIso,
-    portal_token_id: portalTokenId,
-    contact_id: contactId ?? null,
-  }
-
-  let waiverId = context.waivers.find((waiver) => waiver.waiver_type === type)?.id ?? null
-  if (waiverId) {
-    const { error: updateWaiverError } = await supabase
-      .from("lien_waivers")
-      .update({
-        status: "signed",
-        signed_at: nowIso,
-        signature_data: signatureData,
-        claimant_name: context.company.name,
-        amount_cents: context.bill.total_cents,
-        through_date: throughDate,
-        property_description: context.project.property_description,
-        metadata: {
-          source: "sub_portal",
-          vendor_bill_id: billId,
-          bill_number: context.bill.bill_number ?? null,
-          commitment_id: context.commitment?.id ?? null,
-        },
-      })
-      .eq("org_id", orgId)
-      .eq("id", waiverId)
-
-    if (updateWaiverError) {
-      throw new Error(`Failed to sign waiver: ${updateWaiverError.message}`)
-    }
-  } else {
-    const { data: created, error: insertWaiverError } = await supabase
-      .from("lien_waivers")
-      .insert({
-        org_id: orgId,
-        project_id: projectId,
-        bill_id: billId,
-        company_id: companyId,
-        contact_id: contactId ?? null,
-        waiver_type: type,
-        status: "signed",
-        amount_cents: context.bill.total_cents,
-        through_date: throughDate,
-        claimant_name: context.company.name,
-        property_description: context.project.property_description,
-        signature_data: signatureData,
-        signed_at: nowIso,
-        metadata: {
-          source: "sub_portal",
-          vendor_bill_id: billId,
-          bill_number: context.bill.bill_number ?? null,
-          commitment_id: context.commitment?.id ?? null,
-        },
-      })
-      .select("id")
-      .single()
-
-    if (insertWaiverError || !created) {
-      throw new Error(`Failed to create waiver: ${insertWaiverError?.message}`)
-    }
-    waiverId = created.id
-  }
-
-  // Only the types the release gate actually accepts as evidence may mark the
-  // payable received. Stamping "received" for an unconditional waiver would
-  // show the hold as satisfied on the payables screen while release kept
-  // refusing, with nothing on either screen explaining the disagreement.
-  if (type === "conditional" || type === "final") {
-    const { error: billUpdateError } = await supabase
-      .from("vendor_bills")
-      .update({
-        lien_waiver_status: "received",
-        lien_waiver_received_at: nowIso,
-      })
-      .eq("org_id", orgId)
-      .eq("project_id", projectId)
-      .eq("id", billId)
-
-    if (billUpdateError) {
-      throw new Error(`Waiver signed but payable could not be updated: ${billUpdateError.message}`)
-    }
-  }
-
-  // Verification writes `metadata.waiver_verification`, which the
-  // `waiver_verified` payment hold reads. Best effort: a failed check must not
-  // undo a signature the sub already gave.
-  try {
-    const { verifyBillWaiver } = await import("@/lib/services/ap-document-verification")
-    await verifyBillWaiver(billId, orgId)
-  } catch {
-    // Verification is advisory; the waiver stands either way.
-  }
-
-  await recordEvent({
-    orgId,
-    eventType: "vendor_bill_waiver_signed",
-    entityType: "vendor_bill",
-    entityId: billId,
-    payload: {
-      project_id: projectId,
-      company_id: companyId,
-      contact_id: contactId ?? null,
-      lien_waiver_id: waiverId,
-      amount_cents: context.bill.total_cents,
-    },
-  })
-
-  return {
-    success: true,
-    waiverId,
-    billId,
-  }
-}
-
+/** The org's fallback waiver jurisdiction. A missing policy is normal, not an error. */
 /** Declares a supplier/sub-subcontractor whose waiver is required for a pay period. */
-export async function createSubtierWaiverRequirement(input: SubtierWaiverRequirementInput, orgId?: string) {
+export async function createSubtierWaiverRequirement(
+  input: SubtierWaiverRequirementInput,
+  orgId?: string,
+) {
   const parsed = subtierWaiverRequirementSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("bill.write", { supabase, orgId: resolvedOrgId, userId })
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    permission: "bill.write",
+    projectId: parsed.project_id,
+    resourceType: "project",
+    resourceId: parsed.project_id,
+  })
   const { data: commitment } = await supabase
     .from("commitments")
     .select("id, company_id")
@@ -378,80 +256,111 @@ export async function createSubtierWaiverRequirement(input: SubtierWaiverRequire
     .eq("id", parsed.commitment_id)
     .maybeSingle()
   if (!commitment || commitment.company_id !== parsed.through_company_id) {
-    throw new Error("Commitment does not belong to the selected first-tier company")
+    throw new Error(
+      "Commitment does not belong to the selected first-tier company",
+    )
   }
-  const { data, error } = await supabase.from("subtier_waiver_requirements").upsert({
-    org_id: resolvedOrgId,
-    ...parsed,
-    created_by: userId,
-  }, { onConflict: "commitment_id,claimant_company_name,period_end,waiver_type" }).select("*").single()
-  if (error || !data) throw new Error(`Failed to save sub-tier claimant: ${error?.message}`)
-  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "insert", entityType: "subtier_waiver_requirement", entityId: data.id, after: data })
-  const [{ data: company }, { data: portal }, { data: org }] = await Promise.all([
-    supabase.from("companies").select("name, email").eq("org_id", resolvedOrgId).eq("id", parsed.through_company_id).maybeSingle(),
-    supabase.from("portal_access_tokens").select("token").eq("org_id", resolvedOrgId).eq("project_id", parsed.project_id).eq("company_id", parsed.through_company_id).eq("portal_type", "sub").is("revoked_at", null).order("created_at", { ascending: false }).limit(1).maybeSingle(),
-    supabase.from("orgs").select("name, slug").eq("id", resolvedOrgId).maybeSingle(),
+  const { data, error } = await supabase
+    .from("subtier_waiver_requirements")
+    .upsert(
+      {
+        org_id: resolvedOrgId,
+        ...parsed,
+        created_by: userId,
+      },
+      {
+        onConflict:
+          "commitment_id,claimant_company_name,period_end,waiver_type",
+      },
+    )
+    .select("*")
+    .single()
+  if (error || !data)
+    throw new Error(`Failed to save sub-tier claimant: ${error?.message}`)
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "insert",
+    entityType: "subtier_waiver_requirement",
+    entityId: data.id,
+    after: data,
+  })
+  const [{ data: company }, { data: org }] = await Promise.all([
+    supabase
+      .from("companies")
+      .select("name, email")
+      .eq("org_id", resolvedOrgId)
+      .eq("id", parsed.through_company_id)
+      .maybeSingle(),
+    supabase
+      .from("orgs")
+      .select("name, slug")
+      .eq("id", resolvedOrgId)
+      .maybeSingle(),
   ])
-  if (company?.email && portal?.token) {
-    const url = `${process.env.NEXT_PUBLIC_APP_URL}/s/${portal.token}/subtier-waivers`
-    const html = renderStandardEmailLayout({ title: "Sub-tier lien waiver requested", messageHtml: `Upload the ${escapeHtml(parsed.waiver_type)} waiver for ${escapeHtml(parsed.claimant_company_name)} through ${escapeHtml(parsed.period_end)}.`, buttonText: "Upload waiver", buttonUrl: url, orgName: org?.name, showManageSettings: false })
-    await sendEmail({ to: [company.email], subject: `Lien waiver requested: ${parsed.claimant_company_name}`, html, from: getOrgSenderEmail(org?.slug, org?.name) })
+  let notificationSent = false
+  if (company?.email) {
+    const { ensurePortalLink } = await import("@/lib/services/portal-links")
+    const base = await ensurePortalLink({
+      supabase,
+      orgId: resolvedOrgId,
+      projectId: parsed.project_id,
+      portalType: "sub",
+      companyId: parsed.through_company_id,
+      capabilities: { can_upload_subtier_waivers: true },
+      fallbackPath: `/projects/${parsed.project_id}/financials/payables/waivers`,
+    })
+    const url = `${base}/subtier-waivers`
+    const html = renderStandardEmailLayout({
+      title: "Sub-tier lien waiver requested",
+      messageHtml: `Upload the ${escapeHtml(parsed.waiver_type)} waiver for ${escapeHtml(parsed.claimant_company_name)} through ${escapeHtml(parsed.period_end)}.`,
+      buttonText: "Upload waiver",
+      buttonUrl: url,
+      orgName: org?.name,
+      showManageSettings: false,
+    })
+    notificationSent = await sendEmail({
+      to: [company.email],
+      subject: `Lien waiver requested: ${parsed.claimant_company_name}`,
+      html,
+      from: getOrgSenderEmail(org?.slug, org?.name),
+    })
   }
-  await recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "lien_waiver_created", entityType: "subtier_waiver_requirement", entityId: data.id, payload: { project_id: parsed.project_id, through_company_id: parsed.through_company_id, claimant_company_name: parsed.claimant_company_name } })
-  return data
+  await recordEvent({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    eventType: "lien_waiver_created",
+    entityType: "subtier_waiver_requirement",
+    entityId: data.id,
+    payload: {
+      project_id: parsed.project_id,
+      through_company_id: parsed.through_company_id,
+      claimant_company_name: parsed.claimant_company_name,
+    },
+  })
+  return { ...data, notificationSent }
 }
 
-export async function listWaiverMatrixForPayPeriod(
-  projectId: string,
-  period: { start?: string | null; end: string },
-  orgId?: string,
-): Promise<WaiverMatrixRow[]> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("bill.read", { supabase, orgId: resolvedOrgId, userId })
-  const [{ data: requirements, error: requirementError }, { data: waivers, error: waiverError }] = await Promise.all([
-    supabase.from("subtier_waiver_requirements")
-      .select("*, commitment:commitments!subtier_requirements_commitment_org_fkey(id, title), through_company:companies!subtier_waiver_requirements_through_company_id_fkey(id, name)")
-      .eq("org_id", resolvedOrgId).eq("project_id", projectId).eq("period_end", period.end).eq("is_active", true),
-    supabase.from("lien_waivers")
-      .select("*, company:companies!lien_waivers_company_id_fkey(id, name), through_company:companies!lien_waivers_through_company_id_fkey(id, name)")
-      .eq("org_id", resolvedOrgId).eq("project_id", projectId).lte("through_date", period.end)
-      .gte("through_date", period.start ?? period.end),
-  ])
-  if (requirementError) throw new Error(`Failed to load sub-tier requirements: ${requirementError.message}`)
-  if (waiverError) throw new Error(`Failed to load lien waivers: ${waiverError.message}`)
-  const map = new Map<string, WaiverMatrixRow>()
-  const ensure = (commitmentId: string, companyId: string, companyName: string) => {
-    const key = `${commitmentId}:${companyId}`
-    const current = map.get(key) ?? { commitment_id: commitmentId, through_company_id: companyId, through_company_name: companyName, tier_one: [], tier_two: [], requirements: [] }
-    map.set(key, current)
-    return current
-  }
-  for (const requirement of requirements ?? []) {
-    const company = relationOne<any>((requirement as any).through_company)
-    const row = ensure(requirement.commitment_id, requirement.through_company_id, company?.name ?? "First-tier contractor")
-    const match = (waivers ?? []).find((waiver: any) => waiver.tier === 2 && waiver.claimant_requirement_id === requirement.id && waiver.status === "signed")
-    row.requirements.push({ ...requirement, received: Boolean(match), matching_waiver_id: match?.id ?? null })
-  }
-  for (const waiver of waivers ?? []) {
-    const metadata = (waiver.metadata ?? {}) as Record<string, unknown>
-    const commitmentId = typeof metadata.commitment_id === "string" ? metadata.commitment_id : null
-    const companyId = waiver.tier === 2 ? waiver.through_company_id : waiver.company_id
-    if (!commitmentId || !companyId) continue
-    const company = waiver.tier === 2 ? relationOne<any>((waiver as any).through_company) : relationOne<any>((waiver as any).company)
-    const row = ensure(commitmentId, companyId, company?.name ?? "First-tier contractor")
-    if (waiver.tier === 2) row.tier_two.push(waiver)
-    else row.tier_one.push(waiver)
-  }
-  return [...map.values()].sort((a, b) => a.through_company_name.localeCompare(b.through_company_name))
-}
-
-export async function listSubtierRequirementsForPortal(args: { orgId: string; projectId: string; companyId: string }) {
+export async function listSubtierRequirementsForPortal(args: {
+  orgId: string
+  projectId: string
+  companyId: string
+}) {
   const supabase = createServiceSupabaseClient()
-  const { data, error } = await supabase.from("subtier_waiver_requirements")
-    .select("*, commitment:commitments!subtier_requirements_commitment_org_fkey(id, title), waivers:lien_waivers(id, status, document_file_id, signed_at)")
-    .eq("org_id", args.orgId).eq("project_id", args.projectId).eq("through_company_id", args.companyId)
-    .eq("is_active", true).order("period_end", { ascending: false })
-  if (error) throw new Error(`Failed to load required sub-tier waivers: ${error.message}`)
+  const { data, error } = await supabase
+    .from("subtier_waiver_requirements")
+    .select(
+      "*, commitment:commitments!subtier_requirements_commitment_org_fkey(id, title), waivers:lien_waivers(id, status, document_file_id, signed_file_id, signed_at, waiver_type, amount_cents, through_date, claimant_name, metadata)",
+    )
+    .eq("org_id", args.orgId)
+    .eq("project_id", args.projectId)
+    .eq("through_company_id", args.companyId)
+    .eq("is_active", true)
+    .order("period_end", { ascending: false })
+  if (error)
+    throw new Error(
+      `Failed to load required sub-tier waivers: ${error.message}`,
+    )
   return data ?? []
 }
 
@@ -464,39 +373,78 @@ export async function uploadSubtierWaiverFromPortal(args: {
   requirementId: string
   claimantCompanyName: string
   amountCents: number
-  waiverType: "conditional" | "unconditional" | "final"
+  waiverType: import("@/lib/lien-waivers/coverage").WaiverKind
   throughDate: string
   fileId: string
+  signedDate: string
+  signerName: string
 }) {
   const supabase = createServiceSupabaseClient()
-  const { data: requirement } = await supabase.from("subtier_waiver_requirements").select("*")
-    .eq("id", args.requirementId).eq("org_id", args.orgId).eq("project_id", args.projectId)
-    .eq("through_company_id", args.companyId).eq("is_active", true).maybeSingle()
-  if (!requirement) throw new Error("Sub-tier waiver request not found for this portal")
+  const { data: requirement } = await supabase
+    .from("subtier_waiver_requirements")
+    .select("*")
+    .eq("id", args.requirementId)
+    .eq("org_id", args.orgId)
+    .eq("project_id", args.projectId)
+    .eq("through_company_id", args.companyId)
+    .eq("is_active", true)
+    .maybeSingle()
+  if (!requirement)
+    throw new Error("Sub-tier waiver request not found for this portal")
   const claimant = args.claimantCompanyName.trim()
-  if (claimant.toLocaleLowerCase() !== String(requirement.claimant_company_name).trim().toLocaleLowerCase()) {
-    throw new Error("Claimant must match the requested supplier or sub-subcontractor")
+  if (
+    claimant.toLocaleLowerCase() !==
+    String(requirement.claimant_company_name).trim().toLocaleLowerCase()
+  ) {
+    throw new Error(
+      "Claimant must match the requested supplier or sub-subcontractor",
+    )
   }
-  const { data, error } = await supabase.from("lien_waivers").insert({
-    org_id: args.orgId,
-    project_id: args.projectId,
-    company_id: null,
-    contact_id: args.contactId ?? null,
-    waiver_type: waiverTypeSchema.parse(args.waiverType),
-    status: "signed",
-    amount_cents: Math.max(0, Math.round(args.amountCents)),
-    through_date: args.throughDate,
-    claimant_name: claimant,
-    claimant_company_name: claimant,
-    tier: 2,
-    through_company_id: args.companyId,
-    claimant_requirement_id: requirement.id,
-    document_file_id: args.fileId,
-    signed_at: new Date().toISOString(),
-    metadata: { source: "sub_portal_upload", commitment_id: requirement.commitment_id, portal_token_id: args.portalTokenId },
-  }).select("*").single()
-  if (error || !data) throw new Error(`Failed to save sub-tier waiver: ${error?.message}`)
-  await recordEvent({ orgId: args.orgId, eventType: "subtier_lien_waiver_uploaded", entityType: "lien_waiver", entityId: data.id, payload: { project_id: args.projectId, through_company_id: args.companyId, claimant_requirement_id: requirement.id } })
+  const { data, error } = await supabase
+    .from("lien_waivers")
+    .insert({
+      org_id: args.orgId,
+      project_id: args.projectId,
+      company_id: null,
+      contact_id: args.contactId ?? null,
+      waiver_type: waiverTypeSchema.parse(args.waiverType),
+      status: "signed",
+      amount_cents: Math.max(0, Math.round(args.amountCents)),
+      through_date: args.throughDate,
+      claimant_name: claimant,
+      claimant_company_name: claimant,
+      tier: 2,
+      through_company_id: args.companyId,
+      claimant_requirement_id: requirement.id,
+      document_file_id: args.fileId,
+      signed_file_id: args.fileId,
+      signed_at: z.string().date().parse(args.signedDate),
+      signature_data: {
+        signer_name: z.string().trim().min(2).parse(args.signerName),
+      },
+      metadata: {
+        source: "sub_portal_upload",
+        review: { status: "pending" },
+        recorded_at: new Date().toISOString(),
+        commitment_id: requirement.commitment_id,
+        portal_token_id: args.portalTokenId,
+      },
+    })
+    .select("*")
+    .single()
+  if (error || !data)
+    throw new Error(`Failed to save sub-tier waiver: ${error?.message}`)
+  await recordEvent({
+    orgId: args.orgId,
+    eventType: "subtier_lien_waiver_uploaded",
+    entityType: "lien_waiver",
+    entityId: data.id,
+    payload: {
+      project_id: args.projectId,
+      through_company_id: args.companyId,
+      claimant_requirement_id: requirement.id,
+    },
+  })
   return data
 }
 
@@ -507,10 +455,22 @@ export async function listMissingSubtierWaiversForBill(args: {
   periodEnd: string
 }) {
   const supabase = createServiceSupabaseClient()
-  const { data, error } = await supabase.from("subtier_waiver_requirements")
-    .select("id, claimant_company_name, waiver_type, waivers:lien_waivers(id, status)")
-    .eq("org_id", args.orgId).eq("project_id", args.projectId).eq("commitment_id", args.commitmentId)
-    .eq("period_end", args.periodEnd).eq("is_active", true)
-  if (error) throw new Error(`Unable to validate sub-tier waivers: ${error.message}`)
-  return (data ?? []).filter((row: any) => !(row.waivers ?? []).some((waiver: any) => waiver.status === "signed"))
+  const { data, error } = await supabase
+    .from("subtier_waiver_requirements")
+    .select(
+      "id, claimant_company_name, waiver_type, amount_cents, period_end, metadata, waivers:lien_waivers(id, status, waiver_type, amount_cents, through_date, claimant_name, signed_at, signed_file_id, document_file_id, metadata)",
+    )
+    .eq("org_id", args.orgId)
+    .eq("project_id", args.projectId)
+    .eq("commitment_id", args.commitmentId)
+    .eq("period_end", args.periodEnd)
+    .eq("is_active", true)
+  if (error)
+    throw new Error(`Unable to validate sub-tier waivers: ${error.message}`)
+  return (data ?? []).filter(
+    (row: any) =>
+      !(row.waivers ?? []).some((waiver: any) =>
+        requirementCovered(row, waiver),
+      ),
+  )
 }

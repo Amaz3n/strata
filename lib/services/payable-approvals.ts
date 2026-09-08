@@ -7,10 +7,10 @@ import { payableOutstandingCents } from "@/lib/financials/payables-rules"
 import type { ProviderSettlementWindow } from "@/lib/payments/settlement-estimate"
 import { requireOrgContext } from "@/lib/services/context"
 import { getPaymentApprovalRouting } from "@/lib/services/payment-approvers"
+import { evaluateRunApprovability } from "@/lib/payments/payment-run-approval-policy"
 import {
   createPaymentRun,
   decidePaymentRun,
-  evaluateRunApprovability,
   isReleasableHoldSnapshot,
 } from "@/lib/services/payment-runs"
 import { requirePermission } from "@/lib/services/permissions"
@@ -29,9 +29,10 @@ export const preparePayableApprovalSchema = z.object({
     .max(200, "A payment run holds up to 200 payables"),
   funding_source_id: z.string().uuid(),
   idempotency_key: z.string().trim().min(8).max(200),
+  mode: z.enum(["all_or_nothing", "skip_failures"]).default("all_or_nothing"),
 })
 
-export type PreparePayableApprovalInput = z.infer<
+export type PreparePayableApprovalInput = z.input<
   typeof preparePayableApprovalSchema
 >
 
@@ -45,6 +46,7 @@ export interface PreparedPayableApproval {
   requiredApprovals: number
   /** How many separate ACH payments this run makes — one per payable. */
   paymentCount: number
+  outcomes: Array<{ id: string; ok: boolean; reason: string | null }>
 }
 
 /**
@@ -78,7 +80,7 @@ export async function preparePayableApproval(
     .eq("org_id", context.orgId)
     .in("id", billIds)
   if (error) throw new Error(`Unable to load the selected payables: ${error.message}`)
-  if (!bills || bills.length !== billIds.length) throw new Error("One or more payables were not found")
+  if (!bills || (parsed.mode === "all_or_nothing" && bills.length !== billIds.length)) throw new Error("One or more payables were not found")
   const billById = new Map(bills.map((bill) => [bill.id, bill]))
 
   const companyIds = [...new Set(bills.map((bill) => bill.company_id).filter((id): id is string => Boolean(id)))]
@@ -100,7 +102,9 @@ export async function preparePayableApproval(
   const recipientByCompany = new Map((relationships ?? []).map((row) => [row.company_id, row.recipient_account_id]))
   const nameByCompany = new Map((companies ?? []).map((row) => [row.id, row.name]))
 
-  const items = parsed.bills.map((entry) => {
+  const localOutcomes: Array<{ id: string; ok: boolean; reason: string | null }> = []
+  const items = parsed.bills.flatMap((entry) => {
+    try {
     const bill = billById.get(entry.bill_id)
     if (!bill) throw new Error("One or more payables were not found")
     const label = bill.bill_number ? `Invoice ${bill.bill_number}` : "A payable"
@@ -129,7 +133,8 @@ export async function preparePayableApproval(
     const recipientAccountId = recipientByCompany.get(bill.company_id)
     if (!recipientAccountId) throw new Error(`The vendor on ${label} has not finished payout verification yet`)
 
-    return {
+    localOutcomes.push({ id: entry.bill_id, ok: true, reason: null })
+    return [{
       bill_id: entry.bill_id,
       amount_cents: entry.amount_cents,
       payees: [
@@ -140,14 +145,21 @@ export async function preparePayableApproval(
           amount_cents: entry.amount_cents,
         },
       ],
+    }]
+    } catch (error) {
+      if (parsed.mode === "all_or_nothing") throw error
+      localOutcomes.push({ id: entry.bill_id, ok: false, reason: error instanceof Error ? error.message : "Payable could not be prepared" })
+      return []
     }
   })
+  if (items.length === 0) throw new Error("No selected payables are ready for Arc Pay")
 
   const run = await createPaymentRun(
     {
       funding_source_id: parsed.funding_source_id,
       idempotency_key: parsed.idempotency_key,
       items,
+      mode: parsed.mode,
     },
     context.orgId,
   )
@@ -160,6 +172,7 @@ export async function preparePayableApproval(
     platformFeeCents: run.platformFeeCents,
     requiredApprovals: run.requiredApprovals,
     paymentCount: items.length,
+    outcomes: localOutcomes.map((outcome) => run.outcomes?.find((result) => result.id === outcome.id) ?? outcome),
   }
 }
 

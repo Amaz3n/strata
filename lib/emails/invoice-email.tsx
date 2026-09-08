@@ -20,6 +20,7 @@ import {
 } from "./theme"
 
 export interface InvoiceEmailProps {
+  includesWaiver?: boolean
   invoiceNumber: string
   invoiceTitle: string
   projectName: string
@@ -32,6 +33,7 @@ export interface InvoiceEmailProps {
 }
 
 export function InvoiceEmail({
+  includesWaiver = false,
   invoiceNumber = "INV-001",
   invoiceTitle = "New Invoice",
   projectName = "Project",
@@ -43,23 +45,23 @@ export function InvoiceEmail({
   companyName,
 }: InvoiceEmailProps) {
   const displayOrgName = orgName ?? companyName ?? "Arc"
-  const previewText = `Invoice ${invoiceNumber} from ${displayOrgName}`
+  const previewText = `${includesWaiver ? "Invoice and signed waiver" : "Invoice"} ${invoiceNumber} from ${displayOrgName}`
 
   return (
     <EmailLayout
       preview={previewText}
-      subtitle="Invoice Notification"
+      subtitle={includesWaiver ? "Invoice & waiver" : "Invoice Notification"}
       orgName={orgName}
       orgLogoUrl={orgLogoUrl}
     >
-      <Text style={eventLabelText}>New Invoice</Text>
+      <Text style={eventLabelText}>{includesWaiver ? "Invoice & signed waiver" : "New Invoice"}</Text>
       <Heading style={heading}>Invoice #{invoiceNumber}</Heading>
       <Text style={subjectText}>{invoiceTitle}</Text>
 
       <Text style={paragraph}>
         You received a new invoice from <strong>{displayOrgName}</strong>.
       </Text>
-      <Text style={paragraph}>Review the invoice and submit payment securely in Arc.</Text>
+      <Text style={paragraph}>{includesWaiver ? "Your signed waiver is included. Review both documents and submit payment securely in Arc." : "Review the invoice and submit payment securely in Arc."}</Text>
 
       <Section style={metaCard}>
         <Text style={metaRow}>
@@ -87,7 +89,7 @@ export function InvoiceEmail({
 
       <Section style={buttonWrap}>
         <Button style={button} href={invoiceLink}>
-          View Invoice
+          {includesWaiver ? "View Invoice & Waiver" : "View Invoice"}
         </Button>
       </Section>
 

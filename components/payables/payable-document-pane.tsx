@@ -42,6 +42,8 @@ interface PayableDocumentPaneProps {
   onReplace?: (file: File) => Promise<void>
   /** Creation only needs the invoice canvas, not the supporting-documents tab. */
   invoiceOnly?: boolean
+  /** Quiet document controls for the existing-bill detail view. */
+  compact?: boolean
   projectId?: string
   /**
    * Region to frame on the page — where a scanned field was read from. Setting
@@ -66,6 +68,7 @@ export function PayableDocumentPane({
   onDetach,
   onReplace,
   invoiceOnly = false,
+  compact = false,
   projectId,
   highlight = null,
   scanning = false,
@@ -174,16 +177,18 @@ export function PayableDocumentPane({
 
   const handleReplaceFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? [])
-    if (files.length > 0 && (onReplace || (active && onAttach && onDetach))) {
+    if (files.length > 0 && (onReplace || (!active && onAttach) || (active && onAttach && onDetach))) {
       setIsReplacing(true)
       try {
         if (onReplace) {
           await onReplace(files[0])
+        } else if (!active && onAttach) {
+          await onAttach(files)
         } else if (active && onAttach && onDetach) {
           await onAttach(files)
           await onDetach(active.linkId)
         }
-        toast.success("Invoice replaced successfully")
+        toast.success(active ? "Invoice replaced" : "Invoice attached")
       } catch (err) {
         console.error("Replace failed:", err)
         toast.error("Failed to replace invoice")
@@ -408,10 +413,10 @@ export function PayableDocumentPane({
               </div>
 
               {/* Floating Controls */}
-              <div className="absolute bottom-6 left-6 right-6 z-20 flex justify-between items-center pointer-events-none">
+              <div className={cn("absolute z-20 flex items-center justify-between pointer-events-none", compact ? "bottom-0 left-0 right-0 gap-2 border-t bg-background/95 px-3 py-2" : "bottom-6 left-6 right-6")}>
                 {/* Bottom Left controls: Zoom & Rotate */}
                 {(isPdf || isImage) && (
-                  <div className="flex items-center gap-1 pointer-events-auto bg-background/85 backdrop-blur-sm border shadow-lg p-1.5">
+                  <div className={cn("flex items-center gap-1 pointer-events-auto", !compact && "bg-background/85 backdrop-blur-sm border shadow-lg p-1.5")}>
                     <Button
                       variant="ghost"
                       size="icon"
@@ -452,7 +457,7 @@ export function PayableDocumentPane({
 
                 {/* Bottom Center paging */}
                 {isPdf && pageCount > 1 && (
-                  <div className="flex items-center gap-1 pointer-events-auto bg-background/85 backdrop-blur-sm border shadow-lg p-1.5 mx-auto">
+                  <div className={cn("mx-auto flex items-center gap-1 pointer-events-auto", !compact && "bg-background/85 backdrop-blur-sm border shadow-lg p-1.5")}>
                     <Button
                       variant="ghost"
                       size="icon"
@@ -486,7 +491,7 @@ export function PayableDocumentPane({
                       <Button
                         variant="outline"
                         size="icon"
-                        className="h-11 w-11 bg-background/85 backdrop-blur-sm border shadow-lg hover:bg-background/95 flex items-center justify-center"
+                        className={cn("flex items-center justify-center", compact ? "size-8 border-0 bg-transparent shadow-none" : "h-11 w-11 bg-background/85 backdrop-blur-sm border shadow-lg hover:bg-background/95")}
                         title="Document actions"
                       >
                         <MoreHorizontal className="h-5 w-5 text-foreground" />

@@ -1,6 +1,12 @@
 import "server-only";
+import { loadBooksProjectDimensions } from "@/lib/services/books/dimensions";
+import { SYSTEM_ACCOUNT_CODES } from "@/lib/services/books/chart-of-accounts";
 
 import { z } from "zod";
+import { loadOpeningOwnedSources } from "@/lib/services/books/opening-sources";
+import { reconcileWarrantyRecoveriesForService } from "@/lib/services/books/warranty-accounting";
+import { loadInventoryPolicies, transitionInventoryForService } from "@/lib/services/books/inventory";
+import { inventoryCostAccount } from "@/lib/services/books/inventory-rules";
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import {
@@ -15,8 +21,11 @@ import {
   retirementFactPayload,
   selectFactsToRetire,
   sortFactCostLines,
+  preserveLegacyDimensionPayload,
   type FactCostLine,
 } from "@/lib/services/books/fact-drafts";
+import { loadBooksFundingResolver } from "@/lib/services/books/funding";
+import { factTransitionIdentity } from "@/lib/services/books/fact-identity";
 import { booksDigest } from "@/lib/services/books/hash";
 import {
   projectBooksFactAndJournalForService,
@@ -68,6 +77,7 @@ const PROJECTED_SOURCE_TYPES = [
   "invoice",
   "retainage_release",
   "bill_payment",
+  "ap_fee_charge",
   "invoice_payment",
   "customer_deposit_receipt",
   "customer_deposit_application",
@@ -148,6 +158,7 @@ type ProjectionWatermarks = {
   bills: string | null;
   invoices: string | null;
   payments: string | null;
+  feeCharges: string | null;
   expenses: string | null;
   reversals: string | null;
   adjustments: string | null;
@@ -194,6 +205,7 @@ async function resolveWatermarks(orgId: string): Promise<ProjectionWatermarks> {
     invoicePayment,
     customerDepositReceipt,
     customerDepositApplication,
+    feeCharge,
     expense,
     reversal,
     customerDepositReversal,
@@ -207,6 +219,7 @@ async function resolveWatermarks(orgId: string): Promise<ProjectionWatermarks> {
     latestFactTimestamp(orgId, "invoice_payment"),
     latestFactTimestamp(orgId, "customer_deposit_receipt"),
     latestFactTimestamp(orgId, "customer_deposit_application"),
+    latestFactTimestamp(orgId, "ap_fee_charge"),
     latestFactTimestamp(orgId, "expense"),
     latestFactTimestamp(orgId, "payment_reversal"),
     latestFactTimestamp(orgId, "customer_deposit_reversal"),
@@ -222,6 +235,7 @@ async function resolveWatermarks(orgId: string): Promise<ProjectionWatermarks> {
       customerDepositReceipt,
       customerDepositApplication,
     ]),
+    feeCharges: feeCharge,
     expenses: expense,
     reversals: earliestTimestamp([reversal, customerDepositReversal]),
     adjustments: receivableAdjustment,
@@ -244,7 +258,7 @@ async function loadBillCostLines(orgId: string) {
       (from, to) =>
         service
           .from("job_cost_entries")
-          .select("source_id, project_id, cost_cents")
+          .select("source_id, project_id, cost_cents, cost_code_id, metadata")
           .eq("org_id", orgId)
           .eq("status", "posted")
           .eq("source_type", "vendor_bill_line")
@@ -311,6 +325,7 @@ async function loadBillCostLines(orgId: string) {
     if (!link) continue;
     const list = byBill.get(link.billId) ?? [];
     list.push({
+      dimensions: { cost_type: ({ "5010": "Subcontractor", "5020": "Materials", "5030": "Labor", "5040": "Equipment", "5050": "Warranty" } as Record<string, string>)[link.accountCode ?? ""] ?? "General job costs", ...(row.cost_code_id ? { cost_code_id: row.cost_code_id } : {}) },
       amount_cents: Number(row.cost_cents ?? 0),
       project_id: row.project_id ? String(row.project_id) : null,
       description: link.description,
@@ -333,7 +348,7 @@ async function loadExpenseCostLines(orgId: string) {
       (from, to) =>
         service
           .from("job_cost_entries")
-          .select("source_type, source_id, project_id, cost_cents")
+          .select("source_type, source_id, project_id, cost_cents, cost_code_id, metadata")
           .eq("org_id", orgId)
           .eq("status", "posted")
           .in("source_type", ["project_expense", "project_expense_line"])
@@ -400,6 +415,7 @@ async function loadExpenseCostLines(orgId: string) {
     if (!expenseId) continue;
     const list = byExpense.get(expenseId) ?? [];
     list.push({
+      dimensions: { cost_type: ({ "5010": "Subcontractor", "5020": "Materials", "5030": "Labor", "5040": "Equipment", "5050": "Warranty" } as Record<string, string>)[line?.accountCode ?? ""] ?? "General job costs", ...(row.cost_code_id ? { cost_code_id: row.cost_code_id } : {}) },
       amount_cents: Number(row.cost_cents ?? 0),
       project_id: row.project_id ? String(row.project_id) : null,
       description: line?.description,
@@ -421,7 +437,7 @@ async function loadLaborCostEntries(orgId: string, since: string | null) {
   return collectPages((from, to) => {
     let query = service
       .from("job_cost_entries")
-      .select("id, project_id, cost_cents, incurred_on, updated_at, status")
+      .select("id, project_id, cost_cents, incurred_on, updated_at, status, cost_code_id, metadata")
       .eq("org_id", orgId)
       .eq("source_type", "time_entry");
     if (since) query = query.gte("updated_at", since);
@@ -438,6 +454,10 @@ async function projectionCandidates(
 ) {
   const service = createServiceSupabaseClient();
   const [
+    funding,
+    projectDimensions,
+    openingSources,
+    inventoryPolicies,
     basisByProject,
     costLinesByBill,
     costLinesByExpense,
@@ -447,10 +467,15 @@ async function projectionCandidates(
     bills,
     invoices,
     payments,
+    feeCharges,
     expenses,
     reversals,
     adjustments,
   ] = await Promise.all([
+    loadBooksFundingResolver(orgId),
+    loadBooksProjectDimensions(orgId),
+    loadOpeningOwnedSources(orgId),
+    loadInventoryPolicies(orgId),
     loadRevenueBasisByProject(orgId),
     loadBillCostLines(orgId),
     loadExpenseCostLines(orgId),
@@ -505,9 +530,20 @@ async function projectionCandidates(
     }, "payments"),
     collectPages((from, to) => {
       let query = service
+        .from("payment_run_fee_charges")
+        .select("id, amount_cents, funding_source_id, settled_at, updated_at, status")
+        .eq("org_id", orgId);
+      if (watermarks.feeCharges) query = query.gte("updated_at", watermarks.feeCharges);
+      return query
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to);
+    }, "payment run fee charges"),
+    collectPages((from, to) => {
+      let query = service
         .from("project_expenses")
         .select(
-          "id, project_id, vendor_company_id, expense_date, amount_cents, tax_cents, description, updated_at, status",
+          "id, project_id, vendor_company_id, expense_date, amount_cents, tax_cents, description, payment_method, accounting_coding, metadata, updated_at, status",
         )
         .eq("org_id", orgId);
       if (watermarks.expenses)
@@ -521,7 +557,7 @@ async function projectionCandidates(
       let query = service
         .from("payment_reversals")
         .select(
-          "id, project_id, invoice_id, bill_id, amount_cents, occurred_at, updated_at, status",
+          "id, project_id, invoice_id, bill_id, payment_id, amount_cents, occurred_at, updated_at, status",
         )
         .eq("org_id", orgId);
       if (watermarks.reversals)
@@ -549,6 +585,12 @@ async function projectionCandidates(
 
   const candidates: ProjectionCandidate[] = [];
   const failures: ProjectionFailure[] = [];
+  const fundingCode = (sourceType: string, sourceId: string, resolve: () => string) => {
+    try { return resolve(); } catch (error) {
+      failures.push({ sourceType, sourceId, error: error instanceof Error ? error.message : String(error) });
+      return null;
+    }
+  };
   const touchedSourceKeys = new Set<string>();
   const liveSourceKeys = new Set<string>();
   const depositInvoiceIds = new Set(
@@ -565,6 +607,7 @@ async function projectionCandidates(
   // credit, an expense credit — that the cost subledger already carries signed,
   // so dropping it drives job cost out of balance with no failure to point at.
   for (const row of bills) {
+    if (openingSources.bills.has(String(row.id))) continue;
     const sourceType =
       (row.metadata as { source?: unknown } | null)?.source ===
       "retainage_release"
@@ -614,7 +657,7 @@ async function projectionCandidates(
     // when it fully accounts for the bill. A partially-coded bill falls back to
     // a single header line so the GL still balances; the nightly tie-out reports
     // the gap rather than the projector inventing detail it does not have.
-    const costLines =
+    const costLines: FactCostLine[] =
       subledgerLines.length > 0 && subledgerTotal === totalCents + useTaxCents
         ? subledgerLines
         : [
@@ -635,12 +678,13 @@ async function projectionCandidates(
         retainage_cents: Number(row.retainage_cents ?? 0),
         project_id: row.project_id ?? null,
         company_id: row.company_id ?? null,
-        cost_lines: costLines,
+        cost_lines: costLines.map(item => { const code = inventoryCostAccount(inventoryPolicies.get(item.project_id ?? ""), String(row.bill_date), item.account_code); return code === (item.account_code ?? SYSTEM_ACCOUNT_CODES.jobCosts) ? item : { ...item, account_code: code }; }),
       },
     });
   }
 
   for (const row of invoices) {
+    if (openingSources.invoices.has(String(row.id))) continue;
     if (depositInvoiceIds.has(String(row.id))) {
       // A deposit request is operationally an invoice so it can be collected in
       // the customer portal, but it is not AR or revenue. The receipt below is
@@ -703,6 +747,7 @@ async function projectionCandidates(
   }
 
   for (const row of payments) {
+    if (openingSources.payments.has(String(row.id))) continue;
     const metadata =
       row.metadata && typeof row.metadata === "object"
         ? (row.metadata as Record<string, unknown>)
@@ -774,6 +819,8 @@ async function projectionCandidates(
       Number(row.platform_fee_cents ?? 0);
     const feeCents =
       splitFeeCents > 0 ? splitFeeCents : Number(row.fee_cents ?? 0);
+    const cashCode = paymentSourceType === "bill_payment" ? fundingCode(paymentSourceType, String(row.id), () => funding.resolve({ metadata, method: row.method })) : SYSTEM_ACCOUNT_CODES.operatingCash;
+    if (!cashCode) continue;
     candidates.push({
       sourceType: paymentSourceType,
       sourceId: String(row.id),
@@ -795,8 +842,32 @@ async function projectionCandidates(
         ),
         fee_cents: feeCents,
         project_id: row.project_id ?? null,
+        ...(paymentSourceType === "bill_payment" && cashCode !== SYSTEM_ACCOUNT_CODES.operatingCash ? { cash_account_code: cashCode } : {}),
         deposit_payment_id: metadata.deposit_payment_id ?? null,
       },
+    });
+  }
+
+  for (const row of feeCharges) {
+    const sourceKey = factSourceKey("ap_fee_charge", String(row.id));
+    touchedSourceKeys.add(sourceKey);
+    if (row.status !== "succeeded") continue;
+    const amountCents = Number(row.amount_cents ?? 0);
+    if (amountCents <= 0) continue;
+    liveSourceKeys.add(sourceKey);
+    const accountingDate = accountingDateFromTimestamp(row.settled_at);
+    if (!accountingDate) {
+      failures.push({ sourceType: "ap_fee_charge", sourceId: String(row.id), error: "Settled AP fee charge has no readable settled_at" });
+      continue;
+    }
+    const cashCode = fundingCode("ap_fee_charge", String(row.id), () => funding.resolve({ fundingSourceId: row.funding_source_id }));
+    if (!cashCode) continue;
+    candidates.push({
+      sourceType: "ap_fee_charge",
+      sourceId: String(row.id),
+      accountingDate,
+      occurredAt: String(row.updated_at),
+      payload: { memo: "Arc Pay fees", amount_cents: amountCents, ...(cashCode !== SYSTEM_ACCOUNT_CODES.operatingCash ? { cash_account_code: cashCode } : {}) },
     });
   }
 
@@ -813,7 +884,7 @@ async function projectionCandidates(
       (sum, item) => sum + item.amount_cents,
       0,
     );
-    const costLines =
+    const costLines: FactCostLine[] =
       subledgerLines.length > 0 && subledgerTotal === amountCents
         ? subledgerLines
         : [
@@ -822,6 +893,8 @@ async function projectionCandidates(
               project_id: row.project_id ? String(row.project_id) : null,
             },
           ];
+    const paymentCode = row.payment_method === "reimbursable_personal" ? SYSTEM_ACCOUNT_CODES.employeeReimbursements : fundingCode("expense", String(row.id), () => funding.resolve({ metadata: row.metadata, method: row.payment_method }));
+    if (!paymentCode) continue;
     candidates.push({
       sourceType: "expense",
       sourceId: String(row.id),
@@ -831,8 +904,9 @@ async function projectionCandidates(
         memo: row.description || "Expense",
         amount_cents: amountCents,
         project_id: row.project_id ?? null,
+        ...(paymentCode !== SYSTEM_ACCOUNT_CODES.operatingCash ? { payment_account_code: paymentCode } : {}),
         vendor_company_id: row.vendor_company_id ?? null,
-        cost_lines: costLines,
+        cost_lines: costLines.map(item => { const code = inventoryCostAccount(inventoryPolicies.get(item.project_id ?? ""), String(row.expense_date), item.account_code); return code === (item.account_code ?? SYSTEM_ACCOUNT_CODES.jobCosts) ? item : { ...item, account_code: code }; }),
       },
     });
   }
@@ -865,6 +939,8 @@ async function projectionCandidates(
     // `payment_reversals` carries a DB check that exactly one of invoice_id and
     // bill_id is set, so the side is unambiguous here.
     const hasBill = Boolean(row.bill_id);
+    const cashCode = hasBill ? fundingCode(reversalSourceType, String(row.id), () => funding.reversal(String(row.payment_id))) : SYSTEM_ACCOUNT_CODES.undepositedFunds;
+    if (!cashCode) continue;
     candidates.push({
       sourceType: reversalSourceType,
       sourceId: String(row.id),
@@ -877,6 +953,7 @@ async function projectionCandidates(
             ? "Vendor payment returned"
             : "Customer payment reversed",
         amount_cents: amountCents,
+        ...(hasBill && cashCode !== SYSTEM_ACCOUNT_CODES.operatingCash ? { cash_account_code: cashCode } : {}),
         side: hasBill ? "bill_payment" : "invoice_payment",
         project_id: row.project_id ?? null,
       },
@@ -924,6 +1001,8 @@ async function projectionCandidates(
       occurredAt: String(row.updated_at),
       payload: {
         memo: "Field labor",
+        dimensions: { cost_type: "labor", ...(row.cost_code_id ? { cost_code_id: row.cost_code_id } : {}) },
+        ...(inventoryCostAccount(inventoryPolicies.get(String(row.project_id)), String(row.incurred_on), SYSTEM_ACCOUNT_CODES.laborCosts) !== SYSTEM_ACCOUNT_CODES.laborCosts ? { cost_account_code: inventoryCostAccount(inventoryPolicies.get(String(row.project_id)), String(row.incurred_on), SYSTEM_ACCOUNT_CODES.laborCosts) } : {}),
         amount_cents: amountCents,
         project_id: row.project_id ?? null,
       },
@@ -935,12 +1014,19 @@ async function projectionCandidates(
       (sourceKey) => !liveSourceKeys.has(sourceKey),
     ),
   );
-  return { candidates, failures, retirementSourceKeys };
+  for (const candidate of candidates) {
+    const ids = new Set([candidate.payload.project_id, ...(Array.isArray(candidate.payload.cost_lines) ? candidate.payload.cost_lines.map((line: FactCostLine) => line.project_id) : [])].filter((id): id is string => typeof id === "string"));
+    const captured = Object.fromEntries([...ids].filter(id => projectDimensions.has(id)).map(id => [id, projectDimensions.get(id)]));
+    if (Object.keys(captured).length) candidate.payload.project_dimensions = captured;
+  }
+  return { candidates, failures, retirementSourceKeys, liveSourceKeys };
 }
 
 const factRowSchema = z.object({
   id: z.string().uuid(),
   payload_hash: z.string(),
+  payload: z.record(z.unknown()),
+  accounting_date: z.string(),
   source_version: z.number().int(),
 });
 
@@ -956,12 +1042,9 @@ async function projectCandidateAtomically(
   projectionVersion: number,
 ) {
   const service = createServiceSupabaseClient();
-  const payloadHash = booksDigest(
-    hashableFactPayload(candidate.sourceType, candidate.payload),
-  );
   const { data: existingRow, error: existingError } = await service
     .from("accounting_facts")
-    .select("id, payload_hash, source_version")
+    .select("id, payload_hash, payload, source_version, accounting_date")
     .eq("org_id", orgId)
     .eq("source_type", candidate.sourceType)
     .eq("source_id", candidate.sourceId)
@@ -973,15 +1056,11 @@ async function projectCandidateAtomically(
       `Failed to inspect accounting fact: ${existingError.message}`,
     );
   const existing = existingRow ? factRowSchema.parse(existingRow) : null;
-  const sourceVersion =
-    existing?.payload_hash === payloadHash
-      ? existing.source_version
-      : (existing?.source_version ?? 0) + 1;
-  const idempotencyKey = booksDigest({
-    orgId,
-    sourceType: candidate.sourceType,
-    sourceId: candidate.sourceId,
-    payloadHash,
+  candidate = { ...candidate, payload: preserveLegacyDimensionPayload(candidate.sourceType, candidate.accountingDate, candidate.payload, existing) };
+  const { sourceVersion, payloadHash, idempotencyKey } = factTransitionIdentity({
+    orgId, sourceType: candidate.sourceType, sourceId: candidate.sourceId,
+    accountingDate: candidate.accountingDate,
+    payload: hashableFactPayload(candidate.sourceType, candidate.payload), previous: existing,
   });
   const draft = draftFromFact({
     sourceType: candidate.sourceType,
@@ -1197,7 +1276,7 @@ export async function resolveProjectionVersion(orgId: string) {
 
 export async function projectJournal(
   orgId: string,
-  options: { since?: string; full?: boolean } = {},
+  options: { since?: string; full?: boolean; sourceKeys?: string[] } = {},
 ) {
   const service = createServiceSupabaseClient();
   const { data: settings, error } = await service
@@ -1222,23 +1301,27 @@ export async function projectJournal(
     bills: value,
     invoices: value,
     payments: value,
+    feeCharges: value,
     expenses: value,
     reversals: value,
     adjustments: value,
     labor: value,
   });
-  const watermarks = options.full
+  const watermarks = options.full || options.sourceKeys
     ? allFrom(null)
     : options.since
       ? allFrom(options.since)
       : await resolveWatermarks(orgId);
-  const { candidates, failures, retirementSourceKeys } =
+  const { candidates, failures: candidateFailures, retirementSourceKeys, liveSourceKeys } =
     await projectionCandidates(orgId, watermarks);
 
+  const requestedKeys = options.sourceKeys ? new Set(options.sourceKeys) : null;
+  const failures = candidateFailures.filter((row) => !requestedKeys || requestedKeys.has(factSourceKey(row.sourceType, row.sourceId)));
   let projected = 0;
   let skipped = 0;
   let revised = 0;
   for (const candidate of candidates) {
+    if (requestedKeys && !requestedKeys.has(factSourceKey(candidate.sourceType, candidate.sourceId))) continue;
     try {
       const projection = await projectCandidateAtomically(
         orgId,
@@ -1262,12 +1345,9 @@ export async function projectJournal(
   }
 
   let retired = 0;
-  if (options.full) {
-    const liveSourceKeys = new Set(
-      candidates.map((candidate) =>
-        factSourceKey(candidate.sourceType, candidate.sourceId),
-      ),
-    );
+  if (options.full && !requestedKeys) {
+    // Sources that could not resolve coding remain live. A failed projection is
+    // never permission to retire the source's existing economic history.
     const retirement = await retireDepartedSources(
       orgId,
       liveSourceKeys,
@@ -1275,7 +1355,7 @@ export async function projectJournal(
     );
     retired = retirement.retired;
     failures.push(...retirement.failures);
-  } else if (retirementSourceKeys.size > 0) {
+  } else if (!requestedKeys && retirementSourceKeys.size > 0) {
     // Incremental rows include lifecycle changes even after they leave the
     // projectable status set, so voids/rejections retire immediately. Deletions
     // still require the nightly full pass because no row remains to watermark.
@@ -1288,6 +1368,22 @@ export async function projectJournal(
     retired = retirement.retired;
     failures.push(...retirement.failures);
   }
+  const inventoryPolicies = await loadInventoryPolicies(orgId);
+  const requestedProjects = requestedKeys ? new Set(candidates.filter(candidate => requestedKeys.has(factSourceKey(candidate.sourceType, candidate.sourceId))).flatMap(candidate => {
+    const lines = Array.isArray(candidate.payload.cost_lines) ? candidate.payload.cost_lines as FactCostLine[] : [];
+    return [candidate.payload.project_id, ...lines.map(line => line.project_id)].filter((id): id is string => typeof id === "string");
+  })) : null;
+  for (const [projectId, policy] of inventoryPolicies) {
+    if (requestedProjects && !requestedProjects.has(projectId)) continue;
+    const date = policy.soldOn ?? policy.completedOn;
+    if (!date || !policy.evidenceUrl) continue;
+    try {
+      await transitionInventoryForService({ orgId, projectId, transition: policy.soldOn ? "sale_relief" : "completion", date, evidenceUrl: policy.evidenceUrl });
+    } catch (error) {
+      failures.push({ sourceType: "inventory_cost_relief", sourceId: projectId, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  failures.push(...await reconcileWarrantyRecoveriesForService(orgId, requestedProjects));
   return { projected, skipped, revised, retired, failures };
 }
 

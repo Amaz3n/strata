@@ -5,6 +5,7 @@ export const primeSovLineInputSchema = z.object({
   description: z.string().min(1, "Description is required").max(500),
   cost_code_id: z.string().uuid().optional().nullable(),
   budget_line_id: z.string().uuid().optional().nullable(),
+  budget_line_ids: z.array(z.string().uuid()).max(500).optional(),
   scheduled_value_cents: z.number().int(),
   retainage_percent_override: z.number().min(0).max(100).optional().nullable(),
 })
@@ -24,6 +25,10 @@ export const payApplicationLineEntrySchema = z
     this_period_cents: z.number().int().optional(),
     percent_complete: z.number().min(0).max(100).optional(),
     stored_materials_cents: z.number().int().min(0).default(0),
+    progress_evidence: z.object({
+      source_bill_ids: z.array(z.string().uuid()).min(1).max(500),
+      suggested_percent_complete: z.number().min(0).max(100),
+    }).optional(),
   })
   .refine((entry) => entry.this_period_cents != null || entry.percent_complete != null, {
     message: "Enter a this-period amount or a percent complete",

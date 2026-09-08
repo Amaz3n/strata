@@ -98,7 +98,7 @@ export async function getVendor1099Report({
     supabase
       .from("project_expenses")
       .select(
-        "vendor_company_id, amount_cents, tax_cents, expense_date, status, payment_method, qbo_transaction_type",
+        "vendor_company_id, amount_cents, tax_cents, expense_date, status, payment_method, accounting_coding",
       )
       .eq("org_id", resolvedOrgId)
       .not("vendor_company_id", "is", null)
@@ -175,7 +175,7 @@ export async function getVendor1099Report({
     if (!expense.vendor_company_id) continue;
     // Direct-paid expenses are cash-basis. AP/bill transactions belong in the
     // payment-allocation stream and must not leak into 1099 totals on approval.
-    if (!expense.payment_method || expense.qbo_transaction_type === "bill")
+    if (!expense.payment_method || expense.accounting_coding?.transaction_type === "bill")
       continue;
     if (
       new Set(["credit_card", "company_card", "card"]).has(

@@ -1,5 +1,8 @@
 "use server";
 
+import { getBooksFundingWorkspace, saveBooksFundingAccount } from "@/lib/services/books/funding";
+import { getClearingSupportWorkspace, reviewClearingSupport } from "@/lib/services/books/clearing-support";
+import { getPayrollSettlementAccounts, recordPayrollSettlement } from "@/lib/services/books/payroll-settlement";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
@@ -35,6 +38,7 @@ import {
 } from "@/lib/services/books/bank-reconciliation";
 import {
   categorizeBankTransaction,
+  getBankCostCodingOptions,
   listBankRules,
   setBankRuleActive,
 } from "@/lib/services/books/bank-rules";
@@ -379,6 +383,7 @@ export async function categorizeBankTransactionAction(input: {
   bankTransactionId: string;
   glAccountId: string;
   projectId?: string | null;
+  costCodeId?: string | null;
   memo?: string | null;
   appliedRuleId?: string | null;
   learn?: boolean;
@@ -390,6 +395,7 @@ export async function categorizeBankTransactionAction(input: {
           bankTransactionId: z.string().uuid(),
           glAccountId: z.string().uuid(),
           projectId: z.string().uuid().nullable().optional(),
+          costCodeId: z.string().uuid().nullable().optional(),
           memo: z.string().max(200).nullable().optional(),
           appliedRuleId: z.string().uuid().nullable().optional(),
           learn: z.boolean().optional(),
@@ -1071,4 +1077,46 @@ export async function getBooksExportDownloadAction(exportId: string) {
       );
     return { url: download.downloadUrl };
   });
+}
+
+export async function loadBooksFundingAction() { return read(() => getBooksFundingWorkspace()); }
+export async function saveBooksFundingAction(input: { fundingSourceId: string; accountId: string }) { return run(() => saveBooksFundingAccount(input)); }
+
+export async function loadClearingSupportAction(periodId: string) {
+  return read(() => getClearingSupportWorkspace(periodId));
+}
+export async function saveClearingSupportAction(input: Parameters<typeof reviewClearingSupport>[0]) {
+  return run(async () => { await reviewClearingSupport(input); return runBooksCloseChecklist(input.periodId); });
+}
+
+export async function loadBankCostCodingOptionsAction() { return read(() => getBankCostCodingOptions()); }
+
+export async function loadPayrollSettlementAccountsAction() { return read(() => getPayrollSettlementAccounts()); }
+export async function recordPayrollSettlementAction(input: Parameters<typeof recordPayrollSettlement>[0]) { return run(() => recordPayrollSettlement(input)); }
+
+export async function loadInventoryWorkspaceAction() {
+  return read(async () => (await import("@/lib/services/books/inventory")).getInventoryWorkspace());
+}
+export async function enableProjectInventoryAction(input: { projectId: string; effectiveOn: string; evidenceUrl: string }) {
+  return run(async () => (await import("@/lib/services/books/inventory")).enableProjectInventory(input));
+}
+export async function completeProjectInventoryAction(input: { projectId: string; date: string; evidenceUrl: string }) {
+  return run(async () => (await import("@/lib/services/books/inventory")).completeProjectInventory(input));
+}
+
+export async function loadLandAcquisitionWorkspaceAction() { return read(async () => (await import("@/lib/services/books/inventory")).getLandAcquisitionWorkspace()); }
+export async function acquireLandInventoryAction(input: Parameters<typeof import("@/lib/services/books/inventory").acquireLandInventory>[0]) { return run(async () => (await import("@/lib/services/books/inventory")).acquireLandInventory(input)); }
+
+export async function loadInventoryAllocationWorkspaceAction() { return read(async () => (await import("@/lib/services/books/inventory")).getInventoryAllocationWorkspace()); }
+export async function allocateDevelopmentInventoryAction(input: Parameters<typeof import("@/lib/services/books/inventory").allocateDevelopmentInventory>[0]) { return run(async () => (await import("@/lib/services/books/inventory")).allocateDevelopmentInventory(input)); }
+export async function capitalizeInventoryInterestAction(input: Parameters<typeof import("@/lib/services/books/inventory").capitalizeInventoryInterest>[0]) { return run(async () => (await import("@/lib/services/books/inventory")).capitalizeInventoryInterest(input)); }
+
+export async function loadWarrantyAccountingAction(projectId?: string) { return read(async () => (await import("@/lib/services/books/warranty-accounting")).getWarrantyAccountingWorkspace(projectId)); }
+export async function loadWarrantyCostSourcesAction(visitId: string) { return read(async () => (await import("@/lib/services/books/warranty-accounting")).getWarrantyCostSources(visitId)); }
+export async function approveWarrantyAccountingAction(input: Parameters<typeof import("@/lib/services/books/warranty-accounting").approveWarrantyAccounting>[0]) { return run(async () => (await import("@/lib/services/books/warranty-accounting")).approveWarrantyAccounting(input)); }
+export async function reverseWarrantyAccountingAction(input: Parameters<typeof import("@/lib/services/books/warranty-accounting").reverseWarrantyAccounting>[0]) { return run(async () => (await import("@/lib/services/books/warranty-accounting")).reverseWarrantyAccounting(input)); }
+export async function setWarrantyReserveEstimateAction(input: Parameters<typeof import("@/lib/services/books/warranty-accounting").setWarrantyReserveEstimate>[0]) { return run(async () => (await import("@/lib/services/books/warranty-accounting")).setWarrantyReserveEstimate(input)); }
+
+export async function reopenBankReconciliationAction(input: { reconciliationId: string; reason: string }) {
+  return run(async () => { const { reopenBankReconciliation } = await import("@/lib/services/books/bank-reconciliation"); return reopenBankReconciliation(input); });
 }

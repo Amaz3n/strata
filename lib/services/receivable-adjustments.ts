@@ -33,6 +33,8 @@ const adjustmentSchema = z.object({
   adjustmentType: z.enum(["credit_memo", "write_off"]),
   amountCents: z.number().int().positive(),
   taxCents: z.number().int().nonnegative().default(0),
+  taxableBaseCents: z.number().int().nonnegative().optional(),
+  exemptBaseCents: z.number().int().nonnegative().optional(),
   effectiveDate: z.string().date(),
   reason: z.string().trim().min(3).max(500),
   idempotencyKey: z.string().trim().min(8).max(200).optional(),
@@ -45,6 +47,8 @@ export async function createReceivableAdjustment(input: CreateReceivableAdjustme
   if (parsed.taxCents > parsed.amountCents) {
     throw new Error("The tax reversal cannot exceed the adjustment")
   }
+
+  if ((parsed.taxableBaseCents ?? 0) + (parsed.exemptBaseCents ?? 0) > parsed.amountCents - parsed.taxCents) throw new Error("Classified credit bases cannot exceed the credit before tax");
 
   const { orgId, userId, supabase } = await requireOrgContext()
   const { data: invoice, error: invoiceError } = await supabase
@@ -78,7 +82,7 @@ export async function createReceivableAdjustment(input: CreateReceivableAdjustme
     p_reason: parsed.reason,
     p_actor_id: userId,
     p_idempotency_key: parsed.idempotencyKey ?? null,
-    p_metadata: {},
+    p_metadata: parsed.adjustmentType === "credit_memo" ? { ...(parsed.taxableBaseCents !== undefined ? { taxable_base_cents: parsed.taxableBaseCents } : {}), ...(parsed.exemptBaseCents !== undefined ? { exempt_base_cents: parsed.exemptBaseCents } : {}) } : {},
   })
   if (error) throw new Error(`Failed to post receivable adjustment: ${error.message}`)
   const adjustment = data as ReceivableAdjustment

@@ -26,6 +26,7 @@ const PORTAL_CAPABILITY_KEYS = [
   "can_submit_selections",
   "can_create_punch_items",
   "can_view_invoices",
+  "can_certify_pay_applications",
   "can_pay_invoices",
   "can_view_rfis",
   "can_view_submittals",

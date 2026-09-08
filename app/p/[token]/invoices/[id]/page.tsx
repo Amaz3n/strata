@@ -1,3 +1,4 @@
+import { InvoiceWaiverLinks } from "@/components/portal/invoice-waiver-links"
 import { notFound } from "next/navigation"
 
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
@@ -5,7 +6,7 @@ import { getInvoiceForPortal } from "@/lib/services/invoices"
 import { listReceiptsForInvoice } from "@/lib/services/receipts"
 import { listOpenBookCostDetailsForInvoice } from "@/lib/services/cost-plus"
 import { listSharedInvoiceBackupPackagesForPortal } from "@/lib/services/owner-billing-packages"
-import { calculatePaymentFeeQuotes, loadPaymentFeePolicy } from "@/lib/payments/fee-engine"
+import { calculatePaymentFeeQuotes, loadPaymentFeePolicy, restrictPaymentFeePolicyToInvoice } from "@/lib/payments/fee-engine"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { InvoicePortalClient } from "./portal-invoice-client"
 
@@ -50,7 +51,7 @@ export default async function InvoicePortalPage({ params }: Params) {
         paymentProps = {
           publishableKey,
           portalToken: token,
-          feeQuotes: calculatePaymentFeeQuotes(balanceDue, policy),
+          feeQuotes: calculatePaymentFeeQuotes(balanceDue, restrictPaymentFeePolicyToInvoice(policy, invoice.metadata)),
         }
       }
     } catch (err) {
@@ -80,6 +81,8 @@ export default async function InvoicePortalPage({ params }: Params) {
   ].filter(Boolean) as string[]
 
   return (
+    <>
+      <InvoiceWaiverLinks orgId={access.org_id} invoiceId={invoice.id} token={token}/>
     <InvoicePortalClient
       token={token}
       invoice={invoice}
@@ -90,5 +93,6 @@ export default async function InvoicePortalPage({ params }: Params) {
       backupPackages={backupPackagesResult.status === "fulfilled" ? backupPackagesResult.value : []}
       proofErrors={proofErrors}
     />
+    </>
   )
 }

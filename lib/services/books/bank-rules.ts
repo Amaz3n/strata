@@ -1,18 +1,17 @@
 import "server-only"
 
 import { z } from "zod"
+import { collectBooksRows } from "@/lib/services/books/paging"
 
 import { nextCodingRuleCounts } from "@/lib/services/accounting-rules"
-import { requireAuthorization } from "@/lib/services/authorization"
+import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access"
 import {
   buildBankRuleLesson,
   isBankRuleCorrection,
   normalizeBankRuleValue,
   type BankRuleCandidate,
 } from "@/lib/services/books/bank-rule-matching"
-import { confirmBankMatch } from "@/lib/services/books/bank-reconciliation"
 import { ruleRowSchema } from "@/lib/services/books/bank-rules-data"
-import { postBooksJournalEntryForService } from "@/lib/services/books/ledger"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
@@ -108,6 +107,7 @@ export async function categorizeBankTransaction(input: {
   bankTransactionId: string
   glAccountId: string
   projectId?: string | null
+  costCodeId?: string | null
   memo?: string | null
   /** The rule that proposed this, when one did — so a change of mind reads as a correction. */
   appliedRuleId?: string | null
@@ -162,59 +162,14 @@ export async function categorizeBankTransaction(input: {
   if (!cashCode) throw new Error("The bank account's GL account does not exist in this organization's chart")
 
   const memo = (input.memo?.trim() || transaction.merchant_name || transaction.description || "Bank transaction").slice(0, 200)
-  // Money out debits the category and credits the bank; money in is the reverse.
-  const lines =
-    transaction.direction === "outflow"
-      ? [
-          { accountCode: categoryCode, debitCents: transaction.amount_cents, creditCents: 0, projectId: input.projectId ?? undefined, description: memo },
-          { accountCode: cashCode, debitCents: 0, creditCents: transaction.amount_cents, description: memo },
-        ]
-      : [
-          { accountCode: cashCode, debitCents: transaction.amount_cents, creditCents: 0, description: memo },
-          { accountCode: categoryCode, debitCents: 0, creditCents: transaction.amount_cents, projectId: input.projectId ?? undefined, description: memo },
-        ]
-
-  const posted = await postBooksJournalEntryForService(
-    {
-      entryDate: transaction.transaction_date,
-      // A person decided this, so it reads as hand-posted in the audit view —
-      // there is no operational fact behind a categorized bank line.
-      entryKind: "adjusting",
-      memo,
-      postingKey: `bank_categorization:${transaction.id}`,
-      projectionVersion: 1,
-      policyVersion: 1,
-      sourceType: "bank_transaction",
-      sourceId: transaction.id,
-      lines,
-    },
-    context.orgId,
-  )
-
-  // Match the transaction against the cash side of the entry we just posted, or
-  // it stays in the tray having been paid for twice over.
-  const { data: cashLineData, error: cashLineError } = await service
-    .from("journal_lines")
-    .select("id, account_id")
-    .eq("org_id", context.orgId)
-    .eq("entry_id", posted.id)
-    .eq("account_id", bankAccount.gl_account_id)
-    .limit(1)
-    .maybeSingle()
-  if (cashLineError) throw new Error(`Failed to resolve the posted cash line: ${cashLineError.message}`)
-  if (!cashLineData) throw new Error("The posted entry has no cash line to match against")
-
-  // Through `confirmBankMatch`, not a direct insert: it refuses unposted
-  // transactions and refuses confirmations that would exceed the transaction
-  // amount. Re-implementing the insert here would skip both guards.
-  await confirmBankMatch({
-    bankTransactionId: transaction.id,
-    journalLineId: String(cashLineData.id),
-    amountCents: transaction.amount_cents,
-    matchType: "exact",
-    confidence: 1,
-    orgId: context.orgId,
+  const { data: entryId, error: postingError } = await service.rpc("categorize_books_bank_transaction_atomic", {
+    p_org_id: context.orgId, p_transaction_id: transaction.id, p_account_id: z.string().uuid().parse(input.glAccountId),
+    p_project_id: input.projectId ? z.string().uuid().parse(input.projectId) : null,
+    p_cost_code_id: input.costCodeId ? z.string().uuid().parse(input.costCodeId) : null,
+    p_memo: memo, p_actor_id: context.userId,
   })
+  if (postingError) throw new Error(`Failed to categorize bank transaction: ${postingError.message}`)
+  const posted = { id: z.string().uuid().parse(entryId) }
 
   if (input.learn !== false) {
     await learnBankRule({
@@ -327,4 +282,14 @@ async function learnBankRule(input: {
     entityId: existingData ? String(existingData.id) : lesson.matchValue,
     payload: { match_kind: lesson.matchKind, gl_account_id: input.glAccountId, confidence: counts.confidence },
   })
+}
+
+export async function getBankCostCodingOptions() {
+  const context = await requireBankRuleContext()
+  const service = createServiceSupabaseClient()
+  const [projects, costCodes] = await Promise.all([
+    collectBooksRows((from, to) => service.from("projects").select("id,name").eq("org_id", context.orgId).order("id").range(from, to)),
+    collectBooksRows((from, to) => service.from("cost_codes").select("id,code,name").eq("org_id", context.orgId).order("id").range(from, to)),
+  ])
+  return { projects, costCodes }
 }

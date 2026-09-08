@@ -11,6 +11,7 @@ import {
 } from "@/lib/services/external-portal-auth"
 import { getPaymentRailProvider } from "@/lib/integrations/payments/payment-rail-registry"
 import { estimateSettlement } from "@/lib/payments/settlement-estimate"
+import { vendorPaymentStage, type VendorPaymentStageLabel } from "@/lib/payments/disbursement-stage"
 import { hashPortalToken } from "@/lib/services/portal-credentials"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { vendorClaimSchema, type VendorClaimInput } from "@/lib/validation/fintech-payments"
@@ -75,6 +76,14 @@ export interface VendorPaymentPortalContext {
       payoutsEnabled: boolean
       bankName: string | null
       bankLast4: string | null
+      /**
+       * What the provider is still waiting on from the vendor. Empty while
+       * Stripe is reviewing a complete submission — which is the difference
+       * between "we need something from you" and "sit tight", and the reason
+       * the page stopped offering a Continue button that reopened a form with
+       * nothing left to fill in.
+       */
+      requirementsCurrentlyDue: string[]
     } | null
     /**
      * Everyone who administers this entity, plus anyone waiting on a decision.
@@ -101,6 +110,13 @@ export interface VendorPaymentPortalContext {
     orgName: string
     billNumber: string
     status: string
+    /**
+     * Where this money actually is, from the disbursement rather than from the
+     * `payments` row alone. A payment row says `succeeded` from the moment the
+     * payout is reported, so it cannot tell a vendor apart from a vendor whose
+     * deposit was returned two days later.
+     */
+    stage: VendorPaymentStageLabel
     amountCents: number
     currency: string
     /** How the money was sent — ACH through Arc, or a check the builder wrote. */
@@ -269,7 +285,7 @@ export async function requireVendorPayoutPortalAccess(portalToken: string): Prom
   const supabase = createServiceSupabaseClient()
   const { data: access, error } = await supabase
     .from("portal_access_tokens")
-    .select("id,org_id,company_id,contact_id,portal_type,paused_at,revoked_at,expires_at,contact:contacts(id,email,primary_company_id)")
+    .select("id,org_id,company_id,contact_id,portal_type,paused_at,revoked_at,expires_at,contact:contacts(id,email)")
     .eq("token_hash", hashPortalToken(portalToken))
     .maybeSingle()
   if (error || !access || access.portal_type !== "sub" || !access.company_id || access.paused_at || access.revoked_at) {
@@ -279,13 +295,27 @@ export async function requireVendorPayoutPortalAccess(portalToken: string): Prom
     throw new Error("This vendor invitation has expired")
   }
   const contact = firstRelation(
-    access.contact as { id?: string; email?: string | null; primary_company_id?: string | null } | Array<{ id?: string; email?: string | null; primary_company_id?: string | null }> | null,
+    access.contact as { id?: string; email?: string | null } | Array<{ id?: string; email?: string | null }> | null,
   )
   const contactEmail = contact?.email?.trim().toLowerCase()
   if (!access.contact_id || !contact?.id || !contactEmail) {
     throw new Error("This link is not addressed to a named contact, so it cannot be used to set up payouts. Ask the builder to re-send the payment invitation.")
   }
-  if (contact.primary_company_id !== access.company_id) {
+  // `contact_company_links` is the only person-to-company linkage in the
+  // directory. `contacts.primary_company_id` is a legacy column a gated
+  // migration drops, and it named exactly one company — so a payout contact
+  // attached from the company side, or one who works for two of the builder's
+  // vendors, was refused a link the builder had just sent them.
+  const { data: link, error: linkError } = await supabase
+    .from("contact_company_links")
+    .select("id")
+    .eq("org_id", access.org_id)
+    .eq("contact_id", access.contact_id)
+    .eq("company_id", access.company_id)
+    .limit(1)
+    .maybeSingle()
+  if (linkError) throw new Error(`Unable to verify this invitation's contact: ${linkError.message}`)
+  if (!link) {
     throw new Error("This link's contact does not belong to the vendor company it points at")
   }
   const { data: relationship, error: relationshipError } = await supabase
@@ -1091,7 +1121,7 @@ export async function getVendorPaymentPortalContext(): Promise<VendorPaymentPort
       ? supabase.from("vendor_entities").select("id,legal_name,dba_name,status").in("id", namedEntityIds)
       : Promise.resolve({ data: [] }),
     entityIds.length > 0
-      ? supabase.from("payment_recipient_accounts").select("id,vendor_entity_id,provider,status,payouts_enabled,payout_bank_name,payout_bank_last4").in("vendor_entity_id", entityIds)
+      ? supabase.from("payment_recipient_accounts").select("id,vendor_entity_id,provider,status,payouts_enabled,payout_bank_name,payout_bank_last4,requirements_currently_due").in("vendor_entity_id", entityIds)
       : Promise.resolve({ data: [] }),
     orgIds.length > 0
       ? supabase.from("orgs").select("id,name").in("id", orgIds)
@@ -1144,7 +1174,7 @@ export async function getVendorPaymentPortalContext(): Promise<VendorPaymentPort
   // rather than quietly dropping a busy vendor's older payments.
   const { data: paymentRows } = companyIds.length > 0
     ? await supabase.from("payments")
-      .select("id,org_id,amount_cents,currency,method,status,received_at,reference,bill:vendor_bills!inner(id,bill_number,company_id,retainage_cents)")
+      .select("id,org_id,amount_cents,currency,method,status,received_at,reference,metadata,bill:vendor_bills!inner(id,bill_number,company_id,retainage_cents)")
       .in("bill.company_id", companyIds)
       .in("status", ["succeeded", "completed"])
       .order("received_at", { ascending: false })
@@ -1167,6 +1197,18 @@ export async function getVendorPaymentPortalContext(): Promise<VendorPaymentPort
   const settlementWindow = getPaymentRailProvider().settlementWindow
   const allPayments = paymentRows ?? []
   const recentPaymentsTruncated = allPayments.length > VENDOR_RECENT_PAYMENTS_CAP
+
+  // A rail payment records its disbursement on the payment row, so the stage
+  // the vendor sees comes from the money's own state machine rather than from
+  // the accounting row that mirrors it. Bounded by the page cap above; ids come
+  // from this vendor's own payments, so nothing else is reachable through them.
+  const settledDisbursementIds = [...new Set(allPayments
+    .map((payment) => (payment.metadata as Record<string, unknown> | null)?.disbursement_id)
+    .filter((id): id is string => typeof id === "string"))]
+  const { data: settledDisbursementRows } = settledDisbursementIds.length > 0
+    ? await supabase.from("disbursements").select("id,status").in("id", settledDisbursementIds)
+    : { data: [] }
+  const disbursementStatusById = new Map((settledDisbursementRows ?? []).map((row) => [row.id, String(row.status)]))
   const allInFlight = inFlightRows ?? []
   const inFlightPaymentsTruncated = allInFlight.length > VENDOR_IN_FLIGHT_PAYMENTS_CAP
 
@@ -1188,6 +1230,9 @@ export async function getVendorPaymentPortalContext(): Promise<VendorPaymentPort
         payoutsEnabled: Boolean(recipient.payouts_enabled),
         bankName: recipient.payout_bank_name ?? null,
         bankLast4: recipient.payout_bank_last4 ?? null,
+        requirementsCurrentlyDue: Array.isArray(recipient.requirements_currently_due)
+          ? recipient.requirements_currently_due.map((requirement) => String(requirement))
+          : [],
       } : null,
       members: ADMINISTERING_ROLES.includes(role) ? membersByEntityId.get(entity.id) ?? [] : [],
     }]
@@ -1223,11 +1268,16 @@ export async function getVendorPaymentPortalContext(): Promise<VendorPaymentPort
     emailVerified,
     recentPayments: allPayments.slice(0, VENDOR_RECENT_PAYMENTS_CAP).map((payment) => {
       const bill = firstRelation(payment.bill)
+      const disbursementId = (payment.metadata as Record<string, unknown> | null)?.disbursement_id
       return {
         id: payment.id,
         orgName: orgNameById.get(payment.org_id) ?? "Builder",
         billNumber: bill?.bill_number ?? "Vendor bill",
         status: payment.status,
+        stage: vendorPaymentStage({
+          disbursementStatus: typeof disbursementId === "string" ? disbursementStatusById.get(disbursementId) ?? null : null,
+          method: payment.method ?? null,
+        }).label,
         amountCents: Number(payment.amount_cents),
         currency: payment.currency,
         method: payment.method ?? "ach",

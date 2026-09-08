@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { renderLienWaiverPdf, type LienWaiverPdfData } from "@/lib/pdfs/lien-waiver"
+import { isWaiverPublic, readWaiverWorkflow } from "@/lib/lien-waivers/invoice-waiver"
+import { downloadFilesObject } from "@/lib/storage/files-storage"
 
 
 /**
@@ -15,17 +17,17 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 
   const { data: invoice, error: invoiceError } = await supabase
     .from("invoices")
-    .select("id, org_id, project_id, invoice_number, metadata, project:projects(name)")
+    .select("id, org_id, project_id, invoice_number, status, metadata, project:projects(name)")
     .eq("token", token)
     .maybeSingle()
-  if (invoiceError || !invoice) {
+  if (invoiceError || !invoice || invoice.status === "void") {
     return new NextResponse("Invoice not found", { status: 404 })
   }
 
   const { data: waiver, error: waiverError } = await supabase
     .from("invoice_lien_waivers")
     .select(
-      "id, org_id, invoice_id, waiver_type, status, amount_cents, through_date, claimant_name, customer_name, property_description, released_at, created_at",
+      "id, org_id, invoice_id, waiver_type, status, amount_cents, through_date, claimant_name, customer_name, property_description, released_at, created_at, metadata",
     )
     .eq("id", waiverId)
     .eq("org_id", invoice.org_id)
@@ -34,8 +36,19 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   if (waiverError || !waiver || waiver.status === "void") {
     return new NextResponse("Waiver not found", { status: 404 })
   }
-  if (waiver.status !== "released" && !String(waiver.waiver_type).startsWith("conditional")) {
+  if (!isWaiverPublic(waiver)) {
     return new NextResponse("Waiver not yet released", { status: 403 })
+  }
+
+  const workflow = readWaiverWorkflow(waiver)
+  if (workflow) {
+    try {
+      const bytes = await downloadFilesObject({ supabase, orgId: invoice.org_id, path: workflow.document_path })
+      return new NextResponse(new Uint8Array(bytes), { headers: {
+        "Content-Type": "application/pdf", "Content-Disposition": 'inline; filename="lien-waiver.pdf"',
+        "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+      } })
+    } catch { return new NextResponse("Document temporarily unavailable", { status: 503 }) }
   }
 
   const metadata = (invoice.metadata ?? {}) as Record<string, any>

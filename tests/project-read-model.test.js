@@ -215,14 +215,11 @@ test("the project switcher runtime-prefetches its destination on intent", () => 
   assert.match(identity.slice(0, 400), /cacheLife\("session"\)/)
 })
 
-test("the org-wide schedule scan is paged and scopable", () => {
-  const schedule = source("lib/services/schedule.ts")
-  assert.match(schedule, /SCHEDULE_SUMMARY_PAGE_SIZE/)
-  assert.match(schedule, /SCHEDULE_SUMMARY_MAX_PAGES/)
-  assert.match(schedule, /if \(projectIds\) query = query\.in\("project_id", projectIds\)/)
-
+test("the directory reads SQL progress separately from its initial rows", () => {
   const index = source("app/(app)/projects/page.tsx")
-  assert.match(index, /listProjectScheduleSummariesAction\(projects\.map/)
+  assert.doesNotMatch(index, /listProjectScheduleSummariesAction/)
+  assert.match(source("app/(app)/projects/projects-client.tsx"), /\/api\/projects\/directory\/progress/)
+  assert.match(source("app/api/projects/directory/progress/route.ts"), /get_project_directory_schedule_summaries/)
 })
 
 test("the latency budgets the bands are measured against live next to the spans", () => {

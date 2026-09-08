@@ -9,6 +9,8 @@ import { formatMoneyFromCents } from "@/components/financials/workspace/workspac
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import type { PayableRunMembership } from "@/lib/services/org-payables"
 import type { EntityAuditEntry } from "@/lib/services/audit"
+import type { AccountingSyncState } from "@/lib/services/accounting-sync-state"
+import { AccountingSyncBadge } from "@/components/accounting/accounting-sync-badge"
 import { billStatus } from "./payable-form"
 
 interface TimelineEvent {
@@ -20,6 +22,7 @@ interface TimelineEvent {
   /** Rendered emphasized — the event describes where the payable is right now. */
   current?: boolean
   href?: string
+  syncState?: AccountingSyncState | null
 }
 
 const RUN_STATUS_LABELS: Record<string, string> = {
@@ -47,6 +50,8 @@ export function PayableTimeline({
   accountingEnabled,
   accountingProvider,
   accountingProviderName,
+  billSync,
+  paymentSync,
   auditTrail = [],
 }: {
   bill: VendorBillSummary
@@ -56,9 +61,10 @@ export function PayableTimeline({
   accountingProvider?: string | null
   /** Connection label, for providers the catalog does not name. */
   accountingProviderName?: string | null
+  billSync?: AccountingSyncState | null
+  paymentSync?: AccountingSyncState | null
   auditTrail?: EntityAuditEntry[]
 }) {
-  const providerName = accountingProviderLabel(accountingProvider, accountingProviderName)
   const status = billStatus(bill)
   const events: TimelineEvent[] = []
 
@@ -100,18 +106,34 @@ export function PayableTimeline({
     events.push({ key: "paid", label: "Paid in full", date: bill.paid_at, current: !runMembership })
   }
 
-  if (accountingEnabled && bill.qbo_synced_at) {
-    events.push({ key: "synced", label: `Synced to ${providerName}`, date: bill.qbo_synced_at })
+  if (accountingEnabled) {
+    events.push({
+      key: "bill-sync",
+      label: "Bill accounting sync",
+      date: billSync?.updatedAt ?? null,
+      syncState: billSync ?? null,
+    })
+    if (bill.payments.length > 0) {
+      events.push({
+        key: "bill-payment-sync",
+        label: "Bill-payment accounting sync",
+        date: paymentSync?.updatedAt ?? null,
+        syncState: paymentSync ?? null,
+      })
+    }
   }
 
   for (const entry of auditTrail) {
     const changedKeys = entry.action === "update"
       ? Object.keys(entry.after ?? {}).filter((key) => (entry.before ?? {})[key] !== (entry.after ?? {})[key])
       : []
+    const blockedSync = entry.source === "accounting_sync_enqueue"
     events.push({
       key: `audit-${entry.id}`,
-      label: entry.action === "insert" ? "Record created" : entry.action === "delete" ? "Record deleted" : "Record updated",
-      detail: `${entry.actor?.name ?? "System"}${changedKeys.length > 0 ? ` · ${changedKeys.slice(0, 3).join(", ")}${changedKeys.length > 3 ? "…" : ""}` : ""}`,
+      label: blockedSync ? "Accounting sync needs review" : entry.action === "insert" ? "Record created" : entry.action === "delete" ? "Record deleted" : "Record updated",
+      detail: blockedSync
+        ? String(entry.after?.accounting_sync_reason ?? "enqueue_failed").replaceAll("_", " ")
+        : `${entry.actor?.name ?? "System"}${changedKeys.length > 0 ? ` · ${changedKeys.slice(0, 3).join(", ")}${changedKeys.length > 3 ? "…" : ""}` : ""}`,
       date: entry.createdAt,
     })
   }
@@ -157,6 +179,23 @@ export function PayableTimeline({
                 <span className="shrink-0 font-mono text-xs font-medium tabular-nums text-success">
                   {formatMoneyFromCents(event.amountCents)}
                 </span>
+              ) : event.syncState ? (
+                <AccountingSyncBadge
+                  status={event.syncState.status}
+                  externalId={event.syncState.externalId}
+                  error={event.syncState.error}
+                  provider={event.syncState.provider ?? accountingProvider}
+                  providerLabel={accountingProviderName}
+                  syncedAt={event.syncState.syncedAt}
+                  compact
+                />
+              ) : event.key.endsWith("-sync") ? (
+                <AccountingSyncBadge
+                  status="not_synced"
+                  provider={accountingProvider}
+                  providerLabel={accountingProviderName}
+                  compact
+                />
               ) : null}
             </div>
           </li>

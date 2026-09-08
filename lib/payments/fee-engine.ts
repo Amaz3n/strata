@@ -190,6 +190,25 @@ export function requotePaymentFeeForAmount(quote: PaymentFeeQuote, amountCents: 
   return calculatePaymentFeeQuote({ invoiceBalanceCents: amountCents, method: quote.method, policy })
 }
 
+/**
+ * The org's policy, narrowed by what this invoice allows. An invoice can turn a
+ * method off (a big draw that must not go on a card); it can never turn on a
+ * method the org has not enabled.
+ */
+export function restrictPaymentFeePolicyToInvoice(
+  policy: PaymentFeePolicy,
+  invoiceMetadata: Record<string, unknown> | null | undefined,
+): PaymentFeePolicy {
+  const raw = invoiceMetadata?.payment_methods
+  if (!raw || typeof raw !== "object") return policy
+  const methods = raw as Record<string, unknown>
+  return {
+    ...policy,
+    achEnabled: policy.achEnabled && methods.ach !== false,
+    cardEnabled: policy.cardEnabled && methods.card !== false,
+  }
+}
+
 export function calculatePaymentFeeQuotes(invoiceBalanceCents: number, policy?: PaymentFeePolicy) {
   return {
     ach: calculatePaymentFeeQuote({ invoiceBalanceCents, method: "ach", policy }),

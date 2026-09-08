@@ -186,6 +186,8 @@ export function buildSubPortalNav({
 
 export interface ClientPortalNavCounts {
   actions: number
+  /** Applications the owner still has to certify or return. */
+  payApplicationsAwaitingCertificate: number
 }
 
 /**
@@ -196,12 +198,18 @@ export function buildClientPortalNav({
   permissions,
   counts,
   hasInvoices,
+  hasPayApplications,
   has3dModel,
   roadmapLabel,
 }: {
   permissions: PortalPermissions
   counts: ClientPortalNavCounts
   hasInvoices: boolean
+  /**
+   * Only shown when the project actually has a posted pay application. Most
+   * residential jobs never produce one, and an empty register is a dead end.
+   */
+  hasPayApplications: boolean
   /** Only shown when this buyer's plan actually has a published model. */
   has3dModel: boolean
   roadmapLabel?: string | null
@@ -221,6 +229,16 @@ export function buildClientPortalNav({
 
   if (hasInvoices) {
     items.push({ segment: "invoices", label: "Invoices", icon: "invoices" })
+  }
+
+  if (hasPayApplications && permissions.can_view_invoices) {
+    items.push({
+      segment: "pay-applications",
+      label: "Pay applications",
+      shortLabel: "Pay apps",
+      icon: "invoices",
+      count: counts.payApplicationsAwaitingCertificate,
+    })
   }
 
   items.push({

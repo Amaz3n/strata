@@ -78,6 +78,17 @@
   --accent: oklch(0.92 0.03 255);
   --accent-foreground: oklch(0.30 0.08 260);
 
+  /* Printed paper. A document preview — an invoice, a pay application, a
+     settlement statement — is a picture of a PDF, so it stays white paper with
+     black ink in dark mode too. These are deliberately NOT redefined under the
+     dark blocks below: paper does not have a theme. Use them only inside a
+     rendered document surface, never in app chrome. */
+  --paper: oklch(1 0 0);
+  --paper-ink: oklch(0.15 0 0);
+  --paper-ink-soft: oklch(0.45 0 0);
+  --paper-ink-faint: oklch(0.62 0 0);
+  --paper-rule: oklch(0.88 0 0);
+
   --destructive: oklch(0.53 0.22 25);
   --destructive-foreground: oklch(0.99 0 0);
 

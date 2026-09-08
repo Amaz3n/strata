@@ -9,28 +9,37 @@ export type AccountingSyncStatus =
   | "error"
   | "conflict"
   | "needs_review"
+  | "skipped"
+  | "accrued"
+  | "exported"
 
 export type AccountingSyncState = {
-  connectionId: string
-  provider: string
+  connectionId: string | null
+  provider: string | null
   externalId: string | null
   externalVersion: string | null
   syncedAt: string | null
   status: AccountingSyncStatus
   error: string | null
+  statusReason: string | null
+  lastAttemptId: string | null
+  updatedAt: string
   pushable: boolean
   metadata: Record<string, unknown>
 }
 
 type AccountingSyncRecordRow = {
   entity_id: string
-  connection_id: string
-  provider: string
+  connection_id: string | null
+  provider: string | null
   external_id: string | null
   external_version: string | null
   last_synced_at: string | null
   status: AccountingSyncStatus
   error_message: string | null
+  status_reason: string | null
+  last_attempt_id: string | null
+  updated_at: string
   pushable: boolean | null
   metadata: Record<string, unknown> | null
 }
@@ -44,6 +53,9 @@ function mapState(row: AccountingSyncRecordRow): AccountingSyncState {
     syncedAt: row.last_synced_at,
     status: row.status,
     error: row.error_message,
+    statusReason: row.status_reason,
+    lastAttemptId: row.last_attempt_id,
+    updatedAt: row.updated_at,
     pushable: row.pushable !== false,
     metadata: row.metadata ?? {},
   }
@@ -58,13 +70,18 @@ export async function getAccountingSyncStates(
 
   const { data, error } = await supabase
     .from("accounting_sync_records")
-    .select("entity_id,connection_id,provider,external_id,external_version,last_synced_at,status,error_message,pushable,metadata")
+    .select("entity_id,connection_id,provider,external_id,external_version,last_synced_at,status,error_message,status_reason,last_attempt_id,updated_at,pushable,metadata")
     .eq("org_id", input.orgId)
     .eq("entity_type", input.entityType)
     .in("entity_id", entityIds)
+    .order("updated_at", { ascending: false })
 
   if (error) throw new Error(`Unable to load accounting sync state: ${error.message}`)
-  return new Map(((data ?? []) as AccountingSyncRecordRow[]).map((row) => [row.entity_id, mapState(row)]))
+  const states = new Map<string, AccountingSyncState>()
+  for (const row of (data ?? []) as AccountingSyncRecordRow[]) {
+    if (!states.has(row.entity_id)) states.set(row.entity_id, mapState(row))
+  }
+  return states
 }
 
 export async function getAccountingSyncState(
@@ -83,6 +100,18 @@ export function hasAccountingExternalId(state: AccountingSyncState | null | unde
   return Boolean(state?.externalId)
 }
 
+export function indexLatestBillPaymentSyncByBillId(
+  latestPaymentIdByBillId: Record<string, string>,
+  billPayments: Record<string, AccountingSyncState>,
+): Record<string, AccountingSyncState> {
+  const byBillId: Record<string, AccountingSyncState> = {}
+  for (const [billId, paymentId] of Object.entries(latestPaymentIdByBillId)) {
+    const state = billPayments[paymentId]
+    if (state) byBillId[billId] = state
+  }
+  return byBillId
+}
+
 /**
  * The external id for one Arc entity: the sync-record layer first, the legacy
  * `qbo_*` column only as a fallback.
@@ -97,10 +126,9 @@ export async function resolveAccountingExternalId(
   supabase: SupabaseClient,
   input: {
     orgId: string
-    connectionId?: string | null
+    connectionId: string
     entityType: string
     entityId: string
-    legacyExternalId?: string | null
   },
 ): Promise<string | null> {
   let query = supabase
@@ -112,13 +140,14 @@ export async function resolveAccountingExternalId(
     .neq("external_id", "")
     .order("last_synced_at", { ascending: false })
     .limit(1)
-  if (input.connectionId) query = query.eq("connection_id", input.connectionId)
+  if (!input.connectionId) throw new Error("Accounting external identity requires a connection")
+  query = query.eq("connection_id", input.connectionId)
 
-  const { data } = await query
+  const { data, error } = await query
+  if (error) throw new Error(`Unable to resolve accounting external identity: ${error.message}`)
   const recorded = data?.[0]?.external_id
   if (typeof recorded === "string" && recorded.length > 0) return recorded
-  const legacy = input.legacyExternalId
-  return typeof legacy === "string" && legacy.length > 0 ? legacy : null
+  return null
 }
 
 /**
@@ -140,7 +169,6 @@ export function invoiceIsFromAccountingProvider(
   state?: AccountingSyncState | null,
 ): boolean {
   if (hasAccountingExternalId(state)) return true
-  if (invoice.qbo_id) return true
   const sourceType = (invoice.metadata as { source_type?: string } | null)?.source_type
   return typeof sourceType === "string" && (ACCOUNTING_PROVIDER_KEYS as string[]).includes(sourceType)
 }

@@ -1,3 +1,4 @@
+import type { ComplianceReviewQueue } from "@/lib/services/compliance-documents"
 import type { ComplianceStatusSummary } from "@/lib/types"
 import type { PrequalificationGlance } from "@/lib/services/prequalification"
 import type { CompanyPaymentReadiness } from "@/lib/services/vendor-payment-invitations"
@@ -11,6 +12,8 @@ export interface DirectoryVendorData {
   complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>
   prequalificationByCompanyId: Record<string, PrequalificationGlance>
   complianceWatchCompanies: Array<{ id: string; name: string }>
+  /** Every document waiting on a decision org-wide, ranked by money held. */
+  complianceReviewQueue: ComplianceReviewQueue | null
   complianceWatchTruncated: boolean
   complianceWatchTotal: number
   statusUnavailable: boolean
@@ -20,7 +23,12 @@ export interface DirectoryVendorData {
 export interface DirectoryVendorHeaderSignals {
   overdueCents: number
   overdueBillCount: number
-  complianceReady: boolean | null
+  /**
+   * Three states, not two. `is_compliant` is true both for a vendor who has
+   * satisfied everything and for one nobody has asked anything of, and the
+   * badge used to render the second as "Compliant".
+   */
+  complianceState: "compliant" | "action_required" | "unenrolled" | null
   complianceMissing: number
   complianceExpired: number
   complianceExpiringSoon: number

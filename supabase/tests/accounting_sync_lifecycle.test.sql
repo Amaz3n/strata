@@ -1,0 +1,40 @@
+begin;
+select plan(18);
+insert into auth.users(id,instance_id,aud,role,email,encrypted_password,email_confirmed_at,created_at,updated_at,raw_app_meta_data,raw_user_meta_data)
+values('18000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000000','authenticated','authenticated','accounting-lease@example.test','',now(),now(),now(),'{}','{}');
+insert into app_users(id,email,full_name) values('18000000-0000-0000-0000-000000000001','accounting-lease@example.test','Accounting Lease Test');
+insert into orgs(id,name,slug,created_by) values('28000000-0000-0000-0000-000000000001','Accounting Lease Test','accounting-lease-test','18000000-0000-0000-0000-000000000001');
+insert into accounting_connections(id,org_id,provider,label,external_account_id,status,connected_by) values
+('38000000-0000-0000-0000-000000000001','28000000-0000-0000-0000-000000000001','qbo','QBO Test','lease-realm','active','18000000-0000-0000-0000-000000000001'),
+('38000000-0000-0000-0000-000000000002','28000000-0000-0000-0000-000000000001','file','File Test','lease-file','active','18000000-0000-0000-0000-000000000001');
+create temp table test_lease(token uuid);
+insert into test_lease select claim_accounting_delivery('28000000-0000-0000-0000-000000000001','38000000-0000-0000-0000-000000000001','invoice','48000000-0000-0000-0000-000000000001');
+select ok((select token is not null from test_lease),'first delivery owns a token');
+select is(claim_accounting_delivery('28000000-0000-0000-0000-000000000001','38000000-0000-0000-0000-000000000001','invoice','48000000-0000-0000-0000-000000000001'),null::uuid,'contender cannot claim active delivery');
+select ok(persist_accounting_delivery((select token from test_lease),'qbo','remote-1','7','synced'),'owner persists remote identity');
+select ok(not persist_accounting_delivery(gen_random_uuid(),'qbo','corrupt','999','synced'),'non-owner cannot overwrite identity');
+select ok(persist_accounting_delivery((select token from test_lease),'qbo',null,null,'synced'),'owner can complete without replacement identity');
+select is((select external_id from accounting_sync_records where entity_id='48000000-0000-0000-0000-000000000001'),'remote-1','completion retains remote ID');
+select is((select external_version from accounting_sync_records where entity_id='48000000-0000-0000-0000-000000000001'),'7','completion retains remote version');
+select throws_ok($$select persist_accounting_delivery((select token from test_lease),'file','remote-1')$$,'P0001','Accounting provider does not match leased connection','provider cannot masquerade as another transport');
+select release_accounting_delivery(gen_random_uuid());
+select is((select count(*)::integer from accounting_delivery_leases),1,'foreign release cannot release owned lease');
+update accounting_delivery_leases set expires_at=now()-interval '1 second';
+create temp table test_new_lease(token uuid);
+insert into test_new_lease select claim_accounting_delivery('28000000-0000-0000-0000-000000000001','38000000-0000-0000-0000-000000000001','invoice','48000000-0000-0000-0000-000000000001');
+select ok((select n.token<>o.token from test_new_lease n cross join test_lease o),'expired owner replaced by new token');
+select ok(not persist_accounting_delivery((select token from test_lease),'qbo','stale','8','synced'),'stale completion is fenced');
+select release_accounting_delivery((select token from test_lease));
+select is((select token from accounting_delivery_leases),(select token from test_new_lease),'stale release does not remove successor');
+select ok(not has_function_privilege('authenticated','public.claim_accounting_delivery(uuid,uuid,text,uuid)','execute'),'browser cannot acquire privileged delivery');
+create temp table test_batch(line jsonb);
+insert into test_batch select append_accounting_batch_line_atomic('28000000-0000-0000-0000-000000000001','38000000-0000-0000-0000-000000000002','generic',null,'invoice','48000000-0000-0000-0000-000000000002','post',100,'usd','2026-09-07','Original','{}');
+select is((append_accounting_batch_line_atomic('28000000-0000-0000-0000-000000000001','38000000-0000-0000-0000-000000000002','generic',null,'invoice','48000000-0000-0000-0000-000000000002','post',100,'usd','2026-09-07','Original','{}')->>'duplicate')::boolean,true,'identical retry creates no second file line');
+select append_accounting_batch_line_atomic('28000000-0000-0000-0000-000000000001','38000000-0000-0000-0000-000000000002','generic',null,'invoice','48000000-0000-0000-0000-000000000002','post',150,'usd','2026-09-07','Revised','{}');
+select is((select total_cents from accounting_batches where id=(select (line->>'batch_id')::uuid from test_batch)),150::bigint,'unexported revision updates batch aggregate');
+select seal_accounting_batch('28000000-0000-0000-0000-000000000001',(select (line->>'batch_id')::uuid from test_batch),'18000000-0000-0000-0000-000000000001');
+select is((seal_accounting_batch('28000000-0000-0000-0000-000000000001',(select (line->>'batch_id')::uuid from test_batch),'18000000-0000-0000-0000-000000000001')->>'sealed_now')::boolean,false,'repeat download does not reseal immutable batch');
+select throws_ok($$select append_accounting_batch_line_atomic('28000000-0000-0000-0000-000000000001','38000000-0000-0000-0000-000000000002','generic',null,'invoice','48000000-0000-0000-0000-000000000002','post',200,'usd','2026-09-07','Revised again','{}')$$,'P0001','This source revision was already exported; review an explicit correcting entry before exporting again','exported revision becomes explicit review instead of silent loss');
+select is((select amount_cents from accounting_batch_lines where entity_id='48000000-0000-0000-0000-000000000002'),150::bigint,'sealed line remains immutable');
+select * from finish();
+rollback;

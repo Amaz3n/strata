@@ -635,6 +635,16 @@ export function PaymentRailPanel({
           <Input id="new-vendor-hold-hours" type="number" min={24} max={720} step={1} value={newVendorHoldHours} onChange={(event) => setNewVendorHoldHours(event.target.value)} disabled={!settings.canManage} className="max-w-sm tabular-nums" />
         </SettingsField>
 
+        <SettingsField
+          label="Electronic-payment jurisdictions"
+          hint="Florida is enabled. Every other state remains unavailable until its construction-payment and waiver review is complete."
+        >
+          <div className="max-w-sm space-y-1 text-sm">
+            <p>{settings.policy.enabledJurisdictions.includes("FL") ? "Florida — enabled" : "Florida — disabled"}</p>
+            <p className="text-muted-foreground">All other states — pending legal review</p>
+          </div>
+        </SettingsField>
+
         {capError ? <SettingsError className="py-3">{capError}</SettingsError> : null}
 
         {settings.canManage ? (

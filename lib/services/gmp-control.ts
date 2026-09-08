@@ -158,8 +158,6 @@ async function loadProjectAndContract({
       org_id,
       name,
       status,
-      qbo_customer_id,
-      qbo_customer_name,
       financial_settings:project_financial_settings(*),
       billing_contract:contracts(
         id,
@@ -200,8 +198,7 @@ async function loadProjectAndContract({
   const contracts = Array.isArray(row.billing_contract) ? row.billing_contract : row.billing_contract ? [row.billing_contract] : []
   const activeContract = (contracts.find((contract: Contract) => contract.status === "active") ?? contracts[0] ?? null) as Contract | null
 
-  // Customer identity lives in the entity map now; the project columns are
-  // pre-cutover fallback only.
+  // Customer identity belongs to the effective accounting route.
   const accountingTarget = await resolveAccountingTarget({ orgId, projectId })
   const accountingCustomer = accountingTarget?.dimensions.customer ?? null
 
@@ -211,8 +208,8 @@ async function loadProjectAndContract({
       org_id: row.org_id,
       name: row.name,
       status: row.status,
-      qbo_customer_id: accountingCustomer?.id ?? row.qbo_customer_id ?? null,
-      qbo_customer_name: accountingCustomer?.name ?? row.qbo_customer_name ?? null,
+      qbo_customer_id: accountingCustomer?.id ?? null,
+      qbo_customer_name: accountingCustomer?.name ?? null,
       financial_settings: Array.isArray(row.financial_settings) ? row.financial_settings[0] ?? null : row.financial_settings ?? null,
       billing_contract: activeContract,
     } as ProjectRow,
@@ -741,7 +738,7 @@ async function createGmpSettlementInvoice(args: {
   amountCents: number
   sourceType?: "manual" | "fee"
 }) {
-  const nextNumber = await getNextInvoiceNumber(args.orgId)
+  const nextNumber = await getNextInvoiceNumber(args.orgId, args.project.id)
   const today = new Date().toISOString().slice(0, 10)
 
   return createInvoice({

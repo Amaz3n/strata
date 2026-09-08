@@ -17,7 +17,6 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Skeleton } from "@/components/ui/skeleton"
 import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
 import { ContractTemplateSettings } from "@/components/settings/contract-template-settings"
@@ -94,46 +93,37 @@ function fontLabel(value: string) {
 type EditKey = "estimate_terms" | "proposal_terms" | "cover_note" | "appearance" | "signer" | "numbering"
 
 export function OrganizationPanel({
+  initialSettings,
+  onSettingsSaved,
   initialDocumentNumbering,
   teamMembers,
   teamLoading = false,
 }: {
+  initialSettings: OrgSettings
+  onSettingsSaved: (settings: OrgSettings) => void
   initialDocumentNumbering: DocumentNumberingSettings | null
-  teamMembers: TeamMember[]
+  teamMembers: Pick<TeamMember, "user" | "status">[]
   teamLoading?: boolean
 }) {
-  const [settings, setSettings] = useState<OrgSettings | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
+  const [settings, setSettings] = useState<OrgSettings>(initialSettings)
   const [numbering, setNumbering] = useState<DocumentNumberingSettings | null>(initialDocumentNumbering)
   const [editing, setEditing] = useState<EditKey | null>(null)
 
   // Logo — the one thing edited in place, mirroring the Profile avatar.
-  const [logoUrl, setLogoUrl] = useState<string | null>(null)
+  const [logoUrl, setLogoUrl] = useState<string | null>(initialSettings.logoUrl)
   const [logoPreview, setLogoPreview] = useState<string | null>(null)
   const [logoError, setLogoError] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
   const [updatingLogo, setUpdatingLogo] = useState(false)
   const logoInputRef = useRef<HTMLInputElement | null>(null)
 
-  const load = useCallback(() => {
-    setLoading(true)
-    setLoadError(null)
-    getOrganizationSettingsAction()
-      .then((data) => {
-        setSettings(data)
-        setLogoUrl(data.logoUrl ?? null)
-      })
-      .catch((error) => {
-        console.error("Failed to load organization settings", error)
-        setLoadError("We couldn't load your organization settings right now.")
-      })
-      .finally(() => setLoading(false))
-  }, [])
-
+  const lastInitialSettings = useRef(initialSettings)
   useEffect(() => {
-    load()
-  }, [load])
+    if (lastInitialSettings.current === initialSettings) return
+    lastInitialSettings.current = initialSettings
+    setSettings(initialSettings)
+    setLogoUrl(initialSettings.logoUrl)
+  }, [initialSettings])
 
   useEffect(() => {
     return () => {
@@ -169,14 +159,14 @@ export function OrganizationPanel({
             estimateBuilderSignerUserId: next.estimateBuilderSignerUserId || null,
           }),
         )
-        if (outcome && "error" in outcome && outcome.error) return outcome.error
-        setSettings((prev) => (prev ? { ...prev, ...next } : prev))
+        setSettings(outcome.settings)
+        onSettingsSaved(outcome.settings)
         return null
       } catch (error) {
         return error instanceof Error ? error.message : "Unable to save settings."
       }
     },
-    [settings],
+    [settings, onSettingsSaved],
   )
 
   const handleLogoSelection = (file: File | null) => {
@@ -203,7 +193,9 @@ export function OrganizationPanel({
           setLogoPreview(null)
           return
         }
-        setLogoUrl("error" in outcome ? null : outcome.logoUrl ?? null)
+        const savedLogo = "error" in outcome ? null : outcome.logoUrl ?? null
+        setLogoUrl(savedLogo)
+        onSettingsSaved({ ...settings, logoUrl: savedLogo })
         setLogoPreview(null)
         toast.success("Organization logo updated")
       } catch (error) {
@@ -230,6 +222,7 @@ export function OrganizationPanel({
           return
         }
         setLogoUrl(null)
+        onSettingsSaved({ ...settings, logoUrl: null })
         setLogoPreview(null)
         toast.success("Organization logo removed")
       } catch (error) {
@@ -239,41 +232,6 @@ export function OrganizationPanel({
         if (logoInputRef.current) logoInputRef.current.value = ""
       }
     })()
-  }
-
-  if (loading) {
-    return (
-      <div className={CONTAINER}>
-        <div className="flex items-center gap-4">
-          <Skeleton className="size-16 rounded-none" />
-          <div className="space-y-2">
-            <Skeleton className="h-5 w-48" />
-            <Skeleton className="h-3.5 w-64" />
-          </div>
-        </div>
-        {Array.from({ length: 2 }).map((_, group) => (
-          <div key={group} className="space-y-3">
-            <Skeleton className="h-3 w-32" />
-            {Array.from({ length: 3 }).map((_, row) => (
-              <Skeleton key={row} className="h-10 w-full rounded-none" />
-            ))}
-          </div>
-        ))}
-      </div>
-    )
-  }
-
-  if (loadError || !settings) {
-    return (
-      <div className={CONTAINER}>
-        <div className="flex flex-col items-center justify-center gap-3 py-20 text-center">
-          <p className="max-w-sm text-sm text-destructive">{loadError ?? "Organization settings are unavailable."}</p>
-          <Button size="sm" variant="outline" onClick={load}>
-            Try again
-          </Button>
-        </div>
-      </div>
-    )
   }
 
   const orgName = settings.name?.trim() || "Your organization"
@@ -807,7 +765,7 @@ function SignerDialog({
   onOpenChange: (open: boolean) => void
   initialMode: SignerMode
   initialUserId: string
-  members: TeamMember[]
+  members: Pick<TeamMember, "user" | "status">[]
   membersLoading: boolean
   onSave: (mode: SignerMode, userId: string) => Promise<string | null>
 }) {
@@ -895,6 +853,7 @@ function SignerDialog({
               </Select>
             </div>
           ) : null}
+          {members.length === 1000 ? <p className="text-xs text-muted-foreground">Showing the first 1,000 active members.</p> : null}
           {error ? <SettingsError>{error}</SettingsError> : null}
         </div>
         <DialogFooter>

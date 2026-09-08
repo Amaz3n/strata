@@ -1,6 +1,7 @@
 import "server-only"
 
-import { generateObject, generateText, NoObjectGeneratedError } from "ai"
+import { consumeObjectStream } from "@/lib/services/ai/consume-object-stream"
+import { generateObject, streamObject, generateText, NoObjectGeneratedError } from "ai"
 import type { z } from "zod"
 
 import {
@@ -85,6 +86,8 @@ export interface RunAiObjectInput<T> {
   /** Starting tier. Defaults to the feature's base tier. */
   tier?: AiTier
   schema: z.ZodType<T>
+  /** Provisional display data only; never bypasses final schema verification. */
+  onPartial?: (value: unknown) => void | Promise<void>
   system?: string
   prompt: string
   files?: AiFilePart[]
@@ -93,6 +96,8 @@ export interface RunAiObjectInput<T> {
   entityType?: string
   entityId?: string
   timeoutMs?: number
+  /** Total model-work budget across tiers, including preparation. */
+  totalTimeoutMs?: number
   /** Attempts at a single tier before escalating. */
   maxAttemptsPerTier?: number
   /**
@@ -270,6 +275,7 @@ export async function runAiObject<T>(input: RunAiObjectInput<T>): Promise<AiObje
     return { ok: false, reason: "disabled", message: "AI features are turned off for this organization.", meta: null }
   }
 
+  const deadline = input.totalTimeoutMs ? Date.now() + input.totalTimeoutMs : Infinity
   const supabase = createServiceSupabaseClient()
   const startTier = input.tier ?? AI_FEATURE_BASE_TIER[feature]
 
@@ -287,7 +293,7 @@ export async function runAiObject<T>(input: RunAiObjectInput<T>): Promise<AiObje
     const apiKey = getApiKeyForProvider(config.provider)
 
     if (!apiKey) {
-      lastFailure = {
+      if (totalAttempts === 0) lastFailure = {
         reason: "not_configured",
         message: `${config.provider} is not configured for ${feature}.`,
       }
@@ -303,6 +309,8 @@ export async function runAiObject<T>(input: RunAiObjectInput<T>): Promise<AiObje
     const tierPrompt = prepared.disclosure ? `${prompt}\n\n${prepared.disclosure}` : prompt
 
     for (let attempt = 1; attempt <= maxAttemptsPerTier; attempt += 1) {
+      const remainingMs = deadline - Date.now()
+      if (remainingMs <= 0) return { ok: false, reason: "timeout", message: "The scan took too long. Please retry or enter the details manually.", meta: lastMeta }
       totalAttempts += 1
       const startedAt = Date.now()
 
@@ -314,15 +322,15 @@ export async function runAiObject<T>(input: RunAiObjectInput<T>): Promise<AiObje
           : `${tierPrompt}\n\nYour previous answer was rejected: ${lastFailure.message}\nReturn a corrected answer that satisfies the schema.`
 
       try {
-        const result = await generateObject({
+        const options = {
           model,
           schema,
           system,
           messages: [
             {
-              role: "user",
+              role: "user" as const,
               content: [
-                { type: "text", text: attemptPrompt },
+                { type: "text" as const, text: attemptPrompt },
                 ...prepared.files.map((file) => ({
                   type: "file" as const,
                   data: file.data,
@@ -332,13 +340,20 @@ export async function runAiObject<T>(input: RunAiObjectInput<T>): Promise<AiObje
               ],
             },
           ],
-          abortSignal: AbortSignal.timeout(timeoutMs),
+          // The gateway owns retries; SDK retries would multiply every attempt.
+          maxRetries: 0,
+          abortSignal: AbortSignal.timeout(Math.min(timeoutMs, remainingMs)),
           experimental_telemetry: {
             isEnabled: true,
             functionId: `ai.${feature}`,
             metadata: { feature, tier, provider: config.provider, model: config.model, orgId: orgId ?? "unknown" },
           },
-        })
+        }
+        const result = await (async () => {
+          if (!input.onPartial) return generateObject(options)
+          const stream = streamObject({ ...options, onError: () => {} })
+          return consumeObjectStream(stream, input.onPartial)
+        })()
 
         const usage = toTokenUsage(result.usage)
         const latencyMs = Date.now() - startedAt

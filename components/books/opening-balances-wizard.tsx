@@ -1,5 +1,6 @@
 "use client";
 
+import type { OpeningBalanceLineInput } from "@/lib/services/books/opening-balances";
 import { useMemo, useState, useTransition } from "react";
 import { toast } from "sonner";
 
@@ -50,6 +51,7 @@ export function OpeningBalancesWizard({
   const [sourceFilename, setSourceFilename] = useState("");
   const [pasted, setPasted] = useState("");
   const [rows, setRows] = useState<ParsedTrialBalanceRow[] | null>(null);
+  const [operationalJson, setOperationalJson] = useState("");
   const [pending, startTransition] = useTransition();
 
   const active = useMemo(
@@ -184,6 +186,27 @@ export function OpeningBalancesWizard({
           </span>
         </div>
       </div>
+
+      <details className="border-b px-5 py-4">
+        <summary className="cursor-pointer text-sm font-medium">Import detailed open items and registers</summary>
+        <p className="my-3 text-xs leading-5 text-muted-foreground">Use one line per unpaid invoice, unpaid vendor bill, held retainage, unapplied deposit, loan or asset. Bank and card lines must identify their mapped native account. Import residual balances as of cutover, with the original document dates. Both reviewers approve the complete detail before posting.</p>
+        <p className="mb-3 text-xs text-muted-foreground">Upload a JSON array of opening lines. Each line includes accountCode, description, debitCents, creditCents, subledgerType and details. Receivables need details.customer_id (or projectId); payables need projectId and companyId. Details may include document_number, document_date, due_date and existing_entity_id. Asset cost lines require asset_number, useful_life_months and register account IDs; accumulated depreciation uses the same asset_number. Retained receivables require details.contract_id.</p>
+        <Input type="file" accept=".json,application/json" aria-label="Detailed opening balance file" onChange={async (event) => {
+          const file = event.target.files?.[0];
+          if (!file) return;
+          if (file.size > 5_000_000) { toast.error("Opening file must be smaller than 5 MB"); return; }
+          setOperationalJson(await file.text()); setSourceFilename(file.name);
+        }} />
+        <Textarea className="my-3 font-mono text-xs" rows={5} value={operationalJson} onChange={(event) => setOperationalJson(event.target.value)} aria-label="Detailed opening lines" placeholder={'[{"accountCode":"1100","description":"Invoice 123 outstanding","debitCents":100000,"creditCents":0,"subledgerType":"ar","projectId":"project UUID","details":{"document_number":"123","customer_id":"contact UUID","document_date":"2026-01-15"}}]'} />
+        <Button variant="outline" disabled={pending || !operationalJson.trim()} onClick={() => startTransition(async () => {
+          try {
+            const lines: OpeningBalanceLineInput[] = JSON.parse(operationalJson);
+            const result = await importOpeningBalancesAction({ cutoverDate, sourceFilename: sourceFilename || null, sourceContent: operationalJson, lines });
+            if (!result.success) { toast.error(result.error); return; }
+            toast.success("Detailed batch validated for owner and accountant review"); setOperationalJson("");
+          } catch { toast.error("The file must contain a valid JSON array of opening lines"); }
+        })}>Validate detailed opening batch</Button>
+      </details>
 
       {rows?.length ? (
         <>

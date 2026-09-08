@@ -1,9 +1,13 @@
 "use server"
 
 import { cache } from "react"
+import { readDailyLogPages } from "@/lib/services/daily-log-pages"
 import { invoiceIsFromAccountingProvider } from "@/lib/services/accounting-sync-state"
 import { revalidatePath } from "next/cache"
-import { recordEvent } from "@/lib/services/events"
+import { recordEvent, createNotificationsFromEvent, type EventRecord } from "@/lib/services/events"
+import { afterResponse } from "@/lib/observability/after-response"
+import { deliverDailyLogOutboxEmails } from "@/lib/services/daily-log-delivery"
+import { persistProjectUpload, uploadRequestFingerprint, UploadRecordInsertError } from "@/lib/services/project-file-upload"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
 import type {
@@ -27,7 +31,7 @@ import type {
   Retainage,
 } from "@/lib/types"
 import type { ScheduleItemInput } from "@/lib/validation/schedule"
-import type { DailyLogEntryInput, DailyLogInput } from "@/lib/validation/daily-logs"
+import type { DailyLogInput } from "@/lib/validation/daily-logs"
 import { scheduleItemInputSchema, scheduleBulkUpdateSchema } from "@/lib/validation/schedule"
 import { taskInputSchema } from "@/lib/validation/tasks"
 import {
@@ -1064,7 +1068,7 @@ export async function generateInvoiceFromDrawAction(projectId: string, drawId: s
         throw new Error("Only pending draws can be invoiced.")
       }
 
-      const next = await getNextInvoiceNumber(orgId)
+      const next = await getNextInvoiceNumber(orgId, projectId)
       const issueDate = new Date().toISOString().split("T")[0]
 
       try {
@@ -1224,7 +1228,7 @@ export async function releaseProjectRetainageAction(
         resourceId: projectId,
       })
 
-      const next = await getNextInvoiceNumber(orgId)
+      const next = await getNextInvoiceNumber(orgId, projectId)
       const serviceClient = createServiceSupabaseClient()
       const issueDate = new Date().toISOString().slice(0, 10)
 
@@ -1928,21 +1932,23 @@ export async function deleteProjectDependencyAction(projectId: string, dependenc
   })
 }
 
-export async function getProjectDailyLogsAction(projectId: string): Promise<DailyLog[]> {
-      const { supabase, orgId } = await requireOrgContext()
+export async function getProjectDailyLogsAction(projectId: string, date?: string): Promise<DailyLog[]> {
+      const { supabase, orgId, userId } = await requireOrgContext()
+      await requireProjectPermission(userId, projectId, "daily_log.read")
+      if (date) z.string().date().parse(date)
 
-      // Scoped to a single project, so fetch the whole record — the day-centric UI
-      // navigates any date, and the old .limit(50) made older days unreachable.
-      const { data, error } = await supabase
+      // The capture page supplies a date; legacy export callers retain complete history.
+      let query = supabase
         .from("daily_logs")
         .select("id, org_id, project_id, log_date, summary, weather, daily_report_id, created_via_portal, portal_company_id, portal_company:companies(name), created_by, created_at, updated_at, author:app_users!daily_logs_created_by_fkey(id, full_name, email, avatar_url)")
         .eq("org_id", orgId)
         .eq("project_id", projectId)
-        .order("log_date", { ascending: false })
+        .order("log_date", { ascending: false }).order("id")
+      if (date) query = query.eq("log_date", date)
+      const { data, error } = await readDailyLogPages((from, to) => query.range(from, to))
 
       if (error) {
-        console.error("Failed to fetch daily logs:", error.message)
-        return []
+        throw new Error("Unable to load daily logs")
       }
 
       const logIds = (data ?? []).map((row) => row.id)
@@ -1953,28 +1959,28 @@ export async function getProjectDailyLogsAction(projectId: string): Promise<Dail
 
       if (logIds.length > 0) {
         const [entriesResult, commentsResult, mentionsResult] = await Promise.all([
-          supabase
+          readDailyLogPages((from, to) => supabase
             .from("daily_log_entries")
             .select("id, org_id, project_id, daily_log_id, entry_type, description, quantity, hours, progress, schedule_item_id, task_id, punch_item_id, cost_code_id, location, location_id, trade, labor_type, inspection_result, metadata, created_at")
             .eq("org_id", orgId)
             .in("daily_log_id", logIds)
-            .order("created_at", { ascending: true }),
-          supabase
+            .order("created_at", { ascending: true }).order("id").range(from, to)),
+          readDailyLogPages((from, to) => supabase
             .from("daily_log_comments")
             .select("id, org_id, project_id, daily_log_id, body, created_by, created_at, updated_at, author:app_users!daily_log_comments_created_by_fkey(id, full_name, email, avatar_url)")
             .eq("org_id", orgId)
             .in("daily_log_id", logIds)
-            .order("created_at", { ascending: true }),
-          supabase
+            .order("created_at", { ascending: true }).order("id").range(from, to)),
+          readDailyLogPages((from, to) => supabase
             .from("daily_log_mentions")
             .select("id, org_id, project_id, daily_log_id, daily_log_comment_id, mentioned_user_id, mentioned_by, created_at, user:app_users!daily_log_mentions_mentioned_user_id_fkey(id, full_name, email, avatar_url)")
             .eq("org_id", orgId)
             .in("daily_log_id", logIds)
-            .order("created_at", { ascending: true }),
+            .order("created_at", { ascending: true }).order("id").range(from, to)),
         ])
 
         if (entriesResult.error) {
-          console.error("Failed to fetch daily log entries:", entriesResult.error.message)
+          throw new Error("Unable to load daily log entries")
         } else {
           for (const entry of entriesResult.data ?? []) {
             if (!entriesByLogId[entry.daily_log_id]) {
@@ -2005,7 +2011,7 @@ export async function getProjectDailyLogsAction(projectId: string): Promise<Dail
         }
 
         if (mentionsResult.error) {
-          console.error("Failed to fetch daily log mentions:", mentionsResult.error.message)
+          throw new Error("Unable to load daily log mentions")
         } else {
           for (const mention of mentionsResult.data ?? []) {
             const user = mention.user as any
@@ -2041,7 +2047,7 @@ export async function getProjectDailyLogsAction(projectId: string): Promise<Dail
         }
 
         if (commentsResult.error) {
-          console.error("Failed to fetch daily log comments:", commentsResult.error.message)
+          throw new Error("Unable to load daily log comments")
         } else {
           for (const comment of commentsResult.data ?? []) {
             const author = comment.author as any
@@ -2131,37 +2137,50 @@ function isHeicFile(mimeType?: string | null, fileName?: string | null, storageP
   )
 }
 
-function buildProjectFileThumbnailUrl(fileId: string, mimeType?: string | null, fileName?: string | null, storagePath?: string | null) {
+function buildProjectFileThumbnailUrl(fileId: string, mimeType?: string | null, fileName?: string | null, storagePath?: string | null, preview?: unknown) {
+  if (preview && typeof preview === "object" && ("thumbnail_path" in preview || "sizes" in preview)) return `/api/files/${fileId}/preview?w=320`
   if (isHeicFile(mimeType, fileName, storagePath)) return `/api/files/${fileId}/preview`
   if (mimeType?.startsWith("image/")) return buildInternalFileUrl(fileId)
   return undefined
 }
 
-export async function getProjectFilesAction(projectId: string): Promise<EnhancedFileMetadata[]> {
+export async function getProjectFilesAction(projectId: string, logIds?: string[], photoDate?: string): Promise<EnhancedFileMetadata[]> {
       const { supabase, orgId } = await requireOrgContext()
 
-      const { data, error } = await supabase
+      if (photoDate) z.string().date().parse(photoDate)
+      if (logIds?.length === 0) return []
+      if (logIds) z.array(z.string().uuid()).max(10000).parse(logIds)
+      let query = supabase
         .from("files")
         .select(`
           id, org_id, project_id, daily_log_id, schedule_item_id, file_name, storage_path, mime_type, size_bytes, visibility, created_at, updated_at,
-          uploaded_by, category, tags, description,
+          uploaded_by, category, tags, description, preview:metadata->preview,
           app_users!files_uploaded_by_fkey(full_name, avatar_url)
         `)
         .eq("org_id", orgId)
         .eq("project_id", projectId)
-        .order("created_at", { ascending: false })
-        .limit(100)
+        .order("created_at", { ascending: false }).order("id")
+      if (logIds) query = query.in("daily_log_id", logIds)
+      if (photoDate) {
+        // Include timezone edges; the day aggregate assigns photos to the viewer's local day.
+        const midnight = Date.parse(`${photoDate}T00:00:00Z`)
+        query = query.is("daily_log_id", null).eq("category", "photos")
+          .gte("created_at", new Date(midnight - 14 * 60 * 60 * 1000).toISOString())
+          .lt("created_at", new Date(midnight + 36 * 60 * 60 * 1000).toISOString())
+      }
+      const { data, error } = logIds || photoDate
+        ? await readDailyLogPages((from, to) => query.range(from, to))
+        : await query.limit(100)
 
       if (error) {
-        console.error("Failed to fetch files:", error.message)
-        return []
+        throw new Error(`Unable to load attachments: ${error.message}`)
       }
 
       // Generate authenticated URLs for files
       const filesWithUrls = await Promise.all(
         (data ?? []).map(async (row) => {
           const downloadUrl = buildInternalFileUrl(row.id)
-          const thumbnailUrl = buildProjectFileThumbnailUrl(row.id, row.mime_type, row.file_name, row.storage_path)
+          const thumbnailUrl = buildProjectFileThumbnailUrl(row.id, row.mime_type, row.file_name, row.storage_path, row.preview)
 
           const uploader = row.app_users as { full_name?: string; avatar_url?: string } | null
 
@@ -3089,8 +3108,10 @@ async function getOrCreateDailyReportId(
     .maybeSingle()
 
   if (existing) {
-    if (weather && !existing.weather) {
-      await supabase.from("daily_reports").update({ weather }).eq("id", existing.id)
+    if (weather && !existing.weather && existing.status === "draft") {
+      const { error: weatherError } = await supabase.from("daily_reports").update({ weather })
+        .eq("id", existing.id).eq("org_id", orgId).eq("project_id", projectId).eq("status", "draft")
+      if (weatherError) throw new Error("Unable to update daily report weather")
     }
     return { id: existing.id as string, status: existing.status as string }
   }
@@ -3121,15 +3142,16 @@ async function getOrCreateDailyReportId(
     throw new Error(`Failed to open daily report: ${error?.message}`)
   }
 
-  const weatherAuto = await fetchProjectDailyWeatherSnapshot(supabase, { orgId, projectId, date })
-  if (weatherAuto) {
-    await supabase
-      .from("daily_reports")
-      .update({ weather_auto: weatherAuto })
-      .eq("org_id", orgId)
-      .eq("project_id", projectId)
-      .eq("id", created.id)
-  }
+  afterResponse("daily_logs.weather_enrichment_failed", async () => {
+    const db = createServiceSupabaseClient()
+    const weatherAuto = await fetchProjectDailyWeatherSnapshot(db, { orgId, projectId, date })
+    if (weatherAuto) {
+      const { error: weatherError } = await db.from("daily_reports").update({ weather_auto: weatherAuto })
+        .eq("org_id", orgId).eq("project_id", projectId).eq("id", created.id)
+        .eq("status", "draft").is("weather_auto", null)
+      if (weatherError) throw new Error("Unable to save daily report weather")
+    }
+  })
 
   return { id: created.id as string, status: created.status as string }
 }
@@ -3204,171 +3226,63 @@ async function fetchProjectDailyWeatherSnapshot(
 
 export async function createProjectDailyLogAction(projectId: string, input: unknown): Promise<ActionResult<DailyLog>> {
   return run(async () => {
-      const parsed = dailyLogInputSchema.parse({ ...input as object, project_id: projectId })
-      const { supabase, orgId, userId } = await requireOrgContext()
-      await requireProjectPermission(userId, projectId, "daily_log.write")
+    const parsed = dailyLogInputSchema.parse({ ...input as object, project_id: projectId })
+    const { supabase, orgId, userId } = await requireOrgContext()
+    await requireProjectPermission(userId, projectId, "daily_log.write")
 
-      const report = await getOrCreateDailyReportId(supabase, {
-        orgId,
-        projectId,
-        date: parsed.date,
-        userId,
-        weather: parsed.weather,
-      })
+    // Resolve text mentions before the transaction; any lookup failure leaves
+    // the draft untouched. The RPC also revalidates active project membership.
+    const submissionId = parsed.submission_id ?? crypto.randomUUID()
+    const mentionedUsers = await createDailyLogMentions({
+      supabase, orgId, projectId, dailyLogId: submissionId, mentionedBy: userId,
+      mentionedUserIds: parsed.mentioned_user_ids ?? [], text: parsed.summary, dryRun: true,
+    })
+    const db = createServiceSupabaseClient()
+    const { data: result, error } = await db.rpc("create_daily_log_submission", {
+      p_org_id: orgId, p_project_id: projectId, p_actor_id: userId,
+      p_submission_id: submissionId, p_input: parsed,
+      p_mentioned_user_ids: mentionedUsers.map((user) => user.id),
+    })
+    if (error || !result) {
+      throw new Error(`Failed to save daily log: ${error?.message ?? "No saved record returned"}`)
+    }
+    const { log: data, entries, mentions, events } = result as {
+      log: { id: string; org_id: string; project_id: string; log_date: string; weather?: DailyLogInput["weather"];
+        summary?: string; daily_report_id: string; created_by?: string; created_at: string; updated_at: string }
+      entries: DailyLog["entries"]
+      mentions: DailyLog["mentions"]
+      events: EventRecord[]
+    }
 
-      const { data, error } = await supabase
-        .from("daily_logs")
-        .insert({
-          org_id: orgId,
-          project_id: projectId,
-          log_date: parsed.date,
-          summary: parsed.summary || null,
-          weather: parsed.weather || null,
-          daily_report_id: report.id,
-          created_by: userId,
-        })
-        .select("id, org_id, project_id, log_date, summary, weather, daily_report_id, created_by, created_at, updated_at")
-        .single()
-
-      if (error || !data) {
-        throw new Error(`Failed to create daily log: ${error?.message}`)
+    // Email is durable in the same transaction as the log, then attempted
+    // immediately after the response. The cron worker recovers abandoned work.
+    afterResponse("daily_logs.mention_delivery_failed", () =>
+      deliverDailyLogOutboxEmails(db, orgId, data.id, sendDailyLogMentionEmailNow))
+    afterResponse("daily_logs.notification_fanout_failed", async () => {
+      for (const event of events) await createNotificationsFromEvent(event, orgId)
+    })
+    afterResponse("daily_logs.weather_enrichment_failed", async () => {
+      const { data: report } = await db.from("daily_reports").select("status, weather_auto")
+        .eq("id", data.daily_report_id).eq("org_id", orgId).eq("project_id", projectId).maybeSingle()
+      if (!report || report.status !== "draft" || report.weather_auto) return
+      const snapshot = await fetchProjectDailyWeatherSnapshot(db, { orgId, projectId, date: data.log_date })
+      if (snapshot) {
+        const { error: weatherError } = await db.from("daily_reports").update({ weather_auto: snapshot })
+          .eq("id", data.daily_report_id).eq("org_id", orgId).eq("project_id", projectId)
+          .eq("status", "draft").is("weather_auto", null)
+        if (weatherError) throw new Error("Unable to save daily report weather")
       }
-
-      const entries = Array.isArray(parsed.entries) ? parsed.entries : []
-      if (entries.length > 0) {
-        const locationIds = [...new Set(entries.map((entry) => entry.location_id).filter((id): id is string => Boolean(id)))]
-        const { data: locationRows, error: locationError } = locationIds.length ? await supabase
-          .from("project_locations").select("id, full_path").eq("org_id", orgId).eq("project_id", projectId).eq("is_active", true).in("id", locationIds) : { data: [], error: null }
-        if (locationError || (locationRows?.length ?? 0) !== locationIds.length) throw new Error("One or more locations are unavailable")
-        const locationsById = new Map((locationRows ?? []).map((location) => [location.id, location.full_path]))
-        const { error: entryError } = await supabase
-          .from("daily_log_entries")
-          .insert(entries.map((entry: DailyLogEntryInput) => ({
-            org_id: orgId,
-            project_id: projectId,
-            daily_log_id: data.id,
-            entry_type: entry.entry_type,
-            description: entry.description ?? null,
-            quantity: entry.quantity ?? null,
-            hours: entry.hours ?? null,
-            progress: entry.progress ?? null,
-            schedule_item_id: entry.schedule_item_id ?? null,
-            task_id: entry.task_id ?? null,
-            punch_item_id: entry.punch_item_id ?? null,
-            cost_code_id: entry.cost_code_id ?? null,
-            location_id: entry.location_id ?? null,
-            location: entry.location_id ? locationsById.get(entry.location_id) ?? null : entry.location ?? null,
-            trade: entry.trade ?? null,
-            labor_type: entry.labor_type ?? null,
-            inspection_result: entry.inspection_result ?? null,
-            metadata: entry.metadata ?? {},
-          })))
-
-        if (entryError) {
-          throw new Error(`Failed to create daily log entries: ${entryError.message}`)
-        }
-
-        await updateLinkedItemsFromDailyLog({
-          supabase,
-          orgId,
-          userId,
-          projectId,
-          entries,
-          dailyLogId: data.id,
-        })
-      }
-
-      const mentionedUsers = await createDailyLogMentions({
-        supabase,
-        orgId,
-        projectId,
-        dailyLogId: data.id as string,
-        mentionedBy: userId,
-        mentionedUserIds: parsed.mentioned_user_ids ?? [],
-        text: parsed.summary,
-      })
-
-      if (mentionedUsers.length > 0) {
-        await sendDailyLogMentionNotifications({
-          supabase,
-          orgId,
-          projectId,
-          dailyLogId: data.id as string,
-          actorId: userId,
-          mentionedUsers,
-          source: "log",
-          excerpt: parsed.summary,
-        })
-      }
-
-      await recordEvent({
-        orgId,
-        eventType: "daily_log_created",
-        entityType: "daily_log",
-        entityId: data.id as string,
-        payload: { project_id: projectId, summary: parsed.summary },
-      })
-
-      await recordAudit({
-        orgId,
-        actorId: userId,
-        action: "insert",
-        entityType: "daily_log",
-        entityId: data.id as string,
-        after: data,
-      })
-
-      revalidatePath(`/projects/${projectId}`)
-
-      const weather = data.weather ?? {}
-      const weatherText = typeof weather === "string"
-        ? weather
-        : [weather.conditions, weather.temperature, weather.notes].filter(Boolean).join(" • ")
-
-      return {
-        id: data.id,
-        org_id: data.org_id,
-        project_id: data.project_id,
-        date: data.log_date,
-        weather: weatherText || undefined,
-        notes: data.summary ?? undefined,
-        daily_report_id: data.daily_report_id ?? report.id,
-        created_by: data.created_by ?? undefined,
-        created_at: data.created_at,
-        updated_at: data.updated_at,
-        entries: entries.map((entry, index) => ({
-          id: `temp-${index}`,
-          org_id: orgId,
-          project_id: projectId,
-          daily_log_id: data.id,
-          entry_type: entry.entry_type,
-          description: entry.description,
-          quantity: entry.quantity,
-          hours: entry.hours,
-          progress: entry.progress,
-          schedule_item_id: entry.schedule_item_id,
-          task_id: entry.task_id,
-          punch_item_id: entry.punch_item_id,
-          cost_code_id: entry.cost_code_id,
-          location: entry.location,
-          trade: entry.trade,
-          labor_type: entry.labor_type,
-          inspection_result: entry.inspection_result,
-          metadata: entry.metadata,
-          created_at: data.created_at,
-        })),
-        mentions: mentionedUsers.map((user) => ({
-          id: `temp-mention-${user.id}`,
-          org_id: orgId,
-          project_id: projectId,
-          daily_log_id: data.id,
-          mentioned_user_id: user.id,
-          mentioned_by: userId,
-          created_at: data.created_at,
-          user,
-        })),
-        comments: [],
-      }
+    })
+    revalidatePath(`/projects/${projectId}`)
+    const weather = data.weather
+    return {
+      id: data.id, org_id: data.org_id, project_id: data.project_id, date: data.log_date,
+      weather: typeof weather === "string" ? weather : weather
+        ? [weather.conditions, weather.temperature, weather.notes].filter(Boolean).join(" • ") || undefined : undefined,
+      notes: data.summary ?? undefined, daily_report_id: data.daily_report_id,
+      created_by: data.created_by ?? undefined, created_at: data.created_at, updated_at: data.updated_at,
+      entries: entries ?? [], mentions: mentions ?? [], comments: [],
+    }
   })
 }
 
@@ -3692,18 +3606,24 @@ async function fetchDailyReport(
   return mapDailyReport(data)
 }
 
-export async function getProjectDailyReportsAction(projectId: string): Promise<DailyReport[]> {
+export async function getProjectDailyReportsAction(projectId: string, date?: string, throughDate?: string): Promise<DailyReport[]> {
       const { supabase, orgId, userId } = await requireOrgContext()
       await requireProjectPermission(userId, projectId, "daily_log.read")
 
-      const { data, error } = await supabase
+      if (date) z.string().date().parse(date)
+      let query = supabase
         .from("daily_reports")
         .select(DAILY_REPORT_SELECT)
         .eq("org_id", orgId)
         .eq("project_id", projectId)
-        .order("report_date", { ascending: false })
+        .order("report_date", { ascending: false }).order("id")
+      if (throughDate) {
+        z.string().date().parse(throughDate)
+        if (!date) throw new Error("Start date is required")
+        query = query.gte("report_date", date).lte("report_date", throughDate)
+      } else if (date) query = query.eq("report_date", date)
+      const { data } = await readDailyLogPages((from, to) => query.range(from, to))
 
-      if (error) throw new Error(`Failed to list daily reports: ${error.message}`)
       return (data ?? []).map(mapDailyReport)
 }
 
@@ -4211,6 +4131,7 @@ async function createDailyLogMentions({
   mentionedBy,
   mentionedUserIds,
   text,
+  dryRun = false,
 }: {
   supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"]
   orgId: string
@@ -4223,7 +4144,9 @@ async function createDailyLogMentions({
   // @mentions even when the client fails to populate mentionedUserIds
   // (stale team list, offline sync, free-typed names, etc.).
   text?: string
+  dryRun?: boolean
 }): Promise<MentionUser[]> {
+  if (mentionedUserIds.length === 0 && !text?.includes("@")) return []
   // Fetch all active project members so we can both validate client-supplied
   // IDs and resolve @mentions directly from the text.
   //
@@ -4287,6 +4210,8 @@ async function createDailyLogMentions({
   })
 
   if (users.length === 0) return []
+
+  if (dryRun) return users
 
   const { error: insertError } = await supabase
     .from("daily_log_mentions")
@@ -4355,28 +4280,19 @@ async function sendDailyLogMentionNotifications({
         source,
       }
 
-      try {
-        const sent = await sendDailyLogMentionEmailNow({
-          orgId,
-          userId: user.id,
-          title,
-          message,
-          projectId,
-          dailyLogId,
-        })
-
-        if (sent) return
-      } catch (error) {
-        console.error("Immediate daily log mention email failed; queueing retry", error)
-      }
-
-      await enqueueOutboxJob({
+      const queued = await enqueueOutboxJob({
         orgId,
         jobType: "send_daily_log_mention_email",
         payload,
+        dedupeByPayloadKeys: ["daily_log_id", "daily_log_comment_id", "user_id"],
       })
+      if (!queued.enqueued && queued.reason === "error") {
+        console.error("Unable to queue daily log mention email", { dailyLogId, userId: user.id })
+      }
     }),
   )
+  afterResponse("daily_logs.mention_delivery_failed", () =>
+    deliverDailyLogOutboxEmails(createServiceSupabaseClient(), orgId, dailyLogId, sendDailyLogMentionEmailNow))
 }
 
 async function sendDailyLogMentionEmailNow({
@@ -4458,134 +4374,6 @@ function escapeHtml(input: string) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;")
-}
-
-async function updateLinkedItemsFromDailyLog({
-  supabase,
-  orgId,
-  userId,
-  projectId,
-  entries,
-  dailyLogId,
-}: {
-  supabase: any
-  orgId: string
-  userId: string
-  projectId: string
-  entries: DailyLogEntryInput[]
-  dailyLogId: string
-}) {
-  for (const entry of entries) {
-    if (entry.schedule_item_id && (entry.progress !== undefined || entry.hours !== undefined || entry.inspection_result)) {
-      const { data: scheduleItem } = await supabase
-        .from("schedule_items")
-        .select("id, actual_hours, progress, status")
-        .eq("org_id", orgId)
-        .eq("project_id", projectId)
-        .eq("id", entry.schedule_item_id)
-        .single()
-
-      if (scheduleItem) {
-        const nextActualHours =
-          typeof entry.hours === "number"
-            ? (scheduleItem.actual_hours ?? 0) + entry.hours
-            : undefined
-        const nextProgress =
-          typeof entry.progress === "number" ? entry.progress : undefined
-        const nextStatus =
-          typeof nextProgress === "number" && nextProgress >= 100
-            ? "completed"
-            : typeof nextProgress === "number" && nextProgress > 0
-            ? "in_progress"
-            : scheduleItem.status
-
-        const updatePayload: Record<string, any> = {}
-        if (typeof nextActualHours === "number") updatePayload.actual_hours = nextActualHours
-        if (typeof nextProgress === "number") updatePayload.progress = nextProgress
-        if (nextStatus && nextStatus !== scheduleItem.status) updatePayload.status = nextStatus
-
-        if (entry.inspection_result) {
-          updatePayload.inspection_result = entry.inspection_result
-          updatePayload.inspected_at = new Date().toISOString()
-          updatePayload.inspected_by = userId
-        }
-
-        if (Object.keys(updatePayload).length > 0) {
-          await supabase
-            .from("schedule_items")
-            .update(updatePayload)
-            .eq("org_id", orgId)
-            .eq("project_id", projectId)
-            .eq("id", entry.schedule_item_id)
-
-          await recordEvent({
-            orgId,
-            eventType: "schedule_item_updated",
-            entityType: "schedule_item",
-            entityId: entry.schedule_item_id,
-            payload: { project_id: projectId, source: "daily_log" },
-          })
-        }
-      }
-    }
-
-    if (entry.task_id && entry.entry_type === "task_update") {
-      const markDone = Boolean((entry.metadata as any)?.mark_complete)
-      const updatePayload: Record<string, any> = {}
-      if (markDone) {
-        updatePayload.status = "done"
-        updatePayload.completed_at = new Date().toISOString()
-      }
-      updatePayload.metadata = {
-        ...(entry.metadata ?? {}),
-        linked_daily_log_id: dailyLogId,
-      }
-
-      await supabase
-        .from("tasks")
-        .update(updatePayload)
-        .eq("org_id", orgId)
-        .eq("project_id", projectId)
-        .eq("id", entry.task_id)
-
-      if (markDone) {
-        await recordEvent({
-          orgId,
-          eventType: "task_completed",
-          entityType: "task",
-          entityId: entry.task_id,
-          payload: { project_id: projectId, source: "daily_log" },
-        })
-      }
-    }
-
-    if (entry.punch_item_id && entry.entry_type === "punch_update") {
-      const markClosed = Boolean((entry.metadata as any)?.mark_closed)
-      const updatePayload: Record<string, any> = {}
-      if (markClosed) {
-        updatePayload.status = "closed"
-        updatePayload.resolved_at = new Date().toISOString()
-        updatePayload.resolved_by = userId
-      }
-
-      if (Object.keys(updatePayload).length > 0) {
-        await supabase
-          .from("punch_items")
-          .update(updatePayload)
-          .eq("org_id", orgId)
-          .eq("project_id", projectId)
-          .eq("id", entry.punch_item_id)
-
-        await recordEvent({
-          orgId,
-          eventType: "punch_item_updated",
-          entityType: "punch_item",
-          entityId: entry.punch_item_id,
-          payload: { project_id: projectId, status: "closed", source: "daily_log" },
-        })
-      }
-    }
-  }
 }
 
 // Assignee types for schedule items
@@ -4748,6 +4536,8 @@ export async function uploadProjectFileAction(
         throw new Error("No file provided")
       }
 
+      const uploadIdRaw = formData.get("upload_id")?.toString()
+      const uploadId = uploadIdRaw ? z.string().uuid("Invalid upload ID").parse(uploadIdRaw) : undefined
       const dailyLogId = formData.get("daily_log_id")?.toString() ?? null
       const scheduleItemId = formData.get("schedule_item_id")?.toString() ?? null
       const category = formData.get("category")?.toString() ?? null
@@ -4792,7 +4582,6 @@ export async function uploadProjectFileAction(
       }
 
       // Generate unique storage path
-      const timestamp = Date.now()
       const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_")
       const inferredCategory = (category as FileCategory | null) ?? inferFileCategory(file.name, file.type)
       const resolvedFolderPath =
@@ -4800,110 +4589,111 @@ export async function uploadProjectFileAction(
         (dailyLogId ? "/daily-logs" : undefined) ??
         getDefaultFolderForCategory(inferredCategory)
       const storageFolder = resolvedFolderPath?.split("/").filter(Boolean).join("/") || "general"
-      const storagePath = `${orgId}/${projectId}/${storageFolder}/uploads/${timestamp}_${safeName}`
+      const storagePath = `${orgId}/${projectId}/${storageFolder}/uploads/${crypto.randomUUID()}_${safeName}`
 
       const bytes = Buffer.from(await file.arrayBuffer())
-      await uploadFilesObject({
-        supabase,
-        orgId,
-        path: storagePath,
-        bytes,
-        contentType: file.type,
-        upsert: false,
-      })
-
-      // Create file record in database
-      const { data, error } = await supabase
-        .from("files")
-        .insert({
-          org_id: orgId,
-          project_id: projectId,
-          daily_log_id: dailyLogId,
-          schedule_item_id: scheduleItemId,
-          file_name: file.name,
-          storage_path: storagePath,
-          mime_type: file.type,
-          size_bytes: file.size,
-          visibility: "private",
-          uploaded_by: userId,
-          category: inferredCategory,
-          folder_path: resolvedFolderPath,
-          description: description ?? undefined,
-          tags: tags ?? [],
-        })
-        .select(`
-          id, org_id, project_id, daily_log_id, schedule_item_id, file_name, storage_path, mime_type, size_bytes, visibility, created_at, category, description, tags,
-          app_users!files_uploaded_by_fkey(full_name, avatar_url)
-        `)
-        .single()
-
-      if (error || !data) {
-        // Try to clean up the uploaded file if db insert fails
-        await deleteFilesObjects({
-          supabase,
-          orgId,
-          paths: [storagePath],
-        })
-        throw new Error(`Failed to create file record: ${error?.message}`)
+      const fingerprint = uploadId ? uploadRequestFingerprint(bytes, {
+        name: file.name, type: file.type, size: file.size, dailyLogId, scheduleItemId,
+        category: inferredCategory, folderPath: resolvedFolderPath, description, tags,
+        capture: readCaptureMetadata(formData),
+      }) : undefined
+      const fileSelect = `
+        id, org_id, project_id, daily_log_id, schedule_item_id, file_name, storage_path, mime_type, size_bytes, visibility,
+        created_at, category, description, tags, uploaded_by, metadata,
+        app_users!files_uploaded_by_fkey(full_name, avatar_url)
+      `
+      const findExisting = async () => {
+        let query = supabase.from("files").select(fileSelect)
+          .eq("id", uploadId!).eq("org_id", orgId).eq("project_id", projectId).eq("uploaded_by", userId)
+        query = dailyLogId ? query.eq("daily_log_id", dailyLogId) : query.is("daily_log_id", null)
+        const { data: existing, error: lookupError } = await query.maybeSingle()
+        if (lookupError) throw new Error("Unable to verify previous upload; retry when connected")
+        return existing
       }
-
-      await createInitialVersion({
-        fileId: data.id,
-        storagePath,
-        fileName: file.name,
-        mimeType: file.type,
-        sizeBytes: file.size,
-      }, orgId)
-
-      await recordEvent({
-        orgId,
-        eventType: "file_uploaded",
-        entityType: "file",
-        entityId: data.id as string,
-        payload: { file_name: file.name, project_id: projectId },
+      const { record: data, created } = await persistProjectUpload({
+        retrySafe: Boolean(uploadId), storagePath, findExisting,
+        validateExisting: (existing) => {
+          const metadata = existing.metadata as Record<string, unknown> | null
+          if (metadata?.upload_request_fingerprint !== fingerprint) {
+            throw new Error("This upload ID was already used for a different file or attachment")
+          }
+        },
+        uploadObject: () => uploadFilesObject({ supabase, orgId, path: storagePath, bytes, contentType: file.type, upsert: false }).then(() => {}),
+        insertRecord: async () => {
+          const { data: inserted, error: insertError } = await supabase.from("files").insert({
+            ...(uploadId ? { id: uploadId, metadata: { upload_request_fingerprint: fingerprint } } : {}),
+            org_id: orgId, project_id: projectId, daily_log_id: dailyLogId, schedule_item_id: scheduleItemId,
+            file_name: file.name, storage_path: storagePath, mime_type: file.type, size_bytes: file.size,
+            visibility: "private", uploaded_by: userId, category: inferredCategory, folder_path: resolvedFolderPath,
+            description: description ?? undefined, tags,
+          }).select(fileSelect).single()
+          if (insertError || !inserted) throw new UploadRecordInsertError(`Failed to create file record: ${insertError?.message}`, insertError?.code)
+          return inserted
+        },
+        cleanupObject: async () => {
+          try { await deleteFilesObjects({ supabase, orgId, paths: [storagePath] }) }
+          catch (cleanupError) { console.error("Unable to clean up upload attempt", cleanupError) }
+        },
       })
 
-      await recordAudit({
-        orgId,
-        actorId: userId,
-        action: "insert",
-        entityType: "file",
-        entityId: data.id as string,
-        after: data,
-      })
+      if (created) {
+        await createInitialVersion({
+          fileId: data.id,
+          storagePath,
+          fileName: file.name,
+          mimeType: file.type,
+          sizeBytes: file.size,
+        }, orgId)
 
-      void triggerFileIndexing(data.id as string, orgId)
+        await recordEvent({
+          orgId,
+          eventType: "file_uploaded",
+          entityType: "file",
+          entityId: data.id as string,
+          payload: { file_name: file.name, project_id: projectId },
+        })
 
-      // A photo's record is created by a trigger on `files`; what only this
-      // request knows is what the browser read out of the file before sending it
-      // — the capture time and GPS fix that the upload timestamp would otherwise
-      // replace. Enqueuing the caption is the other half, and nothing did it
-      // before, which is why every photo in Arc has a null caption while the
-      // workbench offers to search captions.
-      //
-      // The bytes are already stored and the row already written, so a failure
-      // here is enrichment lost, not an upload lost, and it is reported rather
-      // than raised — failing the action would tell the user their photo did not
-      // upload when it did.
-      if (isPhotoMedia(file.type)) {
-        try {
-          await registerUploadedPhoto(
-            {
-              fileId: data.id as string,
-              projectId,
-              capture: readCaptureMetadata(formData),
-            },
-            orgId,
-          )
-        } catch (photoError) {
-          console.error("[files] Failed to record photo capture metadata", photoError)
+        await recordAudit({
+          orgId,
+          actorId: userId,
+          action: "insert",
+          entityType: "file",
+          entityId: data.id as string,
+          after: data,
+        })
+
+        void triggerFileIndexing(data.id as string, orgId)
+
+        // A photo's record is created by a trigger on `files`; what only this
+        // request knows is what the browser read out of the file before sending it
+        // — the capture time and GPS fix that the upload timestamp would otherwise
+        // replace. Enqueuing the caption is the other half, and nothing did it
+        // before, which is why every photo in Arc has a null caption while the
+        // workbench offers to search captions.
+        //
+        // The bytes are already stored and the row already written, so a failure
+        // here is enrichment lost, not an upload lost, and it is reported rather
+        // than raised — failing the action would tell the user their photo did not
+        // upload when it did.
+        if (isPhotoMedia(file.type)) {
+          try {
+            await registerUploadedPhoto(
+              {
+                fileId: data.id as string,
+                projectId,
+                capture: readCaptureMetadata(formData),
+              },
+              orgId,
+            )
+          } catch (photoError) {
+            console.error("[files] Failed to record photo capture metadata", photoError)
+          }
         }
       }
-
       revalidatePath(`/projects/${projectId}`)
 
       const downloadUrl = buildInternalFileUrl(data.id as string)
-      const thumbnailUrl = buildProjectFileThumbnailUrl(data.id as string, file.type, file.name, storagePath)
+      const thumbnailUrl = buildProjectFileThumbnailUrl(data.id as string, data.mime_type, data.file_name, data.storage_path)
 
       const uploader = data.app_users as { full_name?: string; avatar_url?: string } | null
 

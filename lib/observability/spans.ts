@@ -23,6 +23,7 @@ export const LATENCY_BUDGETS_MS: Record<string, number> = {
   "project.operations": 700,
   "project.financials": 1500,
   "projects.index": 1000,
+  "projects.progress": 500,
 }
 
 /**

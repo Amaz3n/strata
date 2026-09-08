@@ -1,3 +1,5 @@
+import { resolveAccountingTarget } from "@/lib/services/accounting-target"
+import { resolveLedgerAuthority } from "@/lib/services/books/authority"
 import { receivablesWriter } from "@/lib/services/receivables-writer"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
@@ -11,13 +13,19 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { requireAuthorization } from "@/lib/services/authorization"
+import { requirePermission } from "@/lib/services/permissions"
 import { ensureVendorRoleWithClient } from "@/lib/services/party-roles"
 import { attachFileWithServiceRole } from "@/lib/services/file-links"
 import { vendorBillStatusUpdateSchema, vendorBillCreateSchema, type VendorBillStatusUpdate, type VendorBillCreate } from "@/lib/validation/vendor-bills"
 import { getComplianceRules } from "@/lib/services/compliance"
 import { propagateApprovalToLedger, voidBillableCostsForVendorBill } from "@/lib/services/cost-plus"
 import { voidJobCostEntriesForVendorBill } from "@/lib/services/job-cost-actuals"
-import { enqueueBillPaymentSync, enqueueVendorBillSync, voidBillPaymentInAccounting } from "@/lib/services/accounting-sync"
+import {
+  enqueueBillPaymentSync,
+  enqueueVendorBillSync,
+  recordPayableAccountingEnqueueResult,
+  voidBillPaymentInAccounting,
+} from "@/lib/services/accounting-sync"
 import { isSyncableVendorBillStatus } from "@/lib/financials/ledger-status"
 import { APPROVAL_GATE_REASONS, loadApprovalGateSettings } from "@/lib/financials/approval-gates"
 import { isCostDrivenBillingModel } from "@/lib/financials/billing-model"
@@ -29,7 +37,7 @@ import {
 } from "@/lib/financials/payables-queues"
 import { listActivePayableRunItems } from "@/lib/services/payable-run-items"
 import { accountingDimension, accountingReference, buildAccountingCoding, readCodingSource, type CodingSource } from "@/lib/services/accounting-coding"
-import { getAccountingSyncState } from "@/lib/services/accounting-sync-state"
+import { getAccountingSyncState, getAccountingSyncStates } from "@/lib/services/accounting-sync-state"
 import { assertBillReleasable, type PaymentReleaseEvidence } from "@/lib/services/payment-holds"
 import { requireRecentPaymentStepUp } from "@/lib/services/payment-step-up"
 import { evaluateAndAutoApproveVendorBill } from "@/lib/services/invoice-auto-approval"
@@ -39,8 +47,46 @@ import { readEvenFlowAssessment, type EvenFlowPriceAssessment } from "@/lib/fina
 import { readBillScheduleAssessment, type BillScheduleAssessment } from "@/lib/financials/bill-schedule-crosscheck"
 import { sendManualPaymentRemittanceAdvice } from "@/lib/services/vendor-remittance"
 import { assertPayableApprovalPeriodOpen, notifyPayableApprovalDecision } from "@/lib/services/payable-approval-gate"
+import { createCompany, getCompany, saveCompanyAccountingVendorLink } from "@/lib/services/companies"
 
 export type VendorBillStatus = "pending" | "approved" | "partial" | "paid" | "rejected"
+
+export async function ensureVendorBillCompany(input: { projectId: string; billId: string }, orgId?: string) {
+  const parsed = z.object({ projectId: z.string().uuid(), billId: z.string().uuid() }).parse(input)
+  const context = await requireOrgContext(orgId)
+  await requireAuthorization({ permission: "bill.write", userId: context.userId, orgId: context.orgId, projectId: parsed.projectId, supabase: context.supabase, logDecision: true, resourceType: "vendor_bill", resourceId: parsed.billId })
+  const supabase = createServiceSupabaseClient()
+  const { data: bill, error } = await supabase.from("vendor_bills")
+    .select("id,project_id,company_id,metadata,accounting_coding,commitment:commitments(company_id)")
+    .eq("org_id", context.orgId).eq("project_id", parsed.projectId).eq("id", parsed.billId).maybeSingle()
+  if (error || !bill) throw new Error("Payable not found")
+  const commitment = Array.isArray(bill.commitment) ? bill.commitment[0] : bill.commitment
+  const existingCompanyId = bill.company_id ?? commitment?.company_id ?? null
+  if (existingCompanyId) return getCompany(existingCompanyId, context.orgId)
+  const metadata = (bill.metadata as Record<string, unknown> | null) ?? {}
+  const counterparty = accountingReference(bill.accounting_coding, "counterparty")
+  const vendorName = String(metadata.vendor_name ?? counterparty?.name ?? "").trim()
+  if (!vendorName) throw new Error("This payable does not have a vendor name to turn into an Arc vendor.")
+  const { data: match, error: matchError } = await supabase.from("companies").select("id").eq("org_id", context.orgId)
+    .ilike("name", vendorName).is("metadata->>archived_at", null).limit(1).maybeSingle()
+  if (matchError) throw new Error(`Unable to find matching vendor: ${matchError.message}`)
+  const company = match?.id ? await getCompany(match.id, context.orgId) : await createCompany({ orgId: context.orgId, input: {
+    name: vendorName, role_key: "vendor",
+  } })
+  if (counterparty?.id) {
+    const state = await getAccountingSyncState(supabase, { orgId: context.orgId, entityType: metadata.source === "vendor_credit" ? "vendor_credit" : "bill", entityId: bill.id })
+    const target = state?.connectionId ? null : await resolveAccountingTarget({ orgId: context.orgId, projectId: parsed.projectId })
+    const connectionId = state?.connectionId ?? target?.connection.id
+    if (!connectionId) throw new Error("Resolve this payable's accounting connection before linking its vendor")
+    await saveCompanyAccountingVendorLink({ supabase, orgId: context.orgId, companyId: company.id, externalId: counterparty.id, displayName: counterparty.name ?? vendorName, connectionId })
+  }
+  const { data: updated, error: updateError } = await supabase.from("vendor_bills").update({
+    company_id: company.id,
+  }).eq("org_id", context.orgId).eq("project_id", parsed.projectId).eq("id", parsed.billId).is("company_id", null).select("id").maybeSingle()
+  if (updateError || !updated) throw new Error("Unable to link payable vendor; it may have changed. Reload and try again.")
+  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "vendor_bill", entityId: bill.id, before: { company_id: null }, after: { company_id: company.id } })
+  return company
+}
 
 /** Hard bound on the project payables query — lists that can grow unbounded get a cap. */
 const PROJECT_PAYABLES_FETCH_LIMIT = 500
@@ -97,6 +143,7 @@ export interface VendorBillSummary {
   paid_cents?: number
   retainage_percent?: number
   retainage_cents?: number
+  retainage_released_cents?: number
   early_pay_discount_percent?: number
   early_pay_discount_days?: number
   lien_waiver_status?: string
@@ -112,6 +159,8 @@ export interface VendorBillSummary {
   qbo_synced_at?: string
   qbo_sync_status?: string
   qbo_sync_error?: string
+  arc_books_gl_account_id?: string
+  arc_books_gl_account_name?: string
   qbo_expense_account_id?: string
   qbo_expense_account_name?: string
   qbo_ap_account_id?: string
@@ -141,6 +190,8 @@ export interface VendorBillSummary {
   coding_rule_id?: string
   /** Vision-extraction confidence from the scan that created this payable. */
   extraction_confidence?: "high" | "medium" | "low"
+  invoice_intake?: { stage: string; error?: string; notes?: string[]; duplicate_reason?: string }
+  extraction_lines?: Array<{ description: string; amountCents: number }>
   /** Advisory line-level match against the commitment, when one has been run. */
   line_match?: PayableLineMatchAssessment
   /** Advisory price comparison against sibling lots of the same house plan. */
@@ -154,13 +205,57 @@ export interface BulkVendorBillApprovalItem {
   expected_updated_at?: string
 }
 
+export type BulkOperationMode = "all_or_nothing" | "skip_failures"
+export interface VendorBillBulkOutcome { id: string; ok: boolean; reason: string | null }
+
+/**
+ * Move prepared quick-capture drafts into the approval queue. Readiness is
+ * checked while each row is locked by the RPC, which returns one result per id
+ * instead of hiding the other 39 invoices behind the first failure.
+ */
+export async function submitVendorBillsForApproval(ids: string[], orgId?: string): Promise<VendorBillBulkOutcome[]> {
+  const parsed = z.array(z.string().uuid()).min(1).max(BULK_APPROVAL_LIMIT).parse(ids)
+  if (new Set(parsed).size !== parsed.length) throw new Error("Bulk submit contains duplicate payables")
+  const context = await requireOrgContext(orgId)
+  const service = createServiceSupabaseClient()
+  const { data: bills, error } = await service.from("vendor_bills")
+    .select("id,project_id,bill_number,total_cents")
+    .eq("org_id", context.orgId).in("id", parsed)
+  if (error) throw new Error(`Unable to load payable drafts: ${error.message}`)
+  const billById = new Map((bills ?? []).map((bill) => [bill.id, bill]))
+  for (const bill of bills ?? []) {
+    if (!bill.project_id) continue
+    await requireAuthorization({ permission: "bill.write", userId: context.userId, orgId: context.orgId,
+      projectId: bill.project_id, supabase: context.supabase, logDecision: true,
+      resourceType: "vendor_bill", resourceId: bill.id })
+  }
+  const missing = parsed.filter((id) => !billById.has(id))
+  if (missing.length > 0) throw new Error("One or more payable drafts could not be found")
+  const { data, error: rpcError } = await service.rpc("submit_vendor_bills_for_approval", {
+    p_org_id: context.orgId, p_actor_id: context.userId, p_bill_ids: parsed,
+  })
+  if (rpcError) throw new Error(rpcError.message)
+  const outcomes = ((data ?? []) as VendorBillBulkOutcome[]).map((row) => ({ id: row.id, ok: Boolean(row.ok), reason: row.reason ?? null }))
+  await Promise.allSettled(outcomes.filter((row) => row.ok).map((row) => {
+    const bill = billById.get(row.id)
+    return recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "vendor_bill_submitted",
+      entityType: "vendor_bill", entityId: row.id, payload: { project_id: bill?.project_id ?? null,
+        bill_number: bill?.bill_number ?? null, total_cents: Number(bill?.total_cents ?? 0), bulk: true, creation_state: "ready" } })
+  }))
+  return outcomes
+}
+
 /**
  * Approve a review queue as one database transaction. Validation, row locking,
  * status changes, audit evidence, events, and durable projection jobs either all
  * commit or none do. Ledger/accounting projections are idempotent and are also
  * attempted immediately so the normal UI does not wait for the worker.
  */
-export async function approveVendorBillsAtomic(items: BulkVendorBillApprovalItem[], orgId?: string): Promise<{ approvedCount: number }> {
+export async function approveVendorBillsAtomic(
+  items: BulkVendorBillApprovalItem[],
+  orgId?: string,
+  mode: BulkOperationMode = "all_or_nothing",
+): Promise<{ approvedCount: number; outcomes: VendorBillBulkOutcome[] }> {
   const parsed = z
     .array(z.object({ id: z.string().uuid(), expected_updated_at: z.string().datetime({ offset: true }).optional() }))
     .min(1)
@@ -172,14 +267,15 @@ export async function approveVendorBillsAtomic(items: BulkVendorBillApprovalItem
   const service = createServiceSupabaseClient()
   const { data: bills, error } = await service
     .from("vendor_bills")
-    .select("id,project_id,bill_date,metadata")
+    .select("id,project_id,company_id,bill_number,total_cents,bill_date,metadata")
     .eq("org_id", context.orgId)
     .in(
       "id",
       parsed.map((item) => item.id),
     )
   if (error || (bills?.length ?? 0) !== parsed.length) throw new Error("One or more payables could not be found")
-  if ((bills ?? []).some((bill) => (bill.metadata as Record<string, unknown> | null)?.creation_state === "draft")) {
+  const billById = new Map((bills ?? []).map((bill) => [bill.id as string, bill]))
+  if (mode === "all_or_nothing" && (bills ?? []).some((bill) => (bill.metadata as Record<string, unknown> | null)?.creation_state === "draft")) {
     throw new Error("Complete every payable draft before bulk approval")
   }
   const projectIds = Array.from(new Set((bills ?? []).map((bill) => bill.project_id)))
@@ -203,44 +299,119 @@ export async function approveVendorBillsAtomic(items: BulkVendorBillApprovalItem
       : []
     return ids.length > 0 && !ids.includes(context.userId)
   })
-  if (outsideDesignatedRoute) {
+  if (mode === "all_or_nothing" && outsideDesignatedRoute) {
     throw new Error("One or more payables are waiting for their designated approver")
   }
 
-  // Same closed-period rule the single-bill and cost-inbox paths enforce.
-  // Approving in a batch was the one way to post cost into a locked period.
+  // Same closed-period and designated-route rules as the single-bill path. In
+  // skip mode these are item outcomes, so one stale/draft/closed-period invoice
+  // cannot hide the result for the other 299 selected bills.
+  const preflightOutcomes = new Map<string, VendorBillBulkOutcome>()
   for (const bill of bills ?? []) {
-    await assertPayableApprovalPeriodOpen({
-      supabase: context.supabase,
-      orgId: context.orgId,
-      projectId: bill.project_id,
-      billDate: bill.bill_date,
-    })
+    try {
+      const metadata = (bill.metadata as Record<string, unknown> | null) ?? {}
+      if (mode === "skip_failures" && metadata.creation_state === "draft") {
+        throw new Error("Complete this payable draft before approval")
+      }
+      const preferredIds = Array.isArray(metadata.preferred_approver_ids)
+        ? metadata.preferred_approver_ids.filter((value): value is string => typeof value === "string")
+        : []
+      if (mode === "skip_failures" && preferredIds.length > 0 && !preferredIds.includes(context.userId)) {
+        throw new Error("This payable is waiting for its designated approver")
+      }
+      await assertPayableApprovalPeriodOpen({
+        supabase: context.supabase,
+        orgId: context.orgId,
+        projectId: bill.project_id,
+        billDate: bill.bill_date,
+      })
+    } catch (error) {
+      if (mode === "all_or_nothing") throw error
+      preflightOutcomes.set(bill.id, { id: bill.id, ok: false, reason: error instanceof Error ? error.message : "Payable could not be approved" })
+    }
   }
 
-  const { data, error: rpcError } = await service.rpc("approve_vendor_bills_atomic", { p_org_id: context.orgId, p_actor_id: context.userId, p_items: parsed })
+  const rpcItems = parsed.filter((item) => !preflightOutcomes.has(item.id))
+  if (rpcItems.length === 0) {
+    const outcomes = parsed.map((item) => preflightOutcomes.get(item.id)!)
+    return { approvedCount: 0, outcomes }
+  }
+
+  const { data, error: rpcError } = await service.rpc("approve_vendor_bills_with_outcomes", {
+    p_org_id: context.orgId, p_actor_id: context.userId, p_items: rpcItems, p_mode: mode,
+  })
   if (rpcError) throw new Error(rpcError.message)
+  const rpcOutcomes = new Map(((data ?? []) as VendorBillBulkOutcome[]).map((row) => [row.id, { id: row.id, ok: Boolean(row.ok), reason: row.reason ?? null }]))
+  const outcomes = parsed.map((item) => preflightOutcomes.get(item.id) ?? rpcOutcomes.get(item.id) ?? { id: item.id, ok: false, reason: "No approval outcome was returned" })
+  const approved = new Set(outcomes.filter((row) => row.ok).map((row) => row.id))
 
   // Fast path. The transaction inserted one durable outbox job per bill, so a
   // temporary projection failure here is retried without weakening approval.
+  //
+  // Telling people comes first, and that ordering is load-bearing: the
+  // projections have an outbox row behind them and the notification does not, so
+  // a QuickBooks hiccup must not be what stops the submitter from hearing that
+  // their invoice was approved.
   await Promise.allSettled(
-    parsed.map(async (item) => {
-      await propagateApprovalToLedger({ source: "vendor_bill", sourceId: item.id, orgId: context.orgId })
-      await enqueueVendorBillSync(item.id, context.orgId)
+    rpcItems.filter((item) => approved.has(item.id)).map(async (item) => {
+      // The same payload the single-bill path raises. It used to be `{ bulk: true }`
+      // alone, so the router could not find the submitter and fell back to
+      // everyone holding the permission — while the RPC raised a second,
+      // equally thin event of its own. The event is emitted here and only here.
+      const bill = billById.get(item.id)
+      const metadata = (bill?.metadata as Record<string, unknown> | null) ?? {}
+      const approvalEvent = await recordEvent({
+        orgId: context.orgId,
+        actorId: context.userId,
+        eventType: "vendor_bill_approved",
+        entityType: "vendor_bill",
+        entityId: item.id,
+        payload: {
+          status: "approved",
+          bulk: true,
+          project_id: bill?.project_id ?? null,
+          company_id: bill?.company_id ?? null,
+          bill_number: bill?.bill_number ?? null,
+          amount_cents: Number(bill?.total_cents ?? 0),
+          submitted_by_user_id: typeof metadata.submitted_by_user_id === "string" ? metadata.submitted_by_user_id : undefined,
+        },
+      })
       // The vendor hears the outcome whether their invoice was approved on its
-      // own or as one of fifty. Only the single-bill path used to say anything.
-      await notifyPayableApprovalDecision({ orgId: context.orgId, billId: item.id, kind: "approved" })
+      // own or as one of fifty. Only the single-bill path used to say anything —
+      // and it carried the event id, which is what ties the vendor's notice to
+      // the decision that caused it.
+      await notifyPayableApprovalDecision({ orgId: context.orgId, billId: item.id, kind: "approved", eventId: approvalEvent.id })
+      await propagateApprovalToLedger({ source: "vendor_bill", sourceId: item.id, orgId: context.orgId })
+      const syncResult = await enqueueVendorBillSync(item.id, context.orgId)
+      await recordPayableAccountingEnqueueResult({
+        orgId: context.orgId,
+        billId: item.id,
+        entityType: "vendor_bill",
+        entityId: item.id,
+        result: syncResult,
+      })
     }),
   )
-  return { approvedCount: Number((data as Record<string, unknown> | null)?.approved_count ?? parsed.length) }
+  return { approvedCount: approved.size, outcomes }
 }
 
 export const vendorBillSelect = `
-  id, org_id, project_id, commitment_id, company_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, accounting_coding, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, early_pay_discount_percent, early_pay_discount_days, lien_waiver_status, lien_waiver_received_at, rejected_at, rejected_by, rejection_reason, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
+  id, org_id, project_id, commitment_id, company_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, accounting_coding, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, retainage_released_cents, early_pay_discount_percent, early_pay_discount_days, lien_waiver_status, lien_waiver_received_at, rejected_at, rejected_by, rejection_reason,
   project:projects(id, name),
-  company:companies!vendor_bills_company_id_fkey(id, name, qbo_vendor_id, qbo_vendor_name),
-  commitment:commitments(id, title, total_cents, company:companies(id, name, qbo_vendor_id, qbo_vendor_name))
+  company:companies!vendor_bills_company_id_fkey(id, name),
+  commitment:commitments(id, title, total_cents, company:companies(id, name))
 `
+
+/** Load a desk-session selection across pages without making the URL own it. */
+export async function listVendorBillsByIds(ids: string[], orgId?: string): Promise<VendorBillSummary[]> {
+  const parsed = z.array(z.string().uuid()).min(1).max(BULK_APPROVAL_LIMIT).parse([...new Set(ids)])
+  const context = await requireOrgContext(orgId)
+  await requirePermission("bill.read", context)
+  const { data, error } = await context.supabase.from("vendor_bills").select(vendorBillSelect)
+    .eq("org_id", context.orgId).in("id", parsed)
+  if (error) throw new Error(`Unable to load selected payables: ${error.message}`)
+  return hydrateVendorBills(context.supabase, context.orgId, data ?? [])
+}
 
 export interface VendorBillProjectShare {
   id: string
@@ -259,6 +430,8 @@ export interface VendorBillActualLine {
   project_id?: string | null
   project_name?: string
   billable_to_customer: boolean
+  arc_books_gl_account_id?: string
+  arc_books_gl_account_name?: string
   qbo_expense_account_id?: string
   qbo_expense_account_name?: string
   qbo_ap_account_id?: string
@@ -429,6 +602,7 @@ async function buildBillLinesFromCommitment({
       amount_cents: amountCents,
       project_id: projectId,
       billable_to_customer: undefined,
+      arc_books_gl_account_id: undefined,
       qbo_expense_account_id: undefined,
       qbo_expense_account_name: undefined,
       qbo_ap_account_id: undefined,
@@ -460,6 +634,8 @@ export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: strin
     project_id: line.project_id ?? null,
     project_name: line.project?.name ?? undefined,
     billable_to_customer: line.metadata?.billable_to_customer === true,
+    arc_books_gl_account_id: line.metadata?.arc_books_gl_account_id ?? undefined,
+    arc_books_gl_account_name: line.metadata?.arc_books_gl_account_name ?? undefined,
     qbo_expense_account_id: line.metadata?.qbo_expense_account_id ?? undefined,
     qbo_expense_account_name: line.metadata?.qbo_expense_account_name ?? undefined,
     qbo_ap_account_id: line.metadata?.qbo_ap_account_id ?? undefined,
@@ -519,7 +695,7 @@ export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: strin
     commitment_title: row.commitment?.title ?? undefined,
     commitment_total_cents: row.commitment?.total_cents ?? undefined,
     company_id: company.id ?? row.company_id ?? undefined,
-    company_name: company.name ?? row.company?.name ?? undefined,
+    company_name: company.name ?? row.company?.name ?? metadata.vendor_name ?? undefined,
     bill_number: row.bill_number ?? undefined,
     status: row.status ?? "pending",
     bill_date: row.bill_date ?? undefined,
@@ -528,6 +704,8 @@ export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: strin
     currency: row.currency ?? "usd",
     submitted_by_contact_id: row.submitted_by_contact_id ?? undefined,
     file_id: row.file_id ?? undefined,
+    invoice_intake: metadata.intake ?? undefined,
+    extraction_lines: Array.isArray(metadata.extraction_lines) ? metadata.extraction_lines : undefined,
     created_at: row.created_at,
     updated_at: row.updated_at ?? undefined,
     payment_reference: row.payment_reference ?? metadata.payment_reference ?? undefined,
@@ -554,6 +732,7 @@ export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: strin
     paid_cents: paidCents,
     retainage_percent: row.retainage_percent ?? undefined,
     retainage_cents: row.retainage_cents ?? undefined,
+    retainage_released_cents: row.retainage_released_cents ?? undefined,
     early_pay_discount_percent: row.early_pay_discount_percent == null ? undefined : Number(row.early_pay_discount_percent),
     early_pay_discount_days: row.early_pay_discount_days == null ? undefined : Number(row.early_pay_discount_days),
     lien_waiver_status: row.lien_waiver_status ?? undefined,
@@ -565,18 +744,20 @@ export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: strin
     actual_cost_code_id: firstActualLine?.cost_code_id ?? undefined,
     actual_cost_code_code: firstActualLine?.cost_code_code ?? undefined,
     actual_cost_code_name: firstActualLine?.cost_code_name ?? undefined,
-    qbo_id: row.qbo_id ?? undefined,
-    qbo_synced_at: row.qbo_synced_at ?? undefined,
-    qbo_sync_status: row.qbo_sync_status ?? undefined,
-    qbo_sync_error: row.qbo_sync_error ?? undefined,
-    qbo_expense_account_id: expenseAccount?.id ?? row.qbo_expense_account_id ?? metadata.qbo_expense_account_id ?? lineExpenseAccountId ?? undefined,
-    qbo_expense_account_name: expenseAccount?.name ?? row.qbo_expense_account_name ?? metadata.qbo_expense_account_name ?? lineExpenseAccountName ?? undefined,
-    qbo_ap_account_id: apAccount?.id ?? row.qbo_ap_account_id ?? metadata.qbo_ap_account_id ?? lineApAccountId ?? undefined,
-    qbo_ap_account_name: apAccount?.name ?? row.qbo_ap_account_name ?? metadata.qbo_ap_account_name ?? lineApAccountName ?? undefined,
-    qbo_vendor_id: counterparty?.id ?? company.qbo_vendor_id ?? row.qbo_vendor_id ?? metadata.qbo_vendor_id ?? undefined,
-    qbo_vendor_name: counterparty?.name ?? company.qbo_vendor_name ?? row.qbo_vendor_name ?? metadata.qbo_vendor_name ?? undefined,
-    company_qbo_vendor_id: company.qbo_vendor_id ?? undefined,
-    company_qbo_vendor_name: company.qbo_vendor_name ?? undefined,
+    qbo_id: row.accounting_sync?.externalId ?? undefined,
+    qbo_synced_at: row.accounting_sync?.syncedAt ?? undefined,
+    qbo_sync_status: row.accounting_sync?.status ?? undefined,
+    qbo_sync_error: row.accounting_sync?.error ?? undefined,
+    qbo_expense_account_id: expenseAccount?.id ?? lineExpenseAccountId ?? undefined,
+    qbo_expense_account_name: expenseAccount?.name ?? lineExpenseAccountName ?? undefined,
+    qbo_ap_account_id: apAccount?.id ?? lineApAccountId ?? undefined,
+    qbo_ap_account_name: apAccount?.name ?? lineApAccountName ?? undefined,
+    qbo_vendor_id: counterparty?.id ?? row.accounting_counterparty?.external_id ?? undefined,
+    qbo_vendor_name: counterparty?.name ?? row.accounting_counterparty?.external_name ?? undefined,
+    company_qbo_vendor_id: row.accounting_counterparty?.external_id ?? undefined,
+    company_qbo_vendor_name: row.accounting_counterparty?.external_name ?? undefined,
+    arc_books_gl_account_id: pickSharedLineValue(actualLines.map((line) => line.arc_books_gl_account_id)),
+    arc_books_gl_account_name: pickSharedLineValue(actualLines.map((line) => line.arc_books_gl_account_name)),
     actual_lines: actualLines,
     project_amount_cents: projectAmountCents,
     is_shared: isShared,
@@ -628,6 +809,8 @@ async function replaceBillLineCoding(
       amount_cents: number
       project_id?: string | null
       billable_to_customer?: boolean
+      arc_books_gl_account_id?: string
+      arc_books_gl_account_name?: string
       qbo_expense_account_id?: string
       qbo_expense_account_name?: string
       qbo_ap_account_id?: string
@@ -661,6 +844,16 @@ async function replaceBillLineCoding(
     }
   }
 
+  const nativeIds = [...new Set(lines.map((line) => line.arc_books_gl_account_id).filter((id): id is string => Boolean(id)))]
+  const nativeNames = new Map<string, string>()
+  if (nativeIds.length > 0) {
+    if (await resolveLedgerAuthority(orgId) !== "arc") throw new Error("Arc Books is not the active ledger. Reload before changing accounts.")
+    const { data: accounts, error } = await supabase.from("gl_accounts").select("id,code,name")
+      .eq("org_id", orgId).eq("active", true).in("account_type", ["cogs", "expense"]).in("id", nativeIds)
+    if (error || accounts?.length !== nativeIds.length) throw new Error("Choose an active Arc Books expense or cost account.")
+    for (const account of accounts) nativeNames.set(account.id, `${account.code} · ${account.name}`)
+  }
+
   const { error: deleteError } = await supabase.from("bill_lines").delete().eq("org_id", orgId).eq("bill_id", billId)
 
   if (deleteError) {
@@ -683,6 +876,8 @@ async function replaceBillLineCoding(
       sort_order: index,
       metadata: {
         source: "ap_review",
+        arc_books_gl_account_id: line.arc_books_gl_account_id,
+        arc_books_gl_account_name: line.arc_books_gl_account_id ? nativeNames.get(line.arc_books_gl_account_id) : undefined,
         billable_to_customer: costDriven && line.billable_to_customer !== false,
         qbo_expense_account_id: line.qbo_expense_account_id,
         qbo_expense_account_name: line.qbo_expense_account_name,
@@ -764,7 +959,7 @@ export async function hydrateVendorBills(supabase: SupabaseClient, orgId: string
   // value at coding/approval time.
   const commitmentIds = Array.from(new Set(rows.map((bill) => bill.commitment_id).filter(Boolean)))
 
-  const [commitmentBillsResult, billLinesResult, paymentsResult] = await Promise.all([
+  const [commitmentBillsResult, billLinesResult, paymentsResult, syncStates] = await Promise.all([
     commitmentIds.length === 0
       ? Promise.resolve({ data: [] as any[], error: null })
       : supabase.from("vendor_bills").select("commitment_id, total_cents").eq("org_id", orgId).in("commitment_id", commitmentIds),
@@ -783,6 +978,10 @@ export async function hydrateVendorBills(supabase: SupabaseClient, orgId: string
       .in("bill_id", billIds)
       .eq("status", "succeeded")
       .order("received_at", { ascending: false }),
+    Promise.all([
+      getAccountingSyncStates(supabase, { orgId, entityType: "bill", entityIds: billIds }),
+      getAccountingSyncStates(supabase, { orgId, entityType: "vendor_credit", entityIds: billIds }),
+    ]).then(([bills, credits]) => new Map([...bills, ...credits])),
   ])
 
   if (commitmentBillsResult.error) {
@@ -814,8 +1013,21 @@ export async function hydrateVendorBills(supabase: SupabaseClient, orgId: string
     paymentsByBillId.set(payment.bill_id, current)
   }
 
+  const companyIds = Array.from(new Set(rows.flatMap((bill) => {
+    const commitment = Array.isArray(bill.commitment) ? bill.commitment[0] : bill.commitment
+    const company = Array.isArray(commitment?.company) ? commitment.company[0] : commitment?.company
+    return [bill.company_id, company?.id].filter(Boolean)
+  })))
+  const { data: links, error: linksError } = companyIds.length ? await supabase.from("accounting_counterparty_links")
+    .select("entity_id,connection_id,external_id,external_name").eq("org_id", orgId).eq("entity_type", "company").eq("role", "vendor").in("entity_id", companyIds) : { data: [], error: null }
+  if (linksError) throw new Error(`Unable to load payable counterparties: ${linksError.message}`)
   return rows.map((bill) => {
-    const summary = mapVendorBill(bill, linesByBillId.get(bill.id), viewProjectId, paymentsByBillId.get(bill.id))
+    const state = syncStates.get(bill.id)
+    const commitment = Array.isArray(bill.commitment) ? bill.commitment[0] : bill.commitment
+    const company = Array.isArray(commitment?.company) ? commitment.company[0] : commitment?.company
+    const companyId = bill.company_id ?? company?.id
+    const link = state?.connectionId ? links?.find((item) => item.entity_id === companyId && item.connection_id === state.connectionId) : null
+    const summary = mapVendorBill({ ...bill, accounting_sync: state, accounting_counterparty: link }, linesByBillId.get(bill.id), viewProjectId, paymentsByBillId.get(bill.id))
     if (summary.commitment_id) {
       summary.commitment_billed_cents = billedByCommitment.get(summary.commitment_id)
     }
@@ -983,7 +1195,7 @@ export async function listVendorBillsPageForProject(
     const companyIds = (matchingCompanies ?? []).map((company) => company.id).filter(Boolean)
     const searchParts = [
       `bill_number.ilike.%${search}%`,
-      `qbo_vendor_name.ilike.%${search}%`,
+      `accounting_coding->counterparty->>name.ilike.%${search}%`,
       ...(companyIds.length > 0 ? [`company_id.in.(${companyIds.join(",")})`] : []),
     ]
     query = query.or(searchParts.join(","))
@@ -1396,7 +1608,7 @@ export async function updateVendorBillStatus({
   const { data: existing, error: existingError } = await supabase
     .from("vendor_bills")
     .select(
-      "id, org_id, project_id, commitment_id, company_id, bill_number, bill_date, due_date, status, total_cents, currency, file_id, metadata, accounting_coding, updated_at, approved_at, approved_by, paid_at, paid_cents, retainage_percent, retainage_cents, lien_waiver_status, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name",
+      "id, org_id, project_id, commitment_id, company_id, bill_number, bill_date, due_date, status, total_cents, currency, file_id, metadata, accounting_coding, updated_at, approved_at, approved_by, paid_at, paid_cents, retainage_percent, retainage_cents, lien_waiver_status",
     )
     .eq("org_id", resolvedOrgId)
     .eq("id", billId)
@@ -1410,11 +1622,12 @@ export async function updateVendorBillStatus({
     const service = createServiceSupabaseClient()
     const { data: replay } = await service
       .from("payments")
-      .select("bill_id,amount_cents")
+      .select("bill_id,amount_cents,metadata")
       .eq("org_id", resolvedOrgId)
       .eq("idempotency_key", `manual-ap:${billId}:${parsed.payment_idempotency_key}`)
       .maybeSingle()
     if (replay) {
+      if (parsed.books_payment_account_id && (replay.metadata as Record<string, unknown> | null)?.books_payment_account_id !== parsed.books_payment_account_id) throw new Error("Payment reference was already recorded with different funding");
       if (replay.bill_id !== billId || (parsed.payment_amount_cents != null && Number(replay.amount_cents) !== parsed.payment_amount_cents)) {
         throw new Error("Payment idempotency key was already used for different contents")
       }
@@ -1501,7 +1714,7 @@ export async function updateVendorBillStatus({
     const service = createServiceSupabaseClient()
     const { data: current } = await service.from("vendor_bills").select(vendorBillSelect).eq("org_id", resolvedOrgId).eq("id", billId).maybeSingle()
     if (!current) throw new Error("Payment was recorded but the payable could not be reloaded")
-    return mapVendorBill(current)
+    return (await hydrateVendorBills(supabase, resolvedOrgId, [current]))[0]
   }
 
   // A waiver status can unblock money. It is therefore a hold override, not a
@@ -1517,6 +1730,10 @@ export async function updateVendorBillStatus({
       resourceType: "vendor_bill",
       resourceId: billId,
     })
+
+    if (parsed.lien_waiver_status === "received" && existing.lien_waiver_status !== "received") {
+      throw new Error("Upload and review the signed document in Waivers before marking it received")
+    }
   }
 
   // A submitted payable's route is narrower than the role permission. The role
@@ -1590,7 +1807,7 @@ export async function updateVendorBillStatus({
         "This payable is set to be paid through Arc. Change its payment method to “Paid outside Arc” before recording an external payment.",
       )
     }
-    externalReleaseEvidence = await assertBillReleasable(billId, resolvedOrgId)
+    externalReleaseEvidence = await assertBillReleasable(billId, resolvedOrgId, {amountCents:parsed.payment_amount_cents??undefined})
     await assertExternalPaymentControls({
       supabase,
       orgId: resolvedOrgId,
@@ -1615,7 +1832,11 @@ export async function updateVendorBillStatus({
 
   // Build update object with column values.
   const updateData: any = { status: parsed.status }
-  if (existingMetadata.creation_state === "draft" && parsed.actual_lines?.length) {
+  // Coding a quick-capture draft is what submits it. Nothing announced that
+  // transition, so a draft completed by hand reached the approval queue without
+  // a single approver being told.
+  const becameReadyForApproval = existingMetadata.creation_state === "draft" && Boolean(parsed.actual_lines?.length)
+  if (becameReadyForApproval) {
     updateData.metadata = { ...existingMetadata, creation_state: "ready" }
   }
   if (parsed.bill_number !== undefined) {
@@ -1649,18 +1870,18 @@ export async function updateVendorBillStatus({
   const existingClass = accountingDimension(existing.accounting_coding, "class")
   const nextExpenseAccountId = parsed.qbo_expense_account_id !== undefined
     ? parsed.qbo_expense_account_id || null
-    : existingExpenseAccount?.id ?? existing.qbo_expense_account_id ?? null
+    : existingExpenseAccount?.id ?? null
   const nextExpenseAccountName = parsed.qbo_expense_account_id !== undefined
     ? parsed.qbo_expense_account_name || null
-    : existingExpenseAccount?.name ?? existing.qbo_expense_account_name ?? null
+    : existingExpenseAccount?.name ?? null
   const nextApAccountId = parsed.qbo_ap_account_id !== undefined
     ? parsed.qbo_ap_account_id || null
-    : existingApAccount?.id ?? existing.qbo_ap_account_id ?? null
+    : existingApAccount?.id ?? null
   const nextApAccountName = parsed.qbo_ap_account_id !== undefined
     ? parsed.qbo_ap_account_name || null
-    : existingApAccount?.name ?? existing.qbo_ap_account_name ?? null
-  let nextCounterpartyId = existingCounterparty?.id ?? existing.qbo_vendor_id ?? null
-  let nextCounterpartyName = existingCounterparty?.name ?? existing.qbo_vendor_name ?? null
+    : existingApAccount?.name ?? null
+  let nextCounterpartyId = existingCounterparty?.id ?? null
+  let nextCounterpartyName = existingCounterparty?.name ?? null
 
   if (parsed.company_id !== undefined) {
     updateData.company_id = parsed.company_id
@@ -1740,6 +1961,7 @@ export async function updateVendorBillStatus({
         amount_cents: line.amount_cents,
         project_id: line.project_id ?? existing.project_id ?? null,
         billable_to_customer: line.billable_to_customer,
+        arc_books_gl_account_id: line.arc_books_gl_account_id ?? parsed.arc_books_gl_account_id,
         qbo_expense_account_id: line.qbo_expense_account_id ?? nextExpenseAccountId ?? undefined,
         qbo_expense_account_name: line.qbo_expense_account_name ?? nextExpenseAccountName ?? undefined,
         qbo_ap_account_id: line.qbo_ap_account_id ?? nextApAccountId ?? undefined,
@@ -1814,6 +2036,7 @@ export async function updateVendorBillStatus({
                 amount_cents: totalCents,
                 project_id: existing.project_id ?? null,
                 billable_to_customer: undefined,
+                arc_books_gl_account_id: parsed.arc_books_gl_account_id,
                 qbo_expense_account_id: nextExpenseAccountId ?? undefined,
                 qbo_expense_account_name: nextExpenseAccountName ?? undefined,
                 qbo_ap_account_id: nextApAccountId ?? undefined,
@@ -2013,7 +2236,7 @@ export async function updateVendorBillStatus({
         }
       : null
     const paymentIdempotencyKey = `manual-ap:${billId}:${parsed.payment_idempotency_key ?? randomUUID()}`
-    const { data: paymentResult, error: paymentError } = await service.rpc("record_manual_ap_payment_atomic", {
+    const { data: paymentResult, error: paymentError } = await service.rpc("record_manual_ap_payment_with_books_atomic", {
       p_org_id: resolvedOrgId,
       p_bill_id: billId,
       p_actor_id: userId,
@@ -2025,6 +2248,7 @@ export async function updateVendorBillStatus({
       p_received_at: parsed.payment_date ? `${parsed.payment_date}T12:00:00.000Z` : new Date().toISOString(),
       p_release_evidence: releaseEvidence,
       p_idempotency_key: paymentIdempotencyKey,
+      p_books_account_id: parsed.books_payment_account_id ?? null,
     })
     if (paymentError || !paymentResult || typeof paymentResult !== "object") {
       throw new Error(`Failed to record bill payment: ${paymentError?.message ?? "No payment result was returned"}`)
@@ -2052,10 +2276,24 @@ export async function updateVendorBillStatus({
   const shouldEnqueueForStatus = isSyncableVendorBillStatus(finalStatus)
   const shouldEnqueueForRecode = billLinkedToQbo && accountingCodingChanged
   if (shouldEnqueueForStatus || shouldEnqueueForRecode) {
-    await enqueueVendorBillSync(billId, resolvedOrgId)
+    const syncResult = await enqueueVendorBillSync(billId, resolvedOrgId)
+    await recordPayableAccountingEnqueueResult({
+      orgId: resolvedOrgId,
+      billId,
+      entityType: "vendor_bill",
+      entityId: billId,
+      result: syncResult,
+    })
   }
   if (recordedPaymentId) {
-    await enqueueBillPaymentSync(recordedPaymentId, resolvedOrgId)
+    const paymentSyncResult = await enqueueBillPaymentSync(recordedPaymentId, resolvedOrgId)
+    await recordPayableAccountingEnqueueResult({
+      orgId: resolvedOrgId,
+      billId,
+      entityType: "bill_payment",
+      entityId: recordedPaymentId,
+      result: paymentSyncResult,
+    })
     // Best effort by design: the money is already recorded, and a mail failure
     // must not undo it. The vendor being told is not conditional on the rail.
     await sendManualPaymentRemittanceAdvice({ orgId: resolvedOrgId, paymentId: recordedPaymentId }).catch((error) =>
@@ -2069,6 +2307,9 @@ export async function updateVendorBillStatus({
   // `vendor_bill_updated` — which has no recipient set and is not a notification
   // type — is why a submitter was never told either way, and why a rejected
   // invoice could only be discovered by asking.
+  // Completing a draft is a submission, not an edit. `vendor_bill_updated` has
+  // no recipient set, so the save that put a payable into the approval queue
+  // used to notify nobody at all.
   const lifecycleEventType =
     finalStatus === "paid"
       ? "vendor_bill_paid"
@@ -2076,7 +2317,9 @@ export async function updateVendorBillStatus({
         ? "vendor_bill_rejected"
         : finalStatus === "approved" && existing.status !== "approved"
           ? "vendor_bill_approved"
-          : "vendor_bill_updated"
+          : becameReadyForApproval
+            ? "vendor_bill_submitted"
+            : "vendor_bill_updated"
 
   const lifecycleEvent = await recordEvent({
     orgId: resolvedOrgId,
@@ -2090,6 +2333,13 @@ export async function updateVendorBillStatus({
       company_id: existing.company_id,
       bill_number: existing.bill_number,
       amount_cents: existing.total_cents,
+      creation_state: becameReadyForApproval ? "ready" : existingMetadata.creation_state,
+      // Routing metadata the approver audience is intersected with. Without it a
+      // completed draft would page every permitted approver instead of the ones
+      // the payable names.
+      approver_ids: Array.isArray(existingMetadata.preferred_approver_ids)
+        ? existingMetadata.preferred_approver_ids.filter((value: unknown): value is string => typeof value === "string")
+        : [],
       submitted_by_user_id: typeof existingMetadata.submitted_by_user_id === "string" ? existingMetadata.submitted_by_user_id : undefined,
       rejection_reason: finalStatus === "rejected" ? parsed.rejection_reason : undefined,
       cost_code_id: parsed.cost_code_id,
@@ -2145,7 +2395,7 @@ export async function updateVendorBillStatus({
     })
     await learnCodingRule({
       companyId: parsed.company_id ?? existing.company_id,
-      vendorName: parsed.qbo_vendor_name ?? existing.qbo_vendor_name,
+      vendorName: parsed.qbo_vendor_name,
       costCodeId: nextCostCodeId,
       budgetLineId: nextBudgetLineId,
       lineSplits: codingLesson.lineSplits,
@@ -2160,7 +2410,7 @@ export async function updateVendorBillStatus({
     console.warn("Invoice auto-approval evaluation failed", error),
   )
 
-  return mapVendorBill(data)
+  return (await hydrateVendorBills(supabase, resolvedOrgId, [data]))[0]
 }
 
 export async function createProjectVendorBill({
@@ -2173,6 +2423,7 @@ export async function createProjectVendorBill({
   orgId?: string
 }): Promise<VendorBillSummary> {
   const parsed = vendorBillCreateSchema.parse(input)
+  if(parsed.lien_waiver_status === "received")throw new Error("Record and review signed evidence in Payables → Waivers after creating the payable")
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
 
   await requireAuthorization({
@@ -2252,11 +2503,15 @@ export async function createProjectVendorBill({
     companyId,
     totalCents: parsed.total_cents,
     billDate: parsed.bill_date ?? null,
-    vendorAliases: { accountingVendorId: parsed.qbo_vendor_id ?? null, vendorName },
+    vendorAliases: { accountingVendorId: parsed.qbo_vendor_id ?? null, connectionId: (await resolveAccountingTarget({ orgId: resolvedOrgId, projectId }))?.connection.id ?? null, vendorName },
   })
   if (duplicate) {
     throw new Error(duplicate.reason)
   }
+
+  const accountingCoding = explicitAccountingCoding ?? (codingSuggestion?.autoApply
+    ? codingSuggestion.accountingCoding
+    : buildAccountingCoding({ counterpartyId: parsed.qbo_vendor_id, counterpartyName: parsed.qbo_vendor_name || parsed.vendor_name }))
 
   const isOverBudget =
     parsed.commitment_id && commitment
@@ -2301,18 +2556,12 @@ export async function createProjectVendorBill({
         coding_rule_id: codingSuggestion?.ruleId,
         coding_confidence: parsed.coding_confidence ?? codingSuggestion?.confidence,
       },
-      accounting_coding:
-        explicitAccountingCoding ??
-        (codingSuggestion?.autoApply
-          ? codingSuggestion.accountingCoding
-          : buildAccountingCoding({ counterpartyId: parsed.qbo_vendor_id, counterpartyName: parsed.qbo_vendor_name || parsed.vendor_name })),
+      accounting_coding: accountingCoding,
       retainage_percent: projectId ? (parsed.retainage_percent ?? null) : null,
       retainage_cents: projectId && parsed.retainage_percent ? Math.round((parsed.total_cents * parsed.retainage_percent) / 100) : 0,
       early_pay_discount_percent: parsed.early_pay_discount_percent ?? null,
       early_pay_discount_days: parsed.early_pay_discount_days ?? null,
       lien_waiver_status: projectId ? (parsed.lien_waiver_status ?? "not_required") : "not_required",
-      qbo_vendor_id: parsed.qbo_vendor_id || null,
-      qbo_vendor_name: parsed.qbo_vendor_name || parsed.vendor_name || null,
     })
     .select(vendorBillSelect)
     .single()
@@ -2332,6 +2581,7 @@ export async function createProjectVendorBill({
         amount_cents: line.amount_cents,
         project_id: projectId,
         billable_to_customer: projectId ? line.billable_to_customer : false,
+        arc_books_gl_account_id: line.arc_books_gl_account_id,
         qbo_expense_account_id: line.qbo_expense_account_id,
         qbo_expense_account_name: line.qbo_expense_account_name,
         qbo_ap_account_id: line.qbo_ap_account_id,
@@ -2413,25 +2663,33 @@ export async function createProjectVendorBill({
     after: data,
   })
 
-  await recordEvent({
-    orgId: resolvedOrgId,
-    eventType: "vendor_bill_submitted",
-    entityType: "vendor_bill",
-    entityId: data.id as string,
-    payload: {
-      project_id: projectId,
-      commitment_id: parsed.commitment_id ?? null,
-      total_cents: parsed.total_cents,
-      bill_number: parsed.bill_number,
-      approver_ids: parsed.preferred_approver_ids ?? [],
-      internal_upload: true,
-      creation_state: parsed.creation_state,
-      over_budget: isOverBudget,
-      coding_rule_id: codingSuggestion?.ruleId,
-      coding_auto_applied: codingSuggestion?.autoApply ?? false,
-      coding_source: parsed.coding_source ?? (codingSuggestion?.autoApply ? "rule" : null),
-    },
-  })
+  // A quick-capture draft is not a submission. Emitting here paged every
+  // approver the moment a superintendent photographed an invoice, and then
+  // again when somebody finished coding it — so the event that means "decide
+  // this" fired for payables nobody could decide yet. The draft's submission is
+  // the draft -> ready transition, raised by `updateVendorBillStatus` or by
+  // `submitVendorBillsForApproval`.
+  if (parsed.creation_state !== "draft") {
+    await recordEvent({
+      orgId: resolvedOrgId,
+      eventType: "vendor_bill_submitted",
+      entityType: "vendor_bill",
+      entityId: data.id as string,
+      payload: {
+        project_id: projectId,
+        commitment_id: parsed.commitment_id ?? null,
+        total_cents: parsed.total_cents,
+        bill_number: parsed.bill_number,
+        approver_ids: parsed.preferred_approver_ids ?? [],
+        internal_upload: true,
+        creation_state: parsed.creation_state,
+        over_budget: isOverBudget,
+        coding_rule_id: codingSuggestion?.ruleId,
+        coding_auto_applied: codingSuggestion?.autoApply ?? false,
+        coding_source: parsed.coding_source ?? (codingSuggestion?.autoApply ? "rule" : null),
+      },
+    })
+  }
 
   if (parsed.creation_state === "ready") {
     await evaluateAndAutoApproveVendorBill({ orgId: resolvedOrgId, billId: data.id as string }).catch((error) =>
@@ -2439,7 +2697,7 @@ export async function createProjectVendorBill({
     )
   }
 
-  return mapVendorBill(data)
+  return (await hydrateVendorBills(supabase, resolvedOrgId, [data]))[0]
 }
 
 export interface ProjectVendorCreditInput {
@@ -2544,8 +2802,16 @@ export async function createProjectVendorCredit(input: ProjectVendorCreditInput,
     entityId: data.id,
     payload: { project_id: input.projectId, commitment_id: input.commitmentId ?? null, total_cents: totalCents },
   })
-  await enqueueVendorBillSync(data.id, resolvedOrgId)
-  return mapVendorBill(data)
+  await propagateApprovalToLedger({ source: "vendor_bill", sourceId: data.id, orgId: resolvedOrgId })
+  const syncResult = await enqueueVendorBillSync(data.id, resolvedOrgId)
+  await recordPayableAccountingEnqueueResult({
+    orgId: resolvedOrgId,
+    billId: data.id,
+    entityType: "vendor_bill",
+    entityId: data.id,
+    result: syncResult,
+  })
+  return (await hydrateVendorBills(supabase, resolvedOrgId, [data]))[0]
 }
 
 /** Apply an Arc vendor credit to a regular bill and mirror recovery to warranty. */
@@ -2601,7 +2867,7 @@ export async function applyVendorCreditToBill({
     }
     return { paymentId: replay.id, appliedCents: Number(replay.amount_cents) }
   }
-  const releaseEvidence = await assertBillReleasable(billId, resolvedOrgId)
+  const releaseEvidence = await assertBillReleasable(billId, resolvedOrgId, {amountCents})
   await assertExternalPaymentControls({
     supabase,
     orgId: resolvedOrgId,
@@ -2638,7 +2904,14 @@ export async function applyVendorCreditToBill({
     entityId: creditBillId,
     payload: { project_id: bill.project_id, bill_id: billId, amount_cents: amountCents },
   })
-  await enqueueBillPaymentSync(paymentId, resolvedOrgId)
+  const syncResult = await enqueueBillPaymentSync(paymentId, resolvedOrgId)
+  await recordPayableAccountingEnqueueResult({
+    orgId: resolvedOrgId,
+    billId,
+    entityType: "bill_payment",
+    entityId: paymentId,
+    result: syncResult,
+  })
   await sendManualPaymentRemittanceAdvice({ orgId: resolvedOrgId, paymentId }).catch((notificationError) =>
     console.warn("Vendor credit remittance advice was not sent", notificationError),
   )
@@ -2738,6 +3011,7 @@ export async function createVendorBillFromPortal({
   portalTokenId: string
 }): Promise<VendorBillSummary> {
   const parsed = vendorBillCreateSchema.parse(input)
+  if(parsed.lien_waiver_status === "received")throw new Error("Record and review signed evidence in Payables → Waivers after creating the payable")
   const supabase = createServiceSupabaseClient()
   const commitmentId = parsed.commitment_id
   if (!commitmentId) {
@@ -2859,7 +3133,7 @@ export async function createVendorBillFromPortal({
 
   await evaluateAndAutoApproveVendorBill({ orgId, billId: data.id as string }).catch((error) => console.warn("Invoice auto-approval evaluation failed", error))
 
-  return mapVendorBill(data)
+  return (await hydrateVendorBills(supabase, orgId, [data]))[0]
 }
 
 export async function deleteVendorBill({ billId, orgId }: { billId: string; orgId?: string }): Promise<{ projectId: string | null }> {
@@ -2868,7 +3142,7 @@ export async function deleteVendorBill({ billId, orgId }: { billId: string; orgI
   // 1. Fetch the existing bill
   const { data: existing, error: existingError } = await supabase
     .from("vendor_bills")
-    .select("id, org_id, project_id, bill_number, status, paid_cents, qbo_id, metadata")
+    .select("id, org_id, project_id, bill_number, status, paid_cents, metadata")
     .eq("org_id", resolvedOrgId)
     .eq("id", billId)
     .maybeSingle()
@@ -2891,8 +3165,9 @@ export async function deleteVendorBill({ billId, orgId }: { billId: string; orgI
     resourceId: billId,
   })
 
+  const existingSyncState = await getAccountingSyncState(supabase, { orgId: resolvedOrgId, entityType: existing.metadata?.source === "vendor_credit" ? "vendor_credit" : "bill", entityId: billId })
   // 3. Restriction checks
-  if (existing.qbo_id) {
+  if (existingSyncState?.externalId) {
     // Bills imported FROM QuickBooks are owned by QBO — deleting the Arc copy
     // would not touch QBO, and the usual reason to delete one is a wrong project.
     // Point the user at Reassign instead of the (here misleading) "disconnect in QBO" path.
@@ -3012,7 +3287,7 @@ export async function reassignImportedPayable({
 
   const { data: existing, error: existingError } = await supabase
     .from("vendor_bills")
-    .select("id, org_id, project_id, bill_number, total_cents, status, metadata, qbo_id")
+    .select("id, org_id, project_id, bill_number, total_cents, status, metadata")
     .eq("org_id", resolvedOrgId)
     .eq("id", billId)
     .maybeSingle()
@@ -3021,7 +3296,8 @@ export async function reassignImportedPayable({
   const metadata = (existing.metadata as Record<string, any> | null) ?? {}
   const isVendorCredit = metadata.source === "vendor_credit"
   const payableLabel = isVendorCredit ? "vendor credit" : "bill"
-  if (metadata.imported_from_qbo !== true || !existing.qbo_id) {
+  const existingSyncState = await getAccountingSyncState(supabase, { orgId: resolvedOrgId, entityType: existing.metadata?.source === "vendor_credit" ? "vendor_credit" : "bill", entityId: billId })
+  if (metadata.imported_from_qbo !== true || !existingSyncState?.externalId) {
     throw new Error("Only payables imported from QuickBooks can be reassigned")
   }
   if (!existing.project_id) throw new Error(`This ${payableLabel} is missing its current project`)
@@ -3147,7 +3423,7 @@ export async function reassignImportedPayable({
     eventType: isVendorCredit ? "vendor_credit_reassigned" : "vendor_bill_reassigned",
     entityType: "vendor_bill",
     entityId: billId,
-    payload: { qbo_id: existing.qbo_id, previous_project_id: previousProjectId, project_id: targetProjectId, total_cents: existing.total_cents },
+    payload: { external_id: existingSyncState.externalId, connection_id: existingSyncState.connectionId, previous_project_id: previousProjectId, project_id: targetProjectId, total_cents: existing.total_cents },
   })
 
   return { previousProjectId, projectId: targetProjectId }

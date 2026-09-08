@@ -5,7 +5,7 @@ import { z } from "zod";
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { recordAudit } from "@/lib/services/audit";
-import { requireAuthorization } from "@/lib/services/authorization";
+import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access";
 import { requireOrgContext } from "@/lib/services/context";
 import { recordEvent } from "@/lib/services/events";
 import { initializeArcBooks } from "@/lib/services/books/ledger";

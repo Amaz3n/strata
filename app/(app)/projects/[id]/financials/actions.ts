@@ -5,8 +5,9 @@ import { revalidatePath } from "next/cache"
 import { getBudgetWithActuals, listBudgetBucketChangeOrders, listProjectBudgetLines, listVarianceAlertsForProject } from "@/lib/services/budgets"
 import { listCostCodes } from "@/lib/services/cost-codes"
 import { listProjectCommitments } from "@/lib/services/commitments"
-import { getInvoiceQueueCounts, getProjectInvoiceArSummary, listInvoicePage } from "@/lib/services/invoices"
-import { listBillableContacts } from "@/lib/services/contacts"
+import { listInvoicePage } from "@/lib/services/invoices"
+import { getProjectBillingSummary, getProjectBillingUpNext } from "@/lib/services/billing-book"
+import type { BillingProfile } from "@/lib/financials/billing-profile"
 import { getVendorBillForProject, listVendorBillsPageForProject } from "@/lib/services/vendor-bills"
 import { getProjectBuyoutStatus } from "@/lib/services/bids"
 import { getComplianceRules } from "@/lib/services/compliance"
@@ -24,7 +25,6 @@ import {
 } from "@/lib/services/billing-periods"
 import {
   generateInvoiceBackupPackage,
-  listProjectOwnerBillingPackageSummaries,
   shareInvoiceBackupPackage,
   summarizeOwnerBillingPackage,
 } from "@/lib/services/owner-billing-packages"
@@ -51,6 +51,8 @@ import {
 import {
   importSovFromBudget,
   importSovFromEstimate,
+  listPrimeSovLines,
+  getSovBudgetEvidence,
   upsertPrimeSovLines,
 } from "@/lib/services/prime-sov"
 import {
@@ -58,7 +60,10 @@ import {
   deletePayApplication,
   getPayApplication,
   listPayApplications,
-  markPayApplicationApproved,
+  certifyPayApplication,
+  getPayApplicationWorkspaceContext,
+  returnPayApplication,
+  sendPayApplication,
   releasePrimeRetainage,
   submitPayApplication,
   updatePayApplicationLines,
@@ -181,56 +186,48 @@ async function buildBudgetBucketCompanies(commitments: Awaited<ReturnType<typeof
 }
 
 /**
- * Fetch all data needed for the Receivables tab
- * - Invoices for the project
- * - Contacts for invoice recipients
- * - Cost codes for invoice line items
+ * The project billing book, refreshed in place after a mutation. The page's
+ * first render composes the same three loaders server-side; this exists so a
+ * row action can re-read the numbers it changed without re-rendering the page.
  */
-export async function fetchBillingTabDataAction(projectId: string) {
-      const [invoicesResult, contactsResult, costCodesResult, ownerPackagesResult, feeSummaryResult, arSummaryResult, queueCountsResult] = await Promise.allSettled([
-        // First page only; the queue lazy-loads the rest via "Load more". Filtering,
-        // sorting and counting happen in the database from here on.
-        listInvoicePage({ projectId, limit: 100, sort: "activity", sortDirection: "desc" }),
-        listBillableContacts(),
-        listCostCodes(),
-        listProjectOwnerBillingPackageSummaries(projectId),
-        // Always fetched: it resolves the billing model itself, so the Fee tab can't
-        // desync from a separately-fetched setup status.
-        getProjectFeeBillingSummary(projectId),
-        // Whole-book aging so the AR strip stays correct beyond the first invoice page.
-        getProjectInvoiceArSummary({ projectId }),
-        getInvoiceQueueCounts({ projectId }),
-      ])
-
-      const feeSummary = feeSummaryResult.status === "fulfilled" ? feeSummaryResult.value : null
-      const invoicePage = invoicesResult.status === "fulfilled" ? invoicesResult.value : null
-      return {
-        invoices: invoicePage?.invoices ?? [],
-        invoiceTotalCount: invoicePage?.totalCount ?? 0,
-        queueCounts:
-          queueCountsResult.status === "fulfilled"
-            ? queueCountsResult.value
-            : { all: 0, preparing: 0, awaiting_approval: 0, ready: 0, open: 0, overdue: 0, exceptions: 0, paid: 0, void: 0 },
-        contacts: contactsResult.status === "fulfilled" ? contactsResult.value : [],
-        costCodes: costCodesResult.status === "fulfilled" ? costCodesResult.value : [],
-        ownerBillingPackages: ownerPackagesResult.status === "fulfilled" ? ownerPackagesResult.value : [],
-        feeSummary,
-        arSummary: arSummaryResult.status === "fulfilled" ? arSummaryResult.value : null,
-        errors: [
-          resultError("Invoices", invoicesResult),
-          resultError("Contacts", contactsResult),
-          resultError("Cost codes", costCodesResult),
-          resultError("Owner billing packages", ownerPackagesResult),
-          resultError("Fee billing", feeSummaryResult),
-          // Named on purpose. When the whole-book aggregate failed, the page used
-          // to quietly show nothing where the money totals go, which reads as
-          // "there is no receivable here" rather than "we could not add it up".
-          resultError("Receivables totals", arSummaryResult),
-          resultError("Queue counts", queueCountsResult),
-        ].filter(Boolean) as string[],
-      }
+export async function fetchProjectBillingBookAction(input: {
+  projectId: string
+  profile: BillingProfile
+  selectedPeriodId?: string | null
+  contractTotalCents?: number
+  search?: string
+}) {
+  return run(async () => {
+    const [rows, summary, upNext] = await Promise.all([
+      listInvoicePage({
+        projectId: input.projectId,
+        queue: "active",
+        search: input.search,
+        limit: 300,
+        sort: "activity",
+        sortDirection: "desc",
+      }),
+      getProjectBillingSummary(input.projectId, { includeSovRetainage: input.profile.progressBilling }),
+      getProjectBillingUpNext(input.projectId, input.profile, {
+        selectedPeriodId: input.selectedPeriodId,
+        contractTotalCents: input.contractTotalCents,
+      }),
+    ])
+    return { rows, summary, upNext }
+  })
 }
 
+export async function fetchProjectBillingSummaryAction(projectId: string, options?: { includeSovRetainage?: boolean }) {
+  return run(() => getProjectBillingSummary(projectId, options))
+}
+
+export async function fetchPrimeSovAction(projectId: string) {
+  return run(() => listPrimeSovLines(projectId))
+}
+
+export async function fetchPayApplicationsAction(projectId: string) {
+  return run(() => listPayApplications(projectId))
+}
 
 /**
  * Fetch all data needed for the Payables tab
@@ -282,6 +279,7 @@ export async function fetchPayablesTabDataAction(projectId: string, query: { pag
         complianceStatusResult[0].status === "fulfilled" ? complianceStatusResult[0].value : {}
       const paymentDecorations = await loadPayablePaymentDecorations(decorationBills).catch(() => ({
         paymentReadinessByCompanyId: {},
+        electronicReadinessByBillId: {},
         runMembershipByBillId: {},
       }))
 
@@ -463,7 +461,7 @@ export async function createProjectFeeInvoiceAction(input: CreateFeeInvoiceInput
   })
 }
 
-export async function savePrimeSovLinesAction(projectId: string, input: { lines: PrimeSovLineInput[] }) {
+export async function savePrimeSovLinesAction(projectId: string, input: { lines: PrimeSovLineInput[]; expected_revision?: number }) {
   return run(async () => {
       const state = await upsertPrimeSovLines(projectId, input)
       revalidatePath(`/projects/${projectId}/financials/billing`)
@@ -500,6 +498,23 @@ export async function createPayApplicationAction(
 
 export async function fetchPayApplicationAction(payApplicationId: string) {
   return run(() => getPayApplication(payApplicationId))
+}
+
+/**
+ * Everything the pay-application workspace needs in one round trip: the open
+ * application (or nothing, when starting a new one) and the parts of the
+ * printed document that do not change while the builder types.
+ */
+export async function loadPayApplicationWorkspaceAction(projectId: string, payApplicationId: string | null) {
+  return run(async () => {
+    const [detail, applications] = await Promise.all([
+      payApplicationId ? getPayApplication(payApplicationId) : Promise.resolve(null),
+      listPayApplications(projectId),
+    ])
+    if (detail && detail.application.project_id !== projectId) throw new Error("Application does not belong to this project")
+    const context = await getPayApplicationWorkspaceContext(projectId, undefined, detail?.application.period_end)
+    return { context, detail, applications }
+  })
 }
 
 export async function updatePayApplicationLinesAction(
@@ -541,11 +556,40 @@ export async function deletePayApplicationAction(projectId: string, payApplicati
   })
 }
 
-export async function markPayApplicationApprovedAction(projectId: string, payApplicationId: string) {
+export async function sendPayApplicationAction(
+  projectId: string,
+  payApplicationId: string,
+  input: { recipients?: string[]; message?: string | null } = {},
+) {
   return run(async () => {
-      const detail = await markPayApplicationApproved(payApplicationId)
-      revalidatePath(`/projects/${projectId}/financials/billing`)
-      return detail
+    const detail = await sendPayApplication(payApplicationId, input)
+    revalidatePath(`/projects/${projectId}/financials/billing`)
+    return detail
+  })
+}
+
+export async function certifyPayApplicationAction(
+  projectId: string,
+  payApplicationId: string,
+  input: {
+    signerName: string
+    signatureText?: string | null
+    note?: string | null
+    deferrals?: Array<{ prime_sov_line_id: string; deferred_cents: number; reason: string }>
+  },
+) {
+  return run(async () => {
+    const detail = await certifyPayApplication(payApplicationId, input)
+    revalidatePath(`/projects/${projectId}/financials/billing`)
+    return detail
+  })
+}
+
+export async function returnPayApplicationAction(projectId: string, payApplicationId: string, input: { reason: string }) {
+  return run(async () => {
+    const detail = await returnPayApplication(payApplicationId, input)
+    revalidatePath(`/projects/${projectId}/financials/billing`)
+    return detail
   })
 }
 
@@ -689,4 +733,8 @@ export async function loadProjectPoGenerationAction(projectId: string) {
     const [runs, exceptions] = await Promise.all([listGenerationRuns(projectId), listPoExceptions({ projectId, status: "open", pageSize: 1 })])
     return { lastRun: runs[0] ?? null, openExceptions: exceptions.count }
   })
+}
+
+export async function fetchSovBudgetEvidenceAction(projectId: string) {
+  return run(() => getSovBudgetEvidence(projectId))
 }

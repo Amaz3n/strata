@@ -1,3 +1,4 @@
+import { accountingReference } from "@/lib/services/accounting-coding"
 import "server-only"
 
 import type { SupabaseClient } from "@supabase/supabase-js"
@@ -61,7 +62,7 @@ export async function findDuplicatePayable({
    * interactive create path has always matched on these; keeping them here is
    * what lets every caller share one matcher instead of forking again.
    */
-  vendorAliases?: { accountingVendorId?: string | null; vendorName?: string | null }
+  vendorAliases?: { accountingVendorId?: string | null; connectionId?: string | null; vendorName?: string | null }
 }): Promise<DuplicateMatch | null> {
   const since = new Date(Date.now() - RECENT_WINDOW_DAYS * 24 * 60 * 60 * 1000)
     .toISOString()
@@ -69,7 +70,7 @@ export async function findDuplicatePayable({
 
   let query = supabase
     .from("vendor_bills")
-    .select("id,bill_number,company_id,total_cents,bill_date,qbo_vendor_id,qbo_vendor_name,metadata")
+    .select("id,bill_number,invoice_number_normalized,company_id,total_cents,bill_date,accounting_coding,vendor_name_normalized,metadata")
     .eq("org_id", orgId)
     .neq("status", "rejected")
     // Ordered, deliberately. An unordered `limit` let Postgres return whichever
@@ -85,10 +86,7 @@ export async function findDuplicatePayable({
   // fallback needs the vendor, so scope by it regardless.
   if (companyId && !vendorAliases) query = query.eq("company_id", companyId)
   if (billNumber?.trim()) {
-    // A loose prefix match catches separator and case drift; the pure matcher
-    // makes the final call.
-    const stem = normalizeBillNumber(billNumber).slice(0, 6)
-    if (stem) query = query.ilike("bill_number", `%${stem}%`)
+    query = query.eq("invoice_number_normalized", normalizeBillNumber(billNumber))
   } else {
     query = query.gte("bill_date", since)
   }
@@ -101,16 +99,25 @@ export async function findDuplicatePayable({
     throw new Error(`Unable to verify whether this payable is a duplicate: ${error.message}`)
   }
 
+  const scopedIds = new Set<string>()
+  if (vendorAliases?.accountingVendorId && vendorAliases.connectionId && (data ?? []).length) {
+    const { data: mappings, error: mappingError } = await supabase.from("accounting_sync_records")
+      .select("entity_id").eq("org_id", orgId).eq("connection_id", vendorAliases.connectionId)
+      .eq("entity_type", "bill").in("entity_id", (data ?? []).map((row) => row.id))
+    if (mappingError) throw new Error(`Unable to verify payable accounting identity: ${mappingError.message}`)
+    for (const mapping of mappings ?? []) scopedIds.add(mapping.entity_id)
+  }
+
   // When aliases are supplied, a candidate counts as the same vendor if any
   // identity lines up; company_id alone would miss QBO-imported bills.
   const sameVendor = (row: Record<string, unknown>) => {
     if (!vendorAliases) return true
     if (companyId && row.company_id === companyId) return true
-    if (vendorAliases.accountingVendorId && row.qbo_vendor_id === vendorAliases.accountingVendorId) return true
-    const alias = vendorAliases.vendorName?.trim().toLowerCase()
+    if (vendorAliases.accountingVendorId && scopedIds.has(String(row.id)) && accountingReference(row.accounting_coding, "counterparty")?.id === vendorAliases.accountingVendorId) return true
+    const alias = vendorAliases.vendorName ? normalizeBillNumber(vendorAliases.vendorName) : ""
     if (!alias) return false
     const metadata = (row.metadata as Record<string, unknown> | null) ?? {}
-    const rowName = String(metadata.vendor_name ?? row.qbo_vendor_name ?? "").trim().toLowerCase()
+    const rowName = String(row.vendor_name_normalized ?? normalizeBillNumber(String(metadata.vendor_name ?? accountingReference(row.accounting_coding, "counterparty")?.name ?? "")))
     return Boolean(rowName) && rowName === alias
   }
 
