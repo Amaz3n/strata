@@ -12,7 +12,7 @@ test('daily log transactions preserve contribution invariants', { skip: !runtime
     await db.exec(`
       create role anon; create role authenticated; create role service_role;
       create type task_status as enum ('todo','in_progress','done');
-      create table projects(id uuid primary key,org_id uuid,name text,address text);
+      create table projects(id uuid primary key,org_id uuid,name text,location jsonb);
       create table app_users(id uuid primary key,full_name text,email text,avatar_url text);
       create table project_members(org_id uuid,project_id uuid,user_id uuid,status text);
       create table daily_reports(id uuid primary key default gen_random_uuid(),org_id uuid,project_id uuid,report_date date,
@@ -36,8 +36,9 @@ test('daily log transactions preserve contribution invariants', { skip: !runtime
       create table outbox(id bigint generated always as identity,org_id uuid,job_type text,payload jsonb,dedupe_key text,status text default 'pending');
     `)
     await db.exec(fs.readFileSync(path.join(__dirname, '../supabase/migrations/20260907213753_daily_log_atomic_submission.sql'), 'utf8'))
+    await db.exec(fs.readFileSync(path.join(__dirname, '../supabase/migrations/20260908151828_daily_log_project_name_fix.sql'), 'utf8'))
     const org = randomUUID(), project = randomUUID(), actor = randomUUID(), member = randomUUID(), schedule = randomUUID(), task = randomUUID(), punch = randomUUID(), location = randomUUID()
-    await db.query('insert into projects values ($1,$2,$3,$4)', [project, org, 'Job', 'Site'])
+    await db.query('insert into projects values ($1,$2,$3,$4)', [project, org, 'Job', JSON.stringify({address:'Site'})])
     await db.query('insert into app_users(id,full_name) values ($1,$2),($3,$4)', [actor,'Writer',member,'Reader'])
     await db.query("insert into project_members values ($1,$2,$3,'active')", [org,project,member])
     await db.query("insert into schedule_items(id,org_id,project_id,actual_hours,status) values ($1,$2,$3,2,'planned')", [schedule,org,project])
@@ -62,6 +63,8 @@ test('daily log transactions preserve contribution invariants', { skip: !runtime
       assert.equal((await db.query('select status from punch_items')).rows[0].status,'closed')
       assert.equal(await count('audit_log'),1)
       assert.equal(await count('outbox'),2)
+      const email = (await db.query("select payload from outbox where job_type='send_daily_log_mention_email'")).rows[0].payload
+      assert.match(email.message, /on Job:/)
       assert.equal(saved.events.length,4)
     })
     await t.test('retry returns the same records without repeating linked hours or outbox writes', async () => {

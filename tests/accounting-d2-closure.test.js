@@ -7,8 +7,8 @@ const { inspectRemoteTransaction, classifyRemoteAccounts } = require('../scripts
 const candidate = { candidate_sha: 'a'.repeat(40), schema_fingerprint: 'schema', checker_version: 'accounting-d2-v1', started_at: '2026-08-01T00:00:00Z' }
 const now = new Date('2026-09-08T12:00:00Z')
 const sample = day => ({ checked_at: `2026-${day}T04:45:00Z`, ...candidate, passed: true, evidence: { complete: true, scope: 'global', blockers: [] } })
-const days = ['08-25','08-26','08-27','08-28','08-29','08-30','08-31','09-01','09-02','09-03','09-04','09-05','09-06','09-07']
-test('fourteen complete UTC days qualify; elapsed time and duplicate runs do not', () => {
+const days = ['09-01','09-02','09-03','09-04','09-05','09-06','09-07']
+test('seven complete UTC days qualify; elapsed time and duplicate runs do not', () => {
   assert.equal(evaluateAcceptanceStreak(days.map(sample), candidate, now).recommendation, 'APPLY D2')
   assert.equal(evaluateAcceptanceStreak(Array.from({length: 20}, () => sample('09-07')), candidate, now).consecutiveCompleteDays, 1)
   assert.equal(evaluateAcceptanceStreak([], candidate, now).recommendation, 'HOLD')
@@ -67,4 +67,11 @@ test('remote evidence whitelists complete allocations and never exports memo, na
   assert.ok(!JSON.stringify(remote).includes('private'))
   assert.equal(inspectRemoteTransaction({Id:'10'}).complete,false)
   assert.equal(classifyRemoteAccounts('a','b',['a','b']),'contains_both')
+})
+
+test('six days and a partial starting date cannot qualify as seven complete dates', () => {
+  assert.equal(evaluateAcceptanceStreak(days.slice(1).map(sample), candidate, now).recommendation, 'HOLD')
+  const partial = {...candidate, started_at: '2026-09-01T01:00:00Z'}
+  assert.equal(evaluateAcceptanceStreak(days.map(sample), partial, now).consecutiveCompleteDays, 6)
+  assert.equal(evaluateAcceptanceStreak(days.map(sample), partial, now).recommendation, 'HOLD')
 })

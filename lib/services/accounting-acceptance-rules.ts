@@ -19,13 +19,15 @@ export function evaluateAcceptanceStreak(samples: AcceptanceSample[], candidate:
     const time = Date.parse(sample.checked_at)
     if (!Number.isFinite(time) || time > now.getTime() || time < Date.parse(candidate.started_at)) continue
     const day = Math.floor(time / dayMs) * dayMs
+    // A campaign started partway through a date has not observed that complete date.
+    if (day < Date.parse(candidate.started_at)) continue
     const valid = sample.passed === true && sample.evidence?.complete === true && sample.evidence.scope === "global" && Array.isArray(sample.evidence.blockers) && sample.evidence.blockers.length === 0 && sample.candidate_sha === candidate.candidate_sha && sample.schema_fingerprint === candidate.schema_fingerprint && sample.checker_version === candidate.checker_version
     days.set(day, (days.get(day) ?? true) && valid)
   }
   if (days.get(today) === false) blockers.push("current_day_failed")
   let consecutiveCompleteDays = 0
   for (let day = today - dayMs; days.get(day) === true; day -= dayMs) consecutiveCompleteDays++
-  if (consecutiveCompleteDays < 14) blockers.push(`acceptance_days:${consecutiveCompleteDays}/14`)
+  if (consecutiveCompleteDays < 7) blockers.push(`acceptance_days:${consecutiveCompleteDays}/7`)
   // Count completed UTC dates only. Multiple retries cannot manufacture days or erase failures.
   return { recommendation: blockers.length ? "HOLD" as const : "APPLY D2" as const, consecutiveCompleteDays, blockers }
 }

@@ -4256,11 +4256,11 @@ async function sendDailyLogMentionNotifications({
 }) {
   const [{ data: actor }, { data: project }] = await Promise.all([
     supabase.from("app_users").select("full_name, email").eq("id", actorId).maybeSingle(),
-    supabase.from("projects").select("name, address").eq("id", projectId).maybeSingle(),
+    supabase.from("projects").select("name").eq("org_id", orgId).eq("id", projectId).maybeSingle(),
   ])
 
   const actorName = actor?.full_name || actor?.email || "A teammate"
-  const projectName = project?.name || project?.address || "a project"
+  const projectName = project?.name?.trim() || "a project"
   const cleanExcerpt = excerpt?.trim()
   const message = source === "comment"
     ? `${actorName} mentioned you in a daily log comment on ${projectName}${cleanExcerpt ? `: ${cleanExcerpt}` : "."}`

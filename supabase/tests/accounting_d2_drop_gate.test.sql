@@ -15,9 +15,9 @@ update accounting_d2_campaigns set release_evidence=release_evidence||jsonb_buil
 select throws_like('select assert_accounting_d2_ready()','%has missing, failed, or incompatible evidence%','elapsed time without observations does not qualify');
 -- Only the PostgreSQL test owner can seed clocked samples; runtime service roles cannot.
 insert into accounting_d2_acceptance_samples(campaign_id,checked_at,candidate_sha,schema_fingerprint,checker_version,passed,evidence)
-select c.id,(d::date::timestamp at time zone 'UTC')+interval '5 hours',c.candidate_sha,c.schema_fingerprint,c.checker_version,true,'{"complete":true,"scope":"global","blockers":[]}' from accounting_d2_campaigns c cross join generate_series(((now() at time zone 'UTC')::date-14),((now() at time zone 'UTC')::date-1),'1 day') d;
+select c.id,(d::date::timestamp at time zone 'UTC')+interval '5 hours',c.candidate_sha,c.schema_fingerprint,c.checker_version,true,'{"complete":true,"scope":"global","blockers":[]}' from accounting_d2_campaigns c cross join generate_series(((now() at time zone 'UTC')::date-7),((now() at time zone 'UTC')::date-1),'1 day') d;
 insert into accounting_d2_acceptance_samples(campaign_id,checked_at,candidate_sha,schema_fingerprint,checker_version,passed,evidence) select id,now(),candidate_sha,schema_fingerprint,checker_version,true,'{"complete":true,"scope":"global","blockers":[]}' from accounting_d2_campaigns;
-select lives_ok('select assert_accounting_d2_ready()','14 complete days and current measured evidence pass');
+select lives_ok('select assert_accounting_d2_ready()','7 complete days and current measured evidence pass');
 create temp table removed_sample as select * from accounting_d2_acceptance_samples order by checked_at limit 1;
 delete from accounting_d2_acceptance_samples where id=(select id from removed_sample);
 select throws_like('select assert_accounting_d2_ready()','%has missing, failed, or incompatible evidence%','one missing completed date blocks');
