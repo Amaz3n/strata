@@ -1,5 +1,6 @@
 import { Suspense, type ReactNode } from "react"
 import { notFound } from "next/navigation"
+import { connection } from "next/server"
 
 import { PortalShell } from "@/components/portal/shell/portal-shell"
 import { PortalShellSkeleton } from "@/components/portal/shell/portal-skeleton"
@@ -38,6 +39,10 @@ export default function ClientPortalLayout(props: ClientPortalLayoutProps) {
 
 async function ClientPortalLayoutContent({ children, params }: ClientPortalLayoutProps) {
   const { token } = await params
+  // Token validation is always live, request-scoped work. An explicit boundary
+  // prevents Supabase fetches from surviving past a Cache Components shell
+  // prerender when a portal route is prefetched.
+  await connection()
 
   const gate = await resolvePortalGate({
     token,

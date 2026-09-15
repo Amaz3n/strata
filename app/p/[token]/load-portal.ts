@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation"
+import { connection } from "next/server"
 
 import {
   assertPortalActionAccess,
@@ -12,6 +13,9 @@ import {
 } from "@/lib/services/pay-applications"
 
 async function loadClientPortalAccess(token: string) {
+  // Pages render in parallel with the portal layout, so they need their own
+  // request boundary before independently re-validating the shared token.
+  await connection()
   try {
     return await assertPortalActionAccess(token, { portalType: "client", requireProject: true })
   } catch {

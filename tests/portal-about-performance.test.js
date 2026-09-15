@@ -21,15 +21,33 @@ test("the client portal team page uses its narrow read model", () => {
   assert.match(page, /loadClientPortalAboutPage/)
   assert.doesNotMatch(page, /loadClientPortalPage\(/)
   assert.match(loader, /loadClientPortalAboutData\(/)
+  assert.doesNotMatch(service, /app_users\([^)]*phone/)
 
   assert.match(aboutLoader, /Promise\.all\(\[/)
   assert.match(aboutLoader, /\.from\("orgs"\)/)
   assert.match(aboutLoader, /\.from\("projects"\)/)
   assert.match(aboutLoader, /\.from\("project_members"\)/)
+  assert.doesNotMatch(aboutLoader, /app_users\([^)]*phone/)
   assert.doesNotMatch(
     aboutLoader,
     /fetch(?:Invoices|Rfis|Submittals|Selections|PunchItems|PhotoTimeline|WarrantyRequests)/,
   )
+})
+
+test("client portal token validation starts only after request time", () => {
+  const layout = source("app/p/[token]/layout.tsx")
+  const loader = source("app/p/[token]/load-portal.ts")
+  const layoutBoundary = layout.indexOf("await connection()")
+  const layoutValidation = layout.indexOf("await resolvePortalGate(")
+  const pageBoundary = loader.indexOf("await connection()")
+  const pageValidation = loader.indexOf("await assertPortalActionAccess(")
+
+  assert.notEqual(layoutBoundary, -1)
+  assert.notEqual(layoutValidation, -1)
+  assert.ok(layoutBoundary < layoutValidation)
+  assert.notEqual(pageBoundary, -1)
+  assert.notEqual(pageValidation, -1)
+  assert.ok(pageBoundary < pageValidation)
 })
 
 test("the portal team view remains server-rendered and date-only safe", () => {
