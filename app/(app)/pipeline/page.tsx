@@ -117,7 +117,12 @@ async function PipelineData({ searchParams }: PipelinePageProps) {
 }
 
 async function PipelinePageContent(props: PipelinePageProps) {
-  const [productTier, params] = await Promise.all([getOrgProductTier(), props.searchParams])
+  // Resolve request-bound URL state before starting Supabase work. If both are
+  // started together, Cache Components can finish the shell prerender while
+  // the org/team fetches are still in flight, and Next rejects those orphaned
+  // fetches after the prerender closes.
+  const params = await props.searchParams
+  const productTier = await getOrgProductTier()
   if (productTier === "production") {
     const next = new URLSearchParams()
     next.set("tab", "leads")
