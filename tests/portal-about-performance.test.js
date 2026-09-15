@@ -37,10 +37,13 @@ test("the client portal team page uses its narrow read model", () => {
 test("client portal token validation starts only after request time", () => {
   const layout = source("app/p/[token]/layout.tsx")
   const loader = source("app/p/[token]/load-portal.ts")
+  const service = source("lib/services/portal-access.ts")
   const layoutBoundary = layout.indexOf("await connection()")
   const layoutValidation = layout.indexOf("await resolvePortalGate(")
   const pageBoundary = loader.indexOf("await connection()")
   const pageValidation = loader.indexOf("await assertPortalActionAccess(")
+  const sharedBoundary = service.indexOf("await connection()", service.indexOf("export async function validatePortalToken"))
+  const sharedValidation = service.indexOf(".from(\"portal_access_tokens\")", sharedBoundary)
 
   assert.notEqual(layoutBoundary, -1)
   assert.notEqual(layoutValidation, -1)
@@ -48,6 +51,19 @@ test("client portal token validation starts only after request time", () => {
   assert.notEqual(pageBoundary, -1)
   assert.notEqual(pageValidation, -1)
   assert.ok(pageBoundary < pageValidation)
+  assert.notEqual(sharedBoundary, -1)
+  assert.notEqual(sharedValidation, -1)
+  assert.ok(sharedBoundary < sharedValidation)
+})
+
+test("public invoice data starts only after request time", () => {
+  const page = source("app/i/[token]/page.tsx")
+  const boundary = page.indexOf("await connection()")
+  const invoiceRead = page.indexOf("await getInvoiceByToken(token)")
+
+  assert.notEqual(boundary, -1)
+  assert.notEqual(invoiceRead, -1)
+  assert.ok(boundary < invoiceRead)
 })
 
 test("the portal team view remains server-rendered and date-only safe", () => {

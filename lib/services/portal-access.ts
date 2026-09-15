@@ -1,5 +1,6 @@
 import { compare, hash } from "bcryptjs"
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { connection } from "next/server"
 
 import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -427,6 +428,10 @@ export async function findExistingCompanyPortalToken({
 }
 
 export async function validatePortalToken(token: string) {
+  // A portal token is revocable, expiring request data. All portal entry
+  // points converge here, so establish request time once before Supabase can
+  // start a fetch that outlives a Cache Components prerender.
+  await connection()
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
     .from("portal_access_tokens")

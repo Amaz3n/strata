@@ -3,6 +3,7 @@ import { Suspense } from "react"
 import { notFound } from "next/navigation"
 
 import { headers } from "next/headers"
+import { connection } from "next/server"
 
 import { getInvoiceByToken, recordInvoiceViewed } from "@/lib/services/invoices"
 import { calculatePaymentFeeQuotes, loadPaymentFeePolicy, restrictPaymentFeePolicyToInvoice } from "@/lib/payments/fee-engine"
@@ -24,6 +25,7 @@ export const metadata = {
 
 async function InvoicePublicPageContent({ params }: Params) {
   const { token } = await params
+  await connection()
   const invoice = await getInvoiceByToken(token)
 
   if (!invoice) {

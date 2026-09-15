@@ -1,6 +1,7 @@
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { redirect } from "next/navigation"
+import { connection } from "next/server"
 import { Skeleton } from "@/components/ui/skeleton"
 import { PageLayout } from "@/components/layout/page-layout"
 import { PipelineWorkspaceClient } from "@/components/prospects/prospect-workspace-client"
@@ -122,6 +123,7 @@ async function PipelinePageContent(props: PipelinePageProps) {
   // the org/team fetches are still in flight, and Next rejects those orphaned
   // fetches after the prerender closes.
   const params = await props.searchParams
+  await connection()
   const productTier = await getOrgProductTier()
   if (productTier === "production") {
     const next = new URLSearchParams()
