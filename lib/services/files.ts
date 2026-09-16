@@ -348,8 +348,8 @@ function mapFile(row: any): FileRecord {
     share_with_clients: row.share_with_clients ?? false,
     share_with_subs: row.share_with_subs ?? false,
     signature_status: (row.documents && row.documents.length > 0) ? row.documents[0].status : undefined,
-    version_number: (row.doc_versions && row.doc_versions.length > 0) 
-      ? Math.max(...row.doc_versions.map((v: any) => v.version_number)) 
+    version_number: (row.doc_versions && row.doc_versions.length > 0)
+      ? Math.max(...row.doc_versions.map((v: any) => v.version_number))
       : 1,
     is_current: (row.doc_versions && row.doc_versions.length > 0)
       ? row.doc_versions.some((v: any) => v.id === row.current_version_id)
@@ -399,7 +399,9 @@ export async function listFiles(
     .eq("org_id", resolvedOrgId)
 
   // Apply filters
-  if (parsed.project_id) {
+  if (parsed.org_only) {
+    query = query.is("project_id", null).is("prospect_id", null)
+  } else if (parsed.project_id) {
     query = query.eq("project_id", parsed.project_id)
   }
 
@@ -472,7 +474,7 @@ export async function listFiles(
   if (parsed.sort === "workflow") orderCol = "status"
   if (parsed.sort === "updated_at") orderCol = "updated_at"
   if (parsed.sort === "size") orderCol = "size_bytes"
-  
+
   const isAscending = parsed.direction === "asc"
 
   const { data, count, error } = await query
@@ -580,7 +582,7 @@ export async function createFileRecord(
     throw new Error(`Failed to create file record: ${error?.message}`)
   }
 
-  if (parsed.project_id && resolvedFolderPath && resolvedFolderPath !== "/") {
+  if (resolvedFolderPath && resolvedFolderPath !== "/") {
     await createProjectFolder(parsed.project_id, resolvedFolderPath, resolvedOrgId)
   }
 
@@ -668,7 +670,7 @@ export class UploadPreparationError extends Error {
 
 export interface PreparedProjectUpload {
   orgId: string
-  projectId: string
+  projectId?: string
   storagePath: string
   contentType: string
 }
@@ -678,7 +680,7 @@ export interface PreparedProjectUpload {
  * upload permission, org-scoped project check, and the storage path.
  */
 export async function prepareProjectDocumentUpload(input: {
-  projectId: string
+  projectId?: string
   fileName: string
   contentType?: string
   fileSize?: number
@@ -700,20 +702,23 @@ export async function prepareProjectDocumentUpload(input: {
   }
 
   try {
-    await requireProjectPermission(userId, input.projectId, "docs.upload")
+    if (input.projectId) await requireProjectPermission(userId, input.projectId, "docs.upload")
+    else await requirePermission("docs.upload", { supabase, orgId, userId })
   } catch {
     throw new UploadPreparationError("Forbidden", 403)
   }
 
-  const { data: project, error: projectError } = await supabase
-    .from("projects")
-    .select("id")
-    .eq("org_id", orgId)
-    .eq("id", input.projectId)
-    .maybeSingle()
+  if (input.projectId) {
+    const { data: project, error: projectError } = await supabase
+      .from("projects")
+      .select("id")
+      .eq("org_id", orgId)
+      .eq("id", input.projectId)
+      .maybeSingle()
 
-  if (projectError || !project) {
-    throw new UploadPreparationError("Project not found.", 404)
+    if (projectError || !project) {
+      throw new UploadPreparationError("Project not found.", 404)
+    }
   }
 
   return {
@@ -1564,7 +1569,7 @@ export async function listFilesWithUrls(
 }
 
 export interface LoadDocumentsViewInput {
-  projectId: string
+  projectId?: string
   /** File list filters. `project_id` is taken from `projectId`, never from here. */
   filters?: Omit<Partial<FileListFilters>, "project_id">
   /** Category counts and folder sharing defaults — skipped while a search is active. */
@@ -1599,9 +1604,9 @@ export async function loadDocumentsView(
   const { projectId, filters = {}, includeMetadata = true, includeChildFolders = true } = input
 
   const [files, counts, folderPermissions, childFolders] = await Promise.all([
-    listFilesWithUrls({ ...filters, project_id: projectId }, orgId),
-    includeMetadata ? getFileCounts(projectId, orgId) : Promise.resolve(null),
-    includeMetadata ? listProjectFolderPermissions(projectId, orgId) : Promise.resolve(null),
+    listFilesWithUrls({ ...filters, project_id: projectId, org_only: !projectId }, orgId),
+    includeMetadata ? getFileCounts(projectId, orgId, !projectId) : Promise.resolve(null),
+    includeMetadata && projectId ? listProjectFolderPermissions(projectId, orgId) : Promise.resolve(null),
     includeChildFolders
       ? listChildFolders(projectId, input.childFolderPath, orgId)
       : Promise.resolve(null),
@@ -1714,10 +1719,12 @@ function extractImmediateChildPath(parentPath: string | undefined, candidatePath
 }
 
 export async function listChildFolders(
-  projectId: string,
+  projectId: string | undefined,
   parentPath?: string,
   orgId?: string,
 ): Promise<FolderChild[]> {
+  if (!projectId) return (await import("./office-documents")).listOfficeFolderChildren(parentPath, orgId)
+
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireProjectPermission(userId, projectId, "docs.read")
   const normalizedParentPath = normalizeFolderPath(parentPath)
@@ -1800,10 +1807,12 @@ export async function listChildFolders(
 }
 
 export async function createProjectFolder(
-  projectId: string,
+  projectId: string | undefined,
   folderPath: string,
   orgId?: string
 ): Promise<string> {
+  if (!projectId) return (await import("./office-documents")).createOfficeFolder(folderPath, orgId)
+
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireProjectPermission(userId, projectId, "docs.upload")
   const normalizedPath = normalizeFolderPath(folderPath)
@@ -1993,11 +2002,13 @@ export async function applyFolderPermissionsToExistingFiles(
  * Rename a folder and all its contents (files and nested folders)
  */
 export async function renameProjectFolder(
-  projectId: string,
+  projectId: string | undefined,
   oldPath: string,
   newName: string,
   orgId?: string
 ): Promise<{ affectedFiles: number }> {
+  if (!projectId) return (await import("./office-documents")).mutateOfficeFolder(oldPath, newName, orgId)
+
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireProjectPermission(userId, projectId, "docs.upload")
   const normalizedOldPath = normalizeFolderPath(oldPath)
@@ -2209,10 +2220,15 @@ async function renameFolderPathRows(
  * Delete a folder if it's empty
  */
 export async function deleteEmptyProjectFolder(
-  projectId: string,
+  projectId: string | undefined,
   folderPath: string,
   orgId?: string
 ): Promise<void> {
+  if (!projectId) {
+    await (await import("./office-documents")).mutateOfficeFolder(folderPath, undefined, orgId)
+    return
+  }
+
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireProjectPermission(userId, projectId, "docs.delete")
   const normalizedPath = normalizeFolderPath(folderPath)
@@ -2486,10 +2502,16 @@ export async function listFileTimeline(
  */
 export async function getFileCounts(
   projectId?: string,
-  orgId?: string
+  orgId?: string,
+  orgOnly = false
 ): Promise<Record<string, number>> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("docs.read", { supabase, orgId: resolvedOrgId, userId })
+  if (orgOnly) {
+    const { data, error } = await supabase.rpc("office_document_counts", { p_org_id: resolvedOrgId })
+    if (error) throw new Error(`Failed to count office documents: ${error.message}`)
+    return Object.fromEntries((data ?? []).map((row: { category: string; file_count: number }) => [row.category, Number(row.file_count)]))
+  }
   const expiringBeforeIso = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
   const loadTrashCount = async () => {
     let trashQuery = supabase

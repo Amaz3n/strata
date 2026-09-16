@@ -27,7 +27,7 @@ export type DirectDocumentUploadOptions = Omit<
   FinalizeUploadedFileInput,
   "fileName" | "fileSize" | "mimeType" | "storagePath"
 > & {
-  projectId: string
+  projectId?: string
   onProgress?: (progress: UploadProgress) => void
   onStage?: (stage: UploadStage) => void
 }

@@ -195,7 +195,7 @@ export function FileShareDialog({ open, onOpenChange, file }: FileShareDialogPro
           ) : null}
         </DialogHeader>
         <div className="max-h-[70vh] space-y-5 overflow-y-auto py-1 pr-1">
-          <section className="space-y-2">
+          {file?.project_id ? <section className="space-y-2">
             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
               Portals
             </p>
@@ -230,7 +230,7 @@ export function FileShareDialog({ open, onOpenChange, file }: FileShareDialogPro
             <p className="text-xs text-muted-foreground">
               {shareSummary(withClients, withSubs, terms.owners)}
             </p>
-          </section>
+          </section> : null}
 
           <section className="space-y-2">
             <div className="flex items-center justify-between">
@@ -375,9 +375,9 @@ export function FileShareDialog({ open, onOpenChange, file }: FileShareDialogPro
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={isSaving}>
-            Cancel
+            {file?.project_id ? "Cancel" : "Done"}
           </Button>
-          <Button onClick={handleConfirm} disabled={isSaving || !file}>
+          {file?.project_id ? <Button onClick={handleConfirm} disabled={isSaving || !file}>
             {isSaving ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -386,7 +386,7 @@ export function FileShareDialog({ open, onOpenChange, file }: FileShareDialogPro
             ) : (
               "Save"
             )}
-          </Button>
+          </Button> : null}
         </DialogFooter>
       </DialogContent>
     </Dialog>

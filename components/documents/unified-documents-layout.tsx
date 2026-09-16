@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import dynamic from "next/dynamic";
 import {
   DndContext,
   DragOverlay,
@@ -56,7 +57,12 @@ import { FolderShareDialog, type FolderShareTarget } from "./dialogs/folder-shar
 import { MoveFilesDialog } from "./dialogs/move-files-dialog";
 import { RenameFileDialog } from "./dialogs/rename-file-dialog";
 import { VersionUploadDialog } from "./dialogs/version-upload-dialog";
-import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard";
+import type { EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard";
+
+const EnvelopeWizard = dynamic(
+  () => import("@/components/esign/envelope-wizard").then((module) => module.EnvelopeWizard),
+  { ssr: false },
+);
 import type { UnifiedDocumentsLayoutProps } from "./types";
 import { isBrowserRenderableImage, isWordPreviewable, type FileWithDetails } from "@/components/files/types";
 import {
@@ -1012,10 +1018,10 @@ function UnifiedDocumentsLayoutInner() {
 
   useEffect(() => {
     const breadcrumbs: Array<{ label: string; href?: string; onClick?: () => void }> = [
-      { label: projectName, href: `/projects/${projectId}` },
+      ...(projectId ? [{ label: projectName, href: `/projects/${projectId}` }] : []),
       {
         label: "Documents",
-        href: `/projects/${projectId}/documents`,
+        href: projectId ? `/projects/${projectId}/documents` : "/documents",
         onClick: () => {
           setPropertiesFileId(null);
           setCurrentPath("");
@@ -1031,7 +1037,7 @@ function UnifiedDocumentsLayoutInner() {
       const path = `/${segments.slice(0, index + 1).join("/")}`;
       breadcrumbs.push({
         label: segment,
-        href: `/projects/${projectId}/documents?path=${encodeURIComponent(path)}`,
+        href: `${projectId ? `/projects/${projectId}/documents` : "/documents"}?path=${encodeURIComponent(path)}`,
         onClick: () => {
           setPropertiesFileId(null);
           setCurrentPath(path);
@@ -1055,7 +1061,7 @@ function UnifiedDocumentsLayoutInner() {
       setEsignSource({
         type: "other",
         id: file.id,
-        project_id: projectId,
+        project_id: projectId ?? null,
         title: file.file_name,
         document_type: "other",
       });
@@ -1071,7 +1077,7 @@ function UnifiedDocumentsLayoutInner() {
           onDownloadFile={handleDownloadById}
           onFolderClick={handleFolderClick}
           onRenameFolder={handleRenameFolder}
-          onShareFolder={handleShareFolder}
+          onShareFolder={projectId ? handleShareFolder : undefined}
           onDeleteFolder={handleDeleteFolder}
           onUploadClick={handleUploadClick}
           onUploadToFolder={handleUploadToFolder}
@@ -1200,7 +1206,7 @@ function UnifiedDocumentsLayoutInner() {
             className="h-full"
             onRenameFolder={handleRenameFolder}
             onDeleteFolder={handleDeleteFolder}
-            onShareFolder={handleShareFolder}
+            onShareFolder={projectId ? handleShareFolder : undefined}
           />
         </aside>
         <div className="relative flex min-h-0 flex-1 flex-col">

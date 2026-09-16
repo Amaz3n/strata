@@ -139,7 +139,7 @@ export async function listFoldersAction(projectId?: string): Promise<string[]> {
  * List the immediate child folders for a project path.
  */
 export async function listChildFoldersAction(
-  projectId: string,
+  projectId: string | undefined,
   parentPath?: string,
 ): Promise<FolderChild[]> {
       return listChildFolders(projectId, parentPath)
@@ -149,23 +149,23 @@ export async function listChildFoldersAction(
  * List all folder permissions for a project
  */
 export async function listProjectFolderPermissionsAction(
-  projectId: string
+  projectId: string | undefined
 ): Promise<ProjectFolderPermissions[]> {
-      return listProjectFolderPermissions(projectId)
+      return projectId ? listProjectFolderPermissions(projectId) : []
 }
 
 /**
  * Create a virtual folder path for a project.
  */
 export async function createFolderAction(
-  projectId: string,
+  projectId: string | undefined,
   folderPath: string
 ): Promise<ActionResult<string[]>> {
   return run(async () => {
       await createProjectFolder(projectId, folderPath)
       revalidatePath("/documents")
-      revalidatePath(`/projects/${projectId}`)
-      return listFolders(projectId)
+      if (projectId) revalidatePath(`/projects/${projectId}`)
+      return projectId ? listFolders(projectId) : []
   })
 }
 
@@ -187,7 +187,7 @@ export async function updateFolderPermissionsAction(
       }
 
       revalidatePath("/documents")
-      revalidatePath(`/projects/${projectId}`)
+      if (projectId) revalidatePath(`/projects/${projectId}`)
 
       return { affectedFiles }
   })
@@ -197,14 +197,14 @@ export async function updateFolderPermissionsAction(
  * Rename a project folder and all its contents
  */
 export async function renameFolderAction(
-  projectId: string,
+  projectId: string | undefined,
   oldPath: string,
   newName: string
 ): Promise<ActionResult<{ affectedFiles: number }>> {
   return run(async () => {
       const result = await renameProjectFolder(projectId, oldPath, newName)
       revalidatePath("/documents")
-      revalidatePath(`/projects/${projectId}`)
+      if (projectId) revalidatePath(`/projects/${projectId}`)
       return result
   })
 }
@@ -213,13 +213,13 @@ export async function renameFolderAction(
  * Delete a project folder if it's empty
  */
 export async function deleteFolderAction(
-  projectId: string,
+  projectId: string | undefined,
   folderPath: string
 ): Promise<ActionResult<void>> {
   return run(async () => {
       await deleteEmptyProjectFolder(projectId, folderPath)
       revalidatePath("/documents")
-      revalidatePath(`/projects/${projectId}`)
+      if (projectId) revalidatePath(`/projects/${projectId}`)
   })
 }
 
@@ -299,7 +299,7 @@ export async function bulkMoveFilesAction(
 
       revalidatePath("/documents")
       for (const projectId of projectIds) {
-        revalidatePath(`/projects/${projectId}`)
+        if (projectId) revalidatePath(`/projects/${projectId}`)
       }
   })
 }
@@ -325,7 +325,7 @@ export async function bulkDeleteFilesAction(fileIds: string[]): Promise<ActionRe
 
       revalidatePath("/documents")
       for (const projectId of projectIds) {
-        revalidatePath(`/projects/${projectId}`)
+        if (projectId) revalidatePath(`/projects/${projectId}`)
       }
   })
 }

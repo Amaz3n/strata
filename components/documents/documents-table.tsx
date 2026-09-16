@@ -899,7 +899,7 @@ function EmptyState({
         <p className="text-sm text-muted-foreground mt-0.5">
           {hasFilters
             ? "Try adjusting your filters or search query."
-            : "Upload drawings, contracts, photos, permits, and closeout files for this project."}
+            : "Upload drawings, contracts, photos, permits, and closeout files to this document library."}
         </p>
       </div>
       <div className="mt-2">

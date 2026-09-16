@@ -75,6 +75,9 @@ export const logProspectContactInputSchema = z.object({
   kind: z.enum(ACTIVITY_KINDS),
   note: z.string().trim().max(2000).optional().nullable(),
   occurredAt: z.string().datetime().optional().nullable(),
+}).refine((input) => input.kind !== "note" || Boolean(input.note?.trim()), {
+  message: "Enter a note before logging this activity",
+  path: ["note"],
 })
 export type LogProspectContactInput = z.infer<typeof logProspectContactInputSchema>
 

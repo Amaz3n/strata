@@ -2,13 +2,13 @@ import { NextResponse } from "next/server"
 
 import { projectIdFromDocumentStoragePath } from "@/lib/files/content-policy"
 import { requireOrgContext } from "@/lib/services/context"
-import { requireProjectPermission } from "@/lib/services/permissions"
+import { requirePermission, requireProjectPermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { createFilesMultipartPartUrl, ensureOrgScopedPath } from "@/lib/storage/files-storage"
 
 export async function POST(request: Request) {
   try {
-    const { orgId, userId } = await requireOrgContext()
+    const { orgId, userId, supabase } = await requireOrgContext()
     const body = await request.json()
     const storagePath = typeof body?.storagePath === "string" ? body.storagePath : null
     const uploadId = typeof body?.uploadId === "string" ? body.uploadId : null
@@ -24,7 +24,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid upload path." }, { status: 400 })
     }
     try {
-      await requireProjectPermission(userId, projectId, "docs.upload")
+      if (projectId === "general") await requirePermission("docs.upload", { supabase, orgId, userId })
+      else await requireProjectPermission(userId, projectId, "docs.upload")
     } catch {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }

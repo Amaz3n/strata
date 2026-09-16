@@ -65,7 +65,7 @@ export function useDocumentsSearchInput() {
 
 interface DocumentsProviderProps {
   children: ReactNode
-  project: { id: string; name: string }
+  project: { id?: string; name: string }
   initialFiles: FileWithUrls[]
   initialCounts: Record<string, number>
   initialFolders: string[]
@@ -485,6 +485,7 @@ export function DocumentsProvider({
       const dueRange = getExpiringDueRange(quickFilter)
       const filesData = await listFilesAction({
         project_id: project.id,
+        org_only: !project.id,
         category: getCategoryFilter(quickFilter),
         folder_path: currentPath || undefined,
         root_only: quickFilter !== "all" || currentPath || searchQuery ? undefined : true,

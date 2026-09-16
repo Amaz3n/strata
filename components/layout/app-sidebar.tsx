@@ -192,6 +192,13 @@ function buildWorkspaceGroups(
       requiredAny: ["schedule.read"],
     }]),
     {
+      title: "Documents",
+      url: "/documents",
+      icon: FolderOpen,
+      isActive: pathname.startsWith("/documents"),
+      requiredAny: ["docs.read"],
+    },
+    {
       title: "Directory",
       url: "/directory",
       icon: Building2,

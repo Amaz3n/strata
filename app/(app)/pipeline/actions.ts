@@ -10,6 +10,7 @@ import {
   createProspectContact,
   updateProspectContact,
   listProspectActivity,
+  logProspectContact,
   setProspectFollowUp,
 } from "@/lib/services/prospects"
 import {
@@ -18,6 +19,7 @@ import {
   prospectContactInputSchema,
   updateProspectContactInputSchema,
   prospectFiltersSchema,
+  logProspectContactInputSchema,
 } from "@/lib/validation/prospects"
 import { createProspectLotHoldSchema } from "@/lib/validation/community-sales"
 
@@ -52,6 +54,14 @@ export async function getProspectAction(contactId: string) {
 
 export async function listProspectActivityAction(prospectId: string) {
       return listProspectActivity(prospectId)
+}
+
+export async function logProspectActivityAction(prospectId: string, input: unknown) {
+  return run(async () => {
+    await logProspectContact({ prospectId, input: logProspectContactInputSchema.parse(input) })
+    revalidatePipelinePaths(prospectId)
+    revalidatePath("/sales")
+  })
 }
 
 export async function createProspectAction(input: unknown) {

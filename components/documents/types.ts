@@ -29,7 +29,7 @@ export interface FolderNode {
 
 export interface DocumentsContextValue {
   // Project
-  projectId: string
+  projectId: string | undefined
   projectName: string
 
   // Data
@@ -77,7 +77,7 @@ export interface DocumentsContextValue {
 }
 
 export interface UnifiedDocumentsLayoutProps {
-  project: { id: string; name: string }
+  project: { id?: string; name: string }
   initialFiles: FileWithUrls[]
   initialCounts: Record<string, number>
   initialFolders: string[]

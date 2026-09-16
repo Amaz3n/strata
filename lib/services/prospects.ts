@@ -568,8 +568,8 @@ export async function logProspectContact({
   // stage observed from state must be moved by the act that changed the state —
   // otherwise you call a buyer three times and they stay a "New inquiry"
   // forever while the New inquiries chip never drains.
-  const advanced = prospect.status === "new"
-  await supabase
+  const advanced = prospect.status === "new" && parsed.kind !== "note"
+  const { error: updateError } = await supabase
     .from("prospects")
     .update({
       updated_at: new Date().toISOString(),
@@ -577,6 +577,8 @@ export async function logProspectContact({
     })
     .eq("org_id", resolvedOrgId)
     .eq("id", prospectId)
+
+  if (updateError) throw new Error(`Failed to log contact: ${updateError.message}`)
 
   await recordEvent({
     orgId: resolvedOrgId,

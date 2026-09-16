@@ -12,6 +12,7 @@ import {
   getEstimateCreateDataAction,
   getProspectAction,
   listProspectActivityAction,
+  logProspectActivityAction,
   listProspectEstimatesAction,
   setProspectFollowUpAction,
   startProspectPricingAction,
@@ -38,6 +39,10 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
+import { ACTIVITY_KINDS, ACTIVITY_LABELS, describeActivity, type ActivityKind } from "@/lib/sales/activity"
+import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Calendar } from "@/components/ui/calendar"
@@ -179,6 +184,8 @@ function renderActivityDetails(event: ProspectActivity): React.ReactNode {
   if (!p) return null
 
   switch (event.event_type) {
+    case "prospect_contact_logged":
+      return <p className="whitespace-pre-wrap text-sm text-muted-foreground">{describeActivity(event).note}</p>
     case "prospect_estimate_created":
       return p.estimate_title ? (
         <span className="text-xs text-muted-foreground">
@@ -314,6 +321,9 @@ export function ProspectDetailSheet({
   const [isPending, startTransition] = useTransition()
   const [estimates, setEstimates] = useState<EstimateRow[]>([])
   const [activity, setActivity] = useState<ProspectActivity[]>([])
+  const [activityKind, setActivityKind] = useState<ActivityKind>("call")
+  const [activityNote, setActivityNote] = useState("")
+  const [loggingActivity, setLoggingActivity] = useState(false)
   const [tab, setTab] = useState<"overview" | "estimates" | "activity">("overview")
 
   const [convertOpen, setConvertOpen] = useState(false)
@@ -356,6 +366,8 @@ export function ProspectDetailSheet({
   useEffect(() => {
     if (!open || !resolvedProspectId) return
     setTab("overview")
+    setActivityKind("call")
+    setActivityNote("")
     startTransition(async () => {
       try {
         await refreshProspect()
@@ -369,6 +381,25 @@ export function ProspectDetailSheet({
   const ownerName =
     teamMembers.find((m) => m.user.id === prospect?.owner_user_id)?.user.full_name ?? "Unassigned"
   const nextStep = prospect ? deriveNextStep(prospect, estimates) : null
+
+  async function handleLogActivity(event: React.FormEvent) {
+    event.preventDefault()
+    if (!resolvedProspectId || loggingActivity) return
+    setLoggingActivity(true)
+    try {
+      unwrapAction(await logProspectActivityAction(resolvedProspectId, { kind: activityKind, note: activityNote }))
+      setActivityNote("")
+      toast({ title: "Activity logged" })
+      await refreshProspect().catch(() => {
+        toast({ title: "Activity saved", description: "Reopen the lead to refresh its timeline." })
+      })
+      router.refresh()
+    } catch (error) {
+      toast({ title: "Unable to log activity", description: (error as Error).message, variant: "destructive" })
+    } finally {
+      setLoggingActivity(false)
+    }
+  }
 
   async function ensureCreateData() {
     if (createData) return createData
@@ -865,6 +896,21 @@ export function ProspectDetailSheet({
                 </TabsContent>
 
                 <TabsContent value="activity" className="m-0 px-6 py-5 focus-visible:outline-none">
+                  <form onSubmit={handleLogActivity} className="mb-6 space-y-3 rounded-lg border p-4">
+                    <h3 className="text-sm font-medium">Log activity</h3>
+                    <div className="space-y-2">
+                      <Label htmlFor="lead-activity-kind">Activity type</Label>
+                      <Select value={activityKind} onValueChange={(value) => setActivityKind(value as ActivityKind)} disabled={loggingActivity}>
+                        <SelectTrigger id="lead-activity-kind"><SelectValue /></SelectTrigger>
+                        <SelectContent>{ACTIVITY_KINDS.map((kind) => <SelectItem key={kind} value={kind}>{ACTIVITY_LABELS[kind]}</SelectItem>)}</SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="lead-activity-note">Notes{activityKind === "note" ? "" : " (optional)"}</Label>
+                      <Textarea id="lead-activity-note" value={activityNote} onChange={(event) => setActivityNote(event.target.value)} placeholder="What happened?" maxLength={2000} rows={3} disabled={loggingActivity} />
+                    </div>
+                    <Button type="submit" size="sm" disabled={loggingActivity || (activityKind === "note" && !activityNote.trim())}>{loggingActivity ? "Saving…" : "Log activity"}</Button>
+                  </form>
                   {activity.length === 0 ? (
                     <div className="flex flex-col items-center gap-2 py-10 text-center text-sm text-muted-foreground">
                       <ActivityIcon className="h-5 w-5" />
@@ -881,7 +927,7 @@ export function ProspectDetailSheet({
                               {index < activity.length - 1 ? <span className="w-px flex-1 bg-border" /> : null}
                             </div>
                             <div className="pb-5">
-                              <p className="text-sm font-medium">{formatActivityType(event.event_type)}</p>
+                              <p className="text-sm font-medium">{event.event_type === "prospect_contact_logged" ? describeActivity(event).title : formatActivityType(event.event_type)}</p>
                               {details && <div className="mt-0.5">{details}</div>}
                               <p className="mt-1 text-[10px] text-muted-foreground">
                                 {format(new Date(event.created_at), "MMM d, yyyy 'at' h:mm a")}
