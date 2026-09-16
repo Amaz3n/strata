@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation"
 import { PageLayout } from "@/components/layout/page-layout"
 import { Plan3dPanel } from "@/components/plans/plan-3d-panel"
 import { getProjectPosture } from "@/lib/product-tier"
+import { isProjectModelEnabled } from "@/lib/project-model-access"
 import { getFloorplanModel } from "@/lib/services/floorplan-models"
 import { getOrgProductTier } from "@/lib/services/context"
 import { hasPermission } from "@/lib/services/permissions"
@@ -29,6 +30,10 @@ export default async function ProjectFloorplanModelPage({
   const { id } = await params
   const project = await getProjectAction(id)
   if (!project) notFound()
+
+  if (!isProjectModelEnabled(project.org_id)) {
+    redirect(`/projects/${id}/drawings`)
+  }
 
   const orgTier = await getOrgProductTier()
   const posture = getProjectPosture(project.property_type, orgTier)

@@ -2,6 +2,7 @@ import { Briefcase, Flag, Hammer, LayoutDashboard, Wallet } from "@/components/i
 import type { LucideIcon } from "@/components/icons"
 import { getProjectFinancialFeatureConfig } from "@/lib/financials/billing-model"
 import type { Project, ProjectNavigationItem } from "@/lib/types"
+import { isProjectModelEnabled } from "@/lib/project-model-access"
 import {
   getProjectPosture,
   type ProductTier,
@@ -539,6 +540,7 @@ export function buildProjectNavGroups({
   ]
 
   const visibleForPosture = <T extends ProjectNavItem | ProjectNavSubItem>(item: T) => {
+    if (item.url === url("/drawings/model") && !isProjectModelEnabled(project?.org_id)) return false
     const override = item.moduleKey ? moduleOverrides[item.moduleKey] : undefined
     return override ?? (!item.postures || item.postures.includes(posture))
   }
