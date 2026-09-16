@@ -1,0 +1,360 @@
+{
+  "financialChecks": [
+    {
+      "check_name": "budgets",
+      "mismatches": 0
+    },
+    {
+      "check_name": "invoices",
+      "mismatches": 0
+    },
+    {
+      "check_name": "commitments",
+      "mismatches": 0
+    },
+    {
+      "check_name": "bills",
+      "mismatches": 0
+    },
+    {
+      "check_name": "lots_plan_version",
+      "mismatches": 0
+    },
+    {
+      "check_name": "cross_org_project_refs",
+      "mismatches": 0
+    },
+    {
+      "check_name": "missing_start_project",
+      "mismatches": 0
+    },
+    {
+      "check_name": "sent_invoices",
+      "mismatches": 0
+    },
+    {
+      "check_name": "outgoing_queued_work",
+      "mismatches": 0
+    }
+  ],
+  "rowCounts": [
+    {
+      "section": "orgs",
+      "records": 1
+    },
+    {
+      "section": "org_settings",
+      "records": 1
+    },
+    {
+      "section": "memberships",
+      "records": 1
+    },
+    {
+      "section": "subscriptions",
+      "records": 1
+    },
+    {
+      "section": "entitlements",
+      "records": 0
+    },
+    {
+      "section": "projects",
+      "records": 10
+    },
+    {
+      "section": "companies",
+      "records": 8
+    },
+    {
+      "section": "contacts",
+      "records": 16
+    },
+    {
+      "section": "cost_codes",
+      "records": 12
+    },
+    {
+      "section": "budgets",
+      "records": 8
+    },
+    {
+      "section": "budget_lines",
+      "records": 96
+    },
+    {
+      "section": "commitments",
+      "records": 24
+    },
+    {
+      "section": "commitment_lines",
+      "records": 24
+    },
+    {
+      "section": "contracts",
+      "records": 8
+    },
+    {
+      "section": "project_financial_settings",
+      "records": 10
+    },
+    {
+      "section": "tasks",
+      "records": 34
+    },
+    {
+      "section": "schedule_items",
+      "records": 80
+    },
+    {
+      "section": "daily_logs",
+      "records": 24
+    },
+    {
+      "section": "punch_items",
+      "records": 24
+    },
+    {
+      "section": "rfis",
+      "records": 6
+    },
+    {
+      "section": "submittals",
+      "records": 6
+    },
+    {
+      "section": "decisions",
+      "records": 6
+    },
+    {
+      "section": "inspections",
+      "records": 6
+    },
+    {
+      "section": "meetings",
+      "records": 1
+    },
+    {
+      "section": "meeting_items",
+      "records": 3
+    },
+    {
+      "section": "transmittals",
+      "records": 1
+    },
+    {
+      "section": "spec_sections",
+      "records": 3
+    },
+    {
+      "section": "safety_incidents",
+      "records": 1
+    },
+    {
+      "section": "toolbox_talks",
+      "records": 1
+    },
+    {
+      "section": "closeout_items",
+      "records": 24
+    },
+    {
+      "section": "warranty_requests",
+      "records": 3
+    },
+    {
+      "section": "prospects",
+      "records": 6
+    },
+    {
+      "section": "opportunities",
+      "records": 0
+    },
+    {
+      "section": "invoices",
+      "records": 16
+    },
+    {
+      "section": "invoice_lines",
+      "records": 16
+    },
+    {
+      "section": "vendor_bills",
+      "records": 24
+    },
+    {
+      "section": "bill_lines",
+      "records": 24
+    },
+    {
+      "section": "change_orders",
+      "records": 8
+    },
+    {
+      "section": "change_order_lines",
+      "records": 8
+    },
+    {
+      "section": "communities",
+      "records": 1
+    },
+    {
+      "section": "community_phases",
+      "records": 1
+    },
+    {
+      "section": "lots",
+      "records": 8
+    },
+    {
+      "section": "house_plans",
+      "records": 3
+    },
+    {
+      "section": "house_plan_versions",
+      "records": 3
+    },
+    {
+      "section": "house_plan_elevations",
+      "records": 3
+    },
+    {
+      "section": "selection_categories",
+      "records": 4
+    },
+    {
+      "section": "selection_options",
+      "records": 12
+    },
+    {
+      "section": "project_selections",
+      "records": 20
+    },
+    {
+      "section": "project_selection_groups",
+      "records": 20
+    },
+    {
+      "section": "selection_groups",
+      "records": 4
+    },
+    {
+      "section": "design_studio_appointments",
+      "records": 3
+    },
+    {
+      "section": "vendor_price_agreements",
+      "records": 12
+    },
+    {
+      "section": "start_packages",
+      "records": 3
+    },
+    {
+      "section": "start_package_gates",
+      "records": 27
+    },
+    {
+      "section": "lot_reservations",
+      "records": 3
+    },
+    {
+      "section": "closings",
+      "records": 2
+    },
+    {
+      "section": "bid_packages",
+      "records": 3
+    },
+    {
+      "section": "bid_scope_items",
+      "records": 9
+    },
+    {
+      "section": "project_expenses",
+      "records": 16
+    },
+    {
+      "section": "time_entries",
+      "records": 6
+    },
+    {
+      "section": "conversations",
+      "records": 0
+    },
+    {
+      "section": "messages",
+      "records": 0
+    },
+    {
+      "section": "files",
+      "records": 32
+    },
+    {
+      "section": "documents",
+      "records": 3
+    },
+    {
+      "section": "project_file_folders",
+      "records": 8
+    },
+    {
+      "section": "project_members",
+      "records": 0
+    },
+    {
+      "section": "photos",
+      "records": 8
+    },
+    {
+      "section": "project_emails",
+      "records": 8
+    },
+    {
+      "section": "directory_relationship_types",
+      "records": 13
+    },
+    {
+      "section": "party_roles",
+      "records": 24
+    },
+    {
+      "section": "drawing_sheets",
+      "records": 3
+    },
+    {
+      "section": "drawing_revisions",
+      "records": 3
+    },
+    {
+      "section": "estimate_items",
+      "records": 15
+    },
+    {
+      "section": "estimates",
+      "records": 3
+    },
+    {
+      "section": "proposals",
+      "records": 3
+    },
+    {
+      "section": "proposal_lines",
+      "records": 15
+    },
+    {
+      "section": "selection_catalog_prices",
+      "records": 36
+    },
+    {
+      "section": "community_plan_availability",
+      "records": 3
+    },
+    {
+      "section": "task_assignments",
+      "records": 32
+    }
+  ],
+  "authenticatedTableChecks": 79,
+  "visibilityMismatches": []
+}

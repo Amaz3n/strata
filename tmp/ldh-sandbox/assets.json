@@ -1,0 +1,23 @@
+[
+  {
+    "file": "sandbox-walkthrough.pdf",
+    "path": "fafc5e08-24d5-50a1-9ab4-7819306a2768/sandbox-assets/sandbox-walkthrough.pdf",
+    "mime": "application/pdf",
+    "size": 3070,
+    "checksum": "6c325eedea41125783a4ccac82c81477200ef7b7f25f204451d494a2918582e6"
+  },
+  {
+    "file": "sample-countertop-coordination.pdf",
+    "path": "fafc5e08-24d5-50a1-9ab4-7819306a2768/sandbox-assets/sample-countertop-coordination.pdf",
+    "mime": "application/pdf",
+    "size": 2605,
+    "checksum": "21bc5a7fa9192bef6d513c9a2031725b4966fda0243a8989fce9f69722874028"
+  },
+  {
+    "file": "sample-countertop-coordination.png",
+    "path": "fafc5e08-24d5-50a1-9ab4-7819306a2768/sandbox-assets/sample-countertop-coordination.png",
+    "mime": "image/png",
+    "size": 60604,
+    "checksum": "f754aaedff777cccb5cbbe296554e5199778e09ae88b979a36a951384a24e01d"
+  }
+]

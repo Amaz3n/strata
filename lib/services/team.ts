@@ -485,7 +485,7 @@ async function mapMfaEnabledByUser(serviceClient: SupabaseClient, userIds: strin
   const { data, error } = await serviceClient.rpc("get_org_member_mfa_status", {
     p_org_id: orgId, p_user_ids: userIds,
   })
-  if (error) throw new Error("Unable to load team security status.")
+  if (error) throw new Error("Unable to load team security status.", { cause: error })
   const rows = z.array(z.object({ user_id: z.string(), enabled: z.boolean() })).parse(data)
   return Object.fromEntries(rows.map((row) => [row.user_id, row.enabled]))
 }

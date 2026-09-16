@@ -33,7 +33,9 @@ import BidsArticle from "./planning-documents/bids"
 import RfisArticle from "./planning-documents/rfis"
 import SubmittalsArticle from "./planning-documents/submittals"
 import SignaturesArticle from "./planning-documents/signatures"
+import TakeoffArticle from "./planning-documents/takeoff"
 import ProjectFinancialsOverviewArticle from "./project-financials/project-financials-overview"
+import ArcBooksArticle from "./project-financials/arc-books"
 import ArcPayOverviewArticle from "./project-financials/arc-pay-overview"
 import PaymentRunsApprovalsArticle from "./project-financials/payment-runs-approvals"
 import PaymentReconciliationArticle from "./project-financials/payment-reconciliation"
@@ -43,7 +45,9 @@ import PayablesArticle from "./project-financials/payables"
 import ExpensesTimeArticle from "./project-financials/expenses-time"
 import ChangeOrdersArticle from "./project-financials/change-orders"
 import BillingInvoicingArticle from "./project-financials/billing-invoicing"
+import PurchasingArticle from "./project-financials/purchasing"
 import ProjectsOverviewArticle from "./projects/projects-overview"
+import ProjectCorrespondenceArticle from "./projects/project-correspondence"
 import TroubleshootingOverviewArticle from "./troubleshooting/troubleshooting-overview"
 import PermissionsAccessIssuesArticle from "./troubleshooting/permissions-access-issues"
 import DrawingProcessingIssuesArticle from "./troubleshooting/drawing-processing-issues"
@@ -131,8 +135,15 @@ export const helpTopics: HelpTopic[] = [
             slug: "projects-overview",
             title: "Projects overview",
             description: "Learn how projects organize job-specific work in Arc.",
-            updatedAt: "2026-06-06",
+            updatedAt: "2026-09-16",
             content: ProjectsOverviewArticle,
+          },
+          {
+            slug: "project-correspondence",
+            title: "Project Correspondence",
+            description: "File, classify, search, link, and export the email record for a project.",
+            updatedAt: "2026-09-16",
+            content: ProjectCorrespondenceArticle,
           },
         ],
       },
@@ -152,14 +163,14 @@ export const helpTopics: HelpTopic[] = [
             slug: "planning-and-documents-overview",
             title: "Planning & Documents overview",
             description: "Choose the right Arc tool for files, drawings, bids, and reviews.",
-            updatedAt: "2026-06-16",
+            updatedAt: "2026-09-16",
             content: PlanningOverviewArticle,
           },
           {
             slug: "documents",
             title: "Documents",
-            description: "Learn how to upload, organize, and share general project files.",
-            updatedAt: "2026-06-16",
+            description: "Use the organization library and project folders to store, share, and trace files.",
+            updatedAt: "2026-09-16",
             content: DocumentsArticle,
           },
           {
@@ -168,6 +179,13 @@ export const helpTopics: HelpTopic[] = [
             description: "Manage drawing sets, sheet revisions, and sheet tags.",
             updatedAt: "2026-06-16",
             content: DrawingsArticle,
+          },
+          {
+            slug: "takeoff",
+            title: "Takeoff",
+            description: "Measure drawings, manage priced conditions, and keep quantities current through revisions.",
+            updatedAt: "2026-09-16",
+            content: TakeoffArticle,
           },
           {
             slug: "bids",
@@ -264,8 +282,15 @@ export const helpTopics: HelpTopic[] = [
             slug: "project-financials-overview",
             title: "Project Financials overview",
             description: "A guide to Arc's core project cost and billing tools.",
-            updatedAt: "2026-06-16",
+            updatedAt: "2026-09-16",
             content: ProjectFinancialsOverviewArticle,
+          },
+          {
+            slug: "arc-books",
+            title: "Arc Books",
+            description: "Manage the organization ledger, banking review, financial statements, and period close.",
+            updatedAt: "2026-09-16",
+            content: ArcBooksArticle,
           },
           {
             slug: "budget",
@@ -284,8 +309,8 @@ export const helpTopics: HelpTopic[] = [
           {
             slug: "payables",
             title: "Payables",
-            description: "Code vendor bills, track approvals, verify lien waivers, and sync with QBO.",
-            updatedAt: "2026-06-16",
+            description: "Review, approve, hold, and pay vendor bills with a complete operating record.",
+            updatedAt: "2026-09-16",
             content: PayablesArticle,
           },
           {
@@ -308,6 +333,13 @@ export const helpTopics: HelpTopic[] = [
             description: "Progress bill clients, hold retainage, send secure invoice links, and collect payments.",
             updatedAt: "2026-06-16",
             content: BillingInvoicingArticle,
+          },
+          {
+            slug: "purchasing",
+            title: "Purchasing",
+            description: "Maintain price agreements, resolve purchase-order exceptions, and review field variance.",
+            updatedAt: "2026-09-16",
+            content: PurchasingArticle,
           },
         ],
       },
@@ -361,8 +393,8 @@ export const helpTopics: HelpTopic[] = [
           {
             slug: "prospects",
             title: "Prospects",
-            description: "Manage sales opportunities, pipeline funnel stages, and lead contacts.",
-            updatedAt: "2026-06-16",
+            description: "Manage sales opportunities, follow-ups, contacts, estimates, and the activity record.",
+            updatedAt: "2026-09-16",
             content: ProspectsArticle,
           },
           {

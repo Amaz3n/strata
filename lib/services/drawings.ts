@@ -1,3 +1,4 @@
+import { duplicateIssuanceNumbers, issuanceNumberConflictMessage } from "@/lib/drawings/publish-validation"
 import type {
   DrawingSetInput,
   DrawingSetUpdate,
@@ -400,53 +401,46 @@ async function listDrawingSheetsOptimized(
   filters: Partial<DrawingSheetListFilters> = {},
   orgId?: string
 ): Promise<DrawingSheet[]> {
-  const parsed = drawingSheetListFiltersSchema.parse(filters)
-  const { orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  // The materialized view is refreshed asynchronously. Never let it decide
+  // membership, filtering or pagination: deleted sheets can remain there until
+  // the next outbox run. Read the live page first and only reuse cached extras.
+  const sheets = await listDrawingSheets(filters, orgId)
+  if (!sheets.length) return []
   const supabase = createServiceSupabaseClient()
-
-  let query = supabase
+  const { data, error } = await supabase
     .from("drawing_sheets_list_mv")
     .select("*")
-    .eq("org_id", resolvedOrgId)
+    .eq("org_id", sheets[0].org_id)
+    .in("id", sheets.map((sheet) => sheet.id))
 
-  if (parsed.project_id) {
-    query = query.eq("project_id", parsed.project_id)
-  }
-
-  if (parsed.drawing_set_id) {
-    query = query.eq("drawing_set_id", parsed.drawing_set_id)
-  }
-
-  if (parsed.discipline) {
-    query = query.eq("discipline", parsed.discipline)
-  }
-
-  if (parsed.share_with_clients !== undefined) {
-    query = query.eq("share_with_clients", parsed.share_with_clients)
-  }
-
-  if (parsed.share_with_subs !== undefined) {
-    query = query.eq("share_with_subs", parsed.share_with_subs)
-  }
-
-  if (parsed.search) {
-    const sanitized = sanitizeIlikeSearch(parsed.search)
-    if (sanitized) {
-      const searchPattern = `%${sanitized}%`
-      query = query.or(`sheet_number.ilike.${searchPattern},sheet_title.ilike.${searchPattern}`)
+  if (error) throw new Error(`Failed to load drawing list details: ${error.message}`)
+  const cached = new Map((data ?? []).map((row) => [row.id, row]))
+  return sheets.map((sheet) => {
+    const row = cached.get(sheet.id)
+    // A new/published revision needs the live imagery fallback below.
+    if (!row || (row.current_revision_id ?? undefined) !== sheet.current_revision_id) {
+      throw new Error("Drawing list snapshot is behind the live register")
     }
-  }
-
-  const { data, error } = await query
-    .order("sort_order", { ascending: true })
-    .order("sheet_number", { ascending: true })
-    .range(parsed.offset, parsed.offset + parsed.limit - 1)
-
-  if (error) {
-    throw new Error(`Failed to list drawing sheets (optimized): ${error.message}`)
-  }
-
-  return (data ?? []).map(mapDrawingSheet)
+    return {
+      ...mapDrawingSheet(row),
+      id: sheet.id,
+      org_id: sheet.org_id,
+      project_id: sheet.project_id,
+      drawing_set_id: sheet.drawing_set_id,
+      sheet_number: sheet.sheet_number,
+      sheet_title: sheet.sheet_title,
+      discipline: sheet.discipline,
+      sort_order: sheet.sort_order,
+      share_with_clients: sheet.share_with_clients,
+      share_with_subs: sheet.share_with_subs,
+      current_revision_id: sheet.current_revision_id,
+      current_revision_label: sheet.current_revision_label,
+      current_revision_creator_name: sheet.current_revision_creator_name,
+      last_modified_by_name: sheet.last_modified_by_name,
+      created_at: sheet.created_at,
+      updated_at: sheet.updated_at,
+    }
+  })
 }
 
 /**
@@ -2312,6 +2306,7 @@ export interface RevisionVersionPreview {
 }
 
 export interface RevisionDiffSheet {
+  needs_number_review?: boolean
   sheet_id: string
   change: "updated" | "added"
   is_new_sheet: boolean
@@ -2417,7 +2412,7 @@ export async function getRevisionDiff(revisionId: string, orgId?: string): Promi
     supabase
       .from("drawing_sheet_versions")
       .select(`
-        id, drawing_sheet_id, page_index, proposed:extracted_metadata->proposed,
+        id, drawing_sheet_id, page_index, proposed:extracted_metadata->proposed, detection:extracted_metadata->sheet_detection,
         thumb_path, tile_base_url, tile_manifest, thumbnail_url, image_width, image_height,
         drawing_sheets!inner(id, sheet_number, sheet_title, discipline, current_revision_id, sort_order)
       `)
@@ -2440,6 +2435,7 @@ export async function getRevisionDiff(revisionId: string, orgId?: string): Promi
     const isNew = !sheet.current_revision_id
     const entry: RevisionDiffSheet = {
       sheet_id: sheet.id,
+      needs_number_review: (dv as any).detection?.needs_review === true,
       change: isNew ? "added" : "updated",
       is_new_sheet: isNew,
       sheet_number: proposed.sheet_number ?? sheet.sheet_number,
@@ -2539,6 +2535,27 @@ export async function publishRevision(input: PublishRevisionInput, orgId?: strin
   await requireProjectPermission(userId, revision.project_id, "drawing.upload")
   if (revision.status === "published") throw new Error("Revision already published")
 
+  // Validate the draft proposals before the atomic publish. Vision can propose
+  // duplicate numbers even when the draft rows have unique temporary numbers.
+  const { data: proposedVersions, error: proposedError } = await supabase
+    .from("drawing_sheet_versions")
+    .select("drawing_sheet_id, proposed:extracted_metadata->proposed, detection:extracted_metadata->sheet_detection, drawing_sheets!inner(sheet_number)")
+    .eq("org_id", resolvedOrgId)
+    .eq("drawing_revision_id", input.revisionId)
+  if (proposedError) throw new Error(`Failed to validate issuance: ${proposedError.message}`)
+  const unresolved = (proposedVersions ?? []).filter((version: any) =>
+    input.decisions?.[version.drawing_sheet_id] !== false &&
+    version.detection?.needs_review === true &&
+    !input.sheetEdits?.[version.drawing_sheet_id]?.sheet_number?.trim())
+  if (unresolved.length) {
+    throw new Error(`Confirm the sheet numbers for ${unresolved.length} pages marked Needs review before publishing.`)
+  }
+  const conflicts = duplicateIssuanceNumbers((proposedVersions ?? []).map((version: any) => ({
+    sheet_id: version.drawing_sheet_id,
+    sheet_number: version.proposed?.sheet_number ?? version.drawing_sheets.sheet_number,
+  })), input.decisions, input.sheetEdits)
+  if (conflicts.length) throw new Error(issuanceNumberConflictMessage(conflicts))
+
   const { error: publishError } = await supabase.rpc("publish_drawing_revision", {
     p_org_id: resolvedOrgId,
     p_revision_id: input.revisionId,
@@ -2554,6 +2571,9 @@ export async function publishRevision(input: PublishRevisionInput, orgId?: strin
   })
 
   if (publishError) {
+    if (publishError.code === "23505") {
+      throw new Error("A sheet number conflicts with another sheet already in this project. Review the sheet numbers before publishing. Your draft is still saved.")
+    }
     throw new Error(`Failed to publish revision: ${publishError.message}`)
   }
 

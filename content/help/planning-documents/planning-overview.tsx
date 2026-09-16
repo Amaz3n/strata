@@ -11,7 +11,7 @@ export default function PlanningOverviewArticle() {
 
       <h2>Core Modules in Planning &amp; Documents</h2>
       <p>
-        Planning &amp; Documents is comprised of six integrated modules. Review the detailed guides below to learn 
+        Planning &amp; Documents is comprised of seven integrated modules. Review the detailed guides below to learn
         how to use each tool:
       </p>
 
@@ -38,7 +38,18 @@ export default function PlanningOverviewArticle() {
         .
       </p>
 
-      <h3>3. Bids</h3>
+      <h3>3. Takeoff</h3>
+      <p>
+        Measure quantities directly on published drawings, retain the link between the measurement and its sheet,
+        and review the impact of later drawing revisions before synchronizing a total downstream.
+        {" "}
+        <Link href="/help/planning-and-documents/planning-workflows/takeoff">
+          Read the Takeoff Guide
+        </Link>
+        .
+      </p>
+
+      <h3>4. Bids</h3>
       <p>
         Manage preconstruction procurement by setting up bid packages, inviting trade partners from your directory, 
         releasing addenda, and comparing subcontractor proposals in a secure bid portal.
@@ -49,7 +60,7 @@ export default function PlanningOverviewArticle() {
         .
       </p>
 
-      <h3>4. RFIs</h3>
+      <h3>5. RFIs</h3>
       <p>
         Resolve ambiguities by creating formal Requests for Information. Assign them to architects or engineers, 
         track schedule and budget impacts, and record decision notes to ensure a reliable project history.
@@ -60,7 +71,7 @@ export default function PlanningOverviewArticle() {
         .
       </p>
 
-      <h3>5. Submittals</h3>
+      <h3>6. Submittals</h3>
       <p>
         Ensure quality control by managing submittals for shop drawings, product data, and material samples. 
         Track reviews, log formal approvals, and verify compliance before ordering project materials.
@@ -71,7 +82,7 @@ export default function PlanningOverviewArticle() {
         .
       </p>
 
-      <h3>6. Signatures</h3>
+      <h3>7. Signatures</h3>
       <p>
         Use the built-in electronic signature workflow to execute contracts, agreements, and change orders. 
         Set sequential signer routing, track envelope progress, and automatically store executed files.

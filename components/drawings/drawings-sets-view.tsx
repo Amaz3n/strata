@@ -521,11 +521,20 @@ export function DrawingsSetsView({
     x: number
     y: number
   } | null>(null)
+  // Successful deletions must survive older in-flight reads and server props.
+  // IDs are globally unique, so keeping these until unmount is safe across projects.
+  const deletedSetIds = useRef(new Set<string>())
+  const deletedSheetIds = useRef(new Set<string>())
+  const visibleSheets = useCallback((sheets: DrawingSheet[]) =>
+    sheets.filter((sheet) =>
+      !deletedSheetIds.current.has(sheet.id) &&
+      !deletedSetIds.current.has(sheet.drawing_set_id)), [])
+
   const sheetOpenRequestIdRef = useRef(0)
   const initialSheetHandledRef = useRef(false)
 
   useEffect(() => {
-    setSets(initialSets)
+    setSets(initialSets.filter((set) => !deletedSetIds.current.has(set.id)))
   }, [initialSets])
 
   // Sheets processed before vector extraction existed get their takeoff snap
@@ -535,8 +544,8 @@ export function DrawingsSetsView({
   }, [])
 
   useEffect(() => {
-    setSheetsBySet(buildSheetsBySet(initialSheets))
-  }, [initialSheets])
+    setSheetsBySet(buildSheetsBySet(visibleSheets(initialSheets)))
+  }, [initialSheets, visibleSheets])
 
   useEffect(() => {
     setSelectedSetId(initialSelectedSetId ?? null)
@@ -548,11 +557,11 @@ export function DrawingsSetsView({
 
   // Reset cross-project state when the project changes.
   useEffect(() => {
-    setSheetsBySet(buildSheetsBySet(initialSheets))
+    setSheetsBySet(buildSheetsBySet(visibleSheets(initialSheets)))
     setExpandedDisciplines(new Set())
     setSelectedSetId(null)
     setSheetsLoading(false)
-  }, [initialSheets, selectedProjectId])
+  }, [initialSheets, selectedProjectId, visibleSheets])
 
   // Pick a default set once sets load. Prefer the newest ready set so a
   // background upload does not take over the table while it is processing.
@@ -581,13 +590,13 @@ export function DrawingsSetsView({
         project_id: selectedProjectId,
         limit: 500,
       })
-      setSheetsBySet(buildSheetsBySet(all))
+      setSheetsBySet(buildSheetsBySet(visibleSheets(all)))
     } catch (err) {
       console.error("Failed to load sheets:", err)
     } finally {
       setSheetsLoading(false)
     }
-  }, [selectedProjectId])
+  }, [selectedProjectId, visibleSheets])
 
   useEffect(() => {
     void loadProjectSheets()
@@ -606,7 +615,7 @@ export function DrawingsSetsView({
         project_id: selectedProjectId,
         limit: 100,
       })
-      setSets(data)
+      setSets(data.filter((set) => !deletedSetIds.current.has(set.id)))
     } catch (err) {
       console.error("Failed to refresh drawing sets:", err)
     }
@@ -910,8 +919,7 @@ export function DrawingsSetsView({
         },
       )
 
-      setUploadStage("Processing PDF…")
-      setUploadTransfer(null)
+      setUploadStage("Saving your package…")
       const { set: newSet, draftRevisionId } = unwrapAction(await createDrawingSetFromUpload({
         projectId: selectedProjectId,
         fileName: uploadFile.name,
@@ -1020,6 +1028,7 @@ export function DrawingsSetsView({
     setIsDeleting(true)
     try {
       unwrapAction(await deleteDrawingSetAction(setToDelete.id))
+      deletedSetIds.current.add(setToDelete.id)
       setSets((prev) => prev.filter((s) => s.id !== setToDelete.id))
       setSheetsBySet((prev) => {
         const next = new Map(prev)
@@ -1042,6 +1051,7 @@ export function DrawingsSetsView({
     setIsDeleting(true)
     try {
       unwrapAction(await deleteDrawingSheetAction(sheetToDelete.id))
+      deletedSheetIds.current.add(sheetToDelete.id)
       setSheetsBySet((prev) => {
         const next = new Map(prev)
         for (const [k, list] of next) {
@@ -1111,7 +1121,10 @@ export function DrawingsSetsView({
     try {
       await Promise.all(
         disciplineGroupToDelete.sheets.map((sheet) =>
-          deleteDrawingSheetAction(sheet.id).then(unwrapAction),
+          deleteDrawingSheetAction(sheet.id).then((result) => {
+            unwrapAction(result)
+            deletedSheetIds.current.add(sheet.id)
+          }),
         ),
       )
       setSheetsBySet((curr) => {
@@ -2211,30 +2224,35 @@ export function DrawingsSetsView({
         )}
       </div>
 
-      <Dialog open={uploadDialogOpen} onOpenChange={setUploadDialogOpen}>
-        <DialogContent className="sm:max-w-2xl">
-          <DialogHeader>
+      <Dialog open={uploadDialogOpen} onOpenChange={(open) => { if (!isUploading) setUploadDialogOpen(open) }}>
+        <DialogContent className="flex max-h-[90dvh] flex-col gap-0 overflow-hidden rounded-xl p-0 sm:max-w-xl" showCloseButton={!isUploading}
+          onInteractOutside={(event) => event.preventDefault()}
+          onEscapeKeyDown={(event) => { if (isUploading) event.preventDefault() }}>
+          <DialogHeader className="shrink-0 border-b px-7 py-6 pr-12 text-left">
             <DialogTitle>
-              {uploadStep === "review"
+              {isUploading ? "Uploading your drawings" : uploadStep === "review"
                 ? "Review imported pages"
                 : sets.length > 0
                   ? "Upload drawing package"
                   : "Upload initial drawing package"}
             </DialogTitle>
             <DialogDescription>
-              {uploadStep === "review"
-                ? "The new pages are ready. Review them here and make any quick corrections before closing."
-                : sets.length > 0
-                  ? "Upload another PDF into this project's single drawing register. We'll process it as a draft package, detect pages by trade, and keep the existing register intact while it runs."
-                  : "Upload a PDF and we'll process it, detect page metadata, and separate the pages into trades automatically."}
+              {isUploading ? "Keep this window open while your file transfers."
+                : "Add your PDF, then review the sheets before publishing."}
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-2">
-            {uploadStep !== "review" && (
-              <div className="rounded-lg border bg-muted/30 p-3 text-xs text-muted-foreground">
-                We process the PDF into a draft issuance first, then let you review what changed before the live register updates.
+          {isUploading ? (
+            <div className="px-8 py-12" role="status" aria-live="polite">
+              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-muted"><FileText className="h-7 w-7 text-muted-foreground" /></div>
+              <p className="mt-6 truncate text-center text-sm font-medium">{uploadFile?.name}</p>
+              <p className="mt-2 text-center text-sm text-muted-foreground">{uploadStage}</p>
+              <Progress value={uploadTransfer?.percent ?? 0} aria-label="File upload" className="mt-8 h-1.5" />
+              <div className="mt-3 flex justify-between text-xs tabular-nums text-muted-foreground">
+                <span>{uploadTransfer ? `${(uploadTransfer.loaded / 1024 / 1024).toFixed(1)} of ${(uploadTransfer.total / 1024 / 1024).toFixed(1)} MB` : "Preparing your package"}</span>
+                <span>{uploadTransfer ? `${uploadTransfer.percent}%` : ""}</span>
               </div>
-            )}
+            </div>
+          ) : <div className="min-h-0 space-y-6 overflow-y-auto px-7 py-6">
 
             {uploadFile && (
               <div className="flex items-center gap-3 rounded-lg border p-3">
@@ -2252,7 +2270,7 @@ export function DrawingsSetsView({
 
             {uploadStep === "prepare" && canonicalSet && projectSheetCount > 0 && (
               <div className="space-y-2">
-                <p className="microlabel">How this package lands</p>
+                <p className="text-xs font-medium text-muted-foreground">PACKAGE PURPOSE</p>
                 <RadioGroup
                   value={uploadMode}
                   onValueChange={handleUploadModeChange}
@@ -2269,13 +2287,10 @@ export function DrawingsSetsView({
                     />
                     <span className="min-w-0 space-y-1">
                       <span className="block text-sm font-medium">
-                        Add as a revision to {canonicalSet.title}
+                        Update existing drawings
                       </span>
                       <span className="block text-xs text-muted-foreground">
-                        Sheets whose numbers match one of the{" "}
-                        {projectSheetCount} sheets already in the register
-                        version up. Sheets not in this PDF stay exactly as they
-                        are.
+                        Matching sheet numbers receive a new version. Other sheets stay unchanged.
                       </span>
                     </span>
                   </Label>
@@ -2290,13 +2305,10 @@ export function DrawingsSetsView({
                     />
                     <span className="min-w-0 space-y-1">
                       <span className="block text-sm font-medium">
-                        Log as a new baseline package
+                        Issue a baseline set
                       </span>
                       <span className="block text-xs text-muted-foreground">
-                        Recorded as a standalone issuance — permit set, IFC, bid
-                        set. It still lands in {canonicalSet.title}: a project
-                        has one register, so matching sheet numbers still
-                        version up.
+                        For a permit, construction, or bid set. Matching sheets still receive a new version.
                       </span>
                     </span>
                   </Label>
@@ -2517,8 +2529,8 @@ export function DrawingsSetsView({
                 </div>
               </div>
             )}
-          </div>
-          <DialogFooter>
+          </div>}
+          {!isUploading && <DialogFooter className="shrink-0 border-t px-7 py-4">
             <Button
               variant="outline"
               onClick={() => {
@@ -2548,7 +2560,7 @@ export function DrawingsSetsView({
                 ) : (
                   <>
                     <Upload className="mr-2 h-4 w-4" />
-                    Start processing
+                    Upload and continue
                   </>
                 )}
               </Button>
@@ -2575,7 +2587,7 @@ export function DrawingsSetsView({
                 Retry import
               </Button>
             ) : null}
-          </DialogFooter>
+          </DialogFooter>}
         </DialogContent>
       </Dialog>
 

@@ -607,20 +607,24 @@ export async function syncVendorRecipient(
   providerKey = DEFAULT_PROVIDER,
   auditSource = "stripe_webhook",
 ) {
-  const provider = getPaymentRailProvider(providerKey)
-  const snapshot = await provider.retrieveRecipient(providerAccountId)
   const supabase = createServiceSupabaseClient()
   // The destination as Arc last knew it, read before the sync overwrites it. A
   // provider-side bank swap — a vendor's compromised Stripe login is the whole
   // threat — arrives here as an ordinary `account.updated` and used to be
   // absorbed silently, so the next run paid the new bank with no hold and no
   // notification.
-  const { data: priorRecipient } = await supabase
+  const { data: priorRecipient, error: lookupError } = await supabase
     .from("payment_recipient_accounts")
     .select("id,payout_bank_name,payout_bank_last4,destination_version")
     .eq("provider", providerKey)
     .eq("provider_account_id", providerAccountId)
     .maybeSingle()
+  if (lookupError) throw new Error(`Unable to look up vendor recipient: ${lookupError.message}`)
+  // Account events also include builder and platform accounts. Only vendor
+  // recipients authorize the bank-detail lookup required by this payment rail.
+  if (!priorRecipient) return null
+  const provider = getPaymentRailProvider(providerKey)
+  const snapshot = await provider.retrieveRecipient(providerAccountId)
   const { data: recipient, error } = await supabase.from("payment_recipient_accounts").update({
     status: snapshot.status,
     details_submitted: snapshot.detailsSubmitted,

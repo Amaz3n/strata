@@ -1,5 +1,3 @@
-import Link from "next/link"
-
 export default function ProspectsArticle() {
   return (
     <>
@@ -8,13 +6,27 @@ export default function ProspectsArticle() {
         inquiries, schedules follow-ups, and monitors opportunities through your sales funnel before they become active projects.
       </p>
 
-      <h2>Key Features</h2>
+      <h2>What a prospect keeps together</h2>
       <ul>
         <li><strong>Sales Funnel Stages:</strong> Monitor prospects through distinct pipeline states: New, Contacted, Qualified, Pricing, and Estimate Sent.</li>
-        <li><strong>Attention Alerts:</strong> Identify Stalled prospects (no activity in 14 days) and Follow-ups Due to ensure no lead goes cold.</li>
+        <li><strong>Attention alerts:</strong> Identify stalled prospects and follow-ups due so no lead goes cold.</li>
         <li><strong>Lead Details:</strong> Track project types, budget ranges, timeline preferences, lead sources (e.g., website, referral), and custom tags.</li>
         <li><strong>Contact Management:</strong> Associate multiple contacts with a prospect and designate a primary contact.</li>
+        <li><strong>Activity:</strong> Keep a dated record of calls, emails, meetings, notes, and follow-up touches beside the prospect.</li>
       </ul>
+
+      <h2>Log activity and schedule the next move</h2>
+      <p>
+        Open a prospect and choose the <strong>Activity</strong> tab to log a call, email, meeting, or note.
+        Add context that the next owner will understand, then set the next follow-up date from the prospect
+        details. The activity timeline is a record of the relationship; the follow-up date is the commitment
+        to act next. Use both.
+      </p>
+      <p>
+        Pipeline alerts group active prospects that need attention. A prospect is considered stalled when it
+        has not been updated for 14 days. Logging a meaningful activity or updating the follow-up keeps the
+        operating view honest without forcing a stage change.
+      </p>
 
       <h2>The Sales Funnel Stages</h2>
       <p>
@@ -37,7 +49,7 @@ export default function ProspectsArticle() {
       </p>
       <ul>
         <li><strong>Follow-Ups Due:</strong> Displays the count of active prospects with a scheduled follow-up date of today or in the past. To clear an alert, log a follow-up touch and schedule the next action date.</li>
-        <li><strong>Stalled Prospects:</strong> Displays leads in active stages (New through Client Approved) that have not been modified or updated in <strong>14 days</strong>, reminding you to re-engage.</li>
+        <li><strong>Stalled Prospects:</strong> Displays active leads with no update in <strong>14 days</strong>, reminding you to re-engage or close the loop.</li>
       </ul>
 
       <h2>Adding and Tracking Prospects</h2>

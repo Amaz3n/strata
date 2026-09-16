@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Dialog,
   DialogContent,
@@ -12,14 +12,8 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Progress } from "@/components/ui/progress"
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible"
 import {
   Select,
   SelectContent,
@@ -38,23 +32,19 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import {
-  ArrowRight,
-  ChevronDown,
+  Check,
+  ChevronLeft,
   ChevronRight,
-  FilePlus2,
-  Layers,
   Loader2,
   RefreshCw,
   AlertTriangle,
 } from "lucide-react"
 import { toast } from "sonner"
-import { cn } from "@/lib/utils"
+import { duplicateIssuanceNumbers, issuanceNumberConflictMessage } from "@/lib/drawings/publish-validation"
 import {
-  DISCIPLINE_LABELS,
   DRAWING_ISSUANCE_TYPE_LABELS,
 } from "@/lib/validation/drawings"
 import type { DrawingDiscipline, DrawingIssuanceType } from "@/lib/validation/drawings"
-import { DISCIPLINE_SORT_ORDER } from "@/lib/utils/drawing-utils"
 import { Textarea } from "@/components/ui/textarea"
 import {
   getDraftRevisionStatusAction,
@@ -70,14 +60,13 @@ import {
 import type { DraftRevisionSheetPreview } from "@/app/(app)/drawings/types"
 import type {
   RevisionDiff,
-  RevisionDiffSheet,
-  RevisionVersionPreview,
 } from "@/lib/services/drawings"
 import type {
   RevisionDistributionRecipient,
   RevisionDistributionRecord,
 } from "@/lib/services/drawings-distribution"
-import { toRenderableDrawingsUrl } from "@/lib/drawings/tile-urls"
+import { DrawingPreviewImage } from "@/components/drawings/drawing-preview-image"
+import { IssuanceSheetReview } from "@/components/drawings/issuance-sheet-review"
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -128,10 +117,11 @@ export function RevisionReviewDialog({
   const [publishing, setPublishing] = useState(false)
   const [retryNonce, setRetryNonce] = useState(0)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
-  const [unchangedOpen, setUnchangedOpen] = useState(false)
+  const [reviewTab, setReviewTab] = useState<"sheets" | "details">("sheets")
   const [previewRetries, setPreviewRetries] = useState(0)
   // Pages already split out of the draft, shown live while processing runs.
   const [draftSheets, setDraftSheets] = useState<DraftRevisionSheetPreview[]>([])
+  const initializedRevision = useRef<string | null>(null)
   // Sheet numbers deleted from this register before — annotates "new" sheets.
   const [deletedSheetNumbers, setDeletedSheetNumbers] = useState<Set<string>>(
     () => new Set(),
@@ -142,11 +132,15 @@ export function RevisionReviewDialog({
     try {
       const data = await getRevisionDiffAction(revisionId)
       setDiff(data)
-      setLabel((prev) => prev || data.revision.revision_label || "")
-      setIssuanceType((data.revision.issuance_type as DrawingIssuanceType | null) ?? "revision")
-      setIssuedDate(data.revision.issued_date?.slice(0, 10) ?? "")
-      setReceivedFrom(data.revision.received_from ?? "")
-      setNotes(data.revision.notes ?? "")
+      // Image refreshes must not overwrite details the reviewer is editing.
+      if (initializedRevision.current !== revisionId) {
+        setLabel(data.revision.revision_label || "")
+        setIssuanceType((data.revision.issuance_type as DrawingIssuanceType | null) ?? "revision")
+        setIssuedDate(data.revision.issued_date?.slice(0, 10) ?? "")
+        setReceivedFrom(data.revision.received_from ?? "")
+        setNotes(data.revision.notes ?? "")
+        initializedRevision.current = revisionId
+      }
 
       // A sheet with no live predecessor may still have existed here before
       // someone deleted it. Best-effort: the review reads fine without this.
@@ -255,8 +249,26 @@ export function RevisionReviewDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [diff, decisions])
 
+  const unresolvedNumberCount = diff
+    ? [...diff.updated, ...diff.added].filter((sheet) =>
+        decisions[sheet.sheet_id] !== false && sheet.needs_number_review &&
+        !edits[sheet.sheet_id]?.sheet_number?.trim()).length
+    : 0
+
+  const conflictingNumbers = useMemo(() => diff
+    ? duplicateIssuanceNumbers([...diff.updated, ...diff.added], decisions, edits)
+    : [], [diff, decisions, edits])
+
   const handlePublish = async () => {
     if (!diff) return
+    if (unresolvedNumberCount) {
+      toast.error("Confirm the sheet numbers marked Needs review before publishing.")
+      return
+    }
+    if (conflictingNumbers.length) {
+      toast.error(issuanceNumberConflictMessage(conflictingNumbers))
+      return
+    }
     setPublishing(true)
     try {
       unwrapAction(await publishRevisionAction({
@@ -315,32 +327,49 @@ export function RevisionReviewDialog({
 
   return (
     <>
-      <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="flex max-h-[90vh] w-[min(1100px,96vw)] max-w-none flex-col overflow-hidden">
-          <DialogHeader>
-            <DialogTitle>Review issuance</DialogTitle>
-            <DialogDescription>
-              Nothing changes in the live drawings until you publish. Review what
-              this package changes, then publish or discard it.
+      <Dialog open={open} onOpenChange={(nextOpen) => { if (!publishing) onOpenChange(nextOpen) }}>
+        <DialogContent
+          className="flex h-[94dvh] max-h-[960px] w-[96vw] max-w-none flex-col gap-0 overflow-hidden rounded-xl p-0 sm:max-w-[1440px]"
+          onInteractOutside={(event) => event.preventDefault()}
+          onEscapeKeyDown={(event) => { if (publishing) event.preventDefault() }}
+          showCloseButton={!publishing}
+        >
+          <DialogHeader className="shrink-0 border-b px-5 py-4 pr-12 text-left sm:px-6 sm:py-5 sm:pr-12">
+            <div className="mb-1 hidden items-center gap-2 text-xs text-muted-foreground sm:flex">
+              <Check className="h-3.5 w-3.5" /> Upload received
+            </div>
+            <DialogTitle className="text-xl tracking-tight">{processing ? "Preparing your drawings" : "Review issuance"}</DialogTitle>
+            <DialogDescription className="sr-only sm:not-sr-only">
+              {processing ? "Your package is processing. You can close this window and return later." : "Review the sheets, confirm the details, then publish to your register."}
             </DialogDescription>
           </DialogHeader>
 
           {failed ? (
-            <div className="flex flex-col items-center gap-3 rounded-lg border border-destructive/40 bg-destructive/5 p-8 text-center">
-              <AlertTriangle className="h-6 w-6 text-destructive" />
-              <p className="text-sm font-medium text-destructive">Processing failed</p>
-              <p className="text-xs text-muted-foreground">{failed}</p>
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
+              <AlertTriangle className="h-7 w-7 text-destructive" />
+              <p className="text-lg font-medium">We couldn’t finish this package</p>
+              <p className="max-w-md text-sm text-muted-foreground">{failed}</p>
             </div>
           ) : processing || (loading && !diff) ? (
-            <ProcessingPanel
-              processedPages={diff?.revision.processed_pages ?? 0}
-              totalPages={diff?.revision.total_pages ?? null}
-              sheets={draftSheets}
-            />
+            <ProcessingPanel processedPages={diff?.revision.processed_pages ?? 0}
+              totalPages={diff?.revision.total_pages ?? null} sheets={draftSheets} />
           ) : diff ? (
-            <div className="flex-1 space-y-5 overflow-y-auto pr-1">
+            <>
+              <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b px-6 py-3">
+                <div className="flex gap-1 rounded-lg bg-muted/60 p-1" aria-label="Review sections">
+                  <Button size="sm" variant={reviewTab === "sheets" ? "secondary" : "ghost"} aria-pressed={reviewTab === "sheets"} onClick={() => setReviewTab("sheets")}>Sheets <span className="ml-1 text-muted-foreground">{diff.updated.length + diff.added.length}</span></Button>
+                  <Button size="sm" variant={reviewTab === "details" ? "secondary" : "ghost"} aria-pressed={reviewTab === "details"} onClick={() => setReviewTab("details")}>Issuance details</Button>
+                </div>
+                <p className="text-xs text-muted-foreground">{diff.updated.length} updated · {diff.added.length} new{diff.unchanged.length > 0 ? ` · ${diff.unchanged.length} kept as-is` : ""}</p>
+              </div>
+              <div className={reviewTab === "sheets" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
+                <IssuanceSheetReview sheets={[...diff.updated, ...diff.added]} edits={edits} decisions={decisions}
+                  deletedSheetNumbers={deletedSheetNumbers} onEdit={setEdit} onAccept={toggleAccept} disabled={publishing} />
+              </div>
+              {reviewTab === "details" && (
+                <fieldset disabled={publishing} className="min-h-0 flex-1 overflow-y-auto p-6 sm:p-10">
               {/* Issuance metadata */}
-              <div className="grid gap-3 rounded-lg border bg-muted/20 p-3 sm:grid-cols-2">
+              <div className="mx-auto grid w-full max-w-2xl gap-6 sm:grid-cols-2">
                 <div className="space-y-1.5">
                   <Label htmlFor="revision-label">Package label</Label>
                   <Input
@@ -353,6 +382,7 @@ export function RevisionReviewDialog({
                 <div className="space-y-1.5">
                   <Label htmlFor="issuance-type">Package type</Label>
                   <Select
+                    disabled={publishing}
                     value={issuanceType}
                     onValueChange={(value) => setIssuanceType(value as DrawingIssuanceType)}
                   >
@@ -397,81 +427,32 @@ export function RevisionReviewDialog({
                 </div>
               </div>
 
-              {/* Summary */}
-              <div className="flex flex-wrap gap-2 text-xs">
-                <Badge variant="secondary" className="gap-1">
-                  <Layers className="h-3 w-3" /> {diff.updated.length} updated
-                </Badge>
-                <Badge variant="secondary" className="gap-1">
-                  <FilePlus2 className="h-3 w-3" /> {diff.added.length} new
-                </Badge>
-                <Badge variant="outline">{diff.unchanged.length} not in this upload</Badge>
-              </div>
-
-              {diff.updated.length > 0 && (
-                <Section title="Updated sheets" hint="A new version replaces the current one when published.">
-                  {diff.updated.map((sheet) => (
-                    <UpdatedRow
-                      key={sheet.sheet_id}
-                      sheet={sheet}
-                      edit={edits[sheet.sheet_id]}
-                      accepted={accepted(sheet.sheet_id)}
-                      onAccept={(v) => toggleAccept(sheet.sheet_id, v)}
-                      onEdit={(patch) => setEdit(sheet.sheet_id, patch)}
-                    />
-                  ))}
-                </Section>
+                  {diff.unchanged.length > 0 && <details className="mx-auto mt-8 max-w-2xl border-t pt-5 text-sm">
+                    <summary className="cursor-pointer text-muted-foreground">{diff.unchanged.length} existing sheets remain unchanged</summary>
+                    <div className="mt-4 max-h-48 space-y-2 overflow-y-auto">{diff.unchanged.map((sheet) => <p key={sheet.sheet_id}><span className="mr-3 font-medium">{sheet.sheet_number}</span><span className="text-muted-foreground">{sheet.sheet_title}</span></p>)}</div>
+                  </details>}
+                </fieldset>
               )}
+            </>
+          ) : <div className="flex flex-1 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">Unable to load this issuance.<Button variant="outline" onClick={() => void loadDiff()}>Try again</Button></div>}
 
-              {diff.added.length > 0 && (
-                <Section title="New sheets" hint="Sheets not in the current register. Added when published.">
-                  {diff.added.map((sheet) => (
-                    <AddedRow
-                      key={sheet.sheet_id}
-                      sheet={sheet}
-                      previouslyDeleted={deletedSheetNumbers.has(sheet.sheet_number)}
-                      edit={edits[sheet.sheet_id]}
-                      accepted={accepted(sheet.sheet_id)}
-                      onAccept={(v) => toggleAccept(sheet.sheet_id, v)}
-                      onEdit={(patch) => setEdit(sheet.sheet_id, patch)}
-                    />
-                  ))}
-                </Section>
-              )}
-
-              {diff.unchanged.length > 0 && (
-                <Collapsible open={unchangedOpen} onOpenChange={setUnchangedOpen}>
-                  <CollapsibleTrigger className="flex w-full items-center gap-2 rounded-md border p-3 text-left text-sm hover:bg-muted/50">
-                    {unchangedOpen ? (
-                      <ChevronDown className="h-4 w-4" />
-                    ) : (
-                      <ChevronRight className="h-4 w-4" />
-                    )}
-                    <span className="font-medium">Not in this upload</span>
-                    <span className="text-muted-foreground">
-                      ({diff.unchanged.length} kept as-is)
-                    </span>
-                  </CollapsibleTrigger>
-                  <CollapsibleContent className="space-y-1 px-3 pb-2 pt-2">
-                    {diff.unchanged.map((s) => (
-                      <div
-                        key={s.sheet_id}
-                        className="flex items-center gap-3 py-1 text-sm"
-                      >
-                        <span className="font-mono w-20 shrink-0">{s.sheet_number}</span>
-                        <span className="truncate text-muted-foreground">
-                          {s.sheet_title}
-                        </span>
-                      </div>
-                    ))}
-                  </CollapsibleContent>
-                </Collapsible>
-              )}
-            </div>
-          ) : null}
+          {processing && !failed && <DialogFooter className="shrink-0 border-t px-6 py-4 sm:justify-between">
+            <p className="text-xs text-muted-foreground">Your live drawings stay unchanged until you publish.</p>
+            <Button variant="outline" onClick={() => onOpenChange(false)}>Continue in background</Button>
+          </DialogFooter>}
 
           {diff && !processing && !failed && (
-            <DialogFooter className="flex-row items-center justify-between gap-2 sm:justify-between">
+            <DialogFooter className="shrink-0 flex-row flex-wrap items-center justify-between gap-2 border-t px-6 py-4 sm:justify-between">
+              {unresolvedNumberCount > 0 && (
+                <p role="alert" className="w-full text-sm text-muted-foreground">
+                  {unresolvedNumberCount} sheet numbers need review. Use the Needs review filter to confirm them.
+                </p>
+              )}
+              {conflictingNumbers.length > 0 && (
+                <p role="alert" className="w-full text-sm text-destructive">
+                  {issuanceNumberConflictMessage(conflictingNumbers)}
+                </p>
+              )}
               <Button
                 variant="ghost"
                 className="text-destructive hover:text-destructive"
@@ -480,7 +461,7 @@ export function RevisionReviewDialog({
               >
                 Discard draft
               </Button>
-              <Button onClick={handlePublish} disabled={publishing || acceptedCount === 0}>
+              <Button onClick={handlePublish} disabled={publishing || acceptedCount === 0 || conflictingNumbers.length > 0 || unresolvedNumberCount > 0}>
                 {publishing ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Publishing…
@@ -493,7 +474,7 @@ export function RevisionReviewDialog({
           )}
 
           {failed && (
-            <DialogFooter>
+            <DialogFooter className="shrink-0 border-t px-6 py-4">
               <Button
                 variant="outline"
                 className="text-destructive"
@@ -757,272 +738,42 @@ export function DistributeRevisionDialog({
   )
 }
 
-function Section({
-  title,
-  hint,
-  children,
-}: {
-  title: string
-  hint: string
-  children: React.ReactNode
-}) {
-  return (
-    <div className="space-y-2">
-      <div>
-        <h3 className="text-sm font-semibold">{title}</h3>
-        <p className="text-xs text-muted-foreground">{hint}</p>
-      </div>
-      <div className="space-y-2">{children}</div>
-    </div>
-  )
-}
-
-/** Mirrors DRAFT_SHEET_PREVIEW_CAP in the drawings actions. */
-const DRAFT_SHEET_GRID_CAP = 400
-/** Ghost tiles stand in for pages not split yet; enough to read as a package. */
-const MAX_PENDING_TILES = 48
-
-/**
- * Live processing state. The pipeline writes sheet + version rows at split
- * time, so pages land here one by one — the user sees the package being taken
- * apart instead of an opaque wait.
- */
-function ProcessingPanel({
-  processedPages,
-  totalPages,
-  sheets,
-}: {
+/** A small, paginated preview tray keeps processing calm at any package size. */
+function ProcessingPanel({ processedPages, totalPages, sheets }: {
   processedPages: number
   totalPages: number | null
   sheets: DraftRevisionSheetPreview[]
 }) {
-  const percent =
-    totalPages && totalPages > 0
-      ? Math.min(100, Math.round((processedPages / totalPages) * 100))
-      : null
-  const pendingTiles =
-    totalPages && totalPages > sheets.length
-      ? Math.min(totalPages - sheets.length, MAX_PENDING_TILES)
-      : 0
-
+  const [page, setPage] = useState(0)
+  const pageSize = 8
+  const pages = Math.max(1, Math.ceil(sheets.length / pageSize))
+  const percent = totalPages ? Math.min(100, Math.round(processedPages / totalPages * 100)) : 0
   return (
-    <div className="flex-1 space-y-4 overflow-y-auto pr-1">
-      <div className="flex items-start gap-3 border bg-muted/20 p-3">
-        <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-chart-1" />
-        <div className="min-w-0 flex-1 space-y-2">
-          <div className="flex items-baseline justify-between gap-3">
-            <p className="text-sm font-medium">
-              {totalPages
-                ? `Processed ${processedPages} of ${totalPages} sheets`
-                : "Reading the package…"}
-            </p>
-            <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-              {percent === null ? "—" : `${percent}%`}
-            </span>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Sheets appear below as they come out of the PDF. Nothing changes in
-            the live register until you publish.
-          </p>
-          <Progress value={percent ?? 8} className="h-1.5" />
+    <div className="min-h-0 flex-1 overflow-y-auto px-6 py-8 sm:px-12">
+      <div className="mx-auto max-w-4xl">
+        <div className="mx-auto mb-10 max-w-lg space-y-4 text-center" role="status" aria-live="polite">
+          <p className="text-3xl font-semibold tracking-tight tabular-nums">{totalPages ? `${processedPages} of ${totalPages}` : "Reading your PDF"}</p>
+          <p className="text-sm text-muted-foreground">{totalPages ? "sheets prepared for review" : "Finding sheets and their details…"}</p>
+          <Progress value={percent} aria-label="Sheets prepared" className="h-1.5" />
         </div>
-      </div>
-
-      {sheets.length === 0 ? (
-        <p className="border border-dashed p-6 text-center text-xs text-muted-foreground">
-          No pages out of the PDF yet — the first sheets show up here within a
-          few seconds.
-        </p>
-      ) : (
-        <div className="space-y-2">
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(84px,1fr))] gap-2">
-            {sheets.map((sheet) => (
-              <DraftTile key={sheet.version_id} sheet={sheet} />
-            ))}
-            {Array.from({ length: pendingTiles }, (_, i) => (
-              <div key={`pending-${i}`} className="space-y-1">
-                <div className="skeleton-shimmer h-24 w-full border border-dashed bg-muted/40" />
-                <p className="text-[10px] text-muted-foreground">—</p>
-              </div>
-            ))}
+        {sheets.length > 0 ? <>
+          <div className="mb-4 flex items-center justify-between">
+            <p className="text-xs font-medium text-muted-foreground">PACKAGE PREVIEW</p>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Button variant="ghost" size="icon" aria-label="Previous previews" disabled={page === 0} onClick={() => setPage(page - 1)}><ChevronLeft className="h-4 w-4" /></Button>
+              {page + 1} / {pages}
+              <Button variant="ghost" size="icon" aria-label="Next previews" disabled={page + 1 >= pages} onClick={() => setPage(page + 1)}><ChevronRight className="h-4 w-4" /></Button>
+            </div>
           </div>
-          {sheets.length >= DRAFT_SHEET_GRID_CAP && (
-            <p className="text-xs text-muted-foreground">
-              Showing the first {DRAFT_SHEET_GRID_CAP} pages of this package.
-            </p>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function DraftTile({ sheet }: { sheet: DraftRevisionSheetPreview }) {
-  const src = toRenderableDrawingsUrl(sheet.thumbnail_url)
-  return (
-    <div className="space-y-1">
-      <div
-        className={cn(
-          "flex h-24 w-full items-center justify-center overflow-hidden border bg-muted",
-          !src && "skeleton-shimmer",
-        )}
-      >
-        {src ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={src}
-            alt={sheet.sheet_number}
-            className="h-full w-full object-contain"
-          />
-        ) : (
-          <span className="text-[10px] text-muted-foreground">rendering…</span>
-        )}
-      </div>
-      <p className="truncate font-mono text-[10px] text-muted-foreground">
-        {sheet.sheet_number}
-      </p>
-    </div>
-  )
-}
-
-function Thumb({ preview, label }: { preview?: RevisionVersionPreview | null; label: string }) {
-  const src = toRenderableDrawingsUrl(preview?.thumbnail_url)
-  return (
-    <div className="flex flex-col items-center gap-1">
-      <div className="flex h-24 w-20 items-center justify-center overflow-hidden rounded border bg-muted">
-        {src ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={src}
-            alt={label}
-            className="h-full w-full object-contain"
-          />
-        ) : (
-          <span className="text-[10px] text-muted-foreground">no preview</span>
-        )}
-      </div>
-      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-        {label}
-      </span>
-    </div>
-  )
-}
-
-function MetaEditor({
-  sheet,
-  edit,
-  onEdit,
-}: {
-  sheet: RevisionDiffSheet
-  edit?: SheetEdit
-  onEdit: (patch: SheetEdit) => void
-}) {
-  return (
-    <div className="grid min-w-[240px] flex-1 gap-2">
-      <div className="flex flex-wrap gap-2">
-        <Input
-          value={edit?.sheet_number ?? sheet.sheet_number}
-          onChange={(e) => onEdit({ sheet_number: e.target.value })}
-          className="h-8 w-28 font-mono"
-          placeholder="Sheet #"
-        />
-        <Select
-          value={(edit?.discipline ?? sheet.discipline ?? "X") as string}
-          onValueChange={(v) => onEdit({ discipline: v as DrawingDiscipline })}
-        >
-          <SelectTrigger className="h-8 w-[150px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {DISCIPLINE_SORT_ORDER.map((code) => (
-              <SelectItem key={code} value={code}>
-                {DISCIPLINE_LABELS[code as DrawingDiscipline]}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-      <Input
-        value={edit?.sheet_title ?? sheet.sheet_title ?? ""}
-        onChange={(e) => onEdit({ sheet_title: e.target.value })}
-        className="h-8"
-        placeholder="Sheet title"
-      />
-    </div>
-  )
-}
-
-function UpdatedRow({
-  sheet,
-  edit,
-  accepted,
-  onAccept,
-  onEdit,
-}: {
-  sheet: RevisionDiffSheet
-  edit?: SheetEdit
-  accepted: boolean
-  onAccept: (v: boolean) => void
-  onEdit: (patch: SheetEdit) => void
-}) {
-  return (
-    <div
-      className={cn(
-        "flex flex-wrap items-start gap-3 rounded-lg border p-3",
-        !accepted && "opacity-60",
-      )}
-    >
-      <Checkbox
-        checked={accepted}
-        onCheckedChange={(v) => onAccept(Boolean(v))}
-        className="mt-1 shrink-0"
-      />
-      <div className="flex shrink-0 items-center gap-2">
-        <Thumb preview={sheet.current} label="current" />
-        <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <Thumb preview={sheet.draft} label="new" />
-      </div>
-      <MetaEditor sheet={sheet} edit={edit} onEdit={onEdit} />
-    </div>
-  )
-}
-
-function AddedRow({
-  sheet,
-  edit,
-  accepted,
-  previouslyDeleted,
-  onAccept,
-  onEdit,
-}: {
-  sheet: RevisionDiffSheet
-  edit?: SheetEdit
-  accepted: boolean
-  /** This sheet number was deleted from the register before — say so. */
-  previouslyDeleted: boolean
-  onAccept: (v: boolean) => void
-  onEdit: (patch: SheetEdit) => void
-}) {
-  return (
-    <div
-      className={cn(
-        "flex flex-wrap items-start gap-3 rounded-lg border p-3",
-        !accepted && "opacity-60",
-      )}
-    >
-      <Checkbox
-        checked={accepted}
-        onCheckedChange={(v) => onAccept(Boolean(v))}
-        className="mt-1 shrink-0"
-      />
-      <Thumb preview={sheet.draft} label="new" />
-      <div className="flex min-w-[240px] flex-1 flex-col gap-2">
-        <MetaEditor sheet={sheet} edit={edit} onEdit={onEdit} />
-        {previouslyDeleted && (
-          <Badge variant="outline" className="w-fit font-normal text-muted-foreground">
-            Previously deleted — returning as new
-          </Badge>
-        )}
+          <div className="grid grid-cols-2 gap-5 sm:grid-cols-4">
+            {sheets.slice(page * pageSize, (page + 1) * pageSize).map((sheet) => <div key={sheet.version_id} className="min-w-0">
+              <DrawingPreviewImage url={sheet.thumbnail_url} alt={sheet.sheet_number} className="aspect-[4/3] rounded-lg border" />
+              <p className="mt-2 truncate text-sm font-medium">{sheet.sheet_number}</p>
+              <p className="mt-0.5 truncate text-xs text-muted-foreground">{sheet.sheet_title || "Preparing sheet details"}</p>
+            </div>)}
+          </div>
+          {totalPages && totalPages > 400 && <p className="mt-4 text-xs text-muted-foreground">Previewing the first 400 sheets. All {totalPages} sheets will be available for review.</p>}
+        </> : <div className="flex min-h-40 items-center justify-center text-sm text-muted-foreground">Previews will appear here as sheets are prepared.</div>}
       </div>
     </div>
   )

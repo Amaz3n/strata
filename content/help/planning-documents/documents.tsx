@@ -1,53 +1,46 @@
-import Link from "next/link"
-
 export default function DocumentsArticle() {
   return (
     <>
       <p>
-        The Documents tool in Arc serves as the central repository for all project-related files.
-        You can upload any file type, organize items using a flexible folder structure, and manage 
-        access permissions to ensure sensitive information remains secure.
+        Documents is Arc&apos;s file library for both office and project work. Use the organization-level
+        <strong> Documents</strong> page for reusable records and the Documents area inside a project for
+        job-specific files. Both use the same folders, search, file properties, sharing, and activity tools.
       </p>
 
-      <h2>Key Features</h2>
+      <h2>Choose the right library</h2>
       <ul>
-        <li><strong>Folder Management:</strong> Create hierarchical folder structures to organize files by category, phase, or contractor.</li>
-        <li><strong>File Uploads:</strong> Drag and drop single files or batch uploads. Arc supports PDFs, spreadsheets, images, word documents, and more.</li>
-        <li><strong>Version Control:</strong> Keep track of file revisions automatically without cluttering folders. Older versions are archived but remain accessible.</li>
-        <li><strong>Security & Permissions:</strong> Control folder-level access for team members and external stakeholders.</li>
+        <li><strong>Organization library:</strong> Store templates, policies, standards, and other files the office needs across projects.</li>
+        <li><strong>Project library:</strong> Store files that belong to one job, such as meeting records, owner selections, photos, and closeout material.</li>
+        <li><strong>Drawings:</strong> Upload drawing sets in the Drawings workflow when you need sheet extraction, revisions, viewing, or takeoff. Do not treat a drawing set as a general document upload.</li>
       </ul>
 
-      <h2>Uploading and Organizing Files</h2>
+      <h2>Upload and organize files</h2>
       <p>
-        To upload a file, navigate to the <strong>Documents</strong> page from your project dashboard. 
-        You can click the <strong>Upload</strong> button or simply drag and drop files from your computer into the browser.
+        Open the library where the file belongs, then use <strong>Upload</strong> or drag files into the
+        file list. You can add a folder before uploading or move files into a folder later. Keep names
+        specific enough to be found in search; a clear folder structure is more durable than relying on
+        one person&apos;s memory.
       </p>
-      <h3>Creating folders</h3>
+      <h3>Folders, properties, and versions</h3>
       <p>
-        Keep your files structured by creating folders. Click the <strong>New Folder</strong> button, 
-        provide a clear name, and press enter. You can drag and drop existing files into the folder 
-        or open it to upload files directly into that directory.
-      </p>
-      <h3>Moving and managing files</h3>
-      <p>
-        Right-click or click the actions menu (...) next to any file or folder to rename, move, download, 
-        or delete it. Organizing files early ensures your field team and subcontractors can easily locate 
-        the latest resources.
+        Select a file to review its properties and timeline. Use the actions menu to rename, move,
+        download, or replace it with a new version. Replacing a file preserves a visible history instead
+        of creating look-alike copies in the folder.
       </p>
 
-      <h2>Sharing Documents Externally</h2>
+      <h2>Share deliberately</h2>
       <p>
-        You can securely share files with clients, architects, and subcontractors who do not have full 
-        access to your Arc workspace.
+        Use <strong>Share</strong> on a file or folder when someone outside your team needs access. The
+        share dialog creates a controlled link; sharing a folder is useful for a packet that will change
+        over time, while sharing a file is best for one fixed record.
       </p>
       <blockquote>
-        <strong>Note:</strong> When you share a folder or file, Arc generates a secure token-based link. 
-        Recipients can view and download the content without needing to create an account.
+        Check the item and audience before sending. A project library can contain contractual or financial
+        material, so a broad folder link is not a substitute for a client or subcontractor portal.
       </blockquote>
       <p>
-        To share, open the file details and click <strong>Share</strong>. You can enter the email addresses 
-        of the recipients and write a custom message. Arc will email them the secure link and track when 
-        they view or download the documents.
+        The file timeline is the source of record for file activity. Use it when you need to confirm what
+        changed or when a file was shared, rather than re-uploading a duplicate.
       </p>
     </>
   )

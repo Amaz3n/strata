@@ -3,6 +3,7 @@ import "server-only"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/auth/context"
 import { isPlatformAdminId } from "@/lib/auth/platform"
+import { preserveQueryError } from "@/lib/supabase/query-error"
 
 export type PlatformRoleKey =
   | "platform_super_admin"
@@ -46,6 +47,8 @@ export async function listPlatformRoleKeysForUser(userId: string): Promise<Platf
     // Postgres evaluates the expiry ("now" is a timestamptz literal): this runs
     // while the app chrome renders, where a JS clock read is not allowed.
     .or("expires_at.is.null,expires_at.gt.now")
+    .throwOnError()
+    .then(undefined, preserveQueryError)
 
   if (error) {
     console.error("Failed to load platform memberships", error)

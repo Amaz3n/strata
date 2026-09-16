@@ -1,4 +1,5 @@
 import "server-only"
+import { hasTitleBlockEvidence, needsNumberVerification } from "@/lib/drawings/number-evidence"
 
 /**
  * Vercel-native drawings processing pipeline.
@@ -209,6 +210,10 @@ type DetectedSheetMetadata = {
 }
 
 type VisionSheetMetadata = {
+  needsReview?: boolean
+  evidence?: { text: string; location: string; is_title_block: boolean } | null
+  verificationTier?: "fast" | "standard"
+
   sheetNumber?: string | null
   sheetTitle?: string | null
   discipline?: string | null
@@ -1565,6 +1570,7 @@ async function ensureSheetAndVersion(
     source_line: detected.sourceLine,
     vision_used: false,
     vision_pending: visionPending,
+    needs_review: visionPending || detected.method !== "label" || detected.confidence !== "high",
     vision_notes: [] as string[],
   }
 
@@ -1997,6 +2003,9 @@ async function handleEnrichDrawingMetadata(supabase: SupabaseClient, job: Claime
           vision_used: Boolean(vision),
           vision_pending: false,
           vision_notes: vision?.notes ?? [],
+          needs_review: vision?.needsReview ?? (detected.method !== "label" || detected.confidence !== "high"),
+          number_evidence: vision?.evidence ?? null,
+          verification_tier: vision?.verificationTier ?? null,
         },
       },
     })
@@ -3521,6 +3530,11 @@ function shouldUseVisionFallback(
  */
 const sheetMetadataSchema = z.object({
   sheet_number: z.string().nullable().describe("Title-block sheet number, e.g. A-101, E1.1, S2.0"),
+  number_evidence: z.object({
+    text: z.string().describe("Exact sheet-number characters visibly printed in the title block"),
+    location: z.string().describe("Where the sheet-number field is on the page"),
+    is_title_block: z.boolean(),
+  }).nullable().describe("Evidence for this page's own number; null if unreadable"),
   sheet_title: z.string().nullable().describe("Title-block sheet title"),
   discipline: z
     .enum(["A", "S", "M", "E", "P", "FP", "C", "L", "I", "G", "T", "SP", "D", "X"])
@@ -3547,18 +3561,20 @@ async function detectSheetMetadataWithVision(input: {
       "You are extracting metadata from one construction drawing page.",
       `Project set title: ${setTitle}`,
       `Page number in upload order: ${pageNumber}`,
-      `Current text-based guess: sheet_number=${initial.sheetNumber}; sheet_title=${initial.sheetTitle}; discipline=${initial.discipline}; method=${initial.method}; confidence=${initial.confidence}`,
+
       pageText.trim()
         ? `Extracted PDF text (may be partial): ${truncateValue(pageText, 4000)}`
         : "Extracted PDF text is empty, so rely on the image.",
-      "If uncertain, preserve the existing guess unless the image clearly shows a better answer.",
-      "Prefer title block values like E1.1, A-101, S2.0, etc.",
+      "Read this page's OWN sheet number only from its title-block sheet-number field.",
+      "Ignore detail references, section bubbles, drawing indexes, and numbers inside the plan.",
+      "Copy the printed characters exactly. Never add digits, punctuation, or infer a number from adjacent pages.",
+      "Return number_evidence with the verbatim number and its location. If unreadable or ambiguous, return sheet_number=null and confidence=low. Never guess.",
       // The scale drives every measured quantity on the sheet, so a guess is
       // worse than nothing: it must be copied verbatim or omitted.
       "stated_scale: copy the drawing scale from the title block EXACTLY as printed, e.g. \"1/4\\\" = 1'-0\\\"\" or \"1\\\" = 20'\". Use null if the sheet says NTS / AS NOTED / VARIES, or if you cannot read a single scale. Never infer or calculate it.",
     ].join("\n")
 
-  const parsed = await runDrawingsVisionObject({
+  let parsed = await runDrawingsVisionObject({
     schema: sheetMetadataSchema,
     prompt,
     images,
@@ -3566,9 +3582,25 @@ async function detectSheetMetadataWithVision(input: {
     entityType: "drawing_sheet_version",
     entityId: input.sheetVersionId,
   })
-  if (!parsed) return null
+  let verificationTier: "fast" | "standard" = "fast"
+  if (!parsed || needsNumberVerification(parsed, initial.sheetNumber)) {
+    verificationTier = "standard"
+    // Independent reread: do not feed either candidate to the verifier.
+    parsed = await runDrawingsVisionObject({
+      schema: sheetMetadataSchema,
+      prompt: prompt + "\nIndependently verify the title-block number. Abstain if the characters cannot be read clearly.",
+      images,
+      orgId: input.orgId,
+      entityType: "drawing_sheet_version",
+      entityId: input.sheetVersionId,
+      tier: "standard",
+      allowEscalation: false,
+    })
+  }
+  const verified = parsed !== null && hasTitleBlockEvidence(parsed)
+  if (!parsed) return { needsReview: true, confidence: "low", verificationTier }
 
-  const sheetNumber = normalizeSheetNumberCandidate(parsed.sheet_number ?? "")
+  const sheetNumber = verified ? normalizeSheetNumberCandidate(parsed.sheet_number ?? "") : null
   // The schema constrains the enum, but a model may still name a discipline that
   // contradicts the number it just read; the number wins, because that is what
   // every downstream grouping keys on.
@@ -3582,7 +3614,7 @@ async function detectSheetMetadataWithVision(input: {
       ? truncateValue(parsed.stated_scale, 60)
       : null
 
-  return { sheetNumber, sheetTitle, discipline, confidence: parsed.confidence, notes, statedScale }
+  return { sheetNumber, sheetTitle, discipline, confidence: verified ? "high" : "low", notes, statedScale, needsReview: !verified || !sheetNumber, evidence: parsed.number_evidence, verificationTier }
 }
 
 /**
@@ -3656,18 +3688,13 @@ function mergeDetectedSheetMetadata(
 ): DetectedSheetMetadata {
   if (!vision) return detected
 
-  const useVisionSheetNumber = Boolean(vision.sheetNumber) && (
-    detected.method !== "label" ||
-    detected.confidence === "low" ||
-    detected.sheetNumber === `${setTitle} - Page ${pageNumber}`
-  )
-
+  const useVisionSheetNumber = Boolean(vision.sheetNumber) &&
+    vision.confidence === "high" && vision.needsReview === false
   const sheetNumber = useVisionSheetNumber ? vision.sheetNumber! : detected.sheetNumber
   const sheetTitle = vision.sheetTitle || detected.sheetTitle || `${setTitle} - Page ${pageNumber}`
-  const discipline = vision.discipline || detected.discipline || detectDiscipline(sheetNumber)
-  const confidence = confidenceRank(vision.confidence) > confidenceRank(detected.confidence)
-    ? vision.confidence!
-    : detected.confidence
+  const discipline = useVisionSheetNumber ? detectDiscipline(sheetNumber) : detected.discipline
+  // Confidence belongs to the selected number, never the other extractor.
+  const confidence = vision.needsReview ? "low" : useVisionSheetNumber ? vision.confidence! : detected.confidence
 
   return {
     sheetNumber,
