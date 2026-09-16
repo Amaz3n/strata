@@ -12,7 +12,7 @@ At the user's request, all seven production sample projects were reclassified as
 
 Created September 16, 2026. Organization ID: `fafc5e08-24d5-50a1-9ab4-7819306a2768`. Slug: `lifestyle-design-homes-sandbox`.
 
-Open https://app.arcnaples.com and select **Lifestyle Design Homes — Sandbox**. Agustin's existing `agustin@arcnaples.com` account has owner membership. The client owner name/email has not yet been supplied, so no client invitation was created or sent. Local trial ends October 16, 2026; no Stripe subscription was purchased.
+Open https://app.arcnaples.com and select **Lifestyle Design Homes — Sandbox**. Agustin's existing `agustin@arcnaples.com` account has owner membership. The client owner name/email has not yet been supplied, so no client invitation was created or sent. Local seven-day trial ends September 23, 2026 at 10:00 AM Eastern; no Stripe subscription was purchased.
 
 ## Hybrid configuration
 

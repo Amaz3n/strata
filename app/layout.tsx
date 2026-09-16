@@ -192,7 +192,7 @@ export default function RootLayout({
         <Suspense fallback={<div className="min-h-svh bg-background" aria-busy="true" />}>
           <ThemeProvider
             attribute="class"
-            defaultTheme="dark"
+            defaultTheme="light"
             enableSystem
             disableTransitionOnChange
           >
