@@ -2,6 +2,8 @@
 
 ## Current configuration update
 
+Financial history added on September 16: two existing mobilization invoices converted to simulated paid history, four additional partial/overdue invoices, twelve vendor bills, sixteen expenses, ten manual simulated payments with allocations, twenty-two posted source-backed job-cost entries, and two WIP snapshots calculated with Arc's POC rules. Naples now has $340,000 billed, $250,000 collected and $278,550 actual cost; Estero has $155,500 billed, $107,500 collected and $119,907 actual cost. Invoice/line/payment and bill/line/payment reconciliations have zero mismatches. No invoices were delivered and no funds moved. Existing draft invoices and pending cost items remain for practice. The subsequently added Bonita Springs project was not modified.
+
 Final simplification: all sample vendor price agreements were removed to hide Purchasing. Exactly two projects remain: Naples Coastal Custom — Sample (residential) and Estero Wellness & Showroom — Sample (commercial). The other eight sample projects and their dependent project records were deleted after a successful rollback rehearsal. A database recovery snapshot was saved in `audit_log` with source `sandbox_cleanup_snapshot`. Org tier remains residential. This supersedes the project counts and provisioning tour below. Verification was database-only, as requested.
 
 Latest update: the user subsequently requested residential org posture. The org's `product_tier` is now `residential`, verified in the database. All ten projects and their data remain; the commercial sample project retains its project-specific commercial type. There are still zero production projects. This supersedes the commercial org configuration described below.

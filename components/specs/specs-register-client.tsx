@@ -33,7 +33,6 @@ import {
   AlertCircle,
   ExternalLink,
   FileText,
-  History,
   Loader2,
   Plus,
   RefreshCcw,
@@ -197,106 +196,153 @@ export function SpecsRegisterClient({
   }
 
   return (
-    <div className="-mx-4 -mb-4 -mt-6 flex h-[calc(100svh-3.5rem)] min-h-0 flex-col overflow-hidden bg-background">
-      <div className="shrink-0 border-b bg-background px-4 py-3 sm:px-6">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <p className="text-sm font-medium">Specification register</p>
-            <p className="text-xs text-muted-foreground">Canonical CSI sections with revision history and linked submittals.</p>
+    <div className="flex min-h-full min-w-0 flex-col bg-muted/20">
+      <header className="border-b bg-background px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+        <div className="flex min-w-0 flex-col gap-5 xl:flex-row xl:items-center xl:justify-between">
+          <div className="min-w-0">
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Project documents</p>
+            <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Specification register</h1>
+            <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground">
+              Every section, revision, and linked submittal in one place.
+            </p>
           </div>
-          {canWrite ? <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={() => setManualOpen(true)}>
-              <Plus /> Add section
-            </Button>
-            <Button size="sm" onClick={() => setUploadOpen(true)}>
-              <Upload /> Upload manual
-            </Button>
-          </div> : null}
-        </div>
-      </div>
-
-      {uploads.length > 0 ? (
-        <div className="shrink-0 border-b bg-muted/20 px-4 py-2 sm:px-6">
-          <div className="flex gap-2 overflow-x-auto">
-            {uploads.slice(0, 4).map((upload) => (
-              <div key={upload.id} className="flex min-w-[220px] items-center gap-2 border bg-background px-3 py-2 text-xs">
-                {upload.status === "pending" || upload.status === "processing" ? (
-                  <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
-                ) : upload.status === "failed" ? (
-                  <AlertCircle className="size-3.5 text-destructive" />
-                ) : (
-                  <FileText className="size-3.5 text-success" />
-                )}
-                <div className="min-w-0">
-                  <p className="font-medium">{uploadStatusLabel(upload.status)}</p>
-                  <p className="truncate text-muted-foreground">
-                    {upload.status === "failed" ? upload.error ?? "Processing failed" : upload.sections_detected != null ? `${upload.sections_detected} sections` : format(new Date(upload.created_at), "MMM d, h:mm a")}
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
-
-      <div className="shrink-0 border-b px-4 py-3 sm:px-6">
-        <div className="relative max-w-md">
-          <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search section number or title…" className="pl-9" />
-        </div>
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-auto">
-        {sections.length === 0 ? (
-          <div className="grid min-h-full place-items-center px-6 py-20 text-center">
-            <div className="max-w-md">
-              <FileText className="mx-auto size-9 text-muted-foreground" />
-              <h2 className="mt-4 text-sm font-semibold">No specification sections yet</h2>
-              <p className="mt-2 text-xs leading-5 text-muted-foreground">Upload the project manual to split it into CSI sections, or add a section manually if a scan cannot be detected.</p>
-              {canWrite ? <div className="mt-5 flex justify-center gap-2">
-                <Button variant="outline" size="sm" onClick={() => setManualOpen(true)}>Add manually</Button>
-                <Button size="sm" onClick={() => setUploadOpen(true)}>Upload manual</Button>
-              </div> : null}
+          {canWrite ? (
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={() => setManualOpen(true)}><Plus /> Add section</Button>
+              <Button onClick={() => setUploadOpen(true)}><Upload /> Upload manual</Button>
             </div>
+          ) : null}
+        </div>
+        <dl className="mt-6 grid grid-cols-3 divide-x border-t pt-5 sm:max-w-lg">
+          {[
+            { label: "Sections", value: sections.length },
+            { label: "CSI divisions", value: new Set(sections.map((section) => section.division)).size },
+            { label: "Submittals", value: sections.reduce((total, section) => total + (section.submittal_count ?? section.submittals?.length ?? 0), 0) },
+          ].map(({ label, value }) => (
+            <div key={label} className="min-w-0 px-3 first:pl-0 sm:px-6">
+              <dd className="text-2xl font-semibold tabular-nums tracking-tight">{value.toLocaleString()}</dd>
+              <dt className="mt-1 text-xs text-muted-foreground">{label}</dt>
+            </div>
+          ))}
+        </dl>
+      </header>
+
+      <div className="min-w-0 space-y-5 p-4 sm:p-6 lg:p-8">
+        {uploads.length > 0 ? (
+          <section aria-label="Recent manual uploads" className="space-y-2">
+            <h2 className="text-xs font-medium text-muted-foreground">Recent uploads</h2>
+            <div className="grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-4">
+              {uploads.slice(0, 4).map((upload) => (
+                <div key={upload.id} className="flex min-w-0 items-start gap-3 rounded-lg border bg-background p-3 text-xs">
+                  {upload.status === "pending" || upload.status === "processing" ? (
+                    <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin text-muted-foreground" />
+                  ) : upload.status === "failed" ? (
+                    <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" />
+                  ) : (
+                    <FileText className="mt-0.5 size-4 shrink-0 text-success" />
+                  )}
+                  <div className="min-w-0">
+                    <p className="truncate font-medium" title={upload.file_name ?? undefined}>{upload.file_name ?? "Project manual"}</p>
+                    <p className="mt-1 font-medium text-muted-foreground">{uploadStatusLabel(upload.status)}</p>
+                    <p className="mt-1 break-words text-muted-foreground">
+                      {upload.status === "failed" ? upload.error ?? "Processing failed" : upload.sections_detected != null ? `${upload.sections_detected} sections detected` : format(new Date(upload.created_at), "MMM d, h:mm a")}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        <section aria-label="Specification sections" className="min-w-0 overflow-hidden rounded-xl border bg-background">
+          <div className="flex min-w-0 flex-col gap-3 border-b p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="relative w-full sm:max-w-sm">
+              <Search aria-hidden="true" className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input aria-label="Search specification sections" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search number, title, or division…" className="bg-muted/30 pl-9" />
+            </div>
+            <p className="shrink-0 text-xs tabular-nums text-muted-foreground">
+              {filtered.length} of {sections.length} sections
+            </p>
           </div>
-        ) : grouped.length === 0 ? (
-          <div className="px-6 py-16 text-center text-sm text-muted-foreground">No sections match “{query}”.</div>
-        ) : (
-          <Table>
-            <TableHeader className="sticky top-0 z-10 bg-background">
-              <TableRow>
-                <TableHead className="w-36">Section</TableHead>
-                <TableHead>Title</TableHead>
-                <TableHead className="w-24">Revision</TableHead>
-                <TableHead className="w-36">Issued</TableHead>
-                <TableHead className="w-28 text-right">Submittals</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {grouped.flatMap(([division, divisionSections]) => [
-                <TableRow key={`division-${division}`} className="bg-muted/50 hover:bg-muted/50">
-                  <TableCell colSpan={5} className="h-9 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Division {division}</TableCell>
-                </TableRow>,
-                ...divisionSections.map((section) => {
-                  const revision = currentRevision(section)
-                  return (
-                    <TableRow key={section.id} className="cursor-pointer" onClick={() => void openSection(section)}>
-                      <TableCell className="font-mono text-xs font-medium">{section.section_number}</TableCell>
-                      <TableCell className="font-medium">{section.title}</TableCell>
-                      <TableCell><Badge variant="outline">Rev {section.revision_number ?? revision?.revision_number ?? 1}</Badge></TableCell>
-                      <TableCell className="text-sm text-muted-foreground">{section.issued_date ? format(new Date(`${section.issued_date}T00:00:00`), "MMM d, yyyy") : revision?.issued_date ? format(new Date(`${revision.issued_date}T00:00:00`), "MMM d, yyyy") : "—"}</TableCell>
-                      <TableCell className="text-right tabular-nums">{section.submittal_count ?? section.submittals?.length ?? 0}</TableCell>
-                    </TableRow>
-                  )
-                }),
-              ])}
-            </TableBody>
-          </Table>
-        )}
+
+          {sections.length === 0 ? (
+            <div className="grid place-items-center px-5 py-16 text-center sm:py-24">
+              <div className="max-w-sm">
+                <div className="mx-auto grid size-14 place-items-center rounded-xl border bg-muted/40"><FileText className="size-6 text-muted-foreground" /></div>
+                <h2 className="mt-5 text-lg font-semibold tracking-tight">Build your specification register</h2>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">Upload a project manual to organize it into CSI sections, or add an individual section to get started.</p>
+                {canWrite ? (
+                  <div className="mt-6 flex flex-wrap justify-center gap-2">
+                    <Button onClick={() => setUploadOpen(true)}><Upload /> Upload manual</Button>
+                    <Button variant="outline" onClick={() => setManualOpen(true)}><Plus /> Add section</Button>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : grouped.length === 0 ? (
+            <div className="px-5 py-16 text-center">
+              <Search className="mx-auto size-6 text-muted-foreground" />
+              <h2 className="mt-4 text-sm font-semibold">No matching sections</h2>
+              <p className="mt-2 break-words text-sm text-muted-foreground">Try another section number, title, or CSI division.</p>
+              <Button variant="outline" size="sm" className="mt-4" onClick={() => setQuery("")}>Clear search</Button>
+            </div>
+          ) : (
+            <Table className="table-fixed" containerClassName="min-w-0">
+              <TableHeader className="bg-muted/20">
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="w-24 pl-4 sm:w-32 sm:pl-5">Section</TableHead>
+                  <TableHead>Title</TableHead>
+                  <TableHead className="hidden w-24 md:table-cell">Revision</TableHead>
+                  <TableHead className="hidden w-32 lg:table-cell">Issued</TableHead>
+                  <TableHead className="hidden w-24 pr-5 text-right sm:table-cell">Submittals</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {grouped.flatMap(([division, divisionSections]) => [
+                  <TableRow key={`division-${division}`} className="bg-muted/40 hover:bg-muted/40">
+                    <TableCell colSpan={2} className="whitespace-normal px-4 py-3 sm:px-5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="break-all text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Division {division}</span>
+                        <span className="text-xs tabular-nums text-muted-foreground/70">/ {divisionSections.length} {divisionSections.length === 1 ? "section" : "sections"}</span>
+                      </div>
+                    </TableCell>
+                    <TableCell className="hidden md:table-cell" />
+                    <TableCell className="hidden lg:table-cell" />
+                    <TableCell className="hidden sm:table-cell" />
+                  </TableRow>,
+                  ...divisionSections.map((section) => {
+                    const revision = currentRevision(section)
+                    const revisionNumber = section.revision_number ?? revision?.revision_number ?? 1
+                    const issuedDate = section.issued_date ?? revision?.issued_date
+                    const submittalCount = section.submittal_count ?? section.submittals?.length ?? 0
+                    return (
+                      <TableRow key={section.id} className="group cursor-pointer" onClick={() => void openSection(section)}>
+                        <TableCell className="whitespace-normal break-words py-4 pl-4 align-top font-mono text-xs text-muted-foreground sm:pl-5">{section.section_number}</TableCell>
+                        <TableCell className="whitespace-normal py-4 align-top">
+                          <button type="button" className="max-w-full rounded-sm text-left text-sm font-medium leading-5 [overflow-wrap:anywhere] group-hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={(event) => { event.stopPropagation(); void openSection(section) }}>
+                            {section.title}
+                          </button>
+                          <p className="mt-1.5 text-xs leading-5 text-muted-foreground lg:hidden">
+                            <span className="md:hidden">Rev {revisionNumber} · </span>
+                            {issuedDate ? format(new Date(`${issuedDate}T00:00:00`), "MMM d, yyyy") : "No issue date"}
+                            <span className="sm:hidden"> · {submittalCount} submittals</span>
+                          </p>
+                        </TableCell>
+                        <TableCell className="hidden py-4 align-top md:table-cell"><Badge variant="outline" className="font-normal">Rev {revisionNumber}</Badge></TableCell>
+                        <TableCell className="hidden py-4 align-top text-xs text-muted-foreground lg:table-cell">{issuedDate ? format(new Date(`${issuedDate}T00:00:00`), "MMM d, yyyy") : "—"}</TableCell>
+                        <TableCell className="hidden py-4 pr-5 text-right align-top tabular-nums text-muted-foreground sm:table-cell">{submittalCount}</TableCell>
+                      </TableRow>
+                    )
+                  }),
+                ])}
+              </TableBody>
+            </Table>
+          )}
+        </section>
       </div>
 
       <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>
-        <DialogContent>
+        <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Upload project manual</DialogTitle>
             <DialogDescription>Upload a full manual or addendum PDF. Matching sections receive a new revision; existing history remains intact.</DialogDescription>
@@ -305,14 +351,14 @@ export function SpecsRegisterClient({
             <Upload className="mx-auto size-7 text-muted-foreground" />
             <p className="mt-3 text-sm font-medium">Choose a PDF</p>
             <p className="mt-1 text-xs text-muted-foreground">Processing continues in the background after upload.</p>
-            <Input ref={uploadInput} type="file" accept="application/pdf,.pdf" className="mt-4" disabled={isPending} onChange={(event) => uploadManual(event.target.files?.[0])} />
+            <Input aria-label="Project manual PDF" ref={uploadInput} type="file" accept="application/pdf,.pdf" className="mt-4" disabled={isPending} onChange={(event) => uploadManual(event.target.files?.[0])} />
           </div>
           <DialogFooter><Button variant="outline" onClick={() => setUploadOpen(false)} disabled={isPending}>Cancel</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
       <Dialog open={manualOpen} onOpenChange={setManualOpen}>
-        <DialogContent>
+        <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto">
           <form action={submitManualSection}>
             <DialogHeader>
               <DialogTitle>Add spec section</DialogTitle>
@@ -330,13 +376,13 @@ export function SpecsRegisterClient({
       </Dialog>
 
       <Sheet open={viewerOpen} onOpenChange={setViewerOpen}>
-        <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:max-w-[92vw] xl:max-w-[1180px]">
-          <SheetHeader className="shrink-0 border-b px-5 py-4 text-left">
+        <SheetContent side="right" className="flex w-full min-w-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-[92vw] xl:max-w-[1180px]">
+          <SheetHeader className="shrink-0 border-b px-5 py-4 pr-12 text-left">
             <SheetTitle className="font-mono text-base">{selected?.section_number ?? "Spec section"}</SheetTitle>
-            <SheetDescription>{selected?.title ?? "Loading section…"}</SheetDescription>
+            <SheetDescription className="[overflow-wrap:anywhere]">{selected?.title ?? "Loading section…"}</SheetDescription>
           </SheetHeader>
           {viewerLoading || !selected ? (
-            <div className="grid min-h-0 flex-1 grid-cols-[1fr_280px] gap-0"><Skeleton className="m-4" /><div className="border-l p-4 space-y-3"><Skeleton className="h-7 w-28" /><Skeleton className="h-20 w-full" /><Skeleton className="h-20 w-full" /></div></div>
+            <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 lg:grid-cols-[minmax(0,1fr)_300px]"><Skeleton className="m-4" /><div className="border-l p-4 space-y-3"><Skeleton className="h-7 w-28" /><Skeleton className="h-20 w-full" /><Skeleton className="h-20 w-full" /></div></div>
           ) : (
             <SpecSectionViewer projectId={projectId} section={selected} />
           )}
@@ -353,15 +399,15 @@ function SpecSectionViewer({ projectId, section }: { projectId: string; section:
   const active = revisions.find((revision) => revision.id === activeRevisionId) ?? initial
 
   return (
-    <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_300px]">
-      <div className="min-h-[55vh] bg-muted/30 p-3 lg:min-h-0">
+    <div className="grid min-h-0 min-w-0 flex-1 overflow-y-auto lg:grid-cols-[minmax(0,1fr)_300px] lg:overflow-hidden">
+      <div className="min-h-0 min-w-0 bg-muted/30 p-3">
         {active ? (
-          <iframe title={`${section.section_number} ${section.title}`} src={active.file_url ?? `/api/files/${active.file_id}/raw`} className="h-full min-h-[55vh] w-full border bg-background" />
+          <iframe title={`${section.section_number} ${section.title}`} src={active.file_url ?? `/api/files/${active.file_id}/raw`} className="h-[55svh] w-full border bg-background lg:h-full" />
         ) : (
           <div className="grid h-full min-h-[55vh] place-items-center border border-dashed text-sm text-muted-foreground">No PDF is attached to this section.</div>
         )}
       </div>
-      <aside className="min-h-0 overflow-y-auto border-l">
+      <aside className="min-h-0 min-w-0 border-t lg:overflow-y-auto lg:border-l lg:border-t-0">
         <div className="border-b p-4">
           <div className="flex items-center justify-between"><h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Revision history</h3>{active ? <Button variant="ghost" size="icon-sm" asChild><a href={active.file_url ?? `/api/files/${active.file_id}/raw`} target="_blank" rel="noreferrer" aria-label="Open PDF in a new tab"><ExternalLink /></a></Button> : null}</div>
           <div className="mt-3 space-y-2">
@@ -378,8 +424,8 @@ function SpecSectionViewer({ projectId, section }: { projectId: string; section:
           <div className="mt-3 space-y-2">
             {section.submittals?.length ? section.submittals.map((submittal) => (
               <Link key={submittal.id} href={`/projects/${projectId}/submittals?submittal=${submittal.id}`} className="block border px-3 py-2 text-xs hover:bg-muted/50">
-                <span className="flex items-center justify-between gap-2"><span className="font-medium">#{submittal.submittal_number}{submittal.revision ? ` · Rev ${submittal.revision}` : ""}</span><Badge variant="outline">{submittal.status.replace(/_/g, " ")}</Badge></span>
-                <span className="mt-1 block text-muted-foreground">{submittal.title}</span>
+                <span className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium">#{submittal.submittal_number}{submittal.revision ? ` · Rev ${submittal.revision}` : ""}</span><Badge variant="outline">{submittal.status.replace(/_/g, " ")}</Badge></span>
+                <span className="mt-1 block [overflow-wrap:anywhere] text-muted-foreground">{submittal.title}</span>
               </Link>
             )) : <p className="text-xs text-muted-foreground">No submittals reference this section yet.</p>}
           </div>
