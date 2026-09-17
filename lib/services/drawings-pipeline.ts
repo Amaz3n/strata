@@ -14,7 +14,7 @@ import { hasTitleBlockEvidence, needsNumberVerification } from "@/lib/drawings/n
  *   process_drawing_page    -> render the page (MuPDF WASM), create the draft
  *                              sheet/version, build thumbnail + tile pyramid
  *                              inline (native libvips dzsave), queue vision
- *                              enrichment when detection was weak
+ *                              independent title-block verification
  *   enrich_drawing_metadata -> AI-vision title-block extraction off the
  *                              critical path; upgrades sheet metadata after
  *                              the sheet is already viewable
@@ -27,6 +27,24 @@ import { hasTitleBlockEvidence, needsNumberVerification } from "@/lib/drawings/n
  * instead of one long single-threaded WASM loop, and every claimed job
  * heartbeats `updated_at` so a dead runner's work is reclaimed in minutes.
  */
+
+import {
+  buildSheetMetadataVisionPrompt,
+  detectSheetMetadata,
+  detectDiscipline,
+  normalizeDiscipline,
+  normalizeSheetNumberCandidate,
+  sanitizeTitle,
+  mergeDetectedSheetMetadata,
+  shouldVerifySheetMetadata,
+  SHEET_DETECTION_VERSION,
+  SHEET_METADATA_WINDOWS,
+  SHEET_NUMBER_MAX_LENGTH,
+  SHEET_TITLE_MAX_LENGTH,
+  type DetectedSheetMetadata,
+  type VisionSheetMetadata,
+} from "@/lib/drawings/sheet-metadata"
+import { renderSheetWindowImage } from "@/lib/services/drawings-sheet-images"
 
 import { createHash } from "node:crypto"
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises"
@@ -103,8 +121,6 @@ export const DRAWING_PIPELINE_JOB_TYPES = [
   "detect_drawing_changes",
 ] as const
 
-const SHEET_NUMBER_MAX_LENGTH = 50
-const SHEET_TITLE_MAX_LENGTH = 255
 const PAGE_TEXT_PAYLOAD_MAX_CHARS = 4000
 const RENDER_DPI = Number.parseInt(process.env.DRAWINGS_TILE_RENDER_DPI ?? "150", 10)
 const TILE_SIZE = Number.parseInt(process.env.DRAWINGS_TILE_SIZE ?? "512", 10)
@@ -180,48 +196,6 @@ const EARLY_THUMBNAIL_EDGE = 256
 const HEARTBEAT_SECONDS = 45
 const STALE_PROCESSING_MINUTES = 3
 const RUNNER_KICK_CAP = 8
-
-const DISCIPLINE_CODES = new Set([
-  "A", "S", "M", "E", "P", "C", "L", "I", "FP", "G", "T", "SP", "D", "X",
-])
-
-const SHEET_LABEL_PATTERNS = [
-  /\b(?:SHEET|SHT)\s*(?:NO|NUMBER|#)?\s*[:\-]?\s*([A-Z0-9][A-Z0-9./-]{1,19})\b/i,
-  /\b(?:DWG|DRAWING)\s*(?:NO|NUMBER|#)?\s*[:\-]?\s*([A-Z0-9][A-Z0-9./-]{1,19})\b/i,
-]
-
-const SHEET_TITLE_LABEL_PATTERNS = [
-  /\b(?:SHEET\s+TITLE|DRAWING\s+TITLE)\s*[:\-]\s*(.+)$/i,
-  /\bTITLE\s*[:\-]\s*(.+)$/i,
-]
-
-const GENERIC_SHEET_NUMBER_PATTERN = /\b(?:FP|SP|[ASMEPCLIGTDX])[-./]?\d{1,4}(?:\.\d{1,3})?[A-Z]?\b/gi
-
-type DetectionMethod = "label" | "pattern" | "fallback"
-type DetectionConfidence = "high" | "medium" | "low"
-
-type DetectedSheetMetadata = {
-  sheetNumber: string
-  sheetTitle: string
-  discipline: string
-  method: DetectionMethod
-  confidence: DetectionConfidence
-  sourceLine: string | null
-}
-
-type VisionSheetMetadata = {
-  needsReview?: boolean
-  evidence?: { text: string; location: string; is_title_block: boolean } | null
-  verificationTier?: "fast" | "standard"
-
-  sheetNumber?: string | null
-  sheetTitle?: string | null
-  discipline?: string | null
-  confidence?: DetectionConfidence
-  notes?: string[]
-  /** Title-block scale as printed, e.g. `1/4" = 1'-0"`. Null when absent or NTS. */
-  statedScale?: string | null
-}
 
 interface ClaimedJob {
   job_id: number
@@ -1056,8 +1030,8 @@ async function splitChunkPages(
     const pageText = textLines.join("\n")
     const pageNumber = pageIndex + 1
 
-    const detected = detectSheetMetadata({ pageText, setTitle, pageNumber })
-    const visionPending = shouldUseVisionFallback(detected, pageText, visionConfigured)
+    const detected = detectPageSheetMetadata(page, pageText, setTitle, pageNumber)
+    const visionPending = shouldVerifySheetMetadata(visionConfigured)
 
     // Cross-page/cross-upload uniqueness is enforced by the DB unique index on
     // (project_id, sheet_number); collisions resolve on insert.
@@ -1257,7 +1231,7 @@ async function handleProcessDrawingPage(supabase: SupabaseClient, job: ClaimedJo
     payload.detected && typeof payload.detected === "object"
       ? (payload.detected as DetectedSheetMetadata)
       : detectSheetMetadata({ pageText, setTitle, pageNumber })
-  const visionPending = shouldUseVisionFallback(detected, pageText, await drawingsVisionConfigured())
+  const visionPending = shouldVerifySheetMetadata(await drawingsVisionConfigured())
   const isTargetPage = Boolean(payload.isTargetPage && payload.targetSheet)
   const targetSheet = isTargetPage ? (payload.targetSheet as Record<string, any>) : null
   const tentativeSheetNumber =
@@ -1296,9 +1270,31 @@ async function handleProcessDrawingPage(supabase: SupabaseClient, job: ClaimedJo
   if (!versionRow) {
     throw new Error(`Version ${versionId} vanished for page ${pageNumber}`)
   }
+  // Configuration can change between split and render. Do not strand review
+  // waiting for a visual job that this deployment can no longer execute.
+  if (!visionPending && versionRow.extracted_metadata?.sheet_detection?.vision_pending) {
+    versionRow.extracted_metadata = {
+      ...versionRow.extracted_metadata,
+      sheet_detection: {
+        ...versionRow.extracted_metadata.sheet_detection,
+        vision_pending: false,
+        needs_review: true,
+        vision_error: "Title-block vision is unavailable; review the extracted sheet identity.",
+      },
+    }
+    const { error } = await supabase.from("drawing_sheet_versions")
+      .update({ extracted_metadata: versionRow.extracted_metadata }).eq("id", versionId).eq("org_id", orgId)
+    if (error) throw new Error(`Unable to update drawing verification status: ${error.message}`)
+  }
+  const queueMetadata = () => enqueueDrawingMetadata(supabase, {
+    orgId, sheetVersionId: versionId, sheetId, draftRevisionId, setTitle, pageNumber,
+    detected, pageText: pageText.slice(0, PAGE_TEXT_PAYLOAD_MAX_CHARS),
+  })
   // A PARTIAL manifest (crash between the early publish and pyramid
   // completion) must fall through and re-tile — only a finished pyramid skips.
   if (isCompleteTileManifest(versionRow.tile_manifest)) {
+    if (visionPending) await queueMetadata()
+    await finishPageProgress(supabase, draftRevisionId, pageCount)
     console.log(`[drawings-pipeline] Page ${pageNumber} already tiled for revision ${draftRevisionId}`)
     return
   }
@@ -1316,6 +1312,7 @@ async function handleProcessDrawingPage(supabase: SupabaseClient, job: ClaimedJo
       ownMetadata: (versionRow.extracted_metadata ?? null) as Record<string, unknown> | null,
       ownPageText: (versionRow.page_text as string | null) ?? null,
     })
+    if (visionPending) await queueMetadata()
     await cleanupTempPagePdf(supabase, pagePdfPath)
     await finishPageProgress(supabase, draftRevisionId, pageCount)
     console.log(
@@ -1469,33 +1466,7 @@ async function handleProcessDrawingPage(supabase: SupabaseClient, job: ClaimedJo
     height,
   })
 
-  // Weak text detection → queue AI-vision enrichment off the critical path.
-  if (visionPending) {
-    const visionPaths = await uploadVisionInputs(supabase, {
-      orgId,
-      sourceHash,
-      pageIndex,
-      pngBuffer: png,
-    })
-    if (visionPaths.length > 0) {
-      await supabase.from("outbox").insert({
-        org_id: orgId,
-        job_type: "enrich_drawing_metadata",
-        payload: {
-          orgId,
-          sheetVersionId: versionId,
-          sheetId,
-          draftRevisionId,
-          setTitle,
-          pageNumber,
-          pageText: pageText.slice(0, PAGE_TEXT_PAYLOAD_MAX_CHARS),
-          detected,
-          visionPaths,
-        },
-        run_at: new Date().toISOString(),
-      })
-    }
-  }
+  if (visionPending) await queueMetadata()
 
   await cleanupTempPagePdf(supabase, pagePdfPath)
   await finishPageProgress(supabase, draftRevisionId, pageCount)
@@ -1565,9 +1536,11 @@ async function ensureSheetAndVersion(
     : normalizeDiscipline(detected.discipline)
 
   const sheetDetection = {
+    version: SHEET_DETECTION_VERSION,
     method: detected.method,
     confidence: detected.confidence,
     source_line: detected.sourceLine,
+    source_bounds: detected.sourceBounds ?? null,
     vision_used: false,
     vision_pending: visionPending,
     needs_review: visionPending || detected.method !== "label" || detected.confidence !== "high",
@@ -1581,6 +1554,7 @@ async function ensureSheetAndVersion(
     source_hash: sourceHash,
     page_index: pageIndex,
     is_new_sheet: isNewSheet,
+    identity_locked: isTargetPage,
     proposed: {
       sheet_number: proposedSheetNumber,
       sheet_title: proposedSheetTitle,
@@ -1828,55 +1802,68 @@ async function finishPageProgress(
   draftRevisionId: string,
   pageCount: number,
 ) {
-  const progress = await incrementRevisionProgress(supabase, draftRevisionId)
-  const processed = progress?.processed ?? null
-  const total = progress?.total ?? pageCount
-
-  if (processed !== null && total !== null && processed >= total) {
-    await updateRevisionStage(supabase, draftRevisionId, {
-      status: "draft",
-      processing_stage: "ready",
-    })
-    console.log(`[drawings-pipeline] Revision ${draftRevisionId} ready for review (${total} pages)`)
-  }
+  // Count durable completed renders rather than incrementing on each attempt.
+  // A retry after tiles/queue writes must neither lose a page nor count it twice.
+  const { count, error } = await supabase.from("drawing_sheet_versions")
+    .select("id", { count: "exact", head: true }).eq("drawing_revision_id", draftRevisionId)
+    .not("tile_manifest", "is", null).is("tile_manifest->Partial", null)
+  if (error) throw new Error(`Unable to count rendered drawings: ${error.message}`)
+  if (count === null) throw new Error("Rendered drawing count is unavailable")
+  const { error: updateError } = await supabase.from("drawing_revisions")
+    .update({ processed_pages: count }).eq("id", draftRevisionId).eq("status", "processing")
+    .lt("processed_pages", count)
+  if (updateError) throw new Error(`Unable to update drawing progress: ${updateError.message}`)
+  if (count >= pageCount) await finishMetadataProgress(supabase, draftRevisionId)
 }
 
-async function incrementRevisionProgress(
-  supabase: SupabaseClient,
-  revisionId: string,
-): Promise<{ processed: number; total: number | null } | null> {
-  const { data, error } = await supabase.rpc("increment_drawing_revision_progress", {
-    p_revision_id: revisionId,
-  })
-
-  if (!error) {
-    const row = Array.isArray(data) ? data[0] : data
-    if (row && typeof row.processed === "number") {
-      return { processed: row.processed, total: row.total ?? null }
-    }
-    return null
-  }
-
-  // Fallback while the migration hasn't been pushed yet (non-atomic, but the
-  // ready-check below tolerates an off-by-one by re-reading the row).
-  console.warn("[drawings-pipeline] increment RPC unavailable, using fallback:", error.message)
-  const { data: revision } = await supabase
-    .from("drawing_revisions")
-    .select("processed_pages, total_pages")
-    .eq("id", revisionId)
-    .maybeSingle()
-  if (!revision) return null
-  const processed = (revision.processed_pages ?? 0) + 1
-  await supabase
-    .from("drawing_revisions")
-    .update({ processed_pages: processed })
-    .eq("id", revisionId)
-  return { processed, total: revision.total_pages ?? null }
+/** Keep polling active until both rendering and title-block verification finish. */
+async function finishMetadataProgress(supabase: SupabaseClient, revisionId: string) {
+  const { data: revision, error: revisionError } = await supabase.from("drawing_revisions")
+    .select("status, processed_pages, total_pages").eq("id", revisionId).maybeSingle()
+  if (revisionError) throw new Error(`Unable to read drawing progress: ${revisionError.message}`)
+  if (!revision || revision.status !== "processing" || !revision.total_pages ||
+      revision.processed_pages < revision.total_pages) return
+  const { count, error } = await supabase.from("drawing_sheet_versions")
+    .select("id", { count: "exact", head: true }).eq("drawing_revision_id", revisionId)
+    .eq("extracted_metadata->sheet_detection->>vision_pending", "true")
+  if (error) throw new Error(`Unable to read drawing verification progress: ${error.message}`)
+  if (count !== 0) return
+  const { error: updateError } = await supabase.from("drawing_revisions")
+    .update({ status: "draft", processing_stage: "ready" })
+    .eq("id", revisionId).eq("status", "processing")
+  if (updateError) throw new Error(`Unable to finish drawing verification: ${updateError.message}`)
 }
 
 // ============================================================================
 // Job: enrich_drawing_metadata (AI vision off the critical path)
 // ============================================================================
+
+async function enqueueDrawingMetadata(supabase: SupabaseClient, payload: {
+  orgId: string; sheetVersionId: string; sheetId: string; draftRevisionId: string
+  setTitle: string; pageNumber: number; pageText: string; detected: DetectedSheetMetadata
+}) {
+  const { data: existing, error: lookupError } = await supabase.from("outbox")
+    .select("id").eq("org_id", payload.orgId).eq("job_type", "enrich_drawing_metadata")
+    .contains("payload", { sheetVersionId: payload.sheetVersionId }).limit(1)
+  if (lookupError) throw new Error(`Unable to check drawing verification job: ${lookupError.message}`)
+  if (existing?.length) return
+  const { data: version, error: versionError } = await supabase.from("drawing_sheet_versions")
+    .select("extracted_metadata").eq("id", payload.sheetVersionId).eq("org_id", payload.orgId).maybeSingle()
+  if (versionError) throw new Error(`Unable to read drawing verification status: ${versionError.message}`)
+  if (!version) return
+  const meta = version.extracted_metadata ?? {}
+  if (meta.sheet_detection?.vision_pending !== true) {
+    const { error } = await supabase.from("drawing_sheet_versions").update({
+      extracted_metadata: { ...meta, sheet_detection: { ...meta.sheet_detection, vision_pending: true } },
+    }).eq("id", payload.sheetVersionId).eq("org_id", payload.orgId)
+    if (error) throw new Error(`Unable to mark drawing verification pending: ${error.message}`)
+  }
+  const { error } = await supabase.from("outbox").insert({
+    org_id: payload.orgId, job_type: "enrich_drawing_metadata", payload,
+    run_at: new Date().toISOString(),
+  })
+  if (error) throw new Error(`Unable to queue drawing verification: ${error.message}`)
+}
 
 async function handleEnrichDrawingMetadata(supabase: SupabaseClient, job: ClaimedJob) {
   const payload = job.payload ?? {}
@@ -1903,12 +1890,13 @@ async function handleEnrichDrawingMetadata(supabase: SupabaseClient, job: Claime
     }
   }
 
-  const { data: version } = await supabase
+  const { data: version, error: versionError } = await supabase
     .from("drawing_sheet_versions")
-    .select("id, extracted_metadata, drawing_revision_id")
+    .select("id, extracted_metadata, drawing_revision_id, tiles_base_path, image_width, image_height")
     .eq("id", sheetVersionId)
     .eq("org_id", orgId)
     .maybeSingle()
+  if (versionError) throw new Error(`Unable to load drawing metadata: ${versionError.message}`)
   if (!version) {
     await cleanupCrops()
     return
@@ -1916,47 +1904,132 @@ async function handleEnrichDrawingMetadata(supabase: SupabaseClient, job: Claime
 
   // Only enrich while the upload is still processing/draft. After publish (or
   // discard) the register is the user's source of truth.
-  const { data: revision } = await supabase
+  const { data: revision, error: revisionError } = await supabase
     .from("drawing_revisions")
     .select("status")
     .eq("id", version.drawing_revision_id)
     .maybeSingle()
+  if (revisionError) throw new Error(`Unable to load drawing revision: ${revisionError.message}`)
   if (!revision || (revision.status !== "processing" && revision.status !== "draft")) {
     await cleanupCrops()
     return
   }
 
-  // Raw bytes, not data URLs: the gateway hands file parts to the provider
-  // directly, so base64-ing them here only inflated the payload by a third.
-  const images: VisionImage[] = []
-  for (const cropPath of visionPaths) {
-    const bytes = await downloadTilesObject({ supabase, path: cropPath })
-    images.push({ data: bytes, mediaType: "image/webp" })
-  }
-  if (images.length === 0) {
-    await cleanupCrops()
-    return
-  }
-
   // Provider failures throw so the outbox retry/backoff owns recovery; after
-  // the final retry the version keeps its regex-detected metadata and the
+  // the final retry the version keeps its provisional text metadata and the
   // failure is recorded on the version, never on the revision.
   let vision: VisionSheetMetadata | null = null
   try {
+    const images: VisionImage[] = []
+    if (version.tiles_base_path && version.image_width > 0 && version.image_height > 0) {
+      for (const window of SHEET_METADATA_WINDOWS) {
+        const image = await renderSheetWindowImage({
+          supabase, tilesBasePath: version.tiles_base_path,
+          imageWidth: version.image_width, imageHeight: version.image_height,
+          window, maxEdge: 1600,
+        })
+        if (image) images.push(image)
+      }
+    } else {
+      for (const cropPath of visionPaths) {
+        images.push({ data: await downloadTilesObject({ supabase, path: cropPath }), mediaType: "image/webp" })
+      }
+    }
+    if (!images.length) throw new Error("Drawing title-block images are unavailable")
     vision = await detectSheetMetadataWithVision({
       images,
-      pageText,
-      setTitle,
-      pageNumber,
-      initial: detected,
+      textGuess: detected.sheetNumber,
       orgId,
       sheetVersionId,
     })
+    const merged = mergeDetectedSheetMetadata(detected, vision)
+    const meta = (version.extracted_metadata ?? {}) as Record<string, any>
+    const originalProposed = (meta.proposed ?? {}) as Record<string, unknown>
+    const lockedNumber = meta.identity_locked && typeof originalProposed.sheet_number === "string"
+      ? originalProposed.sheet_number : null
+    const newProposed = {
+      sheet_number: lockedNumber ?? truncateValue(merged.sheetNumber, SHEET_NUMBER_MAX_LENGTH),
+      sheet_title: truncateValue(merged.sheetTitle, SHEET_TITLE_MAX_LENGTH),
+      discipline: lockedNumber ? detectDiscipline(lockedNumber) : normalizeDiscipline(merged.discipline),
+    }
+
+    // Vision only gets to propose a scale when the text layer found none —
+    // a scanned sheet is exactly the case where reading the title block by eye
+    // is the only option, and exactly the case where it is least reliable, so it
+    // never overrides a proposal derived from real text.
+    const visionProposal = resolveVisionScaleProposal(meta, vision)
+
+    const { error: metadataError } = await supabase
+      .from("drawing_sheet_versions")
+      .update({
+        extracted_metadata: {
+          ...meta,
+          proposed: newProposed,
+          ...(visionProposal ? { calibration_proposal: visionProposal } : {}),
+          sheet_detection: {
+            ...(meta.sheet_detection ?? {}),
+            version: SHEET_DETECTION_VERSION,
+            source_line: merged.sourceLine,
+            source_bounds: merged.sourceBounds ?? null,
+            method: merged.method,
+            confidence: merged.confidence,
+            vision_used: Boolean(vision),
+            vision_pending: false,
+            vision_notes: vision?.notes ?? [],
+            needs_review: vision?.needsReview !== false || merged.confidence !== "high" ||
+              Boolean(lockedNumber && lockedNumber !== vision?.sheetNumber),
+            number_evidence: vision?.evidence ?? null,
+            verification_tier: vision?.verificationTier ?? null,
+          },
+        },
+      })
+      .eq("id", sheetVersionId)
+      .eq("org_id", orgId)
+
+    if (metadataError) throw new Error(`Unable to save drawing metadata: ${metadataError.message}`)
+
+    // Upgrade the sheet row only when this upload created it AND the user
+    // hasn't edited it since (values still match the original auto-detection).
+    if (meta.is_new_sheet === true) {
+      const { data: sheetRow } = await supabase
+        .from("drawing_sheets")
+        .select("id, sheet_number, sheet_title, discipline")
+        .eq("id", sheetId)
+        .eq("org_id", orgId)
+        .maybeSingle()
+      const untouched =
+        sheetRow &&
+        sheetRow.sheet_number === originalProposed.sheet_number &&
+        sheetRow.sheet_title === originalProposed.sheet_title &&
+        sheetRow.discipline === originalProposed.discipline
+      if (untouched) {
+        const { error: sheetError } = await supabase
+          .from("drawing_sheets")
+          .update(newProposed)
+          .eq("id", sheetId)
+          .eq("org_id", orgId)
+        if (sheetError?.code === "23505") {
+          // Vision proposed a number another sheet already owns — keep the
+          // number, still upgrade title/discipline.
+          await supabase
+            .from("drawing_sheets")
+            .update({ sheet_title: newProposed.sheet_title, discipline: newProposed.discipline })
+            .eq("id", sheetId)
+            .eq("org_id", orgId)
+        }
+      }
+    }
+
+    await cleanupCrops()
+    await finishMetadataProgress(supabase, version.drawing_revision_id)
   } catch (error) {
     if (job.retry_count + 1 >= MAX_JOB_RETRIES) {
       const message = error instanceof Error ? error.message : String(error)
-      const failedMeta = (version.extracted_metadata ?? {}) as Record<string, any>
-      await supabase
+      const { data: fresh, error: readError } = await supabase.from("drawing_sheet_versions")
+        .select("extracted_metadata").eq("id", sheetVersionId).eq("org_id", orgId).maybeSingle()
+      if (readError) throw new Error(`Unable to record drawing verification failure: ${readError.message}`)
+      const failedMeta = (fresh?.extracted_metadata ?? version.extracted_metadata ?? {}) as Record<string, any>
+      const { error: failureError } = await supabase
         .from("drawing_sheet_versions")
         .update({
           extracted_metadata: {
@@ -1964,86 +2037,19 @@ async function handleEnrichDrawingMetadata(supabase: SupabaseClient, job: Claime
             sheet_detection: {
               ...(failedMeta.sheet_detection ?? {}),
               vision_pending: false,
+              confidence: "low",
+              needs_review: true,
               vision_error: truncateValue(message, 500),
             },
           },
         })
-        .eq("id", sheetVersionId)
+        .eq("id", sheetVersionId).eq("org_id", orgId)
+      if (failureError) throw new Error(`Unable to record drawing verification failure: ${failureError.message}`)
       await cleanupCrops()
+      await finishMetadataProgress(supabase, version.drawing_revision_id)
     }
     throw error
   }
-
-  const merged = mergeDetectedSheetMetadata(detected, vision, setTitle, pageNumber)
-  const meta = (version.extracted_metadata ?? {}) as Record<string, any>
-  const originalProposed = (meta.proposed ?? {}) as Record<string, unknown>
-  const newProposed = {
-    sheet_number: truncateValue(merged.sheetNumber, SHEET_NUMBER_MAX_LENGTH),
-    sheet_title: truncateValue(merged.sheetTitle, SHEET_TITLE_MAX_LENGTH),
-    discipline: normalizeDiscipline(merged.discipline),
-  }
-
-  // Vision only gets to propose a scale when the text layer found none —
-  // a scanned sheet is exactly the case where reading the title block by eye
-  // is the only option, and exactly the case where it is least reliable, so it
-  // never overrides a proposal derived from real text.
-  const visionProposal = resolveVisionScaleProposal(meta, vision)
-
-  await supabase
-    .from("drawing_sheet_versions")
-    .update({
-      extracted_metadata: {
-        ...meta,
-        proposed: newProposed,
-        ...(visionProposal ? { calibration_proposal: visionProposal } : {}),
-        sheet_detection: {
-          ...(meta.sheet_detection ?? {}),
-          method: merged.method,
-          confidence: merged.confidence,
-          vision_used: Boolean(vision),
-          vision_pending: false,
-          vision_notes: vision?.notes ?? [],
-          needs_review: vision?.needsReview ?? (detected.method !== "label" || detected.confidence !== "high"),
-          number_evidence: vision?.evidence ?? null,
-          verification_tier: vision?.verificationTier ?? null,
-        },
-      },
-    })
-    .eq("id", sheetVersionId)
-
-  // Upgrade the sheet row only when this upload created it AND the user
-  // hasn't edited it since (values still match the original auto-detection).
-  if (meta.is_new_sheet === true) {
-    const { data: sheetRow } = await supabase
-      .from("drawing_sheets")
-      .select("id, sheet_number, sheet_title, discipline")
-      .eq("id", sheetId)
-      .eq("org_id", orgId)
-      .maybeSingle()
-    const untouched =
-      sheetRow &&
-      sheetRow.sheet_number === originalProposed.sheet_number &&
-      sheetRow.sheet_title === originalProposed.sheet_title &&
-      sheetRow.discipline === originalProposed.discipline
-    if (untouched) {
-      const { error: sheetError } = await supabase
-        .from("drawing_sheets")
-        .update(newProposed)
-        .eq("id", sheetId)
-        .eq("org_id", orgId)
-      if (sheetError?.code === "23505") {
-        // Vision proposed a number another sheet already owns — keep the
-        // number, still upgrade title/discipline.
-        await supabase
-          .from("drawing_sheets")
-          .update({ sheet_title: newProposed.sheet_title, discipline: newProposed.discipline })
-          .eq("id", sheetId)
-          .eq("org_id", orgId)
-      }
-    }
-  }
-
-  await cleanupCrops()
 }
 
 // ============================================================================
@@ -3333,159 +3339,23 @@ async function updateRevisionStage(
 }
 
 // ============================================================================
-// Title-block detection (regex, ported verbatim from the worker)
+// Positioned title-block detection
 // ============================================================================
 
-function detectSheetMetadata(input: {
-  pageText: string
-  setTitle: string
-  pageNumber: number
-}): DetectedSheetMetadata {
-  const { pageText, setTitle, pageNumber } = input
-  const lines = pageText
-    .replace(/\r/g, "")
-    .split("\n")
-    .map((line) => normalizeWhitespace(line).trim())
-    .filter(Boolean)
-
-  const labeledMatch = detectSheetNumberFromLabel(lines)
-  if (labeledMatch) {
-    const titleFromLabel = detectSheetTitleFromLabels(lines)
-    const titleFromNearby = titleFromLabel || detectSheetTitleNearLine(lines, labeledMatch.sourceLine)
-    return {
-      sheetNumber: truncateValue(labeledMatch.sheetNumber, SHEET_NUMBER_MAX_LENGTH),
-      sheetTitle: truncateValue(titleFromNearby || `${setTitle} - Page ${pageNumber}`, SHEET_TITLE_MAX_LENGTH),
-      discipline: detectDiscipline(labeledMatch.sheetNumber),
-      method: "label",
-      confidence: "high",
-      sourceLine: labeledMatch.sourceLine,
-    }
+/** Keep PDF coordinates for identity detection, including on vector-free pages. */
+function detectPageSheetMetadata(page: any, pageText: string, setTitle: string, pageNumber: number) {
+  let textRuns: TextRun[] = []
+  try {
+    const [x0, y0, x1, y1] = page.getBounds() as number[]
+    textRuns = extractPageTextRuns(page, {
+      pageToImageScale: 1,
+      imageWidth: Math.abs(x1 - x0), imageHeight: Math.abs(y1 - y0),
+      pageOriginX: Math.min(x0, x1), pageOriginY: Math.min(y0, y1),
+    })
+  } catch {
+    // Scans or unsupported text layers remain unclassified until vision reads them.
   }
-
-  const patternMatch = detectSheetNumberByPattern(lines)
-  if (patternMatch) {
-    const title = detectSheetTitleNearLine(lines, patternMatch.sourceLine)
-    return {
-      sheetNumber: truncateValue(patternMatch.sheetNumber, SHEET_NUMBER_MAX_LENGTH),
-      sheetTitle: truncateValue(title || `${setTitle} - Page ${pageNumber}`, SHEET_TITLE_MAX_LENGTH),
-      discipline: detectDiscipline(patternMatch.sheetNumber),
-      method: "pattern",
-      confidence: "medium",
-      sourceLine: patternMatch.sourceLine,
-    }
-  }
-
-  return {
-    sheetNumber: truncateValue(`${setTitle} - Page ${pageNumber}`, SHEET_NUMBER_MAX_LENGTH),
-    sheetTitle: truncateValue(`${setTitle} - Page ${pageNumber}`, SHEET_TITLE_MAX_LENGTH),
-    discipline: "X",
-    method: "fallback",
-    confidence: "low",
-    sourceLine: null,
-  }
-}
-
-function detectSheetNumberFromLabel(lines: string[]): { sheetNumber: string; sourceLine: string } | null {
-  for (const line of lines) {
-    for (const pattern of SHEET_LABEL_PATTERNS) {
-      const match = line.match(pattern)
-      if (!match) continue
-      const sheetNumber = normalizeSheetNumberCandidate(match[1])
-      if (sheetNumber) {
-        return { sheetNumber, sourceLine: line }
-      }
-    }
-  }
-  return null
-}
-
-function detectSheetNumberByPattern(lines: string[]): { sheetNumber: string; sourceLine: string } | null {
-  let best: { sheetNumber: string; sourceLine: string; score: number } | null = null
-
-  for (const line of lines) {
-    const candidates = line.match(GENERIC_SHEET_NUMBER_PATTERN) || []
-    for (const candidate of candidates) {
-      const normalized = normalizeSheetNumberCandidate(candidate)
-      if (!normalized) continue
-
-      let score = 0
-      if (/[-./]/.test(normalized)) score += 2
-      if (/\b(SHEET|SHT|DWG|DRAWING)\b/i.test(line)) score += 4
-      if (line.length <= 40) score += 1
-      if (/\b(DETAIL|SCALE|DATE|ISSUED|REVISION|PROJECT)\b/i.test(line)) score -= 1
-
-      const numeric = parseInt(normalized.replace(/^[A-Z]+[-./]?/, ""), 10)
-      if (Number.isFinite(numeric) && numeric >= 1900 && numeric <= 2100 && !/[-./]/.test(normalized)) {
-        score -= 3
-      }
-
-      if (!best || score > best.score) {
-        best = { sheetNumber: normalized, sourceLine: line, score }
-      }
-    }
-  }
-
-  if (!best || best.score < 2) return null
-  return { sheetNumber: best.sheetNumber, sourceLine: best.sourceLine }
-}
-
-function detectSheetTitleFromLabels(lines: string[]): string | null {
-  for (const line of lines) {
-    for (const pattern of SHEET_TITLE_LABEL_PATTERNS) {
-      const match = line.match(pattern)
-      if (!match) continue
-      const title = sanitizeTitle(match[1])
-      if (title) return title
-    }
-  }
-  return null
-}
-
-function detectSheetTitleNearLine(lines: string[], sourceLine: string): string | null {
-  const index = lines.findIndex((line) => line === sourceLine)
-  if (index === -1) return null
-
-  const nearbyIndexes = [index + 1, index + 2, index - 1, index - 2]
-  for (const i of nearbyIndexes) {
-    if (i < 0 || i >= lines.length) continue
-    const title = sanitizeTitle(lines[i])
-    if (title) return title
-  }
-  return null
-}
-
-function sanitizeTitle(raw: string): string | null {
-  const value = normalizeWhitespace(raw).trim()
-  if (!value) return null
-  if (value.length < 3 || value.length > SHEET_TITLE_MAX_LENGTH) return null
-  if (!/[A-Za-z]/.test(value)) return null
-  if (/^(SHEET|SHT|DWG|DRAWING|REVISION|PROJECT|SCALE)\b/i.test(value)) return null
-  return truncateValue(value, SHEET_TITLE_MAX_LENGTH)
-}
-
-function normalizeSheetNumberCandidate(raw: string): string | null {
-  const value = raw
-    .toUpperCase()
-    .replace(/[^A-Z0-9./-]/g, "")
-    .replace(/^[./-]+|[./-]+$/g, "")
-
-  if (!value) return null
-
-  const valid = /^(?:FP|SP|[ASMEPCLIGTDX])[-./]?\d{1,4}(?:\.\d{1,3})?[A-Z]?$/.test(value)
-  return valid ? truncateValue(value, SHEET_NUMBER_MAX_LENGTH) : null
-}
-
-function detectDiscipline(sheetNumber: string): string {
-  const normalized = sheetNumber.toUpperCase()
-  if (normalized.startsWith("FP")) return "FP"
-  if (normalized.startsWith("SP")) return "SP"
-  const single = normalized[0]
-  return DISCIPLINE_CODES.has(single) ? single : "X"
-}
-
-function normalizeDiscipline(value: string | null | undefined): string {
-  const normalized = (value || "").toUpperCase()
-  return DISCIPLINE_CODES.has(normalized) ? normalized : "X"
+  return detectSheetMetadata({ pageText, textRuns, setTitle, pageNumber })
 }
 
 function truncateForSuffix(base: string, suffix: string, maxLength: number): string {
@@ -3503,24 +3373,8 @@ function normalizeWhitespace(value: string): string {
 }
 
 // ============================================================================
-// AI vision fallback (ported from the worker; buffer-based instead of files)
+// Independent visual title-block verification
 // ============================================================================
-
-/**
- * Vision only earns its cost when the text pass is weak or absent. The caller
- * resolves `visionConfigured` once per job rather than per page — it is a
- * registry read, and asking it four hundred times for one set is four hundred
- * round trips to learn the same thing.
- */
-function shouldUseVisionFallback(
-  detected: DetectedSheetMetadata,
-  pageText: string,
-  visionConfigured: boolean,
-): boolean {
-  if (!visionConfigured) return false
-  if (!pageText.trim()) return true
-  return detected.method !== "label" || detected.confidence === "low"
-}
 
 /**
  * The title-block read. Structured output means the shape is guaranteed, so the
@@ -3548,48 +3402,29 @@ const sheetMetadataSchema = z.object({
 })
 
 async function detectSheetMetadataWithVision(input: {
+  textGuess: string
   images: VisionImage[]
-  pageText: string
-  setTitle: string
-  pageNumber: number
-  initial: DetectedSheetMetadata
   orgId: string
   sheetVersionId: string
 }): Promise<VisionSheetMetadata | null> {
-  const { images, pageText, setTitle, pageNumber, initial } = input
-  const prompt = [
-      "You are extracting metadata from one construction drawing page.",
-      `Project set title: ${setTitle}`,
-      `Page number in upload order: ${pageNumber}`,
-
-      pageText.trim()
-        ? `Extracted PDF text (may be partial): ${truncateValue(pageText, 4000)}`
-        : "Extracted PDF text is empty, so rely on the image.",
-      "Read this page's OWN sheet number only from its title-block sheet-number field.",
-      "Ignore detail references, section bubbles, drawing indexes, and numbers inside the plan.",
-      "Copy the printed characters exactly. Never add digits, punctuation, or infer a number from adjacent pages.",
-      "Return number_evidence with the verbatim number and its location. If unreadable or ambiguous, return sheet_number=null and confidence=low. Never guess.",
-      // The scale drives every measured quantity on the sheet, so a guess is
-      // worse than nothing: it must be copied verbatim or omitted.
-      "stated_scale: copy the drawing scale from the title block EXACTLY as printed, e.g. \"1/4\\\" = 1'-0\\\"\" or \"1\\\" = 20'\". Use null if the sheet says NTS / AS NOTED / VARIES, or if you cannot read a single scale. Never infer or calculate it.",
-    ].join("\n")
-
+  const prompt = buildSheetMetadataVisionPrompt()
   let parsed = await runDrawingsVisionObject({
     schema: sheetMetadataSchema,
     prompt,
-    images,
+    tier: "fast",
+    images: input.images,
     orgId: input.orgId,
     entityType: "drawing_sheet_version",
     entityId: input.sheetVersionId,
   })
   let verificationTier: "fast" | "standard" = "fast"
-  if (!parsed || needsNumberVerification(parsed, initial.sheetNumber)) {
+  if (!parsed || needsNumberVerification(parsed, input.textGuess)) {
     verificationTier = "standard"
-    // Independent reread: do not feed either candidate to the verifier.
+    // Compare candidates only to choose the tier; neither guess enters the prompt.
     parsed = await runDrawingsVisionObject({
       schema: sheetMetadataSchema,
       prompt: prompt + "\nIndependently verify the title-block number. Abstain if the characters cannot be read clearly.",
-      images,
+      images: input.images,
       orgId: input.orgId,
       entityType: "drawing_sheet_version",
       entityId: input.sheetVersionId,
@@ -3597,14 +3432,14 @@ async function detectSheetMetadataWithVision(input: {
       allowEscalation: false,
     })
   }
-  const verified = parsed !== null && hasTitleBlockEvidence(parsed)
-  if (!parsed) return { needsReview: true, confidence: "low", verificationTier }
+  if (!parsed) throw new Error("Drawing title-block verification returned no result")
+  const verified = hasTitleBlockEvidence(parsed)
 
   const sheetNumber = verified ? normalizeSheetNumberCandidate(parsed.sheet_number ?? "") : null
   // The schema constrains the enum, but a model may still name a discipline that
   // contradicts the number it just read; the number wins, because that is what
   // every downstream grouping keys on.
-  const discipline = parsed.discipline ?? (sheetNumber ? detectDiscipline(sheetNumber) : null)
+  const discipline = sheetNumber ? detectDiscipline(sheetNumber) : parsed.discipline
   const sheetTitle = sanitizeTitle(parsed.sheet_title ?? "")
   const notes = parsed.notes.filter((note) => note.trim()).slice(0, 6)
   // Only keep a scale this codebase can actually parse — an unparseable string
@@ -3615,101 +3450,6 @@ async function detectSheetMetadataWithVision(input: {
       : null
 
   return { sheetNumber, sheetTitle, discipline, confidence: verified ? "high" : "low", notes, statedScale, needsReview: !verified || !sheetNumber, evidence: parsed.number_evidence, verificationTier }
-}
-
-/**
- * Build the vision inputs (full-page webp + three title-block corner crops)
- * and stash them in tiles storage so the enrichment job can run later without
- * re-rendering the page. Returns the uploaded paths in prompt order.
- */
-async function uploadVisionInputs(
-  supabase: SupabaseClient,
-  input: { orgId: string; sourceHash: string; pageIndex: number; pngBuffer: Buffer },
-): Promise<string[]> {
-  const buffers = await buildVisionCropBuffers(input.pngBuffer)
-  const paths = buffers.map(
-    (_, i) => `${input.orgId}/${input.sourceHash}/temp/vision-${input.pageIndex}-${i}.webp`,
-  )
-  await Promise.all(
-    buffers.map((bytes, i) =>
-      uploadTilesObject({
-        supabase,
-        path: paths[i],
-        bytes,
-        contentType: "image/webp",
-        cacheControl: "private, max-age=3600",
-      }),
-    ),
-  )
-  return paths
-}
-
-async function buildVisionCropBuffers(pngBuffer: Buffer): Promise<Buffer[]> {
-  const sharp = await loadSharp()
-  const metadata = await sharp(pngBuffer, { limitInputPixels: SHARP_PIXEL_LIMIT }).metadata()
-  const width = metadata.width ?? 0
-  const height = metadata.height ?? 0
-  if (width <= 0 || height <= 0) return []
-
-  const full = await sharp(pngBuffer, { limitInputPixels: SHARP_PIXEL_LIMIT })
-    .resize({ width: Math.min(width, 1600), withoutEnlargement: true })
-    .webp({ quality: 85 })
-    .toBuffer()
-
-  const cornerWidth = Math.max(300, Math.round(width * 0.34))
-  const cornerHeight = Math.max(220, Math.round(height * 0.24))
-
-  const crops = await Promise.all([
-    sharp(pngBuffer, { limitInputPixels: SHARP_PIXEL_LIMIT })
-      .extract({ left: Math.max(0, width - cornerWidth), top: 0, width: Math.min(cornerWidth, width), height: Math.min(cornerHeight, height) })
-      .resize({ width: 1200, withoutEnlargement: false })
-      .webp({ quality: 90 })
-      .toBuffer(),
-    sharp(pngBuffer, { limitInputPixels: SHARP_PIXEL_LIMIT })
-      .extract({ left: Math.max(0, width - cornerWidth), top: Math.max(0, height - cornerHeight), width: Math.min(cornerWidth, width), height: Math.min(cornerHeight, height) })
-      .resize({ width: 1200, withoutEnlargement: false })
-      .webp({ quality: 90 })
-      .toBuffer(),
-    sharp(pngBuffer, { limitInputPixels: SHARP_PIXEL_LIMIT })
-      .extract({ left: 0, top: Math.max(0, height - cornerHeight), width: Math.min(cornerWidth, width), height: Math.min(cornerHeight, height) })
-      .resize({ width: 1200, withoutEnlargement: false })
-      .webp({ quality: 90 })
-      .toBuffer(),
-  ])
-
-  return [full, ...crops]
-}
-
-function mergeDetectedSheetMetadata(
-  detected: DetectedSheetMetadata,
-  vision: VisionSheetMetadata | null,
-  setTitle: string,
-  pageNumber: number,
-): DetectedSheetMetadata {
-  if (!vision) return detected
-
-  const useVisionSheetNumber = Boolean(vision.sheetNumber) &&
-    vision.confidence === "high" && vision.needsReview === false
-  const sheetNumber = useVisionSheetNumber ? vision.sheetNumber! : detected.sheetNumber
-  const sheetTitle = vision.sheetTitle || detected.sheetTitle || `${setTitle} - Page ${pageNumber}`
-  const discipline = useVisionSheetNumber ? detectDiscipline(sheetNumber) : detected.discipline
-  // Confidence belongs to the selected number, never the other extractor.
-  const confidence = vision.needsReview ? "low" : useVisionSheetNumber ? vision.confidence! : detected.confidence
-
-  return {
-    sheetNumber,
-    sheetTitle,
-    discipline,
-    method: useVisionSheetNumber ? "pattern" : detected.method,
-    confidence,
-    sourceLine: detected.sourceLine,
-  }
-}
-
-function confidenceRank(value: DetectionConfidence | undefined): number {
-  if (value === "high") return 3
-  if (value === "medium") return 2
-  return 1
 }
 
 // ============================================================================
