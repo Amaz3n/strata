@@ -731,7 +731,7 @@ async function handleProcessDrawingSet(supabase: SupabaseClient, job: ClaimedJob
   const { count: existingFanout } = await supabase
     .from("outbox")
     .select("id", { count: "exact", head: true })
-    .in("job_type", ["split_drawing_chunk"])
+    .in("job_type", ["split_drawing_chunk", "process_drawing_page"])
     .contains("payload", { draftRevisionId })
   if ((existingFanout ?? 0) > 0) {
     console.log(`[drawings-pipeline] Fan-out already exists for revision ${draftRevisionId}, skipping`)
