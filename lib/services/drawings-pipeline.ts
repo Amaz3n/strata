@@ -1671,8 +1671,8 @@ async function adoptDonorRender(
   },
 ): Promise<void> {
   const donorMeta = (input.donor.extracted_metadata ?? {}) as Record<string, unknown>
-  const merged = {
-    ...(input.ownMetadata ?? {}),
+  await updateDrawingMetadata(supabase, input.orgId, input.versionId, current => ({
+    ...current,
     ...(donorMeta.calibration_proposal ? { calibration_proposal: donorMeta.calibration_proposal } : {}),
     ...(donorMeta.vector_stats ? { vector_stats: donorMeta.vector_stats } : {}),
     ...(donorMeta.spaces ? { spaces: donorMeta.spaces } : {}),
@@ -1682,7 +1682,7 @@ async function adoptDonorRender(
     // correct — same printed content, each project resolves its own sheets.
     ...(donorMeta.callout_links ? { callout_links: donorMeta.callout_links } : {}),
     ...(donorMeta.render_scaled ? { render_scaled: donorMeta.render_scaled } : {}),
-  }
+  }))
 
   const { error } = await supabase
     .from("drawing_sheet_versions")
@@ -1697,7 +1697,6 @@ async function adoptDonorRender(
       tiles_base_path: input.donor.tiles_base_path,
       tiles_generated_at: new Date().toISOString(),
       page_text: input.ownPageText || input.donor.page_text,
-      extracted_metadata: merged,
     })
     .eq("org_id", input.orgId)
     .eq("id", input.versionId)

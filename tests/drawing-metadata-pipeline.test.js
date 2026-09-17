@@ -34,7 +34,7 @@ function loadPipeline(vision = async () => ({
     return require(id)
   }
   const source = fs.readFileSync(filename, "utf8") + `\nexport {
-    splitChunkPages, detectPageSheetMetadata, handleEnrichDrawingMetadata, handleProcessDrawingPage,
+    adoptDonorRender, splitChunkPages, detectPageSheetMetadata, handleEnrichDrawingMetadata, handleProcessDrawingPage,
     enqueueDrawingMetadata, finishMetadataProgress, finishPageProgress
   };`
   mod._compile(ts.transpileModule(source, { compilerOptions: {
@@ -375,4 +375,19 @@ test("a slow tile upload does not hold up the next queued tile", async () => {
   release()
   await all
   assert.deepEqual(finished, [1, 2, 3, 0])
+})
+
+test("adopting a cached render preserves labels completed after the render job began", async () => {
+  const { db, supabase } = fixture()
+  const staleMetadata = structuredClone(db.drawing_sheet_versions[0].extracted_metadata)
+  db.drawing_sheet_versions[0].extracted_metadata.proposed.sheet_number = "A2"
+  db.drawing_sheet_versions[0].extracted_metadata.sheet_detection.vision_pending = false
+  await loadPipeline().adoptDonorRender(supabase, {
+    orgId: "org", versionId: "version", ownMetadata: staleMetadata, ownPageText: "",
+    donor: { tile_manifest: { Image: {} }, extracted_metadata: { vector_stats: { segments: 100 } } },
+  })
+  const meta = db.drawing_sheet_versions[0].extracted_metadata
+  assert.equal(meta.proposed.sheet_number, "A2")
+  assert.equal(meta.sheet_detection.vision_pending, false)
+  assert.equal(meta.vector_stats.segments, 100)
 })
