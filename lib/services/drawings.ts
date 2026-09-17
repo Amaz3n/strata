@@ -2307,6 +2307,7 @@ export interface RevisionVersionPreview {
 
 export interface RevisionDiffSheet {
   needs_number_review?: boolean
+  verification_pending?: boolean
   sheet_id: string
   change: "updated" | "added"
   is_new_sheet: boolean
@@ -2436,6 +2437,7 @@ export async function getRevisionDiff(revisionId: string, orgId?: string): Promi
     const entry: RevisionDiffSheet = {
       sheet_id: sheet.id,
       needs_number_review: (dv as any).detection?.needs_review === true,
+      verification_pending: (dv as any).detection?.vision_pending === true,
       change: isNew ? "added" : "updated",
       is_new_sheet: isNew,
       sheet_number: proposed.sheet_number ?? sheet.sheet_number,
@@ -2534,6 +2536,7 @@ export async function publishRevision(input: PublishRevisionInput, orgId?: strin
   if (revError || !revision) throw new Error(`Revision not found: ${revError?.message}`)
   await requireProjectPermission(userId, revision.project_id, "drawing.upload")
   if (revision.status === "published") throw new Error("Revision already published")
+  if (revision.status !== "draft") throw new Error("Sheet identification is still finishing. You can review the available previews now.")
 
   // Validate the draft proposals before the atomic publish. Vision can propose
   // duplicate numbers even when the draft rows have unique temporary numbers.

@@ -20,6 +20,8 @@ function loadPipeline(vision = async () => ({
   mod.paths = module.paths
   mod.require = (id) => {
     if (id in overrides) return overrides[id]
+    if (id === "@/lib/services/mupdf-loader") return { loadMupdf: () => import("mupdf") }
+    if (id === "@/lib/services/drawings-pipeline-trigger") return { triggerDrawingsPipeline: async () => ({ triggered: true }) }
     if (id === "@/lib/services/ai/drawings-vision") return {
       drawingsVisionConfigured: async () => true,
       runDrawingsVisionObject: async args => { prompts.push(args); return vision(args) },
@@ -32,7 +34,7 @@ function loadPipeline(vision = async () => ({
     return require(id)
   }
   const source = fs.readFileSync(filename, "utf8") + `\nexport {
-    detectPageSheetMetadata, handleEnrichDrawingMetadata, handleProcessDrawingPage,
+    splitChunkPages, detectPageSheetMetadata, handleEnrichDrawingMetadata, handleProcessDrawingPage,
     enqueueDrawingMetadata, finishMetadataProgress, finishPageProgress
   };`
   mod._compile(ts.transpileModule(source, { compilerOptions: {
@@ -53,13 +55,23 @@ function fixture() {
   }
   const field = (row, key) => key.split(/->>?/).reduce((value, part) => value?.[part], row)
   let insertError = null
-  const supabase = { from(table) {
+  const supabase = {
+    async rpc(name, args) {
+      assert.equal(name, "compare_exchange_drawing_metadata")
+      const row = db.drawing_sheet_versions.find(r => r.id === args.p_version_id && r.org_id === args.p_org_id)
+      if (!row || JSON.stringify(row.extracted_metadata) !== JSON.stringify(args.p_expected)) return { data: false, error: null }
+      row.extracted_metadata = structuredClone(args.p_next)
+      return { data: true, error: null }
+    },
+    from(table) {
     const filters = []
     let operation, one = false, count = false, limit = Infinity
     const q = {
       select: (_cols, options) => { count = !!options?.count; return q },
-      eq: (k, v) => { filters.push(r => k.includes("->>") ? String(field(r, k)) === v : field(r, k) === v); return q },
+      eq: (k, v) => { filters.push(r => k.includes("->>") ? String(field(r, k)) === v : (k === "extracted_metadata" ? JSON.stringify(field(r, k)) === v : field(r, k) === v)); return q },
+      in: (k, values) => { filters.push(r => values.includes(field(r, k))); return q },
       neq: (k, v) => { filters.push(r => field(r, k) !== v); return q },
+      gte: (k, v) => { filters.push(r => field(r, k) >= v); return q },
       lt: (k, v) => { filters.push(r => field(r, k) < v); return q },
       is: (k, v) => { filters.push(r => (field(r, k) ?? null) === v); return q },
       not: (k, _op, v) => { filters.push(r => (field(r, k) ?? null) !== v); return q },
@@ -72,8 +84,9 @@ function fixture() {
         let rows = db[table].filter(r => filters.every(f => f(r))).slice(0, limit)
         if (operation?.kind === "insert") {
           if (insertError) return { data: null, error: { message: insertError } }
-          const row = { id: `${table}-${db[table].length}`, ...structuredClone(operation.value) }
-          db[table].push(row); rows = [row]
+          rows = (Array.isArray(operation.value) ? operation.value : [operation.value]).map((value, i) =>
+            ({ id: `${table}-${db[table].length + i}`, ...structuredClone(value) }))
+          db[table].push(...rows)
         }
         if (operation?.kind === "update") rows.forEach(r => Object.assign(r, structuredClone(operation.value)))
         return { data: structuredClone(one ? rows[0] ?? null : rows), count: count ? rows.length : null, error: null }
@@ -144,17 +157,15 @@ test("unsupported vision evidence gets a standard reread and remains flagged for
   assert.equal(db.drawing_revisions[0].status, "draft")
 })
 
-test("a provider failure retries, then releases review with an explicit error", async () => {
+test("provider unavailability releases review immediately with an unresolved sheet", async () => {
   const { db, supabase, job } = fixture()
   const pipeline = loadPipeline(async () => null)
-  await assert.rejects(pipeline.handleEnrichDrawingMetadata(supabase, job), /no result/)
-  assert.equal(db.drawing_sheet_versions[0].extracted_metadata.sheet_detection.vision_pending, true)
-  assert.equal(db.drawing_revisions[0].status, "processing")
-  await assert.rejects(pipeline.handleEnrichDrawingMetadata(supabase, { ...job, retry_count: 2 }), /no result/)
+  await pipeline.handleEnrichDrawingMetadata(supabase, job)
   const detection = db.drawing_sheet_versions[0].extracted_metadata.sheet_detection
   assert.equal(detection.vision_pending, false)
   assert.equal(detection.needs_review, true)
-  assert.match(detection.vision_error, /no result/)
+  assert.equal(detection.confidence, "low")
+  assert.match(detection.vision_notes[0], /unavailable/)
   assert.equal(db.drawing_revisions[0].status, "draft")
 })
 
@@ -241,7 +252,7 @@ test("fresh PDF renders and queues verification before becoming ready for review
     pagePdfPath: "temp.pdf" } })
   assert.equal(db.drawing_sheet_versions[0].tile_manifest.Image.Format, "webp")
   assert.ok([...objects.keys()].some(key => key.endsWith("manifest.json")))
-  assert.equal(objects.has("temp.pdf"), false)
+  assert.equal(objects.has("temp.pdf"), true) // Retained while the label consumer may still need it.
   assert.equal(db.outbox.length, 1)
   assert.equal(db.drawing_revisions[0].status, "processing")
   await pipeline.handleEnrichDrawingMetadata(supabase, job)
@@ -258,4 +269,110 @@ test("disabling vision between split and render cannot strand the upload", async
     projectId: "project", drawingSetId: "set", sourceFileId: "file", sourceHash: "hash", pageIndex: 0, pageCount: 1 } })
   assert.equal(db.drawing_revisions[0].status, "draft")
   assert.equal(db.outbox.length, 0)
+})
+
+test("labels and readable previews finish before any full-resolution tiles exist", async () => {
+  const { db, supabase, job } = fixture()
+  const pdf = await PDFDocument.create()
+  pdf.addPage([1200, 800]).drawText("SHEET NUMBER A2", { x: 950, y: 40, size: 20 })
+  const bytes = Buffer.from(await pdf.save())
+  const objects = new Map([["label.pdf", bytes]])
+  const pipeline = loadPipeline(undefined, {
+    "@/lib/storage/drawings-tiles-storage": {
+      downloadTilesObject: async ({ path }) => objects.get(path),
+      uploadTilesObject: async ({ path, bytes }) => objects.set(path, bytes),
+      deleteTilesObjects: async ({ paths }) => paths.forEach(path => objects.delete(path)),
+    },
+    "@/lib/storage/drawings-urls": { buildDrawingsTilesBaseUrl: p => `https://tiles.test/${p}` },
+  })
+  db.drawing_sheet_versions[0].tile_manifest = null
+  db.drawing_revisions[0].processed_pages = 0
+  await pipeline.handleEnrichDrawingMetadata(supabase, { ...job, payload: {
+    ...job.payload, pagePdfPath: "label.pdf", sourceHash: "hash", pageIndex: 0,
+  } })
+  const version = db.drawing_sheet_versions[0]
+  assert.equal(version.extracted_metadata.proposed.sheet_number, "A2")
+  assert.match(version.thumbnail_url, /preview-label.jpg$/)
+  assert.equal(version.tile_manifest, null)
+  assert.equal(db.drawing_revisions[0].status, "draft")
+  assert.equal(db.drawing_revisions[0].processing_stage, "rendering_pages")
+  assert.equal(objects.has("label.pdf"), true, "render worker still needs the page PDF")
+  assert.equal(pipeline.images.length, 0, "no tile reconstruction for label images")
+  assert.equal(pipeline.prompts[0].images.length, 5)
+  db.drawing_sheet_versions[0].tile_manifest = { Image: {} }
+  await pipeline.finishPageProgress(supabase, "revision", 1)
+  assert.equal(db.drawing_revisions[0].processing_stage, "ready")
+})
+
+test("parallel metadata writers preserve render information and verified labels", async () => {
+  const { db, supabase } = fixture()
+  const { updateDrawingMetadata } = require("../lib/drawings/metadata-update")
+  await Promise.all([
+    updateDrawingMetadata(supabase, "org", "version", current => ({ ...current, vector_stats: { segments: 100 } })),
+    updateDrawingMetadata(supabase, "org", "version", current => ({ ...current, proposed: { sheet_number: "A2" } })),
+  ])
+  assert.equal(db.drawing_sheet_versions[0].extracted_metadata.vector_stats.segments, 100)
+  assert.equal(db.drawing_sheet_versions[0].extracted_metadata.proposed.sheet_number, "A2")
+})
+
+test("every drawing job belongs to exactly one independent worker lane", () => {
+  const { DRAWING_LANE_JOBS, DRAWING_LANE_CONCURRENCY } = require("../lib/drawings/processing-lanes")
+  const jobs = Object.values(DRAWING_LANE_JOBS).flat()
+  assert.equal(new Set(jobs).size, jobs.length)
+  assert.deepEqual([...jobs].sort(), [...loadPipeline().DRAWING_PIPELINE_JOB_TYPES].sort())
+  assert.ok(DRAWING_LANE_CONCURRENCY.metadata > DRAWING_LANE_CONCURRENCY.render)
+  assert.deepEqual(DRAWING_LANE_JOBS.metadata, ["enrich_drawing_metadata"])
+})
+
+test("split uploads pages concurrently, starts labeling first, and resumes without duplicate jobs", async () => {
+  const { db, supabase } = fixture()
+  const pdf = await PDFDocument.create()
+  for (let i = 0; i < 6; i++) pdf.addPage([600, 400]).drawText(`SHEET NUMBER A${i + 1}`, { x: 450, y: 30, size: 10 })
+  const template = db.drawing_sheet_versions[0]
+  db.drawing_sheet_versions = Array.from({ length: 6 }, (_, i) => ({
+    ...structuredClone(template), id: `v${i}`, drawing_sheet_id: `s${i}`, page_index: i, tile_manifest: null,
+  }))
+  const mupdf = await import("mupdf")
+  const doc = mupdf.Document.openDocument(await pdf.save(), "application/pdf")
+  let active = 0, peak = 0, earlyKick = false
+  const pipeline = loadPipeline(undefined, {
+    "@/lib/services/drawings-pipeline-trigger": { triggerDrawingsPipeline: async lane => {
+      if (lane === "metadata" && db.outbox.some(j => j.job_type === "enrich_drawing_metadata") &&
+        !db.outbox.some(j => j.job_type === "process_drawing_page")) earlyKick = true
+      return { triggered: true }
+    } },
+    "@/lib/storage/drawings-tiles-storage": { uploadTilesObject: async () => {
+      peak = Math.max(peak, ++active)
+      await new Promise(resolve => setImmediate(resolve))
+      active--
+    } },
+  })
+  const input = { orgId: "org", projectId: "project", drawingSetId: "set", draftRevisionId: "revision",
+    sourceFileId: "file", sourceHash: "hash", pageCount: 6, setTitle: "House", targetSheet: null,
+    visionConfigured: true, chunkIndex: 0, chunkStart: 0, chunkEnd: 6, doc, mupdf }
+  try {
+    await pipeline.splitChunkPages(supabase, input)
+    assert.equal(peak, 4)
+    assert.equal(earlyKick, true)
+    assert.equal(db.outbox.filter(j => j.job_type === "enrich_drawing_metadata").length, 6)
+    assert.equal(db.outbox.filter(j => j.job_type === "process_drawing_page").length, 6)
+    await pipeline.splitChunkPages(supabase, input)
+    assert.equal(db.outbox.length, 12)
+  } finally { doc.destroy() }
+})
+
+test("a slow tile upload does not hold up the next queued tile", async () => {
+  const { parallelWork } = require("../lib/drawings/parallel-work")
+  let release
+  const blocked = new Promise(resolve => { release = resolve })
+  const finished = []
+  const all = parallelWork([0, 1, 2, 3], 2, async n => {
+    if (n === 0) await blocked
+    finished.push(n)
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(finished, [1, 2, 3])
+  release()
+  await all
+  assert.deepEqual(finished, [1, 2, 3, 0])
 })

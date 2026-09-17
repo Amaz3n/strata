@@ -195,7 +195,7 @@ export function IssuanceSheetReview({
                       "Untitled sheet"}
                   </p>
                   <p className="mt-1 text-[11px] text-muted-foreground">
-                    {sheet.change === "added" ? "New sheet" : "Updated"}
+                    {sheet.verification_pending ? "Reading label…" : sheet.change === "added" ? "New sheet" : "Updated"}
                     {decisions[sheet.sheet_id] === false ? " · Excluded" : ""}
                   </p>
                 </div>
@@ -314,7 +314,8 @@ export function IssuanceSheetReview({
                 />
                 Include in issuance
               </label>
-              {selected.needs_number_review && !edit?.sheet_number?.trim() && (
+              {selected.verification_pending && <p role="status" className="text-sm text-muted-foreground">Reading the title block. You can review the preview and enter corrections now.</p>}
+              {!selected.verification_pending && selected.needs_number_review && !edit?.sheet_number?.trim() && (
                 <div role="alert" className="space-y-2 rounded-lg border p-3 text-sm">
                   <p className="font-medium">Needs review</p>
                   <p className="text-muted-foreground">We could not verify this number. Read the title block and correct it below, or confirm the displayed number.</p>
@@ -401,11 +402,14 @@ function SheetPreview({
   preview?: RevisionVersionPreview | null
   label: string
 }) {
-  if (preview?.tile_base_url && preview.tile_manifest) {
+  // Polling labels must not reset the viewer's source object and camera.
+  const manifestKey = JSON.stringify(preview?.tile_manifest ?? null)
+  const manifest = useMemo(() => JSON.parse(manifestKey) as TileManifest | null, [manifestKey])
+  if (preview?.tile_base_url && manifest) {
     return (
       <TiledDrawingViewer
         tileBaseUrl={preview.tile_base_url}
-        tileManifest={preview.tile_manifest as TileManifest}
+        tileManifest={manifest}
         thumbnailUrl={preview.thumbnail_url ?? undefined}
         className="absolute inset-0 h-full w-full"
       />

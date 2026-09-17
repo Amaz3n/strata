@@ -54,7 +54,6 @@ import {
   retryDraftRevisionAction,
   listRevisionRecipientsAction,
   distributeRevisionAction,
-  listDraftRevisionSheetsAction,
   listRecentlyDeletedSheetNumbersAction,
 } from "@/app/(app)/drawings/actions"
 import type { DraftRevisionSheetPreview } from "@/app/(app)/drawings/types"
@@ -120,15 +119,14 @@ export function RevisionReviewDialog({
   const [reviewTab, setReviewTab] = useState<"sheets" | "details">("sheets")
   const [previewRetries, setPreviewRetries] = useState(0)
   // Pages already split out of the draft, shown live while processing runs.
-  const [draftSheets, setDraftSheets] = useState<DraftRevisionSheetPreview[]>([])
   const initializedRevision = useRef<string | null>(null)
   // Sheet numbers deleted from this register before — annotates "new" sheets.
   const [deletedSheetNumbers, setDeletedSheetNumbers] = useState<Set<string>>(
     () => new Set(),
   )
 
-  const loadDiff = useCallback(async () => {
-    setLoading(true)
+  const loadDiff = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true)
     try {
       const data = await getRevisionDiffAction(revisionId)
       setDiff(data)
@@ -163,7 +161,7 @@ export function RevisionReviewDialog({
   // Thumbnails/tiles are generated just after the draft becomes ready, so the
   // first diff load can have missing previews. Refresh a few times to fill them.
   useEffect(() => {
-    if (!open || !diff || processing || previewRetries >= 6) return
+    if (!open || !diff || processing || diff.revision.processing_stage === "rendering_pages" || previewRetries >= 6) return
     const pending = [...diff.updated, ...diff.added].some(
       (s) => !s.draft.thumbnail_url,
     )
@@ -179,7 +177,6 @@ export function RevisionReviewDialog({
   useEffect(() => {
     if (!open) return
     setPreviewRetries(0)
-    setDraftSheets([])
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
 
@@ -204,24 +201,17 @@ export function RevisionReviewDialog({
         }
         if (status.status === "processing") {
           setProcessing(true)
-          setDiff({
-            revision: status,
-            updated: [],
-            added: [],
-            unchanged: [],
-          })
-          // Sheet + version rows are written at split time, so pages show up
-          // here long before their tiles finish. Degrade silently: a failed
-          // page fetch just leaves the grid where it was.
-          const pages = await listDraftRevisionSheetsAction(revisionId)
-          if (cancelled) return
-          if (pages.success) setDraftSheets(pages.data)
+          // Review available pages immediately; preserve local edits across updates.
+          await loadDiff(true)
           timer = setTimeout(tick, 2000)
           return
         }
         // draft ready
         setProcessing(false)
-        await loadDiff()
+        await loadDiff(true)
+        if (status.status === "draft" && status.processing_stage === "rendering_pages") {
+          timer = setTimeout(tick, 2000)
+        }
       } catch (err) {
         if (cancelled) return
         console.error("Failed to poll draft status:", err)
@@ -235,6 +225,11 @@ export function RevisionReviewDialog({
       if (timer) clearTimeout(timer)
     }
   }, [open, revisionId, loadDiff, retryNonce])
+
+  const reviewSheets = diff ? [...diff.updated, ...diff.added] : []
+  const hasSheets = reviewSheets.length > 0
+  const labelingCount = reviewSheets.filter(sheet => sheet.verification_pending).length
+  const rendering = !!diff && (diff.revision.processed_pages ?? 0) < (diff.revision.total_pages ?? 0)
 
   const setEdit = (sheetId: string, patch: SheetEdit) =>
     setEdits((prev) => ({ ...prev, [sheetId]: { ...prev[sheetId], ...patch } }))
@@ -338,9 +333,9 @@ export function RevisionReviewDialog({
             <div className="mb-1 hidden items-center gap-2 text-xs text-muted-foreground sm:flex">
               <Check className="h-3.5 w-3.5" /> Upload received
             </div>
-            <DialogTitle className="text-xl tracking-tight">{processing ? "Preparing your drawings" : "Review issuance"}</DialogTitle>
+            <DialogTitle className="text-xl tracking-tight">{processing && !hasSheets ? "Preparing your drawings" : "Review issuance"}</DialogTitle>
             <DialogDescription className="sr-only sm:not-sr-only">
-              {processing ? "Your package is processing. You can close this window and return later." : "Review the sheets, confirm the details, then publish to your register."}
+              {processing || rendering ? "Review available previews now. Full-resolution drawings are processing in the background." : "Review the sheets, confirm the details, then publish to your register."}
             </DialogDescription>
           </DialogHeader>
 
@@ -350,11 +345,15 @@ export function RevisionReviewDialog({
               <p className="text-lg font-medium">We couldn’t finish this package</p>
               <p className="max-w-md text-sm text-muted-foreground">{failed}</p>
             </div>
-          ) : processing || (loading && !diff) ? (
+          ) : (processing && !hasSheets) || (loading && !diff) ? (
             <ProcessingPanel processedPages={diff?.revision.processed_pages ?? 0}
-              totalPages={diff?.revision.total_pages ?? null} sheets={draftSheets} />
+              totalPages={diff?.revision.total_pages ?? null} sheets={[]} />
           ) : diff ? (
             <>
+              {(processing || rendering) && <div role="status" className="shrink-0 border-b bg-muted/30 px-6 py-2 text-xs text-muted-foreground">
+                {labelingCount > 0 ? `Reading ${labelingCount} sheet labels. ` : "Available sheet labels are ready for review. "}
+                {rendering ? `Full-resolution drawings: ${diff.revision.processed_pages ?? 0} of ${diff.revision.total_pages ?? "…"} ready. Previews upgrade automatically.` : ""}
+              </div>}
               <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b px-6 py-3">
                 <div className="flex gap-1 rounded-lg bg-muted/60 p-1" aria-label="Review sections">
                   <Button size="sm" variant={reviewTab === "sheets" ? "secondary" : "ghost"} aria-pressed={reviewTab === "sheets"} onClick={() => setReviewTab("sheets")}>Sheets <span className="ml-1 text-muted-foreground">{diff.updated.length + diff.added.length}</span></Button>
