@@ -6,7 +6,7 @@ insert into auth.users(id,instance_id,aud,role,email,encrypted_password,email_co
 insert into app_users(id,email,full_name) values('19000000-0000-0000-0000-000000000001','d2-gate@example.test','Gate Reviewer');
 insert into orgs(id,name,slug,created_by) values('29000000-0000-0000-0000-000000000001','Gate Test','d2-gate-test','19000000-0000-0000-0000-000000000001');
 insert into accounting_connections(id,org_id,provider,label,external_account_id,external_account_name,status,connected_by,refresh_failure_count,token_expires_at,refresh_token_expires_at,last_inbound_poll_at) values('39000000-0000-0000-0000-000000000001','29000000-0000-0000-0000-000000000001','qbo','Gate Books','gate-realm','Gate Books','active','19000000-0000-0000-0000-000000000001',0,now()+interval '1 hour',now()+interval '90 days',now());
-create table if not exists public.accounting_d2_legacy_archive(org_id uuid,source_table text,entity_id uuid,legacy_data jsonb);
+create table if not exists public.accounting_d2_legacy_archive(org_id uuid,source_table text,entity_id uuid,legacy_data jsonb,captured_at timestamptz default now(),unique(org_id,source_table,entity_id));
 insert into job_runs(job_name,status,started_at,finished_at,duration_ms,http_status) select name,'success',now()-interval '1 minute',now(),60000,200 from unnest(array['accounting-process-outbox','accounting-process-inbound','accounting-process-changes','accounting-reconciliation']) name;
 insert into accounting_d2_campaigns(id,candidate_sha,schema_fingerprint,checker_version,parity_version,expected_org_id,expected_connection_id,expected_realm_id,expected_company_name,release_evidence,approved_by,approved_at,started_at,created_at)
 values('59000000-0000-0000-0000-000000000001',repeat('a',40),accounting_d2_schema_fingerprint(),'accounting-d2-v1','legacy-present-neutral-equivalence-v1','29000000-0000-0000-0000-000000000001','39000000-0000-0000-0000-000000000001','gate-realm','Gate Books',jsonb_build_object('candidate_sha',repeat('a',40),'runtime_consumers',0,'drop_rehearsal_passed',true,'repairs_verified',true,'artifact_inventory_complete',true,'archive_verified',true),'19000000-0000-0000-0000-000000000001',now()-interval '16 days',now()-interval '15 days',now()-interval '17 days');
@@ -35,9 +35,10 @@ insert into accounting_d2_acceptance_samples(campaign_id,checked_at,candidate_sh
 update accounting_connections set external_account_id='changed' where id='39000000-0000-0000-0000-000000000001';
 select throws_ok('select assert_accounting_d2_ready()','P0001','HOLD D2: expected QBO identity or health changed','connection identity is rechecked at drop time');
 update accounting_connections set external_account_id='gate-realm' where id='39000000-0000-0000-0000-000000000001';
+alter table companies disable trigger accounting_d2_refresh_archive;
 insert into companies(id,org_id,name,qbo_vendor_name) values('49000000-0000-0000-0000-000000000001','29000000-0000-0000-0000-000000000001','Archive Fixture','legacy name only');
 select throws_like('select assert_accounting_d2_ready()','%legacy payloads are not archived exactly%','names-only legacy payload must be archived');
-insert into accounting_d2_legacy_archive values('29000000-0000-0000-0000-000000000001','companies','49000000-0000-0000-0000-000000000001','{"qbo_vendor_name":"legacy name only"}');
+insert into accounting_d2_legacy_archive(org_id,source_table,entity_id,legacy_data) values('29000000-0000-0000-0000-000000000001','companies','49000000-0000-0000-0000-000000000001','{"qbo_vendor_name":"legacy name only"}');
 select lives_ok('select assert_accounting_d2_ready()','exact archive preserves names-only compatibility payload');
 update companies set qbo_vendor_name='changed legacy name' where id='49000000-0000-0000-0000-000000000001';
 select throws_like('select assert_accounting_d2_ready()','%legacy payloads are not archived exactly%','archive evidence invalidates when source cache changes');

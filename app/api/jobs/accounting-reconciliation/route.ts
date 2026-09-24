@@ -9,7 +9,9 @@ async function handler(request: NextRequest) {
   if (!isAuthorizedCronRequest(request)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   const result = await runNightlyAccountingReconciliation()
   const acceptance = await captureAccountingAcceptance(result)
-  const ok = result.failures.length === 0 && acceptance.failedSamples === 0
+  // Acceptance is a release decision, not an operational reconciliation failure.
+  // Its persisted failed sample remains visible without poisoning tomorrow's cron-health gate.
+  const ok = result.attempted === result.completed && result.failures.length === 0
   return NextResponse.json({ ok, ...result, acceptance }, { status: ok ? 200 : 207 })
 }
 
