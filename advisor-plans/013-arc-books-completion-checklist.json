@@ -2590,7 +2590,7 @@
             "scripts/books-acceptance/scenarios/close-01.cjs",
             "scripts/books-acceptance/expected/CLOSE-01.json",
             "lib/services/books/period-close.ts",
-            "supabase/migrations/20261006150000_period_close_snapshot_ids.sql"
+            "supabase/migrations/20261006121034_period_close_snapshot_ids.sql"
           ],
           "test_scenario_ids": [
             "CLOSE-01"
@@ -2606,7 +2606,7 @@
             "Journal proposal: an accountant-proposed journal blocks close ('Manual journal proposals independently reviewed'); self-approval refused; owner approval then close posts Dr 6000 / Cr 3010 2,500.",
             "Close failure injected at the statement snapshot and at the final period lock (after snapshots saved): period left 'open' with no digest; retry closes with the clean worked-example July ledger, exactly one recognition entry and one saved statement per type.",
             "Twelve sequential closes Jul 2025-Jun 2026: 12 distinct digests; each close's balance sheet reports receivables of 1,000 x month.",
-            "Fixed: a reopened and reclosed period kept both statement sets (July balance sheet at 1,000 and at 1,500) with nothing marking the current one, and the accountant export carries both. accounting_periods.close_snapshot_ids is now written in the same update that locks the period, and the period_closed event carries the ids. Migration 20261006150000 is UNAPPLIED to production (needs approval).",
+            "Fixed: a reopened and reclosed period kept both statement sets (July balance sheet at 1,000 and at 1,500) with nothing marking the current one, and the accountant export carries both. accounting_periods.close_snapshot_ids is now written in the same update that locks the period, and the period_closed event carries the ids. Migration 20261006121034 applied to production 2026-10-06 with approval.",
             "Not built: quarter-end (needs a definition of quarter-specific close behaviour) and all-supported-modules (depends on BANK-01, payroll summary, assets, tax scenarios)."
           ],
           "artifact_paths_and_hashes": [
