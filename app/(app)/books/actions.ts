@@ -195,6 +195,7 @@ export async function loadDepositBatchWorkspaceAction() {
 export async function createDepositBatchAction(input: {
   bankTransactionId: string;
   paymentIds: string[];
+  feeCents?: number;
   reference?: string | null;
 }) {
   return run(() =>
@@ -203,6 +204,7 @@ export async function createDepositBatchAction(input: {
         .object({
           bankTransactionId: z.string().uuid(),
           paymentIds: z.array(z.string().uuid()).min(1),
+          feeCents: z.number().int().nonnegative().safe().optional(),
           reference: z.string().trim().max(120).nullable().optional(),
         })
         .parse(input),

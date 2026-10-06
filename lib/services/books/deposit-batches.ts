@@ -57,7 +57,7 @@ export async function getDepositBatchWorkspace(orgId?: string) {
     service.from("books_deposit_batch_items").select("payment_id").eq("org_id", context.orgId),
     service
       .from("books_deposit_batches")
-      .select("id,deposited_on,total_cents,status,reference,bank_account:bank_accounts(name,official_name),items:books_deposit_batch_items(id)")
+      .select("id,deposited_on,total_cents,fee_cents,status,reference,bank_account:bank_accounts(name,official_name),items:books_deposit_batch_items(id)")
       .eq("org_id", context.orgId)
       .order("deposited_on", { ascending: false })
       .limit(25),
@@ -118,6 +118,7 @@ export async function getDepositBatchWorkspace(orgId?: string) {
         id: row.id,
         depositedOn: row.deposited_on,
         totalCents: Number(row.total_cents),
+        feeCents: Number(row.fee_cents),
         status: row.status,
         reference: row.reference,
         accountName: account?.official_name || account?.name || "Bank account",
@@ -130,22 +131,26 @@ export async function getDepositBatchWorkspace(orgId?: string) {
 export async function createDepositBatch(input: {
   bankTransactionId: string;
   paymentIds: string[];
+  /** Processor fees withheld from a payout that settles these receipts. */
+  feeCents?: number;
   reference?: string | null;
   orgId?: string;
 }) {
   const context = await requireDepositContext(input.orgId);
+  const feeCents = z.number().int().nonnegative().safe().parse(input.feeCents ?? 0);
   if (input.paymentIds.length === 0) throw new Error("Select at least one receipt");
   if (new Set(input.paymentIds).size !== input.paymentIds.length) throw new Error("A receipt can be selected only once");
   const service = createServiceSupabaseClient();
   const { data, error } = await service.rpc("create_books_deposit_batch_atomic", {
     p_org_id: context.orgId, p_transaction_id: input.bankTransactionId,
     p_payment_ids: input.paymentIds, p_reference: input.reference?.trim() || null, p_actor_id: context.userId,
+    p_fee_cents: feeCents,
   });
   if (error) throw new Error(`Failed to post deposit batch: ${error.message}`);
   const result = z.object({ id: z.string().uuid(), duplicate: z.boolean() }).parse(data);
   await Promise.all([
-    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "deposit_batch", entityId: result.id, after: { payment_ids: input.paymentIds, bank_transaction_id: input.bankTransactionId }, source: "books.deposit_batch" }),
-    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "books.deposit_batch_posted", entityType: "deposit_batch", entityId: result.id, payload: { receipt_count: input.paymentIds.length } }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "deposit_batch", entityId: result.id, after: { payment_ids: input.paymentIds, bank_transaction_id: input.bankTransactionId, fee_cents: feeCents }, source: "books.deposit_batch" }),
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "books.deposit_batch_posted", entityType: "deposit_batch", entityId: result.id, payload: { receipt_count: input.paymentIds.length, fee_cents: feeCents } }),
   ]);
   return result;
 }

@@ -30,7 +30,7 @@ async function postOpening(kit, org, cutoverDate, lines) {
 // A Books-only builder: chart (plus any custom accounts), fiscal calendar,
 // accounting periods, an optional opening position, then a greenfield launch so
 // Arc is the official ledger (ledger_authority 'arc').
-async function greenfieldOrg(kit, { name, periods, setup, fiscalYearStartMonth = 1, accounts = [], opening }) {
+async function greenfieldOrg(kit, { name, periods, setup, fiscalYearStartMonth = 1, accounts = [], beforeOpening, opening }) {
   const { CONSTRUCTION_CHART_TEMPLATE } = app("books/chart-of-accounts")
   const { createAccountingPeriod } = app("books/period-close")
   const { launchGreenfieldBooks, GREENFIELD_ATTESTATION } = app("books/greenfield")
@@ -44,11 +44,12 @@ async function greenfieldOrg(kit, { name, periods, setup, fiscalYearStartMonth =
   }
   const { createGlAccount } = app("books/chart-management")
   for (const account of accounts) await kit.as(org.owner, () => createGlAccount(account))
+  if (beforeOpening) await beforeOpening(org)
   const launchedOn = org.periods[periods[0]].periodStart
   if (opening) {
     const cutover = new Date(`${launchedOn}T00:00:00Z`)
     cutover.setUTCDate(cutover.getUTCDate() - 1)
-    await postOpening(kit, org, cutover.toISOString().slice(0, 10), opening)
+    await postOpening(kit, org, cutover.toISOString().slice(0, 10), typeof opening === "function" ? opening(org) : opening)
   }
   await kit.as(org.owner, () => launchGreenfieldBooks({ launchedOn, openingPosition: opening ? "posted_opening_balances" : "zero", attestation: GREENFIELD_ATTESTATION }))
   return org

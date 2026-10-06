@@ -2009,7 +2009,7 @@
       "workstream": "B00",
       "title": "Build the golden acceptance runner and durable evidence catalog",
       "status": "PARTIAL",
-      "status_basis": "Golden runner, kit and API route working end to end. Passing: BILL-01 (4/4), YEAR-01 (5/5); CLOSE-01 4/6; BANK-01 2/5 (net deposit with fees, imported outstanding items, supplier refund need B08.1/B08.3 features); WIP-01 4/7 (3 need B04.1). 19 scenarios not started (2026-10-06).",
+      "status_basis": "Golden runner, kit and API route working end to end. Passing: BILL-01 (4/4), YEAR-01 (5/5), BANK-01 (5/5); CLOSE-01 4/6; WIP-01 4/7 (3 need B04.1). 19 scenarios not started (2026-10-06).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "intentionally incorrect accounting causes a nonzero run",
@@ -2639,6 +2639,28 @@
           ],
           "artifact_paths_and_hashes": [
             "docs/books-evidence/2026-10-06-golden-scenarios/BANK-01.json sha256:b336c5d6e9022db2b9a0180bde91ad5aca353d3279e98f808f52e1137ae7fcd5"
+          ]
+        },
+        {
+          "verified_at": "2026-10-06T12:38:27.765829+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/bank-01.cjs",
+            "scripts/books-acceptance/expected/BANK-01.json"
+          ],
+          "test_scenario_ids": [
+            "BANK-01"
+          ],
+          "commands": [
+            "scenario-runner BANK-01 (PASSED 5/5)",
+            "supabase/tests/books_*.test.sql 479 ok",
+            "pnpm test:financials 3560/3560",
+            "tsc, eslint clean"
+          ],
+          "observed_results": [
+            "BANK-01 PASSED: two banks + card over two cycles; ordered reopen with frozen evidence; processor payout net of fees; cutover outstanding items cleared by the first statement; supplier refund and an applied vendor credit with payables and job-cost controls tying at close."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/BANK-01.json sha256:4d0ad8fc3abda8c81c69c29b9d5957631f7ed6fd2390bb19cd9996d524ba280b"
           ]
         }
       ],
@@ -7300,7 +7322,35 @@
         "BANK-01",
         "RACE-01"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "verified_at": "2026-10-06T12:38:27.765829+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261006170000_books_deposit_batch_processor_fees.sql",
+            "supabase/migrations/20261006171000_books_opening_bank_outstanding_items.sql",
+            "supabase/migrations/20261003021045_books_bank_statement_evidence.sql",
+            "lib/services/books/deposit-batches.ts",
+            "lib/services/books/opening-balances.ts",
+            "components/books/deposit-batches.tsx",
+            "components/books/opening-balances-wizard.tsx"
+          ],
+          "test_scenario_ids": [
+            "BANK-01"
+          ],
+          "commands": [
+            "scenario-runner BANK-01"
+          ],
+          "observed_results": [
+            "Built: cutover checks/deposits import as their own reviewed opening lines (bank_opening_role 'outstanding_item', reference, original date) inside the single opening posting; the first statement clears exactly those items (10,000 statement, check 998 1,200 and deposit 300 cleared -> 9,085 = GL, nothing outstanding); the statement-balance opening line can never be matched; an item without its reference is refused.",
+            "Built: a processor payout net of fees clears its grouped receipts (Dr 1000 1,455 + Dr 6050 45 / Cr 1010 1,500), owned once by the bank line; retries are idempotent and a different fee is refused.",
+            "Verified: first statement opening + activity = closing; GL = statement adjusted by evidenced outstanding items for two banks and a card over two cycles; refunds, fees and card payments neither double-count expense nor cash.",
+            "Remaining for DONE: later void/reissue of an imported check, prior-period source corrections, independent-session races (RACE-01). New migrations 20261006170000/20261006171000 unapplied; outstanding-item clearing also needs the October train (close + match validation live in 20261003021045)."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/BANK-01.json sha256:4d0ad8fc3abda8c81c69c29b9d5957631f7ed6fd2390bb19cd9996d524ba280b"
+          ]
+        }
+      ],
       "remaining_criteria": [
         "first statement opening + actual statement activity = closing",
         "ledger balance adjusted by evidenced outstanding items = statement balance",
@@ -7331,7 +7381,27 @@
         "BANK-01",
         "RACE-01"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "verified_at": "2026-10-06T12:38:27.765829+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261003021045_books_bank_statement_evidence.sql"
+          ],
+          "test_scenario_ids": [
+            "BANK-01"
+          ],
+          "commands": [
+            "scenario-runner BANK-01"
+          ],
+          "observed_results": [
+            "Closed evidence cannot mutate (edit of a reconciled line refused); later-first reopen enforced across statements and periods; statement reimport adds no transactions; ordered reclose reproduces each digest (fixed: proof now fingerprints economic item fields in stable order).",
+            "Remaining for DONE: racing closes/matches across independent sessions (RACE-01); feed interruption with manual fallback; provider sandbox evidence."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/BANK-01.json sha256:4d0ad8fc3abda8c81c69c29b9d5957631f7ed6fd2390bb19cd9996d524ba280b"
+          ]
+        }
+      ],
       "remaining_criteria": [
         "racing closes/matches produce one valid state or explicit retry",
         "closed evidence cannot mutate",
@@ -7362,7 +7432,27 @@
         "BANK-01",
         "RACE-01"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "verified_at": "2026-10-06T12:38:27.765829+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/bank-01.cjs"
+          ],
+          "test_scenario_ids": [
+            "BANK-01"
+          ],
+          "commands": [
+            "scenario-runner BANK-01"
+          ],
+          "observed_results": [
+            "Two bank accounts and a card hold separate exact control balances over two cycles; bill checks credit the chosen funding account; card charges expense once and repayments only clear the liability; payroll net pay clears as two split debits; supplier refund categorized to job cost and an applied vendor credit keep AP and job cost tied at close.",
+            "Remaining for DONE: one payable paid across two accounts, reimbursable employee costs, Arc Pay funding-source mapping, provider fee settlement."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/BANK-01.json sha256:4d0ad8fc3abda8c81c69c29b9d5957631f7ed6fd2390bb19cd9996d524ba280b"
+          ]
+        }
+      ],
       "remaining_criteria": [
         "two bank accounts and a card produce separate exact control balances",
         "one payable paid across accounts retains ownership",

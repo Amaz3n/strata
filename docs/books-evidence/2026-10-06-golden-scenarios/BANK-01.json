@@ -1,13 +1,13 @@
 {
   "scenario": "BANK-01",
-  "status": "INCOMPLETE",
+  "status": "PASSED",
   "reviewedFrom": "Bank reconciliation practice: statement opening + statement activity = statement closing; GL control balance = statement balance adjusted by outstanding book items (checks/deposits in transit); each bank line is owned by exactly one book entry; card purchases are expensed once when charged and a card repayment only moves cash to the card liability; transfers between accounts move cash without income or expense. Pending licensed-CPA review (B16.3). Amounts are integer cents.",
   "subcases": [
     {
       "name": "two-banks-and-card-two-cycles",
       "status": "PASSED",
       "identities": {
-        "orgId": "0410df9b-2a8f-4d67-9779-78ca18206587"
+        "orgId": "728eb1d7-4dc2-4536-9f8a-0bdc114182a0"
       },
       "checks": [
         {
@@ -161,13 +161,13 @@
           "observed": 0
         }
       ],
-      "startedAt": "2026-10-06T12:19:20.405Z"
+      "startedAt": "2026-10-06T12:38:15.916Z"
     },
     {
       "name": "reopen-order-and-frozen-evidence",
       "status": "PASSED",
       "identities": {
-        "orgId": "c6b4acc8-d298-41cb-921c-9d5e07344fd8"
+        "orgId": "c489ebb5-99cd-44a2-9158-1bb3638dde26"
       },
       "checks": [
         {
@@ -195,24 +195,157 @@
           "observed": true
         }
       ],
-      "startedAt": "2026-10-06T12:19:26.652Z"
+      "startedAt": "2026-10-06T12:38:22.116Z"
     },
     {
       "name": "grouped-net-deposit-with-fees",
-      "status": "NOT_IMPLEMENTED",
-      "checks": []
+      "status": "PASSED",
+      "identities": {
+        "orgId": "0df94409-53e7-4cf5-bd25-6ad69be0e9be"
+      },
+      "checks": [
+        {
+          "label": "a retry of the same payout is a duplicate, not a second deposit",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "a retry with a different fee is refused",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "July statement ties with the payout owned once",
+          "pass": true,
+          "expected": {
+            "ending": 145500,
+            "outstanding": 0,
+            "book": 145500
+          },
+          "observed": {
+            "ending": 145500,
+            "outstanding": 0,
+            "book": 145500
+          }
+        },
+        {
+          "label": "ledger: receipts cleared, fee expensed once",
+          "pass": true,
+          "expected": {
+            "1000": 145500,
+            "4900": -150000,
+            "6050": 4500
+          },
+          "observed": {
+            "1000": 145500,
+            "4900": -150000,
+            "6050": 4500
+          }
+        }
+      ],
+      "startedAt": "2026-10-06T12:38:25.401Z"
     },
     {
       "name": "imported-outstanding-items",
-      "status": "NOT_IMPLEMENTED",
-      "checks": []
+      "status": "PASSED",
+      "identities": {
+        "orgId": "57603d3c-e4cf-4ab5-96ee-b5206f62dd11"
+      },
+      "checks": [
+        {
+          "label": "an outstanding item without its reference is refused",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "the statement-balance opening line cannot be matched",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "the first statement clears exactly the imported items",
+          "pass": true,
+          "expected": {
+            "ending": 908500,
+            "outstanding": 0,
+            "book": 908500
+          },
+          "observed": {
+            "ending": 908500,
+            "outstanding": 0,
+            "book": 908500
+          }
+        },
+        {
+          "label": "ledger: one opening posting, cleared items, fee",
+          "pass": true,
+          "expected": {
+            "1000": 908500,
+            "3010": -910000,
+            "6050": 1500
+          },
+          "observed": {
+            "1000": 908500,
+            "3010": -910000,
+            "6050": 1500
+          }
+        }
+      ],
+      "startedAt": "2026-10-06T12:38:26.035Z"
     },
     {
-      "name": "supplier-refund",
-      "status": "NOT_IMPLEMENTED",
-      "checks": []
+      "name": "supplier-refund-and-vendor-credit",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "c701cb4b-810d-4b76-b7c5-501b3a6c0bc5"
+      },
+      "checks": [
+        {
+          "label": "July statement ties",
+          "pass": true,
+          "expected": {
+            "ending": 665000,
+            "outstanding": 0,
+            "book": 665000
+          },
+          "observed": {
+            "ending": 665000,
+            "outstanding": 0,
+            "book": 665000
+          }
+        },
+        {
+          "label": "July closes: payables and job-cost controls tie",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "ledger: refund and credit reduce job cost once",
+          "pass": true,
+          "expected": {
+            "1000": 665000,
+            "2350": 502500,
+            "3010": -1000000,
+            "4000": -502500,
+            "5000": 335000
+          },
+          "observed": {
+            "1000": 665000,
+            "2350": 502500,
+            "3010": -1000000,
+            "4000": -502500,
+            "5000": 335000
+          }
+        }
+      ],
+      "startedAt": "2026-10-06T12:38:26.515Z"
     }
   ],
   "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
-  "finishedAt": "2026-10-06T12:19:30.116Z"
+  "finishedAt": "2026-10-06T12:38:27.706Z"
 }

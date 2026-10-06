@@ -56,7 +56,10 @@ begin
       where mt.org_id=p_org_id and mt.journal_line_id=l.id and mt.status='confirmed' and t.lifecycle_status='posted'
         and not t.excluded and t.transaction_date<=rec.statement_end) m on true
     where l.org_id=p_org_id and l.account_id=bank.gl_account_id and e.status in ('posted','reversed') and e.entry_date<=rec.statement_end
-      and e.entry_kind<>'opening' and l.debit_cents+l.credit_cents<>coalesce(m.cleared,0);
+      -- The opening position is not an outstanding item, except the cutover checks
+      -- and deposits imported as their own opening lines until the bank clears them.
+      and (e.entry_kind<>'opening' or l.dimensions->>'bank_opening_role'='outstanding_item')
+      and l.debit_cents+l.credit_cents<>coalesce(m.cleared,0);
   select coalesce(sum(amount_cents),0) into outstanding from public.bank_reconciliation_items
     where org_id=p_org_id and reconciliation_id=rec.id and item_status='outstanding';
   if rec.ending_balance_cents+outstanding<>books then raise exception 'Adjusted statement balance does not equal GL: statement %, outstanding %, GL %',rec.ending_balance_cents,outstanding,books; end if;
@@ -85,3 +88,54 @@ end;
 $$;
 revoke all on function public.close_books_bank_reconciliation_atomic(uuid,uuid,uuid) from public,anon,authenticated;
 grant execute on function public.close_books_bank_reconciliation_atomic(uuid,uuid,uuid) to service_role;
+
+-- Imported cutover checks and deposits are opening lines that the bank later
+-- clears; the rest of the opening position can never be matched.
+create or replace function public.validate_books_bank_match()
+returns trigger language plpgsql security definer set search_path = '' as $$
+declare
+  txn public.bank_transactions%rowtype;
+  bank public.bank_accounts%rowtype;
+  jl public.journal_lines%rowtype;
+  entry_status text;
+  entry_kind_value text;
+  used_cents bigint;
+begin
+  if tg_op = 'UPDATE' and (new.org_id <> old.org_id or new.bank_transaction_id <> old.bank_transaction_id
+      or new.journal_line_id is distinct from old.journal_line_id) then
+    raise exception 'A bank match cannot be reassigned; reverse it and create a new match';
+  end if;
+  select * into txn from public.bank_transactions where id = new.bank_transaction_id and org_id = new.org_id;
+  if not found then raise exception 'Bank transaction not found in organization'; end if;
+  select * into bank from public.bank_accounts where id = txn.bank_account_id and org_id = new.org_id for update;
+  if not found then raise exception 'Bank account not found in organization'; end if;
+  if exists (select 1 from public.bank_reconciliations r where r.org_id = new.org_id
+    and r.bank_account_id = bank.id and r.status = 'closed' and txn.transaction_date <= r.statement_end) then
+    raise exception 'Reopen the bank reconciliation before changing its matches';
+  end if;
+  select * into txn from public.bank_transactions where id = new.bank_transaction_id and org_id = new.org_id for update;
+  if new.status <> 'confirmed' then return new; end if;
+  if txn.lifecycle_status <> 'posted' or txn.excluded then raise exception 'Only posted, included bank transactions can be matched'; end if;
+  if new.journal_line_id is null or new.match_type = 'excluded' then
+    raise exception 'A confirmed match requires a journal line; exclusion is a separate reviewed action';
+  end if;
+  select * into jl from public.journal_lines where id = new.journal_line_id and org_id = new.org_id for update;
+  if not found or jl.account_id is distinct from bank.gl_account_id then raise exception 'Journal line must belong to the mapped bank account and organization'; end if;
+  select status, entry_kind into entry_status, entry_kind_value from public.journal_entries where id = jl.entry_id and org_id = new.org_id;
+  if entry_status not in('posted','reversed') then raise exception 'Only an economic journal line can receive a new match'; end if;
+  if entry_kind_value = 'opening' and coalesce(jl.dimensions->>'bank_opening_role','') <> 'outstanding_item' then
+    raise exception 'Only an imported outstanding check or deposit can clear against the opening balance';
+  end if;
+  if (txn.direction = 'inflow' and jl.debit_cents <= 0) or (txn.direction = 'outflow' and jl.credit_cents <= 0) then
+    raise exception 'Bank and journal line directions differ';
+  end if;
+  select coalesce(sum(matched_amount_cents),0) into used_cents from public.bank_transaction_matches
+    where org_id = new.org_id and bank_transaction_id = txn.id and status = 'confirmed' and id <> new.id;
+  if used_cents + new.matched_amount_cents > abs(txn.amount_cents) then raise exception 'Matches exceed bank transaction capacity'; end if;
+  select coalesce(sum(matched_amount_cents),0) into used_cents from public.bank_transaction_matches
+    where journal_line_id = jl.id and status = 'confirmed' and id <> new.id;
+  if used_cents + new.matched_amount_cents > jl.debit_cents + jl.credit_cents then raise exception 'Matches exceed journal line capacity'; end if;
+  return new;
+end;
+$$;
+revoke all on function public.validate_books_bank_match() from public, anon, authenticated;

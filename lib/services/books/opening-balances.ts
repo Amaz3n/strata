@@ -48,7 +48,7 @@ async function requireOpeningPermission(
   return context;
 }
 
-function validateLines(lines: OpeningBalanceLineInput[]) {
+function validateLines(lines: OpeningBalanceLineInput[], cutoverDate: string) {
   if (lines.length < 2)
     throw new Error("Opening balances require at least two lines");
   let debitTotalCents = 0;
@@ -101,6 +101,17 @@ function validateLines(lines: OpeningBalanceLineInput[]) {
         `Opening line ${index + 1} for control account ${line.accountCode} requires source detail`,
       );
     }
+    // A check or deposit the bank had not cleared at cutover is its own opening
+    // line, so the first statements can clear exactly that item.
+    if (line.details?.bank_opening_role !== undefined) {
+      const { bank_opening_role: role, reference, document_date: documentDate } = line.details;
+      if (role !== "outstanding_item" || (line.subledgerType !== "bank" && line.subledgerType !== "credit_card"))
+        throw new Error(`Opening line ${index + 1}: only bank and card accounts carry outstanding items`);
+      if (typeof reference !== "string" || reference.trim().length === 0)
+        throw new Error(`Opening line ${index + 1}: an outstanding item needs its check or deposit reference`);
+      if (typeof documentDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(documentDate) || documentDate > cutoverDate)
+        throw new Error(`Opening line ${index + 1}: an outstanding item needs its original date on or before cutover`);
+    }
     debitTotalCents += line.debitCents;
     creditTotalCents += line.creditCents;
   }
@@ -119,7 +130,7 @@ export async function createOpeningBalanceBatch(input: {
   orgId?: string;
 }) {
   const context = await requireOpeningPermission("books.manage", input.orgId);
-  const totals = validateLines(input.lines);
+  const totals = validateLines(input.lines, input.cutoverDate);
   const service = createServiceSupabaseClient();
   const sourceContentHash = booksDigest(input.sourceContent);
   const digest = booksDigest({

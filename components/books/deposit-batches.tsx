@@ -24,6 +24,8 @@ export function DepositBatches() {
   useEffect(() => { void load(); }, [load]);
   const selectedTransaction = workspace?.bankTransactions.find((row) => row.id === transactionId);
   const selectedTotal = useMemo(() => (workspace?.payments ?? []).filter((payment) => selected.has(payment.id)).reduce((sum, payment) => sum + payment.amountCents, 0), [selected, workspace]);
+  // A processor payout lands net of its fees; the shortfall is posted to bank fees.
+  const feeCents = selectedTransaction ? selectedTotal - selectedTransaction.amountCents : 0;
 
   if (!workspace) return <section className="border bg-background p-5 text-sm text-muted-foreground">Loading deposit workspace…</section>;
   return (
@@ -47,15 +49,15 @@ export function DepositBatches() {
           </div>
           <Input value={reference} onChange={(event) => setReference(event.target.value)} placeholder="Deposit slip or reference (optional)" />
           <div className="flex items-center justify-between gap-4 border-t pt-4">
-            <div className="text-xs"><p>Selected {formatMoneyCentsExact(selectedTotal)}</p><p className={selectedTransaction && selectedTotal !== selectedTransaction.amountCents ? "text-destructive" : "text-muted-foreground"}>Bank deposit {formatMoneyCentsExact(selectedTransaction?.amountCents ?? 0)}</p></div>
-            <Button disabled={pending || !selectedTransaction || selected.size === 0 || selectedTotal !== selectedTransaction.amountCents} onClick={() => startTransition(async () => {
-              const result = await createDepositBatchAction({ bankTransactionId: selectedTransaction!.id, paymentIds: Array.from(selected), reference: reference || null });
+            <div className="text-xs"><p>Selected {formatMoneyCentsExact(selectedTotal)}</p><p className={feeCents < 0 ? "text-destructive" : "text-muted-foreground"}>Bank deposit {formatMoneyCentsExact(selectedTransaction?.amountCents ?? 0)}</p>{feeCents > 0 ? <p className="text-warning">Processor fees withheld {formatMoneyCentsExact(feeCents)}</p> : null}</div>
+            <Button disabled={pending || !selectedTransaction || selected.size === 0 || feeCents < 0 || feeCents >= selectedTotal} onClick={() => startTransition(async () => {
+              const result = await createDepositBatchAction({ bankTransactionId: selectedTransaction!.id, paymentIds: Array.from(selected), feeCents, reference: reference || null });
               if (!result.success) { toast.error(result.error); return; }
               toast.success("Deposit posted and matched"); setTransactionId(""); setSelected(new Set()); setReference(""); await load();
-            })}>{pending ? "Posting…" : "Post deposit"}</Button>
+            })}>{pending ? "Posting…" : feeCents > 0 ? "Post deposit and fees" : "Post deposit"}</Button>
           </div>
         </div>
-        <div><div className="border-b p-4 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Recent deposits</div><div className="divide-y">{workspace.batches.map((batch) => <div key={batch.id} className="flex items-center justify-between gap-3 p-4 text-xs"><div><p className="font-medium">{batch.depositedOn} · {batch.accountName}</p><p className="mt-0.5 text-muted-foreground">{batch.itemCount} receipt{batch.itemCount === 1 ? "" : "s"}{batch.reference ? ` · ${batch.reference}` : ""}</p></div><div className="text-right"><p className="font-mono tabular-nums">{formatMoneyCentsExact(batch.totalCents)}</p><Badge variant="outline" className="mt-1 capitalize">{batch.status}</Badge></div></div>)}{workspace.batches.length === 0 ? <p className="p-8 text-center text-xs text-muted-foreground">No deposit batches yet.</p> : null}</div></div>
+        <div><div className="border-b p-4 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Recent deposits</div><div className="divide-y">{workspace.batches.map((batch) => <div key={batch.id} className="flex items-center justify-between gap-3 p-4 text-xs"><div><p className="font-medium">{batch.depositedOn} · {batch.accountName}</p><p className="mt-0.5 text-muted-foreground">{batch.itemCount} receipt{batch.itemCount === 1 ? "" : "s"}{batch.reference ? ` · ${batch.reference}` : ""}</p></div><div className="text-right"><p className="font-mono tabular-nums">{formatMoneyCentsExact(batch.totalCents - batch.feeCents)}</p>{batch.feeCents > 0 ? <p className="text-muted-foreground tabular-nums">{formatMoneyCentsExact(batch.feeCents)} fees</p> : null}<Badge variant="outline" className="mt-1 capitalize">{batch.status}</Badge></div></div>)}{workspace.batches.length === 0 ? <p className="p-8 text-center text-xs text-muted-foreground">No deposit batches yet.</p> : null}</div></div>
       </div>
     </section>
   );

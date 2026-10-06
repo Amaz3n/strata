@@ -326,13 +326,140 @@
       "expectedClosedEditRefused": true
     },
     "grouped-net-deposit-with-fees": {
-      "status": "NOT_IMPLEMENTED"
+      "inputs": {
+        "invoices": [
+          {
+            "issueDate": "2026-07-02",
+            "cents": 100000
+          },
+          {
+            "issueDate": "2026-07-02",
+            "cents": 50000
+          }
+        ],
+        "receiptDate": "2026-07-03",
+        "payout": {
+          "date": "2026-07-05",
+          "description": "Card processor payout",
+          "cents": 145500
+        },
+        "feeCents": 4500
+      },
+      "derivation": "Two card receipts (1,500) sit in 1010; the processor pays out 1,455 net of a 45 fee. One deposit clears both receipts: Dr 1000 1,455 + Dr 6050 45 / Cr 1010 1,500. The bank line is owned once; a retry with a different fee is refused; the July statement ties with nothing outstanding.",
+      "expectedNetDebitCentsByAccount": {
+        "1000": 145500,
+        "4900": -150000,
+        "6050": 4500
+      },
+      "expectedRetryDuplicate": true,
+      "expectedDifferentFeeRefused": true,
+      "expectedStatement": {
+        "ending": 145500,
+        "outstanding": 0,
+        "book": 145500
+      }
     },
     "imported-outstanding-items": {
-      "status": "NOT_IMPLEMENTED"
+      "inputs": {
+        "cutover": "2026-06-30",
+        "statementBalance": 1000000,
+        "equity": 910000,
+        "outstanding": [
+          {
+            "reference": "998",
+            "date": "2026-06-25",
+            "description": "Check 998 to framing supplier",
+            "cents": -120000
+          },
+          {
+            "reference": "DEP-0629",
+            "date": "2026-06-29",
+            "description": "Deposit in transit",
+            "cents": 30000
+          }
+        ],
+        "july": [
+          {
+            "date": "2026-07-01",
+            "description": "Deposit",
+            "cents": 30000,
+            "clears": "DEP-0629"
+          },
+          {
+            "date": "2026-07-06",
+            "description": "Check 998",
+            "cents": -120000,
+            "clears": "998"
+          },
+          {
+            "date": "2026-07-15",
+            "description": "Monthly service fee",
+            "cents": -1500,
+            "categorize": "6050"
+          }
+        ]
+      },
+      "derivation": "At cutover the bank shows 10,000 while the books show 9,100: check 998 (1,200) is outstanding and a 300 deposit is in transit. Each is its own opening line, so the first statement (opening 10,000) clears exactly those items; the statement-balance line can never be matched. July: 10,000 + 300 \u2212 1,200 \u2212 15 = 9,085 = GL with nothing outstanding.",
+      "expectedStatementBalanceLineRefused": true,
+      "expectedMissingReferenceRefused": true,
+      "expectedStatement": {
+        "ending": 908500,
+        "outstanding": 0,
+        "book": 908500
+      },
+      "expectedNetDebitCentsByAccount": {
+        "1000": 908500,
+        "3010": -910000,
+        "6050": 1500
+      }
     },
-    "supplier-refund": {
-      "status": "NOT_IMPLEMENTED"
+    "supplier-refund-and-vendor-credit": {
+      "inputs": {
+        "contractCents": 1500000,
+        "eacCents": 1000000,
+        "period": "2026-07",
+        "capital": {
+          "date": "2026-07-01",
+          "cents": 1000000
+        },
+        "bill1": {
+          "date": "2026-07-08",
+          "cents": 300000,
+          "check": "101",
+          "paid": "2026-07-20",
+          "clears": "2026-07-24"
+        },
+        "refund": {
+          "date": "2026-07-26",
+          "description": "Supplier refund \u2014 returned lumber",
+          "cents": 40000
+        },
+        "credit": {
+          "date": "2026-07-27",
+          "cents": 25000
+        },
+        "bill2": {
+          "date": "2026-07-28",
+          "cents": 100000,
+          "check": "102",
+          "paid": "2026-07-30",
+          "clears": "2026-07-31"
+        }
+      },
+      "derivation": "A supplier refunds 400 for returned lumber on a paid bill: Dr cash / Cr job cost, once. A 250 vendor credit (Dr AP / Cr job cost) is applied to a 1,000 bill, leaving 750 paid by check. Job cost = 3,000 \u2212 400 + 1,000 \u2212 250 = 3,350; AP = 0 with the credit consumed; 33.5% complete -> 5,025 earned. The payables and job-cost controls tie, so July closes.",
+      "expectedNetDebitCentsByAccount": {
+        "1000": 665000,
+        "2350": 502500,
+        "3010": -1000000,
+        "4000": -502500,
+        "5000": 335000
+      },
+      "expectedStatement": {
+        "ending": 665000,
+        "outstanding": 0,
+        "book": 665000
+      },
+      "expectedClosed": true
     }
   }
 }

@@ -3,7 +3,7 @@
 // bill payments by check, categorization, transfers, a split payroll debit,
 // statement reconciliation, period close and ordered reopen.
 const { randomUUID } = require("node:crypto")
-const { app, contractJob, project } = require("./shared.cjs")
+const { app, contractJob, greenfieldOrg, project } = require("./shared.cjs")
 const { prepareAndReview } = require("./wip-01.cjs").helpers
 
 const ACCOUNTS = ["operating", "payroll", "card"]
@@ -202,10 +202,144 @@ async function reopenOrder(kit, expected, check) {
   return { orgId: org.orgId }
 }
 
+// One mapped bank account on an org, returned as { id, code }.
+async function bankAccount(kit, org, code, name = "operating account") {
+  const { createManualBankAccount } = app("books/bank-feeds")
+  const created = await kit.as(org.owner, () => createManualBankAccount({ name, accountType: "depository", glAccountId: glId(kit, org, code) }))
+  return { id: created.id ?? created.bankAccountId ?? created, code }
+}
+
+async function closeStatement(kit, org, bankId, period, beginning, lines) {
+  const { createBankReconciliation, closeBankReconciliation } = app("books/bank-reconciliation")
+  const [year, month] = period.split("-").map(Number)
+  const end = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10)
+  const ending = beginning + lines.reduce((sum, line) => sum + line.cents, 0)
+  const id = await kit.as(org.owner, () => createBankReconciliation({ bankAccountId: bankId, statementStart: `${period}-01`, statementEnd: end, beginningBalanceCents: beginning, endingBalanceCents: ending }))
+  await kit.as(org.owner, () => closeBankReconciliation(id))
+  const row = kit.rows(`select ending_balance_cents, outstanding_balance_cents, book_balance_cents from public.bank_reconciliations where id=${kit.q(id)}`)[0]
+  return { ending: Number(row.ending_balance_cents), outstanding: Number(row.outstanding_balance_cents), book: Number(row.book_balance_cents) }
+}
+
+async function attempt(work) {
+  try { await work(); return false } catch { return true }
+}
+
+async function netDepositWithFees(kit, expected, check) {
+  const input = expected.inputs
+  const org = await greenfieldOrg(kit, { name: "BANK-01 processor payout", periods: ["2026-07"] })
+  org.banks = { operating: await bankAccount(kit, org, "1000") }
+  const { createInvoice } = app("invoices")
+  const { createContact } = app("contacts")
+  const { recordMultiInvoicePayment } = app("payments")
+  const client = await kit.as(org.owner, () => createContact({ input: { full_name: "Card Client", role_key: "client", email: "card@acceptance.example.test" } }))
+  const receipts = []
+  for (const spec of input.invoices) {
+    const invoice = await kit.as(org.owner, () => createInvoice({ input: { invoice_number: `CARD-${randomUUID().slice(0, 8)}`, customer_id: client.id, title: "Services", issue: true, issue_date: spec.issueDate, due_date: spec.issueDate,
+      sent_to_emails: ["card@acceptance.example.test"], lines: [{ description: "Services", quantity: 1, unit_cost: spec.cents / 100, taxable: false, arc_books_gl_account_id: glId(kit, org, "4900") }] } }))
+    await kit.as(org.owner, () => recordMultiInvoicePayment({ received_at: `${input.receiptDate}T12:00:00Z`, method: "card", idempotency_key: randomUUID(), allocations: [{ invoice_id: invoice.id, amount_cents: spec.cents }] }))
+    receipts.push(kit.rows(`select id from public.payments where org_id=${kit.q(org.orgId)} and invoice_id=${kit.q(invoice.id)}`)[0].id)
+  }
+  await kit.drainOutbox(org.orgId)
+  await project(kit, org)
+  await importStatement(kit, org, "operating", [input.payout])
+  const transactionId = bankTransaction(kit, org, "operating", input.payout)
+  const { createDepositBatch } = app("books/deposit-batches")
+  const deposit = (feeCents) => kit.as(org.owner, () => createDepositBatch({ bankTransactionId: transactionId, paymentIds: receipts, feeCents, reference: "Processor payout" }))
+  await deposit(input.feeCents)
+  check.equal("a retry of the same payout is a duplicate, not a second deposit", expected.expectedRetryDuplicate, (await deposit(input.feeCents)).duplicate)
+  check.equal("a retry with a different fee is refused", expected.expectedDifferentFeeRefused, await attempt(() => deposit(input.feeCents + 100)))
+  check.equal("July statement ties with the payout owned once", expected.expectedStatement, await closeStatement(kit, org, org.banks.operating.id, "2026-07", 0, [input.payout]))
+  check.equal("ledger: receipts cleared, fee expensed once", expected.expectedNetDebitCentsByAccount, kit.postedNet(org.orgId))
+  return { orgId: org.orgId }
+}
+
+async function importedOutstandingItems(kit, expected, check) {
+  const input = expected.inputs
+  const bankLine = (org, extra) => ({ accountCode: "1000", subledgerType: "bank", ...extra, details: { existing_entity_id: org.banks.operating.id, ...extra.details } })
+  const opening = (org) => [
+    bankLine(org, { description: "Bank statement balance at cutover", debitCents: input.statementBalance, creditCents: 0, details: {} }),
+    ...input.outstanding.map((item) => bankLine(org, { description: item.description, debitCents: Math.max(item.cents, 0), creditCents: Math.max(-item.cents, 0),
+      details: { bank_opening_role: "outstanding_item", reference: item.reference, document_date: item.date } })),
+    { accountCode: "3010", description: "Owner equity at cutover", debitCents: 0, creditCents: input.equity },
+  ]
+  let missingReferenceRefused = false
+  const org = await greenfieldOrg(kit, { name: "BANK-01 cutover items", periods: ["2026-07"], opening,
+    beforeOpening: async (org) => {
+      org.banks = { operating: await bankAccount(kit, org, "1000") }
+      const { createOpeningBalanceBatch } = app("books/opening-balances")
+      const lines = opening(org)
+      lines[1] = { ...lines[1], details: { ...lines[1].details, reference: "" } }
+      missingReferenceRefused = await attempt(() => kit.as(org.owner, () => createOpeningBalanceBatch({ cutoverDate: input.cutover, sourceContent: "missing reference", lines })))
+    } })
+  check.equal("an outstanding item without its reference is refused", expected.expectedMissingReferenceRefused, missingReferenceRefused)
+  await importStatement(kit, org, "operating", input.july)
+  const { confirmBankMatch } = app("books/bank-reconciliation")
+  const { categorizeBankTransaction } = app("books/bank-rules")
+  const openingLine = (where) => kit.rows(`select l.id from public.journal_lines l join public.journal_entries e on e.id=l.entry_id where l.org_id=${kit.q(org.orgId)} and e.entry_kind='opening' and ${where}`)[0].id
+  const deposit = input.july[0]
+  check.equal("the statement-balance opening line cannot be matched", expected.expectedStatementBalanceLineRefused,
+    await attempt(() => kit.as(org.owner, () => confirmBankMatch({ bankTransactionId: bankTransaction(kit, org, "operating", deposit), journalLineId: openingLine(`l.dimensions->>'bank_opening_role' is null and l.debit_cents=${input.statementBalance}`), amountCents: deposit.cents, matchType: "exact" }))))
+  for (const line of input.july) {
+    const transactionId = bankTransaction(kit, org, "operating", line)
+    if (line.clears) await kit.as(org.owner, () => confirmBankMatch({ bankTransactionId: transactionId, journalLineId: openingLine(`l.dimensions->>'reference'=${kit.q(line.clears)}`), amountCents: Math.abs(line.cents), matchType: "exact" }))
+    else await kit.as(org.owner, () => categorizeBankTransaction({ bankTransactionId: transactionId, glAccountId: glId(kit, org, line.categorize), memo: line.description, learn: false }))
+  }
+  check.equal("the first statement clears exactly the imported items", expected.expectedStatement, await closeStatement(kit, org, org.banks.operating.id, "2026-07", input.statementBalance, input.july))
+  check.equal("ledger: one opening posting, cleared items, fee", expected.expectedNetDebitCentsByAccount, kit.postedNet(org.orgId))
+  return { orgId: org.orgId }
+}
+
+async function supplierRefundAndCredit(kit, expected, check) {
+  const input = expected.inputs
+  const org = await contractJob(kit, { name: "BANK-01 supplier refund", contractCents: input.contractCents, retainagePercent: 0, periods: [input.period] })
+  org.banks = { operating: await bankAccount(kit, org, "1000") }
+  const { createProjectVendorBill, approveVendorBillsAtomic, updateVendorBillStatus, createProjectVendorCredit, applyVendorCreditToBill } = app("vendor-bills")
+  const bill = async (spec, label) => {
+    const created = await kit.as(org.owner, () => createProjectVendorBill({ projectId: org.projectId, input: { company_id: org.vendorId, bill_number: label, bill_date: spec.date, due_date: spec.date, total_cents: spec.cents,
+      actual_lines: [{ cost_code_id: org.costCodeId, description: "Lumber", amount_cents: spec.cents, project_id: org.projectId }] } }))
+    await kit.as(org.owner, () => approveVendorBillsAtomic([{ id: created.id }]))
+    return created.id
+  }
+  const pay = (billId, spec, cents) => kit.as(org.owner, () => updateVendorBillStatus({ billId, input: { status: "paid", payment_amount_cents: cents, payment_method: "check", check_number: spec.check, payment_date: spec.paid,
+    books_payment_account_id: glId(kit, org, "1000"), payment_idempotency_key: `bank-01-${spec.check}-${org.orgId}` } }))
+  const bill1 = await bill(input.bill1, "LUMBER-1")
+  await pay(bill1, input.bill1, input.bill1.cents)
+  const credit = await kit.as(org.owner, () => createProjectVendorCredit({ projectId: org.projectId, companyId: org.vendorId, billNumber: "CREDIT-1", billDate: input.credit.date, description: "Credit for damaged lumber",
+    lines: [{ cost_code_id: org.costCodeId, description: "Damaged lumber", amount_cents: -input.credit.cents }] }))
+  const bill2 = await bill(input.bill2, "LUMBER-2")
+  await kit.as(org.owner, () => applyVendorCreditToBill({ creditBillId: credit.id, billId: bill2, amountCents: input.credit.cents, idempotencyKey: `credit-${org.orgId}` }))
+  await pay(bill2, input.bill2, input.bill2.cents - input.credit.cents)
+  await kit.drainOutbox(org.orgId)
+  await project(kit, org)
+  const lines = [
+    { date: input.capital.date, description: "Owner capital contribution", cents: input.capital.cents },
+    { date: input.bill1.clears, description: `Check ${input.bill1.check}`, cents: -input.bill1.cents },
+    { date: input.refund.date, description: input.refund.description, cents: input.refund.cents },
+    { date: input.bill2.clears, description: `Check ${input.bill2.check}`, cents: -(input.bill2.cents - input.credit.cents) },
+  ]
+  await importStatement(kit, org, "operating", lines)
+  const { categorizeBankTransaction } = app("books/bank-rules")
+  const { confirmBankMatch } = app("books/bank-reconciliation")
+  await kit.as(org.owner, () => categorizeBankTransaction({ bankTransactionId: bankTransaction(kit, org, "operating", lines[0]), glAccountId: glId(kit, org, "3010"), memo: "Capital", learn: false }))
+  await kit.as(org.owner, () => categorizeBankTransaction({ bankTransactionId: bankTransaction(kit, org, "operating", lines[2]), glAccountId: glId(kit, org, "5000"), projectId: org.projectId, costCodeId: org.costCodeId, memo: "Returned lumber", learn: false }))
+  for (const line of [lines[1], lines[3]])
+    await kit.as(org.owner, () => confirmBankMatch({ bankTransactionId: bankTransaction(kit, org, "operating", line), journalLineId: bookLine(kit, org, "1000", "credit", Math.abs(line.cents), `and e.source_type like '%payment%'`), amountCents: Math.abs(line.cents), matchType: "exact" }))
+  check.equal("July statement ties", expected.expectedStatement, await closeStatement(kit, org, org.banks.operating.id, input.period, 0, lines))
+  await prepareAndReview(kit, org, input.period, { contractCents: input.contractCents, eacCents: input.eacCents })
+  let closed = true
+  try { await kit.as(org.owner, () => app("books/period-close").closeAccountingPeriod(org.periods[input.period].periodId)) } catch (error) { closed = error instanceof Error ? error.message : String(error) }
+  check.equal("July closes: payables and job-cost controls tie", expected.expectedClosed, closed)
+  check.equal("ledger: refund and credit reduce job cost once", expected.expectedNetDebitCentsByAccount, kit.postedNet(org.orgId))
+  return { orgId: org.orgId }
+}
+
 module.exports = {
   id: "BANK-01",
   subcases: {
     "two-banks-and-card-two-cycles": async (kit, expected, check) => ({ orgId: (await twoCycles(kit, expected, check)).org.orgId }),
     "reopen-order-and-frozen-evidence": reopenOrder,
+    "grouped-net-deposit-with-fees": netDepositWithFees,
+    "imported-outstanding-items": importedOutstandingItems,
+    "supplier-refund-and-vendor-credit": supplierRefundAndCredit,
   },
 }
