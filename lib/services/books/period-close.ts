@@ -1166,6 +1166,10 @@ export async function reopenAccountingPeriod(input: {
     .eq("status", "closed");
   if (error)
     throw new Error(`Failed to reopen accounting period: ${error.message}`);
+  // Sources the closed period had blocked retry on the next projection run.
+  const { error: retryError } = await service.rpc("books_touch_blocked_sources", { p_org_id: context.orgId });
+  if (retryError)
+    throw new Error(`Period reopened, but blocked sources could not be queued for retry: ${retryError.message}`);
   await recordEvent({
     orgId: context.orgId,
     actorId: context.userId,

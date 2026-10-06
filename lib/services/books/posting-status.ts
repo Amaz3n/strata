@@ -22,9 +22,11 @@ export async function getBooksPostingStatus(input: { sourceType: "invoice" | "ve
   const { data: settings, error: settingsError } = await service.from("books_settings").select("workspace_enabled,arc_ledger_mode").eq("org_id", context.orgId).maybeSingle()
   if (settingsError) throw new Error("Unable to load accounting posture")
   if (!settings?.workspace_enabled || settings.arc_ledger_mode === "disabled") return null
+  // A retainage release posts (and fails) under its own source type.
+  const sourceTypes = parsed.sourceType === "expense" ? ["expense"] : [parsed.sourceType, "retainage_release"]
   const [receiptResult, failureResult] = await Promise.all([
-    service.from("books_projection_receipts").select("source_observed_at,checked_at,journal:journal_entries!books_projection_receipts_journal_id_fkey(status,entry_date)").eq("org_id", context.orgId).eq("source_type", parsed.sourceType).eq("source_id", parsed.sourceId).maybeSingle(),
-    service.from("accounting_reconciliation_items").select("category").eq("org_id", context.orgId).eq("entity_type", parsed.sourceType).eq("entity_id", parsed.sourceId).in("category", ["projection_failed", "projection_blocked_by_closed_period"]).neq("status", "resolved").order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    service.from("books_projection_receipts").select("source_observed_at,checked_at,journal:journal_entries!books_projection_receipts_journal_id_fkey(status,entry_date)").eq("org_id", context.orgId).in("source_type", sourceTypes).eq("source_id", parsed.sourceId).order("checked_at", { ascending: false }).limit(1).maybeSingle(),
+    service.from("accounting_reconciliation_items").select("category").eq("org_id", context.orgId).in("entity_type", sourceTypes).eq("entity_id", parsed.sourceId).in("category", ["projection_failed", "projection_blocked_by_closed_period"]).neq("status", "resolved").order("created_at", { ascending: false }).limit(1).maybeSingle(),
   ])
   if (receiptResult.error || failureResult.error) throw new Error("Unable to verify accounting posting status")
   const receipt = receiptResult.data

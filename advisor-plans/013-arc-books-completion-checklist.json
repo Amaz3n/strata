@@ -7817,7 +7817,7 @@
       "workstream": "B09",
       "title": "Complete economic dependency invalidation",
       "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status_basis": "Dependency invalidation built and proven for bills, invoices, expenses and payments with incremental runs (STATUS-01 7/7, negative check confirms the test catches a missing trigger). Open: project dimensions (policy with B07), date-driven revenue-basis flips, deletions retire only nightly, and a test of a stopped org run surfacing as a finding.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "table-driven mutation tests change each listed dependency and get stale/blocked/reprojected status correctly",
@@ -7873,14 +7873,49 @@
           "artifact_paths_and_hashes": [
             "docs/books-evidence/2026-10-06-golden-scenarios/RACE-01.json sha256:af51a74fc97621cb9e1f08fff19724876fa136c5bfbcd5b02ac7b32a7adf4582"
           ]
+        },
+        {
+          "verified_at": "2026-10-06T17:06:05.887438+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261006200000_books_projection_dependency_invalidation.sql",
+            "lib/services/books/projector.ts",
+            "lib/services/books/period-close.ts",
+            "lib/services/books/posting-status.ts",
+            "scripts/books-acceptance/scenarios/status-01.cjs",
+            "tests/arc-books.test.js"
+          ],
+          "test_scenario_ids": [
+            "STATUS-01",
+            "RACE-01"
+          ],
+          "commands": [
+            "scenario-runner STATUS-01 (PASSED 7/7)",
+            "negative: drop books_touch_source_from_job_cost -> dependency-invalidation FAILS ('posted' before reprojection)",
+            "regression: BILL-01, YEAR-01, BANK-01 PASSED; WIP-01/CLOSE-01/RACE-01 unchanged INCOMPLETE; pnpm test:financials 2679/2679; books pgTAP 479 ok"
+          ],
+          "observed_results": [
+            "Inputs outside the source row now invalidate it (security-definer touch triggers): job-cost lines -> bill/expense; billing model, inventory policy, contracts, project type/status -> the project's invoices, bills, expenses, credit memos; funding-source mapping -> funded payments, expenses, fee charges; chart account changes -> documents and payments naming the account; payment edits -> its reversals; invoice edits -> its credit memos (and payments when its kind changes).",
+            "Incremental-only proof: job-cost re-code, billing-model change, new contract, funding remap curing a failed payment, account deactivation, and reopen retrying a blocked bill each read 'pending' at once and current after one incremental run, with the ledger reflecting the change.",
+            "Fixed: one organization's projection error stopped every later organization's run (now surfaced as that org's failure); reopening a period now retries the sources its close blocked; retainage-release documents read their own receipts and findings instead of 'pending' forever."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/STATUS-01.json sha256:0251c6a921ca2dce67a964422dabe4a018c87ec0d3e0b806a3d0676a58d505f0"
+          ],
+          "remaining_criteria": [
+            "project dimension changes (division/community/lot/contract count) — restatement policy decided with B07",
+            "revenue basis that flips by date alone (contract effective_date reached) without any write",
+            "deleted sources retire only in the nightly full run",
+            "test that an organization whose projection stops is surfaced as a finding and blocks close"
+          ],
+          "external_dependency": null,
+          "reviewer": null
         }
       ],
       "remaining_criteria": [
-        "table-driven mutation tests change each listed dependency and get stale/blocked/reprojected status correctly",
-        "retired/superseded facts are not reported missing",
-        "a failed replacement preserves previous valid monetary history",
-        "resolution clears only evaluated source findings",
-        "no skipped/capped run reports the company clean"
+        "project dimension changes (division/community/lot/contract count) — restatement policy decided with B07",
+        "revenue basis that flips by date alone (contract effective_date reached) without any write",
+        "deleted sources retire only in the nightly full run",
+        "test that an organization whose projection stops is surfaced as a finding and blocks close"
       ],
       "external_dependency": null,
       "reviewer": null,

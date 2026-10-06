@@ -7,8 +7,8 @@
       "name": "bill-harmless-edit",
       "status": "PASSED",
       "identities": {
-        "orgId": "44906023-d47f-4c43-b71f-9d9572eba8b0",
-        "billId": "d3427b08-7867-4b49-b5aa-04d62ff50afe"
+        "orgId": "8be5c01a-dbf2-4b6c-af2b-45b41e0bb5ac",
+        "billId": "900dc816-d1e8-4db4-9683-91b1f78d14f3"
       },
       "checks": [
         {
@@ -36,14 +36,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T14:03:45.272Z"
+      "startedAt": "2026-10-06T17:02:01.626Z"
     },
     {
       "name": "bill-economic-edits",
       "status": "PASSED",
       "identities": {
-        "orgId": "6d7637e2-bbdc-4512-8994-e8b10ad32df9",
-        "billId": "2e63a7f5-8f25-41cc-9270-2f94887fc03c"
+        "orgId": "47541792-cbda-480c-8ba8-5208d65f77cb",
+        "billId": "dd741cff-0f7f-45c5-8999-9ae0c035de2b"
       },
       "checks": [
         {
@@ -133,14 +133,14 @@
           "observed": 4
         }
       ],
-      "startedAt": "2026-10-06T14:03:48.388Z"
+      "startedAt": "2026-10-06T17:02:05.105Z"
     },
     {
       "name": "bill-closed-period-replacement-and-repair",
       "status": "PASSED",
       "identities": {
-        "orgId": "812de862-aad4-451e-b5cc-41e3dc3d568f",
-        "billId": "d6795e9e-9dc7-4154-ab6e-eff284a85dec",
+        "orgId": "5712d1e3-a981-4331-beb2-9edc2cbe836f",
+        "billId": "187dd9d5-5a55-48dc-8cd0-b1796e537d82",
         "editRefused": false,
         "blockedState": "blocked"
       },
@@ -194,14 +194,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T14:03:49.302Z"
+      "startedAt": "2026-10-06T17:02:06.083Z"
     },
     {
       "name": "expense-family",
       "status": "PASSED",
       "identities": {
-        "orgId": "18297f94-50da-413f-84f6-80b3b15bd4b2",
-        "expenseId": "51b5ad4c-5ab6-453e-90fd-885facf701c1"
+        "orgId": "ac94842f-a5ce-4b76-b4be-30764fa4193c",
+        "expenseId": "9a611c0e-377a-41e6-8f9c-dbdc84b9e6d5"
       },
       "checks": [
         {
@@ -247,15 +247,15 @@
           "observed": {}
         }
       ],
-      "startedAt": "2026-10-06T14:03:50.124Z"
+      "startedAt": "2026-10-06T17:02:07.002Z"
     },
     {
       "name": "invoice-view-and-revision",
       "status": "PASSED",
       "identities": {
-        "orgId": "9f5141b8-82a6-489e-9960-8abe2cf244b1",
-        "originalId": "fa2f2165-059d-44a6-84fd-4b6af5af366c",
-        "replacementId": "15044603-18e9-4ffc-832c-b62e57e489c0",
+        "orgId": "fd90b356-84d7-4fb6-83e8-925d6cc1787a",
+        "originalId": "3efeba03-efa5-47aa-aa59-0abeec93bf39",
+        "replacementId": "db23606e-e094-4721-b7c3-daba2ab104d9",
         "originalState": "reversed"
       },
       "checks": [
@@ -296,15 +296,15 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T14:03:50.648Z"
+      "startedAt": "2026-10-06T17:02:07.529Z"
     },
     {
       "name": "partial-run-scoped-resolution",
       "status": "PASSED",
       "identities": {
-        "orgId": "1f5a2d98-5e6c-45bd-8c7b-0c7ddfeec4bf",
-        "billA": "ce53cdde-6c1a-4ef9-9739-1a829d768243",
-        "billB": "a0afc7f3-1489-40f9-b434-f7bb0fa8cb43"
+        "orgId": "d994a47f-bead-43c6-9185-401a3f06f177",
+        "billA": "d1ae9385-0a1d-4e4d-9bc1-4da65a72a3a8",
+        "billB": "985a28fa-d3e7-45ce-a4bd-4cac13c499cb"
       },
       "checks": [
         {
@@ -356,9 +356,97 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T14:03:51.474Z"
+      "startedAt": "2026-10-06T17:02:08.370Z"
+    },
+    {
+      "name": "dependency-invalidation",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "a12d5bad-0177-43e3-8ca5-27701de2c4b3",
+        "reopenOrgId": "ecd4c6c4-e6a0-4f13-897f-1d47bb71873e",
+        "deactivatedAfter": "posted"
+      },
+      "checks": [
+        {
+          "label": "job-cost re-code: pending, then current with the new cost code",
+          "pass": true,
+          "expected": {
+            "before": "pending",
+            "after": "posted",
+            "postedCostCodeIsNew": true
+          },
+          "observed": {
+            "before": "pending",
+            "after": "posted",
+            "postedCostCodeIsNew": true
+          }
+        },
+        {
+          "label": "billing model: pending, then current",
+          "pass": true,
+          "expected": {
+            "before": "pending",
+            "after": "posted"
+          },
+          "observed": {
+            "before": "pending",
+            "after": "posted"
+          }
+        },
+        {
+          "label": "new contract: pending, then current",
+          "pass": true,
+          "expected": {
+            "before": "pending",
+            "after": "posted"
+          },
+          "observed": {
+            "before": "pending",
+            "after": "posted"
+          }
+        },
+        {
+          "label": "funding remap: fails while unmapped, posts to the mapped account on the next run",
+          "pass": true,
+          "expected": {
+            "failedBeforeMapping": true,
+            "postedToMappedAccount": "1005"
+          },
+          "observed": {
+            "failedBeforeMapping": true,
+            "postedToMappedAccount": "1005"
+          }
+        },
+        {
+          "label": "account deactivated: pending, then re-evaluated with its posted history kept",
+          "pass": true,
+          "expected": {
+            "before": "pending",
+            "afterIsNotStalePosted": true,
+            "historyPreserved": true
+          },
+          "observed": {
+            "before": "pending",
+            "afterIsNotStalePosted": true,
+            "historyPreserved": true
+          }
+        },
+        {
+          "label": "reopen: the blocked bill posts on the next incremental run",
+          "pass": true,
+          "expected": {
+            "blocked": "blocked",
+            "afterReopenIncremental": "posted"
+          },
+          "observed": {
+            "blocked": "blocked",
+            "afterReopenIncremental": "posted"
+          }
+        }
+      ],
+      "startedAt": "2026-10-06T17:02:09.392Z"
     }
   ],
   "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
-  "finishedAt": "2026-10-06T14:03:52.441Z"
+  "finishedAt": "2026-10-06T17:02:11.564Z"
 }

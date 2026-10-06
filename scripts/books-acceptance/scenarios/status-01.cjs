@@ -195,6 +195,88 @@ async function expenseFamily(kit, expected, check) {
   return { orgId: org.orgId, expenseId }
 }
 
+// The scheduled run: incremental, never the nightly full pass.
+async function incrementalJob(kit, org) {
+  const { projectJournal } = app("books/projector")
+  const { recordProjectionFailures } = app("books/reconciliation")
+  const result = await kit.service(() => projectJournal(org.orgId))
+  await kit.service(() => recordProjectionFailures([{ orgId: org.orgId, ...result }]))
+}
+
+async function dependencyInvalidation(kit, expected, check) {
+  const input = expected.inputs
+  const want = expected.expected
+  const org = await contractJob(kit, { name: "STATUS-01 dependencies", contractCents: input.contractCents, retainagePercent: 0, periods: ["2026-07"],
+    accounts: [{ code: "1005", name: "Payroll checking", accountType: "asset", subtype: "cash", normalBalance: "debit" }, { code: "6810", name: "Estimating software", accountType: "expense", subtype: "software", normalBalance: "debit" }] })
+  const billState = (id) => state(kit, org, id)
+
+  // A job-cost line re-coded after the bill posted (the app writes cost lines after the bill).
+  const recodeBill = await createBill(kit, org, input.billDate, input.cents)
+  await incrementalJob(kit, org)
+  const newCode = randomUUID()
+  kit.sql(`insert into public.cost_codes(id,org_id,code,name) values(${kit.q(newCode)},${kit.q(org.orgId)},'06-300','Trim carpentry');
+update public.job_cost_entries set cost_code_id=${kit.q(newCode)} where org_id=${kit.q(org.orgId)} and source_type='vendor_bill_line' and source_id in (select id::text from public.bill_lines where bill_id=${kit.q(recodeBill)});`)
+  const recodeBefore = await billState(recodeBill)
+  await incrementalJob(kit, org)
+  const recodeLine = kit.rows(`select l.dimensions->>'cost_code_id' code from public.journal_lines l join public.journal_entries e on e.id=l.entry_id where e.org_id=${kit.q(org.orgId)} and e.source_type='vendor_bill' and e.source_id=${kit.q(recodeBill)} and e.status='posted' and l.debit_cents>0`)
+  check.equal("job-cost re-code: pending, then current with the new cost code", want["job-cost-recode"], { before: recodeBefore, after: await billState(recodeBill), postedCostCodeIsNew: recodeLine.length === 1 && recodeLine[0].code === newCode })
+
+  // The project's billing model and a new contract decide how its documents post.
+  kit.sql(`update public.project_financial_settings set billing_model='cost_plus_percent' where project_id=${kit.q(org.projectId)};`)
+  const settingsBefore = await billState(recodeBill)
+  await incrementalJob(kit, org)
+  check.equal("billing model: pending, then current", want["billing-model"], { before: settingsBefore, after: await billState(recodeBill) })
+  kit.sql(`insert into public.contracts(id,org_id,project_id,title,status,total_cents,currency,contract_type,retainage_percent,effective_date) values(gen_random_uuid(),${kit.q(org.orgId)},${kit.q(org.projectId)},'Change order contract','draft',100000,'usd','fixed',0,'2026-07-01');`)
+  const contractBefore = await billState(recodeBill)
+  await incrementalJob(kit, org)
+  check.equal("new contract: pending, then current", want["new-contract"], { before: contractBefore, after: await billState(recodeBill) })
+
+  // A payment that names an unmapped funding source fails until the source is mapped.
+  const paidBill = await createBill(kit, org, input.billDate, input.cents)
+  await kit.as(org.owner, () => app("vendor-bills").updateVendorBillStatus({ billId: paidBill, input: { status: "paid", payment_amount_cents: input.cents, payment_method: "ach",
+    payment_date: "2026-07-15", books_payment_account_id: glId(kit, org, "1000"), payment_idempotency_key: `dep-fund-${org.orgId}` } }))
+  const fundingId = randomUUID()
+  kit.sql(`insert into public.org_funding_sources(id,org_id,provider,provider_customer_id,provider_payment_method_id,mandate_status,verification_status,status,is_default,created_by)
+  values(${kit.q(fundingId)},${kit.q(org.orgId)},'stripe',${kit.q(`cus_${fundingId}`)},${kit.q(`pm_${fundingId}`)},'accepted','verified','active',false,${kit.q(org.owner.userId)});
+update public.payments set metadata=(metadata - 'books_payment_account_id') || jsonb_build_object('funding_source_id',${kit.q(fundingId)}) where bill_id=${kit.q(paidBill)};`)
+  const paymentId = kit.rows(`select id from public.payments where bill_id=${kit.q(paidBill)}`)[0].id
+  await incrementalJob(kit, org)
+  const failed = kit.rows(`select count(*) n from public.accounting_reconciliation_items where org_id=${kit.q(org.orgId)} and entity_id::text=${kit.q(paymentId)} and status<>'resolved'`)[0].n > 0
+  await kit.as(org.owner, () => app("books/funding").saveBooksFundingAccount({ fundingSourceId: fundingId, accountId: glId(kit, org, "1005") }))
+  await incrementalJob(kit, org)
+  const paidFrom = kit.rows(`select a.code from public.journal_lines l join public.journal_entries e on e.id=l.entry_id join public.gl_accounts a on a.id=l.account_id
+    where e.org_id=${kit.q(org.orgId)} and e.source_id=${kit.q(paymentId)} and e.status='posted' and l.credit_cents>0`)[0]?.code
+  check.equal("funding remap: fails while unmapped, posts to the mapped account on the next run", want["funding-remap"], { failedBeforeMapping: failed, postedToMappedAccount: paidFrom })
+
+  // A chart account named on a bill line is deactivated.
+  const softwareBill = await createBill(kit, org, input.billDate, input.cents)
+  await kit.as(org.owner, () => app("vendor-bills").updateVendorBillStatus({ billId: softwareBill, input: { status: "approved", actual_lines: [{ description: "Estimating software", amount_cents: input.cents, cost_code_id: org.costCodeId, project_id: org.projectId, arc_books_gl_account_id: glId(kit, org, "6810") }] } }))
+  await incrementalJob(kit, org)
+  const postedBefore = kit.rows(`select count(*) n from public.journal_entries where org_id=${kit.q(org.orgId)} and source_id=${kit.q(softwareBill)} and status='posted'`)[0].n
+  await kit.as(org.owner, () => app("books/chart-management").setGlAccountActive(glId(kit, org, "6810"), false))
+  const deactivatedBefore = await billState(softwareBill)
+  await incrementalJob(kit, org)
+  const deactivatedAfter = await billState(softwareBill)
+  const postedAfter = kit.rows(`select count(*) n from public.journal_entries where org_id=${kit.q(org.orgId)} and source_id=${kit.q(softwareBill)} and status='posted'`)[0].n
+  check.equal("account deactivated: pending, then re-evaluated with its posted history kept", want["account-deactivated"],
+    { before: deactivatedBefore, afterIsNotStalePosted: deactivatedAfter !== "pending", historyPreserved: postedBefore === 1 && postedAfter === 1 })
+
+  // A reopened period retries what its close blocked, without waiting for the nightly run.
+  const closed = await contractJob(kit, { name: "STATUS-01 reopen retry", contractCents: input.contractCents, retainagePercent: 0, periods: ["2026-07"] })
+  const blockedBill = await createBill(kit, closed, input.billDate, input.cents)
+  await incrementalJob(kit, closed)
+  await prepareAndReview(kit, closed, "2026-07", { contractCents: input.contractCents, eacCents: input.contractCents })
+  const periodClose = app("books/period-close")
+  await kit.as(closed.owner, () => periodClose.closeAccountingPeriod(closed.periods["2026-07"].periodId))
+  await editBill(kit, closed, blockedBill, { actual_lines: [{ description: "Framing", amount_cents: input.cents, cost_code_id: closed.costCodeId, project_id: closed.projectId, arc_books_gl_account_id: glId(kit, closed, "5020") }] })
+  await incrementalJob(kit, closed)
+  const blocked = await state(kit, closed, blockedBill)
+  await kit.as(closed.owner, () => periodClose.reopenAccountingPeriod({ periodId: closed.periods["2026-07"].periodId, reason: "Vendor bill coded to the wrong account" }))
+  await incrementalJob(kit, closed)
+  check.equal("reopen: the blocked bill posts on the next incremental run", want["reopen-retries-blocked"], { blocked, afterReopenIncremental: await state(kit, closed, blockedBill) })
+  return { orgId: org.orgId, reopenOrgId: closed.orgId, deactivatedAfter }
+}
+
 module.exports = {
   id: "STATUS-01",
   subcases: {
@@ -204,5 +286,6 @@ module.exports = {
     "invoice-view-and-revision": invoiceViewAndRevision,
     "partial-run-scoped-resolution": partialRunScopedResolution,
     "expense-family": expenseFamily,
+    "dependency-invalidation": dependencyInvalidation,
   },
 }

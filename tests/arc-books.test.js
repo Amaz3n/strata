@@ -4389,13 +4389,21 @@ test("provider coding gates close only when the ledger syncs externally", () => 
   assert.match(item, /applicable: requiresExternalSync/);
 });
 
-test("an abandoned close is recognized after the same interval the database uses", () => {
-  const { ABANDONED_CLOSE_MINUTES, isAbandonedClose } = require("../lib/services/books/close-review")
-  const migration = fs.readFileSync(path.join(__dirname, "../supabase/migrations/20261006155617_books_period_close_recovery.sql"), "utf8")
-  assert.match(migration, new RegExp(`interval '${ABANDONED_CLOSE_MINUTES} minutes'`))
-  const now = new Date("2026-10-06T12:00:00Z")
-  assert.equal(isAbandonedClose("reviewing", "2026-10-06T11:45:00Z", now), false)
-  assert.equal(isAbandonedClose("reviewing", "2026-10-06T11:20:00Z", now), true)
-  assert.equal(isAbandonedClose("reviewing", null, now), true)
-  assert.equal(isAbandonedClose("open", null, now), false)
+test("an abandoned close is recognized after the same interval the database uses", async (t) => {
+  const { createDatabase, insert, rpc, seedMember } = require("./support/pglite")
+  const { isAbandonedClose } = require("../lib/services/books/close-review")
+  const db = await createDatabase(t)
+  const { orgId } = await seedMember(db)
+  for (const [minutes, period] of [[29, "2026-07"], [31, "2026-08"]]) {
+    const startedAt = new Date(Date.now() - minutes * 60_000)
+    const row = await insert(db, "accounting_periods", { org_id: orgId, period_start: `${period}-01`, period_end: `${period}-28`, fiscal_year: 2026, fiscal_period: Number(period.slice(5)),
+      status: "reviewing", close_started_at: startedAt.toISOString(), close_prior_status: "open" })
+    const resumed = await rpc(db, "begin_books_period_close", { p_org_id: orgId, p_period_id: row.id }).then(() => true, (error) => {
+      assert.match(String(error.message), /already running/)
+      return false
+    })
+    assert.equal(isAbandonedClose("reviewing", startedAt.toISOString(), new Date()), resumed, `${minutes} minutes`)
+  }
+  assert.equal(isAbandonedClose("reviewing", null, new Date()), true)
+  assert.equal(isAbandonedClose("open", null, new Date()), false)
 })

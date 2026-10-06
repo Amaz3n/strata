@@ -1474,10 +1474,17 @@ export async function runBooksProjection(options: { full?: boolean } = {}) {
     .order("org_id")
     .range(from, to), "Books organizations");
   const results = [];
-  for (const row of data ?? [])
-    results.push({
-      orgId: row.org_id,
-      ...(await projectJournal(row.org_id, { full: options.full })),
-    });
+  // One organization's failure (a row cap, an unresolvable revenue basis) must
+  // not stop every later organization; it is surfaced as that org's failure.
+  for (const row of data ?? []) {
+    try {
+      results.push({ orgId: row.org_id, ...(await projectJournal(row.org_id, { full: options.full })) });
+    } catch (error) {
+      results.push({
+        orgId: row.org_id, projected: 0, skipped: 0, revised: 0, retired: 0, evaluatedSourceKeys: [], fullScanCompleted: false,
+        failures: [{ sourceType: "organization", sourceId: String(row.org_id), error: `Books projection stopped: ${error instanceof Error ? error.message : String(error)}` }],
+      });
+    }
+  }
   return { organizations: results.length, results };
 }

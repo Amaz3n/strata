@@ -121,6 +121,42 @@
           "openFindings": 0
         }
       }
+    },
+    "dependency-invalidation": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "cents": 100000,
+        "contractCents": 500000
+      },
+      "derivation": "Using only the incremental (10-minute) projection, every economic input that lives outside the source row invalidates the source: it reads 'pending' as soon as the input changes and is current after one incremental run, with the ledger reflecting the change. Cases: a job-cost line re-coded after its bill posted; the project's billing model; a new contract on the project; a funding-source mapping that cures a failed payment; a chart account named on a bill deactivated; a reopened period retrying the bill its close had blocked.",
+      "expected": {
+        "job-cost-recode": {
+          "before": "pending",
+          "after": "posted",
+          "postedCostCodeIsNew": true
+        },
+        "billing-model": {
+          "before": "pending",
+          "after": "posted"
+        },
+        "new-contract": {
+          "before": "pending",
+          "after": "posted"
+        },
+        "funding-remap": {
+          "failedBeforeMapping": true,
+          "postedToMappedAccount": "1005"
+        },
+        "account-deactivated": {
+          "before": "pending",
+          "afterIsNotStalePosted": true,
+          "historyPreserved": true
+        },
+        "reopen-retries-blocked": {
+          "blocked": "blocked",
+          "afterReopenIncremental": "posted"
+        }
+      }
     }
   }
 }
