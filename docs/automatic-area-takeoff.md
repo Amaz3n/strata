@@ -229,9 +229,7 @@ Accuracy is scored against traced references only — see
 conventions and the frozen release protocol. The running scoreboard lives in
 [the reliability gameplan](plans/takeoff-reliability-gameplan.md). The public
 Swiss Dwellings diagnostics ([fixture attribution](../tests/fixtures/area-takeoff/README.md),
-CC BY 4.0) and the reports [area-takeoff-benchmark.json](area-takeoff-benchmark.json) /
-[area-takeoff-rich-benchmark.json](area-takeoff-rich-benchmark.json) are development
-diagnostics from engine 9 and do not count toward any gate.
+CC BY 4.0) are development diagnostics and do not count toward any gate.
 
 Software checks: `pnpm test:takeoff`, `pnpm test:area-ui` (real controller with
 mocked actions; needs Bun and Playwright Chromium) and `pnpm test:drawing-workspace`.

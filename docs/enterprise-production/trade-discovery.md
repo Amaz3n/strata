@@ -19,4 +19,4 @@ Verification passed: 17 focused original service/action/actual-SDK cases, 1,672 
 - Existing daily company-level suppression can suppress another scoped notice on the same day; reviewed-scope delivery policy and legacy-writer cutover need explicit contract/acceptance.
 - No authenticated browser/device, full accessibility/dark/mobile, customer policy, archive/restore or delivery sandbox acceptance. No production sends, migrations or deployment.
 
-[Durable evidence](evidence/2026-10-05-trade-discovery/manifest.json).
+Durable evidence.

@@ -19,4 +19,4 @@ The connector lists only the production Arc project. Only relation/column/FK/pol
 - Dispatch requires atomic durable intents/claims/receipts, reviewed-scope daily policy, provider ambiguity/cancellation/recovery and current committing-actor authority.
 - Physical-device/accessibility/customer/restore/release acceptance remains open. No migrations, production writes, provider sends or deployment occurred.
 
-[Evidence manifest](evidence/2026-10-05-trade-schema/manifest.json). [Unchanged UI evidence](evidence/2026-10-05-trade-discovery/manifest.json).
+Evidence manifest. Unchanged UI evidence.

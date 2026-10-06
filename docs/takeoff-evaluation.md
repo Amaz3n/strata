@@ -94,8 +94,6 @@ Decide once; apply on every sheet; note exceptions in the scope note.
 
 ## 5. Release protocol (version 1.0.0, frozen)
 
-Machine-readable state: [`recognition-release-scorecard.json`](recognition-release-scorecard.json).
-
 **Scope:** English-language residential plans, feet/inches, straight (including
 oblique) walls, layered/unlayered vector PDFs and legible native scans ≥ 200 DPI,
 with verifiable scale. Curved walls, unreadable scans and unresolved mixed

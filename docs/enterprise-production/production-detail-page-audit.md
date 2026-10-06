@@ -127,4 +127,4 @@ Home schedule/dependencies read and original ScheduleView mutation callbacks.
 
 Owners: `app/(app)/projects/[id]/actions.ts`, `app/(app)/projects/[id]/schedule/project-schedule-client.tsx`.
 
-[Evidence and source fingerprints](evidence/2026-10-05-production-detail-audit/manifest.json).
+Evidence and source fingerprints.

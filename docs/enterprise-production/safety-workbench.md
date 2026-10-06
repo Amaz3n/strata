@@ -21,4 +21,4 @@ The new safety discovery index migration is staged and **unapplied; human approv
 - Global Safety desk, complete company/location rosters, reports, archive/retention, accessibility/dark/mobile QA and customer policy acceptance remain open.
 - Staged discovery indexes are unapplied and require human migration approval; no query-plan/full-schema evidence.
 
-[Evidence manifest](evidence/2026-10-05-safety-workbench/manifest.json).
+Evidence manifest.

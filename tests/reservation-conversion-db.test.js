@@ -9,7 +9,7 @@ function capturedColumns(path) {
   const raw=JSON.parse(blocks.find(x=>x.type==='text').text).result
   return JSON.parse(raw.match(/<untrusted-data-[^>]+>\n([\s\S]*?)\n<\/untrusted-data-/)[1])
 }
-const columns=[...capturedColumns('docs/enterprise-production/evidence/2026-10-05-reservation-preparation/live-columns.json'),...capturedColumns('docs/enterprise-production/evidence/2026-10-05-reservation-conversion/live-columns.json')]
+const columns=[...capturedColumns('tests/fixtures/reservation-conversion/preparation-live-columns.json'),...capturedColumns('tests/fixtures/reservation-conversion/conversion-live-columns.json')]
 async function fixture(t,{existing=false,started=false}={}) {
   const db=new PGlite();t.after(()=>db.close())
   // Partial schema with captured column types/defaults. Enum/citext are text,

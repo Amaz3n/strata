@@ -27,7 +27,7 @@ The preceding review found that the staged native-invoice posting migration exte
 This is a candidate-schema integration blocker for E12-03, not evidence that the deployed production database has been changed. Complete native posting receipt/body/source verification, archive schema compatibility, restore dependency order, actor/entity access and exact recovery before adding the table to an accepted export contract. Merely allowing the new table would not satisfy monetary-history recovery. The fixture is partial-schema test infrastructure and cannot establish full-schema readiness.
 
 
-Local inspection handoff evidence: [manifest](evidence/2026-10-04-inspection-handoff/manifest.json). Current financial verification passed 3,348 tests after the shared worktree archive contract advanced to schema 26. The earlier six failures remain historical evidence; full native archive acceptance is still open.
+Local inspection handoff evidence: manifest. Current financial verification passed 3,348 tests after the shared worktree archive contract advanced to schema 26. The earlier six failures remain historical evidence; full native archive acceptance is still open.
 
 
-The staged [obligation and accepted-attempt lifecycle](inspection-obligation-lifecycle.md) now implements linked corrective work/reinspection, independent review, atomic completion receipts and SQL closing/schedule proof checks. It remains disabled and unapplied. See its [local evidence](evidence/2026-10-04-inspection-lifecycle/manifest.json) and outstanding release requirements; this is not E09-03 acceptance.
+The staged [obligation and accepted-attempt lifecycle](inspection-obligation-lifecycle.md) now implements linked corrective work/reinspection, independent review, atomic completion receipts and SQL closing/schedule proof checks. It remains disabled and unapplied. See its local evidence and outstanding release requirements; this is not E09-03 acceptance.
