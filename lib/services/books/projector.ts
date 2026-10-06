@@ -1431,8 +1431,9 @@ export async function projectJournal(
     failures.push(...retirement.failures);
   } else if (!requestedKeys && retirementSourceKeys.size > 0) {
     // Incremental rows include lifecycle changes even after they leave the
-    // projectable status set, so voids/rejections retire immediately. Deletions
-    // still require the nightly full pass because no row remains to watermark.
+    // projectable status set, so voids/rejections retire immediately. A source
+    // with a posted journal cannot be deleted (books_guard_posted_source_delete),
+    // so a deletion never leaves money behind waiting for the nightly pass.
     const retirement = await retireDepartedSources(
       orgId,
       new Set<string>(),

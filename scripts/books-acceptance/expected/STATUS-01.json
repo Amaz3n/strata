@@ -100,7 +100,7 @@
         "eacCents": 400000,
         "newAccount": "5020"
       },
-      "derivation": "Two July bills are re-coded while July is closed, so both are blocked with findings. After reopening, a projection run scoped to bill A resolves only bill A's finding; bill B stays blocked and its finding open \u2014 a partial run never reports the rest of the company clean. A full run then resolves bill B.",
+      "derivation": "Two July bills are re-coded while July is closed, so both are blocked with findings. After reopening, a projection run scoped to bill A resolves only bill A's finding; bill B stays blocked and its finding open — a partial run never reports the rest of the company clean. A full run then resolves bill B.",
       "expectedAfterScopedRun": {
         "billA": {
           "state": "posted",
@@ -177,6 +177,37 @@
         },
         "ledger-disabled": {
           "owner": "none"
+        }
+      }
+    },
+    "posted-source-deletion": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "cents": 100000
+      },
+      "derivation": "An approved bill posts Dr cost / Cr AP on the incremental run. Deleting it is refused by the database guard while that journal is posted, so the bill and its entry remain. Returned to pending, it is still refused until the next incremental run reverses the entry (original 'reversed', reversal posted without a source). Then it deletes, the net of the entry and its reversal is zero, and a full run opens no finding for the missing source. The refused delete leaves the bill's job cost intact (1,000.00 still posted to the project).",
+      "expected": {
+        "posted": {
+          "state": "posted",
+          "delete": "refused: posted",
+          "stillExists": true,
+          "entries": [
+            "posted"
+          ],
+          "jobCostCents": 100000
+        },
+        "before-reversal": {
+          "delete": "refused: posted",
+          "stillExists": true
+        },
+        "after-reversal": {
+          "entries": [
+            "reversed"
+          ],
+          "delete": "deleted",
+          "stillExists": false,
+          "ledgerNet": {},
+          "openFindings": 0
         }
       }
     }

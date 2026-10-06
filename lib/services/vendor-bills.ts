@@ -3196,6 +3196,20 @@ export async function deleteVendorBill({ billId, orgId }: { billId: string; orgI
   if ((activeRunItems ?? []).length > 0) {
     throw new Error("This payable belongs to an active payment run. Cancel that run before deleting it.")
   }
+  // The database refuses this delete too, but only after the cleanup below has
+  // voided the bill's job cost; refuse first so a posted bill stays whole.
+  const { data: postedEntries, error: postedError } = await createServiceSupabaseClient()
+    .from("journal_entries")
+    .select("id")
+    .eq("org_id", resolvedOrgId)
+    .eq("source_type", "vendor_bill")
+    .eq("source_id", billId)
+    .eq("status", "posted")
+    .limit(1)
+  if (postedError) throw new Error(`Unable to check the bill's ledger posting: ${postedError.message}`)
+  if ((postedEntries ?? []).length > 0) {
+    throw new Error("This record has posted to the ledger. Return it to pending or void it, then delete it once its journal is reversed (within about 10 minutes).")
+  }
 
   // Fetch related billable costs
   const { data: costs, error: costsError } = await supabase

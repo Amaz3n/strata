@@ -308,6 +308,34 @@ commit;`)
   return { orgId: org.orgId }
 }
 
+// Deleting a posted document would leave its money in the ledger until the
+// nightly pass; it is refused until the document is returned and reversed.
+async function postedSourceDeletion(kit, expected, check) {
+  const input = expected.inputs
+  const want = expected.expected
+  const org = await jobOrg(kit, "STATUS-01 posted deletion", ["2026-07"])
+  const billId = await createBill(kit, org, input.billDate, input.cents)
+  await incrementalJob(kit, org)
+  const { deleteVendorBill } = app("vendor-bills")
+  const attempt = async () => { try { await kit.as(org.owner, () => deleteVendorBill({ billId })); return "deleted" } catch (error) { return /posted to the ledger/.test(error.message) ? "refused: posted" : `refused: ${error.message}` } }
+  const exists = () => Number(kit.rows(`select count(*) n from public.vendor_bills where org_id=${kit.q(org.orgId)} and id=${kit.q(billId)}`)[0].n) === 1
+  const liveJobCost = () => Number(kit.rows(`select coalesce(sum(j.cost_cents),0) n from public.job_cost_entries j join public.bill_lines l on l.id::text=j.source_id
+    where j.org_id=${kit.q(org.orgId)} and j.source_type='vendor_bill_line' and l.bill_id=${kit.q(billId)} and j.status='posted'`)[0].n)
+  const entries = () => kit.rows(`select status from public.journal_entries where org_id=${kit.q(org.orgId)} and source_id=${kit.q(billId)} order by created_at`).map((row) => row.status)
+  const posted = { state: await state(kit, org, billId), delete: await attempt(), stillExists: exists(), entries: entries(), jobCostCents: liveJobCost() }
+  // Returned to pending: the next 10-minute run reverses it, and then it deletes.
+  await kit.as(org.owner, () => app("vendor-bills").updateVendorBillStatus({ billId, input: { status: "pending" } }))
+  const beforeRun = { delete: await attempt(), stillExists: exists() }
+  await incrementalJob(kit, org)
+  const afterRun = { entries: entries(), delete: await attempt(), stillExists: exists() }
+  await projectionJob(kit, org)
+  const net = kit.postedNet(org.orgId, `e.source_id=${kit.q(billId)} or e.reversal_of_entry_id in (select id from public.journal_entries where source_id=${kit.q(billId)})`)
+  check.equal("a posted bill cannot be deleted", want.posted, posted)
+  check.equal("returned to pending: refused until its journal is reversed", want["before-reversal"], beforeRun)
+  check.equal("reversed: deletes, and the ledger keeps nothing for it", want["after-reversal"], { ...afterRun, ledgerNet: net, openFindings: openFindings(kit, org, billId).length })
+  return { orgId: org.orgId }
+}
+
 module.exports = {
   id: "STATUS-01",
   subcases: {
@@ -319,5 +347,6 @@ module.exports = {
     "expense-family": expenseFamily,
     "dependency-invalidation": dependencyInvalidation,
     "access-and-empty": accessAndEmpty,
+    "posted-source-deletion": postedSourceDeletion,
   },
 }
