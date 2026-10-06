@@ -40,6 +40,14 @@ prior status and the period keeps no digest. Close-owned entries already
 posted by the failed attempt are recomputed as deltas on retry, so the retry
 finishes with exactly the books a clean close would.
 
+If the process itself stops after the freeze (a deploy, a timeout, a crash),
+nothing runs the cancel. The freeze records `close_started_at`,
+`close_started_by` and `close_prior_status`; a period still `reviewing` 30
+minutes after its freeze is an **abandoned close**. The next close resumes it —
+checks run again first — and the close screen says so and offers **Resume
+close**. Until then the period stays frozen: operational postings remain
+refused, and a second close inside the 30 minutes refuses as already running.
+
 ## Year-end transfer
 
 `closeFiscalYearToRetainedEarnings` runs inside the close of the final fiscal

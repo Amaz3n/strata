@@ -18,8 +18,10 @@ export default defineConfig({
   reporter: [["list"], ["json", { outputFile: join(workspace, "browser-journeys.json") }]],
   use: { baseURL: url, trace: "retain-on-failure", screenshot: "only-on-failure" },
   outputDir: join(workspace, "browser-artifacts"),
+  // The phone run only checks presentation, so it goes first, before the
+  // desktop run performs the journey's mutations.
   projects: [
-    { name: "desktop", use: { ...devices["Desktop Chrome"], colorScheme: "light" } },
     { name: "mobile-dark", use: { ...devices["Desktop Chrome"], viewport: { width: 390, height: 844 }, colorScheme: "dark" } },
+    { name: "desktop", use: { ...devices["Desktop Chrome"], colorScheme: "light" }, dependencies: ["mobile-dark"] },
   ],
 })

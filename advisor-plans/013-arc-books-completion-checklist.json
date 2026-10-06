@@ -2728,8 +2728,8 @@
       "id": "B01.1",
       "workstream": "B01",
       "title": "Atomic or durably recoverable close orchestration",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All B01.1 criteria and the global DoD verified locally (2026-10-06): CLOSE-01 failure injection at snapshot and lock, abandoned-close resume, RACE-01 double close, authenticated browser journeys. Recovery migration 20261006180000 is unapplied to production (needs approval).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "no failed attempt is shown closed",
@@ -2761,15 +2761,52 @@
           "artifact_paths_and_hashes": [
             "docs/books-evidence/2026-10-06-golden-scenarios/RACE-01.json sha256:af51a74fc97621cb9e1f08fff19724876fa136c5bfbcd5b02ac7b32a7adf4582"
           ]
+        },
+        {
+          "verified_at": "2026-10-06T14:28:45.004674+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261006180000_books_period_close_recovery.sql",
+            "lib/services/books/period-close.ts",
+            "lib/services/books/close-review.ts",
+            "lib/services/books/workspace.ts",
+            "components/books/close-workspace.tsx",
+            "tests/arc-books.test.js",
+            "docs/books-period-close.md",
+            "scripts/books-acceptance/journeys/abandoned-close.spec.ts"
+          ],
+          "test_scenario_ids": [
+            "CLOSE-01",
+            "RACE-01",
+            "browser:abandoned-close",
+            "browser:year-end"
+          ],
+          "commands": [
+            "scenario-runner CLOSE-01 (5 passed; quarter-end and all-modules not implemented)",
+            "node --test tests/arc-books.test.js",
+            "BOOKS_ACCEPTANCE_WORKSPACE=W npx playwright test -c scripts/books-acceptance/playwright.config.ts (5 passed, 1 skipped by design)"
+          ],
+          "observed_results": [
+            "No failed attempt is shown closed: failures injected at the statement snapshot and at the final lock leave the period open with no digest (CLOSE-01).",
+            "Injected failures and an abandoned close (process stopped after the freeze) both finish on retry with the clean worked-example July ledger and one recognition entry; double close races to one winner (RACE-01); year-end same-intent retry posts one entry (YEAR-01).",
+            "Snapshots and digest reference the successful attempt: close_snapshot_ids written with the lock; reclose replaces it.",
+            "Fixed: a close that stopped after its freeze left the period 'reviewing' forever (postings refused, every close refused). The freeze now records start time and prior status; after 30 minutes the next close resumes it. Browser: the stuck period explains itself and 'Resume close' closes it (desktop light; 390px dark presentation).",
+            "Parity test binds the 30-minute threshold between SQL and the close screen."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/CLOSE-01.json sha256:c220c9cd93fdc7bffeac096abda95d0fe333157254fa7035d62f2bbebf4f357d",
+            "docs/books-evidence/2026-10-06-golden-scenarios/RACE-01.json sha256:af51a74fc97621cb9e1f08fff19724876fa136c5bfbcd5b02ac7b32a7adf4582",
+            "docs/books-evidence/2026-10-06-browser/abandoned-close-desktop.png sha256:3dcefa9576f9da55bf66f45cbc517a0901525d693ba6045bbd80c0f9d78d0b10",
+            "docs/books-evidence/2026-10-06-browser/abandoned-close-mobile-dark.png sha256:a6f3bf3dae57c07af3046046a3e4112a74f631d4664f6d89d17e57dca304071a",
+            "docs/books-evidence/2026-10-06-browser/close-journeys.json sha256:eb43aed3830f848b549dff6495ab9cab31fff3327cf6a2c39539d2f2a2cc1234",
+            "docs/books-evidence/2026-10-06-browser/year-end-desktop-march-reclosed.png sha256:faf8cef77e2d851967171214a27f0b05398373909081daed520cc2ed926d5437"
+          ],
+          "schema_or_runtime_identity": "acceptance stack arc-books-acceptance-e1c88d89280b with 20261006180000 applied locally; app worktree at commit a873d338+",
+          "remaining_criteria": [],
+          "external_dependency": null,
+          "reviewer": null
         }
       ],
-      "remaining_criteria": [
-        "no failed attempt is shown closed",
-        "every injected failure rolls back or resumes deterministically to the identical final ledger",
-        "retries post no duplicate revenue/loss/reclass/year-end entries",
-        "snapshots and period digest reference the successful attempt",
-        "pending recovery is visible and actionable"
-      ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
       "verified_at": null

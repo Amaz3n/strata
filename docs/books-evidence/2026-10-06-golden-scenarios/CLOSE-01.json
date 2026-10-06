@@ -7,8 +7,8 @@
       "name": "late-source-into-closed-period",
       "status": "PASSED",
       "identities": {
-        "orgId": "b742182e-138d-4441-8a41-ad30c5480919",
-        "lateInvoiceId": "0d389855-020c-410a-b7af-ceac675efdd2"
+        "orgId": "e5ac8c9a-0c9b-4e89-8fde-21f09cb613e9",
+        "lateInvoiceId": "30692a71-12a7-4eca-861a-7b8c421fb85b"
       },
       "checks": [
         {
@@ -88,14 +88,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T12:03:29.756Z"
+      "startedAt": "2026-10-06T14:25:44.681Z"
     },
     {
       "name": "unreviewed-journal-proposal-blocks-close",
       "status": "PASSED",
       "identities": {
-        "orgId": "a62ccbbb-9bda-41fb-8a27-dee67590b9c8",
-        "proposalId": "878853b8-1a66-4c07-a0ec-05309181b2c2"
+        "orgId": "8454180e-da83-4815-9f43-cf4e2a358ca7",
+        "proposalId": "09622460-81ce-4022-bc39-c4e8beb71825"
       },
       "checks": [
         {
@@ -129,14 +129,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T12:03:33.550Z"
+      "startedAt": "2026-10-06T14:25:50.308Z"
     },
     {
       "name": "close-failure-resumes",
       "status": "PASSED",
       "identities": {
-        "statement_snapshot": "4bacd126-3032-4e52-ad61-063e72949f4a",
-        "period_lock": "736d1c48-967d-491c-bcc0-639939e3a167"
+        "statement_snapshot": "05558643-4978-4b3d-9b17-ef452663415f",
+        "period_lock": "9d096106-c73b-4fd7-b007-47f7e525a088"
       },
       "checks": [
         {
@@ -276,13 +276,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T12:03:33.760Z"
+      "startedAt": "2026-10-06T14:25:50.529Z"
     },
     {
       "name": "twelve-month-sequence-snapshots",
       "status": "PASSED",
       "identities": {
-        "orgId": "3a1a00ad-cb2b-4ddc-9907-963075e67f48"
+        "orgId": "db51407a-70f2-498a-9001-00785099b1dd"
       },
       "checks": [
         {
@@ -324,7 +324,7 @@
           ]
         }
       ],
-      "startedAt": "2026-10-06T12:03:35.697Z"
+      "startedAt": "2026-10-06T14:25:52.465Z"
     },
     {
       "name": "quarter-end",
@@ -335,8 +335,70 @@
       "name": "all-supported-modules",
       "status": "NOT_IMPLEMENTED",
       "checks": []
+    },
+    {
+      "name": "abandoned-close-resumes",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "78bf5160-b457-4219-9605-cba06c2e32ff"
+      },
+      "checks": [
+        {
+          "label": "operational postings are refused while the period is frozen",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "a second close within 30 minutes refuses as already running",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "the next close resumes and finishes",
+          "pass": true,
+          "expected": {
+            "status": "closed",
+            "close_started_at": null,
+            "close_prior_status": null
+          },
+          "observed": {
+            "status": "closed",
+            "close_started_at": null,
+            "close_prior_status": null
+          }
+        },
+        {
+          "label": "one recognition entry",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "the resumed close's ledger equals a clean close",
+          "pass": true,
+          "expected": {
+            "1100": 27000000,
+            "1110": 3000000,
+            "2000": -20000000,
+            "2350": -5000000,
+            "4000": -25000000,
+            "5000": 20000000
+          },
+          "observed": {
+            "1100": 27000000,
+            "1110": 3000000,
+            "2000": -20000000,
+            "2350": -5000000,
+            "4000": -25000000,
+            "5000": 20000000
+          }
+        }
+      ],
+      "startedAt": "2026-10-06T14:25:56.576Z"
     }
   ],
   "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
-  "finishedAt": "2026-10-06T12:03:39.998Z"
+  "finishedAt": "2026-10-06T14:25:57.198Z"
 }
