@@ -115,7 +115,7 @@ export async function listJournalEntries(
     .from("journal_entries")
     .select(
       "id, entry_date, entry_kind, status, memo, posting_key, source_type, source_id, posted_at, posted_by, reversal_of_entry_id, " +
-        "lines:journal_lines(id, account_id, debit_cents, credit_cents, description, project_id, account:gl_accounts(code, name), project:projects(name), company:companies(name))",
+        "lines:journal_lines!journal_lines_entry_owner_fk(id, account_id, debit_cents, credit_cents, description, project_id, account:gl_accounts!journal_lines_account_owner_fk(code, name), project:projects(name), company:companies(name))",
     )
     .eq("org_id", context.orgId)
     .order("entry_date", { ascending: false })

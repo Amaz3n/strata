@@ -171,3 +171,34 @@ JSON body. No container was created and no migration or native pgTAP file ran.
 Preparation/review SQL and editor callbacks are scoped test evidence; native
 full-schema, complete archive recovery and authenticated browser acceptance remain
 required.
+
+## Golden scenarios (B00.3)
+
+Golden scenarios run Arc's real services — source services and RPCs, the
+outbox queue (`processOutboxQueue`), the projector, periods, WIP review and
+close — against an isolated stack:
+
+```sh
+node scripts/bootstrap-books-acceptance.cjs --workspace W --db-port 55480
+node scripts/bootstrap-books-acceptance.cjs --workspace W --run
+node scripts/books-acceptance/api.cjs --workspace W
+node scripts/books-acceptance/scenario-runner.cjs --container <container> \
+  --api-url http://127.0.0.1:55482 --scenario WIP-01 --evidence-dir NEW_DIR
+```
+
+`api.cjs` starts only PostgREST and Kong, keeps the replayed volume and
+re-verifies the isolation marker. The kit mints the local stack's published
+development tokens; Arc's `.env` files are never read. Each actor runs through
+`runWithServiceOrgContext` with its own `authenticated` token, so row-level
+security and permission checks are real, and each run uses a fresh organisation,
+so reruns never duplicate money. The local stack binds to `0.0.0.0` — stop it
+when finished.
+
+Expected results live in `scripts/books-acceptance/expected/<ID>.json`, written
+from the reviewed policy rather than the implementation. Every subcase the plan
+requires is listed; one still `NOT_IMPLEMENTED` keeps the scenario `INCOMPLETE`
+and the run non-zero. A subcase that throws or asserts nothing fails.
+
+Status (October 6): `WIP-01 / policy-worked-example` — the §5 worked example of
+`docs/books-revenue-recognition.md` — passes to the cent; the other six WIP-01
+subcases and the remaining 23 scenarios are not yet implemented.

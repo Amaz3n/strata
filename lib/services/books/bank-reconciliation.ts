@@ -384,7 +384,7 @@ export async function reviewUnmatchedBankTransactions(
           await collectBooksRows((from, to) => service
               .from("journal_lines")
               .select(
-                "id, account_id, debit_cents, credit_cents, description, entry:journal_entries!inner(entry_date, status)",
+                "id, account_id, debit_cents, credit_cents, description, entry:journal_entries!journal_lines_entry_owner_fk!inner(entry_date, status)",
               )
               .eq("org_id", context.orgId)
               .in("account_id", mappedGlAccountIds)

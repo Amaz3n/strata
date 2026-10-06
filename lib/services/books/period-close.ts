@@ -726,11 +726,13 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       code: "coding_exceptions",
       label: "Approved bills are coded",
       category: "ledger",
-      blocking: true,
+      // Provider coding only feeds external sync; Arc's own postings come from
+      // the cost lines, so a disconnected ledger must not be held by it.
+      blocking: requiresExternalSync,
       status: uncodedBills.length ? "failed" : "passed",
       issueCount: uncodedBills.length,
       href: "/payables?tab=approval",
-      evidence: { bill_ids: uncodedBills.map((row) => row.id) },
+      evidence: { applicable: requiresExternalSync, bill_ids: uncodedBills.map((row) => row.id) },
     },
     {
       code: "sync_backlog",

@@ -209,7 +209,7 @@ export async function processBankAiSuggestionsForOrg(
     let journalLines: Array<{ id: string; account_id: string; debit_cents: number; credit_cents: number; description: string | null; entry: { entry_date: string; status: string } | Array<{ entry_date: string; status: string }> }> = []
     try {
       if (controlAccountIds.size && dates.length) journalLines = await collectBooksRows((from, to) => service.from("journal_lines")
-        .select("id,account_id,debit_cents,credit_cents,description,entry:journal_entries!inner(entry_date,status)")
+        .select("id,account_id,debit_cents,credit_cents,description,entry:journal_entries!journal_lines_entry_owner_fk!inner(entry_date,status)")
         .eq("org_id", orgId).in("account_id", [...controlAccountIds])
         .in("entry.status", ["posted", "reversed"])
         .gte("entry.entry_date", shiftDate(dates[0], -MATCH_WINDOW_DAYS))

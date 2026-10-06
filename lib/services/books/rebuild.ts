@@ -64,7 +64,7 @@ export async function runLedgerRebuildDrillForOrg(orgId: string) {
       const facts = page.filter((fact) => !isRetiredFactKind(fact.fact_kind))
       const ids = facts.map((fact) => fact.id)
       const { data: entries, error: entryError } = ids.length > 0
-        ? await service.from("journal_entries").select("id, fact_id, entry_date, entry_kind, memo, posting_key, projection_version, policy_version, lines:journal_lines(line_no, project_id, company_id, debit_cents, credit_cents, description, dimensions, account:gl_accounts(code))").eq("org_id", orgId).in("fact_id", ids).in("status", ["posted", "reversed"])
+        ? await service.from("journal_entries").select("id, fact_id, entry_date, entry_kind, memo, posting_key, projection_version, policy_version, lines:journal_lines!journal_lines_entry_owner_fk(line_no, project_id, company_id, debit_cents, credit_cents, description, dimensions, account:gl_accounts!journal_lines_account_owner_fk(code))").eq("org_id", orgId).in("fact_id", ids).in("status", ["posted", "reversed"])
         : { data: [], error: null }
       if (entryError) throw new Error(entryError.message)
       const entryByFact = new Map((entries ?? []).map((entry) => [entry.fact_id, entry]))

@@ -1987,7 +1987,7 @@
       "workstream": "B00",
       "title": "Build the golden acceptance runner and durable evidence catalog",
       "status": "PARTIAL",
-      "status_basis": "Bootstrap and timeout guards locally verified; actual native engine/replay/upgrade/golden acceptance incomplete.",
+      "status_basis": "Golden runner, kit, API route and first scenario subcase working end to end (2026-10-06); 23 scenarios + 6 WIP-01 subcases outstanding.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "intentionally incorrect accounting causes a nonzero run",
@@ -2444,6 +2444,44 @@
           ],
           "external_dependency": "Native engine response required for replay; independent implementation can continue",
           "reviewer": null
+        },
+        {
+          "verified_at": "2026-10-06T03:11:58.841533+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenario-kit.cjs",
+            "scripts/books-acceptance/scenario-runner.cjs",
+            "scripts/books-acceptance/api.cjs",
+            "scripts/books-acceptance/scenarios/wip-01.cjs",
+            "scripts/books-acceptance/expected/WIP-01.json",
+            "scripts/test-books-release-acceptance.cjs",
+            "tests/books-acceptance-scenarios.test.js",
+            "docs/books-acceptance-runner.md"
+          ],
+          "test_scenario_ids": [
+            "WIP-01"
+          ],
+          "commands": [
+            "bootstrap --run; node scripts/books-acceptance/api.cjs --workspace W; node scripts/books-acceptance/scenario-runner.cjs --container C --api-url http://127.0.0.1:55482 --scenario WIP-01 --evidence-dir D",
+            "node --test tests/books-acceptance-scenarios.test.js"
+          ],
+          "observed_results": [
+            "Golden scenario framework runs real services against an isolated full-schema stack (PostgREST+Kong only), real RLS via per-actor authenticated tokens, real outbox queue and projector; fresh org per run.",
+            "WIP-01 policy-worked-example PASSED to the cent from a clean replay (July/August ledgers, recognition deltas 250,000.00 and 500,000.00, gross profit 150,000.00); scenario INCOMPLETE with 6 required subcases NOT_IMPLEMENTED.",
+            "Runner semantics unit-tested: incorrect accounting fails with exact difference, missing subcase keeps scenario incomplete, silent/throwing subcase fails, unregistered scenarios report NOT_IMPLEMENTED.",
+            "Found and fixed while making it pass: ambiguous PostgREST embeds journal_lines<->gl_accounts/journal_entries after 20261004193127 composite keys (would break GL detail, close, recognition on deploy); coding_exceptions close check blocked disconnected (greenfield) ledgers; self-reference reversal embed unresolvable. Live production bugs: vendor bill creation denied to all app users since 2026-09-02 (normalizer EXECUTE revoked; fix 20261006033000), orgs created after 2026-08-19 lack directory vocabulary (fix 20261006034000). Both fixes unapplied pending approval."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/WIP-01.json sha256:1c14298ecce933552987f208073e6ce86a9be5cd137f78e9c92100252672b856",
+            "docs/books-evidence/2026-10-06-golden-scenarios/schema-01.json sha256:c0371d720a87e78fe0022b385320252a84343bd881006c04bc32c7c968cf41f1"
+          ],
+          "schema_or_runtime_identity": "isolated arc-books-acceptance-26646c871959; SCHEMA-01 778/778",
+          "remaining_criteria": [
+            "Implement the remaining 23 client-ready golden scenarios and the 6 pending WIP-01 subcases",
+            "RACE-01 needs independent-session harness",
+            "Browser/HTTP journeys (G4) are separate"
+          ],
+          "external_dependency": null,
+          "reviewer": null
         }
       ],
       "remaining_criteria": [
@@ -2537,7 +2575,31 @@
         "RACE-01",
         "YEAR-01"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "verified_at": "2026-10-06T03:11:58.841533+00:00",
+          "implemented_paths": [
+            "lib/services/books/period-close.ts",
+            "lib/services/books/revenue-recognition.ts"
+          ],
+          "test_scenario_ids": [
+            "WIP-01"
+          ],
+          "commands": [
+            "scenario-runner WIP-01"
+          ],
+          "observed_results": [
+            "Close gate fix: provider coding check no longer blocks disconnected Arc-owned ledgers (verified by WIP-01 close)."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/WIP-01.json"
+          ],
+          "schema_or_runtime_identity": "isolated replay",
+          "remaining_criteria": [],
+          "external_dependency": null,
+          "reviewer": null
+        }
+      ],
       "remaining_criteria": [
         "all valid golden scenarios close",
         "each invalid fixture blocks for its precise cause",
@@ -3917,7 +3979,31 @@
         "LOSS-01",
         "WIP-01"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "verified_at": "2026-10-06T03:11:58.841533+00:00",
+          "implemented_paths": [
+            "lib/services/books/period-close.ts",
+            "lib/services/books/revenue-recognition.ts"
+          ],
+          "test_scenario_ids": [
+            "WIP-01"
+          ],
+          "commands": [
+            "scenario-runner WIP-01"
+          ],
+          "observed_results": [
+            "WIP-01 policy worked example passes through real WIP prepare/review/close and recognition; contract-level ownership subcases outstanding."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/WIP-01.json"
+          ],
+          "schema_or_runtime_identity": "isolated replay",
+          "remaining_criteria": [],
+          "external_dependency": null,
+          "reviewer": null
+        }
+      ],
       "remaining_criteria": [
         "two contracts on one project with different bases produce correct independent revenue/WIP/loss and sum to project/GL",
         "shared costs require reviewed allocation",

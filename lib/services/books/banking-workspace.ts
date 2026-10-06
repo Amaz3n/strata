@@ -369,7 +369,7 @@ export async function loadBankingDetail(transactionId: string) {
       ? service
           .from("journal_lines")
           .select(
-            "id,debit_cents,credit_cents,description,entry:journal_entries!inner(entry_date,status,memo),matches:bank_transaction_matches(matched_amount_cents,status)",
+            "id,debit_cents,credit_cents,description,entry:journal_entries!journal_lines_entry_owner_fk!inner(entry_date,status,memo),matches:bank_transaction_matches(matched_amount_cents,status)",
           )
           .eq("org_id", orgId)
           .eq("account_id", bank.gl_account_id)

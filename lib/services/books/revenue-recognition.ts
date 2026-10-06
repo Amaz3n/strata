@@ -71,7 +71,7 @@ async function loadRecognizedRevenueByProject(orgId: string, asOf: string) {
   for (let from = 0; ; from += RECOGNIZED_REVENUE_PAGE_SIZE) {
     const { data, error } = await service
       .from("journal_lines")
-      .select("id, project_id, debit_cents, credit_cents, dimensions, entry:journal_entries!inner(status, entry_date, entry_kind, source_type, original:journal_entries!journal_entries_reversal_of_entry_id_fkey(source_type)), account:gl_accounts!inner(code)")
+      .select("id, project_id, debit_cents, credit_cents, dimensions, entry:journal_entries!journal_lines_entry_owner_fk!inner(status, entry_date, entry_kind, source_type, original:reversal_of_entry_id(source_type)), account:gl_accounts!journal_lines_account_owner_fk!inner(code)")
       .eq("org_id", orgId)
       .eq("account.account_type", "income")
       .in("entry.status", ["posted", "reversed"])

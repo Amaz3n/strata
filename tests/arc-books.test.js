@@ -1929,7 +1929,7 @@ test("the P&L carries the project dimension and drill-down reuses the shared hre
   // which would make the row cap slice an arbitrary page.
   assert.match(
     detail,
-    /from\("journal_entries"\)[\s\S]*?lines:journal_lines!inner/,
+    /from\("journal_entries"\)[\s\S]*?lines:journal_lines(?:![a-z_]+)?!inner/,
   );
   assert.match(detail, /\.order\("entry_date", \{ ascending: true \}\)/);
   // Source links come from the one href registry, not a second copy of the routes.
@@ -4375,4 +4375,16 @@ test("a refused close leaves no journal entries behind, and posts under resolved
   assert.match(yearEnd, /projectionVersion: versions\.projectionVersion/);
   assert.match(yearEnd, /policyVersion: versions\.policyVersion/);
   assert.doesNotMatch(yearEnd, /projectionVersion: 1/);
+});
+
+test("provider coding gates close only when the ledger syncs externally", () => {
+  // Arc posts bills from their cost lines; provider coding feeds only external
+  // sync, so a disconnected (greenfield official) ledger must not be held by it.
+  const source = fs.readFileSync(
+    path.join(__dirname, "../lib/services/books/period-close.ts"),
+    "utf8",
+  );
+  const item = source.slice(source.indexOf('code: "coding_exceptions"'), source.indexOf('code: "sync_backlog"'));
+  assert.match(item, /blocking: requiresExternalSync,/);
+  assert.match(item, /applicable: requiresExternalSync/);
 });

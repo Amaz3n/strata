@@ -474,7 +474,7 @@ async function reverseJournalEntryInternal(input: {
     service
       .from("journal_lines")
       .select(
-        "line_no, debit_cents, credit_cents, description, project_id, company_id, dimensions, account:gl_accounts!inner(id, code)",
+        "line_no, debit_cents, credit_cents, description, project_id, company_id, dimensions, account:gl_accounts!journal_lines_account_owner_fk!inner(id, code)",
       )
       .eq("org_id", context.orgId)
       .eq("entry_id", input.entryId)

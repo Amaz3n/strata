@@ -265,7 +265,7 @@ async function loadOpeningBalanceCents(args: {
   for (let from = 0; ; from += 1000) {
     let query = service
       .from("journal_entries")
-      .select("id, lines:journal_lines!inner(debit_cents, credit_cents)")
+      .select("id, lines:journal_lines!journal_lines_entry_owner_fk!inner(debit_cents, credit_cents)")
       .eq("org_id", args.orgId)
       .in("status", ["posted", "reversed"])
       .lt("entry_date", args.startDate)
@@ -335,7 +335,7 @@ export async function getAccountActivity(input: {
         .from("journal_entries")
         .select(
           "id, entry_date, entry_kind, memo, source_type, source_id, " +
-            "lines:journal_lines!inner(id, account_id, project_id, company_id, debit_cents, credit_cents, description, line_no)",
+            "lines:journal_lines!journal_lines_entry_owner_fk!inner(id, account_id, project_id, company_id, debit_cents, credit_cents, description, line_no)",
         )
         .eq("org_id", orgId)
         .in("status", ["posted", "reversed"])

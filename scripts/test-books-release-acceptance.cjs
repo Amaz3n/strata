@@ -4,6 +4,7 @@ const {
   parseArgs,
   execute,
 } = require("./books-acceptance/runtime.cjs");
+const { SCENARIO_MODULES } = require("./books-acceptance/scenario-runner.cjs");
 async function main() {
   const config = parseArgs(process.argv.slice(2));
   if (config.list) {
@@ -17,7 +18,9 @@ async function main() {
           },
           ...GOLDEN_SCENARIOS.map((id) => ({
             id,
-            implementation: "NOT_IMPLEMENTED",
+            implementation: SCENARIO_MODULES[id]
+              ? `scripts/books-acceptance/scenario-runner.cjs (subcases listed in scripts/books-acceptance/expected/${id}.json)`
+              : "NOT_IMPLEMENTED",
           })),
         ],
         null,

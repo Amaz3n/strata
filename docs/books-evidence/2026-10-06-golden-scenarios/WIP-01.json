@@ -1,0 +1,108 @@
+{
+  "scenario": "WIP-01",
+  "status": "INCOMPLETE",
+  "reviewedFrom": "docs/books-revenue-recognition.md §4a, §4b, §4c and the §5 worked example (cost-to-cost percentage of completion). Expected balances are independent of the implementation; amounts are integer cents. Pending licensed-CPA review (B16.3).",
+  "subcases": [
+    {
+      "name": "policy-worked-example",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "f682f30f-dc3c-41d1-8f96-55aad423b0af",
+        "projectId": "bed2d7b2-520c-4e04-a0be-a68bc347dedf"
+      },
+      "checks": [
+        {
+          "label": "2026-07 ledger matches the policy entry set",
+          "pass": true,
+          "expected": {
+            "1100": 27000000,
+            "1110": 3000000,
+            "2000": -20000000,
+            "2350": -5000000,
+            "4000": -25000000,
+            "5000": 20000000
+          },
+          "observed": {
+            "1100": 27000000,
+            "1110": 3000000,
+            "2000": -20000000,
+            "2350": -5000000,
+            "4000": -25000000,
+            "5000": 20000000
+          }
+        },
+        {
+          "label": "2026-07 recognition delta",
+          "pass": true,
+          "expected": 25000000,
+          "observed": 25000000
+        },
+        {
+          "label": "2026-08 ledger matches the policy entry set",
+          "pass": true,
+          "expected": {
+            "1100": 54000000,
+            "1110": 6000000,
+            "2000": -60000000,
+            "2350": 15000000,
+            "4000": -75000000,
+            "5000": 60000000
+          },
+          "observed": {
+            "1100": 54000000,
+            "1110": 6000000,
+            "2000": -60000000,
+            "2350": 15000000,
+            "4000": -75000000,
+            "5000": 60000000
+          }
+        },
+        {
+          "label": "2026-08 recognition delta",
+          "pass": true,
+          "expected": 50000000,
+          "observed": 50000000
+        },
+        {
+          "label": "gross profit after August",
+          "pass": true,
+          "expected": 15000000,
+          "observed": 15000000
+        }
+      ],
+      "startedAt": "2026-10-06T03:06:40.518Z"
+    },
+    {
+      "name": "second-contract-separately-owned",
+      "status": "NOT_IMPLEMENTED",
+      "checks": []
+    },
+    {
+      "name": "shared-cost-allocation",
+      "status": "NOT_IMPLEMENTED",
+      "checks": []
+    },
+    {
+      "name": "late-bill-after-review-blocks-close",
+      "status": "NOT_IMPLEMENTED",
+      "checks": []
+    },
+    {
+      "name": "revised-and-reverted-eac",
+      "status": "NOT_IMPLEMENTED",
+      "checks": []
+    },
+    {
+      "name": "completed-job-carryforward",
+      "status": "NOT_IMPLEMENTED",
+      "checks": []
+    },
+    {
+      "name": "wip-recognition-close-populations-agree",
+      "status": "NOT_IMPLEMENTED",
+      "checks": []
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-26646c871959",
+  "finishedAt": "2026-10-06T03:06:44.198Z"
+}

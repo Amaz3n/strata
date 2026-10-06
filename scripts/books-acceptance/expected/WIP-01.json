@@ -1,0 +1,29 @@
+{
+  "scenario": "WIP-01",
+  "reviewedFrom": "docs/books-revenue-recognition.md §4a, §4b, §4c and the §5 worked example (cost-to-cost percentage of completion). Expected balances are independent of the implementation; amounts are integer cents. Pending licensed-CPA review (B16.3).",
+  "subcases": {
+    "policy-worked-example": {
+      "inputs": {
+        "contractCents": 100000000,
+        "estimatedTotalCostCents": 80000000,
+        "retainagePercent": 10,
+        "months": [
+          { "period": "2026-07", "billCents": 20000000, "invoiceGrossCents": 30000000, "invoiceRetainageCents": 3000000 },
+          { "period": "2026-08", "billCents": 40000000, "invoiceGrossCents": 30000000, "invoiceRetainageCents": 3000000 }
+        ]
+      },
+      "expectedNetDebitCentsByAccount": {
+        "afterJuly": { "1100": 27000000, "1110": 3000000, "2000": -20000000, "2350": -5000000, "4000": -25000000, "5000": 20000000 },
+        "afterAugust": { "1100": 54000000, "1110": 6000000, "2000": -60000000, "2350": 15000000, "4000": -75000000, "5000": 60000000 }
+      },
+      "expectedRecognitionCents": { "2026-07": 25000000, "2026-08": 50000000 },
+      "expectedGrossProfitCentsAfterAugust": 15000000
+    },
+    "second-contract-separately-owned": { "status": "NOT_IMPLEMENTED" },
+    "shared-cost-allocation": { "status": "NOT_IMPLEMENTED" },
+    "late-bill-after-review-blocks-close": { "status": "NOT_IMPLEMENTED" },
+    "revised-and-reverted-eac": { "status": "NOT_IMPLEMENTED" },
+    "completed-job-carryforward": { "status": "NOT_IMPLEMENTED" },
+    "wip-recognition-close-populations-agree": { "status": "NOT_IMPLEMENTED" }
+  }
+}

@@ -112,7 +112,7 @@ export async function getInventoryAllocationWorkspace() {
   const service = createServiceSupabaseClient()
   const [lots, interest] = await Promise.all([
     collectBooksRows((from,to) => service.from("lots").select("id,lot_number").eq("org_id",context.orgId).in("status",["owned","developed","assigned"]).not("books_acquisition_entry_id","is",null).order("id").range(from,to)),
-    collectBooksRows((from,to) => service.from("journal_lines").select("id,debit_cents,description,entry:journal_entries!inner(entry_date,status),account:gl_accounts!inner(subtype)").eq("org_id",context.orgId).eq("entry.status","posted").eq("account.subtype","interest").gt("debit_cents",0).order("id").range(from,to)),
+    collectBooksRows((from,to) => service.from("journal_lines").select("id,debit_cents,description,entry:journal_entries!journal_lines_entry_owner_fk!inner(entry_date,status),account:gl_accounts!journal_lines_account_owner_fk!inner(subtype)").eq("org_id",context.orgId).eq("entry.status","posted").eq("account.subtype","interest").gt("debit_cents",0).order("id").range(from,to)),
   ])
   return { lots: lots.map(row => ({ id: row.id, name: `Lot ${row.lot_number}` })), interest: interest.map(row => { const entry = Array.isArray(row.entry) ? row.entry[0] : row.entry; return { id: row.id, amountCents: Number(row.debit_cents), label: `${entry?.entry_date} · ${row.description ?? "Interest expense"}` } }) }
 }

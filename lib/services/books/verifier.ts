@@ -75,7 +75,7 @@ async function loadGlJobCostCents(orgId: string, asOf: string) {
       service
         .from("journal_lines")
         .select(
-          "debit_cents, credit_cents, dimensions, entry:journal_entries!inner(status, entry_date), account:gl_accounts!inner(account_type,code)",
+          "debit_cents, credit_cents, dimensions, entry:journal_entries!journal_lines_entry_owner_fk!inner(status, entry_date), account:gl_accounts!journal_lines_account_owner_fk!inner(account_type,code)",
         )
         .eq("org_id", orgId)
         .in("entry.status", ["posted", "reversed"])
