@@ -216,6 +216,31 @@
         "3100": -1430000
       },
       "expectedOutOfOrderReopenRefused": true
+    },
+    "same-intent-retry": {
+      "inputs": {
+        "fiscalYearStartMonth": 4,
+        "opening": {
+          "cash": 1500000,
+          "ownerContributions": 500000,
+          "retainedEarnings": 1000000
+        },
+        "journals": [
+          {
+            "date": "2026-03-05",
+            "debit": "1060",
+            "credit": "4310",
+            "cents": 300000
+          }
+        ]
+      },
+      "derivation": "The year-end transfer requested twice at once, and the final period closed twice at once, produce one year-end entry: RE = 10,000 + 3,000.",
+      "expectedYearEndEntries": 1,
+      "expectedNetDebitCentsByAccount": {
+        "1060": 1800000,
+        "3010": -500000,
+        "3100": -1300000
+      }
     }
   }
 }

@@ -2811,14 +2811,34 @@
           "artifact_paths_and_hashes": [
             "docs/books-evidence/2026-10-06-golden-scenarios/RACE-01.json sha256:af51a74fc97621cb9e1f08fff19724876fa136c5bfbcd5b02ac7b32a7adf4582"
           ]
+        },
+        {
+          "verified_at": "2026-10-06T14:05:13.909477+00:00",
+          "implemented_paths": [
+            "lib/services/books/period-close.ts",
+            "components/books/close-workspace.tsx",
+            "scripts/books-acceptance/scenarios/year-01.cjs"
+          ],
+          "test_scenario_ids": [
+            "YEAR-01",
+            "CLOSE-01",
+            "RACE-01"
+          ],
+          "commands": [
+            "scenario-runner YEAR-01 (PASSED 6/6)"
+          ],
+          "observed_results": [
+            "All five B01.2 accounting criteria demonstrated through product services: RE equation with custom accounts and separately recorded distributions; next-year P&L reset; zero-income and no-activity years; same-intent retry (concurrent transfer + concurrent final-period close) creates one entry; reopen/reclose with a late adjustment posts only the residual and preserves history; newest-first reopen enforced.",
+            "Remaining for LOCALLY_VERIFIED under the global DoD: authenticated browser journey of close/reopen/reclose (global DoD 5/6) and the accounting-entry documentation (global DoD 9)."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/YEAR-01.json sha256:e4b7fef0138a0bc2d8e67dcf8df48dd979110bd52972f0ec59491dd91eee3c8f"
+          ]
         }
       ],
       "remaining_criteria": [
-        "beginning RE + annual net income ± separately recorded equity movements ties ending RE",
-        "P&L resets correctly in the next year",
-        "custom-account and zero-income years work",
-        "same-intent retry creates one entry",
-        "reopening/reclosing with a late adjustment produces only the necessary deltas and preserves original history"
+        "authenticated browser journey: year-end close, refused out-of-order reopen, reopen/reclose (global DoD 5/6)",
+        "year-end entry set and reopen policy documented (global DoD 9)"
       ],
       "external_dependency": null,
       "reviewer": null,

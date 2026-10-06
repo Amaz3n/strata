@@ -7,7 +7,7 @@
       "name": "noncalendar-year-closes-to-retained-earnings",
       "status": "PASSED",
       "identities": {
-        "orgId": "9a4afe5f-1ffd-42e8-8242-7a2e1c20e23e"
+        "orgId": "e79dfcf8-d475-4959-a8c8-199008145592"
       },
       "checks": [
         {
@@ -73,13 +73,13 @@
           "observed": 0
         }
       ],
-      "startedAt": "2026-10-06T11:52:50.793Z"
+      "startedAt": "2026-10-06T14:04:53.018Z"
     },
     {
       "name": "late-adjustment-reopen-reclose-and-next-year",
       "status": "PASSED",
       "identities": {
-        "orgId": "13b8b187-6c10-470f-b855-6370fbb9d6d4"
+        "orgId": "51155f47-9cbe-4eed-8ed6-5682576645af"
       },
       "checks": [
         {
@@ -147,13 +147,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T11:52:52.572Z"
+      "startedAt": "2026-10-06T14:04:54.774Z"
     },
     {
       "name": "break-even-year",
       "status": "PASSED",
       "identities": {
-        "orgId": "3a0b00ca-9338-416e-91fd-c8725a178fd7"
+        "orgId": "c34720a9-ecd2-4502-8ccc-354acc07c31f"
       },
       "checks": [
         {
@@ -189,13 +189,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T11:52:53.095Z"
+      "startedAt": "2026-10-06T14:04:55.277Z"
     },
     {
       "name": "no-activity-year",
       "status": "PASSED",
       "identities": {
-        "orgId": "a35a663b-0a8d-47af-9997-994f7307e4d5"
+        "orgId": "75ed7178-91bd-4a19-818f-a195c6e65922"
       },
       "checks": [
         {
@@ -219,13 +219,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T11:52:53.362Z"
+      "startedAt": "2026-10-06T14:04:55.530Z"
     },
     {
       "name": "late-adjustment-in-earlier-closed-period",
       "status": "PASSED",
       "identities": {
-        "orgId": "8e68d0bb-16a2-41c8-9ee2-0270abcf6c1e"
+        "orgId": "29f5f6c6-ff11-4a30-892f-1c7db76a1611"
       },
       "checks": [
         {
@@ -261,9 +261,45 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T11:52:53.560Z"
+      "startedAt": "2026-10-06T14:04:55.733Z"
+    },
+    {
+      "name": "same-intent-retry",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "8ea4645a-e1e8-4529-93c0-33498e2f96d9"
+      },
+      "checks": [
+        {
+          "label": "the final period is closed",
+          "pass": true,
+          "expected": "closed",
+          "observed": "closed"
+        },
+        {
+          "label": "one year-end entry for one intent",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "RE = opening + net income",
+          "pass": true,
+          "expected": {
+            "1060": 1800000,
+            "3010": -500000,
+            "3100": -1300000
+          },
+          "observed": {
+            "1060": 1800000,
+            "3010": -500000,
+            "3100": -1300000
+          }
+        }
+      ],
+      "startedAt": "2026-10-06T14:04:56.120Z"
     }
   ],
   "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
-  "finishedAt": "2026-10-06T11:52:53.968Z"
+  "finishedAt": "2026-10-06T14:04:56.367Z"
 }

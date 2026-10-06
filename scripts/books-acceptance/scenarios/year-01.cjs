@@ -156,3 +156,21 @@ async function lateAdjustmentInEarlierPeriod(kit, expected, check) {
 }
 
 module.exports.subcases["late-adjustment-in-earlier-closed-period"] = lateAdjustmentInEarlierPeriod
+
+// The same year-end intent twice at once — the transfer itself, then the final
+// period's close — must leave exactly one closing entry.
+async function sameIntentRetry(kit, expected, check) {
+  const input = expected.inputs
+  const org = await yearOrg(kit, "YEAR-01 same-intent retry", input.opening, ["2026-03"])
+  for (const entry of input.journals) await journal(kit, org, entry)
+  const { closeFiscalYearToRetainedEarnings } = app("books/period-close")
+  const transfer = () => kit.as(org.owner, () => closeFiscalYearToRetainedEarnings(org.periods["2026-03"].periodId))
+  await Promise.allSettled([transfer(), transfer()])
+  await Promise.allSettled([close(kit, org, "2026-03"), close(kit, org, "2026-03")])
+  check.equal("the final period is closed", "closed", kit.rows(`select status from public.accounting_periods where id=${kit.q(org.periods["2026-03"].periodId)}`)[0].status)
+  check.equal("one year-end entry for one intent", expected.expectedYearEndEntries, yearEndEntries(kit, org).length)
+  check.equal("RE = opening + net income", expected.expectedNetDebitCentsByAccount, kit.postedNet(org.orgId))
+  return { orgId: org.orgId }
+}
+
+module.exports.subcases["same-intent-retry"] = sameIntentRetry
