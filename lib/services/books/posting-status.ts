@@ -44,7 +44,7 @@ export async function getBooksPostingStatus(input: { sourceType: BooksPostingSou
   if (settingsError) throw new Error("Unable to load accounting posture")
   if (!settings?.workspace_enabled || settings.arc_ledger_mode === "disabled") return null
   const [receiptResult, failureResult] = await Promise.all([
-    service.from("books_projection_receipts").select("source_observed_at,checked_at,journal:journal_entries!books_projection_receipts_journal_id_fkey(status,entry_date)").eq("org_id", context.orgId).in("source_type", family.sourceTypes).eq("source_id", parsed.sourceId).order("checked_at", { ascending: false }).limit(1).maybeSingle(),
+    service.from("books_projection_receipts").select("source_observed_at,checked_at,journal:journal_entries!books_projection_receipts_journal_id_fkey(id,status,entry_date)").eq("org_id", context.orgId).in("source_type", family.sourceTypes).eq("source_id", parsed.sourceId).order("checked_at", { ascending: false }).limit(1).maybeSingle(),
     service.from("accounting_reconciliation_items").select("category,details").eq("org_id", context.orgId).in("entity_type", family.sourceTypes).eq("entity_id", parsed.sourceId).in("category", ["projection_failed", "projection_blocked_by_closed_period"]).neq("status", "resolved").order("created_at", { ascending: false }).limit(1).maybeSingle(),
   ])
   if (receiptResult.error || failureResult.error) throw new Error("Unable to verify accounting posting status")
@@ -58,7 +58,7 @@ export async function getBooksPostingStatus(input: { sourceType: BooksPostingSou
     ledgerMode: settings.arc_ledger_mode as string,
     // Where the posting lives, so the person can open the actual journal.
     journalEntryDate: journal?.entry_date ?? null,
-    journalHref: journal ? `/books/ledger?q=${parsed.sourceId}` : null,
+    journalHref: journal ? `/books/ledger?entry=${journal.id}` : null,
     finding: failureResult.data ? { cure: details.cure ?? null, error: details.error ?? null, href: details.href ?? null } : null,
   }
 }

@@ -545,6 +545,7 @@ export async function listJournalEntriesAction(input: {
   projectId?: string;
   minAmountCents?: number;
   maxAmountCents?: number;
+  entryId?: string;
 }) {
   return read(() =>
     listJournalEntries(
@@ -558,6 +559,7 @@ export async function listJournalEntriesAction(input: {
           projectId: z.string().uuid().optional(),
           minAmountCents: z.number().int().min(0).optional(),
           maxAmountCents: z.number().int().min(0).optional(),
+          entryId: z.string().uuid().optional(),
         })
         .parse(input),
     ),

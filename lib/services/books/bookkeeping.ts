@@ -105,6 +105,8 @@ export async function listJournalEntries(
     projectId?: string;
     minAmountCents?: number;
     maxAmountCents?: number;
+    /** One entry by id, found in the database rather than the scan window. */
+    entryId?: string;
     orgId?: string;
   } = {},
 ) {
@@ -125,6 +127,7 @@ export async function listJournalEntries(
     query = query.in("entry_kind", input.entryKinds);
   if (input.startDate) query = query.gte("entry_date", input.startDate);
   if (input.endDate) query = query.lte("entry_date", input.endDate);
+  if (input.entryId) query = query.eq("id", input.entryId);
 
   const { data, error } = await query;
   if (error)

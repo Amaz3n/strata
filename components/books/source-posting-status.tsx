@@ -37,9 +37,10 @@ export function SourcePostingStatus({ sourceType, sourceId, revision }: { source
     <div className="min-w-0">
       <p className="font-medium">Arc ledger{status && status.ledgerMode !== "official" ? ` · ${status.ledgerMode}` : ""}</p>
       <p className={cn("mt-1", status ? tone[status.state] : "text-muted-foreground")}>{!result ? "Checking posting…" : status ? copy[status.state] : "Accounting status is unavailable"}</p>
-      {status?.finding?.error ? <p className="mt-1 text-muted-foreground">{status.finding.error}</p> : null}
+      {/* A blocked posting already says its cure; only a failure needs the diagnostic. */}
+      {status?.state === "failed" && status.finding?.error ? <p className="mt-1 text-muted-foreground">{status.finding.error}</p> : null}
       <div className="mt-1 flex flex-wrap gap-3">
-        {status?.journalHref && status.state !== "failed" ? <Link className="underline underline-offset-2" href={status.journalHref}>Journal {status.journalEntryDate}</Link> : null}
+        {status?.journalHref && status.state !== "failed" ? <Link className="underline underline-offset-2" href={status.journalHref}>{status.state === "posted" || status.state === "reversed" ? "Journal" : "Last journal"} {status.journalEntryDate}</Link> : null}
         {status?.finding?.href && (status.state === "blocked" || status.state === "failed") ? <Link className="underline underline-offset-2" href={status.finding.href}>Resolve in Books</Link> : null}
       </div>
     </div>

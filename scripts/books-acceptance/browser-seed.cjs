@@ -105,7 +105,13 @@ const JOURNEYS = {
     await kit.drainOutbox(org.orgId)
     await project(kit, org)
     await prepareAndReview(kit, org, "2026-07", { contractCents: 1000000, eacCents: 800000 })
-    await kit.as(org.owner, () => app("books/period-close").closeAccountingPeriod(org.periods["2026-07"].periodId))
+    // The receipt is still undeposited at month end; the close needs its support.
+    const { getClearingSupportWorkspace, reviewClearingSupport } = app("books/clearing-support")
+    const july = org.periods["2026-07"].periodId
+    const clearing = await kit.as(org.owner, () => getClearingSupportWorkspace(july))
+    await kit.as(org.owner, () => reviewClearingSupport({ periodId: july, ledgerDigest: clearing.ledgerDigest, items: [{ code: "1010", amountCents: 50000, expectedSettlementDate: "2026-08-03",
+      explanation: "Client check of July 8 deposited August 3", evidenceUrl: "https://acceptance.example.test/deposit-slip-0803.pdf" }] }))
+    await kit.as(org.owner, () => app("books/period-close").closeAccountingPeriod(july))
     await kit.as(org.owner, () => updateVendorBillStatus({ billId: bill.id, input: { status: "approved", actual_lines: [{ description: "Framing", amount_cents: 100000, cost_code_id: org.costCodeId, project_id: org.projectId, arc_books_gl_account_id: gl("5020") }] } }))
     const result = await project(kit, org)
     await kit.service(() => app("books/reconciliation").recordProjectionFailures([{ orgId: org.orgId, ...result }], { full: true }))

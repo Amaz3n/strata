@@ -835,7 +835,9 @@ function InvoiceInspectorBody({
                 </span>
               </Row>
               <div className="mt-3 border-t pt-3">
-                <Row label="Issued">{invoice.sent_at ? format(new Date(invoice.sent_at), "MMM d, yyyy") : "Not yet"}</Row>
+                {/* The invoice date is what the ledger posts; when it went out is separate. */}
+                <Row label="Issued">{wasIssued && invoice.issue_date ? formatDateOnly(invoice.issue_date, { withYear: true }) : "Not yet"}</Row>
+                {invoice.sent_at && format(new Date(invoice.sent_at), "yyyy-MM-dd") !== invoice.issue_date ? <Row label="Sent">{format(new Date(invoice.sent_at), "MMM d, yyyy")}</Row> : null}
                 <Row label="Due">{formatDateOnly(invoice.due_date, { withYear: true })}</Row>
                 <Row label="Source">
                   {provenanceHref ? (

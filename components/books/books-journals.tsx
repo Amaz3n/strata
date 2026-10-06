@@ -259,9 +259,10 @@ function EntriesPane({
 }) {
   const requestId = useRef(0);
   const [filter, setFilter] = useState("all");
-  // A posting-status link opens the ledger filtered to its document (?q=).
+  // Documents link to their journal as ?entry=<id>: that one entry, opened.
   const searchParams = useSearchParams();
-  const [query, setQuery] = useState(() => searchParams.get("q") ?? "");
+  const [entryId, setEntryId] = useState(() => searchParams.get("entry"));
+  const [query, setQuery] = useState("");
   const [accountId, setAccountId] = useState("all");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -271,7 +272,7 @@ function EntriesPane({
   const [data, setData] = useState<JournalListing | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(entryId);
   const [activityTarget, setActivityTarget] = useState<ActivityTarget | null>(
     null,
   );
@@ -303,6 +304,7 @@ function EntriesPane({
       ...(endDate ? { endDate } : {}),
       ...(minAmount ? { minAmountCents: Math.max(0, cents(minAmount)) } : {}),
       ...(maxAmount ? { maxAmountCents: Math.max(0, cents(maxAmount)) } : {}),
+      ...(entryId ? { entryId } : {}),
     })
       .then((result) => {
         if (request !== requestId.current) return;
@@ -320,6 +322,7 @@ function EntriesPane({
     accountId,
     deferredQuery,
     endDate,
+    entryId,
     filter,
     maxAmount,
     minAmount,
@@ -334,6 +337,7 @@ function EntriesPane({
   }, [load, revision]);
 
   const hasFilters = Boolean(
+    entryId ||
     query ||
     accountId !== "all" ||
     startDate ||
@@ -343,6 +347,7 @@ function EntriesPane({
     filter !== "all",
   );
   const clearFilters = () => {
+    setEntryId(null);
     setQuery("");
     setAccountId("all");
     setStartDate("");
@@ -465,6 +470,11 @@ function EntriesPane({
           >
             <RotateCcw className="size-4" />
           </Button>
+          {entryId ? (
+            <span className="inline-flex h-9 items-center border px-3 text-xs text-muted-foreground">
+              Linked entry
+            </span>
+          ) : null}
           {hasFilters ? (
             <Button
               variant="ghost"
@@ -506,7 +516,7 @@ function EntriesPane({
             {loading
               ? "Updating…"
               : data && !error
-                ? `${data.entries.length}${data.truncated ? "+" : ""} entries`
+                ? `${data.entries.length}${data.truncated ? "+" : ""} ${data.entries.length === 1 && !data.truncated ? "entry" : "entries"}`
                 : ""}
           </span>
         </div>
