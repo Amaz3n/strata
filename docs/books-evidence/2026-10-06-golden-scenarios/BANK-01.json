@@ -7,7 +7,7 @@
       "name": "two-banks-and-card-two-cycles",
       "status": "PASSED",
       "identities": {
-        "orgId": "c6da80fc-93bb-4dac-b649-8d75f22e98b5"
+        "orgId": "ddbbb7e8-b4b6-43dd-9bc8-4e4a3fb190ce"
       },
       "checks": [
         {
@@ -161,13 +161,13 @@
           "observed": 0
         }
       ],
-      "startedAt": "2026-10-06T16:29:37.400Z"
+      "startedAt": "2026-10-06T16:50:36.884Z"
     },
     {
       "name": "reopen-order-and-frozen-evidence",
       "status": "PASSED",
       "identities": {
-        "orgId": "7967395f-d5a1-48b9-b58d-95ed85812a65"
+        "orgId": "006a8a9a-8d9f-4757-9679-a993bc17cb64"
       },
       "checks": [
         {
@@ -195,13 +195,13 @@
           "observed": true
         }
       ],
-      "startedAt": "2026-10-06T16:29:55.401Z"
+      "startedAt": "2026-10-06T16:50:44.069Z"
     },
     {
       "name": "grouped-net-deposit-with-fees",
       "status": "PASSED",
       "identities": {
-        "orgId": "209ac186-bd8d-43b9-9cdb-a68e6b659089"
+        "orgId": "a3982453-6d1a-4689-962f-a4dcc445c3ed"
       },
       "checks": [
         {
@@ -245,13 +245,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T16:30:04.525Z"
+      "startedAt": "2026-10-06T16:50:47.663Z"
     },
     {
       "name": "imported-outstanding-items",
       "status": "PASSED",
       "identities": {
-        "orgId": "94e4088e-4748-4390-baad-8b849ba36b45"
+        "orgId": "dfa99d5a-3f10-4ed9-80be-e271437fe996"
       },
       "checks": [
         {
@@ -295,13 +295,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T16:30:06.012Z"
+      "startedAt": "2026-10-06T16:50:48.406Z"
     },
     {
       "name": "supplier-refund-and-vendor-credit",
       "status": "PASSED",
       "identities": {
-        "orgId": "0f24b87a-1e96-4053-8323-692152a9b34e"
+        "orgId": "24b5faf6-2577-409a-8c0e-5b861c559116"
       },
       "checks": [
         {
@@ -343,14 +343,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T16:30:07.347Z"
+      "startedAt": "2026-10-06T16:50:48.934Z"
     },
     {
       "name": "voided-checks-offset",
       "status": "PASSED",
       "identities": {
-        "orgId": "6f9f6e5e-d4ec-4634-a009-fccd698e09a4",
-        "reconciliationId": "783f08a6-f0d5-43d9-8aae-03190b0d0ea4"
+        "orgId": "9deba49d-4dbb-4620-a6f8-4d411fc0ecb4",
+        "reconciliationId": "e6449193-18a4-4be3-8bdc-6c9478b20d68"
       },
       "checks": [
         {
@@ -418,13 +418,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T16:30:11.287Z"
+      "startedAt": "2026-10-06T16:50:50.202Z"
     },
     {
       "name": "voided-after-posting",
       "status": "PASSED",
       "identities": {
-        "orgId": "e5267daf-2405-423c-96bf-ef679277229e"
+        "orgId": "825f40d7-856f-432a-9ba7-0bb4df62fa45"
       },
       "checks": [
         {
@@ -446,13 +446,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T16:30:13.315Z"
+      "startedAt": "2026-10-06T16:50:50.956Z"
     },
     {
       "name": "funding-ownership",
       "status": "PASSED",
       "identities": {
-        "orgId": "c42f8b55-e5a2-4d19-9242-3b9d9bde2974",
+        "orgId": "048bfc0e-faa1-463a-9a2e-a626e16d6a50",
         "ambiguousRefusal": "Failed to record bill payment: Choose the actual bank or card account before recording this payment"
       },
       "checks": [
@@ -519,9 +519,45 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T16:30:15.199Z"
+      "startedAt": "2026-10-06T16:50:51.629Z"
+    },
+    {
+      "name": "feed-failure-manual-fallback",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "0e5bef56-2d36-4543-aa9e-de245319cc0a"
+      },
+      "checks": [
+        {
+          "label": "manual reconciliation closes while the feed is failing",
+          "pass": true,
+          "expected": {
+            "ending": -2500,
+            "outstanding": 0,
+            "book": -2500
+          },
+          "observed": {
+            "ending": -2500,
+            "outstanding": 0,
+            "book": -2500
+          }
+        },
+        {
+          "label": "the feed failure stays visible on the connection",
+          "pass": true,
+          "expected": {
+            "status": "reauth_required",
+            "hasError": true
+          },
+          "observed": {
+            "status": "reauth_required",
+            "hasError": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-06T16:50:52.897Z"
     }
   ],
   "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
-  "finishedAt": "2026-10-06T16:30:18.740Z"
+  "finishedAt": "2026-10-06T16:50:53.187Z"
 }

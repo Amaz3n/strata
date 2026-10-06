@@ -579,6 +579,29 @@
         "2000": -50000,
         "5000": 390000
       }
+    },
+    "feed-failure-manual-fallback": {
+      "inputs": {
+        "failure": {
+          "status": "reauth_required",
+          "lastError": "ITEM_LOGIN_REQUIRED: the bank requires the user to sign in again"
+        },
+        "fee": {
+          "date": "2026-07-10",
+          "description": "Monthly service fee",
+          "cents": -2500
+        }
+      },
+      "derivation": "The bank feed for the operating account fails (the bank requires a new sign-in). The failure stays recorded on the connection, and a statement file can still be imported, its line categorized and the statement reconciled and closed by hand.",
+      "expectedConnection": {
+        "status": "reauth_required",
+        "hasError": true
+      },
+      "expectedStatement": {
+        "ending": -2500,
+        "outstanding": 0,
+        "book": -2500
+      }
     }
   }
 }

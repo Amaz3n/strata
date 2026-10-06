@@ -7641,8 +7641,8 @@
       "id": "B08.2",
       "workstream": "B08",
       "title": "Concurrent statement lifecycle and feed/import resilience",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "BLOCKED_EXTERNAL",
+      "status_basis": "Every local B08.2 criterion is verified (2026-10-06); only actual provider (Plaid sandbox) read-only evidence remains, which needs provider access.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "racing closes/matches produce one valid state or explicit retry",
@@ -7693,13 +7693,44 @@
           "artifact_paths_and_hashes": [
             "docs/books-evidence/2026-10-06-golden-scenarios/RACE-01.json sha256:af51a74fc97621cb9e1f08fff19724876fa136c5bfbcd5b02ac7b32a7adf4582"
           ]
+        },
+        {
+          "verified_at": "2026-10-06T16:51:11.624954+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/bank-01.cjs",
+            "scripts/books-acceptance/journeys/feed-failure.spec.ts",
+            "scripts/books-acceptance/browser-seed.cjs"
+          ],
+          "test_scenario_ids": [
+            "BANK-01",
+            "RACE-01",
+            "browser:feed-failure",
+            "browser:bank-statement"
+          ],
+          "commands": [
+            "scenario-runner BANK-01 (PASSED 9/9)",
+            "BOOKS_ACCEPTANCE_WORKSPACE=W npx playwright test -c scripts/books-acceptance/playwright.config.ts feed-failure"
+          ],
+          "observed_results": [
+            "Racing matches and closes resolve to one valid state or an explicit refusal (RACE-01 bank-double-match, deposit contention); closed evidence cannot mutate and reopen is later-first (BANK-01 reopen-order); statement reimport adds nothing.",
+            "Feed failure: with the connection in reauth_required and its error recorded, a statement file still imports, its line is categorized, and the statement closes (BANK-01 feed-failure-manual-fallback). Browser: the account shows 'Needs attention' in Manage banking and the July statement is opened and closed by hand; 390px dark presentation clean."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/BANK-01.json sha256:9164770201ff1ad29b1ad9b854efa9f475a51e0acde5ca0b89435d808b759708",
+            "docs/books-evidence/2026-10-06-browser/feed-failure-desktop.png sha256:be0533690d596d02316302c11f618e8ae8bdbe98b0fcd5690e356b5bdb6868f0",
+            "docs/books-evidence/2026-10-06-browser/feed-failure-journeys.json sha256:66fb95d9f9f6d803dc7bb19692f4ed7d15cd4bb69608712702a111976682d5cd"
+          ],
+          "remaining_criteria": [
+            "actual provider read-only/sandbox evidence retained"
+          ],
+          "external_dependency": "Plaid sandbox access",
+          "reviewer": null
         }
       ],
       "remaining_criteria": [
-        "feed failure is visible without preventing valid manual reconciliation (browser)",
-        "actual provider read-only/sandbox evidence retained (external: Plaid sandbox access)"
+        "actual provider read-only/sandbox evidence retained"
       ],
-      "external_dependency": null,
+      "external_dependency": "Plaid sandbox (or read-only production item) access to retain actual provider sync evidence",
       "reviewer": null,
       "verified_at": null
     },

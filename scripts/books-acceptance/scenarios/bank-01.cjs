@@ -446,6 +446,21 @@ async function fundingOwnership(kit, expected, check) {
   return { orgId: org.orgId, ambiguousRefusal: ambiguous }
 }
 
+async function feedFailureManualFallback(kit, expected, check) {
+  const input = expected.inputs
+  const org = await greenfieldOrg(kit, { name: "BANK-01 feed failure", periods: ["2026-07"] })
+  org.banks = { operating: await bankAccount(kit, org, "1000") }
+  // The provider reports that the bank needs the user to sign in again.
+  kit.sql(`update public.bank_feed_connections set status=${kit.q(input.failure.status)}, last_error=${kit.q(input.failure.lastError)}
+    where id=(select connection_id from public.bank_accounts where id=${kit.q(org.banks.operating.id)});`)
+  await importStatement(kit, org, "operating", [input.fee])
+  await kit.as(org.owner, () => app("books/bank-rules").categorizeBankTransaction({ bankTransactionId: bankTransaction(kit, org, "operating", input.fee), glAccountId: glId(kit, org, "6050"), memo: "Fee", learn: false }))
+  check.equal("manual reconciliation closes while the feed is failing", expected.expectedStatement, await closeStatement(kit, org, org.banks.operating.id, "2026-07", 0, [input.fee]))
+  const connection = kit.rows(`select c.status, c.last_error is not null has_error from public.bank_feed_connections c join public.bank_accounts b on b.connection_id=c.id where b.id=${kit.q(org.banks.operating.id)}`)[0]
+  check.equal("the feed failure stays visible on the connection", expected.expectedConnection, { status: connection.status, hasError: connection.has_error })
+  return { orgId: org.orgId }
+}
+
 async function refusalOf(work) {
   try { await work(); return null } catch (error) { return error instanceof Error ? error.message : String(error) }
 }
@@ -461,5 +476,6 @@ module.exports = {
     "voided-checks-offset": voidedChecksOffset,
     "voided-after-posting": voidedAfterPosting,
     "funding-ownership": fundingOwnership,
+    "feed-failure-manual-fallback": feedFailureManualFallback,
   },
 }

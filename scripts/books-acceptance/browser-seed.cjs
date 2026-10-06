@@ -73,6 +73,20 @@ const JOURNEYS = {
     org.periods.payrollAccount = { periodId: gl("1005") }
     return org
   },
+  // The operating account's bank feed needs a new sign-in; a July fee was
+  // imported from a statement file and categorized by hand.
+  async "feed-failure"(kit, password) {
+    const org = await greenfieldOrg(kit, { name: "Browser acceptance — feed failure", periods: ["2026-07"], password })
+    const gl = (code) => kit.rows(`select id from public.gl_accounts where org_id=${kit.q(org.orgId)} and code=${kit.q(code)}`)[0].id
+    const created = await kit.as(org.owner, () => app("books/bank-feeds").createManualBankAccount({ name: "Operating checking", accountType: "depository", glAccountId: gl("1000") }))
+    org.periods.bankAccount = { periodId: created.bankAccountId }
+    kit.sql(`update public.bank_feed_connections set status='reauth_required', last_error='ITEM_LOGIN_REQUIRED: the bank requires the user to sign in again'
+      where id=(select connection_id from public.bank_accounts where id=${kit.q(created.bankAccountId)});`)
+    await kit.as(org.owner, () => app("books/bank-feeds").importBankStatement({ bankAccountId: created.bankAccountId, contents: "Date,Description,Amount,Id\n2026-07-10,Monthly service fee,-25.00,jul-fee", fileName: "july.csv" }))
+    const fee = kit.rows(`select id from public.bank_transactions where bank_account_id=${kit.q(created.bankAccountId)}`)[0].id
+    await kit.as(org.owner, () => app("books/bank-rules").categorizeBankTransaction({ bankTransactionId: fee, glAccountId: gl("6050"), memo: "Fee", learn: false }))
+    return org
+  },
   // July's close died right after freezing the period, 31 minutes ago.
   async "abandoned-close"(kit, password) {
     const org = await greenfieldOrg(kit, { name: "Browser acceptance — abandoned close", periods: ["2026-07"], password })
