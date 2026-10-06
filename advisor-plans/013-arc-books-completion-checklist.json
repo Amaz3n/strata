@@ -1336,6 +1336,32 @@
           ],
           "external_dependency": null,
           "reviewer": null
+        },
+        {
+          "verified_at": "2026-10-06T02:26:43.572729+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261006022553_warranty_completion_coverage.sql",
+            "supabase/migrations/20261006022554_remove_dead_vendor_identity_lockout_columns.sql",
+            "supabase/migrations/20261006022555_project_optional_vendor_bills.sql",
+            "supabase/migrations/20261006022556_payment_money_widening_and_fk_indexes.sql"
+          ],
+          "test_scenario_ids": [],
+          "commands": [
+            "Supabase MCP apply_migration x4 (user-approved 2026-10-05), read-only verification"
+          ],
+          "observed_results": [
+            "PRODUCTION: applied 4 origin/main migrations that production had never run, after each applied cleanly to the reconstructed baseline. Verified: closeout_packages.substantial_completion_date exists (fixes closeout completion for 23 packages); vendor lockout columns dropped (were empty); vendor_bills.project_id nullable; payment money columns bigint; 15 FK indexes present; row counts unchanged. Repo files renamed to stamped versions 20261006022553-56.",
+            "Held for review: desk_rollup_counts (unused), billing_lifecycle_and_command_permissions (changes 6 live saved invoices + RLS), accounting_d2_compatibility_mirror (gated D2 cutover)."
+          ],
+          "artifact_paths_and_hashes": [],
+          "schema_or_runtime_identity": "production gzlfiskfkvqgpzqldnwk",
+          "remaining_criteria": [
+            "Decide on the 3 held migrations",
+            "Explain remaining 12 function differences",
+            "accounting_d2_lossless_finalizer location"
+          ],
+          "external_dependency": null,
+          "reviewer": "Agustin (approved application)"
         }
       ],
       "remaining_criteria": [

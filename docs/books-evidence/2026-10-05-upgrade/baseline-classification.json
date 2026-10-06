@@ -1,12 +1,8 @@
 {
   "method": "repo files up to production newest applied (20261002011734), minus files whose created objects are absent in production (catalog check 2026-10-05)",
   "excluded_not_applied": [
-    "20260724120000_warranty_completion_coverage.sql",
     "20260731150000_desk_rollup_counts.sql",
-    "20260813040000_remove_dead_vendor_identity_lockout_columns.sql",
-    "20260827121000_project_optional_vendor_bills.sql",
     "20260829120000_billing_lifecycle_and_command_permissions.sql",
-    "20260901120100_payment_money_widening_and_fk_indexes.sql",
     "20260919235924_unified_reporting_access.sql",
     "20260921123155_customer_billing_refunds.sql",
     "20260924230342_accounting_d2_compatibility_mirror.sql",
@@ -75,7 +71,7 @@
     "20260901120100_payment_money_widening_and_fk_indexes.sql",
     "20260924230342_accounting_d2_compatibility_mirror.sql"
   ],
-  "live_impact": "Deployed lib/services/closeout.ts selects and writes closeout_packages.substantial_completion_date, added only by the unapplied 20260724120000_warranty_completion_coverage.sql.",
+  "live_impact": "Resolved 2026-10-05: closeout_packages.substantial_completion_date now exists in production.",
   "remaining_function_drift_to_explain": [
     "apply_invoice_late_fee_atomic",
     "can_manage_members",
@@ -89,5 +85,17 @@
     "restore_retainage_for_void_release_invoice",
     "run_bid_award_conversion",
     "sync_retainage_release_invoice_status"
-  ]
+  ],
+  "applied_2026_10_05": {
+    "20260724120000_warranty_completion_coverage": "20261006022553",
+    "20260813040000_remove_dead_vendor_identity_lockout_columns": "20261006022554",
+    "20260827121000_project_optional_vendor_bills": "20261006022555",
+    "20260901120100_payment_money_widening_and_fk_indexes": "20261006022556",
+    "books_job_cost_source_id_casts": "20261006014257"
+  },
+  "held_pending_review": {
+    "20260731150000_desk_rollup_counts.sql": "no code reads desk_rollup_counts; adds triggers to four busy tables",
+    "20260829120000_billing_lifecycle_and_command_permissions.sql": "folds 6 live saved invoices to draft and removes member write access to invoices/payments; needs billing review",
+    "20260924230342_accounting_d2_compatibility_mirror.sql": "gated QBO D2 cutover; triggers can block bill/expense updates"
+  }
 }
