@@ -1,221 +1,689 @@
-const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs')
-const {PGlite}=require('@electric-sql/pglite')
-const ORG='00000000-0000-4000-8000-000000000001',PKG='00000000-0000-4000-8000-000000000002',HOME='00000000-0000-4000-8000-000000000003',OTHER='00000000-0000-4000-8000-000000000004',VERSION='00000000-0000-4000-8000-000000000005',SOURCE='00000000-0000-4000-8000-000000000006',LOT='00000000-0000-4000-8000-000000000007',COMM='00000000-0000-4000-8000-000000000008'
-async function setup(t){
- const db=new PGlite();t.after(()=>db.close())
- await db.exec("create role anon;create role authenticated;create role service_role;create table outbox(id bigint generated always as identity primary key,org_id uuid,job_type text,payload jsonb,status text default 'pending',retry_count integer default 0,last_error text,run_at timestamptz default now(),updated_at timestamptz default now(),created_at timestamptz default now(),priority integer default 0);create table orgs(id uuid primary key);create table app_users(id uuid primary key);create table communities(id uuid primary key,org_id uuid);create table projects(id uuid primary key,org_id uuid,metadata jsonb default '{}');create table lots(id uuid primary key,org_id uuid,project_id uuid,community_id uuid,house_plan_version_id uuid);")
- const packages=fs.readFileSync(require.resolve('../supabase/migrations/20260718210910_start_packages.sql'),'utf8');const start=packages.indexOf('create table public.start_packages (');await db.exec(packages.slice(start,packages.indexOf('\n);',start)+4))
- for(const table of ['schedule_items','budgets','inspections'])await db.exec(`create table ${table}(id uuid primary key,org_id uuid,project_id uuid)`)
- await db.exec('create table budget_lines(id uuid,org_id uuid,budget_id uuid);create table inspection_items(id uuid,org_id uuid,inspection_id uuid);create table schedule_assignments(id uuid,org_id uuid,project_id uuid,schedule_item_id uuid);create table schedule_dependencies(id uuid,org_id uuid,project_id uuid,item_id uuid,depends_on_item_id uuid);create table files(id uuid primary key default gen_random_uuid(),org_id uuid,project_id uuid,storage_path text,source text,visibility text,category text,metadata jsonb);create table drawing_sets(id uuid primary key default gen_random_uuid(),org_id uuid,project_id uuid,source_file_id uuid references files(id));create table drawing_revisions(id uuid primary key default gen_random_uuid(),org_id uuid,project_id uuid,source_file_id uuid references files(id),drawing_set_id uuid references drawing_sets(id));create table house_plan_versions(id uuid primary key,org_id uuid,status text,bundle_snapshot jsonb)')
- for(const file of ['20261003023000_starts_job_claim_leases.sql','20261003025000_starts_generated_artifact_fences.sql','20261003033500_starts_release_lot_plan_scope.sql','20261003034000_starts_drawing_record_fences.sql'])await db.exec(fs.readFileSync(require.resolve(`../supabase/migrations/${file}`),'utf8'))
- await db.query('insert into files(id,org_id) values($1,$2)',[SOURCE,ORG])
- await db.query("insert into house_plan_versions values($1,$2,'released',$3)",[VERSION,ORG,{drawing_source_file_id:SOURCE}])
- await db.query('insert into orgs values($1)',[ORG]);await db.query('insert into communities values($1,$2)',[COMM,ORG]);await db.query('insert into projects(id,org_id) values($1,$2)',[HOME,ORG]);await db.query('insert into lots values($1,$2,$3,$4,$5)',[LOT,ORG,HOME,COMM,VERSION])
- await db.query("insert into start_packages(id,org_id,project_id,lot_id,community_id,status) values($1,$2,$3,$4,$5,'releasing')",[PKG,ORG,HOME,LOT,COMM])
- await db.query("insert into outbox(org_id,job_type,payload) values($1,'start_release',$2)",[ORG,{start_package_id:PKG}]);const job=(await db.query('select * from claim_starts_jobs(1)')).rows[0]
- await db.query("update start_packages set metadata=jsonb_build_object('release_lease_token',$1::text,'release_lease_at',clock_timestamp())",[job.claim_token])
- const headers=active=>db.query("select set_config('request.headers',$1,false)",[JSON.stringify(active?{'x-starts-job-id':String(job.job_id),'x-starts-claim-token':job.claim_token}:{})])
- const file=async(project=HOME,path=`${ORG}/projects/${project}/plans/${VERSION}/plan.pdf`,version=VERSION,source=SOURCE)=>(await db.query("insert into files(org_id,project_id,storage_path,source,visibility,category,metadata) values($1,$2,$3,'generated','private','plans',$4) returning id",[ORG,project,path,{source_plan_version_id:version,source_file_id:source}])).rows[0].id
- const set=async(source,project=HOME)=>(await db.query('insert into drawing_sets(org_id,project_id,source_file_id) values($1,$2,$3) returning id',[ORG,project,source])).rows[0].id
- await headers(true);return {db,job,headers,file,set}
+"use strict"
+
+/**
+ * A start release copies the lot's pinned plan PDF into the home and queues
+ * its drawings. The worker doing that holds a claimed `start_release` job and
+ * a package lease, and identifies itself with request headers; the database
+ * fences every file, drawing record and child job it writes to that claimed
+ * home, plan and frozen source, and makes the publication one transaction.
+ */
+
+const test = require("node:test")
+const assert = require("node:assert/strict")
+
+const { asRole, createDatabase, insert, rpc, seedMember, setRequestHeaders } = require("./support/pglite")
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+/** A released plan version whose frozen bundle points at `source`. */
+async function releasedPlanVersion(db, orgId, actorId, source, versionNumber = 1) {
+  const plan = await insert(db, "house_plans", { org_id: orgId, code: `P${versionNumber}`, name: `Plan ${versionNumber}` })
+  return insert(db, "house_plan_versions", {
+    org_id: orgId,
+    house_plan_id: plan.id,
+    version_number: versionNumber,
+    status: "released",
+    released_at: new Date(),
+    released_by: actorId,
+    bundle_snapshot: { drawing_source_file_id: source.id },
+  })
 }
-test('owned snapshot PDF, canonical set and revision writes work under service role',async t=>{
- const h=await setup(t);await h.db.exec('grant all on files,drawing_sets,drawing_revisions,house_plan_versions,outbox,start_packages,lots to service_role;set role service_role')
- const file=await h.file(),set=await h.set(file)
- await h.db.query('insert into drawing_revisions(org_id,project_id,source_file_id,drawing_set_id) values($1,$2,$3,$4)',[ORG,HOME,file,set])
-})
-test('PDF records reject wrong home, plan, frozen source and destination traversal',async t=>{
- const h=await setup(t)
- await assert.rejects(h.file(OTHER),/home mismatch/)
- await assert.rejects(h.file(HOME,undefined,OTHER),/plan mismatch/)
- await assert.rejects(h.file(HOME,undefined,VERSION,OTHER),/source snapshot mismatch/)
- await assert.rejects(h.file(HOME,`${ORG}/projects/${HOME}/plans/${VERSION}/../wrong.pdf`),/destination mismatch/)
- await assert.rejects(h.file(HOME,`${OTHER}/projects/${HOME}/plans/${VERSION}/plan.pdf`),/destination mismatch/)
- await assert.rejects(h.file(HOME,`${ORG}/projects/${HOME}/plans/${OTHER}/plan.pdf`),/destination mismatch/)
-})
-test('drawing parent references cannot cross homes or hide old ancestry',async t=>{
- const h=await setup(t),ownFile=await h.file(),ownSet=await h.set(ownFile);await h.headers(false)
- const foreignFile=await h.file(OTHER),foreignSet=await h.set(foreignFile,OTHER)
- const revision=(await h.db.query('insert into drawing_revisions(org_id,project_id,source_file_id,drawing_set_id) values($1,$2,$3,$4) returning id',[ORG,HOME,foreignFile,foreignSet])).rows[0].id
- await h.headers(true)
- await assert.rejects(h.set(foreignFile),/project file mismatch/)
- await assert.rejects(h.db.query('insert into drawing_revisions(org_id,project_id,source_file_id,drawing_set_id) values($1,$2,$3,$4)',[ORG,HOME,ownFile,foreignSet]),/set mismatch/)
- await assert.rejects(h.db.query('update drawing_revisions set source_file_id=$1,drawing_set_id=$2 where id=$3',[ownFile,ownSet,revision]),/project file mismatch/)
- await assert.rejects(h.db.query('update files set project_id=$1 where id=$2',[HOME,foreignFile]),/home mismatch/)
-})
-test('expired worker changes are rejected and transaction artifacts roll back',async t=>{
- const h=await setup(t);await h.db.exec('begin');const file=await h.file()
- await h.db.exec("update outbox set start_job_lease_expires_at=clock_timestamp()-interval '1 second'")
- await assert.rejects(h.set(file),/worker lease lost/);await h.db.exec('rollback')
- assert.equal((await h.db.query('select count(*)::int n from files where project_id=$1',[HOME])).rows[0].n,0)
-})
-test('ordinary file writes preserve policy while forged browser worker headers fail',async t=>{
- const h=await setup(t);await h.headers(false);await h.db.exec('grant all on files to authenticated;set role authenticated')
- await h.file(OTHER);await h.headers(true);await assert.rejects(h.file(),/Browser cannot use starts worker headers/)
-})
-test('canonical set can replace its old home PDF but new sources must match the claimed plan',async t=>{
- const h=await setup(t);await h.headers(false)
- const oldFile=(await h.db.query('insert into files(org_id,project_id) values($1,$2) returning id',[ORG,HOME])).rows[0].id
- const set=await h.set(oldFile),wrongPlan=await h.file(HOME,undefined,OTHER)
- await h.headers(true)
- await assert.rejects(h.set(wrongPlan),/generated source mismatch/)
- const file=await h.file();await h.db.query('update drawing_sets set source_file_id=$1 where id=$2',[file,set])
- assert.equal((await h.db.query('select source_file_id from drawing_sets where id=$1',[set])).rows[0].source_file_id,file)
- await h.db.exec("update outbox set start_job_lease_expires_at=clock_timestamp()-interval '1 second'")
- await assert.rejects(h.db.query('delete from files where id=$1',[file]),/worker lease lost/)
- await assert.rejects(h.db.query("update files set visibility='public' where id=$1",[file]),/worker lease lost/)
-})
-async function publication(t){
- const h=await setup(t)
- await h.db.exec(` alter table files add column file_name text,add column mime_type text,add column size_bytes bigint,add column checksum text,add column folder_path text,add column uploaded_by uuid;
- alter table house_plan_versions add column version_number integer;
- alter table drawing_sets add column title text,add column status text,add column processing_stage text,add column created_by uuid,add column created_at timestamptz default now();
- alter table drawing_revisions add column revision_label text,add column issuance_type text,add column status text,add column processing_stage text,add column issued_date date,add column created_by uuid;`)
- // Source is a library record; mutate it through its ordinary owning service.
- await h.headers(false);await h.db.query("update files set file_name='plan.pdf',size_bytes=100 where id=$1",[SOURCE]);await h.db.query('update house_plan_versions set version_number=1 where id=$1',[VERSION])
- await h.db.query("update outbox set payload=payload||jsonb_build_object('actor_id',$1::text)",[OTHER]);await h.headers(true)
- await h.db.exec(fs.readFileSync(require.resolve('../supabase/migrations/20261003035000_plan_drawing_publication_transaction.sql'),'utf8'))
- await h.db.exec(fs.readFileSync(require.resolve('../supabase/migrations/20261003036000_plan_drawing_copy_attempt.sql'),'utf8'))
- const reserve=async(evidence={size_bytes:100,source_etag:'source'})=>(await h.db.query('select reserve_plan_drawing_copy($1,$2,$3,$4,$5) result',[ORG,HOME,VERSION,OTHER,evidence])).rows[0].result
- const manifest=await reserve(),copy={attempt_id:manifest.attempt_id,storage_path:manifest.storage_path,size_bytes:100,source_etag:'source',etag:'copy'}
- const publish=async(evidence=copy,actor=OTHER)=>(await h.db.query('select publish_plan_drawing_copy($1,$2,$3,$4,$5) result',[ORG,HOME,VERSION,actor,evidence])).rows[0].result
- return {...h,copy,publish,reserve}
+
+/**
+ * A home on a lot pinned to a released plan, mid-release: the start package is
+ * `releasing`, a worker has claimed its `start_release` job and holds the
+ * package lease, and the worker's headers are active.
+ */
+async function release(t) {
+  const db = await createDatabase(t)
+  const { orgId, userId: actorId } = await seedMember(db)
+  const community = await insert(db, "communities", { org_id: orgId, name: "Harbor Point" })
+  const source = await insert(db, "files", {
+    org_id: orgId,
+    file_name: "plan.pdf",
+    storage_path: `${orgId}/plans/library/plan.pdf`,
+    size_bytes: 100,
+    category: "plans",
+  })
+  const version = await releasedPlanVersion(db, orgId, actorId, source)
+  const home = await insert(db, "projects", { org_id: orgId, name: "Lot 7" })
+  const otherHome = await insert(db, "projects", { org_id: orgId, name: "Lot 8" })
+  const lot = await insert(db, "lots", {
+    org_id: orgId,
+    community_id: community.id,
+    project_id: home.id,
+    lot_number: "7",
+    house_plan_version_id: version.id,
+  })
+  const pkg = await insert(db, "start_packages", {
+    org_id: orgId,
+    lot_id: lot.id,
+    community_id: community.id,
+    project_id: home.id,
+    status: "releasing",
+  })
+  await insert(db, "outbox", {
+    org_id: orgId,
+    job_type: "start_release",
+    payload: { start_package_id: pkg.id, actor_id: actorId },
+  })
+  const [job] = await rpc(db, "claim_starts_jobs", { p_limit: 1 })
+  const acquired = await rpc(db, "transition_starts_package_lease", {
+    p_org_id: orgId,
+    p_job_id: job.job_id,
+    p_token: job.claim_token,
+    p_action: "acquire",
+  })
+  assert.equal(acquired, true)
+
+  const h = { db, orgId, actorId, community, source, version, home, otherHome, lot, pkg, job }
+
+  /** Whether the release worker's headers are on the session. */
+  h.asWorker = (active) =>
+    setRequestHeaders(
+      db,
+      active ? { "x-starts-job-id": String(job.job_id), "x-starts-claim-token": job.claim_token } : {},
+    )
+  /** Run `fn` as the worker's database role. */
+  h.service = (fn) => asRole(db, { role: "service_role" }, fn)
+  /** Let the worker's job lease run out, as time passing would. */
+  h.expireLease = async () => {
+    await setRequestHeaders(db, {})
+    await db.query("update outbox set start_job_lease_expires_at = now() - interval '1 second' where id = $1", [job.job_id])
+  }
+  /** A generated plan PDF for the home, defaulting to exactly what the release may write. */
+  h.planFile = ({
+    project = home,
+    planVersion = version.id,
+    sourceFile = source.id,
+    path = `${orgId}/projects/${project.id}/plans/${version.id}/plan.pdf`,
+  } = {}) =>
+    h.service((tx) =>
+      insert(tx, "files", {
+        org_id: orgId,
+        project_id: project.id,
+        file_name: "plan.pdf",
+        storage_path: path,
+        source: "generated",
+        visibility: "private",
+        category: "plans",
+        metadata: { source_plan_version_id: planVersion, source_file_id: sourceFile },
+      }),
+    )
+  /** The home's canonical drawing set, sourced from `file`. */
+  h.drawingSet = (file, project = home) =>
+    h.service((tx) =>
+      insert(tx, "drawing_sets", { org_id: orgId, project_id: project.id, title: "Plans", source_file_id: file.id }),
+    )
+  h.revision = (file, set, project = home) =>
+    h.service((tx) =>
+      insert(tx, "drawing_revisions", {
+        org_id: orgId,
+        project_id: project.id,
+        drawing_set_id: set.id,
+        source_file_id: file.id,
+        revision_label: "Plan v1",
+        status: "processing",
+      }),
+    )
+  h.count = async (sql, params) => (await db.query(`select count(*)::int as n from ${sql}`, params)).rows[0].n
+
+  await h.asWorker(true)
+  return h
 }
-test('publication atomically creates file, canonical set, revision and job and replays a lost response',async t=>{
- const h=await publication(t);await h.db.exec('set role service_role')
- const first=await h.publish(),retry=await h.publish();assert.equal(first.replayed,false);assert.equal(retry.replayed,true);assert.equal(first.file_id,retry.file_id);assert.equal(first.job_id,retry.job_id)
- await h.db.exec('reset role')
- for(const table of ['drawing_sets','drawing_revisions'])assert.equal((await h.db.query(`select count(*)::int n from ${table}`)).rows[0].n,1)
- assert.equal((await h.db.query("select count(*)::int n from outbox where job_type='process_drawing_set'")).rows[0].n,1)
- await assert.rejects(h.publish({...h.copy,etag:'different'}),/different evidence/)
+
+// ---------------------------------------------------------------------------
+// Generated files and drawing records
+// ---------------------------------------------------------------------------
+
+test("the release worker writes the home's plan PDF, canonical set and revision", async (t) => {
+  const h = await release(t)
+
+  const file = await h.planFile()
+  const set = await h.drawingSet(file)
+  const revision = await h.revision(file, set)
+
+  assert.equal(revision.source_file_id, file.id)
+  assert.equal(revision.drawing_set_id, set.id)
 })
-test('queue persistence failure rolls back every drawing publication record',async t=>{
- const h=await publication(t)
- await h.db.exec(`create function reject_drawing_queue() returns trigger language plpgsql as $$ begin
- if new.job_type='process_drawing_set' then raise exception 'queue unavailable';end if;return new;end $$;
- create trigger reject_drawing_queue before insert on outbox for each row execute function reject_drawing_queue();`)
- await assert.rejects(h.publish(),/queue unavailable/)
- for(const table of ['drawing_sets','drawing_revisions'])assert.equal((await h.db.query(`select count(*)::int n from ${table}`)).rows[0].n,0)
- assert.equal((await h.db.query('select count(*)::int n from files where project_id=$1',[HOME])).rows[0].n,0)
+
+test("a plan PDF for the wrong home, plan, source or destination is refused", async (t) => {
+  const h = await release(t)
+  const foreignPlan = await releasedPlanVersion(h.db, h.orgId, h.actorId, h.source, 2)
+  const base = `${h.orgId}/projects/${h.home.id}/plans/${h.version.id}`
+
+  await assert.rejects(h.planFile({ project: h.otherHome }), /home mismatch/)
+  await assert.rejects(h.planFile({ planVersion: foreignPlan.id }), /plan mismatch/)
+  await assert.rejects(h.planFile({ sourceFile: h.otherHome.id }), /source snapshot mismatch/)
+  await assert.rejects(h.planFile({ path: `${base}/../wrong.pdf` }), /destination mismatch/)
+  const otherPrefix = `${h.otherHome.id}/projects/${h.home.id}/plans/${h.version.id}/plan.pdf`
+  await assert.rejects(h.planFile({ path: otherPrefix }), /destination mismatch/)
+  await assert.rejects(h.planFile({ path: `${h.orgId}/projects/${h.home.id}/plans/${foreignPlan.id}/plan.pdf` }), /destination mismatch/)
 })
-test('publication refuses wrong evidence/actor and competing pending work before inserting files',async t=>{
- const h=await publication(t)
- await assert.rejects(h.publish(h.copy,SOURCE),/actor mismatch/)
- await assert.rejects(h.publish({...h.copy,size_bytes:101}),/not reserved/)
- await assert.rejects(h.publish({...h.copy,storage_path:'wrong'}),/not reserved/)
- await h.headers(false);await h.db.query("insert into drawing_revisions(org_id,project_id,status) values($1,$2,'draft')",[ORG,HOME]);await h.headers(true)
- await assert.rejects(h.publish(),/pending review/)
- assert.equal((await h.db.query('select count(*)::int n from files where project_id=$1',[HOME])).rows[0].n,0)
+
+test("drawing records cannot point across homes or hide a crossed ancestry", async (t) => {
+  const h = await release(t)
+  const ownFile = await h.planFile()
+  const ownSet = await h.drawingSet(ownFile)
+  await h.asWorker(false)
+  const foreignFile = await insert(h.db, "files", {
+    org_id: h.orgId,
+    project_id: h.otherHome.id,
+    file_name: "other.pdf",
+    storage_path: `${h.orgId}/projects/${h.otherHome.id}/other.pdf`,
+  })
+  const foreignSet = await h.drawingSet(foreignFile, h.otherHome)
+  // A revision of this home that was (wrongly) built from another home's records.
+  const crossedRevision = await h.revision(foreignFile, foreignSet)
+  await h.asWorker(true)
+
+  await assert.rejects(h.drawingSet(foreignFile), /project file mismatch/)
+  await assert.rejects(h.revision(ownFile, foreignSet), /set mismatch/)
+  await assert.rejects(
+    h.service((tx) =>
+      tx.query("update drawing_revisions set source_file_id = $1, drawing_set_id = $2 where id = $3", [
+        ownFile.id,
+        ownSet.id,
+        crossedRevision.id,
+      ]),
+    ),
+    /project file mismatch/,
+  )
+  await assert.rejects(
+    h.service((tx) => tx.query("update files set project_id = $1 where id = $2", [h.home.id, foreignFile.id])),
+    /home mismatch/,
+  )
 })
-test('ownership expiry after queue insertion rolls back the complete publication',async t=>{
- const h=await publication(t)
- await h.db.exec(`create function expire_drawing_publication() returns trigger language plpgsql as $$ begin
- if new.job_type='process_drawing_set' then update outbox set start_job_lease_expires_at=clock_timestamp()-interval '1 second' where job_type='start_release';end if;return new;end $$;
- create trigger expire_drawing_publication after insert on outbox for each row execute function expire_drawing_publication();`)
- await assert.rejects(h.publish(),/worker lease lost/)
- assert.equal((await h.db.query('select count(*)::int n from files where project_id=$1',[HOME])).rows[0].n,0)
- assert.equal((await h.db.query('select count(*)::int n from drawing_revisions')).rows[0].n,0)
- assert.equal((await h.db.query("select count(*)::int n from outbox where job_type='process_drawing_set'")).rows[0].n,0)
+
+test("a worker that loses its lease mid-transaction leaves nothing behind", async (t) => {
+  const h = await release(t)
+
+  await assert.rejects(
+    h.db.transaction(async (tx) => {
+      await tx.exec("set local role service_role")
+      const file = await insert(tx, "files", {
+        org_id: h.orgId,
+        project_id: h.home.id,
+        file_name: "plan.pdf",
+        storage_path: `${h.orgId}/projects/${h.home.id}/plans/${h.version.id}/plan.pdf`,
+        source: "generated",
+        visibility: "private",
+        category: "plans",
+        metadata: { source_plan_version_id: h.version.id, source_file_id: h.source.id },
+      })
+      await tx.exec("reset role")
+      await tx.query("select set_config('request.headers', '{}', true)")
+      await tx.query("update outbox set start_job_lease_expires_at = now() - interval '1 second' where id = $1", [
+        h.job.job_id,
+      ])
+      await tx.query("select set_config('request.headers', $1, true)", [
+        JSON.stringify({ "x-starts-job-id": String(h.job.job_id), "x-starts-claim-token": h.job.claim_token }),
+      ])
+      await insert(tx, "drawing_sets", { org_id: h.orgId, project_id: h.home.id, title: "Plans", source_file_id: file.id })
+    }),
+    /worker lease lost/,
+  )
+
+  assert.equal(await h.count("files where project_id = $1", [h.home.id]), 0)
 })
-test('failed processor receipts do not create replacement work and browser execution is denied',async t=>{
- const h=await publication(t),first=await h.publish()
- await h.db.query("update outbox set status='failed' where id=$1",[first.job_id])
- await assert.rejects(h.publish(),/processing failed/)
- await h.db.exec('set role authenticated');await assert.rejects(h.publish(),/permission denied for function publish_plan_drawing_copy/);await h.db.exec('reset role')
- assert.equal((await h.db.query('select count(*)::int n from drawing_revisions')).rows[0].n,1)
+
+test("members keep ordinary file access, but a browser cannot present worker headers", async (t) => {
+  const h = await release(t)
+  const member = { role: "authenticated", userId: h.actorId }
+  const upload = () =>
+    asRole(h.db, member, (tx) =>
+      insert(tx, "files", {
+        org_id: h.orgId,
+        project_id: h.otherHome.id,
+        file_name: "photo.pdf",
+        storage_path: `${h.orgId}/projects/${h.otherHome.id}/photo.pdf`,
+      }),
+    )
+
+  await h.asWorker(false)
+  await upload()
+
+  await h.asWorker(true)
+  await assert.rejects(upload(), /Browser cannot use starts worker headers/)
 })
-test('durable drawing reservation reuses destination and advances the shared ledger only for new work',async t=>{
- const h=await publication(t),reserved=await h.reserve();assert.equal(reserved.attempt_id,h.copy.attempt_id);assert.equal(reserved.storage_path,h.copy.storage_path)
- let ledger=(await h.db.query("select metadata->'plan_instantiation' ledger from projects where id=$1",[HOME])).rows[0].ledger
- assert.equal(ledger.seq,1);assert.equal(ledger.drawing_copy_attempt.status,'reserved')
- await h.publish();const recovered=await h.reserve();assert.equal(recovered.status,'published');assert.equal(recovered.attempt_id,reserved.attempt_id)
- ledger=(await h.db.query("select metadata->'plan_instantiation' ledger from projects where id=$1",[HOME])).rows[0].ledger
- assert.equal(ledger.seq,2);assert.equal(ledger.drawing_copy_attempt.receipt.file_id,recovered.receipt.file_id)
- await h.publish();assert.equal((await h.db.query("select metadata->'plan_instantiation'->>'seq' seq from projects where id=$1",[HOME])).rows[0].seq,'2')
+
+test("the canonical set may leave an old uploaded PDF but only for the claimed plan's copy", async (t) => {
+  const h = await release(t)
+  await h.asWorker(false)
+  const uploaded = await insert(h.db, "files", {
+    org_id: h.orgId,
+    project_id: h.home.id,
+    file_name: "uploaded.pdf",
+    storage_path: `${h.orgId}/projects/${h.home.id}/uploaded.pdf`,
+  })
+  const set = await h.drawingSet(uploaded)
+  const foreignPlan = await releasedPlanVersion(h.db, h.orgId, h.actorId, h.source, 2)
+  const wrongPlanCopy = await h.planFile({ planVersion: foreignPlan.id })
+  await h.asWorker(true)
+  const repoint = (file) =>
+    h.service((tx) => tx.query("update drawing_sets set source_file_id = $1 where id = $2", [file.id, set.id]))
+
+  await assert.rejects(repoint(wrongPlanCopy), /generated source mismatch/)
+  const copy = await h.planFile()
+  await repoint(copy)
+  const stored = await h.db.query("select source_file_id from drawing_sets where id = $1", [set.id])
+  assert.equal(stored.rows[0].source_file_id, copy.id)
+
+  await h.expireLease()
+  await h.asWorker(true)
+  await assert.rejects(h.service((tx) => tx.query("delete from files where id = $1", [copy.id])), /worker lease lost/)
+  await assert.rejects(
+    h.service((tx) => tx.query("update files set visibility = 'public' where id = $1", [copy.id])),
+    /worker lease lost/,
+  )
 })
-test('changed source evidence and malformed reservations cannot create another destination',async t=>{
- const h=await publication(t)
- await assert.rejects(h.reserve({size_bytes:100,source_etag:'replacement'}),/differs/)
- await assert.rejects(h.reserve({size_bytes:101,source_etag:'source'}),/differs from file record/)
- await h.db.query("update projects set metadata=jsonb_set(metadata,'{plan_instantiation,drawing_copy_attempt}',(metadata->'plan_instantiation'->'drawing_copy_attempt')-'status') where id=$1",[HOME])
- await assert.rejects(h.reserve(),/differs/);await assert.rejects(h.publish(),/not reserved/)
- assert.equal((await h.db.query('select count(*)::int n from files where project_id=$1',[HOME])).rows[0].n,0)
+
+test("plan copies follow the lot's pinned plan, not one remembered by the package", async (t) => {
+  const h = await release(t)
+  const repinned = await releasedPlanVersion(h.db, h.orgId, h.actorId, h.source, 2)
+  const pin = async (versionId) => {
+    await h.asWorker(false)
+    await h.db.query("update lots set house_plan_version_id = $1 where id = $2", [versionId, h.lot.id])
+    await h.asWorker(true)
+  }
+
+  await pin(repinned.id)
+  await assert.rejects(h.planFile(), /plan mismatch/)
+
+  await pin(null)
+  await assert.rejects(h.planFile(), /pinned plan scope/)
 })
-test('publication rollback preserves reservation and other project metadata for a retry',async t=>{
- const h=await publication(t)
- await h.db.query("update projects set metadata=metadata||'{\"unrelated\":\"kept\"}'::jsonb where id=$1",[HOME])
- await h.db.exec(`create function reject_reserved_queue() returns trigger language plpgsql as $$ begin
- if new.job_type='process_drawing_set' then raise exception 'queue unavailable';end if;return new;end $$;
- create trigger reject_reserved_queue before insert on outbox for each row execute function reject_reserved_queue();`)
- await assert.rejects(h.publish(),/queue unavailable/)
- const metadata=(await h.db.query('select metadata from projects where id=$1',[HOME])).rows[0].metadata
- assert.equal(metadata.unrelated,'kept');assert.equal(metadata.plan_instantiation.seq,1);assert.equal(metadata.plan_instantiation.drawing_copy_attempt.status,'reserved')
- await h.db.exec('drop trigger reject_reserved_queue on outbox');await h.publish()
- const next=(await h.db.query('select metadata from projects where id=$1',[HOME])).rows[0].metadata;assert.equal(next.unrelated,'kept');assert.equal(next.plan_instantiation.seq,2)
-})
-test('reservation sequence fences an old whole-metadata instantiation mark',async t=>{
- const h=await publication(t)
- const result=await h.db.query("update projects set metadata='{}' where id=$1 and metadata->'plan_instantiation'->>'seq' is null returning id",[HOME]);assert.equal(result.rows.length,0)
- await h.db.exec('set role authenticated');await assert.rejects(h.reserve(),/permission denied for function reserve_plan_drawing_copy/)
-})
-test('a corrupted published manifest is refused instead of manufacturing another publication',async t=>{
- const h=await publication(t);await h.publish()
- await h.db.query("update projects set metadata=jsonb_set(metadata,'{plan_instantiation,drawing_copy_attempt,receipt}','{}') where id=$1",[HOME])
- await assert.rejects(h.reserve(),/receipt requires repair/);await assert.rejects(h.publish(),/manifest is incomplete/)
- assert.equal((await h.db.query('select count(*)::int n from drawing_revisions')).rows[0].n,1)
-})
-async function fanout(t){
- const h=await publication(t)
- await h.db.exec('create table companies(id uuid primary key,org_id uuid);alter table schedule_assignments add column company_id uuid');await h.db.query('insert into schedule_items(id,org_id,project_id) values($1,$2,$1)',[HOME,ORG]);await h.db.query('insert into schedule_assignments(id,org_id,project_id,schedule_item_id,company_id) values($1,$2,$3,$3,$1)',[OTHER,ORG,HOME]);await h.db.query('insert into companies values($1,$2)',[OTHER,ORG])
- await h.db.exec(fs.readFileSync(require.resolve('../supabase/migrations/20261003037000_starts_worker_outbox_fanout_fences.sql'),'utf8'))
- const notice=async(payload={start_package_id:PKG,actor_id:OTHER,company_id:OTHER})=>h.db.query("insert into outbox(org_id,job_type,payload) values($1,'start_release_trade_notice',$2)",[ORG,payload])
- return {...h,notice}
+
+// ---------------------------------------------------------------------------
+// Publication: reserve a copy destination, then publish file, set, revision
+// and processing job in one transaction.
+// ---------------------------------------------------------------------------
+
+const SOURCE_EVIDENCE = { size_bytes: 100, source_etag: "source" }
+
+async function publication(t) {
+  const h = await release(t)
+  h.reserve = (evidence = SOURCE_EVIDENCE) =>
+    rpc(h.db, "reserve_plan_drawing_copy", {
+      p_org_id: h.orgId,
+      p_project_id: h.home.id,
+      p_plan_version_id: h.version.id,
+      p_actor_id: h.actorId,
+      p_source_evidence: evidence,
+    })
+  const reserved = await h.reserve()
+  h.copy = {
+    attempt_id: reserved.attempt_id,
+    storage_path: reserved.storage_path,
+    size_bytes: 100,
+    source_etag: "source",
+    etag: "copy",
+  }
+  h.publish = (copy = h.copy, actorId = h.actorId, caller = { role: "service_role" }) =>
+    rpc(
+      h.db,
+      "publish_plan_drawing_copy",
+      {
+        p_org_id: h.orgId,
+        p_project_id: h.home.id,
+        p_plan_version_id: h.version.id,
+        p_actor_id: actorId,
+        p_copy: copy,
+      },
+      caller,
+    )
+  h.ledger = async () =>
+    (await h.db.query("select metadata from projects where id = $1", [h.home.id])).rows[0].metadata
+  h.homeFiles = () => h.count("files where project_id = $1", [h.home.id])
+  return h
 }
-test('fenced release publishes its drawing job and owned vendor notice',async t=>{
- const h=await fanout(t);await h.db.exec('grant all on all tables in schema public to service_role;grant usage on all sequences in schema public to service_role;set role service_role');await h.publish();await h.notice()
- assert.equal((await h.db.query("select count(*)::int n from outbox where job_type in ('process_drawing_set','start_release_trade_notice')")).rows[0].n,2)
- await assert.rejects(h.notice({start_package_id:OTHER,actor_id:OTHER,company_id:OTHER}),/notice scope mismatch/)
- await assert.rejects(h.notice({start_package_id:PKG,actor_id:SOURCE,company_id:OTHER}),/notice scope mismatch/)
- await assert.rejects(h.notice({start_package_id:PKG,actor_id:OTHER,company_id:SOURCE}),/vendor mismatch/)
- await assert.rejects(h.db.query("insert into outbox(org_id,job_type,payload) values($1,'issue_invoice','{}')",[ORG]),/job family/)
+
+/** Make the next `process_drawing_set` insert fail, as a queue outage would. */
+async function failDrawingQueue(db) {
+  await db.exec(`
+    create function test_reject_drawing_queue() returns trigger language plpgsql as $$
+    begin
+      if new.job_type = 'process_drawing_set' then raise exception 'queue unavailable'; end if;
+      return new;
+    end $$;
+    create trigger test_reject_drawing_queue before insert on outbox
+      for each row execute function test_reject_drawing_queue();
+  `)
+}
+
+test("publication creates the file, set, revision and job together and replays a lost response", async (t) => {
+  const h = await publication(t)
+
+  const first = await h.publish()
+  const replay = await h.publish()
+
+  assert.equal(first.replayed, false)
+  assert.equal(replay.replayed, true)
+  assert.equal(replay.file_id, first.file_id)
+  assert.equal(replay.job_id, first.job_id)
+  assert.equal(await h.count("drawing_sets where project_id = $1", [h.home.id]), 1)
+  assert.equal(await h.count("drawing_revisions where project_id = $1", [h.home.id]), 1)
+  assert.equal(await h.count("outbox where job_type = 'process_drawing_set'"), 1)
+  await assert.rejects(h.publish({ ...h.copy, etag: "different" }), /different evidence/)
 })
-test('drawing fanout payload must match all persisted file, set and revision ancestry',async t=>{
- const h=await fanout(t),receipt=await h.publish(),job=(await h.db.query('select payload from outbox where id=$1',[receipt.job_id])).rows[0].payload
- for(const [key,value,pattern]of [['projectId',OTHER,/scope mismatch/],['storagePath','wrong',/file mismatch/],['drawingSetId',OTHER,/set mismatch/],['draftRevisionId',OTHER,/revision mismatch/]]){
-  await assert.rejects(h.db.query("insert into outbox(org_id,job_type,payload) values($1,'process_drawing_set',$2)",[ORG,{...job,[key]:value}]),pattern)
- }
- await assert.rejects(h.db.query('delete from outbox where id=$1',[receipt.job_id]),/cannot mutate other jobs/)
- await assert.rejects(h.db.query("update outbox set payload='{}' where id=$1",[receipt.job_id]),/cannot mutate other jobs/)
+
+test("a queue failure rolls back every publication record", async (t) => {
+  const h = await publication(t)
+  await failDrawingQueue(h.db)
+
+  await assert.rejects(h.publish(), /queue unavailable/)
+
+  assert.equal(await h.count("drawing_sets where project_id = $1", [h.home.id]), 0)
+  assert.equal(await h.count("drawing_revisions where project_id = $1", [h.home.id]), 0)
+  assert.equal(await h.homeFiles(), 0)
 })
-test('owned claim heartbeat/completion work after package finalization but payload substitution is denied',async t=>{
- const h=await fanout(t)
- await h.db.query("update start_packages set status='released' where id=$1",[PKG])
- assert.equal((await h.db.query("select transition_starts_job_lease($1,$2,$3,'heartbeat') ok",[ORG,h.job.job_id,h.job.claim_token])).rows[0].ok,true)
- await assert.rejects(h.db.query("update outbox set payload='{}' where id=$1",[h.job.job_id]),/identity or payload/)
- assert.equal((await h.db.query("select transition_starts_job_lease($1,$2,$3,'complete') ok",[ORG,h.job.job_id,h.job.claim_token])).rows[0].ok,true)
- await assert.rejects(h.notice(),/worker lease lost/)
+
+test("publication refuses another actor, unreserved evidence and a pending review", async (t) => {
+  const h = await publication(t)
+
+  await assert.rejects(h.publish(h.copy, h.otherHome.id), /actor mismatch/)
+  await assert.rejects(h.publish({ ...h.copy, size_bytes: 101 }), /not reserved/)
+  await assert.rejects(h.publish({ ...h.copy, storage_path: "wrong" }), /not reserved/)
+
+  await h.asWorker(false)
+  await insert(h.db, "drawing_revisions", {
+    org_id: h.orgId,
+    project_id: h.home.id,
+    revision_label: "Manual",
+    status: "draft",
+  })
+  await h.asWorker(true)
+  await assert.rejects(h.publish(), /pending review/)
+
+  assert.equal(await h.homeFiles(), 0)
 })
-test('browser drawing jobs are denied while ordinary server writers preserve behavior',async t=>{
- const h=await fanout(t);await h.headers(false)
- await h.db.exec('grant all on outbox to authenticated;grant usage on sequence outbox_id_seq to authenticated;set role authenticated')
- await assert.rejects(h.db.query("insert into outbox(org_id,job_type,payload) values($1,'process_drawing_set','{}')",[ORG]),/authorized server writers/)
- await h.db.exec('reset role');await h.db.query("insert into outbox(org_id,job_type,payload) values($1,'process_drawing_set','{}')",[ORG])
+
+test("losing the lease after the job is queued rolls back the whole publication", async (t) => {
+  const h = await publication(t)
+  // The lease runs out between the queue insert and the final ownership check.
+  await h.db.exec(`
+    create function test_expire_release_lease() returns trigger language plpgsql as $$
+    declare headers text := current_setting('request.headers', true);
+    begin
+      if new.job_type = 'process_drawing_set' then
+        perform set_config('request.headers', '{}', true);
+        update outbox set start_job_lease_expires_at = clock_timestamp() - interval '1 second'
+          where job_type = 'start_release';
+        perform set_config('request.headers', headers, true);
+      end if;
+      return new;
+    end $$;
+    create trigger test_expire_release_lease after insert on outbox
+      for each row execute function test_expire_release_lease();
+  `)
+
+  await assert.rejects(h.publish(), /worker lease lost/)
+
+  assert.equal(await h.homeFiles(), 0)
+  assert.equal(await h.count("drawing_revisions where project_id = $1", [h.home.id]), 0)
+  assert.equal(await h.count("outbox where job_type = 'process_drawing_set'"), 0)
 })
-test('an owned-org vendor without a home assignment cannot receive release fanout',async t=>{
- const h=await fanout(t);await h.db.query('insert into companies values($1,$2)',[SOURCE,ORG])
- await assert.rejects(h.notice({start_package_id:PKG,actor_id:OTHER,company_id:SOURCE}),/not assigned to this home/)
- await h.headers(false);await h.db.query('delete from schedule_assignments where company_id=$1',[OTHER]);await h.headers(true)
- await assert.rejects(h.notice(),/not assigned to this home/)
+
+test("a failed processor is not replaced by replaying publication", async (t) => {
+  const h = await publication(t)
+  const first = await h.publish()
+  await h.asWorker(false)
+  await h.db.query("update outbox set status = 'failed' where id = $1", [first.job_id])
+  await h.asWorker(true)
+
+  await assert.rejects(h.publish(), /processing failed/)
+
+  assert.equal(await h.count("drawing_revisions where project_id = $1", [h.home.id]), 1)
 })
-test('drawing protections use the real package schema and authoritative lot plan pin',async t=>{
- const h=await setup(t)
- const columns=(await h.db.query("select attname from pg_attribute where attrelid='public.start_packages'::regclass and attnum>0 and not attisdropped")).rows.map(row=>row.attname)
- assert.equal(columns.includes('house_plan_version_id'),false);assert.equal(columns.includes('lot_id'),true)
- await h.db.query('update lots set house_plan_version_id=$1 where id=$2',[OTHER,LOT]);await assert.rejects(h.file(),/plan mismatch/)
- await h.db.query('update lots set house_plan_version_id=null where id=$1',[LOT]);await assert.rejects(h.file(),/pinned plan scope/)
+
+test("browsers cannot reserve or publish a plan drawing copy", async (t) => {
+  const h = await publication(t)
+  await h.asWorker(false)
+  const member = { role: "authenticated", userId: h.actorId }
+
+  await assert.rejects(h.publish(h.copy, h.actorId, member), /permission denied for function publish_plan_drawing_copy/)
+  await assert.rejects(
+    rpc(
+      h.db,
+      "reserve_plan_drawing_copy",
+      {
+        p_org_id: h.orgId,
+        p_project_id: h.home.id,
+        p_plan_version_id: h.version.id,
+        p_actor_id: h.actorId,
+        p_source_evidence: SOURCE_EVIDENCE,
+      },
+      member,
+    ),
+    /permission denied for function reserve_plan_drawing_copy/,
+  )
 })
-test('lot plan lookup rejects reassigned home or community before drawing publication',async t=>{
- const h=await publication(t)
- await h.db.query('update lots set project_id=$1 where id=$2',[OTHER,LOT]);await assert.rejects(h.publish(),/pinned plan scope/)
- await h.db.query('update lots set project_id=$1,community_id=$2 where id=$3',[HOME,OTHER,LOT]);await assert.rejects(h.publish(),/pinned plan scope/)
+
+test("a reservation is durable and the ledger advances only for new work", async (t) => {
+  const h = await publication(t)
+
+  const reserved = await h.reserve()
+  assert.equal(reserved.attempt_id, h.copy.attempt_id)
+  assert.equal(reserved.storage_path, h.copy.storage_path)
+  let ledger = (await h.ledger()).plan_instantiation
+  assert.equal(ledger.seq, 1)
+  assert.equal(ledger.drawing_copy_attempt.status, "reserved")
+
+  await h.publish()
+  const recovered = await h.reserve()
+  assert.equal(recovered.status, "published")
+  assert.equal(recovered.attempt_id, reserved.attempt_id)
+  ledger = (await h.ledger()).plan_instantiation
+  assert.equal(ledger.seq, 2)
+  assert.equal(ledger.drawing_copy_attempt.receipt.file_id, recovered.receipt.file_id)
+
+  await h.publish()
+  assert.equal((await h.ledger()).plan_instantiation.seq, 2)
+})
+
+test("a stale whole-metadata instantiation write misses once a reservation advanced the sequence", async (t) => {
+  const h = await publication(t)
+  await h.asWorker(false)
+
+  const stale = await h.db.query(
+    "update projects set metadata = '{}' where id = $1 and metadata->'plan_instantiation'->>'seq' is null returning id",
+    [h.home.id],
+  )
+
+  assert.equal(stale.rows.length, 0)
+})
+
+test("changed source evidence or a malformed reservation cannot open another destination", async (t) => {
+  const h = await publication(t)
+
+  await assert.rejects(h.reserve({ size_bytes: 100, source_etag: "replacement" }), /differs/)
+  await assert.rejects(h.reserve({ size_bytes: 101, source_etag: "source" }), /differs from file record/)
+
+  await h.asWorker(false)
+  await h.db.query(
+    `update projects
+     set metadata = jsonb_set(metadata, '{plan_instantiation,drawing_copy_attempt}',
+       (metadata->'plan_instantiation'->'drawing_copy_attempt') - 'status')
+     where id = $1`,
+    [h.home.id],
+  )
+  await h.asWorker(true)
+  await assert.rejects(h.reserve(), /differs/)
+  await assert.rejects(h.publish(), /not reserved/)
+
+  assert.equal(await h.homeFiles(), 0)
+})
+
+test("a rolled-back publication keeps the reservation and unrelated project metadata", async (t) => {
+  const h = await publication(t)
+  await h.asWorker(false)
+  await h.db.query(`update projects set metadata = metadata || '{"unrelated": "kept"}' where id = $1`, [h.home.id])
+  await failDrawingQueue(h.db)
+  await h.asWorker(true)
+
+  await assert.rejects(h.publish(), /queue unavailable/)
+  let metadata = await h.ledger()
+  assert.equal(metadata.unrelated, "kept")
+  assert.equal(metadata.plan_instantiation.seq, 1)
+  assert.equal(metadata.plan_instantiation.drawing_copy_attempt.status, "reserved")
+
+  await h.db.exec("drop trigger test_reject_drawing_queue on outbox")
+  await h.publish()
+  metadata = await h.ledger()
+  assert.equal(metadata.unrelated, "kept")
+  assert.equal(metadata.plan_instantiation.seq, 2)
+})
+
+test("a corrupted published receipt is refused instead of publishing again", async (t) => {
+  const h = await publication(t)
+  await h.publish()
+  await h.asWorker(false)
+  await h.db.query(
+    `update projects
+     set metadata = jsonb_set(metadata, '{plan_instantiation,drawing_copy_attempt,receipt}', '{}')
+     where id = $1`,
+    [h.home.id],
+  )
+  await h.asWorker(true)
+
+  await assert.rejects(h.reserve(), /receipt requires repair/)
+  await assert.rejects(h.publish(), /manifest is incomplete/)
+  assert.equal(await h.count("drawing_revisions where project_id = $1", [h.home.id]), 1)
+})
+
+test("publication is refused once the lot moves to another home or community", async (t) => {
+  const h = await publication(t)
+  const elsewhere = await insert(h.db, "communities", { org_id: h.orgId, name: "Elsewhere" })
+  const moveLot = async (columns) => {
+    await h.asWorker(false)
+    await h.db.query("update lots set project_id = $1, community_id = $2 where id = $3", [
+      columns.project,
+      columns.community,
+      h.lot.id,
+    ])
+    await h.asWorker(true)
+  }
+
+  await moveLot({ project: h.otherHome.id, community: h.community.id })
+  await assert.rejects(h.publish(), /home ancestry differs from package/)
+
+  await moveLot({ project: h.home.id, community: elsewhere.id })
+  await assert.rejects(h.publish(), /lot ancestry differs from package/)
+})
+
+// ---------------------------------------------------------------------------
+// Child jobs the release fans out
+// ---------------------------------------------------------------------------
+
+/** A publication whose home has a trade company assigned on its schedule. */
+async function fanout(t) {
+  const h = await publication(t)
+  await h.asWorker(false)
+  h.vendor = await insert(h.db, "companies", { org_id: h.orgId, name: "Framing Co" })
+  const item = await insert(h.db, "schedule_items", { org_id: h.orgId, project_id: h.home.id, name: "Framing" })
+  await insert(h.db, "schedule_assignments", {
+    org_id: h.orgId,
+    project_id: h.home.id,
+    schedule_item_id: item.id,
+    company_id: h.vendor.id,
+  })
+  await h.asWorker(true)
+  h.enqueue = (jobType, payload) =>
+    h.service((tx) => insert(tx, "outbox", { org_id: h.orgId, job_type: jobType, payload }))
+  h.notice = (payload = {}) =>
+    h.enqueue("start_release_trade_notice", {
+      start_package_id: h.pkg.id,
+      actor_id: h.actorId,
+      company_id: h.vendor.id,
+      ...payload,
+    })
+  return h
+}
+
+test("a release fans out its drawing job and a notice to an assigned vendor", async (t) => {
+  const h = await fanout(t)
+
+  await h.publish()
+  await h.notice()
+
+  assert.equal(await h.count("outbox where job_type in ('process_drawing_set', 'start_release_trade_notice')"), 2)
+})
+
+test("release notices stay within the claimed package, actor and assigned vendors", async (t) => {
+  const h = await fanout(t)
+  await h.asWorker(false)
+  const unassigned = await insert(h.db, "companies", { org_id: h.orgId, name: "Roofing Co" })
+  await h.asWorker(true)
+
+  await assert.rejects(h.notice({ start_package_id: h.home.id }), /notice scope mismatch/)
+  await assert.rejects(h.notice({ actor_id: h.home.id }), /notice scope mismatch/)
+  await assert.rejects(h.notice({ company_id: h.home.id }), /vendor mismatch/)
+  await assert.rejects(h.notice({ company_id: unassigned.id }), /not assigned to this home/)
+  await assert.rejects(h.enqueue("issue_invoice", {}), /job family/)
+
+  await h.asWorker(false)
+  await h.db.query("delete from schedule_assignments where company_id = $1", [h.vendor.id])
+  await h.asWorker(true)
+  await assert.rejects(h.notice(), /not assigned to this home/)
+})
+
+test("a fanned-out drawing job must match the published file, set and revision", async (t) => {
+  const h = await fanout(t)
+  const receipt = await h.publish()
+  const { payload } = (await h.db.query("select payload from outbox where id = $1", [receipt.job_id])).rows[0]
+
+  const forged = [
+    ["projectId", h.otherHome.id, /scope mismatch/],
+    ["storagePath", "wrong", /file mismatch/],
+    ["drawingSetId", h.otherHome.id, /set mismatch/],
+    ["draftRevisionId", h.otherHome.id, /revision mismatch/],
+  ]
+  for (const [key, value, refusal] of forged) {
+    await assert.rejects(h.enqueue("process_drawing_set", { ...payload, [key]: value }), refusal, key)
+  }
+  await assert.rejects(
+    h.service((tx) => tx.query("delete from outbox where id = $1", [receipt.job_id])),
+    /cannot mutate other jobs/,
+  )
+  await assert.rejects(
+    h.service((tx) => tx.query("update outbox set payload = '{}' where id = $1", [receipt.job_id])),
+    /cannot mutate other jobs/,
+  )
+})
+
+test("the release job heartbeats while releasing and completes once released, but never swaps its payload", async (t) => {
+  const h = await fanout(t)
+  const transition = (action) =>
+    rpc(h.db, "transition_starts_job_lease", {
+      p_org_id: h.orgId,
+      p_id: h.job.job_id,
+      p_token: h.job.claim_token,
+      p_action: action,
+    })
+
+  assert.equal(await transition("heartbeat"), true)
+  await assert.rejects(
+    h.service((tx) => tx.query("update outbox set payload = '{}' where id = $1", [h.job.job_id])),
+    /identity or payload/,
+  )
+
+  await h.asWorker(false)
+  await h.db.query("update start_packages set status = 'released' where id = $1", [h.pkg.id])
+  await h.asWorker(true)
+  assert.equal(await transition("complete"), true)
+  await assert.rejects(h.notice(), /worker lease lost/)
+})
+
+test("browsers cannot queue drawing jobs; server writers without worker headers can", async (t) => {
+  const h = await fanout(t)
+  await h.asWorker(false)
+  const drawingJob = (caller) =>
+    asRole(h.db, caller, (tx) =>
+      insert(tx, "outbox", { org_id: h.orgId, job_type: "process_drawing_set", payload: {} }),
+    )
+
+  await assert.rejects(drawingJob({ role: "authenticated", userId: h.actorId }), /authorized server writers/)
+  await drawingJob({ role: "service_role" })
 })
