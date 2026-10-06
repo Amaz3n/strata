@@ -30,11 +30,11 @@ async function postOpening(kit, org, cutoverDate, lines) {
 // A Books-only builder: chart (plus any custom accounts), fiscal calendar,
 // accounting periods, an optional opening position, then a greenfield launch so
 // Arc is the official ledger (ledger_authority 'arc').
-async function greenfieldOrg(kit, { name, periods, setup, fiscalYearStartMonth = 1, accounts = [], beforeOpening, opening }) {
+async function greenfieldOrg(kit, { name, periods, setup, fiscalYearStartMonth = 1, accounts = [], beforeOpening, opening, password }) {
   const { CONSTRUCTION_CHART_TEMPLATE } = app("books/chart-of-accounts")
   const { createAccountingPeriod } = app("books/period-close")
   const { launchGreenfieldBooks, GREENFIELD_ATTESTATION } = app("books/greenfield")
-  const org = { ...kit.organization({ name, chart: CONSTRUCTION_CHART_TEMPLATE, reviewerRole: "org_accountant" }), periods: {} }
+  const org = { ...kit.organization({ name, chart: CONSTRUCTION_CHART_TEMPLATE, reviewerRole: "org_accountant", password }), periods: {} }
   if (setup) setup(org)
   if (fiscalYearStartMonth !== 1) await kit.as(org.owner, () => app("books/module").updateBooksFiscalSettings({ fiscalYearStartMonth }))
   for (const period of periods) {

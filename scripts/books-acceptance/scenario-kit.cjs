@@ -91,14 +91,18 @@ function createKit(stack) {
   }
 
   // A fresh organisation per scenario run: reruns never collide or duplicate money.
-  function organization({ name, productTier = "residential", chart, reviewerRole = "org_books_reviewer" }) {
+  // `password` makes the actors real sign-in users for browser acceptance.
+  function organization({ name, productTier = "residential", chart, reviewerRole = "org_books_reviewer", password = null }) {
     const orgId = randomUUID(),
       owner = { userId: randomUUID(), orgId, productTier, role: "org_owner" },
       reviewer = { userId: randomUUID(), orgId, productTier, role: reviewerRole }
     const statements = ["begin;"]
     for (const actor of [owner, reviewer]) {
       const email = `${actor.userId}@acceptance.example.test`
-      statements.push(`insert into auth.users(id,instance_id,aud,role,email,encrypted_password,created_at,updated_at,raw_app_meta_data,raw_user_meta_data) values(${q(actor.userId)},'00000000-0000-0000-0000-000000000000','authenticated','authenticated',${q(email)},'',now(),now(),'{}','{}');`)
+      actor.email = email
+      const secret = password ? `extensions.crypt(${q(password)}, extensions.gen_salt('bf'))` : "''"
+      statements.push(`insert into auth.users(id,instance_id,aud,role,email,encrypted_password,email_confirmed_at,created_at,updated_at,raw_app_meta_data,raw_user_meta_data,confirmation_token,recovery_token,email_change_token_new,email_change,email_change_token_current,phone_change,phone_change_token,reauthentication_token) values(${q(actor.userId)},'00000000-0000-0000-0000-000000000000','authenticated','authenticated',${q(email)},${secret},${password ? "now()" : "null"},now(),now(),'{"provider":"email","providers":["email"]}','{}','','','','','','','','');`)
+      if (password) statements.push(`insert into auth.identities(id,provider_id,user_id,identity_data,provider,last_sign_in_at,created_at,updated_at) values(gen_random_uuid(),${q(actor.userId)},${q(actor.userId)},jsonb_build_object('sub',${q(actor.userId)},'email',${q(email)},'email_verified',true),'email',now(),now(),now());`)
       statements.push(`insert into public.app_users(id,email,full_name) values(${q(actor.userId)},${q(email)},${q(actor.role)}) on conflict (id) do nothing;`)
     }
     statements.push(`insert into public.orgs(id,name,slug,created_by,product_tier) values(${q(orgId)},${q(name)},${q(orgId)},${q(owner.userId)},${q(productTier)});`)

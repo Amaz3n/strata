@@ -101,10 +101,10 @@ export function CloseWorkspace(props: Props) {
         {props.capabilities.tax ? <Button asChild variant="ghost" size="sm"><Link href="/books/taxes">Tax filing records</Link></Button> : null}
       </div>
       {selected ? (
-        <div className="grid lg:grid-cols-[240px_minmax(0,1fr)]">
+        <div className="grid grid-cols-1 lg:grid-cols-[240px_minmax(0,1fr)]">
           <nav
             aria-label="Accounting periods"
-            className="border-b bg-muted/20 p-4 lg:border-b-0 lg:border-r lg:p-5"
+            className="min-w-0 border-b bg-muted/20 p-4 lg:border-b-0 lg:border-r lg:p-5"
           >
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
