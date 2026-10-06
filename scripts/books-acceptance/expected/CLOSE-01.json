@@ -1,0 +1,104 @@
+{
+  "scenario": "CLOSE-01",
+  "reviewedFrom": "Month-end close controls: a closed period accepts no postings; a source dated into a closed period must surface as blocked (never silently re-dated or dropped) and block later closes until cured by reopening; manual journals need an independent reviewer before close; a failed close leaves the period open and a retry produces exactly the books a clean close would; each close's saved statements report that period's balances. POC figures follow docs/books-revenue-recognition.md \u00a75 (July of the worked example). Pending licensed-CPA review (B16.3). Amounts are integer cents.",
+  "subcases": {
+    "late-source-into-closed-period": {
+      "inputs": {
+        "first": {
+          "issueDate": "2026-07-10",
+          "cents": 100000
+        },
+        "late": {
+          "issueDate": "2026-07-25",
+          "cents": 50000
+        },
+        "directJournal": {
+          "date": "2026-07-28",
+          "cents": 10000
+        }
+      },
+      "derivation": "July closes with 1,000 billed. A 500 invoice dated July 25 arrives after the close: it must show as blocked, leave July's ledger unchanged and block the August close. Reopening July posts it on its own date; reclosing July produces a new digest; August then closes. A direct journal into closed July is refused.",
+      "expectedLateInvoiceStateWhileClosed": "blocked",
+      "expectedJulyLedgerWhileClosed": {
+        "1100": 100000,
+        "4900": -100000
+      },
+      "expectedAugustCloseBlockedBy": "Accounting reconciliation issues resolved",
+      "expectedDirectJournalRefused": true,
+      "expectedLateInvoiceEntryDate": "2026-07-25",
+      "expectedLateInvoiceStateAfterCure": "posted",
+      "expectedRecloseDigestChanged": true,
+      "expectedNetDebitCentsByAccount": {
+        "1100": 150000,
+        "4900": -150000
+      },
+      "expectedJulyClosedBalanceSheet": {
+        "1100": 150000
+      }
+    },
+    "unreviewed-journal-proposal-blocks-close": {
+      "inputs": {
+        "period": "2026-07",
+        "journal": {
+          "date": "2026-07-31",
+          "debit": "6000",
+          "credit": "3010",
+          "cents": 250000
+        }
+      },
+      "derivation": "A manual journal proposed by the accountant blocks close until a different person reviews it; the proposer cannot approve their own proposal.",
+      "expectedCloseBlockedBy": "Manual journal proposals independently reviewed",
+      "expectedSelfApprovalRefused": true,
+      "expectedNetDebitCentsByAccount": {
+        "3010": -250000,
+        "6000": 250000
+      }
+    },
+    "close-failure-resumes": {
+      "inputs": {
+        "contractCents": 100000000,
+        "eacCents": 80000000,
+        "retainagePercent": 10,
+        "period": "2026-07",
+        "billCents": 20000000,
+        "invoiceGrossCents": 30000000,
+        "invoiceRetainageCents": 3000000,
+        "failurePoints": [
+          "statement_snapshot",
+          "period_lock"
+        ]
+      },
+      "derivation": "A close that fails after recognition \u2014 at the statement snapshot, or at the final lock after snapshots are saved \u2014 must leave the period open with no close digest; a retry must finish with the clean-close ledger (worked example July), exactly one recognition entry and one saved statement per type.",
+      "expectedStatusAfterFailure": "open",
+      "expectedRecognitionEntries": 1,
+      "expectedSnapshotsPerType": 1,
+      "expectedNetDebitCentsByAccount": {
+        "1100": 27000000,
+        "1110": 3000000,
+        "2000": -20000000,
+        "2350": -5000000,
+        "4000": -25000000,
+        "5000": 20000000
+      },
+      "expectedClosedReceivables": {
+        "1100": 27000000,
+        "1110": 3000000
+      }
+    },
+    "twelve-month-sequence-snapshots": {
+      "inputs": {
+        "firstPeriod": "2025-07",
+        "months": 12,
+        "monthlyInvoiceCents": 100000
+      },
+      "derivation": "One 1,000 invoice per month, each month closed in order: twelve distinct close digests, and each month's saved balance sheet reports receivables of 1,000 x month number.",
+      "expectedDistinctDigests": 12
+    },
+    "quarter-end": {
+      "status": "NOT_IMPLEMENTED"
+    },
+    "all-supported-modules": {
+      "status": "NOT_IMPLEMENTED"
+    }
+  }
+}

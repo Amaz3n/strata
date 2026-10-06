@@ -126,3 +126,5 @@ module.exports = {
     "late-bill-after-review-blocks-close": lateBillAfterReview,
   },
 }
+
+module.exports.helpers = { bill, invoice, prepareAndReview }

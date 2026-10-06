@@ -2009,7 +2009,7 @@
       "workstream": "B00",
       "title": "Build the golden acceptance runner and durable evidence catalog",
       "status": "PARTIAL",
-      "status_basis": "Golden runner, kit and API route working end to end. Passing: BILL-01 (4/4), YEAR-01 (5/5); WIP-01 4/7 (3 subcases need B04.1 contract-level WIP). 21 scenarios outstanding (2026-10-06).",
+      "status_basis": "Golden runner, kit and API route working end to end. Passing: BILL-01 (4/4), YEAR-01 (5/5); CLOSE-01 4/6 (quarter-end and all-modules subcases undefined/pending); WIP-01 4/7 (3 subcases need B04.1). 20 scenarios not started (2026-10-06).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "intentionally incorrect accounting causes a nonzero run",
@@ -2582,6 +2582,35 @@
           ],
           "artifact_paths_and_hashes": [
             "docs/books-evidence/2026-10-06-golden-scenarios/YEAR-01.json sha256:c66f64c2da26d86a95803298a0100c8e41cffbd2b1509041bf5a5e1e249da418"
+          ]
+        },
+        {
+          "verified_at": "2026-10-06T12:08:59.233925+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/close-01.cjs",
+            "scripts/books-acceptance/expected/CLOSE-01.json",
+            "lib/services/books/period-close.ts",
+            "supabase/migrations/20261006150000_period_close_snapshot_ids.sql"
+          ],
+          "test_scenario_ids": [
+            "CLOSE-01"
+          ],
+          "commands": [
+            "scenario-runner CLOSE-01",
+            "regression: YEAR-01 PASSED, BILL-01 PASSED, WIP-01 4/7 unchanged",
+            "pnpm test:financials 3562/3563 (pre-existing reservation duplicate-event failure)",
+            "tsc, eslint clean"
+          ],
+          "observed_results": [
+            "Late source: an invoice dated July 25 created after July closed shows posting state 'blocked', leaves July's ledger at 1,000, blocks the August close ('Accounting reconciliation issues resolved'); a direct journal into closed July is refused. Reopening July posts it on 2026-07-25 (state 'posted'); reclose gets a new digest; August then closes. Final 1100 1,500 / 4900 -1,500.",
+            "Journal proposal: an accountant-proposed journal blocks close ('Manual journal proposals independently reviewed'); self-approval refused; owner approval then close posts Dr 6000 / Cr 3010 2,500.",
+            "Close failure injected at the statement snapshot and at the final period lock (after snapshots saved): period left 'open' with no digest; retry closes with the clean worked-example July ledger, exactly one recognition entry and one saved statement per type.",
+            "Twelve sequential closes Jul 2025-Jun 2026: 12 distinct digests; each close's balance sheet reports receivables of 1,000 x month.",
+            "Fixed: a reopened and reclosed period kept both statement sets (July balance sheet at 1,000 and at 1,500) with nothing marking the current one, and the accountant export carries both. accounting_periods.close_snapshot_ids is now written in the same update that locks the period, and the period_closed event carries the ids. Migration 20261006150000 is UNAPPLIED to production (needs approval).",
+            "Not built: quarter-end (needs a definition of quarter-specific close behaviour) and all-supported-modules (depends on BANK-01, payroll summary, assets, tax scenarios)."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/CLOSE-01.json sha256:2f4f4ff24f21d7ba176d2fa254edadca32589b815cd591f6ea4ab4edd9ca31eb"
           ]
         }
       ],

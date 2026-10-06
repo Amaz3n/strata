@@ -966,11 +966,33 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
       throw new Error(
         `Failed to snapshot financial statements: ${snapshotError.message}`,
       );
+    // Identical statements dedupe onto an earlier close's rows, so read back the
+    // ids by hash rather than trusting the insert's returned set.
+    const { data: snapshotRows, error: snapshotReadError } = await service
+      .from("financial_statement_snapshots")
+      .select("id")
+      .eq("org_id", context.orgId)
+      .eq("period_id", period.id)
+      .eq("basis", "accrual")
+      .in(
+        "content_hash",
+        officialStatements.map((statement) => booksDigest(statement)),
+      );
+    if (snapshotReadError)
+      throw new Error(
+        `Failed to read saved financial statements: ${snapshotReadError.message}`,
+      );
+    const snapshotIds = z
+      .array(z.object({ id: z.string().uuid() }))
+      .length(officialStatements.length)
+      .parse(snapshotRows)
+      .map((row) => row.id);
     const { error: closeError } = await service
       .from("accounting_periods")
       .update({
         status: "closed",
         close_digest: digest,
+        close_snapshot_ids: snapshotIds,
         closed_by: context.userId,
         closed_at: new Date().toISOString(),
       })
@@ -991,6 +1013,7 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
         payload: {
           period_end: period.period_end,
           digest,
+          snapshot_ids: snapshotIds,
           revenue_recognized_cents: recognition.postedCents,
           revenue_recognized_projects: recognition.recognized,
         },
