@@ -277,6 +277,37 @@ update public.payments set metadata=(metadata - 'books_payment_account_id') || j
   return { orgId: org.orgId, reopenOrgId: closed.orgId, deactivatedAfter }
 }
 
+// Who may read a document's posting status: the project's own readers for
+// project documents, Books readers for company documents, nobody else; and a
+// company without the Arc ledger gets no status rather than a false one.
+async function accessAndEmpty(kit, expected, check) {
+  const input = expected.inputs
+  const want = expected.expected
+  const org = await jobOrg(kit, "STATUS-01 access", ["2026-07"])
+  const { q } = kit
+  const pm = { userId: randomUUID(), orgId: org.orgId, productTier: "residential", role: "org_user" }
+  kit.sql(`begin;
+insert into auth.users(id,instance_id,aud,role,email,created_at,updated_at) values(${q(pm.userId)},'00000000-0000-0000-0000-000000000000','authenticated','authenticated',${q(`${pm.userId}@acceptance.example.test`)},now(),now());
+insert into public.app_users(id,email,full_name) values(${q(pm.userId)},${q(`${pm.userId}@acceptance.example.test`)},'Project manager on the first job');
+insert into public.memberships(org_id,user_id,role_id,status) select ${q(org.orgId)},${q(pm.userId)},id,'active' from public.roles where key='org_user';
+insert into public.project_members(org_id,project_id,user_id,role_id) select ${q(org.orgId)},${q(org.projectId)},${q(pm.userId)},id from public.roles where key='pm';
+commit;`)
+  const ownBill = await createBill(kit, org, input.billDate, input.cents)
+  const otherBill = await createBill(kit, { ...org, projectId: org.secondProjectId }, input.billDate, input.cents)
+  const companyBill = randomUUID()
+  kit.sql(`insert into public.vendor_bills(id,org_id,company_id,bill_number,bill_date,due_date,total_cents,status) values(${q(companyBill)},${q(org.orgId)},${q(org.vendorId)},'ST-COMPANY',${q(input.billDate)},${q(input.billDate)},${input.cents},'approved')`)
+  await projectionJob(kit, org)
+  const status = (actor, sourceId) => kit.as(actor, () => app("books/posting-status").getBooksPostingStatus({ sourceType: "vendor_bill", sourceId }))
+  const outcome = async (actor, sourceId) => { try { return (await status(actor, sourceId))?.state ?? "none" } catch { return "refused" } }
+  check.equal("project documents follow the project's readers", want["project-scope"], {
+    pmOwnProject: await outcome(pm, ownBill), pmOtherProject: await outcome(pm, otherBill), booksReviewerOnProjectBill: await outcome(org.reviewer, ownBill) })
+  check.equal("company documents need Books read access", want["company-document"], {
+    pm: await outcome(pm, companyBill), booksReviewer: await outcome(org.reviewer, companyBill), owner: await outcome(org.owner, companyBill) })
+  kit.sql(`update public.books_settings set ledger_authority='external', arc_ledger_mode='disabled', external_sync_posture='normal' where org_id=${q(org.orgId)}`)
+  check.equal("no Arc ledger: no status, not a false pending", want["ledger-disabled"], { owner: await outcome(org.owner, ownBill) })
+  return { orgId: org.orgId }
+}
+
 module.exports = {
   id: "STATUS-01",
   subcases: {
@@ -287,5 +318,6 @@ module.exports = {
     "partial-run-scoped-resolution": partialRunScopedResolution,
     "expense-family": expenseFamily,
     "dependency-invalidation": dependencyInvalidation,
+    "access-and-empty": accessAndEmpty,
   },
 }

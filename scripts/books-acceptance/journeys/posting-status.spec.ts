@@ -23,6 +23,23 @@ test("posting status: a posted invoice opens its journal; a blocked bill leads t
   await page.screenshot({ path: info.outputPath("blocked-bill.png"), fullPage: true })
   if (info.project.name !== "desktop") return noErrors()
 
+  // Loading, then an unreachable status service, then Refresh once it is back.
+  const isStatusRequest = (body: string | null) => Boolean(body?.includes('"sourceType":"vendor_bill"'))
+  let release: () => void = () => {}
+  const held = new Promise<void>((resolve) => { release = resolve })
+  await page.route("**/*", async (route) => {
+    if (route.request().method() !== "POST" || !isStatusRequest(route.request().postData())) return route.fallback()
+    await held
+    await route.abort()
+  })
+  await billStatus.getByRole("button", { name: "Refresh" }).click()
+  await expect(billStatus.getByText("Checking posting…")).toBeVisible()
+  release()
+  await expect(billStatus.getByText("Accounting status is unavailable")).toBeVisible()
+  await page.unrouteAll({ behavior: "wait" })
+  await billStatus.getByRole("button", { name: "Refresh" }).click()
+  await expect(billStatus.getByText(/Posting blocked by a closed period/)).toBeVisible()
+
   // The posted invoice and its receipt.
   await page.goto(`/projects/${projectId}/financials/billing?invoice=${users.periods.invoice}`)
   await page.waitForLoadState("networkidle")

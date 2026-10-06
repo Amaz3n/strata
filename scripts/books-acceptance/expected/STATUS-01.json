@@ -157,6 +157,28 @@
           "afterReopenIncremental": "posted"
         }
       }
+    },
+    "access-and-empty": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "cents": 100000
+      },
+      "derivation": "A member with a project role on the first job only (org role org_user, project role pm with bill.read) reads that job's bill and is refused the second job's. The Books reviewer (books.read, no project bill.read) is refused a project bill. A bill with no project is company accounting: the project manager is refused, the Books reviewer and owner read it. With the Arc ledger disabled the service returns no status, so no surface shows a false 'pending'.",
+      "expected": {
+        "project-scope": {
+          "pmOwnProject": "posted",
+          "pmOtherProject": "refused",
+          "booksReviewerOnProjectBill": "refused"
+        },
+        "company-document": {
+          "pm": "refused",
+          "booksReviewer": "posted",
+          "owner": "posted"
+        },
+        "ledger-disabled": {
+          "owner": "none"
+        }
+      }
     }
   }
 }
