@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import type { DocumentProps } from "react-pdf"
-import { Document, Page } from "react-pdf"
+import { Document, Page, pdfjs } from "react-pdf"
 import { configurePdfWorker } from "@/lib/pdf/worker"
 
 import "react-pdf/dist/Page/AnnotationLayer.css"
@@ -21,7 +21,7 @@ import {
   type PdfZoom,
 } from "./pdf-chrome"
 
-configurePdfWorker()
+configurePdfWorker(pdfjs)
 
 // Sourced from react-pdf rather than from `pdfjs-dist` directly: pnpm resolves a
 // second copy of pdfjs-dist under react-pdf, and the two copies' proxy types are

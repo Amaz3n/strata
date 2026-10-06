@@ -74,7 +74,7 @@ export function DocumentSigningClient({
     const loadPdf = async () => {
       try {
         const { Document, Page, pdfjs } = await import("react-pdf")
-        configurePdfWorker()
+        configurePdfWorker(pdfjs)
         setPDFComponents({ Document, Page })
       } catch (error) {
         console.error("Failed to load PDF renderer", error)

@@ -1080,7 +1080,7 @@ export function EnvelopeWizard({
     try {
       await fetch(fileUrl, { credentials: "include" }).catch(() => null)
       const { pdfjs } = await import("react-pdf")
-      configurePdfWorker()
+      configurePdfWorker(pdfjs)
       const task = pdfjs.getDocument({ url: fileUrl, withCredentials: true })
       const pdf = await task.promise
       pdf.destroy()

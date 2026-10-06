@@ -1,14 +1,14 @@
 "use client"
 
 import { useEffect, useRef, useState, type ReactNode } from "react"
-import { Document, Page } from "react-pdf"
+import { Document, Page, pdfjs } from "react-pdf"
 import { ChevronLeft, ChevronRight, FileWarning, Loader2 } from "lucide-react"
 import { configurePdfWorker } from "@/lib/pdf/worker"
 import { WAIVER_FIELDS, type WaiverPlacement, type WaiverFieldKey } from "@/lib/lien-waivers/invoice-waiver"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
-configurePdfWorker()
+configurePdfWorker(pdfjs)
 const OPTIONS = { isEvalSupported: false }
 
 export function PdfDocumentPreview({ url, fields = [], activeField, selectedId, onPlace, onSelect, onChange, onReady, toolbar, renderOverlay, onPageCount, resetPageOnUrlChange = true }: {
