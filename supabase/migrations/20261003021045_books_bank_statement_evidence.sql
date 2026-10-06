@@ -1,4 +1,6 @@
 -- Preserve the transaction display along with closed accounting proof.
+-- The proof carries each item's economic fields (not its regenerated row id or
+-- timestamps) in a stable order, so an unchanged statement recloses to the same digest.
 create or replace function public.close_books_bank_reconciliation_atomic(p_org_id uuid, p_reconciliation_id uuid, p_actor_id uuid)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
@@ -61,7 +63,8 @@ begin
   select jsonb_build_object('version',1,'statement_start',rec.statement_start,'statement_end',rec.statement_end,
     'beginning_balance_cents',rec.beginning_balance_cents,'ending_balance_cents',rec.ending_balance_cents,
     'book_balance_cents',books,'outstanding_balance_cents',outstanding,'account_id',bank.gl_account_id,
-    'direction_factor',direction_factor,'items',coalesce(jsonb_agg(to_jsonb(i) order by i.id),'[]'::jsonb)) into proof
+    'direction_factor',direction_factor,'items',coalesce(jsonb_agg(jsonb_build_object('bank_transaction_id',i.bank_transaction_id,'journal_line_id',i.journal_line_id,'amount_cents',i.amount_cents,'item_status',i.item_status)
+      order by i.item_status,i.bank_transaction_id nulls last,i.journal_line_id nulls last,i.amount_cents),'[]'::jsonb)) into proof
     from public.bank_reconciliation_items i where i.org_id=p_org_id and i.reconciliation_id=rec.id;
   proof := proof || jsonb_build_object('version',2,'statement_transactions',(
     select coalesce(jsonb_agg(jsonb_build_object(

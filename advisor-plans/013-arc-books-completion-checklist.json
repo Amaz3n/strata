@@ -2619,7 +2619,7 @@
             "scripts/books-acceptance/scenarios/bank-01.cjs",
             "scripts/books-acceptance/expected/BANK-01.json",
             "scripts/books-acceptance/scenarios/shared.cjs",
-            "supabase/migrations/20261006160000_books_bank_evidence_reproducible_digest.sql"
+            "supabase/migrations/20261003021045_books_bank_statement_evidence.sql"
           ],
           "test_scenario_ids": [
             "BANK-01"
@@ -2634,7 +2634,7 @@
             "Two banks (operating 1000, payroll checking 1005) and a card (2100) across July and August, all through product services: statement CSV import, invoices + receipts to 1010, deposit batches, two bills paid by check from a chosen account, categorization (owner capital, fees, card purchases incl. job-costed lumber, card repayment, payroll tax), transfer matches, a payroll summary journal whose 350,000 net pay clears as two direct-deposit debits (manual split), clearing-support review of 1010/2230 at July end, WIP review and period close.",
             "Each statement ties: July operating 5,077,500 statement - 200,000 check 102 in transit = 4,877,500 GL; payroll 150,000; card 30,000 owed. August operating 5,245,000 with nothing outstanding; payroll 100,000; card 25,000. Ledger exact after each month; no duplicated card expense or deposit cash; re-importing July's statement adds 0 transactions.",
             "A reconciled statement line cannot be edited; closed detail keeps its description; July's bank statement and period cannot reopen before August's; newest-first reopen and in-order reclose reproduce every statement digest.",
-            "Fixed: reclosing an unchanged bank statement produced a different digest (proof included regenerated item ids/timestamps in random-uuid order), so the digest could not show whether a reopened statement changed. Migration 20261006160000 fingerprints economic item fields in a stable order. UNAPPLIED to production (needs approval).",
+            "Fixed: reclosing an unchanged bank statement produced a different digest (proof included regenerated item ids/timestamps in random-uuid order), so the digest could not show whether a reopened statement changed. The proof now fingerprints economic item fields in a stable order, folded into the unapplied October migration 20261003021045 (production still runs the pre-October function, so a separate later-stamped migration would be overwritten when the October train applies).",
             "Gaps confirmed (feature work): deposits net of processor fees cannot be batched (deposit must equal receipts exactly); no way to import cutover outstanding checks/deposits; no supplier-refund flow. Policy note for B16.1: every project not sold at closing is percentage-of-completion, including cost-plus/T&M jobs."
           ],
           "artifact_paths_and_hashes": [
