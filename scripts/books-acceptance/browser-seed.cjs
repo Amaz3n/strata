@@ -29,6 +29,21 @@ const JOURNEYS = {
     for (const period of ["2026-02", "2026-03"]) await kit.as(org.owner, () => closeAccountingPeriod(org.periods[period].periodId))
     return org
   },
+  // July with two genuine problems: an unreconciled bank account and an
+  // unsupported undeposited receipt; the reviewer is read-only.
+  async "close-gates"(kit, password) {
+    const org = await greenfieldOrg(kit, { name: "Browser acceptance — close gates", periods: ["2026-07"], password, reviewerRole: "org_books_reviewer" })
+    const gl = (code) => kit.rows(`select id from public.gl_accounts where org_id=${kit.q(org.orgId)} and code=${kit.q(code)}`)[0].id
+    await kit.as(org.owner, () => app("books/bank-feeds").createManualBankAccount({ name: "Operating", accountType: "depository", glAccountId: gl("1000") }))
+    const client = await kit.as(org.owner, () => app("contacts").createContact({ input: { full_name: "Gate Client", role_key: "client", email: "gate@acceptance.example.test" } }))
+    const invoice = await kit.as(org.owner, () => app("invoices").createInvoice({ input: { invoice_number: "GATE-1", customer_id: client.id, title: "Services", issue: true, issue_date: "2026-07-10", due_date: "2026-07-10",
+      sent_to_emails: ["gate@acceptance.example.test"], lines: [{ description: "Services", quantity: 1, unit_cost: 1000, taxable: false, arc_books_gl_account_id: gl("4900") }] } }))
+    await kit.as(org.owner, () => app("payments").recordMultiInvoicePayment({ received_at: "2026-07-30T12:00:00Z", method: "check", idempotency_key: `gate-${org.orgId}`, allocations: [{ invoice_id: invoice.id, amount_cents: 100000 }] }))
+    await kit.drainOutbox(org.orgId)
+    await kit.service(() => app("books/projector").projectJournal(org.orgId, { full: true }))
+    await kit.as(org.owner, () => app("books/period-close").runBooksCloseChecklist(org.periods["2026-07"].periodId))
+    return org
+  },
   // July's close died right after freezing the period, 31 minutes ago.
   async "abandoned-close"(kit, password) {
     const org = await greenfieldOrg(kit, { name: "Browser acceptance — abandoned close", periods: ["2026-07"], password })

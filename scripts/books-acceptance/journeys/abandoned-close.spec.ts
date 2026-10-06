@@ -1,10 +1,13 @@
 import { expect, test } from "@playwright/test"
-import { applyTheme, expectNoHorizontalOverflow, journey, rows, signIn, watchErrors } from "./support"
+import { applyTheme, expectNoHorizontalOverflow, journey, rows, setupSql, signIn, watchErrors } from "./support"
 
 // B01.1: a close that stopped after freezing its period is visible and can be
 // resumed from the close screen.
 test("abandoned close: the stuck period explains itself and resumes to closed", async ({ page }, info) => {
   const users = journey("abandoned-close")
+  // Every run starts from a close that died 31 minutes after freezing July.
+  setupSql(`update public.accounting_periods set status='reviewing', close_digest=null, closed_at=null, closed_by=null, close_snapshot_ids=null,
+    close_prior_status='open', close_started_at=now() - interval '31 minutes' where id='${users.periods["2026-07"]}'`)
   const noErrors = watchErrors(page)
   await applyTheme(page, info.project.name)
   await signIn(page, users.owner, users.password)

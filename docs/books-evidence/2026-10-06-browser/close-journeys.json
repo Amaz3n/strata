@@ -104,12 +104,12 @@
                   "workerIndex": 0,
                   "parallelIndex": 0,
                   "status": "passed",
-                  "duration": 5240,
+                  "duration": 5449,
                   "errors": [],
                   "stdout": [],
                   "stderr": [],
                   "retry": 0,
-                  "startTime": "2026-10-06T14:27:44.456Z",
+                  "startTime": "2026-10-06T16:02:32.073Z",
                   "annotations": [],
                   "attachments": []
                 }
@@ -138,12 +138,12 @@
                   "workerIndex": 1,
                   "parallelIndex": 0,
                   "status": "passed",
-                  "duration": 6040,
+                  "duration": 6642,
                   "errors": [],
                   "stdout": [],
                   "stderr": [],
                   "retry": 0,
-                  "startTime": "2026-10-06T14:27:55.301Z",
+                  "startTime": "2026-10-06T16:02:48.987Z",
                   "annotations": [],
                   "attachments": []
                 }
@@ -154,6 +154,170 @@
           "id": "bbd166a8ddbdd19bf0de-614cb4ef62903850dc27",
           "file": "abandoned-close.spec.ts",
           "line": 6,
+          "column": 5
+        }
+      ]
+    },
+    {
+      "title": "close-gates.spec.ts",
+      "file": "close-gates.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "close gates: each blocking check names its cause and leads to its cure",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "mobile-dark",
+              "projectName": "mobile-dark",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 5373,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-06T16:02:37.619Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "652a2198abf961710357-5e168db7ef204294f1a7",
+          "file": "close-gates.spec.ts",
+          "line": 6,
+          "column": 5
+        },
+        {
+          "title": "close gates: a read-only reviewer sees the period but cannot run checks or close",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [
+                {
+                  "type": "skip",
+                  "description": "Permission behaviour is viewport-independent",
+                  "location": {
+                    "file": "/Users/agustinzenuto/Desktop/Projects/arc/scripts/books-acceptance/journeys/close-gates.spec.ts",
+                    "line": 29,
+                    "column": 8
+                  }
+                }
+              ],
+              "expectedStatus": "skipped",
+              "projectId": "mobile-dark",
+              "projectName": "mobile-dark",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "skipped",
+                  "duration": 66,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-06T16:02:42.995Z",
+                  "annotations": [
+                    {
+                      "type": "skip",
+                      "description": "Permission behaviour is viewport-independent",
+                      "location": {
+                        "file": "/Users/agustinzenuto/Desktop/Projects/arc/scripts/books-acceptance/journeys/close-gates.spec.ts",
+                        "line": 29,
+                        "column": 8
+                      }
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "skipped"
+            }
+          ],
+          "id": "652a2198abf961710357-f9c99a90503fff6c1105",
+          "file": "close-gates.spec.ts",
+          "line": 28,
+          "column": 5
+        },
+        {
+          "title": "close gates: each blocking check names its cause and leads to its cure",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "desktop",
+              "projectName": "desktop",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 6233,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-06T16:02:55.736Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "652a2198abf961710357-02a773afb704167b2bf4",
+          "file": "close-gates.spec.ts",
+          "line": 6,
+          "column": 5
+        },
+        {
+          "title": "close gates: a read-only reviewer sees the period but cannot run checks or close",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "desktop",
+              "projectName": "desktop",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 5427,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-06T16:03:01.974Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "652a2198abf961710357-665cf42a72136b4d3a3f",
+          "file": "close-gates.spec.ts",
+          "line": 28,
           "column": 5
         }
       ]
@@ -180,12 +344,12 @@
                   "workerIndex": 0,
                   "parallelIndex": 0,
                   "status": "passed",
-                  "duration": 5283,
+                  "duration": 5603,
                   "errors": [],
                   "stdout": [],
                   "stderr": [],
                   "retry": 0,
-                  "startTime": "2026-10-06T14:27:49.775Z",
+                  "startTime": "2026-10-06T16:02:43.068Z",
                   "annotations": [],
                   "attachments": []
                 }
@@ -224,12 +388,12 @@
                   "workerIndex": 0,
                   "parallelIndex": 0,
                   "status": "skipped",
-                  "duration": 51,
+                  "duration": 78,
                   "errors": [],
                   "stdout": [],
                   "stderr": [],
                   "retry": 0,
-                  "startTime": "2026-10-06T14:27:55.063Z",
+                  "startTime": "2026-10-06T16:02:48.675Z",
                   "annotations": [
                     {
                       "type": "skip",
@@ -268,12 +432,12 @@
                   "workerIndex": 1,
                   "parallelIndex": 0,
                   "status": "passed",
-                  "duration": 8704,
+                  "duration": 9243,
                   "errors": [],
                   "stdout": [],
                   "stderr": [],
                   "retry": 0,
-                  "startTime": "2026-10-06T14:28:01.421Z",
+                  "startTime": "2026-10-06T16:03:07.409Z",
                   "annotations": [],
                   "attachments": []
                 }
@@ -302,12 +466,12 @@
                   "workerIndex": 1,
                   "parallelIndex": 0,
                   "status": "passed",
-                  "duration": 5163,
+                  "duration": 5685,
                   "errors": [],
                   "stdout": [],
                   "stderr": [],
                   "retry": 0,
-                  "startTime": "2026-10-06T14:28:10.129Z",
+                  "startTime": "2026-10-06T16:03:16.657Z",
                   "annotations": [],
                   "attachments": []
                 }
@@ -325,10 +489,10 @@
   ],
   "errors": [],
   "stats": {
-    "startTime": "2026-10-06T14:27:44.302Z",
-    "duration": 31033.015,
-    "expected": 5,
-    "skipped": 1,
+    "startTime": "2026-10-06T16:02:31.878Z",
+    "duration": 50538.48299999999,
+    "expected": 8,
+    "skipped": 2,
     "unexpected": 0,
     "flaky": 0
   }

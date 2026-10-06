@@ -126,6 +126,60 @@
         "4000": -25000000,
         "5000": 20000000
       }
+    },
+    "gate-matrix": {
+      "inputs": {
+        "period": "2026-07",
+        "receiptCents": 100000,
+        "journalCents": 25000,
+        "contractCents": 1000000,
+        "eacCents": 800000,
+        "billCents": 200000
+      },
+      "derivation": "A valid company closes with no blocking checks. Each invalid fixture \u2014 made through the product where one exists \u2014 fails exactly its own check, and its cure clears it. With two problems at once, curing one leaves the other failing (corrections never hide other open issues).",
+      "expectedCleanBlocking": [],
+      "expectedBlocking": {
+        "draft-journal": [
+          "All journals posted"
+        ],
+        "unreviewed-proposal": [
+          "Manual journal proposals independently reviewed"
+        ],
+        "unreconciled-bank": [
+          "Bank and card accounts reconciled"
+        ],
+        "undeposited-receipt": [
+          "Clearing and undeposited-funds accounts reviewed"
+        ],
+        "direct-job-cost-journal": [
+          "GL job cost ties to the job-cost subledger"
+        ],
+        "unreviewed-wip": [
+          "WIP and POC reviewed through period end"
+        ],
+        "invoice-not-yet-posted": [
+          "Accounts receivable ties to the AR subledger"
+        ]
+      },
+      "expectedCombined": {
+        "both": [
+          "Clearing and undeposited-funds accounts reviewed",
+          "Manual journal proposals independently reviewed"
+        ],
+        "afterProposalCure": [
+          "Clearing and undeposited-funds accounts reviewed"
+        ],
+        "afterBothCures": []
+      }
+    },
+    "reviewer-cannot-mutate-gates": {
+      "derivation": "A read-only books reviewer (org_books_reviewer: books.read only) is refused, server-side, when running the close checks, supporting clearing balances, closing or reopening.",
+      "expectedRefused": {
+        "runChecks": true,
+        "clearingSupport": true,
+        "close": true,
+        "reopen": true
+      }
     }
   }
 }

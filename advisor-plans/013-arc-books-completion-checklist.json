@@ -2924,8 +2924,8 @@
       "id": "B01.3",
       "workstream": "B01",
       "title": "Complete close gates and cures",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All B01.3 criteria and the global DoD verified locally (2026-10-06): CLOSE-01 gate matrix and read-only reviewer, STATUS-01 scoped resolution, every passing golden scenario closes, authenticated browser journeys. Dedicated invalid fixtures cover drafts, proposals, bank reconciliation, clearing support, job-cost and AR tie-outs, WIP review and closed-period sources; AP/deposit/debt/asset tie-outs are exercised only as passing controls.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "all valid golden scenarios close",
@@ -2980,15 +2980,49 @@
           "artifact_paths_and_hashes": [
             "docs/books-evidence/2026-10-06-golden-scenarios/RACE-01.json sha256:af51a74fc97621cb9e1f08fff19724876fa136c5bfbcd5b02ac7b32a7adf4582"
           ]
+        },
+        {
+          "verified_at": "2026-10-06T16:04:15.565345+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/close-01.cjs",
+            "scripts/books-acceptance/journeys/close-gates.spec.ts",
+            "scripts/books-acceptance/browser-seed.cjs",
+            "docs/books-period-close.md"
+          ],
+          "test_scenario_ids": [
+            "CLOSE-01",
+            "STATUS-01",
+            "WIP-01",
+            "YEAR-01",
+            "BANK-01",
+            "RACE-01",
+            "browser:close-gates"
+          ],
+          "commands": [
+            "scenario-runner CLOSE-01 (7 passed; quarter-end and all-modules not implemented)",
+            "BOOKS_ACCEPTANCE_WORKSPACE=W npx playwright test -c scripts/books-acceptance/playwright.config.ts (8 passed, 2 skipped by design)"
+          ],
+          "observed_results": [
+            "All valid golden scenarios close (WIP-01, YEAR-01, CLOSE-01, BANK-01, STATUS-01, RACE-01); a clean company has no blocking checks.",
+            "Each invalid fixture blocks for exactly its cause and its cure clears it: draft journal, unreviewed proposal, unreconciled bank account, unsupported undeposited receipt, job cost journaled without a subledger record, invoice not yet posted (AR tie-out), unreviewed WIP; a source dated into a closed period blocks 'Accounting reconciliation issues resolved' (CLOSE-01 late source).",
+            "Normal construction cases are not blocked by missing workflows: Books-only companies without banks, assets, tax or external sync close; coding exceptions block only with an external provider.",
+            "Two problems at once: curing one leaves exactly the other; STATUS-01 shows a scoped run resolves only evaluated sources.",
+            "Read-only reviewer (org_books_reviewer) is refused server-side when running checks, supporting clearing balances, closing and reopening; in the browser the reviewer sees the period and the failing checks but no Run checks or Close, with 'Your role can review this period'.",
+            "Browser (owner): the two failing checks are listed as Required, Close period is disabled, the bank check opens to 'Review source' -> /books/banking; 390px dark presentation without clipping."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/CLOSE-01.json sha256:db009ad0db77a93a2511d53f261a06d47c365bbf62ec763393ff9e33964a99a4",
+            "docs/books-evidence/2026-10-06-browser/close-gates-desktop.png sha256:3a7d2aad9e2cc193ecc30e2bd237b282f28426739e6a1496337b60fd5718defb",
+            "docs/books-evidence/2026-10-06-browser/close-gates-mobile-dark.png sha256:0c9e994e33ce32be388bed4fe3beb5d3f1e4685481809b1eb834ac6d877504fe",
+            "docs/books-evidence/2026-10-06-browser/close-journeys.json sha256:e14a8aa1e3e8795af38e3323dd2ed5c6e723ffe8dce9e5f65a157ab26810a4fe"
+          ],
+          "schema_or_runtime_identity": "acceptance stack arc-books-acceptance-e1c88d89280b; migrations through 20261006155617",
+          "remaining_criteria": [],
+          "external_dependency": null,
+          "reviewer": null
         }
       ],
-      "remaining_criteria": [
-        "all valid golden scenarios close",
-        "each invalid fixture blocks for its precise cause",
-        "a normal supported construction case is not blocked merely because its workflow is missing",
-        "corrections resolve the correct finding without hiding other open issues",
-        "read-only reviewers cannot mutate gates"
-      ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
       "verified_at": null

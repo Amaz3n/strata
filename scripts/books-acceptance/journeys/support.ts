@@ -13,6 +13,14 @@ export function journey(name: string): JourneyUsers {
   return users[name]
 }
 
+/** Harness setup SQL against the acceptance database (journeys that must recreate their starting state). */
+export function setupSql(sql: string, user = "postgres") {
+  const { container } = JSON.parse(readFileSync(join(workspace, "api.json"), "utf8")) as { container: string }
+  if (!/^supabase_db_arc-books-acceptance-[a-z0-9]+$/.test(container)) throw new Error("Not an acceptance container")
+  const result = spawnSync("docker", ["exec", "-i", container, "psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-U", user, "-d", "postgres"], { input: sql, encoding: "utf8" })
+  if (result.status !== 0) throw new Error(result.stderr)
+}
+
 /** Read-only SQL against the acceptance database, for ledger assertions. */
 export function rows<T>(sql: string): T[] {
   const { container } = JSON.parse(readFileSync(join(workspace, "api.json"), "utf8")) as { container: string }

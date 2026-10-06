@@ -7,8 +7,8 @@
       "name": "late-source-into-closed-period",
       "status": "PASSED",
       "identities": {
-        "orgId": "e5ac8c9a-0c9b-4e89-8fde-21f09cb613e9",
-        "lateInvoiceId": "30692a71-12a7-4eca-861a-7b8c421fb85b"
+        "orgId": "b3e09aba-f352-4851-92db-752491fb4855",
+        "lateInvoiceId": "2d9c3a25-c50d-4274-8265-d5a95e34f46f"
       },
       "checks": [
         {
@@ -88,14 +88,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T14:25:44.681Z"
+      "startedAt": "2026-10-06T16:03:39.625Z"
     },
     {
       "name": "unreviewed-journal-proposal-blocks-close",
       "status": "PASSED",
       "identities": {
-        "orgId": "8454180e-da83-4815-9f43-cf4e2a358ca7",
-        "proposalId": "09622460-81ce-4022-bc39-c4e8beb71825"
+        "orgId": "b64c74bc-e270-40f5-babd-8ed140866e34",
+        "proposalId": "eff3dc11-b6f9-4838-a3a1-dd98d93c5eaa"
       },
       "checks": [
         {
@@ -129,14 +129,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T14:25:50.308Z"
+      "startedAt": "2026-10-06T16:03:44.681Z"
     },
     {
       "name": "close-failure-resumes",
       "status": "PASSED",
       "identities": {
-        "statement_snapshot": "05558643-4978-4b3d-9b17-ef452663415f",
-        "period_lock": "9d096106-c73b-4fd7-b007-47f7e525a088"
+        "statement_snapshot": "2a18133b-374d-4a08-be29-c630dfe4a517",
+        "period_lock": "0c5b01eb-699f-4f8c-a592-12d68d49dd1b"
       },
       "checks": [
         {
@@ -276,13 +276,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T14:25:50.529Z"
+      "startedAt": "2026-10-06T16:03:44.923Z"
     },
     {
       "name": "twelve-month-sequence-snapshots",
       "status": "PASSED",
       "identities": {
-        "orgId": "db51407a-70f2-498a-9001-00785099b1dd"
+        "orgId": "65ced026-2e12-4606-b2d9-a45a4604a371"
       },
       "checks": [
         {
@@ -324,7 +324,7 @@
           ]
         }
       ],
-      "startedAt": "2026-10-06T14:25:52.465Z"
+      "startedAt": "2026-10-06T16:03:47.271Z"
     },
     {
       "name": "quarter-end",
@@ -340,7 +340,7 @@
       "name": "abandoned-close-resumes",
       "status": "PASSED",
       "identities": {
-        "orgId": "78bf5160-b457-4219-9605-cba06c2e32ff"
+        "orgId": "ac45baad-8fca-4438-8d27-ca2094bf03cc"
       },
       "checks": [
         {
@@ -396,9 +396,192 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T14:25:56.576Z"
+      "startedAt": "2026-10-06T16:03:51.969Z"
+    },
+    {
+      "name": "gate-matrix",
+      "status": "PASSED",
+      "identities": {
+        "cleanOrgId": "de493a04-7301-4aa3-9044-04b942f8c19a",
+        "combinedOrgId": "e318355d-5f3f-4d22-9693-cb13a994c2c8"
+      },
+      "checks": [
+        {
+          "label": "a valid company has no blocking checks",
+          "pass": true,
+          "expected": [],
+          "observed": []
+        },
+        {
+          "label": "draft-journal: blocks for exactly its cause",
+          "pass": true,
+          "expected": [
+            "All journals posted"
+          ],
+          "observed": [
+            "All journals posted"
+          ]
+        },
+        {
+          "label": "draft-journal: the cure clears it",
+          "pass": true,
+          "expected": [],
+          "observed": []
+        },
+        {
+          "label": "unreviewed-proposal: blocks for exactly its cause",
+          "pass": true,
+          "expected": [
+            "Manual journal proposals independently reviewed"
+          ],
+          "observed": [
+            "Manual journal proposals independently reviewed"
+          ]
+        },
+        {
+          "label": "unreviewed-proposal: the cure clears it",
+          "pass": true,
+          "expected": [],
+          "observed": []
+        },
+        {
+          "label": "unreconciled-bank: blocks for exactly its cause",
+          "pass": true,
+          "expected": [
+            "Bank and card accounts reconciled"
+          ],
+          "observed": [
+            "Bank and card accounts reconciled"
+          ]
+        },
+        {
+          "label": "unreconciled-bank: the cure clears it",
+          "pass": true,
+          "expected": [],
+          "observed": []
+        },
+        {
+          "label": "undeposited-receipt: blocks for exactly its cause",
+          "pass": true,
+          "expected": [
+            "Clearing and undeposited-funds accounts reviewed"
+          ],
+          "observed": [
+            "Clearing and undeposited-funds accounts reviewed"
+          ]
+        },
+        {
+          "label": "undeposited-receipt: the cure clears it",
+          "pass": true,
+          "expected": [],
+          "observed": []
+        },
+        {
+          "label": "invoice-not-yet-posted: blocks for exactly its cause",
+          "pass": true,
+          "expected": [
+            "Accounts receivable ties to the AR subledger"
+          ],
+          "observed": [
+            "Accounts receivable ties to the AR subledger"
+          ]
+        },
+        {
+          "label": "invoice-not-yet-posted: the cure clears it",
+          "pass": true,
+          "expected": [],
+          "observed": []
+        },
+        {
+          "label": "direct-job-cost-journal: blocks for exactly its cause",
+          "pass": true,
+          "expected": [
+            "GL job cost ties to the job-cost subledger"
+          ],
+          "observed": [
+            "GL job cost ties to the job-cost subledger"
+          ]
+        },
+        {
+          "label": "direct-job-cost-journal: the cure clears it",
+          "pass": true,
+          "expected": [],
+          "observed": []
+        },
+        {
+          "label": "unreviewed-wip: blocks for exactly its cause",
+          "pass": true,
+          "expected": [
+            "WIP and POC reviewed through period end"
+          ],
+          "observed": [
+            "WIP and POC reviewed through period end"
+          ]
+        },
+        {
+          "label": "unreviewed-wip: the cure clears it",
+          "pass": true,
+          "expected": [],
+          "observed": []
+        },
+        {
+          "label": "two problems: both block",
+          "pass": true,
+          "expected": [
+            "Clearing and undeposited-funds accounts reviewed",
+            "Manual journal proposals independently reviewed"
+          ],
+          "observed": [
+            "Clearing and undeposited-funds accounts reviewed",
+            "Manual journal proposals independently reviewed"
+          ]
+        },
+        {
+          "label": "curing one leaves the other",
+          "pass": true,
+          "expected": [
+            "Clearing and undeposited-funds accounts reviewed"
+          ],
+          "observed": [
+            "Clearing and undeposited-funds accounts reviewed"
+          ]
+        },
+        {
+          "label": "curing both clears the close",
+          "pass": true,
+          "expected": [],
+          "observed": []
+        }
+      ],
+      "startedAt": "2026-10-06T16:03:52.666Z"
+    },
+    {
+      "name": "reviewer-cannot-mutate-gates",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "c7086f53-1bf6-4d2e-8467-eaabf68ae2fd"
+      },
+      "checks": [
+        {
+          "label": "a read-only reviewer is refused every gate mutation",
+          "pass": true,
+          "expected": {
+            "runChecks": true,
+            "clearingSupport": true,
+            "close": true,
+            "reopen": true
+          },
+          "observed": {
+            "runChecks": true,
+            "clearingSupport": true,
+            "close": true,
+            "reopen": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-06T16:03:55.076Z"
     }
   ],
   "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
-  "finishedAt": "2026-10-06T14:25:57.198Z"
+  "finishedAt": "2026-10-06T16:03:55.188Z"
 }

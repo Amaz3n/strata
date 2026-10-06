@@ -193,3 +193,117 @@ module.exports = {
     "abandoned-close-resumes": abandonedClose,
   },
 }
+
+// ---- B01.3: every blocking check fails for its precise cause --------------
+const blocking = (kit, org, period) => kit.as(org.owner, () => app("books/period-close").runBooksCloseChecklist(org.periods[period].periodId))
+  .then((result) => result.blockingFailures.map((item) => item.label).sort())
+
+const jobProject = (kit, org) => {
+  org.projectId = randomUUID()
+  kit.sql(`insert into public.projects(id,org_id,name,property_type,created_by) values(${kit.q(org.projectId)},${kit.q(org.orgId)},'Gate fixture job','residential',${kit.q(org.owner.userId)});`)
+}
+
+// Each fixture breaks one control through the product and returns its cure.
+const GATE_FIXTURES = {
+  async "draft-journal"(kit, org) {
+    const id = randomUUID()
+    kit.sql(`insert into public.journal_entries(id,org_id,entry_date,entry_kind,status,memo,posting_key,policy_version) values(${kit.q(id)},${kit.q(org.orgId)},'2026-07-15','adjusting','draft','Imported draft awaiting review',${kit.q(`draft:${id}`)},1);`)
+    return () => kit.sql(`delete from public.journal_entries where id=${kit.q(id)};`)
+  },
+  async "unreviewed-proposal"(kit, org, input) {
+    const { proposeAdjustingJournal, reviewJournalProposal } = app("books/bookkeeping")
+    const proposal = await kit.as(org.reviewer, () => proposeAdjustingJournal({ intentId: randomUUID(), entryDate: "2026-07-31", memo: "Owner paid rent personally",
+      lines: [{ accountCode: "6000", debitCents: input.journalCents, creditCents: 0 }, { accountCode: "3010", debitCents: 0, creditCents: input.journalCents }] }))
+    return () => kit.as(org.owner, () => reviewJournalProposal({ proposalId: proposal.id, decision: "approve", note: "Agreed" }))
+  },
+  async "unreconciled-bank"(kit, org) {
+    const { createManualBankAccount } = app("books/bank-feeds")
+    const { createBankReconciliation, closeBankReconciliation } = app("books/bank-reconciliation")
+    const created = await kit.as(org.owner, () => createManualBankAccount({ name: "Operating", accountType: "depository", glAccountId: glAccount(kit, org, "1000") }))
+    return async () => {
+      const id = await kit.as(org.owner, () => createBankReconciliation({ bankAccountId: created.bankAccountId, statementStart: "2026-07-01", statementEnd: "2026-07-31", beginningBalanceCents: 0, endingBalanceCents: 0 }))
+      await kit.as(org.owner, () => closeBankReconciliation(id))
+    }
+  },
+  async "undeposited-receipt"(kit, org, input) {
+    const client = await customer(kit, org)
+    const invoice = await serviceInvoice(kit, org, client.id, "2026-07-10", input.receiptCents)
+    await kit.as(org.owner, () => app("payments").recordMultiInvoicePayment({ received_at: "2026-07-30T12:00:00Z", method: "check", idempotency_key: randomUUID(), allocations: [{ invoice_id: invoice.id, amount_cents: input.receiptCents }] }))
+    await kit.drainOutbox(org.orgId)
+    await projectionJob(kit, org)
+    return async () => {
+      const { getClearingSupportWorkspace, reviewClearingSupport } = app("books/clearing-support")
+      const periodId = org.periods["2026-07"].periodId
+      const workspace = await kit.as(org.owner, () => getClearingSupportWorkspace(periodId))
+      await kit.as(org.owner, () => reviewClearingSupport({ periodId, ledgerDigest: workspace.ledgerDigest, items: [{ code: "1010", amountCents: input.receiptCents,
+        expectedSettlementDate: "2026-08-03", explanation: "July 30 check deposited August 3", evidenceUrl: "https://acceptance.example.test/deposit-0803.pdf" }] }))
+    }
+  },
+  async "invoice-not-yet-posted"(kit, org, input) {
+    const client = await customer(kit, org)
+    await serviceInvoice(kit, org, client.id, "2026-07-12", input.receiptCents)
+    return () => projectionJob(kit, org)
+  },
+  async "direct-job-cost-journal"(kit, org, input) {
+    jobProject(kit, org)
+    const { createAdjustingJournal } = app("books/bookkeeping")
+    const receipt = await kit.as(org.reviewer, () => createAdjustingJournal({ entryDate: "2026-07-20", memo: "Job cost keyed straight to the ledger",
+      lines: [{ accountCode: "5000", debitCents: input.journalCents, creditCents: 0, projectId: org.projectId }, { accountCode: "3010", debitCents: 0, creditCents: input.journalCents }] }))
+    return () => kit.as(org.reviewer, () => app("books/ledger").reverseBooksJournalEntry({ entryId: receipt.id, reversalDate: "2026-07-31", reason: "Job cost belongs on a bill, not a journal" }))
+  },
+}
+
+const glAccount = (kit, org, code) => kit.rows(`select id from public.gl_accounts where org_id=${kit.q(org.orgId)} and code=${kit.q(code)}`)[0].id
+
+async function gateMatrix(kit, expected, check) {
+  const input = expected.inputs
+  const clean = await greenfieldOrg(kit, { name: "CLOSE-01 gates clean", periods: [input.period] })
+  check.equal("a valid company has no blocking checks", expected.expectedCleanBlocking, await blocking(kit, clean, input.period))
+  for (const [name, breakIt] of Object.entries(GATE_FIXTURES)) {
+    const org = await greenfieldOrg(kit, { name: `CLOSE-01 gate ${name}`, periods: [input.period] })
+    const cure = await breakIt(kit, org, input)
+    check.equal(`${name}: blocks for exactly its cause`, expected.expectedBlocking[name], await blocking(kit, org, input.period))
+    await cure()
+    check.equal(`${name}: the cure clears it`, [], await blocking(kit, org, input.period))
+  }
+  // Unreviewed WIP needs a contract job.
+  const job = await contractJob(kit, { name: "CLOSE-01 gate wip", contractCents: input.contractCents, retainagePercent: 0, periods: [input.period] })
+  await bill(kit, job, input.period, input.billCents, "GATE-WIP")
+  await project(kit, job)
+  check.equal("unreviewed-wip: blocks for exactly its cause", expected.expectedBlocking["unreviewed-wip"], await blocking(kit, job, input.period))
+  await prepareAndReview(kit, job, input.period, { contractCents: input.contractCents, eacCents: input.eacCents })
+  check.equal("unreviewed-wip: the cure clears it", [], await blocking(kit, job, input.period))
+  // Two problems at once: curing one never hides the other.
+  const both = await greenfieldOrg(kit, { name: "CLOSE-01 gates combined", periods: [input.period] })
+  const cureClearing = await GATE_FIXTURES["undeposited-receipt"](kit, both, input)
+  const cureProposal = await GATE_FIXTURES["unreviewed-proposal"](kit, both, input)
+  check.equal("two problems: both block", expected.expectedCombined.both, await blocking(kit, both, input.period))
+  await cureProposal()
+  check.equal("curing one leaves the other", expected.expectedCombined.afterProposalCure, await blocking(kit, both, input.period))
+  await cureClearing()
+  check.equal("curing both clears the close", expected.expectedCombined.afterBothCures, await blocking(kit, both, input.period))
+  await close(kit, both, input.period)
+  return { cleanOrgId: clean.orgId, combinedOrgId: both.orgId }
+}
+
+async function reviewerCannotMutateGates(kit, expected, check) {
+  const org = await greenfieldOrg(kit, { name: "CLOSE-01 read-only reviewer", periods: ["2026-07"], reviewerRole: "org_books_reviewer" })
+  const periodId = org.periods["2026-07"].periodId
+  const periodClose = app("books/period-close")
+  const { getClearingSupportWorkspace, reviewClearingSupport } = app("books/clearing-support")
+  const refused = {
+    runChecks: Boolean(await refusal(() => kit.as(org.reviewer, () => periodClose.runBooksCloseChecklist(periodId)))),
+    clearingSupport: Boolean(await refusal(async () => {
+      const workspace = await kit.as(org.owner, () => getClearingSupportWorkspace(periodId))
+      await kit.as(org.reviewer, () => reviewClearingSupport({ periodId, ledgerDigest: workspace.ledgerDigest, items: [{ code: "1010", amountCents: 1, expectedSettlementDate: "2026-08-01", explanation: "Reviewer attempting support", evidenceUrl: "https://acceptance.example.test/x.pdf" }] }))
+    })),
+    close: Boolean(await refusal(() => kit.as(org.reviewer, () => periodClose.closeAccountingPeriod(periodId)))),
+  }
+  await close(kit, org, "2026-07")
+  refused.reopen = Boolean(await refusal(() => kit.as(org.reviewer, () => periodClose.reopenAccountingPeriod({ periodId, reason: "Reviewer attempting a reopen" }))))
+  check.equal("a read-only reviewer is refused every gate mutation", expected.expectedRefused, refused)
+  return { orgId: org.orgId }
+}
+
+module.exports.subcases["gate-matrix"] = gateMatrix
+module.exports.subcases["reviewer-cannot-mutate-gates"] = reviewerCannotMutateGates
