@@ -4,10 +4,11 @@
 alter table public.books_deposit_batches add column fee_cents bigint not null default 0
   constraint books_deposit_batches_fee_nonnegative check (fee_cents >= 0);
 
+-- The fee defaults to zero, so a caller that predates it keeps working.
 drop function public.create_books_deposit_batch_atomic(uuid,uuid,uuid[],text,uuid);
 
 create or replace function public.create_books_deposit_batch_atomic(
-  p_org_id uuid,p_transaction_id uuid,p_payment_ids uuid[],p_reference text,p_actor_id uuid,p_fee_cents bigint
+  p_org_id uuid,p_transaction_id uuid,p_payment_ids uuid[],p_reference text,p_actor_id uuid,p_fee_cents bigint default 0
 ) returns jsonb language plpgsql security definer set search_path='' as $$
 declare
   txn public.bank_transactions%rowtype;
