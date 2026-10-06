@@ -4388,3 +4388,14 @@ test("provider coding gates close only when the ledger syncs externally", () => 
   assert.match(item, /blocking: requiresExternalSync,/);
   assert.match(item, /applicable: requiresExternalSync/);
 });
+
+test("an abandoned close is recognized after the same interval the database uses", () => {
+  const { ABANDONED_CLOSE_MINUTES, isAbandonedClose } = require("../lib/services/books/close-review")
+  const migration = fs.readFileSync(path.join(__dirname, "../supabase/migrations/20261006180000_books_period_close_recovery.sql"), "utf8")
+  assert.match(migration, new RegExp(`interval '${ABANDONED_CLOSE_MINUTES} minutes'`))
+  const now = new Date("2026-10-06T12:00:00Z")
+  assert.equal(isAbandonedClose("reviewing", "2026-10-06T11:45:00Z", now), false)
+  assert.equal(isAbandonedClose("reviewing", "2026-10-06T11:20:00Z", now), true)
+  assert.equal(isAbandonedClose("reviewing", null, now), true)
+  assert.equal(isAbandonedClose("open", null, now), false)
+})

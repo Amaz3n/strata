@@ -838,6 +838,7 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
     {
       p_org_id: context.orgId,
       p_period_id: periodId,
+      p_actor_id: context.userId,
     },
   );
   if (beginError)
@@ -993,6 +994,9 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
         status: "closed",
         close_digest: digest,
         close_snapshot_ids: snapshotIds,
+        close_started_at: null,
+        close_started_by: null,
+        close_prior_status: null,
         closed_by: context.userId,
         closed_at: new Date().toISOString(),
       })

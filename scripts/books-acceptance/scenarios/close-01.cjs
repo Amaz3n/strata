@@ -159,6 +159,30 @@ async function twelveMonths(kit, expected, check) {
   return { orgId: org.orgId }
 }
 
+async function abandonedClose(kit, expected, check) {
+  const input = expected.inputs
+  const job = await contractJob(kit, { name: "CLOSE-01 abandoned close", contractCents: input.contractCents, retainagePercent: input.retainagePercent, periods: [input.period] })
+  await bill(kit, job, input.period, input.billCents, "ABANDON-B1")
+  contractInvoice(kit, job, input.period, input.invoiceGrossCents, input.invoiceRetainageCents, "ABANDON-I1")
+  await project(kit, job)
+  await prepareAndReview(kit, job, input.period, { contractCents: input.contractCents, eacCents: input.eacCents })
+  const periodId = job.periods[input.period].periodId
+  // The process dies right after freezing the period.
+  kit.sql(`set role service_role; select public.begin_books_period_close(${kit.q(job.orgId)}, ${kit.q(periodId)}, ${kit.q(job.owner.userId)});`)
+  const posting = await refusal(() => kit.as(job.reviewer, () => app("books/bookkeeping").createAdjustingJournal({ entryDate: input.journal.date, memo: "Accrual during a frozen close",
+    lines: [{ accountCode: "6900", debitCents: input.journal.cents, creditCents: 0 }, { accountCode: "3010", debitCents: 0, creditCents: input.journal.cents }] })))
+  check.equal("operational postings are refused while the period is frozen", expected.expectedPostingRefusedWhileFrozen, Boolean(posting))
+  const fresh = await refusal(() => close(kit, job, input.period))
+  check.equal("a second close within 30 minutes refuses as already running", expected.expectedFreshCloseRefused, Boolean(fresh?.includes("already running")))
+  kit.sql(`update public.accounting_periods set close_started_at = now() - interval '31 minutes' where id=${kit.q(periodId)};`)
+  await close(kit, job, input.period)
+  const row = kit.rows(`select status, close_started_at, close_prior_status from public.accounting_periods where id=${kit.q(periodId)}`)[0]
+  check.equal("the next close resumes and finishes", { status: "closed", close_started_at: null, close_prior_status: null }, row)
+  check.equal("one recognition entry", expected.expectedRecognitionEntries, Number(kit.rows(`select count(*) n from public.journal_entries where org_id=${kit.q(job.orgId)} and source_type='revenue_recognition' and status='posted'`)[0].n))
+  check.equal("the resumed close's ledger equals a clean close", expected.expectedNetDebitCentsByAccount, kit.postedNet(job.orgId))
+  return { orgId: job.orgId }
+}
+
 module.exports = {
   id: "CLOSE-01",
   subcases: {
@@ -166,5 +190,6 @@ module.exports = {
     "unreviewed-journal-proposal-blocks-close": journalProposal,
     "close-failure-resumes": closeFailure,
     "twelve-month-sequence-snapshots": twelveMonths,
+    "abandoned-close-resumes": abandonedClose,
   },
 }

@@ -99,6 +99,33 @@
     },
     "all-supported-modules": {
       "status": "NOT_IMPLEMENTED"
+    },
+    "abandoned-close-resumes": {
+      "inputs": {
+        "contractCents": 100000000,
+        "eacCents": 80000000,
+        "retainagePercent": 10,
+        "period": "2026-07",
+        "billCents": 20000000,
+        "invoiceGrossCents": 30000000,
+        "invoiceRetainageCents": 3000000,
+        "journal": {
+          "date": "2026-07-31",
+          "cents": 10000
+        }
+      },
+      "derivation": "A close dies right after freezing July (simulated by freezing without finishing). While frozen, operational postings into July are refused and a second close within 30 minutes refuses as already running. Once the freeze is older than 30 minutes, the next close resumes it and finishes with the clean worked-example July ledger and one recognition entry.",
+      "expectedPostingRefusedWhileFrozen": true,
+      "expectedFreshCloseRefused": true,
+      "expectedRecognitionEntries": 1,
+      "expectedNetDebitCentsByAccount": {
+        "1100": 27000000,
+        "1110": 3000000,
+        "2000": -20000000,
+        "2350": -5000000,
+        "4000": -25000000,
+        "5000": 20000000
+      }
     }
   }
 }

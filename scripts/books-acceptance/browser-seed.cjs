@@ -29,6 +29,14 @@ const JOURNEYS = {
     for (const period of ["2026-02", "2026-03"]) await kit.as(org.owner, () => closeAccountingPeriod(org.periods[period].periodId))
     return org
   },
+  // July's close died right after freezing the period, 31 minutes ago.
+  async "abandoned-close"(kit, password) {
+    const org = await greenfieldOrg(kit, { name: "Browser acceptance — abandoned close", periods: ["2026-07"], password })
+    const periodId = org.periods["2026-07"].periodId
+    kit.sql(`set role service_role; select public.begin_books_period_close(${kit.q(org.orgId)}, ${kit.q(periodId)}, ${kit.q(org.owner.userId)});
+reset role; update public.accounting_periods set close_started_at = now() - interval '31 minutes' where id=${kit.q(periodId)};`)
+    return org
+  },
 }
 
 async function seed(workspace, journey) {

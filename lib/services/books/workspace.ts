@@ -99,7 +99,7 @@ export async function getBooksWorkspace(
       service
         .from("accounting_periods")
         .select(
-          "id, period_start, period_end, fiscal_year, fiscal_period, status, closed_at, reopened_at, close_digest",
+          "id, period_start, period_end, fiscal_year, fiscal_period, status, closed_at, reopened_at, close_digest, close_started_at",
         )
         .eq("org_id", context.orgId)
         .order("period_end", { ascending: false })

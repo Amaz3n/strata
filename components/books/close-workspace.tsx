@@ -32,7 +32,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { closeReviewState } from "@/lib/services/books/close-review";
+import { closeReviewState, isAbandonedClose } from "@/lib/services/books/close-review";
 import { cn } from "@/lib/utils";
 
 type Workspace = Awaited<
@@ -203,6 +203,8 @@ function PeriodReview({
   );
   const closed = period.status === "closed";
   const reviewing = period.status === "reviewing";
+  const [checkedAt] = useState(() => new Date());
+  const abandoned = isAbandonedClose(period.status, period.close_started_at, checkedAt);
   const updatedAt = rows
     .map((check) => check.updated_at)
     .filter(Boolean)
@@ -630,7 +632,9 @@ function PeriodReview({
             <p className="mt-2 text-xs leading-5 text-muted-foreground">
               {closed
                 ? "Entries in this period are locked. Closing saved the financial statements for this period."
-                : reviewing
+                : abandoned
+                  ? "This close stopped before it finished, so entries in this period are still frozen. Resume it to finish closing; the checks run again first."
+                  : reviewing
                   ? "This period is being closed. Refresh to see the result before making further changes."
                   : "Closing verifies controls, recognizes project revenue, and saves financial statements before locking entries."}
             </p>
@@ -642,7 +646,20 @@ function PeriodReview({
               </p>
             ) : null}
             <div className="mt-5 space-y-2">
-              {reviewing ? (
+              {abandoned && capabilities.close ? (
+                <Button
+                  className="w-full"
+                  disabled={pending}
+                  onClick={() =>
+                    act("Period closed", () =>
+                      closeAccountingPeriodAction(period.id),
+                    )
+                  }
+                >
+                  <LockKeyhole className="size-3.5" />
+                  Resume close
+                </Button>
+              ) : reviewing ? (
                 <Button
                   className="w-full"
                   variant="outline"
