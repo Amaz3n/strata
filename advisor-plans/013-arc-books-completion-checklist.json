@@ -2009,7 +2009,7 @@
       "workstream": "B00",
       "title": "Build the golden acceptance runner and durable evidence catalog",
       "status": "PARTIAL",
-      "status_basis": "Golden runner, kit and API route working end to end. Passing: BILL-01 (4/4), YEAR-01 (5/5); CLOSE-01 4/6 (quarter-end and all-modules subcases undefined/pending); WIP-01 4/7 (3 subcases need B04.1). 20 scenarios not started (2026-10-06).",
+      "status_basis": "Golden runner, kit and API route working end to end. Passing: BILL-01 (4/4), YEAR-01 (5/5); CLOSE-01 4/6; BANK-01 2/5 (net deposit with fees, imported outstanding items, supplier refund need B08.1/B08.3 features); WIP-01 4/7 (3 need B04.1). 19 scenarios not started (2026-10-06).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "intentionally incorrect accounting causes a nonzero run",
@@ -2611,6 +2611,34 @@
           ],
           "artifact_paths_and_hashes": [
             "docs/books-evidence/2026-10-06-golden-scenarios/CLOSE-01.json sha256:2f4f4ff24f21d7ba176d2fa254edadca32589b815cd591f6ea4ab4edd9ca31eb"
+          ]
+        },
+        {
+          "verified_at": "2026-10-06T12:23:00.658354+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/bank-01.cjs",
+            "scripts/books-acceptance/expected/BANK-01.json",
+            "scripts/books-acceptance/scenarios/shared.cjs",
+            "supabase/migrations/20261006160000_books_bank_evidence_reproducible_digest.sql"
+          ],
+          "test_scenario_ids": [
+            "BANK-01"
+          ],
+          "commands": [
+            "scenario-runner BANK-01",
+            "supabase/tests/books_bank_rollforward.test.sql 45/45",
+            "node --test tests/books-bank-*.test.js tests/books-banking.test.js 22/22",
+            "pnpm test:financials 3560/3560"
+          ],
+          "observed_results": [
+            "Two banks (operating 1000, payroll checking 1005) and a card (2100) across July and August, all through product services: statement CSV import, invoices + receipts to 1010, deposit batches, two bills paid by check from a chosen account, categorization (owner capital, fees, card purchases incl. job-costed lumber, card repayment, payroll tax), transfer matches, a payroll summary journal whose 350,000 net pay clears as two direct-deposit debits (manual split), clearing-support review of 1010/2230 at July end, WIP review and period close.",
+            "Each statement ties: July operating 5,077,500 statement - 200,000 check 102 in transit = 4,877,500 GL; payroll 150,000; card 30,000 owed. August operating 5,245,000 with nothing outstanding; payroll 100,000; card 25,000. Ledger exact after each month; no duplicated card expense or deposit cash; re-importing July's statement adds 0 transactions.",
+            "A reconciled statement line cannot be edited; closed detail keeps its description; July's bank statement and period cannot reopen before August's; newest-first reopen and in-order reclose reproduce every statement digest.",
+            "Fixed: reclosing an unchanged bank statement produced a different digest (proof included regenerated item ids/timestamps in random-uuid order), so the digest could not show whether a reopened statement changed. Migration 20261006160000 fingerprints economic item fields in a stable order. UNAPPLIED to production (needs approval).",
+            "Gaps confirmed (feature work): deposits net of processor fees cannot be batched (deposit must equal receipts exactly); no way to import cutover outstanding checks/deposits; no supplier-refund flow. Policy note for B16.1: every project not sold at closing is percentage-of-completion, including cost-plus/T&M jobs."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/BANK-01.json sha256:b336c5d6e9022db2b9a0180bde91ad5aca353d3279e98f808f52e1137ae7fcd5"
           ]
         }
       ],

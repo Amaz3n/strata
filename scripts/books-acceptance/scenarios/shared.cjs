@@ -55,10 +55,10 @@ async function greenfieldOrg(kit, { name, periods, setup, fiscalYearStartMonth =
 }
 
 // One fixed-price contract job on a greenfield builder.
-async function contractJob(kit, { name, contractCents, retainagePercent, periods }) {
+async function contractJob(kit, { name, contractCents, retainagePercent, periods, ...options }) {
   const { q } = kit
   const ids = { projectId: randomUUID(), vendorId: randomUUID(), costCodeId: randomUUID(), contractId: randomUUID() }
-  return greenfieldOrg(kit, { name, periods, setup: (org) => {
+  return greenfieldOrg(kit, { ...options, name, periods, setup: (org) => {
     Object.assign(org, ids)
     kit.sql(`begin;
 insert into public.projects(id,org_id,name,property_type,created_by) values(${q(org.projectId)},${q(org.orgId)},${q(`${name} — custom home`)},'residential',${q(org.owner.userId)});

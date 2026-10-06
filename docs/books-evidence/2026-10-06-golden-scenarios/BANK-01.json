@@ -1,0 +1,218 @@
+{
+  "scenario": "BANK-01",
+  "status": "INCOMPLETE",
+  "reviewedFrom": "Bank reconciliation practice: statement opening + statement activity = statement closing; GL control balance = statement balance adjusted by outstanding book items (checks/deposits in transit); each bank line is owned by exactly one book entry; card purchases are expensed once when charged and a card repayment only moves cash to the card liability; transfers between accounts move cash without income or expense. Pending licensed-CPA review (B16.3). Amounts are integer cents.",
+  "subcases": [
+    {
+      "name": "two-banks-and-card-two-cycles",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "0410df9b-2a8f-4d67-9779-78ca18206587"
+      },
+      "checks": [
+        {
+          "label": "2026-07: statement, outstanding and GL tie for each account",
+          "pass": true,
+          "expected": {
+            "operating": {
+              "ending": 5077500,
+              "outstanding": -200000,
+              "book": 4877500
+            },
+            "payroll": {
+              "ending": 150000,
+              "outstanding": 0,
+              "book": 150000
+            },
+            "card": {
+              "ending": 30000,
+              "outstanding": 0,
+              "book": 30000
+            }
+          },
+          "observed": {
+            "operating": {
+              "ending": 5077500,
+              "outstanding": -200000,
+              "book": 4877500
+            },
+            "payroll": {
+              "ending": 150000,
+              "outstanding": 0,
+              "book": 150000
+            },
+            "card": {
+              "ending": 30000,
+              "outstanding": 0,
+              "book": 30000
+            }
+          }
+        },
+        {
+          "label": "July ledger after close",
+          "pass": true,
+          "expected": {
+            "1000": 4877500,
+            "1005": 150000,
+            "1010": 400000,
+            "2100": -30000,
+            "2230": -50000,
+            "2350": 900000,
+            "3010": -5000000,
+            "4000": -900000,
+            "4900": -1400000,
+            "5000": 500000,
+            "5020": 100000,
+            "6020": 50000,
+            "6050": 2500,
+            "6070": 400000
+          },
+          "observed": {
+            "1000": 4877500,
+            "1005": 150000,
+            "1010": 400000,
+            "2100": -30000,
+            "2230": -50000,
+            "2350": 900000,
+            "3010": -5000000,
+            "4000": -900000,
+            "4900": -1400000,
+            "5000": 500000,
+            "5020": 100000,
+            "6020": 50000,
+            "6050": 2500,
+            "6070": 400000
+          }
+        },
+        {
+          "label": "2026-08: statement, outstanding and GL tie for each account",
+          "pass": true,
+          "expected": {
+            "operating": {
+              "ending": 5245000,
+              "outstanding": 0,
+              "book": 5245000
+            },
+            "payroll": {
+              "ending": 100000,
+              "outstanding": 0,
+              "book": 100000
+            },
+            "card": {
+              "ending": 25000,
+              "outstanding": 0,
+              "book": 25000
+            }
+          },
+          "observed": {
+            "operating": {
+              "ending": 5245000,
+              "outstanding": 0,
+              "book": 5245000
+            },
+            "payroll": {
+              "ending": 100000,
+              "outstanding": 0,
+              "book": 100000
+            },
+            "card": {
+              "ending": 25000,
+              "outstanding": 0,
+              "book": 25000
+            }
+          }
+        },
+        {
+          "label": "final ledger: no duplicated card expense or deposit cash",
+          "pass": true,
+          "expected": {
+            "1000": 5245000,
+            "1005": 100000,
+            "2100": -25000,
+            "2350": 900000,
+            "3010": -5000000,
+            "4000": -900000,
+            "4900": -1400000,
+            "5000": 500000,
+            "5020": 100000,
+            "6020": 75000,
+            "6050": 5000,
+            "6070": 400000
+          },
+          "observed": {
+            "1000": 5245000,
+            "1005": 100000,
+            "2100": -25000,
+            "2350": 900000,
+            "3010": -5000000,
+            "4000": -900000,
+            "4900": -1400000,
+            "5000": 500000,
+            "5020": 100000,
+            "6020": 75000,
+            "6050": 5000,
+            "6070": 400000
+          }
+        },
+        {
+          "label": "re-importing July's statement adds no transactions",
+          "pass": true,
+          "expected": 0,
+          "observed": 0
+        }
+      ],
+      "startedAt": "2026-10-06T12:19:20.405Z"
+    },
+    {
+      "name": "reopen-order-and-frozen-evidence",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "c6b4acc8-d298-41cb-921c-9d5e07344fd8"
+      },
+      "checks": [
+        {
+          "label": "a reconciled statement line cannot be edited",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "the closed statement shows the description it was closed on",
+          "pass": true,
+          "expected": "Check 101",
+          "observed": "Check 101"
+        },
+        {
+          "label": "July cannot reopen while August is closed",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "reclosing in order reproduces every statement digest",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        }
+      ],
+      "startedAt": "2026-10-06T12:19:26.652Z"
+    },
+    {
+      "name": "grouped-net-deposit-with-fees",
+      "status": "NOT_IMPLEMENTED",
+      "checks": []
+    },
+    {
+      "name": "imported-outstanding-items",
+      "status": "NOT_IMPLEMENTED",
+      "checks": []
+    },
+    {
+      "name": "supplier-refund",
+      "status": "NOT_IMPLEMENTED",
+      "checks": []
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-06T12:19:30.116Z"
+}

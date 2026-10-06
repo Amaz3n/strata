@@ -1,0 +1,338 @@
+{
+  "scenario": "BANK-01",
+  "reviewedFrom": "Bank reconciliation practice: statement opening + statement activity = statement closing; GL control balance = statement balance adjusted by outstanding book items (checks/deposits in transit); each bank line is owned by exactly one book entry; card purchases are expensed once when charged and a card repayment only moves cash to the card liability; transfers between accounts move cash without income or expense. Pending licensed-CPA review (B16.3). Amounts are integer cents.",
+  "subcases": {
+    "two-banks-and-card-two-cycles": {
+      "inputs": {
+        "accounts": {
+          "operating": "1000",
+          "payroll": "1005",
+          "card": "2100"
+        },
+        "july": {
+          "operating": [
+            {
+              "date": "2026-07-01",
+              "description": "Owner capital contribution",
+              "cents": 5000000,
+              "book": {
+                "categorize": "3010"
+              }
+            },
+            {
+              "date": "2026-07-05",
+              "description": "Deposit \u2014 client receipt",
+              "cents": 1000000,
+              "book": {
+                "depositOf": "receipt1"
+              }
+            },
+            {
+              "date": "2026-07-15",
+              "description": "Transfer to payroll checking",
+              "cents": -500000,
+              "book": {
+                "categorize": "1005"
+              }
+            },
+            {
+              "date": "2026-07-24",
+              "description": "Check 101",
+              "cents": -300000,
+              "book": {
+                "check": "101"
+              }
+            },
+            {
+              "date": "2026-07-28",
+              "description": "Card payment",
+              "cents": -120000,
+              "book": {
+                "categorize": "2100"
+              }
+            },
+            {
+              "date": "2026-07-31",
+              "description": "Monthly service fee",
+              "cents": -2500,
+              "book": {
+                "categorize": "6050"
+              }
+            }
+          ],
+          "payroll": [
+            {
+              "date": "2026-07-15",
+              "description": "Transfer from operating",
+              "cents": 500000,
+              "book": {
+                "transferFrom": "operating"
+              }
+            },
+            {
+              "date": "2026-07-31",
+              "description": "Payroll direct deposit A",
+              "cents": -180000,
+              "book": {
+                "payrollSplit": true
+              }
+            },
+            {
+              "date": "2026-07-31",
+              "description": "Payroll direct deposit B",
+              "cents": -170000,
+              "book": {
+                "payrollSplit": true
+              }
+            }
+          ],
+          "card": [
+            {
+              "date": "2026-07-10",
+              "description": "Lumber yard",
+              "cents": -100000,
+              "book": {
+                "categorize": "5020",
+                "project": true
+              }
+            },
+            {
+              "date": "2026-07-12",
+              "description": "Estimating software",
+              "cents": -50000,
+              "book": {
+                "categorize": "6020"
+              }
+            },
+            {
+              "date": "2026-07-28",
+              "description": "Payment received \u2014 thank you",
+              "cents": 120000,
+              "book": {
+                "transferFrom": "operating"
+              }
+            }
+          ]
+        },
+        "august": {
+          "operating": [
+            {
+              "date": "2026-08-03",
+              "description": "Deposit \u2014 client receipt",
+              "cents": 400000,
+              "book": {
+                "depositOf": "receipt2"
+              }
+            },
+            {
+              "date": "2026-08-04",
+              "description": "Check 102",
+              "cents": -200000,
+              "book": {
+                "check": "102"
+              }
+            },
+            {
+              "date": "2026-08-27",
+              "description": "Card payment",
+              "cents": -30000,
+              "book": {
+                "categorize": "2100"
+              }
+            },
+            {
+              "date": "2026-08-31",
+              "description": "Monthly service fee",
+              "cents": -2500,
+              "book": {
+                "categorize": "6050"
+              }
+            }
+          ],
+          "payroll": [
+            {
+              "date": "2026-08-15",
+              "description": "Payroll tax deposit",
+              "cents": -50000,
+              "book": {
+                "categorize": "2230"
+              }
+            }
+          ],
+          "card": [
+            {
+              "date": "2026-08-05",
+              "description": "Estimating software",
+              "cents": -25000,
+              "book": {
+                "categorize": "6020"
+              }
+            },
+            {
+              "date": "2026-08-27",
+              "description": "Payment received \u2014 thank you",
+              "cents": 30000,
+              "book": {
+                "transferFrom": "operating"
+              }
+            }
+          ]
+        },
+        "books": {
+          "invoices": [
+            {
+              "key": "invoice1",
+              "issueDate": "2026-07-02",
+              "cents": 1000000
+            },
+            {
+              "key": "invoice2",
+              "issueDate": "2026-07-20",
+              "cents": 400000
+            }
+          ],
+          "receipts": [
+            {
+              "key": "receipt1",
+              "invoice": "invoice1",
+              "date": "2026-07-03"
+            },
+            {
+              "key": "receipt2",
+              "invoice": "invoice2",
+              "date": "2026-07-30"
+            }
+          ],
+          "bills": [
+            {
+              "key": "bill1",
+              "date": "2026-07-08",
+              "cents": 300000,
+              "check": "101",
+              "paid": "2026-07-20"
+            },
+            {
+              "key": "bill2",
+              "date": "2026-07-25",
+              "cents": 200000,
+              "check": "102",
+              "paid": "2026-07-29"
+            }
+          ],
+          "payroll": {
+            "date": "2026-07-31",
+            "grossCents": 400000,
+            "netCents": 350000,
+            "withheldCents": 50000
+          }
+        },
+        "job": {
+          "contractCents": 1500000,
+          "eacCents": 1000000
+        },
+        "clearingSupport": {
+          "2026-07": [
+            {
+              "code": "1010",
+              "amountCents": 400000,
+              "expectedSettlementDate": "2026-08-03",
+              "explanation": "Client receipt of July 30 deposited August 3",
+              "evidenceUrl": "https://acceptance.example.test/deposit-slip-0803.pdf"
+            },
+            {
+              "code": "2230",
+              "amountCents": 50000,
+              "expectedSettlementDate": "2026-08-15",
+              "explanation": "July payroll withholdings remitted August 15",
+              "evidenceUrl": "https://acceptance.example.test/payroll-tax-0815.pdf"
+            }
+          ]
+        }
+      },
+      "derivation": "Operating July: statement 0 + 6,000,000 \u2212 922,500 = 5,077,500; GL 4,877,500 = 5,077,500 \u2212 check 102 in transit (200,000). August: statement 5,077,500 + 400,000 \u2212 232,500 = 5,245,000 = GL; nothing outstanding. Payroll: July 500,000 \u2212 350,000 (two direct deposits matched to one 350,000 net-pay line) = 150,000; August \u2212 50,000 = 100,000. Card (liability): July 150,000 charges \u2212 120,000 payment = 30,000 owed; August + 25,000 \u2212 30,000 = 25,000. Receipt 2 sits in 1010 at July end and is deposited in August. The job is a 1,500,000 fixed-price contract with a 1,000,000 estimate: July job cost 600,000 (two bills 500,000 + card lumber 100,000) = 60% complete -> 900,000 earned, unbilled: Dr 2350 / Cr 4000 \u2014 the contract's single control account, presented as a 900,000 contract asset on the balance sheet; August adds no job cost and recognizes nothing.",
+      "expectedStatements": {
+        "2026-07": {
+          "operating": {
+            "ending": 5077500,
+            "outstanding": -200000,
+            "book": 4877500
+          },
+          "payroll": {
+            "ending": 150000,
+            "outstanding": 0,
+            "book": 150000
+          },
+          "card": {
+            "ending": 30000,
+            "outstanding": 0,
+            "book": 30000
+          }
+        },
+        "2026-08": {
+          "operating": {
+            "ending": 5245000,
+            "outstanding": 0,
+            "book": 5245000
+          },
+          "payroll": {
+            "ending": 100000,
+            "outstanding": 0,
+            "book": 100000
+          },
+          "card": {
+            "ending": 25000,
+            "outstanding": 0,
+            "book": 25000
+          }
+        }
+      },
+      "expectedJulyNetDebitCentsByAccount": {
+        "1000": 4877500,
+        "1005": 150000,
+        "1010": 400000,
+        "2100": -30000,
+        "2230": -50000,
+        "3010": -5000000,
+        "4900": -1400000,
+        "5000": 500000,
+        "5020": 100000,
+        "6020": 50000,
+        "6050": 2500,
+        "6070": 400000,
+        "4000": -900000,
+        "2350": 900000
+      },
+      "expectedNetDebitCentsByAccount": {
+        "1000": 5245000,
+        "1005": 100000,
+        "2100": -25000,
+        "3010": -5000000,
+        "4900": -1400000,
+        "5000": 500000,
+        "5020": 100000,
+        "6020": 75000,
+        "6050": 5000,
+        "6070": 400000,
+        "4000": -900000,
+        "2350": 900000
+      },
+      "expectedReimportNewTransactions": 0
+    },
+    "reopen-order-and-frozen-evidence": {
+      "derivation": "A reconciled statement line cannot be edited while its statement is closed. With July and August closed, July's bank statement and accounting period cannot reopen before August's; reopening newest first and reclosing in order reproduces each statement's digest.",
+      "expectedWrongOrderRefused": true,
+      "expectedDigestsReproduced": true,
+      "expectedClosedDescription": "Check 101",
+      "expectedClosedEditRefused": true
+    },
+    "grouped-net-deposit-with-fees": {
+      "status": "NOT_IMPLEMENTED"
+    },
+    "imported-outstanding-items": {
+      "status": "NOT_IMPLEMENTED"
+    },
+    "supplier-refund": {
+      "status": "NOT_IMPLEMENTED"
+    }
+  }
+}
