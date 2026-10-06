@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { POSTED_PAYMENT_STATUSES } from "@/lib/financials/ledger-status"
 import { allocateCashBillCosts } from "@/lib/services/books/cash-costs"
 import { SYSTEM_ACCOUNT_CODES as codes } from "@/lib/services/books/chart-of-accounts"
 import { resolveBooksPostingState } from "@/lib/services/books/posting-state"
@@ -110,7 +111,7 @@ export function cashSettlementAncillaryFromSnapshot(orgId: string, startDate: st
   // A wholly omitted fee charge never appears in the ledger index.
   for (const source of charges.values()) if (source.status === "succeeded" && dated(source.settled_at) <= endDate && !actual.has(`ap_fee_charge:${source.id}`)) throw new Error("Settled Arc Pay fee charge has no posted expense")
   for (const source of payments.values()) {
-    if (!["succeeded", "completed", "paid", "refunded"].includes(String(source.status)) || dated(source.received_at) > endDate) continue
+    if (!(POSTED_PAYMENT_STATUSES as readonly string[]).includes(String(source.status)) || dated(source.received_at) > endDate) continue
     const split = BigInt(cents(source.processor_fee_cents)) + BigInt(cents(source.platform_fee_cents))
     if ((source.invoice_id || allocatedReceiptIds.has(String(source.id)) || actual.has(`invoice_payment:${source.id}`)) && (split > BigInt(0) || cents(source.fee_cents) > 0 || cents(source.gross_cents ?? source.amount_cents) > cents(source.amount_cents)) && !actual.has(`invoice_payment:${source.id}`)) throw new Error("Receipt ancillary charges have no posted fee evidence")
   }

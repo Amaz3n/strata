@@ -1378,6 +1378,17 @@ export async function setWarrantyReserveEstimateAction(
   );
 }
 
+export async function createBankBookOffsetAction(input: {
+  bankAccountId: string;
+  journalLineIds: string[];
+  reason: string;
+}) {
+  return run(async () => {
+    const { createBankBookOffset } = await import("@/lib/services/books/bank-reconciliation");
+    return createBankBookOffset(input);
+  });
+}
+
 export async function reopenBankReconciliationAction(input: {
   reconciliationId: string;
   reason: string;

@@ -333,6 +333,77 @@ async function supplierRefundAndCredit(kit, expected, check) {
   return { orgId: org.orgId }
 }
 
+async function voidedChecksOffset(kit, expected, check) {
+  const input = expected.inputs
+  const imported = input.importedCheck
+  const bankLine = (org, extra) => ({ accountCode: "1000", subledgerType: "bank", ...extra, details: { existing_entity_id: org.banks.operating.id, ...extra.details } })
+  const org = await contractJob(kit, { name: "BANK-01 voided checks", contractCents: input.contractCents, retainagePercent: 0, periods: ["2026-10"],
+    beforeOpening: async (org) => { org.banks = { operating: await bankAccount(kit, org, "1000") } },
+    opening: (org) => [
+      bankLine(org, { description: "Bank statement balance at cutover", debitCents: input.statementBalance, creditCents: 0, details: {} }),
+      bankLine(org, { description: `Check ${imported.reference} to framing supplier`, debitCents: 0, creditCents: imported.cents, details: { bank_opening_role: "outstanding_item", reference: imported.reference, document_date: imported.date } }),
+      { accountCode: "3010", description: "Owner equity at cutover", debitCents: 0, creditCents: input.equity },
+    ] })
+  const { createProjectVendorBill, approveVendorBillsAtomic, updateVendorBillStatus, reverseManualBillPayment } = app("vendor-bills")
+  const created = await kit.as(org.owner, () => createProjectVendorBill({ projectId: org.projectId, input: { company_id: org.vendorId, bill_number: "VOID-301", bill_date: input.bill.date, due_date: input.bill.date, total_cents: input.bill.cents,
+    actual_lines: [{ cost_code_id: org.costCodeId, description: "Framing", amount_cents: input.bill.cents, project_id: org.projectId }] } }))
+  await kit.as(org.owner, () => approveVendorBillsAtomic([{ id: created.id }]))
+  await kit.as(org.owner, () => updateVendorBillStatus({ billId: created.id, input: { status: "paid", payment_amount_cents: input.bill.cents, payment_method: "check", check_number: input.bill.check, payment_date: input.bill.paid,
+    books_payment_account_id: glId(kit, org, "1000"), payment_idempotency_key: `void-301-${org.orgId}` } }))
+  const paymentId = kit.rows(`select id from public.payments where org_id=${kit.q(org.orgId)} and bill_id=${kit.q(created.id)}`)[0].id
+  await kit.as(org.owner, () => reverseManualBillPayment({ paymentId, reason: "Check 301 voided before it was presented", idempotencyKey: `void-301-reversal-${org.orgId}` }))
+  await kit.as(org.reviewer, () => app("books/bookkeeping").createAdjustingJournal({ entryDate: input.voidImported.date, memo: `Void check ${imported.reference} issued before cutover`,
+    lines: [{ accountCode: "1000", debitCents: imported.cents, creditCents: 0 }, { accountCode: "6900", debitCents: 0, creditCents: imported.cents }] }))
+  await kit.drainOutbox(org.orgId)
+  await project(kit, org)
+  const statement = [{ date: input.fee.date, description: "Monthly service fee", cents: -input.fee.cents }]
+  await importStatement(kit, org, "operating", statement)
+  await kit.as(org.owner, () => app("books/bank-rules").categorizeBankTransaction({ bankTransactionId: bankTransaction(kit, org, "operating", statement[0]), glAccountId: glId(kit, org, "6050"), memo: "Fee", learn: false }))
+  const { createBankReconciliation, closeBankReconciliation, getBankReconciliationDetail, createBankBookOffset } = app("books/bank-reconciliation")
+  const reconciliationId = await kit.as(org.owner, () => createBankReconciliation({ bankAccountId: org.banks.operating.id, statementStart: "2026-10-01", statementEnd: "2026-10-31", beginningBalanceCents: input.statementBalance, endingBalanceCents: input.statementBalance - input.fee.cents }))
+  const detail = () => kit.as(org.owner, () => getBankReconciliationDetail(reconciliationId))
+  const before = await detail()
+  check.equal("before offsets: the imported check, check 301, its void and the 998 void are outstanding", expected.expectedOutstandingBefore, before.outstandingItems.length)
+  const byAmount = (cents) => before.outstandingItems.filter((item) => item.amount_cents === cents).map((item) => item.journal_line_id)
+  const offset = (lineIds, reason) => kit.as(org.owner, () => createBankBookOffset({ bankAccountId: org.banks.operating.id, journalLineIds: lineIds, reason }))
+  check.equal("entries that do not cancel cannot offset", expected.expectedMismatchedOffsetRefused, Boolean(await refusalOf(() => offset([byAmount(-input.bill.cents)[0], byAmount(imported.cents)[0]], "Mismatched pair attempted by mistake"))))
+  await offset([byAmount(-input.bill.cents)[0], byAmount(input.bill.cents)[0]], "Check 301 voided before it was presented")
+  await offset([byAmount(-imported.cents)[0], byAmount(imported.cents)[0]], `Check ${imported.reference} from before cutover voided`)
+  check.equal("an offset entry cannot be offset again", expected.expectedReoffsetRefused, Boolean(await refusalOf(() => offset([byAmount(-input.bill.cents)[0], byAmount(input.bill.cents)[0]], "Second attempt at the same pair"))))
+  check.equal("after offsets nothing is outstanding", expected.expectedOutstandingAfter, (await detail()).outstandingItems.length)
+  await kit.as(org.owner, () => closeBankReconciliation(reconciliationId))
+  const row = kit.rows(`select ending_balance_cents, outstanding_balance_cents, book_balance_cents, jsonb_array_length(evidence->'book_offsets') offsets from public.bank_reconciliations where id=${kit.q(reconciliationId)}`)[0]
+  check.equal("the statement closes with nothing outstanding", expected.expectedStatement, { ending: Number(row.ending_balance_cents), outstanding: Number(row.outstanding_balance_cents), book: Number(row.book_balance_cents) })
+  check.equal("both offsets are part of the closed evidence", expected.expectedEvidenceOffsets, Number(row.offsets))
+  check.equal("ledger: a voided check counts once each way and the bill is owed again", expected.expectedNetDebitCentsByAccount, kit.postedNet(org.orgId))
+  return { orgId: org.orgId, reconciliationId }
+}
+
+async function voidedAfterPosting(kit, expected, check) {
+  const input = expected.inputs
+  const org = await contractJob(kit, { name: "BANK-01 void after posting", contractCents: input.contractCents, retainagePercent: 0, periods: ["2026-10"] })
+  const { createProjectVendorBill, approveVendorBillsAtomic, updateVendorBillStatus, reverseManualBillPayment } = app("vendor-bills")
+  const created = await kit.as(org.owner, () => createProjectVendorBill({ projectId: org.projectId, input: { company_id: org.vendorId, bill_number: "VOID-LATE", bill_date: input.billDate, due_date: input.billDate, total_cents: input.cents,
+    actual_lines: [{ cost_code_id: org.costCodeId, description: "Framing", amount_cents: input.cents, project_id: org.projectId }] } }))
+  await kit.as(org.owner, () => approveVendorBillsAtomic([{ id: created.id }]))
+  await kit.as(org.owner, () => updateVendorBillStatus({ billId: created.id, input: { status: "paid", payment_amount_cents: input.cents, payment_method: "check", check_number: "401", payment_date: input.paid,
+    books_payment_account_id: glId(kit, org, "1000"), payment_idempotency_key: `void-late-${org.orgId}` } }))
+  await kit.drainOutbox(org.orgId)
+  await project(kit, org)
+  const paymentId = kit.rows(`select id from public.payments where org_id=${kit.q(org.orgId)} and bill_id=${kit.q(created.id)}`)[0].id
+  await kit.as(org.owner, () => reverseManualBillPayment({ paymentId, reason: "Check 401 voided after posting", idempotencyKey: `void-late-reversal-${org.orgId}` }))
+  await kit.drainOutbox(org.orgId)
+  await project(kit, org)
+  check.equal("the voided payment's own entry stays posted", expected.expectedPaymentEntryStillPosted,
+    Number(kit.rows(`select count(*) n from public.journal_entries where org_id=${kit.q(org.orgId)} and source_id=${kit.q(paymentId)} and status='posted'`)[0].n) === 1)
+  check.equal("cash nets to zero and the bill is owed again", expected.expectedNetDebitCentsByAccount, kit.postedNet(org.orgId))
+  return { orgId: org.orgId }
+}
+
+async function refusalOf(work) {
+  try { await work(); return null } catch (error) { return error instanceof Error ? error.message : String(error) }
+}
+
 module.exports = {
   id: "BANK-01",
   subcases: {
@@ -341,5 +412,7 @@ module.exports = {
     "grouped-net-deposit-with-fees": netDepositWithFees,
     "imported-outstanding-items": importedOutstandingItems,
     "supplier-refund-and-vendor-credit": supplierRefundAndCredit,
+    "voided-checks-offset": voidedChecksOffset,
+    "voided-after-posting": voidedAfterPosting,
   },
 }

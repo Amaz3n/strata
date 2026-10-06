@@ -86,7 +86,7 @@ export type BankReconciliationDetail = {
   bookDifferenceCents: number;
   evidenceDigest: string | null;
   legacyTransactionEvidence?: boolean;
-  outstandingItems: Array<{ journal_line_id: string; amount_cents: number }>;
+  outstandingItems: Array<{ journal_line_id: string; amount_cents: number; entryDate: string; memo: string; description: string | null }>;
   items: Array<{
     transactionId: string;
     transactionDate: string;
@@ -157,6 +157,23 @@ export async function getBankReconciliationDetail(
       status,
     };
   });
+  // People recognize a book entry by its date and memo, never its id.
+  const outstandingLines = evidence.items.filter((item) => item.item_status === "outstanding" && item.journal_line_id).map((item) => ({ id: item.journal_line_id!, amountCents: item.amount_cents }));
+  const describedLines = new Map<string, { entryDate: string; memo: string; description: string | null }>();
+  if (outstandingLines.length > 0) {
+    const { data: lineRows, error: lineError } = await service.from("journal_lines").select("id, entry_id, description")
+      .eq("org_id", context.orgId).in("id", outstandingLines.map((line) => line.id));
+    if (lineError) throw new Error(`Failed to load outstanding entries: ${lineError.message}`);
+    const lines = z.array(z.object({ id: z.string(), entry_id: z.string(), description: z.string().nullable() })).parse(lineRows ?? []);
+    const { data: entryRows, error: entryError } = await service.from("journal_entries").select("id, entry_date, memo")
+      .eq("org_id", context.orgId).in("id", [...new Set(lines.map((line) => line.entry_id))]);
+    if (entryError) throw new Error(`Failed to load outstanding entries: ${entryError.message}`);
+    const entries = new Map(z.array(z.object({ id: z.string(), entry_date: z.string(), memo: z.string() })).parse(entryRows ?? []).map((entry) => [entry.id, entry]));
+    for (const line of lines) {
+      const entry = entries.get(line.entry_id);
+      if (entry) describedLines.set(line.id, { entryDate: entry.entry_date, memo: entry.memo, description: line.description });
+    }
+  }
   const clearedBalanceCents = evidence.frozen ? Number(reconciliation.ending_balance_cents) : rows.reduce(
     (balance, row) => row.status !== "cleared"
       ? balance
@@ -180,7 +197,11 @@ export async function getBankReconciliationDetail(
     bookDifferenceCents: Number(reconciliation.ending_balance_cents) + evidence.outstanding_balance_cents - evidence.book_balance_cents,
     legacyTransactionEvidence: evidence.frozen && !evidence.statement_transactions,
     evidenceDigest: evidence.frozen ? reconciliation.digest ?? null : null,
-    outstandingItems: evidence.items.filter((item) => item.item_status === "outstanding" && item.journal_line_id).map((item) => ({ journal_line_id: item.journal_line_id!, amount_cents: item.amount_cents })),
+    outstandingItems: outstandingLines.map((line) => {
+      const described = describedLines.get(line.id);
+      if (!described) throw new Error("An outstanding book entry could not be found");
+      return { journal_line_id: line.id, amount_cents: line.amountCents, ...described };
+    }).sort((a, b) => a.entryDate.localeCompare(b.entryDate)),
     items: rows,
   };
 }
@@ -555,6 +576,22 @@ export async function confirmBankMatch(input: {
   const id = z.string().uuid().parse(data);
   await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "books.bank_match_confirmed", entityType: "bank_transaction_match", entityId: id, payload: { bank_transaction_id: input.bankTransactionId, journal_line_id: input.journalLineId, amount_cents: input.amountCents } });
   return id;
+}
+
+/** Clear book entries on a bank account that cancel each other (a check and its void). */
+export async function createBankBookOffset(input: { bankAccountId: string; journalLineIds: string[]; reason: string; orgId?: string }) {
+  const parsed = z.object({ bankAccountId: z.string().uuid(), journalLineIds: z.array(z.string().uuid()).min(2).max(50), reason: z.string().trim().min(10).max(500) }).parse(input);
+  const context = await requireReconciliationContext(input.orgId);
+  const { data, error } = await createServiceSupabaseClient().rpc("create_books_bank_offset_atomic", {
+    p_org_id: context.orgId, p_bank_account_id: parsed.bankAccountId, p_line_ids: parsed.journalLineIds, p_reason: parsed.reason, p_actor_id: context.userId,
+  });
+  if (error) throw new Error(`Failed to offset entries: ${error.message}`);
+  const id = z.string().uuid().parse(data);
+  await Promise.all([
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "bank_book_offset", entityId: id, after: { bank_account_id: parsed.bankAccountId, journal_line_ids: parsed.journalLineIds, reason: parsed.reason }, source: "books.bank_offset" }),
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "books.bank_offset_created", entityType: "bank_book_offset", entityId: id, payload: { bank_account_id: parsed.bankAccountId, line_count: parsed.journalLineIds.length } }),
+  ]);
+  return { id };
 }
 
 export async function closeBankReconciliation(

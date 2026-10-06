@@ -460,6 +460,65 @@
         "book": 665000
       },
       "expectedClosed": true
+    },
+    "voided-checks-offset": {
+      "inputs": {
+        "cutover": "2026-09-30",
+        "statementBalance": 1000000,
+        "importedCheck": {
+          "reference": "998",
+          "date": "2026-09-25",
+          "cents": 120000
+        },
+        "equity": 880000,
+        "bill": {
+          "date": "2026-10-01",
+          "cents": 100000,
+          "check": "301",
+          "paid": "2026-10-02"
+        },
+        "voidImported": {
+          "date": "2026-10-05"
+        },
+        "fee": {
+          "date": "2026-10-03",
+          "cents": 1500
+        },
+        "contractCents": 1000000
+      },
+      "derivation": "Cutover: bank 10,000, check 998 (1,200) outstanding, book 8,800. October: check 301 (1,000) written and voided; check 998 voided by journal. Before offsets the statement shows four outstanding entries netting to zero (the imported check among them). An offset whose entries do not cancel is refused; the two cancelling pairs clear. The statement then closes with nothing outstanding and both offsets recorded in its evidence: statement 9,985 = book 9,985. The voided check leaves the bill owed again (AP 1,000) and cash counts the 1,000 once: written and voided.",
+      "expectedOutstandingBefore": 4,
+      "expectedMismatchedOffsetRefused": true,
+      "expectedReoffsetRefused": true,
+      "expectedOutstandingAfter": 0,
+      "expectedStatement": {
+        "ending": 998500,
+        "outstanding": 0,
+        "book": 998500
+      },
+      "expectedEvidenceOffsets": 2,
+      "expectedNetDebitCentsByAccount": {
+        "1000": 998500,
+        "2000": -100000,
+        "3010": -880000,
+        "5000": 100000,
+        "6050": 1500,
+        "6900": -120000
+      }
+    },
+    "voided-after-posting": {
+      "inputs": {
+        "contractCents": 1000000,
+        "billDate": "2026-10-01",
+        "cents": 50000,
+        "paid": "2026-10-02"
+      },
+      "derivation": "A check payment that already posted (Dr AP / Cr cash) and is then voided keeps its posting and adds the reversal (Dr cash / Cr AP): cash nets to zero and the bill is owed again.",
+      "expectedNetDebitCentsByAccount": {
+        "2000": -50000,
+        "5000": 50000
+      },
+      "expectedPaymentEntryStillPosted": true
     }
   }
 }

@@ -1,4 +1,4 @@
-import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
+import { BILLED_INVOICE_STATUSES, POSTED_PAYMENT_STATUSES } from "@/lib/financials/ledger-status"
 import type { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { collectBooksRows } from "@/lib/services/books/paging"
 
@@ -27,8 +27,8 @@ export async function loadSubledgerSettlements(client: Client, orgId: string, si
   for (let start = 0; start < allIds.length; start += 200) {
     const ids = allIds.slice(start, start + 200)
     const [payments, allocations, reversals] = await Promise.all([
-      collectBooksRows((from, to) => client.from("payments").select("id,invoice_id,bill_id,amount_cents").eq("org_id", orgId).in(key, ids).in("status", ["succeeded", "completed", "paid", "refunded"]).lt("received_at", cutoff).order("id").range(from, to)),
-      collectBooksRows((from, to) => client.from("payment_allocations").select("id,payment_id,invoice_id,bill_id,amount_cents,payment:payments!inner(status,received_at)").eq("org_id", orgId).in(key, ids).in("payment.status", ["succeeded", "completed", "paid", "refunded"]).lt("payment.received_at", cutoff).order("id").range(from, to)),
+      collectBooksRows((from, to) => client.from("payments").select("id,invoice_id,bill_id,amount_cents").eq("org_id", orgId).in(key, ids).in("status", [...POSTED_PAYMENT_STATUSES]).lt("received_at", cutoff).order("id").range(from, to)),
+      collectBooksRows((from, to) => client.from("payment_allocations").select("id,payment_id,invoice_id,bill_id,amount_cents,payment:payments!inner(status,received_at)").eq("org_id", orgId).in(key, ids).in("payment.status", [...POSTED_PAYMENT_STATUSES]).lt("payment.received_at", cutoff).order("id").range(from, to)),
       collectBooksRows((from, to) => client.from("payment_reversals").select("id,invoice_id,bill_id,amount_cents").eq("org_id", orgId).in(key, ids).eq("status", "succeeded").lt("occurred_at", cutoff).order("id").range(from, to)),
     ])
     const allocatedPairs = new Set<string>()

@@ -19,6 +19,7 @@ import {
   BILLED_INVOICE_STATUSES,
   PAYABLE_VENDOR_BILL_STATUSES,
   POSTED_EXPENSE_STATUSES,
+  POSTED_PAYMENT_STATUSES,
 } from "@/lib/financials/ledger-status";
 import {
   draftFromFact,
@@ -785,7 +786,7 @@ async function projectionCandidates(
       hasInvoice: Boolean(row.invoice_id) || Boolean(allocationEvidence?.allocations[0].invoice_id),
       creditApplied: metadata.vendor_credit_applied === true,
     });
-    const paymentIsLive = new Set(["succeeded", "completed", "paid"]).has(
+    const paymentIsLive = (POSTED_PAYMENT_STATUSES as readonly string[]).includes(
       String(row.status),
     );
     const paymentKeys = paymentProjectionSourceKeys(String(row.id));
