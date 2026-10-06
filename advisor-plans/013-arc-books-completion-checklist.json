@@ -7544,8 +7544,8 @@
       "id": "B08.1",
       "workstream": "B08",
       "title": "Imported outstanding items and real clearing",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All B08.1 criteria and the global DoD verified locally (2026-10-06): BANK-01 7/7, RACE-01 bank contention, browser statement journey, reference doc. Migrations 20261006124534/124637 applied in production; 20261006190000 (outstanding definition + offsets) applies after the October train together with 20261003021045.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "first statement opening + actual statement activity = closing",
@@ -7585,15 +7585,54 @@
           "artifact_paths_and_hashes": [
             "docs/books-evidence/2026-10-06-golden-scenarios/BANK-01.json sha256:4d0ad8fc3abda8c81c69c29b9d5957631f7ed6fd2390bb19cd9996d524ba280b"
           ]
+        },
+        {
+          "verified_at": "2026-10-06T16:27:59.832691+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261006190000_books_bank_outstanding_and_offsets.sql",
+            "lib/services/books/bank-reconciliation.ts",
+            "components/books/bank-reconciliation-detail.tsx",
+            "components/books/bank-statement-desk.tsx",
+            "app/(app)/books/books-client.tsx",
+            "lib/financials/ledger-status.ts",
+            "lib/services/books/projector.ts",
+            "docs/books-bank-reconciliation.md",
+            "scripts/books-acceptance/journeys/bank-statement.spec.ts"
+          ],
+          "test_scenario_ids": [
+            "BANK-01",
+            "RACE-01",
+            "browser:bank-statement"
+          ],
+          "commands": [
+            "scenario-runner BANK-01 (PASSED 7/7)",
+            "BOOKS_ACCEPTANCE_WORKSPACE=W npx playwright test -c scripts/books-acceptance/playwright.config.ts (11 passed, 3 skipped by design)",
+            "pnpm test:financials",
+            "supabase/tests/books_*.test.sql 479 ok"
+          ],
+          "observed_results": [
+            "Void/reissue: a check voided before presentation (manual payment reversal) and a cutover check voided by journal clear as reviewed offsets; mismatched and repeated offsets refused; the statement closes with nothing outstanding and both offsets in its evidence.",
+            "Fixed: a fully reversed payment ('refunded') was treated as never posted while its reversal posted — cash +1,000 and AP doubled; posted payment statuses are now one definition (projector, subledger, cash basis). Voids before and after posting both net cash to zero and reopen the bill.",
+            "Fixed: statement preview had its own outstanding definition that ignored cutover items; one SQL definition now serves preview and close.",
+            "Fixed: the banking redesign had removed statement reconciliation from the app; BankStatementDesk restores opening/closing statements in Manage banking (the reconcile route), with outstanding entries listed by date and memo.",
+            "Browser: open a statement, see the check and its reversal by memo, clear them as an offset, close the statement (evidence holds 1 offset); an unclaimed bank line waits in Banking > For review with category and Post; 390px dark presentation clean."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/BANK-01.json sha256:2f9e4119c977cb78a5cad3fb8100a7a15dacdab7b2e2ee918c0e89b3c4f22480",
+            "docs/books-evidence/2026-10-06-golden-scenarios/RACE-01.json sha256:af51a74fc97621cb9e1f08fff19724876fa136c5bfbcd5b02ac7b32a7adf4582",
+            "docs/books-evidence/2026-10-06-browser/bank-closed-desktop.png sha256:dc5b1ae7ce0b898d515cd49f36ef649a0cb48fc992ab7a14699067e29f813061",
+            "docs/books-evidence/2026-10-06-browser/bank-review-desktop.png sha256:79b7a0e055af84555f53a7f0db4ea26b2ca5693a1d1bc88a4bf0cde4d928eb3c",
+            "docs/books-evidence/2026-10-06-browser/bank-statements-desktop.png sha256:d674d9dd60fbab27eab1fd2e1c30b785525228ace347b703084f2ffa7ecfbd02",
+            "docs/books-evidence/2026-10-06-browser/bank-statements-mobile-dark.png sha256:bfbe0cc88c989a187358d3276572ceea001ff350959f962513c4c214f745d37d",
+            "docs/books-evidence/2026-10-06-browser/all-journeys.json sha256:17911f74e27871f01a69403d2a112df46dcb1eca4a9ef57e9a16c8337c1dc94e"
+          ],
+          "schema_or_runtime_identity": "acceptance stack arc-books-acceptance-e1c88d89280b with 20261006190000 applied locally",
+          "remaining_criteria": [],
+          "external_dependency": null,
+          "reviewer": null
         }
       ],
-      "remaining_criteria": [
-        "first statement opening + actual statement activity = closing",
-        "ledger balance adjusted by evidenced outstanding items = statement balance",
-        "clearing removes the exact item",
-        "refunds, fees and card payments neither double-count expense nor cash",
-        "missing ownership remains actionable"
-      ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
       "verified_at": null
@@ -7657,12 +7696,8 @@
         }
       ],
       "remaining_criteria": [
-        "racing closes/matches produce one valid state or explicit retry",
-        "closed evidence cannot mutate",
-        "later-first reopen order enforced",
-        "statement reimport does not duplicate transactions",
-        "feed failure is visible without preventing valid manual reconciliation",
-        "actual provider read-only/sandbox evidence retained"
+        "feed failure is visible without preventing valid manual reconciliation (browser)",
+        "actual provider read-only/sandbox evidence retained (external: Plaid sandbox access)"
       ],
       "external_dependency": null,
       "reviewer": null,
@@ -7708,11 +7743,10 @@
         }
       ],
       "remaining_criteria": [
-        "two bank accounts and a card produce separate exact control balances",
-        "one payable paid across accounts retains ownership",
-        "no generic default cash account hides an unmapped source",
-        "card repayment does not duplicate expense",
-        "independent full workflow tests tie actual payment/statement/GL"
+        "one payable paid across two accounts retains ownership",
+        "no generic default cash account hides an unmapped source (ambiguous funding test)",
+        "reimbursable employee costs retain employee payable until settlement",
+        "browser journeys for funding choice"
       ],
       "external_dependency": null,
       "reviewer": null,

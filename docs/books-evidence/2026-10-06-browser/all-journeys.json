@@ -1,0 +1,663 @@
+{
+  "config": {
+    "argv": [
+      "/Users/agustinzenuto/.nvm/versions/node/v22.22.0/bin/node",
+      "/Users/agustinzenuto/Desktop/Projects/arc/node_modules/.pnpm/@playwright+test@1.62.1/node_modules/@playwright/test/cli.js",
+      "test",
+      "-c",
+      "scripts/books-acceptance/playwright.config.ts"
+    ],
+    "configFile": "/Users/agustinzenuto/Desktop/Projects/arc/scripts/books-acceptance/playwright.config.ts",
+    "rootDir": "/Users/agustinzenuto/Desktop/Projects/arc/scripts/books-acceptance/journeys",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/beaf89a0-1bbe-4660-bc17-9b00f4191643/scratchpad/books-scenario-20261006-03/browser-artifacts",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "mobile-dark",
+        "name": "mobile-dark",
+        "testDir": "/Users/agustinzenuto/Desktop/Projects/arc/scripts/books-acceptance/journeys",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 180000
+      },
+      {
+        "outputDir": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/beaf89a0-1bbe-4660-bc17-9b00f4191643/scratchpad/books-scenario-20261006-03/browser-artifacts",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "desktop",
+        "name": "desktop",
+        "testDir": "/Users/agustinzenuto/Desktop/Projects/arc/scripts/books-acceptance/journeys",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 180000
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "list",
+        null
+      ],
+      [
+        "json",
+        {
+          "outputFile": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/beaf89a0-1bbe-4660-bc17-9b00f4191643/scratchpad/books-scenario-20261006-03/browser-journeys.json"
+        }
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.62.1",
+    "workers": 1,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "abandoned-close.spec.ts",
+      "file": "abandoned-close.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "abandoned close: the stuck period explains itself and resumes to closed",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "mobile-dark",
+              "projectName": "mobile-dark",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 5509,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-06T16:26:12.336Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "bbd166a8ddbdd19bf0de-b8bdcde25b17e6d9853f",
+          "file": "abandoned-close.spec.ts",
+          "line": 6,
+          "column": 5
+        },
+        {
+          "title": "abandoned close: the stuck period explains itself and resumes to closed",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "desktop",
+              "projectName": "desktop",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 6388,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-06T16:26:35.017Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "bbd166a8ddbdd19bf0de-614cb4ef62903850dc27",
+          "file": "abandoned-close.spec.ts",
+          "line": 6,
+          "column": 5
+        }
+      ]
+    },
+    {
+      "title": "bank-statement.spec.ts",
+      "file": "bank-statement.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "bank statement: a voided check clears as an offset and the statement closes",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "mobile-dark",
+              "projectName": "mobile-dark",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 5695,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-06T16:26:17.925Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c0ffbd126e44afce134c-e9d08ffacebedb6164da",
+          "file": "bank-statement.spec.ts",
+          "line": 6,
+          "column": 5
+        },
+        {
+          "title": "bank statement: an unclaimed bank line waits in review with a way to own it",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [
+                {
+                  "type": "skip",
+                  "description": "Covered by the statement journey's presentation run",
+                  "location": {
+                    "file": "/Users/agustinzenuto/Desktop/Projects/arc/scripts/books-acceptance/journeys/bank-statement.spec.ts",
+                    "line": 48,
+                    "column": 8
+                  }
+                }
+              ],
+              "expectedStatus": "skipped",
+              "projectId": "mobile-dark",
+              "projectName": "mobile-dark",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "skipped",
+                  "duration": 51,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-06T16:26:23.623Z",
+                  "annotations": [
+                    {
+                      "type": "skip",
+                      "description": "Covered by the statement journey's presentation run",
+                      "location": {
+                        "file": "/Users/agustinzenuto/Desktop/Projects/arc/scripts/books-acceptance/journeys/bank-statement.spec.ts",
+                        "line": 48,
+                        "column": 8
+                      }
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "skipped"
+            }
+          ],
+          "id": "c0ffbd126e44afce134c-119f2a898250cd288ba7",
+          "file": "bank-statement.spec.ts",
+          "line": 47,
+          "column": 5
+        },
+        {
+          "title": "bank statement: a voided check clears as an offset and the statement closes",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "desktop",
+              "projectName": "desktop",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 8371,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-06T16:26:41.491Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c0ffbd126e44afce134c-a358f5b308c18af8b2d4",
+          "file": "bank-statement.spec.ts",
+          "line": 6,
+          "column": 5
+        },
+        {
+          "title": "bank statement: an unclaimed bank line waits in review with a way to own it",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "desktop",
+              "projectName": "desktop",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 6427,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-06T16:26:49.865Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c0ffbd126e44afce134c-520805e4f295d20ba1de",
+          "file": "bank-statement.spec.ts",
+          "line": 47,
+          "column": 5
+        }
+      ]
+    },
+    {
+      "title": "close-gates.spec.ts",
+      "file": "close-gates.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "close gates: each blocking check names its cause and leads to its cure",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "mobile-dark",
+              "projectName": "mobile-dark",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 5402,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-06T16:26:23.679Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "652a2198abf961710357-5e168db7ef204294f1a7",
+          "file": "close-gates.spec.ts",
+          "line": 6,
+          "column": 5
+        },
+        {
+          "title": "close gates: a read-only reviewer sees the period but cannot run checks or close",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [
+                {
+                  "type": "skip",
+                  "description": "Permission behaviour is viewport-independent",
+                  "location": {
+                    "file": "/Users/agustinzenuto/Desktop/Projects/arc/scripts/books-acceptance/journeys/close-gates.spec.ts",
+                    "line": 29,
+                    "column": 8
+                  }
+                }
+              ],
+              "expectedStatus": "skipped",
+              "projectId": "mobile-dark",
+              "projectName": "mobile-dark",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "skipped",
+                  "duration": 52,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-06T16:26:29.085Z",
+                  "annotations": [
+                    {
+                      "type": "skip",
+                      "description": "Permission behaviour is viewport-independent",
+                      "location": {
+                        "file": "/Users/agustinzenuto/Desktop/Projects/arc/scripts/books-acceptance/journeys/close-gates.spec.ts",
+                        "line": 29,
+                        "column": 8
+                      }
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "skipped"
+            }
+          ],
+          "id": "652a2198abf961710357-f9c99a90503fff6c1105",
+          "file": "close-gates.spec.ts",
+          "line": 28,
+          "column": 5
+        },
+        {
+          "title": "close gates: each blocking check names its cause and leads to its cure",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "desktop",
+              "projectName": "desktop",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 6194,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-06T16:26:56.298Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "652a2198abf961710357-02a773afb704167b2bf4",
+          "file": "close-gates.spec.ts",
+          "line": 6,
+          "column": 5
+        },
+        {
+          "title": "close gates: a read-only reviewer sees the period but cannot run checks or close",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "desktop",
+              "projectName": "desktop",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 5179,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-06T16:27:02.496Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "652a2198abf961710357-665cf42a72136b4d3a3f",
+          "file": "close-gates.spec.ts",
+          "line": 28,
+          "column": 5
+        }
+      ]
+    },
+    {
+      "title": "year-end.spec.ts",
+      "file": "year-end.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "year end: out-of-order reopen is explained, reopen and reclose leave one year-end entry",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "mobile-dark",
+              "projectName": "mobile-dark",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 5608,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-06T16:26:29.142Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "56e69d4557f2f4b2aa0d-18e6eda170661829e4c3",
+          "file": "year-end.spec.ts",
+          "line": 8,
+          "column": 5
+        },
+        {
+          "title": "year end: an accountant without reopen permission is not offered a reopen",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [
+                {
+                  "type": "skip",
+                  "description": "Permission behaviour is viewport-independent",
+                  "location": {
+                    "file": "/Users/agustinzenuto/Desktop/Projects/arc/scripts/books-acceptance/journeys/year-end.spec.ts",
+                    "line": 46,
+                    "column": 8
+                  }
+                }
+              ],
+              "expectedStatus": "skipped",
+              "projectId": "mobile-dark",
+              "projectName": "mobile-dark",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "skipped",
+                  "duration": 51,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-06T16:26:34.753Z",
+                  "annotations": [
+                    {
+                      "type": "skip",
+                      "description": "Permission behaviour is viewport-independent",
+                      "location": {
+                        "file": "/Users/agustinzenuto/Desktop/Projects/arc/scripts/books-acceptance/journeys/year-end.spec.ts",
+                        "line": 46,
+                        "column": 8
+                      }
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "skipped"
+            }
+          ],
+          "id": "56e69d4557f2f4b2aa0d-9129f72eb12850b66118",
+          "file": "year-end.spec.ts",
+          "line": 45,
+          "column": 5
+        },
+        {
+          "title": "year end: out-of-order reopen is explained, reopen and reclose leave one year-end entry",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "desktop",
+              "projectName": "desktop",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 9015,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-06T16:27:07.681Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "56e69d4557f2f4b2aa0d-5c76c87025647abd7aa2",
+          "file": "year-end.spec.ts",
+          "line": 8,
+          "column": 5
+        },
+        {
+          "title": "year end: an accountant without reopen permission is not offered a reopen",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "desktop",
+              "projectName": "desktop",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 5897,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-06T16:27:16.700Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "56e69d4557f2f4b2aa0d-f2fdcc02612f176f7bf7",
+          "file": "year-end.spec.ts",
+          "line": 45,
+          "column": 5
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-10-06T16:26:12.127Z",
+    "duration": 70540.697,
+    "expected": 11,
+    "skipped": 3,
+    "unexpected": 0,
+    "flaky": 0
+  }
+}

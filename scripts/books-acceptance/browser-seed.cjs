@@ -54,6 +54,8 @@ const JOURNEYS = {
     const check = await kit.as(org.reviewer, () => app("books/bookkeeping").createAdjustingJournal({ entryDate: "2026-07-05", memo: "Check 301 to framing supplier",
       lines: [{ accountCode: "6900", debitCents: 100000, creditCents: 0 }, { accountCode: "1000", debitCents: 0, creditCents: 100000 }] }))
     await kit.as(org.reviewer, () => app("books/ledger").reverseBooksJournalEntry({ entryId: check.id, reversalDate: "2026-07-08", reason: "Check 301 voided before it was presented" }))
+    // A bank line nobody has claimed yet.
+    await kit.as(org.owner, () => app("books/bank-feeds").importBankStatement({ bankAccountId: created.bankAccountId, contents: "Date,Description,Amount,Id\n2026-08-04,Unidentified deposit,2500.00,aug-1", fileName: "august.csv" }))
     return org
   },
   // July's close died right after freezing the period, 31 minutes ago.
