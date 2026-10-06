@@ -2009,7 +2009,7 @@
       "workstream": "B00",
       "title": "Build the golden acceptance runner and durable evidence catalog",
       "status": "PARTIAL",
-      "status_basis": "Golden runner, kit and API route working end to end. Passing: BILL-01 (4/4), YEAR-01 (5/5), BANK-01 (5/5); CLOSE-01 4/6; WIP-01 4/7 (3 need B04.1). 19 scenarios not started (2026-10-06).",
+      "status_basis": "Golden runner, kit and API route working end to end. Passing: BILL-01 (4/4), YEAR-01 (5/5), BANK-01 (5/5); STATUS-01 5/6 (expense family needs the expense workbench logic moved into a service); CLOSE-01 4/6; WIP-01 4/7 (3 need B04.1). 18 scenarios not started (2026-10-06).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "intentionally incorrect accounting causes a nonzero run",
@@ -2661,6 +2661,28 @@
           ],
           "artifact_paths_and_hashes": [
             "docs/books-evidence/2026-10-06-golden-scenarios/BANK-01.json sha256:4d0ad8fc3abda8c81c69c29b9d5957631f7ed6fd2390bb19cd9996d524ba280b"
+          ]
+        },
+        {
+          "verified_at": "2026-10-06T12:56:13.932347+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/status-01.cjs",
+            "scripts/books-acceptance/expected/STATUS-01.json"
+          ],
+          "test_scenario_ids": [
+            "STATUS-01"
+          ],
+          "commands": [
+            "scenario-runner STATUS-01 (5 passed, expense family not implemented)",
+            "pnpm test:financials 3561/3561",
+            "node --test tests/books-source-revision.test.js",
+            "tsc, eslint clean"
+          ],
+          "observed_results": [
+            "STATUS-01: bill due-date edit adds no entries and stays current; cost code, job, expense account and bill-date edits each read 'pending' until reprojected, then 'posted', with each superseded revision reversed (4) and the final line carrying the new job/cost code/date; a re-code inside closed July reads 'blocked', keeps July's posted money, leaves a finding with a cure link, and after reopening resolves and recloses; a client invoice view adds nothing; revise voids the original and posts the replacement once; a run scoped to one source resolves only that source's finding."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/STATUS-01.json sha256:bfe507389ae9a6d90f0467f57e2927c5ddfabd263aa80581296475d1f022be49"
           ]
         }
       ],
@@ -7483,7 +7505,32 @@
         "RACE-01",
         "STATUS-01"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "verified_at": "2026-10-06T12:56:13.932347+00:00",
+          "implemented_paths": [
+            "lib/services/books/posting-state.ts",
+            "lib/services/books/posting-status.ts",
+            "lib/financials/ledger-status.ts",
+            "components/books/source-posting-status.tsx",
+            "tests/books-source-revision.test.js"
+          ],
+          "test_scenario_ids": [
+            "STATUS-01"
+          ],
+          "commands": [
+            "scenario-runner STATUS-01"
+          ],
+          "observed_results": [
+            "Vendor bill and invoice families: economic header/line/dimension/job/account/date mutations reproject with supersession; harmless edits add no money; failed replacement in a closed period keeps prior monetary history and surfaces an actionable finding; scoped runs resolve only evaluated sources.",
+            "Fixed: a voided invoice read 'pending' forever (revise touched it after its entry was reversed and retired sources are never re-observed). Retired sources with a reversed entry now read 'reversed' (\"Journal reversed. This document no longer carries money in the ledger\").",
+            "Remaining: expense family (expense workbench writes project_expenses in its page action, not a service), payment/settlement families, funding-mapping and contract/policy mutations, projection scan caps."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/STATUS-01.json sha256:bfe507389ae9a6d90f0467f57e2927c5ddfabd263aa80581296475d1f022be49"
+          ]
+        }
+      ],
       "remaining_criteria": [
         "table-driven mutation tests change each listed dependency and get stale/blocked/reprojected status correctly",
         "retired/superseded facts are not reported missing",
@@ -7513,7 +7560,32 @@
         "RACE-01",
         "STATUS-01"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "verified_at": "2026-10-06T12:56:13.932347+00:00",
+          "implemented_paths": [
+            "lib/services/books/posting-state.ts",
+            "lib/services/books/posting-status.ts",
+            "lib/financials/ledger-status.ts",
+            "components/books/source-posting-status.tsx",
+            "tests/books-source-revision.test.js"
+          ],
+          "test_scenario_ids": [
+            "STATUS-01"
+          ],
+          "commands": [
+            "scenario-runner STATUS-01"
+          ],
+          "observed_results": [
+            "Vendor bill and invoice families: economic header/line/dimension/job/account/date mutations reproject with supersession; harmless edits add no money; failed replacement in a closed period keeps prior monetary history and surfaces an actionable finding; scoped runs resolve only evaluated sources.",
+            "Fixed: a voided invoice read 'pending' forever (revise touched it after its entry was reversed and retired sources are never re-observed). Retired sources with a reversed entry now read 'reversed' (\"Journal reversed. This document no longer carries money in the ledger\").",
+            "Remaining: expense family (expense workbench writes project_expenses in its page action, not a service), payment/settlement families, funding-mapping and contract/policy mutations, projection scan caps."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/STATUS-01.json sha256:bfe507389ae9a6d90f0467f57e2927c5ddfabd263aa80581296475d1f022be49"
+          ]
+        }
+      ],
       "remaining_criteria": [
         ">1,000 records and repeated cursor ties return exactly once",
         "interruption/resume and concurrent workers do not skip/duplicate entries",

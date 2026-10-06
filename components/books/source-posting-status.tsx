@@ -6,6 +6,7 @@ import type { BooksPostingState } from "@/lib/services/books/posting-state"
 const copy: Record<BooksPostingState, string> = {
   posted: "Journal verified for this revision",
   pending: "No verified journal for this revision yet",
+  reversed: "Journal reversed. This document no longer carries money in the ledger",
   blocked: "Posting blocked by a closed period. Ask your accountant to review an adjustment or reopen the period.",
   failed: "Posting needs attention. Ask your accountant to review the source coding and retry verification.",
 }

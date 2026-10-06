@@ -37,6 +37,9 @@ export const BILLED_INVOICE_STATUSES = ["sent", "partial", "paid", "overdue"] as
  */
 export const PAYABLE_VENDOR_BILL_STATUSES = ["approved", "partial", "paid"] as const
 
+/** Expense statuses that count as incurred cost — and therefore as projectable facts. */
+export const POSTED_EXPENSE_STATUSES = ["approved", "locked"] as const
+
 export type BilledInvoiceStatus = (typeof BILLED_INVOICE_STATUSES)[number]
 export type PayableVendorBillStatus = (typeof PAYABLE_VENDOR_BILL_STATUSES)[number]
 

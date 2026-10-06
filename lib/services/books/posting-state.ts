@@ -1,4 +1,4 @@
-export type BooksPostingState = "pending" | "posted" | "blocked" | "failed"
+export type BooksPostingState = "pending" | "posted" | "reversed" | "blocked" | "failed"
 export function timestampMicros(value: string): bigint | null {
   const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?(Z|[+-]\d{2}:\d{2})$/.exec(value)
   if (!match) return null
@@ -11,9 +11,14 @@ export function resolveBooksPostingState(input: {
   sourceUpdatedAt: string
   receipt: { sourceObservedAt: string; journalStatus: string } | null
   failureCategory?: string | null
+  /** False once the source has left the projectable set (void, rejected). */
+  sourceProjectable?: boolean
 }): BooksPostingState {
   if (input.failureCategory === "projection_blocked_by_closed_period") return "blocked"
   if (input.failureCategory) return "failed"
+  // A voided or rejected source whose entry was reversed carries no money; later
+  // housekeeping on the document must not make it look like it awaits posting.
+  if (input.sourceProjectable === false && input.receipt?.journalStatus === "reversed") return "reversed"
   if (!input.receipt || input.receipt.journalStatus !== "posted") return "pending"
   const sourceTime = timestampMicros(input.sourceUpdatedAt)
   const observedTime = timestampMicros(input.receipt.sourceObservedAt)

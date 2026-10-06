@@ -5,13 +5,14 @@ import { requireOrgContext } from "@/lib/services/context"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { requireBooksAuthorization } from "@/lib/services/books/access"
 import { resolveBooksPostingState } from "@/lib/services/books/posting-state"
+import { BILLED_INVOICE_STATUSES, PAYABLE_VENDOR_BILL_STATUSES, POSTED_EXPENSE_STATUSES } from "@/lib/financials/ledger-status"
 
 export async function getBooksPostingStatus(input: { sourceType: "invoice" | "vendor_bill" | "expense"; sourceId: string }) {
   const parsed = z.object({ sourceType: z.enum(["invoice", "vendor_bill", "expense"]), sourceId: z.string().uuid() }).parse(input)
   const context = await requireOrgContext()
   const service = createServiceSupabaseClient()
   const { data: source, error } = await service.from(parsed.sourceType === "invoice" ? "invoices" : parsed.sourceType === "expense" ? "project_expenses" : "vendor_bills")
-    .select("id,project_id,updated_at").eq("org_id", context.orgId).eq("id", parsed.sourceId).single()
+    .select("id,project_id,status,updated_at").eq("org_id", context.orgId).eq("id", parsed.sourceId).single()
   if (error || !source) throw new Error("Accounting source not found")
   if (source.project_id) {
     await requireAuthorization({ permission: parsed.sourceType === "invoice" ? "invoice.read" : "bill.read", userId: context.userId, orgId: context.orgId, projectId: source.project_id, supabase: context.supabase, resourceType: parsed.sourceType === "expense" ? "project_expense" : parsed.sourceType, resourceId: parsed.sourceId })
@@ -28,6 +29,7 @@ export async function getBooksPostingStatus(input: { sourceType: "invoice" | "ve
   if (receiptResult.error || failureResult.error) throw new Error("Unable to verify accounting posting status")
   const receipt = receiptResult.data
   const journal = Array.isArray(receipt?.journal) ? receipt.journal[0] : receipt?.journal
-  const state = resolveBooksPostingState({ sourceUpdatedAt: source.updated_at, receipt: receipt && journal ? { sourceObservedAt: receipt.source_observed_at, journalStatus: journal.status } : null, failureCategory: failureResult.data?.category })
+  const projectable: readonly string[] = parsed.sourceType === "invoice" ? BILLED_INVOICE_STATUSES : parsed.sourceType === "expense" ? POSTED_EXPENSE_STATUSES : PAYABLE_VENDOR_BILL_STATUSES
+  const state = resolveBooksPostingState({ sourceUpdatedAt: source.updated_at, sourceProjectable: projectable.includes(String(source.status)), receipt: receipt && journal ? { sourceObservedAt: receipt.source_observed_at, journalStatus: journal.status } : null, failureCategory: failureResult.data?.category })
   return { state, checkedAt: receipt?.checked_at ?? null, ledgerMode: settings.arc_ledger_mode as string }
 }

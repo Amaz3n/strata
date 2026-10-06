@@ -18,6 +18,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import {
   BILLED_INVOICE_STATUSES,
   PAYABLE_VENDOR_BILL_STATUSES,
+  POSTED_EXPENSE_STATUSES,
 } from "@/lib/financials/ledger-status";
 import {
   draftFromFact,
@@ -914,7 +915,7 @@ async function projectionCandidates(
   for (const row of expenses) {
     const sourceKey = factSourceKey("expense", String(row.id));
     touchedSourceKeys.add(sourceKey);
-    if (!new Set(["approved", "locked"]).has(String(row.status))) continue;
+    if (!(POSTED_EXPENSE_STATUSES as readonly string[]).includes(String(row.status))) continue;
     const amountCents =
       Number(row.amount_cents ?? 0) + Number(row.tax_cents ?? 0);
     if (amountCents === 0) continue;

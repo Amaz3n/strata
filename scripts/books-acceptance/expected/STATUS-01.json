@@ -1,0 +1,113 @@
+{
+  "scenario": "STATUS-01",
+  "reviewedFrom": "Posting-status integrity: a source document reports 'posted' only when its current economic revision is in the ledger; an economic change shows as pending until reprojected and then supersedes the prior entry (reversed, not deleted); a non-economic edit never adds money; a replacement that cannot post leaves the prior monetary history in place and surfaces a finding that leads back to the source; the repair resolves exactly that finding. Amounts are integer cents.",
+  "subcases": {
+    "bill-harmless-edit": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "cents": 100000,
+        "newDueDate": "2026-08-30"
+      },
+      "derivation": "Changing a due date is not an accounting event: no new journal, no reversal, status current after projection.",
+      "expectedStateAfterProjection": "posted",
+      "expectedNewEntries": 0,
+      "expectedNetDebitCentsByAccount": {
+        "2000": -100000,
+        "5000": 100000
+      }
+    },
+    "bill-economic-edits": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "cents": 100000,
+        "newBillDate": "2026-07-20"
+      },
+      "derivation": "An approved bill's total is fixed (corrections go through credits), so its economic edits are re-coding and the accounting date: cost code, job, expense account and bill date. Each is pending until reprojected, then the prior entry is reversed and a replacement posted. Final: 1,000 on the second job, second cost code, expense account 5020, dated July 20.",
+      "expectedStateBeforeProjection": "pending",
+      "expectedStateAfterProjection": "posted",
+      "expectedNetDebitCentsByAccount": {
+        "2000": -100000,
+        "5020": 100000
+      },
+      "expectedFinalLine": {
+        "projectIsSecondJob": true,
+        "costCodeIsSecond": true,
+        "cents": 100000,
+        "entryDate": "2026-07-20"
+      },
+      "expectedReversedEntries": 4
+    },
+    "bill-closed-period-replacement-and-repair": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "cents": 100000,
+        "contractCents": 500000,
+        "eacCents": 400000,
+        "newAccount": "5020"
+      },
+      "derivation": "July is closed. Re-coding the July bill to expense account 5020 must not post into July and must not retire the posted 1,000 in 5000: either the edit is refused, or the bill shows blocked with a finding that names it. Reopening July and reprojecting posts the re-coded bill, resolves the finding and July closes again.",
+      "expectedJulyLedgerWhileClosed": {
+        "2000": -100000,
+        "5000": 100000
+      },
+      "expectedNotPostedWhileClosed": true,
+      "expectedFindingLeadsToSource": true,
+      "expectedStateAfterRepair": "posted",
+      "expectedOpenFindingsAfterRepair": 0,
+      "expectedNetDebitCentsByAccount": {
+        "2000": -100000,
+        "5020": 100000
+      }
+    },
+    "expense-family": {
+      "status": "NOT_IMPLEMENTED",
+      "note": "Project expenses are written directly by app/(app)/projects/[id]/expenses/actions.ts rather than a service, so they cannot be driven headlessly; moving that logic into a service is a prerequisite."
+    },
+    "invoice-view-and-revision": {
+      "inputs": {
+        "issueDate": "2026-07-05",
+        "cents": 100000,
+        "revisedCents": 120000
+      },
+      "derivation": "A client viewing an issued invoice changes nothing economic: no new entries and the status is current after projection. Revising it voids the original (its posting reversed, never deleted) and the reissued replacement posts once at 1,200; the voided original reads 'reversed' (it carries no money), never 'pending' or 'posted'.",
+      "expectedStateAfterView": "posted",
+      "expectedNewEntriesAfterView": 0,
+      "expectedReplacementState": "posted",
+      "expectedNetDebitCentsByAccount": {
+        "1100": 120000,
+        "4900": -120000
+      },
+      "expectedOriginalState": "reversed"
+    },
+    "partial-run-scoped-resolution": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "cents": 100000,
+        "contractCents": 500000,
+        "eacCents": 400000,
+        "newAccount": "5020"
+      },
+      "derivation": "Two July bills are re-coded while July is closed, so both are blocked with findings. After reopening, a projection run scoped to bill A resolves only bill A's finding; bill B stays blocked and its finding open \u2014 a partial run never reports the rest of the company clean. A full run then resolves bill B.",
+      "expectedAfterScopedRun": {
+        "billA": {
+          "state": "posted",
+          "openFindings": 0
+        },
+        "billB": {
+          "state": "blocked",
+          "openFindings": 1
+        }
+      },
+      "expectedAfterFullRun": {
+        "billA": {
+          "state": "posted",
+          "openFindings": 0
+        },
+        "billB": {
+          "state": "posted",
+          "openFindings": 0
+        }
+      }
+    }
+  }
+}

@@ -35,3 +35,10 @@ test('line edits invalidate receipts and source revisions advance past transacti
 
  }
 });
+
+test('a voided or rejected source with a reversed entry reads reversed, never pending or posted',()=>{
+ const receipt={sourceObservedAt:'2026-10-06T12:00:00.000000Z',journalStatus:'reversed'};
+ assert.equal(resolveBooksPostingState({sourceUpdatedAt:'2026-10-06T12:00:01.000000Z',receipt,sourceProjectable:false}),'reversed');
+ assert.equal(resolveBooksPostingState({sourceUpdatedAt:'2026-10-06T12:00:01.000000Z',receipt,sourceProjectable:true}),'pending');
+ assert.equal(resolveBooksPostingState({sourceUpdatedAt:'2026-10-06T12:00:01.000000Z',receipt,sourceProjectable:false,failureCategory:'projection_failed'}),'failed');
+});
