@@ -10,19 +10,47 @@ function monthBounds(period) {
   return { year, month, periodStart: `${period}-01`, periodEnd: `${period}-${String(last).padStart(2, "0")}` }
 }
 
-// A Books-only builder: chart, accounting periods, then a greenfield launch with a
-// zero opening so Arc is the official ledger (ledger_authority 'arc').
-async function greenfieldOrg(kit, { name, periods, setup }) {
+// Fiscal years are named for the calendar year in which they start.
+function fiscalLabel(bounds, startMonth) {
+  return bounds.month >= startMonth
+    ? { fiscalYear: bounds.year, fiscalPeriod: bounds.month - startMonth + 1 }
+    : { fiscalYear: bounds.year - 1, fiscalPeriod: bounds.month + 13 - startMonth }
+}
+
+// The opening position a builder brings: an owner- and accountant-approved
+// opening batch dated the day before launch.
+async function postOpening(kit, org, cutoverDate, lines) {
+  const { createOpeningBalanceBatch, approveOpeningBalanceBatch, postOpeningBalanceBatch } = app("books/opening-balances")
+  const batch = await kit.as(org.owner, () => createOpeningBalanceBatch({ cutoverDate, sourceFilename: "opening-trial-balance.csv", sourceContent: JSON.stringify(lines), lines }))
+  await kit.as(org.owner, () => approveOpeningBalanceBatch({ batchId: batch.batchId, approvalRole: "owner" }))
+  await kit.as(org.reviewer, () => approveOpeningBalanceBatch({ batchId: batch.batchId, approvalRole: "accountant" }))
+  await kit.as(org.owner, () => postOpeningBalanceBatch(batch.batchId))
+}
+
+// A Books-only builder: chart (plus any custom accounts), fiscal calendar,
+// accounting periods, an optional opening position, then a greenfield launch so
+// Arc is the official ledger (ledger_authority 'arc').
+async function greenfieldOrg(kit, { name, periods, setup, fiscalYearStartMonth = 1, accounts = [], opening }) {
   const { CONSTRUCTION_CHART_TEMPLATE } = app("books/chart-of-accounts")
   const { createAccountingPeriod } = app("books/period-close")
   const { launchGreenfieldBooks, GREENFIELD_ATTESTATION } = app("books/greenfield")
   const org = { ...kit.organization({ name, chart: CONSTRUCTION_CHART_TEMPLATE, reviewerRole: "org_accountant" }), periods: {} }
   if (setup) setup(org)
+  if (fiscalYearStartMonth !== 1) await kit.as(org.owner, () => app("books/module").updateBooksFiscalSettings({ fiscalYearStartMonth }))
   for (const period of periods) {
     const bounds = monthBounds(period)
-    org.periods[period] = { ...bounds, periodId: await kit.as(org.owner, () => createAccountingPeriod({ periodStart: bounds.periodStart, periodEnd: bounds.periodEnd, fiscalYear: bounds.year, fiscalPeriod: bounds.month })) }
+    const label = fiscalLabel(bounds, fiscalYearStartMonth)
+    org.periods[period] = { ...bounds, ...label, periodId: await kit.as(org.owner, () => createAccountingPeriod({ periodStart: bounds.periodStart, periodEnd: bounds.periodEnd, ...label })) }
   }
-  await kit.as(org.owner, () => launchGreenfieldBooks({ launchedOn: org.periods[periods[0]].periodStart, openingPosition: "zero", attestation: GREENFIELD_ATTESTATION }))
+  const { createGlAccount } = app("books/chart-management")
+  for (const account of accounts) await kit.as(org.owner, () => createGlAccount(account))
+  const launchedOn = org.periods[periods[0]].periodStart
+  if (opening) {
+    const cutover = new Date(`${launchedOn}T00:00:00Z`)
+    cutover.setUTCDate(cutover.getUTCDate() - 1)
+    await postOpening(kit, org, cutover.toISOString().slice(0, 10), opening)
+  }
+  await kit.as(org.owner, () => launchGreenfieldBooks({ launchedOn, openingPosition: opening ? "posted_opening_balances" : "zero", attestation: GREENFIELD_ATTESTATION }))
   return org
 }
 

@@ -147,7 +147,16 @@ export function CloseWorkspace(props: Props) {
               ))}
             </div>
           </nav>
-          <PeriodReview key={selected.id} {...props} period={selected} />
+          <PeriodReview
+            key={selected.id}
+            {...props}
+            period={selected}
+            laterClosed={periods.find(
+              (period) =>
+                period.status === "closed" &&
+                period.period_start > selected.period_end,
+            )}
+          />
         </div>
       ) : (
         <div className="mx-auto max-w-lg px-6 py-24 text-center">
@@ -176,7 +185,11 @@ function PeriodReview({
   findings,
   findingTotal,
   capabilities,
-}: Props & { period: Props["periods"][number] }) {
+  laterClosed,
+}: Props & {
+  period: Props["periods"][number];
+  laterClosed: Props["periods"][number] | undefined;
+}) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [operation, setOperation] = useState("");
@@ -639,7 +652,12 @@ function PeriodReview({
                 </Button>
               ) : closed ? (
                 <>
-                  {capabilities.reopen ? (
+                  {capabilities.reopen && laterClosed ? (
+                    <p className="text-sm text-muted-foreground">
+                      Periods reopen newest first. Reopen the period ending{" "}
+                      {date(laterClosed.period_end)} before correcting this one.
+                    </p>
+                  ) : capabilities.reopen ? (
                     <Button
                       className="w-full"
                       variant="outline"

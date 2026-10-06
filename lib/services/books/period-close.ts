@@ -1102,12 +1102,30 @@ export async function reopenAccountingPeriod(input: {
   const service = createServiceSupabaseClient();
   const { data: before, error: loadError } = await service
     .from("accounting_periods")
-    .select("status, close_digest")
+    .select("status, close_digest, period_end")
     .eq("org_id", context.orgId)
     .eq("id", input.periodId)
     .single();
   if (loadError || before?.status !== "closed")
     throw new Error("Only a closed accounting period can be reopened");
+  // Periods reopen newest first. A later close snapshotted balances that include
+  // this period, and the fiscal year end transferred its earnings to retained
+  // earnings — a correction reclosed underneath either would leave them stale.
+  const { data: later, error: laterError } = await service
+    .from("accounting_periods")
+    .select("period_end")
+    .eq("org_id", context.orgId)
+    .eq("status", "closed")
+    .gt("period_start", before.period_end)
+    .order("period_start", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (laterError)
+    throw new Error(`Failed to check later periods: ${laterError.message}`);
+  if (later)
+    throw new Error(
+      `Reopen the period ending ${later.period_end} first: later closed periods report balances that include this one`,
+    );
   const { error } = await service
     .from("accounting_periods")
     .update({
