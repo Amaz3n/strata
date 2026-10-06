@@ -7326,8 +7326,8 @@
         {
           "verified_at": "2026-10-06T12:38:27.765829+00:00",
           "implemented_paths": [
-            "supabase/migrations/20261006170000_books_deposit_batch_processor_fees.sql",
-            "supabase/migrations/20261006171000_books_opening_bank_outstanding_items.sql",
+            "supabase/migrations/20261006124534_books_deposit_batch_processor_fees.sql",
+            "supabase/migrations/20261006124637_books_opening_bank_outstanding_items.sql",
             "supabase/migrations/20261003021045_books_bank_statement_evidence.sql",
             "lib/services/books/deposit-batches.ts",
             "lib/services/books/opening-balances.ts",
@@ -7344,7 +7344,7 @@
             "Built: cutover checks/deposits import as their own reviewed opening lines (bank_opening_role 'outstanding_item', reference, original date) inside the single opening posting; the first statement clears exactly those items (10,000 statement, check 998 1,200 and deposit 300 cleared -> 9,085 = GL, nothing outstanding); the statement-balance opening line can never be matched; an item without its reference is refused.",
             "Built: a processor payout net of fees clears its grouped receipts (Dr 1000 1,455 + Dr 6050 45 / Cr 1010 1,500), owned once by the bank line; retries are idempotent and a different fee is refused.",
             "Verified: first statement opening + activity = closing; GL = statement adjusted by evidenced outstanding items for two banks and a card over two cycles; refunds, fees and card payments neither double-count expense nor cash.",
-            "Remaining for DONE: later void/reissue of an imported check, prior-period source corrections, independent-session races (RACE-01). New migrations 20261006170000/20261006171000 unapplied; outstanding-item clearing also needs the October train (close + match validation live in 20261003021045)."
+            "Remaining for DONE: later void/reissue of an imported check, prior-period source corrections, independent-session races (RACE-01). Migrations 20261006124534/20261006124637 applied to production 2026-10-06; outstanding-item clearing also needs the October train (close + match validation live in 20261003021045)."
           ],
           "artifact_paths_and_hashes": [
             "docs/books-evidence/2026-10-06-golden-scenarios/BANK-01.json sha256:4d0ad8fc3abda8c81c69c29b9d5957631f7ed6fd2390bb19cd9996d524ba280b"

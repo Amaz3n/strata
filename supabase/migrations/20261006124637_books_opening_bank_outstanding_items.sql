@@ -134,24 +134,3 @@ end;
 $$;
 revoke all on function public.post_books_opening_batch(uuid,uuid,uuid) from public,anon,authenticated;
 grant execute on function public.post_books_opening_batch(uuid,uuid,uuid) to service_role;
-
-create or replace function public.guard_books_opening_lines()
-returns trigger language plpgsql set search_path='' as $$
-declare batch_id_value uuid; org_id_value uuid;
-begin
- if tg_op='DELETE' then batch_id_value:=old.batch_id; org_id_value:=old.org_id; else batch_id_value:=new.batch_id; org_id_value:=new.org_id; end if;
- perform 1 from public.opening_balance_batches where org_id=org_id_value and id=batch_id_value for update;
- if tg_op='UPDATE' and (to_jsonb(new)-array['operational_entity_type','operational_entity_id','operational_payment_id'])=(to_jsonb(old)-array['operational_entity_type','operational_entity_id','operational_payment_id']) then
-   if current_user not in('postgres','service_role') then raise exception 'Opening source ownership can only be assigned by the import transaction'; end if;
-   if old.operational_entity_id is not null and (old.operational_entity_id,old.operational_entity_type,old.operational_payment_id) is distinct from (new.operational_entity_id,new.operational_entity_type,new.operational_payment_id) then raise exception 'Assigned opening source ownership is immutable'; end if;
-   return new;
- end if;
- if tg_op='INSERT' and (new.operational_entity_id is not null or new.operational_payment_id is not null) and current_user not in('postgres','service_role') then raise exception 'Opening source ownership requires the import transaction'; end if;
- if exists(select 1 from public.opening_balance_approvals where org_id=org_id_value and batch_id=batch_id_value) then raise exception 'Approved opening lines are frozen; create a corrected batch'; end if;
- if tg_op='DELETE' then return old; end if;
- return new;
-end;
-$$;
-
-revoke all on function public.post_books_opening_batch(uuid,uuid,uuid) from public,anon,authenticated;
-grant execute on function public.post_books_opening_batch(uuid,uuid,uuid) to service_role;
