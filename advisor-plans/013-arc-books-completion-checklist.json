@@ -2504,6 +2504,31 @@
           ],
           "external_dependency": null,
           "reviewer": null
+        },
+        {
+          "verified_at": "2026-10-06T11:31:35.586214+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/wip-01.cjs",
+            "scripts/books-acceptance/expected/WIP-01.json"
+          ],
+          "test_scenario_ids": [
+            "WIP-01"
+          ],
+          "commands": [
+            "scenario-runner WIP-01"
+          ],
+          "observed_results": [
+            "WIP-01 subcases PASSED through real services: policy-worked-example; late-bill-after-review-blocks-close (close refused, nothing recognized, re-review then 500,000.00); revised-and-reverted-eac (250,000.00 / 350,000.00 / 150,000.00); completed-job-carryforward (1,000,000.00 then 0). Pending B04.1 contract-level WIP: second-contract-separately-owned, shared-cost-allocation, wip-recognition-close-populations-agree."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/WIP-01.json sha256:01e71f5be411c17945cdcd32805a080696467f368245ddbd03a673f18a2a0e50"
+          ],
+          "schema_or_runtime_identity": "isolated arc-books-acceptance-26646c871959",
+          "remaining_criteria": [
+            "3 WIP-01 subcases depend on B04.1 contract-level WIP"
+          ],
+          "external_dependency": null,
+          "reviewer": null
         }
       ],
       "remaining_criteria": [
@@ -4056,7 +4081,33 @@
         "LOSS-01",
         "WIP-01"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "verified_at": "2026-10-06T11:31:35.586045+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/wip-01.cjs",
+            "scripts/books-acceptance/expected/WIP-01.json"
+          ],
+          "test_scenario_ids": [
+            "WIP-01"
+          ],
+          "commands": [
+            "scenario-runner WIP-01"
+          ],
+          "observed_results": [
+            "WIP-01 subcases PASSED through real services: policy-worked-example; late-bill-after-review-blocks-close (close refused, nothing recognized, re-review then 500,000.00); revised-and-reverted-eac (250,000.00 / 350,000.00 / 150,000.00); completed-job-carryforward (1,000,000.00 then 0). Pending B04.1 contract-level WIP: second-contract-separately-owned, shared-cost-allocation, wip-recognition-close-populations-agree."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/WIP-01.json sha256:01e71f5be411c17945cdcd32805a080696467f368245ddbd03a673f18a2a0e50"
+          ],
+          "schema_or_runtime_identity": "isolated arc-books-acceptance-26646c871959",
+          "remaining_criteria": [
+            "3 WIP-01 subcases depend on B04.1 contract-level WIP"
+          ],
+          "external_dependency": null,
+          "reviewer": null
+        }
+      ],
       "remaining_criteria": [
         "repeated preparation/approval/recognition is idempotent",
         "a changed source invalidates the exact review",

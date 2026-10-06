@@ -1,6 +1,6 @@
 {
   "scenario": "WIP-01",
-  "reviewedFrom": "docs/books-revenue-recognition.md §4a, §4b, §4c and the §5 worked example (cost-to-cost percentage of completion). Expected balances are independent of the implementation; amounts are integer cents. Pending licensed-CPA review (B16.3).",
+  "reviewedFrom": "docs/books-revenue-recognition.md \u00a74a, \u00a74b, \u00a74c and the \u00a75 worked example (cost-to-cost percentage of completion). Expected balances are independent of the implementation; amounts are integer cents. Pending licensed-CPA review (B16.3).",
   "subcases": {
     "policy-worked-example": {
       "inputs": {
@@ -8,22 +8,119 @@
         "estimatedTotalCostCents": 80000000,
         "retainagePercent": 10,
         "months": [
-          { "period": "2026-07", "billCents": 20000000, "invoiceGrossCents": 30000000, "invoiceRetainageCents": 3000000 },
-          { "period": "2026-08", "billCents": 40000000, "invoiceGrossCents": 30000000, "invoiceRetainageCents": 3000000 }
+          {
+            "period": "2026-07",
+            "billCents": 20000000,
+            "invoiceGrossCents": 30000000,
+            "invoiceRetainageCents": 3000000
+          },
+          {
+            "period": "2026-08",
+            "billCents": 40000000,
+            "invoiceGrossCents": 30000000,
+            "invoiceRetainageCents": 3000000
+          }
         ]
       },
       "expectedNetDebitCentsByAccount": {
-        "afterJuly": { "1100": 27000000, "1110": 3000000, "2000": -20000000, "2350": -5000000, "4000": -25000000, "5000": 20000000 },
-        "afterAugust": { "1100": 54000000, "1110": 6000000, "2000": -60000000, "2350": 15000000, "4000": -75000000, "5000": 60000000 }
+        "afterJuly": {
+          "1100": 27000000,
+          "1110": 3000000,
+          "2000": -20000000,
+          "2350": -5000000,
+          "4000": -25000000,
+          "5000": 20000000
+        },
+        "afterAugust": {
+          "1100": 54000000,
+          "1110": 6000000,
+          "2000": -60000000,
+          "2350": 15000000,
+          "4000": -75000000,
+          "5000": 60000000
+        }
       },
-      "expectedRecognitionCents": { "2026-07": 25000000, "2026-08": 50000000 },
+      "expectedRecognitionCents": {
+        "2026-07": 25000000,
+        "2026-08": 50000000
+      },
       "expectedGrossProfitCentsAfterAugust": 15000000
     },
-    "second-contract-separately-owned": { "status": "NOT_IMPLEMENTED" },
-    "shared-cost-allocation": { "status": "NOT_IMPLEMENTED" },
-    "late-bill-after-review-blocks-close": { "status": "NOT_IMPLEMENTED" },
-    "revised-and-reverted-eac": { "status": "NOT_IMPLEMENTED" },
-    "completed-job-carryforward": { "status": "NOT_IMPLEMENTED" },
-    "wip-recognition-close-populations-agree": { "status": "NOT_IMPLEMENTED" }
+    "second-contract-separately-owned": {
+      "status": "NOT_IMPLEMENTED"
+    },
+    "shared-cost-allocation": {
+      "status": "NOT_IMPLEMENTED"
+    },
+    "late-bill-after-review-blocks-close": {
+      "inputs": {
+        "contractCents": 100000000,
+        "retainagePercent": 0,
+        "eacCents": 80000000,
+        "period": "2026-07",
+        "billCents": 20000000,
+        "lateBillCents": 20000000
+      },
+      "expectedCloseBlockedAfterLateBill": true,
+      "expectedRecognitionCents": {
+        "2026-07": 50000000
+      },
+      "derivation": "A cost approved after WIP review changes the reviewed position, so close must refuse until WIP is re-prepared and re-reviewed; then 400k/800k=50% -> 500k."
+    },
+    "revised-and-reverted-eac": {
+      "inputs": {
+        "contractCents": 100000000,
+        "retainagePercent": 0,
+        "months": [
+          {
+            "period": "2026-07",
+            "billCents": 20000000,
+            "eacCents": 80000000
+          },
+          {
+            "period": "2026-08",
+            "billCents": 40000000,
+            "eacCents": 100000000
+          },
+          {
+            "period": "2026-09",
+            "billCents": 0,
+            "eacCents": 80000000
+          }
+        ]
+      },
+      "expectedRecognitionCents": {
+        "2026-07": 25000000,
+        "2026-08": 35000000,
+        "2026-09": 15000000
+      },
+      "derivation": "earned-to-date = cost-to-date / EAC x contract; delta = earned-to-date - prior recognized (docs/books-revenue-recognition.md \u00a74c). 200k/800k=25% -> 250k; 600k/1,000k=60% -> 600k (delta 350k); 600k/800k=75% -> 750k (delta 150k)."
+    },
+    "completed-job-carryforward": {
+      "inputs": {
+        "contractCents": 100000000,
+        "retainagePercent": 0,
+        "months": [
+          {
+            "period": "2026-07",
+            "billCents": 80000000,
+            "eacCents": 80000000
+          },
+          {
+            "period": "2026-08",
+            "billCents": 0,
+            "carryForward": true
+          }
+        ]
+      },
+      "expectedRecognitionCents": {
+        "2026-07": 100000000,
+        "2026-08": 0
+      },
+      "derivation": "cost-to-date equals EAC -> 100% complete -> full contract recognized; a carried-forward period with no activity recognizes nothing (\u00a74c: a run with nothing to recognize posts nothing)."
+    },
+    "wip-recognition-close-populations-agree": {
+      "status": "NOT_IMPLEMENTED"
+    }
   }
 }
