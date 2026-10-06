@@ -24,3 +24,5 @@ export const closeoutItemUpdateSchema = z.object({
 
 export type CloseoutItemInput = z.infer<typeof closeoutItemInputSchema>
 export type CloseoutItemUpdate = z.infer<typeof closeoutItemUpdateSchema>
+
+export const closeoutPreparationSchema = z.object({ projectId: z.string().uuid("Project is required") })

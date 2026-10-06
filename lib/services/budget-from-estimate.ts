@@ -4,6 +4,8 @@ import { z } from "zod"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { requireAuthorization } from "@/lib/services/authorization"
+import { resolveContractedEstimateItems, type ContractedEstimateItem } from "@/lib/financials/contracted-estimate"
+import { normalizeEstimateCommercial } from "@/lib/financials/estimate-commercial"
 import { runAiObject } from "@/lib/services/ai/gateway"
 
 const scopeNotesSchema = z.object({
@@ -37,7 +39,7 @@ export type BudgetDraftFromEstimate = {
   used_ai: boolean
 }
 
-type EstimateItemRow = {
+type EstimateItemRow = ContractedEstimateItem & {
   cost_code_id: string | null
   item_type: string | null
   description: string | null
@@ -99,7 +101,7 @@ export async function listBudgetEstimateSources(
 
 /**
  * Builds a reviewable budget draft from an estimate. Amounts use the estimate's
- * cost basis (qty × unit cost, excluding markup, optional add-ons, and group
+ * cost basis (qty × unit cost, excluding markup, unaccepted add-ons, and group
  * headers) so the budget reflects expected spend, not the marked-up sell price.
  * Cost codes are carried over deterministically. An optional AI pass tidies the
  * scope note for each line; it never changes amounts or cost codes, and falls
@@ -131,7 +133,7 @@ export async function buildBudgetDraftFromEstimate({
   const { data: estimate, error } = await supabase
     .from("estimates")
     .select(
-      "id, title, version, project_id, items:estimate_items(cost_code_id, item_type, description, quantity, unit_cost_cents, metadata)",
+      "id, title, version, project_id, subtotal_cents, metadata, items:estimate_items(id, cost_code_id, item_type, description, quantity, unit_cost_cents, sort_order, metadata)",
     )
     .eq("org_id", resolvedOrgId)
     .eq("project_id", projectId)
@@ -162,20 +164,15 @@ export async function buildBudgetDraftFromEstimate({
     }
   }
 
-  // Keep only real cost lines: drop group headers and optional add-ons.
-  const costItems = ((estimate.items as EstimateItemRow[]) ?? []).filter((item) => {
-    if ((item.item_type ?? "line") === "group") return false
-    if (item.metadata && (item.metadata as Record<string, unknown>).is_optional) return false
-    const amount = (item.unit_cost_cents ?? 0) * (item.quantity ?? 1)
-    return amount > 0
-  })
+  const costItems = resolveContractedEstimateItems((estimate.items ?? []) as EstimateItemRow[], estimate.metadata)
+    .filter((item) => item.cost_cents !== 0)
 
   // Group by cost code when codes are enabled; otherwise every line stands alone.
   type Group = { costCodeId: string | null; descriptions: string[]; amountCents: number }
   const groups = new Map<string, Group>()
   costItems.forEach((item, index) => {
     const key = costCodesEnabled ? item.cost_code_id ?? "__uncoded__" : `line-${index}`
-    const amount = (item.unit_cost_cents ?? 0) * (item.quantity ?? 1)
+    const amount = item.cost_cents
     const existing = groups.get(key) ?? {
       costCodeId: costCodesEnabled ? item.cost_code_id ?? null : null,
       descriptions: [],
@@ -193,6 +190,14 @@ export async function buildBudgetDraftFromEstimate({
     amount_cents: group.amountCents,
     source_item_count: group.descriptions.length || 1,
   }))
+
+  const commercial = normalizeEstimateCommercial(estimate.metadata)
+  const reserve = Math.round(Number(estimate.subtotal_cents ?? 0) * Number(estimate.metadata?.contingency_percent ?? 0) / 100)
+  if (reserve > 0 && commercial.contingency_treatment !== "included_in_price") lines.push({
+    cost_code_id: null, cost_code_label: null,
+    description: commercial.contingency_treatment === "owner_reserve" ? "Owner contingency reserve" : "Builder contingency reserve",
+    amount_cents: reserve, source_item_count: 1,
+  })
 
   // Best-effort AI tidy-up of the scope notes (never touches amounts/codes).
   let usedAi = false
@@ -247,7 +252,7 @@ async function improveScopeNotesWithAi({
   }))
 
   const result = await runAiObject({
-    feature: "document_extraction",
+    feature: "text_assistance",
     schema: scopeNotesSchema,
     system:
       "You write short, clear construction budget scope notes for builders. Given draft scope notes, " +

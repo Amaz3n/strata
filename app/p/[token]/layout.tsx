@@ -1,5 +1,5 @@
 import { Suspense, type ReactNode } from "react"
-import { notFound } from "next/navigation"
+import { notFound, unstable_rethrow } from "next/navigation"
 
 import { PortalShell } from "@/components/portal/shell/portal-shell"
 import { PortalShellSkeleton } from "@/components/portal/shell/portal-skeleton"
@@ -63,7 +63,10 @@ async function ClientPortalLayoutContent({ children, params }: ClientPortalLayou
     }),
     // The 3D tab only appears when this buyer's plan actually has a published
     // model — an empty destination is worse than no destination.
-    getPortalFloorplanModel({ orgId: access.org_id, projectId: access.project_id }).catch(() => null),
+    getPortalFloorplanModel({ orgId: access.org_id, projectId: access.project_id }).catch((error) => {
+      unstable_rethrow(error)
+      return null
+    }),
   ])
 
   const nav = buildClientPortalNav({

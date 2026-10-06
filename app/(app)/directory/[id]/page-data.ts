@@ -1,4 +1,5 @@
 import { cache } from "react"
+import { unstable_rethrow } from "next/navigation"
 import { cacheLife, cacheTag } from "next/cache"
 
 import {
@@ -258,16 +259,25 @@ export const loadVendorLedger = cache((companyId: string) => getVendorAccountLed
 export async function loadCostCodesEnabledForProjects(projectIds: string[]) {
   if (projectIds.length === 0) return {}
   const { supabase, orgId } = await requireOrgContext()
-  return getProjectsCostCodesEnabled(supabase, orgId, projectIds).catch(() => ({}))
+  return getProjectsCostCodesEnabled(supabase, orgId, projectIds).catch((error) => {
+    unstable_rethrow(error)
+    return {}
+  })
 }
 
 export const loadPaymentReadiness = cache(async (companyId: string) => {
-  const readiness = await listCompanyPaymentReadiness([companyId]).catch(() => null)
+  const readiness = await listCompanyPaymentReadiness([companyId]).catch((error) => {
+    unstable_rethrow(error)
+    return null
+  })
   return readiness?.get(companyId) ?? null
 })
 
 export const loadPrequalificationGlance = cache((companyId: string) =>
-  getLatestPrequalification(companyId).catch(() => null),
+  getLatestPrequalification(companyId).catch((error) => {
+    unstable_rethrow(error)
+    return null
+  }),
 )
 
 /**
@@ -281,21 +291,30 @@ export const loadComplianceStatus = cache((companyId: string) =>
 )
 
 export const loadClientReceivables = cache((companyId: string) =>
-  getClientCompanyReceivables(companyId).catch(() => null),
+  getClientCompanyReceivables(companyId).catch((error) => {
+    unstable_rethrow(error)
+    return null
+  }),
 )
 
 export const loadContactAssignments = cache((contactId: string) =>
-  getContactAssignments(contactId).catch(() => ({
-    schedule: [],
-    tasks: [],
-    limit: 0,
-    scheduleTruncated: false,
-    tasksTruncated: false,
-  })),
+  getContactAssignments(contactId).catch((error) => {
+    unstable_rethrow(error)
+    return {
+      schedule: [],
+      tasks: [],
+      limit: 0,
+      scheduleTruncated: false,
+      tasksTruncated: false,
+    }
+  }),
 )
 
 export const loadContactReceivables = cache((contactId: string) =>
-  getFinancialPartyReceivables({ partyType: "contact", partyId: contactId }).catch(() => null),
+  getFinancialPartyReceivables({ partyType: "contact", partyId: contactId }).catch((error) => {
+    unstable_rethrow(error)
+    return null
+  }),
 )
 
 export const loadVendorIntelligence = cache(async (companyId: string) => {
@@ -305,7 +324,8 @@ export const loadVendorIntelligence = cache(async (companyId: string) => {
       scorecard: intelligence.scorecardsByCompanyId[companyId] ?? null,
       taxReadiness: intelligence.taxReadinessByCompanyId[companyId] ?? null,
     }
-  } catch {
+  } catch (error) {
+    unstable_rethrow(error)
     return { scorecard: null, taxReadiness: null }
   }
 })

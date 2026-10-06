@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import Link from "next/link"
@@ -699,14 +700,12 @@ async function SchedulePageContent({
 }: {
   searchParams: Promise<{ zoom?: string; community?: string }>
 }) {
+  await connection()
   const { zoom: zoomParam, community } = await searchParams
   const zoom: Zoom = zoomParam === "day" || zoomParam === "month" ? zoomParam : "week"
 
   const scope = await resolveProductionDeskScope({ communityId: community })
-  const [allProjects, allItems] = await Promise.all([
-    listProjectSummariesAction(),
-    listScheduleItemsAction(scope.projectIds ?? undefined),
-  ])
+  const allProjects = await listProjectSummariesAction()
   const allowedProjectIds = scope.projectIds === null ? null : new Set(scope.projectIds)
   const projects = allowedProjectIds
     ? allProjects.filter((project) => allowedProjectIds.has(project.id))
@@ -716,7 +715,11 @@ async function SchedulePageContent({
   const ACTIVE_STATUSES = new Set(["planning", "bidding", "active", "on_hold"])
   const activeProjects = projects.filter((project) => ACTIVE_STATUSES.has(project.status))
   const projectById = new Map(activeProjects.map((project) => [project.id, project]))
-  const startMarkers = await listReleasedStartMarkers(activeProjects.map((project) => project.id)).catch(() => new Map<string, string>())
+  const activeIds = activeProjects.map((project) => project.id)
+  const [allItems, startMarkers] = await Promise.all([
+    listScheduleItemsAction(activeIds, { excludeCancelled: true, includeDependencies: false }),
+    listReleasedStartMarkers(activeIds),
+  ])
 
   const items: DatedItem[] = allItems
     .filter((item) => item.status !== "cancelled" && projectById.has(item.project_id))
@@ -948,7 +951,7 @@ async function SchedulePageContent({
 
 export default function SchedulePage(props: Parameters<typeof SchedulePageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLayout title="Schedule" fullBleed><PageLoadingSkeleton /></PageLayout>}>
       <SchedulePageContent {...props} />
     </Suspense>
   )

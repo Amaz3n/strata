@@ -8,7 +8,7 @@ export const upsertClosingAdjustmentSchema = z.object({
   label: z.string().min(1).max(200),
   kind: z.enum(SETTLEMENT_ADJUSTMENT_KINDS),
   // Buyer's sign: positive adds to what the buyer owes, negative credits them.
-  amountCents: z.number().int().refine((value) => value !== 0, "A settlement adjustment cannot be zero"),
+  amountCents: z.number().int().safe().refine((value) => value !== 0, "A settlement adjustment cannot be zero"),
 })
 
 export const scheduleClosingSchema = z.object({
@@ -21,7 +21,7 @@ export const updateClosingChecklistItemSchema = z.object({
   status: z.enum(["open", "complete", "waived"]),
   fileId: z.string().uuid().optional().nullable(),
   notes: z.string().max(2000).optional().nullable(),
-})
+}).refine(input => input.status !== "waived" || (input.notes?.trim().length ?? 0) >= 10, { message: "A waiver reason needs at least 10 characters", path: ["notes"] })
 
 export const settleClosingSchema = z.object({
   closingId: z.string().uuid(),

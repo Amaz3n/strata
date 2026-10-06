@@ -1,4 +1,5 @@
-import { notFound } from "next/navigation"
+import { connection } from "next/server"
+import { notFound, unstable_rethrow } from "next/navigation"
 
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { getChangeOrderForPortal } from "@/lib/services/change-orders"
@@ -11,6 +12,7 @@ interface Params {
 
 
 export default async function ChangeOrderApprovalPage({ params }: Params) {
+  await connection()
   const { token, id } = await params
   let access
   try {
@@ -19,7 +21,8 @@ export default async function ChangeOrderApprovalPage({ params }: Params) {
       requireProject: true,
       permission: "can_approve_change_orders",
     })
-  } catch {
+  } catch (error) {
+    unstable_rethrow(error)
     notFound()
   }
 

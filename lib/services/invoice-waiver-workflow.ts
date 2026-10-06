@@ -1,4 +1,5 @@
 import "server-only"
+import { templateMatches, templatePriority } from "@/lib/templates/waiver-engine"
 import { invoiceWaiverContentHash } from "@/lib/lien-waivers/invoice-content"
 import { listEditableWaiverTemplates, COMPANY_WAIVER_TEMPLATE_FOLDER } from "@/lib/services/company-waiver-templates"
 import { waiverTemplateSchema } from "@/lib/templates/waiver-template"
@@ -19,7 +20,7 @@ import {
 } from "@/lib/lien-waivers/invoice-waiver"
 import type { InvoiceLienWaiver } from "@/lib/types"
 
-const SELECT = "id,org_id,project_id,invoice_id,waiver_type,status,amount_cents,through_date,claimant_name,customer_name,property_description,released_at,created_at,metadata"
+const SELECT = "id,org_id,project_id,invoice_id,waiver_type,status,amount_cents,through_date,claimant_name,customer_name,property_description,released_at,created_at,updated_at,metadata"
 
 export async function invoiceWaiverContext(invoiceId: string, permission = "invoice.write") {
   z.string().uuid().parse(invoiceId)
@@ -61,7 +62,7 @@ export async function loadInvoiceWaiverPreparation(invoiceId: string) {
     owner_name: invoice.metadata?.owner_name ?? invoice.metadata?.customer_name ?? "",
     property_description: propertyText(project.data?.location), jurisdiction: locationState(project.data?.location) ?? "",
     signer_name: user.data?.full_name ?? "", through_date: waiverThroughDate(invoice, period.data?.period_end),
-    templates, payments: availableWaiverPayments(activity.payments, activity.reversals),
+    templates: templates.filter(t => !t.editable || templateMatches(t.editable, {direction:"outgoing", jurisdiction:locationState(project.data?.location) ?? "", projectId:invoice.project_id, customerName:invoice.metadata?.customer_name})).sort((a,b)=>(b.editable ? templatePriority(b.editable) : 0)-(a.editable ? templatePriority(a.editable) : 0)), payments: availableWaiverPayments(activity.payments, activity.reversals),
     can_manage_company_templates: admin.allowed,
   }
 }
@@ -87,7 +88,7 @@ async function listTemplates(ctx: Context): Promise<WaiverTemplate[]> {
 
 async function listBillingTemplates(ctx: Context): Promise<WaiverTemplate[]> {
   const [legacy, editable] = await Promise.all([listTemplates(ctx), listEditableWaiverTemplates(ctx, {publishedOnly:true, direction:"outgoing"})]);
-  return [...editable.map(t => ({id:t.id,name:t.name,waiver_type:t.waiverType,scope:"company" as const,preferred:false,family_id:t.familyId,fields:[],version:t.revision ?? 1,created_at:t.createdAt,project_id:null,editable:t,status:t.status})), ...legacy];
+  return [...editable.map(t => ({id:t.id,name:t.name,waiver_type:t.waiverType,scope:"company" as const,preferred:!!t.defaults?.enabled,sourceFileId:t.sourceFileId,family_id:t.familyId,fields:[],version:t.revision ?? 1,created_at:t.createdAt,project_id:null,editable:t,status:t.status})), ...legacy];
 }
 async function loadBillingTemplate(ctx: Context, id: string) {
   const {data,error} = await ctx.supabase.from("files").select("id,project_id,storage_path,metadata,archived_at,folder_path").eq("org_id",ctx.orgId).eq("id",z.string().uuid().parse(id)).maybeSingle();
@@ -95,8 +96,9 @@ async function loadBillingTemplate(ctx: Context, id: string) {
   if(data.folder_path !== COMPANY_WAIVER_TEMPLATE_FOLDER) return loadTemplate(ctx,id);
   const editable = waiverTemplateSchema.parse(data.metadata?.editable_waiver);
   if(editable.status !== "published") throw new Error("Publish this template in Settings before preparing a waiver");
+  if (!templateMatches(editable, {direction:"outgoing", jurisdiction:editable.jurisdiction, projectId:ctx.invoice.project_id, customerName:ctx.invoice.metadata?.customer_name})) throw new Error("This template is not assigned to this project or customer");
   if (editable.applicability === "incoming") throw new Error("Choose an outgoing waiver template");
-  return {...data, version:Number(data.metadata?.editable_waiver?.revision) || 1, editable, template:{name:editable.name,waiver_type:editable.waiverType,fields:[]}};
+  return {...data, sourceFileId:data.metadata?.editable_waiver?.sourceFileId as string | undefined, version:Number(data.metadata?.editable_waiver?.revision) || 1, editable, template:{name:editable.name,waiver_type:editable.waiverType,fields:[]}};
 }
 
 async function loadTemplate(ctx: Context, id: string) {
@@ -178,6 +180,7 @@ export async function prepareInvoiceWaiver(raw: PrepareWaiverInput, file?: File)
   if(template && "editable" in template && template.editable?.jurisdiction && template.editable.jurisdiction !== input.jurisdiction)throw new Error("Choose a template matching the property state")
   if (template && template.template.waiver_type !== input.waiver_type) throw new Error("Choose a template matching the waiver type")
   let bytes: Buffer
+  let resolvedValues: Record<string,string> | undefined
   if (input.source === "upload") {
     if (file) bytes = await pdfFileBytes(file)
     else if (input.replaces_draft_id) {
@@ -187,7 +190,7 @@ export async function prepareInvoiceWaiver(raw: PrepareWaiverInput, file?: File)
       bytes = await downloadFilesObject({ ...ctx, path: original.document_path })
     } else throw new Error("Choose the signed PDF")
   } else if (template) {
-    bytes = "editable" in template ? await (await import("@/lib/pdfs/editable-invoice-waiver")).renderEditableInvoiceWaiver(template.editable, input, ctx.invoice.invoice_number) : await renderCustomInvoiceWaiver(await downloadFilesObject({ ...ctx, path: template.storage_path }), template.template.fields, input, ctx.invoice.invoice_number)
+    bytes = "editable" in template ? await (await import("@/lib/services/waiver-rendering")).renderCompanyWaiver({onResolved:values=>{resolvedValues=values},template:template.editable, sourceFileId:template.sourceFileId, supabase:ctx.supabase, orgId:ctx.orgId, values:{...(await import("@/lib/lien-waivers/preparation")).editableWaiverValues(input),covered_items:JSON.stringify([{item_number:ctx.invoice.invoice_number,item_project:input.project_name,item_property:input.property_description,item_amount:`$${(input.amount_cents/100).toFixed(2)}`,item_through:input.through_date}])}, customValues:input.custom_values, physicalSigning:input.execution_method === "physical", additionalSigners:input.additional_signers, invoiceNumber:ctx.invoice.invoice_number}) : await renderCustomInvoiceWaiver(await downloadFilesObject({ ...ctx, path: template.storage_path }), template.template.fields, input, ctx.invoice.invoice_number)
   } else {
     if (!["CA", "FL", "TX"].includes(input.jurisdiction)) throw new Error("Use your company or project form for this jurisdiction")
     bytes = await renderArcInvoiceWaiver(input, ctx.invoice.invoice_number, input.request_id)
@@ -202,6 +205,7 @@ export async function prepareInvoiceWaiver(raw: PrepareWaiverInput, file?: File)
     document_path: stored.storagePath, file_id: stored.fileId, file_name: `waiver-${ctx.invoice.invoice_number}.pdf`,
     sha256: createHash("sha256").update(bytes).digest("hex"), prepared_at: new Date().toISOString(),
     invoice_revision: ctx.invoice.updated_at ?? null, invoice_content_hash: invoiceWaiverContentHash(ctx.invoice),
+    ...(resolvedValues ? {resolved_values:resolvedValues} : {}),
     ...(template ? { template_name: template.template.name, template_version: template.version,
       template_path: template.storage_path, fields: template.template.fields, ...("editable" in template ? {editable_template:template.editable} : {}) } : {}),
   }
@@ -242,7 +246,7 @@ export async function getInvoiceWaiverRecord(invoiceId: string, waiverId: string
   const { data, error } = await ctx.supabase.from("invoice_lien_waivers").select(SELECT)
     .eq("org_id", ctx.orgId).eq("invoice_id", invoiceId).eq("id", z.string().uuid().parse(waiverId)).maybeSingle()
   if (error || !data) throw new Error("Waiver not found")
-  return { ctx, waiver: data as InvoiceLienWaiver }
+  return { ctx, waiver: data as InvoiceLienWaiver & { updated_at: string } }
 }
 
 export async function finalizeInvoiceWaiver(invoiceId: string, waiverId: string, consent: boolean, shared: boolean) {
@@ -274,7 +278,7 @@ export async function finalizeInvoiceWaiver(invoiceId: string, waiverId: string,
   const { data, error } = await ctx.supabase.from("invoice_lien_waivers").update({
     metadata: { ...waiver.metadata, workflow: signedWorkflow }, status: paymentIds.length ? "released" : "pending_payment",
     released_at: paymentIds.length ? signedAt : null, released_by_payment_id: paymentIds[0] ?? null,
-    updated_at: signedAt,
+    updated_at: new Date().toISOString(),
   }).eq("org_id", ctx.orgId).eq("id", waiver.id).eq("status", "pending_payment")
     .eq("metadata->workflow->>lifecycle", "draft").select(SELECT).maybeSingle()
   if (error) throw new Error("Could not finish the waiver")
@@ -291,9 +295,10 @@ export async function updateInvoiceWaiverSharing(invoiceId: string, waiverId: st
   const workflow = readWaiverWorkflow(waiver)
   if (!workflow || workflow.lifecycle !== "signed" || waiver.status === "void") throw new Error("Only signed waivers can be shared")
   if (shared && workflow.needs_review) throw new Error("The invoice or payment changed during signing. Prepare a new waiver before sharing.")
-  const { data, error } = await ctx.supabase.from("invoice_lien_waivers").update({ metadata: { ...waiver.metadata, workflow: { ...workflow, shared } } })
-    .eq("org_id", ctx.orgId).eq("id", waiverId).eq("metadata", JSON.stringify(waiver.metadata)).select(SELECT).maybeSingle()
-  if (error || !data) throw new Error("The waiver changed. Refresh and try again.")
+  const { data, error } = await ctx.supabase.from("invoice_lien_waivers").update({ updated_at: new Date().toISOString(), metadata: { ...waiver.metadata, workflow: { ...workflow, shared } } })
+    .eq("org_id", ctx.orgId).eq("id", waiverId).eq("updated_at", waiver.updated_at).eq("status", waiver.status).select(SELECT).maybeSingle()
+  if (error) throw new Error("Could not save the waiver. Try again.", { cause: error })
+  if (!data) throw new Error("The waiver changed. Refresh and try again.")
   await recordAudit({ orgId: ctx.orgId, actorId: ctx.userId, action: "update", entityType: "invoice_lien_waiver", entityId: waiverId, after: { shared } })
   return data as InvoiceLienWaiver
 }
@@ -307,10 +312,11 @@ export async function matchInvoiceWaiverPayment(invoiceId: string, waiverId: str
   const paymentIds = z.array(z.string().uuid()).min(1).max(100).parse(Array.isArray(paymentId) ? paymentId : [paymentId])
   await assertPayment(ctx, paymentIds, waiver.amount_cents)
   const { data, error } = await ctx.supabase.from("invoice_lien_waivers").update({
-    status: "released", released_at: new Date().toISOString(), released_by_payment_id: paymentIds[0],
+    updated_at: new Date().toISOString(), status: "released", released_at: new Date().toISOString(), released_by_payment_id: paymentIds[0],
     metadata: { ...waiver.metadata, workflow: { ...workflow, payment_id: paymentIds[0], payment_ids: [...new Set(paymentIds)] } },
-  }).eq("org_id", ctx.orgId).eq("id", waiverId).eq("metadata", JSON.stringify(waiver.metadata)).select(SELECT).maybeSingle()
-  if (error || !data) throw new Error("The waiver changed. Refresh and try again.")
+  }).eq("org_id", ctx.orgId).eq("id", waiverId).eq("updated_at", waiver.updated_at).eq("status", waiver.status).select(SELECT).maybeSingle()
+  if (error) throw new Error("Could not save the waiver. Try again.", { cause: error })
+  if (!data) throw new Error("The waiver changed. Refresh and try again.")
   await recordAudit({ orgId: ctx.orgId, actorId: ctx.userId, action: "update", entityType: "invoice_lien_waiver", entityId: waiverId, after: { payment_ids: paymentIds, funds_received_confirmed: true } })
   return data as InvoiceLienWaiver
 }
@@ -340,23 +346,62 @@ export async function startInvoiceWaiverSigning(invoiceId:string,waiverId:string
  if(workflow.lifecycle!=="draft")throw new Error("This waiver is already signed")
  if(workflow.invoice_content_hash ? workflow.invoice_content_hash!==invoiceWaiverContentHash(ctx.invoice) : workflow.invoice_revision!==(ctx.invoice.updated_at??null))throw new Error("The invoice changed. Prepare a new waiver with the current details.")
  const input=prepareWaiverSchema.parse(workflow.input)
+ if(input.execution_method === "physical")throw new Error("This waiver is prepared for physical signing. Upload the fully executed PDF from the invoice.")
  if(waiverPaymentIds(input).length)await assertPayment(ctx,waiverPaymentIds(input),input.amount_cents)
  if(input.source==="upload"||input.source==="arc")throw new Error("Prepare a new waiver using a company template to use native signing.")
  const {createDocument,replaceDocumentFields}=await import("@/lib/services/documents")
  const bytes=await downloadFilesObject({...ctx,path:workflow.document_path})
  const fields=workflow.editable_template
-  ? await (await import("@/lib/pdfs/waiver-signature-fields")).waiverSignatureFields(bytes, (workflow.editable_template.body.match(/\{\{signed_date\}\}/g) ?? []).length)
+  ? await (await import("@/lib/pdfs/waiver-signature-fields")).waiverSignatureFields(bytes, (workflow.editable_template.body.match(/\{\{signed_date\}\}/g) ?? []).length, workflow.editable_template)
   : (workflow.fields??[]).filter(f=>f.key==="signer_name"||f.key==="signed_date").map(f=>({page_index:f.page,field_type:f.key==="signer_name"?"signature" as const:"date" as const,label:f.key==="signer_name"?"Authorized signature":"Date signed",required:true,signer_role:"claimant",x:f.x,y:f.y,w:f.width,h:f.height}))
  const {data:user}=await ctx.supabase.from("app_users").select("email").eq("id",ctx.userId).single()
  const document=await createDocument({project_id:ctx.invoice.project_id??undefined,document_type:"other",title:`Waiver · ${ctx.invoice.invoice_number}`,source_file_id:workflow.file_id,source_entity_type:"other",source_entity_id:waiver.id,metadata:{invoice_lien_waiver_id:waiver.id,invoice_id:invoiceId,...(packet?{delivery_mode:"invoice_packet"}:{}),draft_recipients:[{name:input.signer_name,email:user?.email??"",role:"signer",signer_role:"claimant"}]}},ctx.orgId,{authorizationPermission:"invoice.write"})
  try {
   await replaceDocumentFields({documentId:document.id,fields,orgId:ctx.orgId,authorizationPermission:"invoice.write"})
-  const {data,error}=await ctx.supabase.from("invoice_lien_waivers").update({metadata:{...waiver.metadata,workflow:{...workflow,signing_document_id:document.id,sharing_requested:shared}}}).eq("org_id",ctx.orgId).eq("id",waiver.id).eq("status","pending_payment").eq("metadata",JSON.stringify(waiver.metadata)).select(SELECT).maybeSingle()
-  if(error||!data)throw new Error("The waiver changed. Refresh and try again.")
+  const {data,error}=await ctx.supabase.from("invoice_lien_waivers").update({updated_at:new Date().toISOString(),metadata:{...waiver.metadata,workflow:{...workflow,signing_document_id:document.id,sharing_requested:shared}}}).eq("org_id",ctx.orgId).eq("id",waiver.id).eq("status","pending_payment").eq("updated_at",waiver.updated_at).select(SELECT).maybeSingle()
+  if(error)throw new Error("Could not prepare the waiver for signing. Try again.",{cause:error})
+  if(!data)throw new Error("The waiver changed. Refresh and try again.")
   return {documentId:document.id as string,status:"draft",waiver:data as InvoiceLienWaiver}
  }catch(error){
   // Only remove the draft created by this attempt; it has never been sent.
   await ctx.supabase.from("documents").delete().eq("org_id",ctx.orgId).eq("id",document.id).eq("status","draft")
   throw error
  }
+}
+
+
+export async function uploadExecutedInvoiceWaiver(invoiceId: string, waiverId: string, file: File, confirmed: boolean) {
+  if (confirmed !== true) throw new Error("Confirm that all required signatures and notarization are complete")
+  const { ctx, waiver } = await getInvoiceWaiverRecord(invoiceId, waiverId, "invoice.send")
+  assertInvoiceOpen(ctx)
+  const flow = readWaiverWorkflow(waiver)
+  if (!flow || waiver.status === "void") throw new Error("Choose an active prepared waiver")
+  if (!flow.invoice_content_hash || flow.invoice_content_hash !== invoiceWaiverContentHash(ctx.invoice)) throw new Error("The invoice changed. Prepare a current waiver before uploading the signed copy.")
+  if (flow.lifecycle === "signed") {
+    if (!(waiver.metadata as any)?.physical_execution) throw new Error("This waiver is already signed")
+    await (await import("@/lib/services/invoice-waiver-auto-send")).sendInvoiceAfterWaiverSignature(ctx.supabase, ctx.orgId, invoiceId, waiverId)
+    return waiver
+  }
+  if (flow.signing_document_id) throw new Error("This waiver has an electronic signature request. Prepare a new waiver for physical signing.")
+  const plan = ctx.invoice.metadata?.waiver_packet
+  if (plan?.delivery_mode !== "after_physical_execution" || !plan.enabled || plan.waiver_id !== waiverId) throw new Error("Review and save the invoice recipients before uploading the executed waiver")
+  const paymentIds = waiverPaymentIds(flow.input)
+  if (flow.input.waiver_type.startsWith("unconditional")) await assertPayment(ctx,paymentIds,waiver.amount_cents)
+  const bytes = await pdfFileBytes(file)
+  const stored = await saveDocument(ctx, bytes, waiverId, "executed")
+  const now = new Date().toISOString()
+  const { data, error } = await ctx.supabase.from("invoice_lien_waivers").update({
+    updated_at: now,
+    metadata: { ...waiver.metadata,
+      physical_execution: { confirmed_by: ctx.userId, confirmed_at: now, original_file_id: flow.file_id, original_document_path: flow.document_path },
+      workflow: { ...flow, lifecycle: "signed", shared: true, recorded_by: ctx.userId, recorded_at: now,
+        document_path: stored.storagePath, file_id: stored.fileId, sha256: createHash("sha256").update(bytes).digest("hex"),
+        consent: "Uploader confirmed all required signatures and notarization are complete." },
+    },
+  }).eq("org_id",ctx.orgId).eq("id",waiverId).eq("updated_at",waiver.updated_at).eq("status",waiver.status).select(SELECT).maybeSingle()
+  if (error) throw new Error("Could not save the executed waiver", { cause: error })
+  if (!data) throw new Error("The waiver changed. Refresh before uploading again.")
+  await recordAudit({orgId:ctx.orgId,actorId:ctx.userId,action:"update",entityType:"invoice_lien_waiver",entityId:waiverId,after:{physical_execution:true,file_id:stored.fileId}})
+  await (await import("@/lib/services/invoice-waiver-auto-send")).sendInvoiceAfterWaiverSignature(ctx.supabase, ctx.orgId, invoiceId, waiverId)
+  return data as InvoiceLienWaiver
 }

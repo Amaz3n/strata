@@ -20,6 +20,7 @@ interface TasksPageClientProps {
   projects: Array<{ id: string; name: string }>
   assignableResources: AssignableResource[]
   approvals: MyWorkApproval[]
+  initialTaskId?: string
   initialProjectFilter?: string
 }
 
@@ -57,6 +58,7 @@ export function TasksPageClient({
   projects,
   assignableResources,
   approvals,
+  initialTaskId,
   initialProjectFilter,
 }: TasksPageClientProps) {
   return (
@@ -64,6 +66,7 @@ export function TasksPageClient({
       <ApprovalsBand approvals={approvals} />
       <div className="min-h-0 flex-1">
         <TasksTab
+          initialTaskId={initialTaskId}
           tasks={initialTasks}
           projects={projects}
           assignableResources={assignableResources}

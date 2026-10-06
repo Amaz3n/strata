@@ -23,6 +23,7 @@ type ReadinessAuditItem = { key: string; passed: boolean; verified_by?: string; 
 type Run = { id: string; status: string; target_live_date?: string | null; notes?: string | null; readiness_audit?: ReadinessAuditItem[] }
 
 interface Props {
+  canManage: boolean
   org: { id: string; name: string; slug: string; product_tier: string }
   run: Run
   stages: Stage[]
@@ -30,7 +31,6 @@ interface Props {
   onSkip: (formData: FormData) => Promise<ActionResult<unknown>>
   onUpdate: (formData: FormData) => Promise<ActionResult<unknown>>
   onMarkLive: (formData: FormData) => Promise<ActionResult<unknown>>
-  onResetSample: (formData: FormData) => Promise<ActionResult<unknown>>
 }
 
 function StatusMark({ status }: { status: string }) {
@@ -40,11 +40,12 @@ function StatusMark({ status }: { status: string }) {
   return <Circle className="size-4 text-muted-foreground/60" />
 }
 
-export function OnboardingWorkbench({ org, run, stages, onComplete, onSkip, onUpdate, onMarkLive, onResetSample }: Props) {
+export function OnboardingWorkbench({ canManage, org, run, stages, onComplete, onSkip, onUpdate, onMarkLive }: Props) {
   const [busy, startTransition] = useTransition()
   const [openStage, setOpenStage] = useState<string | null>(stages.find((stage) => stage.state.status === "in_progress")?.definition.key ?? null)
 
   const submit = (formData: FormData, action: (data: FormData) => Promise<ActionResult<unknown>>, success: string) => {
+    if (!canManage) return
     startTransition(async () => {
       try {
         unwrapAction(await action(formData))
@@ -59,6 +60,7 @@ export function OnboardingWorkbench({ org, run, stages, onComplete, onSkip, onUp
 
   return (
     <div className="space-y-5">
+      {!canManage ? <p role="status" className="text-sm text-muted-foreground">Read-only access. You can inspect onboarding progress and import evidence.</p> : null}
       <div className="flex flex-wrap items-start justify-between gap-4 border-b pb-4">
         <div>
           <div className="flex items-center gap-2">
@@ -69,23 +71,22 @@ export function OnboardingWorkbench({ org, run, stages, onComplete, onSkip, onUp
         </div>
         <div className="flex gap-2">
           <Button asChild size="sm" variant="outline"><Link href="/admin/customers">Customer desk</Link></Button>
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => {
-            if (!window.confirm("Reset Cypress Landing sample data? Only entities marked as sample will be replaced.")) return
-            const data = new FormData(); data.set("orgId", org.id); submit(data, onResetSample, "Sample community reset")
-          }}>Reset sample community</Button>
+          <Button size="sm" variant="outline" disabled title="Sample reset is unavailable until original ownership can be verified. Existing data is preserved.">Reset sample community</Button>
           {run.status === "active" ? (
-            <Button size="sm" disabled={busy || completed !== stages.length} onClick={() => {
+            <Button size="sm" disabled={!canManage || busy || completed !== stages.length} onClick={() => {
               const data = new FormData(); data.set("runId", run.id); data.set("orgId", org.id); submit(data, onMarkLive, "Onboarding marked live")
             }}><Flag /> Mark live</Button>
           ) : null}
         </div>
       </div>
 
+      <p className="text-sm text-muted-foreground" role="status">Sample reset is unavailable until original ownership can be verified. Existing data is preserved.</p>
+
       <form action={(data) => submit(data, onUpdate, "Run details saved")} className="grid gap-3 border bg-muted/10 p-4 md:grid-cols-[180px_1fr_auto]">
         <input type="hidden" name="runId" value={run.id} /><input type="hidden" name="orgId" value={org.id} />
-        <label className="space-y-1 text-xs font-medium">Target live date<Input name="targetLiveDate" type="date" defaultValue={run.target_live_date ?? ""} /></label>
-        <label className="space-y-1 text-xs font-medium">Run notes<Input name="notes" defaultValue={run.notes ?? ""} placeholder="Pilot scope, controller decision, rollout wave notes…" /></label>
-        <Button type="submit" size="sm" variant="outline" className="self-end" disabled={busy}>Save</Button>
+        <label className="space-y-1 text-xs font-medium">Target live date<Input disabled={!canManage} name="targetLiveDate" type="date" defaultValue={run.target_live_date ?? ""} /></label>
+        <label className="space-y-1 text-xs font-medium">Run notes<Input disabled={!canManage} name="notes" defaultValue={run.notes ?? ""} placeholder="Pilot scope, controller decision, rollout wave notes…" /></label>
+        <Button type="submit" size="sm" variant="outline" className="self-end" disabled={!canManage || busy}>Save</Button>
       </form>
 
       <details className="border bg-muted/10">
@@ -93,19 +94,19 @@ export function OnboardingWorkbench({ org, run, stages, onComplete, onSkip, onUp
         <form action={(data) => submit(data, onUpdate, "Readiness audit saved")} className="space-y-4 border-t p-4">
           <input type="hidden" name="runId" value={run.id} /><input type="hidden" name="orgId" value={org.id} /><input type="hidden" name="readinessAuditSubmitted" value="true" />
           <div className="grid gap-3 md:grid-cols-2">
-            <label className="space-y-1 text-xs font-medium">Verified by<Input name="readinessVerifiedBy" required defaultValue={run.readiness_audit?.[0]?.verified_by ?? ""} placeholder="Name or team" /></label>
-            <label className="space-y-1 text-xs font-medium">Test volume<Input name="readinessVolume" required defaultValue={run.readiness_audit?.[0]?.volume ?? ""} placeholder="250 projects / 400 lots" /></label>
+            <label className="space-y-1 text-xs font-medium">Verified by<Input disabled={!canManage} name="readinessVerifiedBy" required defaultValue={run.readiness_audit?.[0]?.verified_by ?? ""} placeholder="Name or team" /></label>
+            <label className="space-y-1 text-xs font-medium">Test volume<Input disabled={!canManage} name="readinessVolume" required defaultValue={run.readiness_audit?.[0]?.volume ?? ""} placeholder="250 projects / 400 lots" /></label>
           </div>
           <div className="divide-y border">
             {ONBOARDING_READINESS_ITEMS.map(([key, label], index) => (
               <label key={key} className="grid grid-cols-[28px_20px_minmax(0,1fr)] items-center gap-2 px-3 py-2 text-sm">
                 <span className="text-xs tabular-nums text-muted-foreground">{String(index + 1).padStart(2, "0")}</span>
-                <input type="checkbox" name="readinessPassed" value={key} defaultChecked={run.readiness_audit?.some((item) => item.key === key && item.passed)} className="size-4 accent-primary" />
+                <input disabled={!canManage} type="checkbox" name="readinessPassed" value={key} defaultChecked={run.readiness_audit?.some((item) => item.key === key && item.passed)} className="size-4 accent-primary" />
                 <span>{label}</span>
               </label>
             ))}
           </div>
-          <Button type="submit" size="sm" variant="outline" disabled={busy}>Save audit evidence</Button>
+          <Button type="submit" size="sm" variant="outline" disabled={!canManage || busy}>Save audit evidence</Button>
         </form>
       </details>
 
@@ -136,23 +137,23 @@ export function OnboardingWorkbench({ org, run, stages, onComplete, onSkip, onUp
                       <Button asChild size="sm" variant="outline" className="mt-2"><Link href={`/admin/customers/${org.id}/onboarding/import/${stage.definition.importer}`}>Open importer <ExternalLink /></Link></Button>
                     ) : null}
                   </div>
-                  {run.status === "active" && !["done", "skipped"].includes(stage.state.status) ? (
+                  {canManage && run.status === "active" && !["done", "skipped"].includes(stage.state.status) ? (
                     <div className="space-y-3 border-l pl-4">
                       <form action={(data) => submit(data, onComplete, `${stage.definition.label} completed`)} className="space-y-2">
                         <input type="hidden" name="runId" value={run.id} /><input type="hidden" name="orgId" value={org.id} /><input type="hidden" name="stageKey" value={stage.definition.key} />
-                        <Textarea name="notes" rows={2} placeholder="Completion notes or evidence context" />
-                        {stage.definition.key === "pilot_live" ? <Input name="evidence" placeholder='{"arc_native_project_id":"uuid"}' /> : null}
-                        <Button type="submit" size="sm" disabled={busy || failing.length > 0}>Mark done</Button>
+                        <Textarea disabled={!canManage} name="notes" rows={2} placeholder="Completion notes or evidence context" />
+                        {stage.definition.key === "pilot_live" ? <Input disabled={!canManage} name="evidence" placeholder='{"arc_native_project_id":"uuid"}' /> : null}
+                        <Button type="submit" size="sm" disabled={!canManage || busy || failing.length > 0}>Mark done</Button>
                       </form>
                       {stage.definition.skippable ? (
                         <form action={(data) => submit(data, onSkip, `${stage.definition.label} skipped`)} className="space-y-2 border-t pt-3">
                           <input type="hidden" name="runId" value={run.id} /><input type="hidden" name="orgId" value={org.id} /><input type="hidden" name="stageKey" value={stage.definition.key} />
-                          <Input name="reason" placeholder="Required skip reason" required minLength={3} />
-                          <Button type="submit" size="sm" variant="outline" disabled={busy}>Skip stage</Button>
+                          <Input disabled={!canManage} name="reason" placeholder="Required skip reason" required minLength={3} />
+                          <Button type="submit" size="sm" variant="outline" disabled={!canManage || busy}>Skip stage</Button>
                         </form>
                       ) : null}
                     </div>
-                  ) : <div className="text-sm text-muted-foreground">{stage.state.notes || "Stage resolved."}</div>}
+                  ) : <div className="text-sm text-muted-foreground">{stage.state.notes || (canManage || ["done", "skipped"].includes(stage.state.status) ? "Stage resolved." : "Awaiting an onboarding operator.")}</div>}
                 </div>
               </CollapsibleContent>
             </Collapsible>

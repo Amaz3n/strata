@@ -664,7 +664,7 @@ export function PaymentRailPanel({
         canManage={settings.canManage}
       />
 
-      <AutoApprovalRulesGroup canManage={settings.canManage} />
+      {settings.canManageAutoApproval ? <AutoApprovalRulesGroup canManage={settings.canManageAutoApproval} /> : null}
 
       <Dialog open={Boolean(setup)} onOpenChange={(open) => { if (!open) setSetup(null) }}>
         <DialogContent className="sm:max-w-lg">

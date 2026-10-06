@@ -15,16 +15,30 @@ const READ_MODEL = "lib/services/project-overview.ts"
 test("the project overview streams identity, health and operations as separate bands", () => {
   const page = source(OVERVIEW_PAGE)
 
-  // Four boundaries: the outer one that owns identity, plus one per band. A
-  // single boundary means the slowest read on the page gates the project name.
-  assert.equal((page.match(/<Suspense/g) ?? []).length, 4)
-  for (const band of ["StatsBand", "AttentionBand", "WeekBand"]) {
-    assert.match(page, new RegExp(`<${band}\\b`), band)
+  // Each core band must have its own loading/error boundary. Additional
+  // optional sections may stream independently too.
+  const ts = require("typescript")
+  const tree = ts.createSourceFile(OVERVIEW_PAGE, page, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  const boundaries = new Map()
+  function visit(node, ancestors = []) {
+    if (ts.isJsxElement(node)) {
+      const name = node.openingElement.tagName.getText(tree)
+      ancestors = [...ancestors, { name, node }]
+    }
+    if (ts.isJsxSelfClosingElement(node)) {
+      const name = node.tagName.getText(tree)
+      if (["StatsBand", "AttentionBand", "WeekBand"].includes(name)) {
+        assert.ok(ancestors.some(item => item.name === "SectionErrorBoundary"), `${name} has an error boundary`)
+        const suspense = ancestors.findLast(item => item.name === "Suspense")
+        assert.ok(suspense, `${name} has a loading boundary`)
+        boundaries.set(name, suspense.node)
+      }
+    }
+    ts.forEachChild(node, child => visit(child, ancestors))
   }
-
-  // Every band owns an error state, so a financial timeout degrades one section
-  // instead of replacing the whole workbench with the route error page.
-  assert.equal((page.match(/<SectionErrorBoundary/g) ?? []).length, 3)
+  visit(tree)
+  assert.equal(boundaries.size, 3)
+  assert.equal(new Set(boundaries.values()).size, 3, "each band streams independently")
 
   // The week band reads operations only — it must not be coupled to financials.
   const weekBand = page.slice(page.indexOf("async function WeekBand"))
@@ -139,16 +153,14 @@ test("the private chrome cache never reaches a request API it may not call", () 
     chrome.indexOf("async function loadAppChromeContext"),
   )
 
-  // `connection()` is the one request API a private cache is forbidden from
-  // calling. It belongs in this uncached entry point, before auth recovery and
-  // before the private chrome cache opens; shared auth helpers cannot own it.
-  assert.ok(
-    entry.indexOf("await connection()") <
-      entry.indexOf("const { user } = await getAuthContext()"),
-  )
-  assert.match(entry, /getAuthContext\(\)/)
-  assert.match(entry, /if \(!user\) return SIGNED_OUT_CHROME/)
+  // A connection() before the cache blocks the entire layout prefetch.
+  // Session recovery is legal inside a private cache; connection() is not.
+  assert.doesNotMatch(chrome, /await connection\(\)/)
+  assert.match(entry, /return loadAppChromeContext\(\)/)
   assert.doesNotMatch(entry, /"use cache: private"/)
+  const cached = chrome.slice(chrome.indexOf("async function loadAppChromeContext"))
+  assert.match(cached, /await getAuthContext\(\)/)
+  assert.match(cached, /if \(!authenticatedUser\) return SIGNED_OUT_CHROME/)
 
   const auth = source("lib/auth/context.ts")
   const authEntry = auth.slice(

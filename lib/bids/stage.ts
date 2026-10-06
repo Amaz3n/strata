@@ -6,11 +6,11 @@ export type BidPackageStage = "setup" | "bidding" | "leveling" | "awarded" | "ca
 
 /** The lifecycle stage the workbench organizes around. Derived, not stored:
  * a package past its deadline is in leveling even if nobody clicked Close. */
-export function getBidPackageStage(pkg: { status: string; due_at?: string | null }): BidPackageStage {
+export function getBidPackageStage(pkg: { status: string; due_at?: string | null }, now = new Date()): BidPackageStage {
   if (pkg.status === "awarded") return "awarded"
   if (pkg.status === "cancelled") return "cancelled"
   if (pkg.status === "draft") return "setup"
   if (pkg.status === "closed") return "leveling"
-  if (pkg.due_at && new Date(pkg.due_at) < new Date()) return "leveling"
+  if (pkg.due_at && new Date(pkg.due_at) < now) return "leveling"
   return "bidding"
 }

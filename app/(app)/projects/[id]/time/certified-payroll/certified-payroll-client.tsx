@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
+import { OptimisticLink } from "@/lib/navigation/optimistic-pathname"
 import { toast } from "sonner"
 import { unwrapAction } from "@/lib/action-result"
 import type { CertifiedPayrollDetail, CertifiedPayrollReport, PayrollWorkerProfile, WageClassification, WageDetermination } from "@/lib/services/certified-payroll"
@@ -36,11 +37,17 @@ export function CertifiedPayrollClient({ projectId, determinations, classificati
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
-  const [selected, setSelected] = useState(initialSelected)
+  const selected = initialSelected
   const [noWork, setNoWork] = useState(false)
   const [finalPayroll, setFinalPayroll] = useState(false)
   const [classificationPaste, setClassificationPaste] = useState("")
-  const run = (work: () => Promise<void>) => startTransition(() => void work().catch((error) => toast.error(error instanceof Error ? error.message : "Something went wrong")))
+  const run = (work: () => Promise<void>) => startTransition(async () => {
+    try {
+      await work()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Something went wrong")
+    }
+  })
 
   return (
     <Tabs defaultValue="reports" className="min-h-0 p-4 sm:p-6">
@@ -56,7 +63,7 @@ export function CertifiedPayrollClient({ projectId, determinations, classificati
       <TabsContent value="reports" className="mt-4 space-y-4">
         <form className="grid gap-3 border p-3 sm:grid-cols-[180px_auto_auto_auto]" onSubmit={(event) => {
           event.preventDefault(); const form = new FormData(event.currentTarget); const weekEnding = String(form.get("week_ending") || "")
-          run(async () => { const created = unwrapAction(await createCertifiedPayrollAction({ project_id: projectId, week_ending: weekEnding, is_no_work: noWork, is_final: finalPayroll })); setSelected(created); toast.success(`Payroll #${created.payroll_number} drafted`); router.refresh() })
+          run(async () => { const created = unwrapAction(await createCertifiedPayrollAction({ project_id: projectId, week_ending: weekEnding, is_no_work: noWork, is_final: finalPayroll })); toast.success(`Payroll #${created.payroll_number} drafted`); router.push(`/projects/${projectId}/time/certified-payroll?report=${created.id}`, { scroll: false }) })
         }}>
           <Input name="week_ending" type="date" required disabled={pending} />
           <Label className="flex items-center gap-2 text-xs"><Checkbox checked={noWork} onCheckedChange={(value) => setNoWork(value === true)} />No work</Label>
@@ -65,7 +72,21 @@ export function CertifiedPayrollClient({ projectId, determinations, classificati
         </form>
         <div className="grid min-h-[480px] border lg:grid-cols-[240px_minmax(0,1fr)]">
           <div className="border-b lg:border-b-0 lg:border-r">
-            {reports.length ? reports.map((report) => <button key={report.id} className="flex w-full items-center justify-between border-b px-3 py-3 text-left hover:bg-muted/40" onClick={() => { window.location.href = `/projects/${projectId}/time/certified-payroll?report=${report.id}` }}><span><span className="block text-sm font-medium">Payroll #{report.payroll_number}</span><span className="text-xs text-muted-foreground">Week ending {report.week_ending}</span></span><Badge variant={report.status === "finalized" ? "secondary" : "outline"}>{report.is_no_work ? "No work" : report.status}</Badge></button>) : <p className="p-6 text-sm text-muted-foreground">No payroll reports yet.</p>}
+            {reports.length ? reports.map((report) => (
+              <OptimisticLink
+                key={report.id}
+                href={`/projects/${projectId}/time/certified-payroll?report=${report.id}`}
+                scroll={false}
+                aria-current={selected?.id === report.id ? "page" : undefined}
+                className="flex w-full items-center justify-between border-b px-3 py-3 text-left hover:bg-muted/40"
+              >
+                <span>
+                  <span className="block text-sm font-medium">Payroll #{report.payroll_number}</span>
+                  <span className="text-xs text-muted-foreground">Week ending {report.week_ending}</span>
+                </span>
+                <Badge variant={report.status === "finalized" ? "secondary" : "outline"}>{report.is_no_work ? "No work" : report.status}</Badge>
+              </OptimisticLink>
+            )) : <p className="p-6 text-sm text-muted-foreground">No payroll reports yet.</p>}
           </div>
           <div className="min-w-0 p-4">
             {selected ? <ReportReview projectId={projectId} report={selected} classifications={classifications} pending={pending} run={run} /> : <div className="py-24 text-center text-sm text-muted-foreground">Pick a week ending to draft the first certified payroll.</div>}
@@ -89,7 +110,16 @@ function ReportReview({ projectId, report, classifications, pending, run }: { pr
   return <div><div className="flex items-start justify-between gap-3"><div><h2 className="text-sm font-semibold">Payroll #{report.payroll_number}</h2><p className="text-xs text-muted-foreground">Week ending {report.week_ending}{report.is_final ? " · Final payroll" : ""}</p></div><div className="flex gap-2">{report.pdf_file_id ? <Button variant="outline" size="sm" asChild><a href={`/api/files/${report.pdf_file_id}/raw`}>PDF</a></Button> : null}{report.status === "draft" ? <Button size="sm" disabled={pending} onClick={() => run(async () => { unwrapAction(await finalizeCertifiedPayrollAction(projectId, report.id)); toast.success("Certified payroll finalized"); router.refresh() })}>Finalize & create PDF</Button> : <Badge variant="secondary">Finalized</Badge>}</div></div>{report.is_no_work ? <div className="mt-6 border border-dashed px-4 py-16 text-center text-sm text-muted-foreground">No work performed. This numbered report preserves payroll sequence continuity.</div> : <div className="mt-4 overflow-auto border"><Table><TableHeader><TableRow><TableHead>Worker</TableHead><TableHead>Classification</TableHead><TableHead>Day hours ST/OT/DT</TableHead><TableHead className="text-right">Gross</TableHead><TableHead className="text-right">All projects</TableHead><TableHead className="text-right">Deductions</TableHead><TableHead className="text-right">Net</TableHead></TableRow></TableHeader><TableBody>{report.lines.map((line) => <TableRow key={line.id}><TableCell><div className="font-medium">{line.worker.display_name}</div><div className="text-xs text-muted-foreground">{line.worker.tax_id_last4 ? `xxx-xx-${line.worker.tax_id_last4}` : "ID not provided"}</div></TableCell><TableCell><Select disabled={report.status !== "draft" || pending} value={line.classification_id ?? ""} onValueChange={(classification_id) => run(async () => { unwrapAction(await updateCertifiedPayrollLineAction(projectId, line.id, { classification_id })); router.refresh() })}><SelectTrigger className="w-44"><SelectValue /></SelectTrigger><SelectContent>{classifications.map((item) => <SelectItem key={item.id} value={item.id}>{item.classification}</SelectItem>)}</SelectContent></Select></TableCell><TableCell className="min-w-56 text-xs">{Object.entries(line.day_hours).sort(([a], [b]) => a.localeCompare(b)).map(([date, hours]) => <div key={date}><span className="inline-block w-16 text-muted-foreground">{date.slice(5)}</span>{hours.st}/{hours.ot}/{hours.dt}</div>)}</TableCell><TableCell className="text-right tabular-nums">{dollars(line.gross_this_project_cents)}</TableCell><TableCell><MoneyEditor disabled={report.status !== "draft" || pending} initial={line.gross_all_projects_cents} onSave={(value) => run(async () => { unwrapAction(await updateCertifiedPayrollLineAction(projectId, line.id, { gross_all_projects_cents: value })); router.refresh() })} /></TableCell><TableCell><MoneyEditor disabled={report.status !== "draft" || pending} initial={Object.values(line.deductions ?? {}).reduce((sum, value) => sum + value, 0)} onSave={(value) => run(async () => { unwrapAction(await updateCertifiedPayrollLineAction(projectId, line.id, { deductions: value == null ? null : { other: value } })); router.refresh() })} /></TableCell><TableCell><MoneyEditor disabled={report.status !== "draft" || pending} initial={line.net_pay_cents} placeholder="Payroll register" onSave={(value) => run(async () => { unwrapAction(await updateCertifiedPayrollLineAction(projectId, line.id, { net_pay_cents: value })); router.refresh() })} /></TableCell></TableRow>)}</TableBody></Table></div>}</div>
 }
 
-function MoneyEditor({ initial, disabled, placeholder, onSave }: { initial: number | null; disabled: boolean; placeholder?: string; onSave: (cents: number | null) => void }) {
+type MoneyEditorProps = { initial: number | null; disabled: boolean; placeholder?: string; onSave: (cents: number | null) => void }
+
+function MoneyEditor(props: MoneyEditorProps) {
+  return <MoneyEditorInput key={props.initial ?? "blank"} {...props} />
+}
+
+function MoneyEditorInput({ initial, disabled, placeholder, onSave }: MoneyEditorProps) {
   const [value, setValue] = useState(initial == null ? "" : (initial / 100).toFixed(2))
-  return <Input className="w-28 text-right tabular-nums" value={value} disabled={disabled} placeholder={placeholder} onChange={(event) => setValue(event.target.value)} onBlur={() => onSave(value.trim() ? Math.round(Number(value) * 100) : null)} />
+  return <Input className="w-28 text-right tabular-nums" value={value} disabled={disabled} placeholder={placeholder} onChange={(event) => setValue(event.target.value)} onBlur={() => {
+    const cents = value.trim() ? Math.round(Number(value) * 100) : null
+    if (cents !== initial) onSave(cents)
+  }} />
 }

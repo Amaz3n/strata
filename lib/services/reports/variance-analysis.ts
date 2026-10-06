@@ -1,4 +1,7 @@
-import { getDivisionScopedProjectIds, requireAuthorization } from "@/lib/services/authorization"
+import { utcReportDateRange } from "@/lib/reports/date-range"
+import { readAllRows, type RangeResult } from "@/lib/land/paging"
+import { resolveDivisionScope } from "@/lib/land/scope"
+import { getDivisionAccessForUser, requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { toCsv } from "@/lib/services/reports/csv"
 
@@ -61,25 +64,25 @@ export async function getVarianceAnalysis({
   divisionId,
   orgId,
 }: { startDate: string; endDate: string; divisionId?: string; orgId?: string }): Promise<VarianceAnalysisResult> {
+  utcReportDateRange(startDate, endDate)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAuthorization({ permission: "price_book.read", userId, orgId: resolvedOrgId, supabase, logDecision: true })
-  const authorizedIds = await getDivisionScopedProjectIds({ orgId: resolvedOrgId, userId, supabase })
-  if (divisionId || authorizedIds !== null) {
-    let projectsQuery = supabase.from("projects").select("id").eq("org_id", resolvedOrgId).eq("phase", "delivery")
-    if (divisionId) projectsQuery = projectsQuery.eq("division_id", divisionId)
-    if (authorizedIds) projectsQuery = projectsQuery.in("id", authorizedIds.length ? authorizedIds : ["00000000-0000-0000-0000-000000000000"])
-    const { data: projects, error: projectError } = await projectsQuery.limit(1000)
-    if (projectError) throw new Error(`Failed to scope variance analysis: ${projectError.message}`)
-    const projectIds = (projects ?? []).map((row) => row.id)
-    return getScopedVarianceAnalysis({ supabase, orgId: resolvedOrgId, projectIds, startDate, endDate })
+  const scope = resolveDivisionScope(await getDivisionAccessForUser({ orgId: resolvedOrgId, userId }), divisionId)
+  if (scope.kind === "none") return { ...emptyVariance(), scoped: true }
+  if (scope.kind === "limited") {
+    const projects = await readAllRows<{ id: string }>((from, to) => supabase.from("projects").select("id")
+      .eq("org_id", resolvedOrgId).in("division_id", scope.divisionIds)
+      .order("id").range(from, to),
+    { cap: 100001, pageSize: FACT_PAGE_SIZE, label: "Failed to scope variance analysis" })
+    if (projects.truncated) throw new Error("Variance analysis exceeds the supported project scope; narrow the division filter")
+    return getScopedVarianceAnalysis({ supabase, orgId: resolvedOrgId, projectIds: projects.rows.map((row) => row.id), startDate, endDate })
   }
-  const { data, error } = await supabase.rpc("get_variance_analysis", {
-    p_org_id: resolvedOrgId,
-    p_start_date: startDate,
-    p_end_date: endDate,
-  })
-  if (error) throw new Error(`Failed to load variance analysis: ${error.message}`)
-  const rows: VarianceAnalysisRow[] = (data ?? []).map((row: Record<string, unknown>) => ({
+  const aggregate = await readAllRows<Record<string, unknown>>((from, to) => supabase.rpc("get_variance_analysis", {
+    p_org_id: resolvedOrgId, p_start_date: startDate, p_end_date: endDate,
+  }).order("dimension").order("dimension_id").order("dimension_label").range(from, to),
+  { cap: 100001, pageSize: FACT_PAGE_SIZE, label: "Failed to load variance analysis" })
+  if (aggregate.truncated) throw new Error("Variance analysis exceeds the supported group count; narrow the report scope")
+  const rows: VarianceAnalysisRow[] = aggregate.rows.map((row: Record<string, unknown>) => ({
     dimension: row.dimension as VarianceDimension,
     dimension_id: String(row.dimension_id ?? ""),
     dimension_label: String(row.dimension_label ?? "Unassigned"),
@@ -124,6 +127,20 @@ async function getScopedVarianceAnalysis({
   return { ...summarize(aggregateVarianceFacts(facts, budgetByProject)), scoped: true }
 }
 
+/** Every reference batch stays below URL and REST row limits. */
+async function readReferenceRows<T>(ids: string[], label: string,
+  query: (ids: string[], from: number, to: number) => PromiseLike<RangeResult<T>>): Promise<T[]> {
+  const rows: T[] = []
+  const unique = [...new Set(ids)]
+  for (let offset = 0; offset < unique.length; offset += 100) {
+    const result = await readAllRows<T>((from, to) => query(unique.slice(offset, offset + 100), from, to),
+      { cap: 100001, pageSize: FACT_PAGE_SIZE, label })
+    if (result.truncated) throw new Error(`${label}: scope exceeds the supported report size`)
+    rows.push(...result.rows)
+  }
+  return rows
+}
+
 async function loadVarianceFacts({
   supabase,
   orgId,
@@ -137,47 +154,28 @@ async function loadVarianceFacts({
   startDate: string
   endDate: string
 }): Promise<VarianceFact[]> {
-  const orders: Array<Record<string, unknown>> = []
-  for (let page = 0; ; page += 1) {
-    const from = page * FACT_PAGE_SIZE
-    const { data, error } = await supabase
-      .from("commitment_change_orders")
-      .select("id,project_id,total_cents,approved_at,reason_code_id,company_id,reason:variance_reason_codes(label),company:companies(name)")
-      .eq("org_id", orgId)
-      .in("project_id", projectIds)
-      .not("reason_code_id", "is", null)
-      .in("status", COUNTED_STATUSES)
-      .gte("approved_at", `${startDate}T00:00:00Z`)
-      .lte("approved_at", `${endDate}T23:59:59.999Z`)
-      .order("id", { ascending: true })
-      .range(from, from + FACT_PAGE_SIZE - 1)
-    if (error) throw new Error(`Failed to load scoped variance analysis: ${error.message}`)
-    orders.push(...(data ?? []))
-    if ((data?.length ?? 0) < FACT_PAGE_SIZE) break
-  }
+  const range = utcReportDateRange(startDate, endDate)
+  const orders = await readReferenceRows<Record<string, unknown>>(projectIds, "Failed to load scoped variance analysis", (ids, from, to) => supabase
+    .from("commitment_change_orders")
+    .select("id,project_id,total_cents,approved_at,reason_code_id,company_id,reason:variance_reason_codes(label),company:companies(name)")
+    .eq("org_id", orgId).in("project_id", ids).not("reason_code_id", "is", null).in("status", COUNTED_STATUSES)
+    .gte("approved_at", range.startInclusive).lt("approved_at", range.endExclusive)
+    .order("id").range(from, to))
   if (orders.length === 0) return []
 
   const orderProjectIds = Array.from(new Set(orders.map((row) => String(row.project_id))))
-  const [lotResult, projectResult, superintendentByProject] = await Promise.all([
-    supabase
-      .from("lots")
-      .select("project_id, community_id, house_plan_id, division_id, community:communities(name), house_plan:house_plans(name)")
-      .eq("org_id", orgId)
-      .in("project_id", orderProjectIds)
-      .limit(5000),
-    supabase
-      .from("projects")
-      .select("id, division_id, division:divisions(name)")
-      .eq("org_id", orgId)
-      .in("id", orderProjectIds)
-      .limit(5000),
+  const [lots, projects, superintendentByProject] = await Promise.all([
+    readReferenceRows<Record<string, unknown>>(orderProjectIds, "Failed to load variance lots", (ids, from, to) => supabase
+      .from("lots").select("id,project_id,community_id,house_plan_id,division_id,community:communities(name),house_plan:house_plans(name)")
+      .eq("org_id", orgId).in("project_id", ids).order("id").range(from, to)),
+    readReferenceRows<Record<string, unknown>>(orderProjectIds, "Failed to load variance projects", (ids, from, to) => supabase
+      .from("projects").select("id,division_id,division:divisions(name)")
+      .eq("org_id", orgId).in("id", ids).order("id").range(from, to)),
     loadSuperintendents({ supabase, orgId, projectIds: orderProjectIds }),
   ])
-  if (lotResult.error) throw new Error(`Failed to load variance lots: ${lotResult.error.message}`)
-  if (projectResult.error) throw new Error(`Failed to load variance projects: ${projectResult.error.message}`)
-
-  const lotByProject = new Map((lotResult.data ?? []).map((row) => [String(row.project_id), row]))
-  const projectById = new Map((projectResult.data ?? []).map((row) => [String(row.id), row]))
+  const lotByProject = new Map(lots.map((row) => [String(row.project_id), row]))
+  const projectById = new Map(projects.map((row) => [String(row.id), row]))
+  if (projectById.size !== orderProjectIds.length) throw new Error("Variance history references missing projects")
 
   return orders.map((row): VarianceFact => {
     const projectId = String(row.project_id)
@@ -220,17 +218,11 @@ async function loadSuperintendents({
   const roleIds = (roles ?? []).map((row) => row.id as string)
   if (roleIds.length === 0) return byProject
 
-  const { data, error } = await supabase
-    .from("project_members")
-    .select("project_id, user_id, created_at, user:app_users(full_name, email)")
-    .eq("org_id", orgId)
-    .eq("status", "active")
-    .in("project_id", projectIds)
-    .in("role_id", roleIds)
-    .order("created_at", { ascending: true })
-    .limit(5000)
-  if (error) throw new Error(`Failed to load variance superintendents: ${error.message}`)
-  for (const row of data ?? []) {
+  const members = await readReferenceRows<Record<string, unknown>>(projectIds, "Failed to load variance superintendents", (ids, from, to) => supabase
+    .from("project_members").select("id,project_id,user_id,created_at,user:app_users(full_name,email)")
+    .eq("org_id", orgId).eq("status", "active").in("project_id", ids).in("role_id", roleIds)
+    .order("created_at", { ascending: true }).order("id").range(from, to))
+  for (const row of members) {
     const projectId = String(row.project_id)
     if (byProject.has(projectId)) continue
     byProject.set(projectId, {
@@ -251,22 +243,11 @@ async function loadLatestBudgets({
   projectIds: string[]
 }): Promise<Map<string, number>> {
   const latest = new Map<string, number>()
-  for (let page = 0; ; page += 1) {
-    const from = page * FACT_PAGE_SIZE
-    const { data, error } = await supabase
-      .from("budgets")
-      .select("project_id, total_cents, version")
-      .eq("org_id", orgId)
-      .in("project_id", projectIds)
-      .order("project_id", { ascending: true })
-      .order("version", { ascending: false })
-      .range(from, from + FACT_PAGE_SIZE - 1)
-    if (error) throw new Error(`Failed to load variance budgets: ${error.message}`)
-    for (const row of data ?? []) {
-      const projectId = String(row.project_id)
-      if (!latest.has(projectId)) latest.set(projectId, Number(row.total_cents ?? 0))
-    }
-    if ((data?.length ?? 0) < FACT_PAGE_SIZE) break
+  const budgets = await readReferenceRows<{ project_id: string; total_cents: number; version: number }>(projectIds, "Failed to load variance budgets", (ids, from, to) => supabase
+    .from("budgets").select("id,project_id,total_cents,version").eq("org_id", orgId).in("project_id", ids)
+    .order("project_id", { ascending: true }).order("version", { ascending: false }).order("id").range(from, to))
+  for (const row of budgets) {
+    if (!latest.has(row.project_id)) latest.set(row.project_id, Number(row.total_cents ?? 0))
   }
   return latest
 }
@@ -356,7 +337,9 @@ function summarize(rows: VarianceAnalysisRow[]) {
   const reasonRows = rows.filter((row) => row.dimension === "reason")
   const totalAbsoluteCents = reasonRows.reduce((sum, row) => sum + row.absolute_variance_cents, 0)
   const totalNetCents = reasonRows.reduce((sum, row) => sum + row.net_variance_cents, 0)
-  const directCostBudgetCents = reasonRows.reduce((sum, row) => sum + row.direct_cost_budget_cents, 0)
+  // A home can contribute to several reasons; summing reason denominators
+  // counts its budget repeatedly. Each home belongs to one division group.
+  const directCostBudgetCents = rows.filter((row) => row.dimension === "division").reduce((sum, row) => sum + row.direct_cost_budget_cents, 0)
   return {
     rows,
     summary: {

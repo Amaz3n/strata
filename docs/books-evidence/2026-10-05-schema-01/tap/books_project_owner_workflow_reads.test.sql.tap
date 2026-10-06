@@ -1,0 +1,5 @@
+1..4
+ok 1 - project owner recovery cannot be invoked by browser credentials
+ok 2 - anonymous project owner recovery denied
+ok 3 - recovery preserves invoker authority
+ok 4 - authorized server can recover project owner requests

@@ -1,0 +1,518 @@
+{
+  "date": "2026-10-05",
+  "classification": "progress_source_workflow_audit_not_acceptance",
+  "previousGoalTurnClassification": "progress_local_safety_implementation_and_evidence",
+  "head": "9f1549af84a6998eb2d851415ec6f119ab89a96f",
+  "dirtyTreeStatusSha256": "0ba7a40c9043c0dbf4f209754969cb2772ac8c2d8569b9264a3e6e83850762f8",
+  "sourceSnapshots": [
+    {
+      "path": "app/(app)/sales/[dealId]/page.tsx",
+      "sha256": "ce6754c13fba1903eeee58e0cc78596445461527fef5c2d6c0ba5ffe52399581"
+    },
+    {
+      "path": "lib/services/sales-deals.ts",
+      "sha256": "ae392e185fc6eca227eaedaf40c9729d00b9b8ffc3ac2aa0b7e75da35ff25bf3"
+    },
+    {
+      "path": "components/sales/deal-primary-action.tsx",
+      "sha256": "5e7e3e0f4a2a3c30937cf21310c92a77468feb604cfd761b2b818166cdc4a8a9"
+    },
+    {
+      "path": "components/sales/deal-actions-menu.tsx",
+      "sha256": "520d81260fb540b408bae5e29532254e2df79fca66718c17f3fea40d2149046c"
+    },
+    {
+      "path": "app/(app)/starts/[id]/page.tsx",
+      "sha256": "a48af511ea2a8b8be7853f886edf0a750d3f129092c38a73aec5fa82173c18dc"
+    },
+    {
+      "path": "components/starts/launch-lane.tsx",
+      "sha256": "34113c49a249be3be651a8c5670e999726602527270352e431c3268cc79216d9"
+    },
+    {
+      "path": "components/starts/start-package-sheet.tsx",
+      "sha256": "0385008bfc007cbce698a2cbe1d9cb979705ec4fc14b35ce6c0e5854e00275b3"
+    },
+    {
+      "path": "lib/services/starts-desk.ts",
+      "sha256": "dffdd7c5aaecf7c29e2ca6af2bcc957c7cc5001ce516d0b1fad2bef00da075c6"
+    },
+    {
+      "path": "lib/services/starts.ts",
+      "sha256": "ea9f0ffb0d6e727a43753d67e732405fac29a5816b43d9532012184f849abfa4"
+    },
+    {
+      "path": "app/(app)/purchasing/bids/[packageId]/page.tsx",
+      "sha256": "192908944ae81dc8f1dd16a7033dfcdd146c226b2ed2d40fc55557386f90202e"
+    },
+    {
+      "path": "lib/services/bids.ts",
+      "sha256": "adc76b7ef1d9f3d1f48ba0436b03e365fd7ee131a82e6d8094aba0d7c092644e"
+    },
+    {
+      "path": "components/bids/bid-package-workbench.tsx",
+      "sha256": "540115bc79110fdaa6f687445df568c706841a4a2c5ddc92800637bae44cfcdb"
+    },
+    {
+      "path": "app/(app)/bids/actions.ts",
+      "sha256": "66a2407c1468cc1795c182179b9617ddc52d47978886a4ded3b19dd0f034ac12"
+    },
+    {
+      "path": "app/(app)/design-studio/catalog/history/page.tsx",
+      "sha256": "9b75ce0d74f3ecf9d90dbdc85393f41c9658059d71407aac64e3bf6ecaf63cdd"
+    },
+    {
+      "path": "lib/services/catalog-publication-history.ts",
+      "sha256": "2ad1f5115be5434f772b788879a6a3fea096b2806560b8b0a0cb1a7441352007"
+    },
+    {
+      "path": "components/design-studio/catalog-publication-history.tsx",
+      "sha256": "8385b88684a4b6760f35cfa83bdea1b808e963336f941217b8429a58ae38295d"
+    },
+    {
+      "path": "app/(app)/design-studio/rules/page.tsx",
+      "sha256": "8605f4d4a972ca0595f86d938dc30830b89349643f6ffb228560937b0af4ea29"
+    },
+    {
+      "path": "lib/services/option-catalog.ts",
+      "sha256": "5e14dbd1771bc92f7ed98f43d338bb109c0e28796d9c5d87ecb7c9d4c58d83a2"
+    },
+    {
+      "path": "lib/services/catalog-group-categories.ts",
+      "sha256": "f0c80a8234f937f92c98e5f12da314d2a0bfc1d91cd0883cd7034ecc4df39621"
+    },
+    {
+      "path": "components/design-studio/cutoff-rules.tsx",
+      "sha256": "72e3dcda5b93562e8e3b5ad3a1ebe931783b388269e83f2c5f3c610ee223ce13"
+    },
+    {
+      "path": "app/(app)/pipeline/[dealId]/plans/page.tsx",
+      "sha256": "626d61a9c4881f9fe6bca70d8837ffb1c297433a00ca2ef667c2e0c087dfc1fb"
+    },
+    {
+      "path": "lib/services/precon-workspace.ts",
+      "sha256": "b242fce6c6a6462bcdfd977f53d1d35388d09148ec2090b36e51d5605add3f56"
+    },
+    {
+      "path": "components/drawings/project-drawings-page.tsx",
+      "sha256": "8bf7f8fa1b7a251c7a9e4dd5f58eabd5e0e6797f2d3d3e8d822ed8fef9ebadff"
+    },
+    {
+      "path": "app/(app)/schedule/trades/page.tsx",
+      "sha256": "8f451e48a41876c3d1d93d4ff8666c6d6d1e495d4645eeb01693dc1c6d3e1553"
+    },
+    {
+      "path": "lib/services/trade-lookahead.ts",
+      "sha256": "f2a7b843cdc04c9d0131884321d76861ffe858481e60fd5b1cea0feec08a66ce"
+    },
+    {
+      "path": "components/schedule/trade-lookahead-client.tsx",
+      "sha256": "eb121e7ce2483a3a3ddc245f7b1a919c1549773a7011603194a0c5f6924ecae9"
+    },
+    {
+      "path": "app/(app)/schedule/trade-actions.ts",
+      "sha256": "d8fa550b522ece3131c50bd5408ad896cd55ed353ad151f22a7d1d41a93eb3c7"
+    },
+    {
+      "path": "app/(app)/settings/starts/page.tsx",
+      "sha256": "c0c6909e47dcf9c8642980f5fd194632c495531273c14f929e10bf059644eb35"
+    },
+    {
+      "path": "components/starts/gate-settings-client.tsx",
+      "sha256": "f21e161a08acb4bf15559546addc557ef340fc62403b19fbcee1ee73b361daef"
+    },
+    {
+      "path": "app/(app)/settings/warranty/page.tsx",
+      "sha256": "245f8b9e996f32f25988a58717aaf1492fc5352522510c623844bb0b45db3aa6"
+    },
+    {
+      "path": "lib/services/warranty-operations.ts",
+      "sha256": "723ed4032bf29209c01e4f0239a1bec7649589e5af9151e8be3473e35baa8031"
+    },
+    {
+      "path": "app/(app)/settings/warranty/warranty-settings-client.tsx",
+      "sha256": "0e9944c3b8934fc6c719f8dcd15d04c16cd6b19e3f08969573f2f2014b342924"
+    },
+    {
+      "path": "app/(app)/warranty/actions.ts",
+      "sha256": "9ebd094a8fa6b10fdd83f90f9d8e6f5ebe60c7c0697488a1fd4452510d53d490"
+    },
+    {
+      "path": "app/(app)/warranty/accounting/page.tsx",
+      "sha256": "ef6a7c7c5fbdbfb45bc506934951487d58f9f300f48c64bfe704bc97335d961e"
+    },
+    {
+      "path": "components/books/warranty-accounting.tsx",
+      "sha256": "b74d33e93e90ac41a72c75cf4552dfbfe4f63bde65818a2742cea25c6f0700d4"
+    },
+    {
+      "path": "lib/services/books/warranty-accounting.ts",
+      "sha256": "f4b80600cb734dc858b276dd72a9b3a8eaaa4ed26f8b8c0ed801573c702a8f40"
+    },
+    {
+      "path": "app/(app)/books/actions.ts",
+      "sha256": "fdce73b121ef61ab1618fabd3d3fd677527a09eb7916adc8a39c9e42b91dce3d"
+    },
+    {
+      "path": "app/(app)/projects/[id]/schedule/page.tsx",
+      "sha256": "6a0b69072ae41c8939df373afceca975bbf3e65a8cd9c66254483af5baa9709f"
+    },
+    {
+      "path": "app/(app)/projects/[id]/actions.ts",
+      "sha256": "d9bbed2e7c48cdc9dd98a2c12142438cf743470b5827f68adaca5f2566d2ba0e"
+    },
+    {
+      "path": "app/(app)/projects/[id]/schedule/project-schedule-client.tsx",
+      "sha256": "1d4f9a4ede6ab387968380fa16c5854ed51d2e7b65f045af35af27aefa03caee"
+    }
+  ],
+  "reviews": [
+    {
+      "path": "app/(app)/sales/[dealId]/page.tsx",
+      "taskIds": [
+        "F01",
+        "E01-01",
+        "E01-02",
+        "E05-02",
+        "E05-03",
+        "E02-02"
+      ],
+      "implemented": "Consultant/contract coordinator buyer file with stage action, signing recovery, original lifecycle targets and links to other desks.",
+      "findings": [
+        "getSalesDeal selects one deal through the original RPC; detail does not depend on presence within the capped Sales board.",
+        "Activity is capped at60 with a truncation indicator but no continuation route on this page.",
+        "Reservation and contract snapshot query errors are not inspected by getSalesDealDetail; failures can appear as absent deposit/pricing/reservation evidence.",
+        "Team read failures are converted to an empty roster. Page passes no caller sales mutation capabilities to action/history components; direct owner authority and reader persona behavior need end-to-end proof."
+      ],
+      "next": "Complete original owner workflow under task dependencies, then prove authenticated persona/current authority/concurrency/recovery and measured capacity.",
+      "accepted": false,
+      "date": "2026-10-05",
+      "sourceSha256": "ce6754c13fba1903eeee58e0cc78596445461527fef5c2d6c0ba5ffe52399581",
+      "reviewKind": "actual_source_workflow_review_not_authenticated_persona_acceptance",
+      "evidence": [
+        "docs/enterprise-production/evidence/2026-10-05-production-detail-audit/manifest.json"
+      ],
+      "owners": [
+        "lib/services/sales-deals.ts",
+        "components/sales/deal-primary-action.tsx",
+        "components/sales/deal-actions-menu.tsx"
+      ]
+    },
+    {
+      "path": "app/(app)/starts/[id]/page.tsx",
+      "taskIds": [
+        "F01",
+        "E01-01",
+        "E07-02",
+        "E07-03"
+      ],
+      "implemented": "Search/notification permalink redirects to the original Starts lane and selected package sheet.",
+      "findings": [
+        "Package detail loads separately through getStartPackage -> listStartPackages(id,pageSize1), so off-lane records have an original selected owner.",
+        "LaunchLane initializes sheetId from props once without source adoption/key on the page; same-component navigation can retain old selection.",
+        "StartPackageSheet load has no response identity/abort fencing; an older selected-record response or failure can replace/close a newer selection.",
+        "Starts desk explicitly flags truncation at200 per list, but there is no lane continuation and counters are derived from loaded subsets."
+      ],
+      "next": "Complete original owner workflow under task dependencies, then prove authenticated persona/current authority/concurrency/recovery and measured capacity.",
+      "accepted": false,
+      "date": "2026-10-05",
+      "sourceSha256": "a48af511ea2a8b8be7853f886edf0a750d3f129092c38a73aec5fa82173c18dc",
+      "reviewKind": "actual_source_workflow_review_not_authenticated_persona_acceptance",
+      "evidence": [
+        "docs/enterprise-production/evidence/2026-10-05-production-detail-audit/manifest.json"
+      ],
+      "owners": [
+        "components/starts/launch-lane.tsx",
+        "components/starts/start-package-sheet.tsx",
+        "lib/services/starts-desk.ts",
+        "lib/services/starts.ts"
+      ]
+    },
+    {
+      "path": "app/(app)/purchasing/bids/[packageId]/page.tsx",
+      "taskIds": [
+        "F01",
+        "E01-01",
+        "E01-02",
+        "E08-01",
+        "E02-02"
+      ],
+      "implemented": "Purchasing price-agreement bid detail reuses the original bid workbench/actions rather than adding a second writer.",
+      "findings": [
+        "Page requires bid.read and restricts award_target to price_agreement; authority of child reads must be proven independently of this route.",
+        "Invite/addendum/scope/submission readers return full arrays without page metadata; provider caps and embedded submission rows can silently omit scope/vendors.",
+        "Bid workbench computes canAward from package status/target; page does not pass caller bid write/award capabilities. Documents/read-only controls use package state rather than role.",
+        "Intelligence failures become null; critical source evidence and optional advice must be distinguishable. Full SDK/RLS/award/provider acceptance remains open."
+      ],
+      "next": "Complete original owner workflow under task dependencies, then prove authenticated persona/current authority/concurrency/recovery and measured capacity.",
+      "accepted": false,
+      "date": "2026-10-05",
+      "sourceSha256": "192908944ae81dc8f1dd16a7033dfcdd146c226b2ed2d40fc55557386f90202e",
+      "reviewKind": "actual_source_workflow_review_not_authenticated_persona_acceptance",
+      "evidence": [
+        "docs/enterprise-production/evidence/2026-10-05-production-detail-audit/manifest.json"
+      ],
+      "owners": [
+        "lib/services/bids.ts",
+        "components/bids/bid-package-workbench.tsx",
+        "app/(app)/bids/actions.ts"
+      ]
+    },
+    {
+      "path": "app/(app)/design-studio/catalog/history/page.tsx",
+      "taskIds": [
+        "F01",
+        "E01-01",
+        "E03-01",
+        "F04"
+      ],
+      "implemented": "Catalog manager history and original-scope pending publication recovery behind the existing cutover flag.",
+      "findings": [
+        "Page binds org/actor/community and keys history to that identity; original service validates bounded history/pending replies.",
+        "Default-off cutover means this cannot count as released recovery.",
+        "History errors are converted to null while pending queue errors propagate; actual UI must distinguish failed history from no history.",
+        "Community query may override ambient scope; original current authority/RPC validation must be proven with real denied/current-JWT cases."
+      ],
+      "next": "Complete original owner workflow under task dependencies, then prove authenticated persona/current authority/concurrency/recovery and measured capacity.",
+      "accepted": false,
+      "date": "2026-10-05",
+      "sourceSha256": "9b75ce0d74f3ecf9d90dbdc85393f41c9658059d71407aac64e3bf6ecaf63cdd",
+      "reviewKind": "actual_source_workflow_review_not_authenticated_persona_acceptance",
+      "evidence": [
+        "docs/enterprise-production/evidence/2026-10-05-production-detail-audit/manifest.json"
+      ],
+      "owners": [
+        "lib/services/catalog-publication-history.ts",
+        "components/design-studio/catalog-publication-history.tsx"
+      ]
+    },
+    {
+      "path": "app/(app)/design-studio/rules/page.tsx",
+      "taskIds": [
+        "F01",
+        "E01-01",
+        "E03-01",
+        "E01-02"
+      ],
+      "implemented": "Studio cutoff rule editor uses original group-page and category-label owners, caller manage capability and actor/scope identity.",
+      "findings": [
+        "Group discovery has server cursor/next cursor; page binds actor/org/community and passes canManage.",
+        "Atomic branch avoids full option/category loading and reads labels for reviewed page references; original-scope/category recovery work is preserved.",
+        "Legacy flag-off branch still loads catalog options/categories. Flag-off and old writer exposure need full-schema cutover/reconciliation.",
+        "Actual reload/cross-tab/current-authority, selected unavailable labels and desktop/mobile QA remain unaccepted."
+      ],
+      "next": "Complete original owner workflow under task dependencies, then prove authenticated persona/current authority/concurrency/recovery and measured capacity.",
+      "accepted": false,
+      "date": "2026-10-05",
+      "sourceSha256": "8605f4d4a972ca0595f86d938dc30830b89349643f6ffb228560937b0af4ea29",
+      "reviewKind": "actual_source_workflow_review_not_authenticated_persona_acceptance",
+      "evidence": [
+        "docs/enterprise-production/evidence/2026-10-05-production-detail-audit/manifest.json"
+      ],
+      "owners": [
+        "lib/services/option-catalog.ts",
+        "lib/services/catalog-group-categories.ts",
+        "components/design-studio/cutoff-rules.tsx"
+      ]
+    },
+    {
+      "path": "app/(app)/pipeline/[dealId]/plans/page.tsx",
+      "taskIds": [
+        "F01",
+        "E01-01",
+        "E03-03",
+        "E02-02"
+      ],
+      "implemented": "Prospect plans route resolves its original linked project and delegates to the shared drawings owner.",
+      "findings": [
+        "getPreconProjectId uses workspaceContext and authorizes the actual linked project; a service lookup prevents an RLS-hidden project being treated as an unlinked lead.",
+        "No linked project redirects to the original prospect workspace; this is preconstruction exposure, not the production plan offering owner.",
+        "Production released revision/source provenance and archived/scope-moved documents must be proven through the shared drawings workflow, not this redirect alone."
+      ],
+      "next": "Complete original owner workflow under task dependencies, then prove authenticated persona/current authority/concurrency/recovery and measured capacity.",
+      "accepted": false,
+      "date": "2026-10-05",
+      "sourceSha256": "626d61a9c4881f9fe6bca70d8837ffb1c297433a00ca2ef667c2e0c087dfc1fb",
+      "reviewKind": "actual_source_workflow_review_not_authenticated_persona_acceptance",
+      "evidence": [
+        "docs/enterprise-production/evidence/2026-10-05-production-detail-audit/manifest.json"
+      ],
+      "owners": [
+        "lib/services/precon-workspace.ts",
+        "components/drawings/project-drawings-page.tsx"
+      ]
+    },
+    {
+      "path": "app/(app)/schedule/trades/page.tsx",
+      "taskIds": [
+        "F01",
+        "E01-01",
+        "E01-02",
+        "E07-03",
+        "E02-02",
+        "F04"
+      ],
+      "implemented": "Starts/trade coordinator company-grouped production look-ahead and original send action.",
+      "findings": [
+        "Page requests pageSize100 and ignores total; it has no page/search controls. Groups after100 are undiscoverable from this route.",
+        "Page does not consume ambient community context, so changing the shared lens does not narrow this desk.",
+        "Original service applies org/projectorg/production/active/division predicates, but reads up to100001 schedule/PO rows then groups and slices in memory; company payloads are unbounded within the page.",
+        "UI always renders Send; service requires start.write. Action validates outside ActionResult run and accepts only weeks, not reviewed community scope.",
+        "UI claims daily deduplication and shows sent success even when original service returns sent:false. Read-event-before-provider-send is not atomic deduplication or durable delivery recovery.",
+        "Expansion uses clickable table rows without keyboard controls; items do not link to canonical home/schedule owner."
+      ],
+      "next": "Complete original owner workflow under task dependencies, then prove authenticated persona/current authority/concurrency/recovery and measured capacity.",
+      "accepted": false,
+      "date": "2026-10-05",
+      "sourceSha256": "8f451e48a41876c3d1d93d4ff8666c6d6d1e495d4645eeb01693dc1c6d3e1553",
+      "reviewKind": "actual_source_workflow_review_not_authenticated_persona_acceptance",
+      "evidence": [
+        "docs/enterprise-production/evidence/2026-10-05-production-detail-audit/manifest.json"
+      ],
+      "owners": [
+        "lib/services/trade-lookahead.ts",
+        "components/schedule/trade-lookahead-client.tsx",
+        "app/(app)/schedule/trade-actions.ts"
+      ]
+    },
+    {
+      "path": "app/(app)/settings/starts/page.tsx",
+      "taskIds": [
+        "F01",
+        "E01-01",
+        "E07-01",
+        "E02-02"
+      ],
+      "implemented": "Starts manager gate definitions with explicit role-safe settings UI and original definition writer.",
+      "findings": [
+        "Page supplies canManage from effective start.release/admin grants; reader remains inspection-only in GateSettingsClient.",
+        "Original list requires start.read; original save requires start.release, validates input and emits audit.",
+        "List reads all definitions without page/exhaustion metadata; large/legacy duplicate datasets and source failure/permission revocation need real QA.",
+        "Gate definition save/audit remain separate requests with no reviewed source revision/exact request receipt; released-home policy version and competing edits remain open."
+      ],
+      "next": "Complete original owner workflow under task dependencies, then prove authenticated persona/current authority/concurrency/recovery and measured capacity.",
+      "accepted": false,
+      "date": "2026-10-05",
+      "sourceSha256": "c0c6909e47dcf9c8642980f5fd194632c495531273c14f929e10bf059644eb35",
+      "reviewKind": "actual_source_workflow_review_not_authenticated_persona_acceptance",
+      "evidence": [
+        "docs/enterprise-production/evidence/2026-10-05-production-detail-audit/manifest.json"
+      ],
+      "owners": [
+        "lib/services/starts.ts",
+        "components/starts/gate-settings-client.tsx"
+      ]
+    },
+    {
+      "path": "app/(app)/settings/warranty/page.tsx",
+      "taskIds": [
+        "F01",
+        "E01-01",
+        "E11-01",
+        "E11-04",
+        "F04",
+        "E02-02"
+      ],
+      "implemented": "Warranty manager program/coverage/SLA configuration with org-default vocabulary and existing-home usage counts.",
+      "findings": [
+        "Both original reads require warranty.manage; absence of a client canManage flag is not proof that a denied user can reach editing controls.",
+        "Both read owners call ensureWarrantyDefaults, so opening settings can perform writes. Read-only inspection and explicit preparation lifecycle are missing.",
+        "Original upsert clears defaults, updates/inserts program, deletes terms and reinserts them as separate requests. Some write errors are ignored; partial failure can leave no default or lost coverage terms.",
+        "Program usage counts are checked exact HEAD counts; row/cost source failure is not zero. Program list itself remains full-array/provider-cap dependent.",
+        "Org tier is used for settings vocabulary; mixed-posture coverage administration must preserve all home programs and source terms under publication/reload/races."
+      ],
+      "next": "Complete original owner workflow under task dependencies, then prove authenticated persona/current authority/concurrency/recovery and measured capacity.",
+      "accepted": false,
+      "date": "2026-10-05",
+      "sourceSha256": "245f8b9e996f32f25988a58717aaf1492fc5352522510c623844bb0b45db3aa6",
+      "reviewKind": "actual_source_workflow_review_not_authenticated_persona_acceptance",
+      "evidence": [
+        "docs/enterprise-production/evidence/2026-10-05-production-detail-audit/manifest.json"
+      ],
+      "owners": [
+        "lib/services/warranty-operations.ts",
+        "app/(app)/settings/warranty/warranty-settings-client.tsx",
+        "app/(app)/warranty/actions.ts"
+      ]
+    },
+    {
+      "path": "app/(app)/warranty/accounting/page.tsx",
+      "taskIds": [
+        "F01",
+        "E01-01",
+        "E10-01",
+        "E11-04",
+        "E02-02",
+        "F04"
+      ],
+      "implemented": "Controller adjustment-permission cost approval/reversal using original Books actions and integer-cent source allocation.",
+      "findings": [
+        "Page checks Books adjust access and service requires books.adjust. Reader approval controls are not exposed through this route.",
+        "Workspace service-role reads exhaust completed visit/source arrays but only apply org and optional home filters; actual-home/division authority must be validated before privileged reads.",
+        "Client loads all visits manually with no search/paging; late-home discovery and payload bounds remain missing.",
+        "Client source/visit responses have no actor/home/selection fence; approval/reversal generates fresh bodies with no predispatch immutable request/recovery status.",
+        "Original financial RPC owns domain operation but TS audit/event follow separately; full-schema/current permission/concurrency/source allocation/restore acceptance is required."
+      ],
+      "next": "Complete original owner workflow under task dependencies, then prove authenticated persona/current authority/concurrency/recovery and measured capacity.",
+      "accepted": false,
+      "date": "2026-10-05",
+      "sourceSha256": "ef6a7c7c5fbdbfb45bc506934951487d58f9f300f48c64bfe704bc97335d961e",
+      "reviewKind": "actual_source_workflow_review_not_authenticated_persona_acceptance",
+      "evidence": [
+        "docs/enterprise-production/evidence/2026-10-05-production-detail-audit/manifest.json"
+      ],
+      "owners": [
+        "components/books/warranty-accounting.tsx",
+        "lib/services/books/warranty-accounting.ts",
+        "app/(app)/books/actions.ts"
+      ]
+    },
+    {
+      "path": "app/(app)/projects/[id]/schedule/page.tsx",
+      "taskIds": [
+        "F01",
+        "E01-01",
+        "E01-02",
+        "E07-02",
+        "E07-03",
+        "E02-02"
+      ],
+      "implemented": "Home schedule/dependencies read and original ScheduleView mutation callbacks.",
+      "findings": [
+        "Page resolves project first, then direct action reads. Reads themselves require only org context rather than explicit actual-home schedule permission.",
+        "getProjectScheduleAction loads dependencies for the entire org before home items; child ancestry/completeness/provider caps are unproven.",
+        "Both schedule/dependency read errors log and return[], presenting failed evidence as an empty schedule.",
+        "ProjectScheduleClient initializes rows/dependencies once and supplies all editing callbacks without capability. New server data/home context can retain stale local state.",
+        "Canonical focused item query is passed to ScheduleView, but off-page data/keyboard/read-only/mixed-posture/RLS and independent schedule writer races remain unaccepted."
+      ],
+      "next": "Complete original owner workflow under task dependencies, then prove authenticated persona/current authority/concurrency/recovery and measured capacity.",
+      "accepted": false,
+      "date": "2026-10-05",
+      "sourceSha256": "6a0b69072ae41c8939df373afceca975bbf3e65a8cd9c66254483af5baa9709f",
+      "reviewKind": "actual_source_workflow_review_not_authenticated_persona_acceptance",
+      "evidence": [
+        "docs/enterprise-production/evidence/2026-10-05-production-detail-audit/manifest.json"
+      ],
+      "owners": [
+        "app/(app)/projects/[id]/actions.ts",
+        "app/(app)/projects/[id]/schedule/project-schedule-client.tsx"
+      ]
+    }
+  ],
+  "sourcePagesReviewed": 40,
+  "runtimePersonaAcceptance": false,
+  "taskAcceptance": false,
+  "releaseAcceptance": false,
+  "infrastructureObservation": {
+    "existingDockerSession": 20780,
+    "confirmedLiveNow": true,
+    "output": "none",
+    "directProbeCommand": "node scripts/books-acceptance/engine-probe.cjs unix:///Users/agustinzenuto/.docker/run/docker.sock",
+    "directProbeExit": 1,
+    "directProbeError": "Docker version endpoint could not be reached",
+    "nativePostgresTools": "psql/postgres/initdb absent from PATH",
+    "migrationApplied": false,
+    "restartPerformed": false
+  },
+  "nextPriority": "F01 complete all-page audit; F02 full-schema isolated environment unresolved. Schedule source failure/authority and Warranty settings read writes/program partial failure need original owning workflow contracts, not cosmetic page-only fixes."
+}

@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation"
+import { notFound, unstable_rethrow } from "next/navigation"
 
 import {
   assertPortalActionAccess,
@@ -14,9 +14,22 @@ import {
 async function loadClientPortalAccess(token: string) {
   try {
     return await assertPortalActionAccess(token, { portalType: "client", requireProject: true })
-  } catch {
+  } catch (error) {
+    unstable_rethrow(error)
     notFound()
   }
+}
+
+function loadClientPortalPayload(access: Awaited<ReturnType<typeof loadClientPortalAccess>>, token: string) {
+  return loadClientPortalData({
+    orgId: access.org_id,
+    projectId: access.project_id,
+    permissions: access.permissions,
+    companyId: access.company_id,
+    contactId: access.contact_id ?? null,
+    scopedRfiId: access.scoped_rfi_id ?? null,
+    portalToken: token,
+  })
 }
 
 /**
@@ -26,17 +39,15 @@ async function loadClientPortalAccess(token: string) {
  */
 export async function loadClientPortalPage(token: string) {
   const access = await loadClientPortalAccess(token)
+  const data = await loadClientPortalPayload(access, token)
+  return { access, data }
+}
 
-  const data = await loadClientPortalData({
-    orgId: access.org_id,
-    projectId: access.project_id,
-    permissions: access.permissions,
-    companyId: access.company_id,
-    contactId: access.contact_id ?? null,
-    scopedRfiId: access.scoped_rfi_id ?? null,
-    portalToken: token,
-  })
-
+/** Photo-disabled links must be rejected before the portal payload is read. */
+export async function loadClientPortalPhotosPage(token: string) {
+  const access = await loadClientPortalAccess(token)
+  if (access.permissions.can_view_photos === false) notFound()
+  const data = await loadClientPortalPayload(access, token)
   return { access, data }
 }
 

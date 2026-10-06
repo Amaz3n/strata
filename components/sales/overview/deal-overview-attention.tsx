@@ -66,7 +66,9 @@ export function DealAttentionBlock({
   items,
   prospectId,
   followUpAt,
+  canEditProspect,
 }: {
+  canEditProspect: boolean
   items: DealAttentionItem[]
   /** Null for a deal with no lead record behind it — an imported agreement. */
   prospectId: string | null
@@ -89,12 +91,12 @@ export function DealAttentionBlock({
               {criticalCount} critical
             </span>
           ) : null}
-          <FollowUpControl
+          {canEditProspect ? <FollowUpControl
             prospectId={prospectId}
             followUpAt={followUpAt}
             variant="block"
             className="w-auto"
-          />
+          /> : null}
         </div>
       }
     >

@@ -1,5 +1,5 @@
-import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
-import Link from "next/link";
+import { TemplateLibraryLoading } from "./templates-navigation"
+import { resolveTemplateSection } from "./sections"
 import { connection } from "next/server";
 import { Suspense } from "react";
 import { WaiverTemplateLibrary } from "@/components/settings/waiver-template-library";
@@ -7,139 +7,25 @@ import { listCompanyWaiverTemplates } from "./waiver-actions";
 import { requireOrgContext } from "@/lib/services/context";
 import { authorize } from "@/lib/services/authorization";
 
-import { PageLayout } from "@/components/layout/page-layout";
 import { BudgetTemplatesClient } from "@/components/financials/budget-templates-client";
 import { EstimateTemplatesClient } from "@/components/estimates/estimate-templates-client";
 import { ScheduleTemplatesClient } from "@/components/schedule/schedule-templates-client";
 import { listBudgetTemplates } from "@/lib/services/budget-templates";
 import { listChecklistTemplates } from "@/lib/services/inspections";
 import { listTemplates } from "@/lib/services/schedule";
-import { cn } from "@/lib/utils";
 
 import { listCostCodesAction } from "../cost-codes/actions";
 import { ChecklistsClient } from "./checklists-client";
 import { listEstimateTemplatesAction } from "./actions";
 
-const SECTIONS = [
-  {
-    key: "waivers",
-    label: "Waivers",
-    description: "Company documents that are ready for every project.",
-  },
-  {
-    key: "estimates",
-    label: "Estimates",
-    description:
-      "Reusable sections and line items to start a new estimate from. Terms, cover note, and branding live in Organization.",
-  },
-  {
-    key: "budgets",
-    label: "Budgets",
-    description:
-      "Reusable budget lines with fixed amounts or quantity-based costs.",
-  },
-  {
-    key: "schedules",
-    label: "Schedules",
-    description:
-      "Reusable activities with calendar-day start offsets and durations.",
-  },
-  {
-    key: "checklists",
-    label: "Checklists",
-    description:
-      "Safety and quality checklists used to run inspections. Running inspections snapshot their items, so edits never change past inspections.",
-  },
-] as const;
-
-type SectionKey = (typeof SECTIONS)[number]["key"];
-
-function resolveSection(value?: string): SectionKey {
-  return SECTIONS.some((section) => section.key === value)
-    ? (value as SectionKey)
-    : "waivers";
-}
-
-async function TemplatesPageContent({
-  searchParams,
-}: {
-  searchParams: Promise<{ section?: string }>;
-}) {
-  // Organization template data is request-scoped; initialize auth after the prerender boundary.
+async function TemplatesPageContent({ searchParams }: { searchParams: Promise<{ section?: string }> }) {
   await connection();
-  const section = resolveSection((await searchParams).section);
-  const active = SECTIONS.find((entry) => entry.key === section) ?? SECTIONS[0];
-
-  return (
-    <PageLayout
-      title="Templates"
-      breadcrumbs={[
-        { label: "Settings", href: "/settings" },
-        { label: "Templates" },
-      ]}
-    >
-      <div className="mx-auto max-w-[1440px] py-4">
-        <div className="mb-10 flex items-end justify-between border-b pb-8">
-          <div>
-            <p className="mb-3 text-[10px] font-medium uppercase tracking-[.2em] text-muted-foreground">
-              Your company’s starting points
-            </p>
-            <h1 className="text-3xl font-medium tracking-tight">Templates</h1>
-            <p className="mt-3 text-sm text-muted-foreground">
-              Set it up once. Make it yours every time.
-            </p>
-          </div>
-        </div>
-        <div className="grid grid-cols-[180px_minmax(0,1fr)] gap-10">
-          <nav aria-label="Template categories" className="space-y-1">
-            <p className="px-3 pb-3 text-[10px] uppercase tracking-widest text-muted-foreground">
-              Library
-            </p>
-            {SECTIONS.map((entry) => (
-              <Link
-                key={entry.key}
-                href={`/settings/templates?section=${entry.key}`}
-                aria-current={entry.key === section ? "page" : undefined}
-                className={cn(
-                  "block rounded-md px-3 py-2.5 text-sm transition-colors",
-                  entry.key === section
-                    ? "bg-muted font-medium text-foreground"
-                    : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-                )}
-              >
-                {entry.label}
-              </Link>
-            ))}
-          </nav>
-          <section className="min-w-0">
-            {section !== "waivers" && (
-              <div className="mb-6">
-                <h2 className="text-lg font-medium">{active.label}</h2>
-                <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                  {active.description}
-                </p>
-              </div>
-            )}
-            {section === "waivers" ? (
-              <Suspense
-                fallback={
-                  <p className="py-12 text-sm text-muted-foreground">
-                    Loading your library…
-                  </p>
-                }
-              >
-                <WaiversSection />
-              </Suspense>
-            ) : null}
-            {section === "estimates" ? <EstimatesSection /> : null}
-            {section === "budgets" ? <BudgetsSection /> : null}
-            {section === "schedules" ? <SchedulesSection /> : null}
-            {section === "checklists" ? <ChecklistsSection /> : null}
-          </section>
-        </div>
-      </div>
-    </PageLayout>
-  );
+  const section = resolveTemplateSection((await searchParams).section);
+  if (section === "estimates") return <EstimatesSection />;
+  if (section === "budgets") return <BudgetsSection />;
+  if (section === "schedules") return <SchedulesSection />;
+  if (section === "checklists") return <ChecklistsSection />;
+  return <WaiversSection />;
 }
 
 async function EstimatesSection() {
@@ -157,7 +43,7 @@ async function EstimatesSection() {
 
 async function BudgetsSection() {
   const [budgetTemplates, costCodes] = await Promise.all([
-    listBudgetTemplates().catch(() => []),
+    listBudgetTemplates(),
     listCostCodesAction(true),
   ]);
   return (
@@ -169,26 +55,32 @@ async function BudgetsSection() {
 }
 
 async function SchedulesSection() {
-  const scheduleTemplates = await listTemplates().catch(() => []);
+  const scheduleTemplates = await listTemplates();
   return <ScheduleTemplatesClient initialTemplates={scheduleTemplates} />;
 }
 
 async function ChecklistsSection() {
-  const templates = await listChecklistTemplates(undefined, {
-    includeInactive: true,
-  });
-  return <ChecklistsClient templates={templates} />;
+  const ctx = await requireOrgContext();
+  const [templates, writeDecision, seedDecision] = await Promise.all([
+    listChecklistTemplates(undefined, { includeInactive: true }),
+    authorize({ ...ctx, permission: "inspection.write" }),
+    authorize({ ...ctx, permission: "org.admin" }),
+  ]);
+  return <ChecklistsClient templates={templates} canManage={writeDecision.allowed} canSeed={seedDecision.allowed} />;
 }
 
 async function WaiversSection() {
   const ctx = await requireOrgContext();
-  const [templates, decision] = await Promise.all([
+  const [templates, decision, projects] = await Promise.all([
     listCompanyWaiverTemplates(),
     authorize({ ...ctx, permission: "org.admin" }),
+    ctx.supabase.from("projects").select("id,name").eq("org_id", ctx.orgId).order("name").limit(500),
   ]);
   return (
     <WaiverTemplateLibrary
       initialTemplates={templates}
+      orgId={ctx.orgId}
+      projects={projects.data ?? []}
       canManage={decision.allowed}
     />
   );
@@ -196,8 +88,10 @@ async function WaiversSection() {
 
 export default function TemplatesPage(props: Parameters<typeof TemplatesPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<TemplateLibraryLoading />}>
       <TemplatesPageContent {...props} />
     </Suspense>
   )
 }
+
+export const maxDuration = 180;

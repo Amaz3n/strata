@@ -16,7 +16,16 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 const money = (cents: number) => (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })
 
 export function ChangeEventsClient({ projectId, initialEvents }: { projectId: string; initialEvents: ChangeEvent[] }) {
+  return <ChangeEventsContent key={projectId} projectId={projectId} initialEvents={initialEvents} />
+}
+
+function ChangeEventsContent({ projectId, initialEvents }: { projectId: string; initialEvents: ChangeEvent[] }) {
   const [events, setEvents] = useState(initialEvents)
+  const [eventSource, setEventSource] = useState(initialEvents)
+  if (eventSource !== initialEvents) {
+    setEventSource(initialEvents)
+    setEvents(initialEvents)
+  }
   const [open, setOpen] = useState(false)
   const [title, setTitle] = useState("")
   const [description, setDescription] = useState("")

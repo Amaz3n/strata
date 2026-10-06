@@ -16,7 +16,10 @@ import {
  * catalog page, the viewer, the export route, and run history all read from
  * this list, so a report can never ship invisible or unexportable.
  */
-export const REPORT_DEFINITIONS: ReportDefinition[] = [...FINANCIAL_REPORTS, ...PRODUCTION_REPORTS, ...PARITY_REPORTS]
+export const REPORT_DEFINITIONS: ReportDefinition[] = [...FINANCIAL_REPORTS, ...PRODUCTION_REPORTS, ...PARITY_REPORTS, {
+  slug: "report-packet", title: "Report Packet", summary: "Combine saved reports and commentary into one review package.", group: "financial", scopes: ["org"], permissions: ["report.read"],
+  run: async (context) => (await import("@/lib/services/report-workspace")).buildReportPacket(context),
+}]
 
 /**
  * Group order on the catalog, by posture. A production builder lives in the

@@ -1,0 +1,7 @@
+1..6
+ok 1 - bulk approval no longer raises its own vendor_bill_approved event
+ok 2 - the approval evidence stayed in the transaction
+ok 3 - the durable projection job stayed in the transaction
+ok 4 - waiver seeding stayed in the transaction
+ok 5 - browser roles cannot approve through the atomic RPC
+ok 6 - a SQL-only event still writes itself inside its own transaction

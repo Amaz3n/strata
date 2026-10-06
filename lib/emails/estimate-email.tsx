@@ -17,6 +17,7 @@ import {
 } from "./theme"
 
 export interface EstimateEmailProps {
+  documentKind?: "estimate" | "proposal" | "agreement"
   estimateTitle: string
   reviewLink: string
   orgName?: string | null
@@ -30,6 +31,7 @@ export interface EstimateEmailProps {
 }
 
 export function EstimateEmail({
+  documentKind = "estimate",
   estimateTitle = "Estimate",
   reviewLink = "#",
   orgName,
@@ -41,19 +43,20 @@ export function EstimateEmail({
   message,
   previewText,
 }: EstimateEmailProps) {
+  const documentLabel = documentKind.charAt(0).toUpperCase() + documentKind.slice(1)
   const displayOrgName = orgName ?? "Arc"
   const greeting = recipientName?.trim() ? `Hi ${recipientName.trim()},` : "Hello,"
-  const resolvedPreview = previewText ?? `${displayOrgName} sent you an estimate: ${estimateTitle}`
+  const resolvedPreview = previewText ?? `${displayOrgName} sent you ${documentKind === "proposal" ? "a" : "an"} ${documentKind}: ${estimateTitle}`
 
   return (
     <EmailLayout
       preview={resolvedPreview}
-      subtitle="Estimate for review"
+      subtitle={`${documentLabel} for ${documentKind === "agreement" ? "signature" : "review"}`}
       orgName={orgName}
       orgLogoUrl={orgLogoUrl}
     >
-      <Text style={eventLabelText}>Estimate</Text>
-      <Heading style={heading}>Your estimate is ready</Heading>
+      <Text style={eventLabelText}>{documentLabel}</Text>
+      <Heading style={heading}>Your {documentKind} is ready</Heading>
       <Text style={subjectText}>{estimateTitle}</Text>
 
       <Text style={paragraph}>{greeting}</Text>
@@ -62,15 +65,14 @@ export function EstimateEmail({
           message
         ) : (
           <>
-            <strong>{displayOrgName}</strong> has prepared an estimate for you. Review the full
-            breakdown online, then approve it, reject it, or request changes — right from the page.
+            <strong>{displayOrgName}</strong> has prepared your {documentKind}. Review the scope and pricing, then {documentKind === "agreement" ? "sign the agreement" : "approve it"} or request changes.
           </>
         )}
       </Text>
 
       <Section style={metaCard}>
         <Text style={metaRow}>
-          <span style={metaLabel}>Estimate:</span> <span style={metaValue}>{estimateTitle}</span>
+          <span style={metaLabel}>{documentLabel}:</span> <span style={metaValue}>{estimateTitle}</span>
         </Text>
         {projectName ? (
           <Text style={metaRow}>
@@ -90,7 +92,7 @@ export function EstimateEmail({
 
       <Section style={buttonWrap}>
         <Button style={button} href={reviewLink}>
-          Review estimate
+          Review {documentKind}
         </Button>
       </Section>
 

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useTransition } from "react"
+import { useEffect, useRef, useState, useTransition } from "react"
 import { format } from "date-fns"
 import { HelpCircle } from "lucide-react"
 
@@ -29,25 +29,47 @@ const statusColors: Record<string, string> = {
   closed: "bg-muted text-muted-foreground",
 }
 
-export function ReviewerRfisTab({ rfis, token, canRespond = true }: ReviewerRfisTabProps) {
+export function ReviewerRfisTab(props: ReviewerRfisTabProps) {
+  return <ReviewerRfisWorkspace key={props.token} {...props} />
+}
+
+function ReviewerRfisWorkspace({ rfis, token, canRespond = true }: ReviewerRfisTabProps) {
   const [items, setItems] = useState<Rfi[]>(rfis)
   const [selected, setSelected] = useState<Rfi | null>(null)
   const [responses, setResponses] = useState<RfiResponse[]>([])
   const [body, setBody] = useState("")
   const [isPending, startTransition] = useTransition()
   const [loadingThread, setLoadingThread] = useState(false)
+  const [rfiSource, setRfiSource] = useState(rfis)
+  const threadRead = useRef<AbortController | null>(null)
+  if (rfiSource !== rfis) {
+    setRfiSource(rfis)
+    setItems(rfis)
+    if (selected) setSelected(rfis.find(rfi => rfi.id === selected.id) ?? null)
+  }
+  const selectedId = selected?.id
 
   useEffect(() => {
-    if (!selected) return
+    if (!selectedId) {
+      threadRead.current = null
+      setResponses([])
+      setLoadingThread(false)
+      return
+    }
+    const controller = new AbortController()
+    threadRead.current = controller
+    setResponses([])
     setLoadingThread(true)
-    listReviewerRfiResponsesAction(token, selected.id)
-      .then((rows) => setResponses(rows))
-      .catch((err) => console.error("Failed to load RFI responses", err))
-      .finally(() => setLoadingThread(false))
-  }, [selected, token])
+    listReviewerRfiResponsesAction(token, selectedId)
+      .then((rows) => { if (!controller.signal.aborted) setResponses(rows) })
+      .catch((err) => { if (!controller.signal.aborted) console.error("Failed to load RFI responses", err) })
+      .finally(() => { if (!controller.signal.aborted) setLoadingThread(false) })
+    return () => controller.abort()
+  }, [selectedId, token])
 
   const handleSend = (responseType: "comment" | "answer") => {
     if (!selected || !body.trim()) return
+    const controller = threadRead.current
     startTransition(async () => {
       try {
         await addReviewerRfiResponseAction(token, {
@@ -55,7 +77,9 @@ export function ReviewerRfisTab({ rfis, token, canRespond = true }: ReviewerRfis
           response_type: responseType,
           body,
         })
+        if (controller !== threadRead.current || controller?.signal.aborted) return
         const rows = await listReviewerRfiResponsesAction(token, selected.id)
+        if (controller !== threadRead.current || controller?.signal.aborted) return
         setResponses(rows)
         setBody("")
         if (responseType === "answer") {
@@ -102,7 +126,7 @@ export function ReviewerRfisTab({ rfis, token, canRespond = true }: ReviewerRfis
                 ) : (
                   <span />
                 )}
-                <Button variant="outline" size="sm" onClick={() => setSelected(rfi)}>
+                <Button variant="outline" size="sm" onClick={() => { setBody(""); setSelected(rfi) }}>
                   {canRespond ? "View & Respond" : "View"}
                 </Button>
               </div>

@@ -1,0 +1,10 @@
+1..9
+ok 1 - decision reads require server project authorization
+ok 2 - anonymous clients cannot read pricing decisions
+ok 3 - pricing decisions require authorized server validation
+ok 4 - clients cannot rewrite decision history
+ok 5 - clients cannot delete issued scope snapshots
+ok 6 - pricing RPC is server only
+ok 7 - scope revision RPC is server only
+ok 8 - reviewed award requires server authorization
+ok 9 - authorized portal service can submit against an issued revision

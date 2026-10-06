@@ -1,0 +1,4 @@
+1..3
+ok 1 - browser cannot bypass entity chart editor context authorization
+ok 2 - editor context preserves invoker authority
+ok 3 - editor context shares one statement snapshot

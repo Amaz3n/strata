@@ -31,6 +31,7 @@ export interface ReportColumn {
   /** Defaults to "text". Numeric types right-align and get `tabular-nums`. */
   type?: ReportColumnType
   /** Carried in exports but hidden on screen — ids, raw cents behind a formatted twin. */
+  aggregation?: "sum"
   exportOnly?: boolean
   /** Tailwind width/min-width class for the header cell. */
   className?: string
@@ -51,7 +52,22 @@ export type ReportCell =
       tone?: ReportTone
     }
 
+export interface ReportActivity {
+  operatingOnly?: boolean
+  unassignedOnly?: boolean
+  accountId: string
+  code: string
+  name: string
+  projectId?: string | null
+  projectName?: string | null
+  startDate: string
+  endDate: string
+}
+
 export interface ReportRow {
+  activity?: ReportActivity
+  activities?: Record<string, ReportActivity>
+  children?: ReportRow[]
   key: string
   /**
    * Absent keys are legal and render as "—". Columns are conditional (the
@@ -70,6 +86,9 @@ export interface ReportRow {
 }
 
 export interface ReportTable {
+  chart?: boolean
+  pageBreak?: boolean
+  locked?: boolean
   key: string
   title?: string
   description?: string
@@ -95,6 +114,9 @@ export interface ReportStat {
 }
 
 export interface ReportResult {
+  sources?: { slug: string; projectId?: string }[]
+  commentary?: string
+  provenance?: { source: string; status: string; generatedAt: string; scope: string }
   /** Provenance line under the title — "As of Jul 28, 2026 · 34 projects". */
   subtitle?: string
   stats?: ReportStat[]

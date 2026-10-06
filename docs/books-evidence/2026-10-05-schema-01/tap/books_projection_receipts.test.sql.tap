@@ -1,0 +1,5 @@
+1..4
+ok 1 - projection receipts have RLS enabled
+ok 2 - browser cannot read unscoped receipts
+ok 3 - browser cannot certify a projection
+ok 4 - receipt cannot certify missing accounting evidence

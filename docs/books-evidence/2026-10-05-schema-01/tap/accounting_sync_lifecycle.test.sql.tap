@@ -1,0 +1,23 @@
+1..18
+ok 1 - first delivery owns a token
+ok 2 - contender cannot claim active delivery
+ok 3 - owner persists remote identity
+ok 4 - non-owner cannot overwrite identity
+ok 5 - owner can complete without replacement identity
+ok 6 - completion retains remote ID
+ok 7 - completion retains remote version
+ok 8 - provider cannot masquerade as another transport
+
+ok 9 - foreign release cannot release owned lease
+ok 10 - expired owner replaced by new token
+ok 11 - stale completion is fenced
+
+ok 12 - stale release does not remove successor
+ok 13 - browser cannot acquire privileged delivery
+ok 14 - identical retry creates no second file line
+{"id": "27524cd4-397a-4212-8977-a1d5d259d6db", "memo": "Revised", "org_id": "28000000-0000-0000-0000-000000000001", "payload": {}, "revised": true, "batch_id": "f631a743-d34f-44f0-8d9e-8deb03f54051", "currency": "usd", "direction": "post", "duplicate": false, "entity_id": "48000000-0000-0000-0000-000000000002", "posted_at": "2026-09-07T00:00:00+00:00", "created_at": "2026-10-06T01:30:07.331698+00:00", "project_id": null, "updated_at": "2026-10-06T01:30:07.331698+00:00", "entity_type": "invoice", "amount_cents": 150, "connection_id": "38000000-0000-0000-0000-000000000002"}
+ok 15 - unexported revision updates batch aggregate
+{"id": "f631a743-d34f-44f0-8d9e-8deb03f54051", "format": "generic", "org_id": "28000000-0000-0000-0000-000000000001", "status": "exported", "created_at": "2026-10-06T01:30:07.331698+00:00", "line_count": 1, "sealed_now": true, "updated_at": "2026-10-06T01:30:07.331698+00:00", "exported_at": "2026-10-06T01:30:07.331698+00:00", "exported_by": "18000000-0000-0000-0000-000000000001", "total_cents": 150, "connection_id": "38000000-0000-0000-0000-000000000002"}
+ok 16 - repeat download does not reseal immutable batch
+ok 17 - exported revision becomes explicit review instead of silent loss
+ok 18 - sealed line remains immutable

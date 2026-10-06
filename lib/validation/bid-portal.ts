@@ -17,6 +17,7 @@ export const bidPortalSubmissionItemSchema = z.object({
 })
 
 export const bidPortalSubmissionInputSchema = z.object({
+  scope_revision: z.number().int().positive(),
   total_cents: z.number().int().positive(),
   currency: z.string().trim().min(1).optional(),
   valid_until: z.string().optional().nullable(),

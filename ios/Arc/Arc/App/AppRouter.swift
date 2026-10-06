@@ -9,6 +9,7 @@ enum AppRoute: Hashable {
     case team
     case expenses
     case projectDetails
+    case fieldTools
     case dailyLog(id: String)
     case scanReceipt
     case drawingSheet(id: String)

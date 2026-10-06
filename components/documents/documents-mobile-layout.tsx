@@ -47,6 +47,7 @@ import { formatFileSize, formatRelativeDate } from "./format"
 import { QUICK_FILTER_CONFIG, type QuickFilter } from "./types"
 
 interface DocumentsMobileLayoutProps {
+  preconstruction?: boolean
   onFileClick: (fileId: string) => void
   onDownloadFile: (fileId: string) => void
   onUploadClick: () => void
@@ -89,6 +90,7 @@ function categoryLabel(category?: string | null): string | null {
 const FILTER_CHIPS = Object.entries(QUICK_FILTER_CONFIG) as [QuickFilter, { label: string }][]
 
 export function DocumentsMobileLayout({
+  preconstruction = false,
   onFileClick,
   onDownloadFile,
   onUploadClick,
@@ -144,7 +146,7 @@ export function DocumentsMobileLayout({
     filteredFiles.length === 0
 
   return (
-    <div className="flex h-full flex-col bg-background">
+    <div className={cn("flex h-full min-h-0 flex-col bg-background", preconstruction && "bg-card")}>
       {/* Header */}
       <div className="sticky top-0 z-10 shrink-0 border-b bg-background">
         <div className="flex items-center gap-2 px-3 pt-3">
@@ -164,7 +166,8 @@ export function DocumentsMobileLayout({
               placeholder="Search documents..."
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
-              className="h-10 pl-9 pr-9 text-sm"
+              className={cn("h-10 pl-9 pr-9 text-sm", preconstruction && "rounded-none border-border/60 bg-muted/30 shadow-none")}
+              aria-label="Search documents"
               inputMode="search"
             />
             {searchInput ? (
@@ -180,7 +183,7 @@ export function DocumentsMobileLayout({
           </div>
           <Button
             size="icon"
-            className="h-10 w-10 shrink-0"
+            className={cn("h-10 w-10 shrink-0", preconstruction && "rounded-none")}
             onClick={() => setNewOpen(true)}
             aria-label="Add"
           >
@@ -198,7 +201,7 @@ export function DocumentsMobileLayout({
                 type="button"
                 onClick={() => setQuickFilter(key)}
                 className={cn(
-                  "shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                  "shrink-0 rounded-none border px-3 py-1.5 text-xs font-medium transition-colors",
                   active
                     ? "border-primary bg-primary text-primary-foreground"
                     : "border-border bg-background text-muted-foreground active:bg-muted",
@@ -227,7 +230,7 @@ export function DocumentsMobileLayout({
         ) : isLoading && currentFolders.length === 0 && filteredFiles.length === 0 ? (
           <MobileSkeleton />
         ) : isEmpty ? (
-          <EmptyState hasFilters={hasFilters} onUploadClick={onUploadClick} />
+          <EmptyState preconstruction={preconstruction} hasFilters={hasFilters} onUploadClick={onUploadClick} />
         ) : (
           <ul className="divide-y">
             {showFolders
@@ -593,15 +596,17 @@ function MobileSkeleton() {
 }
 
 function EmptyState({
+  preconstruction = false,
   hasFilters,
   onUploadClick,
 }: {
+  preconstruction?: boolean
   hasFilters?: boolean
   onUploadClick: () => void
 }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-3 px-6 py-20 text-center">
-      <div className="flex h-14 w-14 items-center justify-center rounded-full bg-muted">
+    <div className={cn("flex flex-col items-center justify-center gap-3 px-6 py-20 text-center", preconstruction && "py-16")}>
+      <div className={cn("flex h-14 w-14 items-center justify-center rounded-none bg-muted", preconstruction && "h-12 w-12 rounded-[16px] border border-border/60 bg-muted/40")}>
         <Upload className="h-6 w-6 text-muted-foreground" />
       </div>
       <div>
@@ -609,7 +614,7 @@ function EmptyState({
         <p className="mt-0.5 text-sm text-muted-foreground">
           {hasFilters
             ? "Try adjusting your search or filters."
-            : "Upload drawings, contracts, photos, and more for this project."}
+            : preconstruction ? "Add scopes, quotes, permits, and project records." : "Upload drawings, contracts, photos, and more for this project."}
         </p>
       </div>
       {!hasFilters ? (

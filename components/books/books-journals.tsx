@@ -5,10 +5,23 @@ import {
   useDeferredValue,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useTransition,
 } from "react";
-import { ChevronRight, Plus, Trash2 } from "lucide-react";
+import {
+  ChevronRight,
+  Plus,
+  Trash2,
+  Search,
+  SlidersHorizontal,
+  RotateCcw,
+  Repeat2,
+  BookOpen,
+  ShieldCheck,
+  Check,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -16,15 +29,28 @@ import {
   listJournalEntriesAction,
   listRecurringTemplatesAction,
   proposeAdjustingJournalAction,
-  listJournalProposalsAction,
-  reviewJournalProposalAction,
   setRecurringTemplateStatusAction,
 } from "@/app/(app)/books/actions";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AccountActivitySheet, type ActivityTarget } from "@/components/books/account-activity-sheet";
+import {
+  AccountActivitySheet,
+  type ActivityTarget,
+} from "@/components/books/account-activity-sheet";
 import {
   Select,
   SelectContent,
@@ -37,6 +63,10 @@ import type {
   JournalEntrySummary,
   RecurringPostingTemplate,
 } from "@/lib/services/books/bookkeeping";
+import { JournalProposalReview } from "@/components/books/journal-proposal-review";
+import { JournalRecoveryPanel } from "@/components/books/journal-recovery";
+import { executeJournalRecovery } from "@/lib/services/books/journal-recovery-client";
+import type { JournalRecoveryScope } from "@/lib/services/books/journal-recovery";
 import { parseMoneyToCents } from "@/lib/financials/money-input";
 import { cn, formatMoneyCentsExact } from "@/lib/utils";
 
@@ -73,9 +103,13 @@ type JournalListing = JournalEntryListing;
 type RecurringTemplate = RecurringPostingTemplate;
 
 const KIND_FILTERS: Array<{ key: string; label: string; kinds?: string[] }> = [
-  { key: "all", label: "All" },
-  { key: "manual", label: "Hand-posted", kinds: ["adjusting", "opening"] },
-  { key: "derived", label: "Derived", kinds: ["operational", "poc"] },
+  { key: "all", label: "All entries" },
+  {
+    key: "manual",
+    label: "Adjustments & opening",
+    kinds: ["adjusting", "opening"],
+  },
+  { key: "derived", label: "Operational", kinds: ["operational", "poc"] },
   {
     key: "closing",
     label: "Closing & reversals",
@@ -103,47 +137,126 @@ function todayIso() {
 }
 
 export function BooksJournals({
+  scope,
   accounts,
   asOf,
 }: {
   accounts: GlAccount[];
   asOf: string;
+  scope: JournalRecoveryScope;
 }) {
-  const [pane, setPane] = useState<"entries" | "new" | "recurring">("entries");
-
+  const [recoveryBlocked, setRecoveryBlocked] = useState(true);
+  const [pane, setPane] = useState<"new" | "recurring" | "review" | null>(null);
+  const [revision, setRevision] = useState(0);
   return (
-    <div className="desk-rise space-y-4">
-      <nav className="flex flex-wrap gap-1" aria-label="Journal views">
-        {[
-          { key: "entries", label: "Entries" },
-          { key: "new", label: "New entry" },
-          { key: "recurring", label: "Recurring" },
-        ].map((item) => (
-          <button
-            key={item.key}
-            type="button"
-            onClick={() => setPane(item.key as typeof pane)}
-            className={cn(
-              "border px-3 py-1.5 text-sm transition-colors",
-              pane === item.key
-                ? "border-foreground bg-foreground text-background"
-                : "text-muted-foreground hover:text-foreground",
-            )}
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
+      <JournalRecoveryPanel
+        scope={scope}
+        onBlockedChange={setRecoveryBlocked}
+        onRecovered={() => setRevision((value) => value + 1)}
+      />
+      <EntriesPane
+        accounts={accounts}
+        revision={revision}
+        actions={
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPane("review")}
+            >
+              <ShieldCheck className="size-4" />
+              Journal approvals
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPane("recurring")}
+            >
+              <Repeat2 className="size-4" />
+              Recurring
+            </Button>
+            <Button
+              size="sm"
+              disabled={recoveryBlocked}
+              onClick={() => setPane("new")}
+            >
+              <Plus className="size-4" />
+              New adjustment
+            </Button>
+          </>
+        }
+      />
+      <Dialog
+        open={pane !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPane(null);
+            setRevision((value) => value + 1);
+          }
+        }}
+      >
+        <DialogContent
+          className={cn(
+            "max-h-[90dvh] overflow-y-auto sm:max-w-4xl",
+            pane === "new" && "flex min-w-0 flex-col gap-0 p-0 sm:max-w-5xl",
+          )}
+        >
+          <DialogHeader
+            className={
+              pane === "new" ? "border-b px-6 py-5 pr-12 text-left" : undefined
+            }
           >
-            {item.label}
-          </button>
-        ))}
-      </nav>
-
-      {pane === "entries" ? <EntriesPane accounts={accounts} /> : null}
-      {pane === "new" ? <NewEntryPane accounts={accounts} asOf={asOf} /> : null}
-      {pane === "recurring" ? <RecurringPane accounts={accounts} /> : null}
+            <DialogTitle>
+              {pane === "new"
+                ? "New adjustment"
+                : pane === "review"
+                  ? "Journal approvals"
+                  : "Recurring entries"}
+            </DialogTitle>
+            <DialogDescription>
+              {pane === "new"
+                ? "Create a balanced journal entry for independent approval."
+                : pane === "review"
+                  ? "Review pending adjustments independently before they enter the ledger."
+                  : "Manage scheduled journal entries and posting templates."}
+            </DialogDescription>
+          </DialogHeader>
+          {pane === "new" ? (
+            <NewEntryPane
+              scope={scope}
+              accounts={accounts}
+              asOf={asOf}
+              onSubmitted={() => {
+                setPane(null);
+                setRevision((value) => value + 1);
+              }}
+              onCancel={() => setPane(null)}
+            />
+          ) : pane === "review" ? (
+            <JournalProposalReview
+              onReviewed={() => setRevision((value) => value + 1)}
+            />
+          ) : (
+            <RecurringPane accounts={accounts} />
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
 /** The audit view: which entries a person wrote, and which the projector derived. */
-function EntriesPane({ accounts }: { accounts: GlAccount[] }) {
+function EntriesPane({
+  accounts,
+  actions,
+  revision,
+}: {
+  accounts: GlAccount[];
+  actions: React.ReactNode;
+  revision: number;
+}) {
+  const requestId = useRef(0);
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [accountId, setAccountId] = useState("all");
@@ -156,12 +269,29 @@ function EntriesPane({ accounts }: { accounts: GlAccount[] }) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [activityTarget, setActivityTarget] = useState<ActivityTarget | null>(null);
+  const [activityTarget, setActivityTarget] = useState<ActivityTarget | null>(
+    null,
+  );
 
   const load = useCallback(() => {
+    const request = ++requestId.current;
     const kinds = KIND_FILTERS.find((item) => item.key === filter)?.kinds;
     setLoading(true);
     setError(null);
+    if (
+      (startDate && endDate && startDate > endDate) ||
+      [minAmount, maxAmount].some(
+        (value) =>
+          value && (parseMoneyToCents(value) === null || cents(value) < 0),
+      ) ||
+      (minAmount && maxAmount && cents(minAmount) > cents(maxAmount))
+    ) {
+      setError(
+        "Enter a valid date range and nonnegative amounts, with the minimum no greater than the maximum.",
+      );
+      setLoading(false);
+      return;
+    }
     listJournalEntriesAction({
       ...(kinds ? { entryKinds: kinds } : {}),
       ...(deferredQuery.trim() ? { query: deferredQuery.trim() } : {}),
@@ -172,303 +302,635 @@ function EntriesPane({ accounts }: { accounts: GlAccount[] }) {
       ...(maxAmount ? { maxAmountCents: Math.max(0, cents(maxAmount)) } : {}),
     })
       .then((result) => {
+        if (request !== requestId.current) return;
         if (result.success) setData(result.data as JournalListing);
         else setError(result.error ?? "The journal could not be loaded.");
       })
-      .catch(() => setError("The journal could not be loaded."))
-      .finally(() => setLoading(false));
-  }, [accountId, deferredQuery, endDate, filter, maxAmount, minAmount, startDate]);
+      .catch(() => {
+        if (request === requestId.current)
+          setError("The journal could not be loaded.");
+      })
+      .finally(() => {
+        if (request === requestId.current) setLoading(false);
+      });
+  }, [
+    accountId,
+    deferredQuery,
+    endDate,
+    filter,
+    maxAmount,
+    minAmount,
+    startDate,
+  ]);
 
-  useEffect(load, [load]);
+  useEffect(() => {
+    load();
+    return () => {
+      requestId.current += 1;
+    };
+  }, [load, revision]);
+
+  const hasFilters = Boolean(
+    query ||
+    accountId !== "all" ||
+    startDate ||
+    endDate ||
+    minAmount ||
+    maxAmount ||
+    filter !== "all",
+  );
+  const clearFilters = () => {
+    setQuery("");
+    setAccountId("all");
+    setStartDate("");
+    setEndDate("");
+    setMinAmount("");
+    setMaxAmount("");
+    setFilter("all");
+  };
 
   return (
-    <div className="space-y-3">
-      <div className="border bg-background p-3">
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-[1.4fr_1fr_135px_135px_120px_120px]">
-          <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Memo, source, account, project, or entity" aria-label="Search general ledger" />
-          <Select value={accountId} onValueChange={setAccountId}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All accounts</SelectItem>{accounts.filter((account) => account.active).map((account) => <SelectItem key={account.id} value={account.id}>{account.code} · {account.name}</SelectItem>)}</SelectContent></Select>
-          <Input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} aria-label="Ledger entries from" />
-          <Input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} aria-label="Ledger entries through" />
-          <Input inputMode="decimal" value={minAmount} onChange={(event) => setMinAmount(event.target.value)} placeholder="Min amount" aria-label="Minimum entry amount" />
-          <Input inputMode="decimal" value={maxAmount} onChange={(event) => setMaxAmount(event.target.value)} placeholder="Max amount" aria-label="Maximum entry amount" />
-        </div>
-        <div className="mt-2 flex flex-wrap gap-1">
-          {KIND_FILTERS.map((item) => (
-          <button
-            key={item.key}
-            type="button"
-            onClick={() => setFilter(item.key)}
-            className={cn(
-              "border px-2.5 py-1.5 text-xs transition-colors",
-              filter === item.key
-                ? "border-foreground text-foreground"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {item.label}
-          </button>
-          ))}
-        </div>
-      </div>
-
-      {loading ? <ListSkeleton /> : null}
-
-      {!loading && error ? (
-        <div className="border bg-background px-5 py-12 text-center">
-          <p className="text-sm font-medium">The journal could not be loaded</p>
-          <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-            {error}
-          </p>
-        </div>
-      ) : null}
-
-      {!loading && !error && data ? (
-        data.entries.length === 0 ? (
-          <div className="border bg-background px-5 py-12 text-center">
-            <p className="mx-auto max-w-md text-sm text-muted-foreground">
-              No journal entries match this filter.
-            </p>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b p-4">
+          <div className="relative min-w-48 flex-1 sm:max-w-80">
+            <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" />
+            <Input
+              className="h-9 border-transparent bg-muted/40 pl-9 shadow-none focus-visible:bg-background"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search the ledger…"
+              aria-label="Search general ledger"
+            />
           </div>
-        ) : (
-          <section className="border bg-background">
-            <div className="divide-y">
-              {data.entries.map((entry) => {
-                const isOpen = expanded === entry.id;
-                return (
-                  <div key={entry.id}>
-                    <button
-                      type="button"
-                      onClick={() => setExpanded(isOpen ? null : entry.id)}
-                      aria-expanded={isOpen}
-                      className="grid w-full grid-cols-[16px_88px_1fr_auto] items-start gap-3 px-4 py-3 text-left text-sm hover:bg-muted/40"
-                    >
-                      <ChevronRight
-                        className={cn(
-                          "mt-0.5 h-3.5 w-3.5 text-muted-foreground transition-transform",
-                          isOpen && "rotate-90",
-                        )}
-                      />
-                      <span className="font-mono text-xs text-muted-foreground">
-                        {entry.entryDate}
-                      </span>
-                      <span className="min-w-0">
-                        <span className="block truncate">
-                          {entry.memo || "—"}
-                        </span>
-                        <span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-                          {entry.isManual ? (
-                            <Badge
-                              variant="outline"
-                              className="border-warning/30 bg-warning/10 text-warning"
-                            >
-                              Hand-posted
-                            </Badge>
-                          ) : (
-                            <Badge variant="outline">{entry.entryKind}</Badge>
-                          )}
-                          {entry.isReversal ? (
-                            <Badge variant="outline">reversal</Badge>
-                          ) : null}
-                          {entry.postedByName ? (
-                            <span>{entry.postedByName}</span>
-                          ) : null}
-                          {entry.sourceType ? (
-                            <span className="font-mono">
-                              {entry.sourceType}
-                            </span>
-                          ) : null}
-                        </span>
-                      </span>
-                      <span className="font-mono tabular-nums">
-                        {formatMoneyCentsExact(entry.totalCents)}
-                      </span>
-                    </button>
-                    {isOpen ? (
-                      <div className="border-t bg-muted/20 px-4 py-3">
-                        <table className="w-full text-xs">
-                          <thead>
-                            <tr className="text-left text-muted-foreground">
-                              <th className="pb-1 font-medium">Account</th>
-                              <th className="pb-1 font-medium">Description</th>
-                              <th className="pb-1 text-right font-medium">
-                                Debit
-                              </th>
-                              <th className="pb-1 text-right font-medium">
-                                Credit
-                              </th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {entry.lines.map((line) => (
-                              <tr key={line.id}>
-                                <td className="py-0.5">
-                                  <button type="button" onClick={() => setActivityTarget({ accountId: line.accountId, code: line.accountCode, name: line.accountName })} className="text-left underline-offset-4 hover:underline">
-                                    <span className="font-mono text-muted-foreground">{line.accountCode}</span>{" "}
-                                    {line.accountName}
-                                  </button>
-                                </td>
-                                <td className="py-0.5 text-muted-foreground">
-                                  {line.description ?? "—"}
-                                  {line.projectName || line.companyName ? <span className="ml-1 text-[10px]">· {[line.projectName, line.companyName].filter(Boolean).join(" · ")}</span> : null}
-                                </td>
-                                <td className="py-0.5 text-right font-mono tabular-nums">
-                                  {line.debitCents
-                                    ? formatMoneyCentsExact(line.debitCents)
-                                    : "—"}
-                                </td>
-                                <td className="py-0.5 text-right font-mono tabular-nums">
-                                  {line.creditCents
-                                    ? formatMoneyCentsExact(line.creditCents)
-                                    : "—"}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                        <p className="mt-2 font-mono text-[10px] text-muted-foreground">
-                          {entry.postingKey}
-                        </p>
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              })}
-            </div>
-            {data.truncated ? (
-              <p className="border-t bg-muted/30 px-4 py-2.5 text-xs text-muted-foreground">
-                Showing up to {data.rowCap} matches{data.scanTruncated ? " from the 1,000 most recent entries" : ""}. Narrow the filters to see older activity.
+          <Select value={accountId} onValueChange={setAccountId}>
+            <SelectTrigger
+              className="h-9 w-full sm:w-56"
+              aria-label="Filter by account"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All accounts</SelectItem>
+              {accounts.map((account) => (
+                <SelectItem key={account.id} value={account.id}>
+                  {account.code} · {account.name}
+                  {!account.active ? " (inactive)" : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="sm" className="h-9">
+                <SlidersHorizontal className="size-4" />
+                Filters
+                {[startDate, endDate, minAmount, maxAmount].filter(Boolean)
+                  .length ? (
+                  <Badge variant="secondary">
+                    {
+                      [startDate, endDate, minAmount, maxAmount].filter(Boolean)
+                        .length
+                    }
+                  </Badge>
+                ) : null}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-80 space-y-4">
+              <p className="text-sm font-medium">Refine entries</p>
+              <div className="grid grid-cols-2 gap-3">
+                {[
+                  {
+                    label: "From",
+                    type: "date",
+                    value: startDate,
+                    set: setStartDate,
+                  },
+                  {
+                    label: "Through",
+                    type: "date",
+                    value: endDate,
+                    set: setEndDate,
+                  },
+                  {
+                    label: "Minimum amount",
+                    type: "text",
+                    value: minAmount,
+                    set: setMinAmount,
+                  },
+                  {
+                    label: "Maximum amount",
+                    type: "text",
+                    value: maxAmount,
+                    set: setMaxAmount,
+                  },
+                ].map((field) => (
+                  <label
+                    key={field.label}
+                    className="space-y-1.5 text-xs text-muted-foreground"
+                  >
+                    {field.label}
+                    <Input
+                      type={field.type}
+                      value={field.value}
+                      onChange={(event) => field.set(event.target.value)}
+                    />
+                  </label>
+                ))}
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setStartDate("");
+                  setEndDate("");
+                  setMinAmount("");
+                  setMaxAmount("");
+                }}
+              >
+                Clear filters
+              </Button>
+            </PopoverContent>
+          </Popover>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-9 shrink-0"
+            aria-label="Refresh ledger"
+            onClick={load}
+            disabled={loading}
+          >
+            <RotateCcw className="size-4" />
+          </Button>
+          {hasFilters ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={clearFilters}
+              className="h-9 text-muted-foreground"
+            >
+              <X className="size-3.5" /> Reset
+            </Button>
+          ) : null}
+          <div className="ml-auto flex items-center gap-2">{actions}</div>
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-4 border-b px-4">
+          <nav
+            className="flex max-w-full gap-5 overflow-x-auto"
+            aria-label="Entry types"
+          >
+            {KIND_FILTERS.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                aria-pressed={filter === item.key}
+                onClick={() => setFilter(item.key)}
+                className={cn(
+                  "whitespace-nowrap border-b-2 px-0.5 py-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                  filter === item.key
+                    ? "border-primary text-foreground"
+                    : "border-transparent text-muted-foreground hover:border-border hover:text-foreground",
+                )}
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
+          <span
+            className="py-3 text-xs tabular-nums text-muted-foreground"
+            aria-live="polite"
+          >
+            {loading
+              ? "Updating…"
+              : data && !error
+                ? `${data.entries.length}${data.truncated ? "+" : ""} entries`
+                : ""}
+          </span>
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto" aria-busy={loading}>
+          {loading ? <ListSkeleton /> : null}
+
+          {!loading && error ? (
+            <div className="bg-background px-5 py-20 text-center">
+              <p className="text-sm font-medium">
+                The journal could not be loaded
               </p>
-            ) : null}
-          </section>
-        )
-      ) : null}
+              <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
+                {error}
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-4"
+                onClick={load}
+              >
+                Try again
+              </Button>
+            </div>
+          ) : null}
+
+          {!loading && !error && data ? (
+            data.entries.length === 0 ? (
+              <div className="bg-background px-5 py-20 text-center">
+                <div className="mx-auto mb-4 flex size-12 items-center justify-center rounded-full bg-muted/50">
+                  <BookOpen className="size-5 text-muted-foreground" />
+                </div>
+                <p className="text-sm font-medium">No entries to show</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {hasFilters
+                    ? "Try a different account, search, or date range."
+                    : "Posted journal entries will appear here."}
+                </p>
+                {hasFilters ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mt-4"
+                    onClick={clearFilters}
+                  >
+                    Clear filters
+                  </Button>
+                ) : null}
+              </div>
+            ) : (
+              <section className="min-w-[850px] bg-background">
+                <div className="sticky top-0 z-10 grid grid-cols-[16px_96px_minmax(200px,1fr)_120px_120px_80px] gap-4 border-b bg-background px-5 py-3 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                  <span />
+                  <span>Date</span>
+                  <span>Journal entry / source</span>
+                  <span className="text-right">Debit</span>
+                  <span className="text-right">Credit</span>
+                  <span className="text-right">Status</span>
+                </div>
+                <div className="divide-y">
+                  {data.entries.map((entry) => {
+                    const isOpen = expanded === entry.id;
+                    return (
+                      <div key={entry.id}>
+                        <button
+                          type="button"
+                          onClick={() => setExpanded(isOpen ? null : entry.id)}
+                          aria-expanded={isOpen}
+                          className="grid w-full grid-cols-[16px_96px_minmax(200px,1fr)_120px_120px_80px] items-center gap-4 px-5 py-4 text-left text-sm transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                        >
+                          <ChevronRight
+                            className={cn(
+                              "h-3.5 w-3.5 text-muted-foreground transition-transform motion-reduce:transition-none",
+                              isOpen && "rotate-90",
+                            )}
+                          />
+                          <span className="font-mono text-xs text-muted-foreground">
+                            {entry.entryDate}
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block truncate font-medium">
+                              {entry.memo || "—"}
+                            </span>
+                            <span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+                              <span className="capitalize">
+                                {entry.isManual
+                                  ? "Adjustment"
+                                  : entry.entryKind.replaceAll("_", " ")}
+                                {entry.isReversal &&
+                                entry.entryKind !== "reversal"
+                                  ? " · Reversal"
+                                  : ""}
+                              </span>
+                              {entry.postedByName ? (
+                                <span>{entry.postedByName}</span>
+                              ) : null}
+                              {entry.sourceType ? (
+                                <span className="before:mr-1.5 before:content-['·']">
+                                  {entry.sourceType.replaceAll("_", " ")}
+                                </span>
+                              ) : null}
+                            </span>
+                          </span>
+                          <span className="text-right font-mono tabular-nums">
+                            {formatMoneyCentsExact(entry.totalCents)}
+                          </span>
+                          <span className="text-right font-mono tabular-nums">
+                            {formatMoneyCentsExact(
+                              entry.lines.reduce(
+                                (sum, line) => sum + line.creditCents,
+                                0,
+                              ),
+                            )}
+                          </span>
+                          <span className="text-right text-xs capitalize text-muted-foreground">
+                            {entry.status.replaceAll("_", " ")}
+                          </span>
+                        </button>
+                        {isOpen ? (
+                          <div className="border-t bg-muted/20 px-5 py-4 sm:pl-14">
+                            <table className="w-full text-xs">
+                              <thead>
+                                <tr className="text-left text-muted-foreground">
+                                  <th className="pb-1 font-medium">Account</th>
+                                  <th className="pb-1 font-medium">
+                                    Description
+                                  </th>
+                                  <th className="pb-1 text-right font-medium">
+                                    Debit
+                                  </th>
+                                  <th className="pb-1 text-right font-medium">
+                                    Credit
+                                  </th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {entry.lines.map((line) => (
+                                  <tr key={line.id}>
+                                    <td className="py-2">
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setActivityTarget({
+                                            accountId: line.accountId,
+                                            code: line.accountCode,
+                                            name: line.accountName,
+                                          })
+                                        }
+                                        className="text-left underline-offset-4 hover:underline"
+                                      >
+                                        <span className="font-mono text-muted-foreground">
+                                          {line.accountCode}
+                                        </span>{" "}
+                                        {line.accountName}
+                                      </button>
+                                    </td>
+                                    <td className="py-2 text-muted-foreground">
+                                      {line.description ?? "—"}
+                                      {line.projectName || line.companyName ? (
+                                        <span className="ml-1 text-[10px]">
+                                          ·{" "}
+                                          {[line.projectName, line.companyName]
+                                            .filter(Boolean)
+                                            .join(" · ")}
+                                        </span>
+                                      ) : null}
+                                    </td>
+                                    <td className="py-2 text-right font-mono tabular-nums">
+                                      {line.debitCents
+                                        ? formatMoneyCentsExact(line.debitCents)
+                                        : "—"}
+                                    </td>
+                                    <td className="py-2 text-right font-mono tabular-nums">
+                                      {line.creditCents
+                                        ? formatMoneyCentsExact(
+                                            line.creditCents,
+                                          )
+                                        : "—"}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                            <p className="mt-2 font-mono text-[10px] text-muted-foreground">
+                              {entry.postingKey}
+                            </p>
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+                {data.truncated ? (
+                  <p className="border-t bg-muted/30 px-4 py-2.5 text-xs text-muted-foreground">
+                    Showing up to {data.rowCap} matches
+                    {data.scanTruncated
+                      ? " from the 1,000 most recent entries"
+                      : ""}
+                    . Narrow the filters to see older activity.
+                  </p>
+                ) : null}
+              </section>
+            )
+          ) : null}
+        </div>
+        {!loading && !error && data ? (
+          <footer className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t bg-muted/10 px-5 py-3 text-xs text-muted-foreground">
+            <span>
+              {data.truncated
+                ? "Partial results · narrow the date range to inspect older entries"
+                : "Totals for displayed entries"}
+            </span>
+            <div className="flex gap-6 tabular-nums">
+              <span>
+                Debit{" "}
+                <strong className="ml-2 font-medium text-foreground">
+                  {formatMoneyCentsExact(
+                    data.entries.reduce(
+                      (sum, entry) => sum + entry.totalCents,
+                      0,
+                    ),
+                  )}
+                </strong>
+              </span>
+              <span>
+                Credit{" "}
+                <strong className="ml-2 font-medium text-foreground">
+                  {formatMoneyCentsExact(
+                    data.entries.reduce(
+                      (sum, entry) =>
+                        sum +
+                        entry.lines.reduce(
+                          (total, line) => total + line.creditCents,
+                          0,
+                        ),
+                      0,
+                    ),
+                  )}
+                </strong>
+              </span>
+            </div>
+          </footer>
+        ) : null}
+      </div>
       <AccountActivitySheet
         target={activityTarget}
         startDate={startDate || `${new Date().getFullYear()}-01-01`}
         endDate={endDate || todayIso()}
-        onOpenChange={(open) => { if (!open) setActivityTarget(null); }}
+        onOpenChange={(open) => {
+          if (!open) setActivityTarget(null);
+        }}
       />
     </div>
   );
 }
 
 function NewEntryPane({
+  scope,
   accounts,
   asOf,
+  onCancel,
+  onSubmitted,
 }: {
+  scope: JournalRecoveryScope;
   accounts: GlAccount[];
   asOf: string;
+  onCancel: () => void;
+  onSubmitted: () => void;
 }) {
+  const [intentId] = useState(() => crypto.randomUUID());
+  const [submitted, setSubmitted] = useState<
+    Parameters<typeof proposeAdjustingJournalAction>[0] | null
+  >(null);
+  const submitting = useRef(false);
   const [entryDate, setEntryDate] = useState(asOf || todayIso());
   const [memo, setMemo] = useState("");
   const [reversingOn, setReversingOn] = useState("");
   const [lines, setLines] = useState<DraftLine[]>([emptyLine(), emptyLine()]);
   const [pending, startTransition] = useTransition();
-  const [proposals, setProposals] = useState<Awaited<ReturnType<typeof import("@/lib/services/books/bookkeeping").listJournalProposals>> | null>(null);
-
-  const loadProposals = useCallback(() => {
-    listJournalProposalsAction().then((result) => {
-      if (result.success) setProposals(result.data);
-    });
-  }, []);
-  useEffect(loadProposals, [loadProposals]);
-
   const totals = useTotals(lines);
   const problem = useDraftProblem({ memo, lines, totals });
 
   const submit = () => {
+    if (submitting.current) return;
+    const request = submitted ?? {
+      intentId,
+      expectedOrgId: scope.orgId,
+      expectedActorId: scope.actorId,
+      entryDate,
+      memo,
+      reversingOn: reversingOn || null,
+      lines: toPayloadLines(lines),
+    };
+    submitting.current = true;
+    setSubmitted(request);
     startTransition(async () => {
-      const result = await proposeAdjustingJournalAction({
-        entryDate,
-        memo,
-        reversingOn: reversingOn || null,
-        lines: toPayloadLines(lines),
-      });
-      if (!result.success) {
-        toast.error(result.error);
-        return;
+      try {
+        const result = await executeJournalRecovery(scope, {
+          version: 1,
+          kind: "prepare",
+          request: {
+            ...request,
+            expectedOrgId: scope.orgId,
+            expectedActorId: scope.actorId,
+          },
+        });
+        toast.success(
+          result.status === "pending"
+            ? "Adjustment sent to a second reviewer"
+            : "Original submission recovered; open Journal approvals or the ledger to inspect its review.",
+        );
+        onSubmitted();
+      } catch (error) {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Submission result could not be confirmed. Retry the original submission.",
+        );
+      } finally {
+        submitting.current = false;
       }
-      toast.success("Adjustment sent to a second reviewer");
-      setMemo("");
-      setReversingOn("");
-      setLines([emptyLine(), emptyLine()]);
-      loadProposals();
     });
   };
 
   return (
-    <section className="border bg-background">
-      <div className="border-b px-5 py-4">
-        <p className="text-sm font-semibold">Propose an adjusting entry</p>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">
-          A different Books adjuster must approve the proposal. Once approved,
-          the entry is immutable; corrections reverse and repost.
-        </p>
-      </div>
-
-      <div className="grid gap-3 border-b px-5 py-4 sm:grid-cols-3">
-        <label className="space-y-1">
-          <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-            Entry date
-          </span>
-          <Input
-            type="date"
-            value={entryDate}
-            onChange={(event) => setEntryDate(event.target.value)}
-            required
-          />
-        </label>
-        <label className="space-y-1 sm:col-span-2">
-          <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-            Memo
-          </span>
-          <Input
-            value={memo}
-            onChange={(event) => setMemo(event.target.value)}
-            placeholder="Why this entry exists"
-            required
-          />
-        </label>
-        <label className="space-y-1">
-          <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-            Reversing on (optional)
-          </span>
-          <Input
-            type="date"
-            value={reversingOn}
-            onChange={(event) => setReversingOn(event.target.value)}
-          />
-        </label>
-      </div>
-
-      <LineEditor accounts={accounts} lines={lines} onChange={setLines} />
-      <BalanceBar totals={totals} />
-
-      <div className="flex items-center justify-between gap-3 border-t px-5 py-4">
-        <p className="text-xs text-muted-foreground">
-          {problem ?? "Balanced and ready to post."}
-        </p>
-        <Button onClick={submit} disabled={Boolean(problem) || pending}>
-          {pending ? "Submitting…" : "Submit for approval"}
-        </Button>
-      </div>
-      {proposals?.proposals.some((proposal) => proposal.status === "pending") ? (
-        <div className="border-t">
-          <div className="border-b bg-muted/20 px-5 py-3 text-xs font-semibold uppercase tracking-wide">Pending journal approvals</div>
-          <div className="divide-y">
-            {proposals.proposals.filter((proposal) => proposal.status === "pending").map((proposal) => {
-              const proposer = Array.isArray(proposal.proposer) ? proposal.proposer[0] : proposal.proposer;
-              const own = proposal.proposed_by === proposals.currentUserId;
-              return (
-                <div key={proposal.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
-                  <div><p className="text-sm">{proposal.memo}</p><p className="mt-1 font-mono text-[10px] text-muted-foreground">{proposal.entry_date} · {proposer?.full_name ?? proposer?.email ?? "Unknown maker"}</p></div>
-                  {own ? <Badge variant="outline">Awaiting another reviewer</Badge> : <div className="flex gap-2"><Button size="sm" variant="outline" disabled={pending} onClick={() => startTransition(async () => { const result = await reviewJournalProposalAction({ proposalId: proposal.id, decision: "reject", note: "Rejected during independent journal review" }); if (!result.success) toast.error(result.error); else { toast.success("Proposal rejected"); loadProposals() } })}>Reject</Button><Button size="sm" disabled={pending} onClick={() => startTransition(async () => { const result = await reviewJournalProposalAction({ proposalId: proposal.id, decision: "approve" }); if (!result.success) toast.error(result.error); else { toast.success("Entry approved and posted"); loadProposals() } })}>Approve & post</Button></div>}
-                </div>
-              );
-            })}
-          </div>
+    <section className="min-w-0 bg-background">
+      <fieldset disabled={pending || submitted !== null} className="min-w-0">
+        <div className="grid gap-6 px-6 py-6 sm:grid-cols-[minmax(0,1fr)_200px]">
+          <label className="space-y-2">
+            <span className="text-sm font-medium">Memo</span>
+            <Input
+              aria-label="Memo"
+              value={memo}
+              onChange={(event) => setMemo(event.target.value)}
+              placeholder="e.g. September depreciation"
+              required
+              className="h-10"
+            />
+            <span className="block text-xs text-muted-foreground">
+              Describe the reason for this adjustment.
+            </span>
+          </label>
+          <label className="space-y-2">
+            <span className="text-sm font-medium">Entry date</span>
+            <Input
+              type="date"
+              aria-label="Entry date"
+              value={entryDate}
+              onChange={(event) => setEntryDate(event.target.value)}
+              required
+              className="h-10"
+            />
+            <span className="block text-xs text-muted-foreground">
+              Date recorded in the ledger.
+            </span>
+          </label>
         </div>
-      ) : null}
+        <div className="mx-6 overflow-hidden border">
+          <div className="flex items-center justify-between gap-3 border-b bg-muted/20 px-4 py-3">
+            <h3 className="text-sm font-medium">Journal lines</h3>
+            <span className="text-xs text-muted-foreground">
+              USD · {lines.length} lines
+            </span>
+          </div>
+          <LineEditor accounts={accounts} lines={lines} onChange={setLines} />
+          <BalanceBar totals={totals} />
+        </div>
+        <div className="px-6 py-5">
+          <details className="group">
+            <summary className="flex w-fit cursor-pointer list-none items-center gap-2 text-xs font-medium text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
+              <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
+              Schedule a reversal{" "}
+              <span className="font-normal">· Optional</span>
+            </summary>
+            <div className="mt-3 flex flex-wrap items-center gap-4 border-l pl-5">
+              <label className="space-y-1.5 text-xs font-medium">
+                Reversal date
+                <Input
+                  type="date"
+                  value={reversingOn}
+                  onChange={(event) => setReversingOn(event.target.value)}
+                  className="mt-1.5 w-44"
+                />
+              </label>
+              <p className="max-w-xs text-xs leading-5 text-muted-foreground">
+                Use for temporary adjustments that should reverse in a later
+                period.
+              </p>
+            </div>
+          </details>
+        </div>
+      </fieldset>
+      <div className="mx-6 mb-5 flex items-start gap-3 bg-muted/30 px-4 py-3">
+        <ShieldCheck className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+        <p className="text-xs leading-5 text-muted-foreground">
+          A different Books adjuster will review this entry before it posts.
+          Approved entries are corrected by reversal.
+        </p>
+      </div>
+      <div className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-4 border-t bg-background px-6 py-4">
+        <p
+          className={cn(
+            "flex max-w-sm items-center gap-2 text-xs",
+            problem ? "text-muted-foreground" : "text-success",
+          )}
+          aria-live="polite"
+        >
+          {!problem && <Check className="size-4 shrink-0" />}
+          {submitted
+            ? "Original submission retained. Retry confirms the same proposal."
+            : (problem ?? "Balanced and ready for review.")}
+        </p>
+        <div className="ml-auto flex gap-2">
+          <Button variant="ghost" onClick={onCancel} disabled={pending}>
+            Cancel
+          </Button>
+          <Button
+            onClick={submit}
+            disabled={Boolean(problem) || !entryDate || pending}
+          >
+            {pending
+              ? "Submitting…"
+              : submitted
+                ? "Retry original submission"
+                : "Submit for approval"}
+          </Button>
+        </div>
+      </div>
     </section>
   );
 }
@@ -775,7 +1237,14 @@ function LineEditor({
   return (
     <div className="px-5 py-4">
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[680px] text-sm">
+        <table className="w-full min-w-[640px] table-fixed text-sm">
+          <colgroup>
+            <col className="w-[32%]" />
+            <col className="w-[28%]" />
+            <col className="w-[18%]" />
+            <col className="w-[18%]" />
+            <col className="w-9" />
+          </colgroup>
           <thead>
             <tr className="text-left">
               <th className="pb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
@@ -784,10 +1253,10 @@ function LineEditor({
               <th className="pb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                 Description
               </th>
-              <th className="pb-2 text-right text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              <th className="pb-2 pr-5 text-right text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                 Debit
               </th>
-              <th className="pb-2 text-right text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              <th className="pb-2 pr-5 text-right text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                 Credit
               </th>
               <th className="w-9 pb-2" />
@@ -803,7 +1272,10 @@ function LineEditor({
                       update(line.key, { accountCode })
                     }
                   >
-                    <SelectTrigger className="w-full" aria-label="Account">
+                    <SelectTrigger
+                      className="w-full [&>span]:truncate"
+                      aria-label="Account"
+                    >
                       <SelectValue placeholder="Select account" />
                     </SelectTrigger>
                     <SelectContent>

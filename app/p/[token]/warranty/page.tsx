@@ -1,4 +1,5 @@
-import { notFound } from "next/navigation"
+import { connection } from "next/server"
+import { notFound, unstable_rethrow } from "next/navigation"
 
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { getProjectWarrantyCoverageForPortal, listWarrantyRequestsForPortal, listWarrantyVisitsForBuyerPortal } from "@/lib/services/warranty"
@@ -9,6 +10,7 @@ interface Params {
 }
 
 export default async function WarrantyPortalPage({ params }: Params) {
+  await connection()
   const { token } = await params
   let access
   try {
@@ -17,14 +19,24 @@ export default async function WarrantyPortalPage({ params }: Params) {
       requireProject: true,
       permission: "can_view_warranty",
     })
-  } catch {
+  } catch (error) {
+    unstable_rethrow(error)
     notFound()
   }
 
   const [requests, coverage, visits] = await Promise.all([
-    listWarrantyRequestsForPortal(access.org_id, access.project_id).catch(() => []),
-    getProjectWarrantyCoverageForPortal(access.org_id, access.project_id).catch(() => null),
-    listWarrantyVisitsForBuyerPortal(access.org_id, access.project_id).catch(() => []),
+    listWarrantyRequestsForPortal(access.org_id, access.project_id).catch((error) => {
+      unstable_rethrow(error)
+      return []
+    }),
+    getProjectWarrantyCoverageForPortal(access.org_id, access.project_id).catch((error) => {
+      unstable_rethrow(error)
+      return null
+    }),
+    listWarrantyVisitsForBuyerPortal(access.org_id, access.project_id).catch((error) => {
+      unstable_rethrow(error)
+      return []
+    }),
   ])
 
   return <WarrantyPortalClient token={token} requests={requests} coverage={coverage} visits={visits} />

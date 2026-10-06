@@ -1,0 +1,265 @@
+{
+  "sourceCommit": "9f1549af84a6998eb2d851415ec6f119ab89a96f",
+  "includesUncommittedWorkspace": true,
+  "isolatedCheckout": "/private/tmp/arc-qbo-goal-01a109ed",
+  "hashAlgorithm": "sha256",
+  "files": {
+    "app/(app)/integrations/accounting-sync-actions.ts": "5efe0253f3353105bf528b8d1dfb365a7a165886e342f18b4d5ce6fb5b15ce35",
+    "app/(app)/integrations/qbo-import-actions.ts": "9e1209a390511473c8c57c7af15daac1722d3c4ca431ea20079bf4be03111912",
+    "app/(app)/integrations/qbo-project-link-actions.ts": "1f493994c5f23dc128538a4797174edd911f4294fe4a3a6b31d2a52373ecdbe9",
+    "app/(app)/settings/integrations/actions.ts": "70eb90012feff28c21d58544ae37508625ade9d6aa76a4daa1b610e7c33f728d",
+    "app/(app)/settings/integrations/invoice-item-actions.ts": "a84211d76e03c48748e9c6351358c152b8356ed3fef15641cebd3fc42de734b1",
+    "app/(app)/settings/integrations/page.tsx": "554f2e1d6eb09ab20b047c4f505d5df987872b415b95d7abe3f1834ed619a7cc",
+    "app/api/accounting/process-changes/route.ts": "a631090dfdf10fd61cde8f3bc7f89ba75337b3ae0e632bbd02764c08d0527f6a",
+    "app/api/accounting/process-inbound/route.ts": "ec68e5c28095a693e6d3566b55badcf96c8638efbfbff2cb2162b881c6f2ba77",
+    "app/api/accounting/process-outbox/route.ts": "f6fafc461fd6e8230882201c405102c3dbd5efec60f657f8f6a6b0aa29958f65",
+    "app/api/integrations/qbo/callback/route.ts": "f8824cff64f7b64effdbec25f8b2f0007be1b2169eb88a01c033efdbfbb425bb",
+    "app/api/qbo/payment-webhook/route.ts": "e99a1e674f1e5091704c46d92891711b1bdb97c07e51c6b6e55f728b01d340a0",
+    "components/accounting/accounting-sync-badge.tsx": "ea95eea567ee235e6f62f68169425e866d8b53d93975921bf80af7ed90d54994",
+    "components/accounting/financial-record-accounting.tsx": "53cb41375611b2401532c415073c4a2e6f240315d682a3fa734e92db2e8d4923",
+    "components/accounting/provider-label.ts": "46ad41c2e2e933f0f141c4ccfc58d0e9e8ddbd62066718711d593fd9f419c5cc",
+    "components/integrations/accounting-connection-sheet.tsx": "b90a6629f0e1381ec61a417924f6b8440b32464afba61b29c97f2768e26a89b8",
+    "components/integrations/accounting-routing-dialog.tsx": "bd9bdf7a4d7a663dc1ca525d991f01a13d1e7e8d717e47fe66af4e83f7540d8e",
+    "components/integrations/accounting-sync-sheet.tsx": "adff610b47b3611f504861c66b6f558d7679aec4f8de12d6fa75983b5ed22b84",
+    "components/integrations/connection-status.tsx": "e4e12b5ab62e4a990a2778b52545f21ed9545dc3ea65eed73a2568155f04901a",
+    "components/integrations/integrations-panel.tsx": "dbb00b69d60b0df89acf263d29e15bebc32cd4d0c0eae7c0ede29d8da8838ff2",
+    "components/integrations/qbo-import-sheet.tsx": "83dac7fffd7b5f7ddf0db5928bb0d52febd784357a4b46039aee01fc0a367589",
+    "components/integrations/stripe-connection-sheet.tsx": "0e5de3d2a29d7435cc5bab9e788aff872e58a555ecec68e4f89696fa56629fb4",
+    "lib/integrations/accounting/catalog.ts": "348185a9f2869a6dfd2e2b5d5d1c40cc1fba64442926e3305b57800038aaea4e",
+    "lib/integrations/accounting/file/adapter.ts": "a12ea87cd70094899b2b724d6dc787c8d509494c465381524cff8640bea4a8af",
+    "lib/integrations/accounting/file/formats.ts": "98d92a048fca881924f7adfa69bce368ffbc8a13ff181cd51d212d25bba9b453",
+    "lib/integrations/accounting/import.ts": "d552f37b03eaccef5b20888ac964730bb07bcc0668611c163e86daa3594965e6",
+    "lib/integrations/accounting/local-change.test.ts": "1982126ed39fb62921b5b99d296023b96b3a206f1175cf31fb3013b48326d9b6",
+    "lib/integrations/accounting/local-change.ts": "2139a2921fa95af9682f5f6e800712fc0d326d8f764c5aa7a972170db07e8a6b",
+    "lib/integrations/accounting/oauth-state.ts": "c0bbc4b0e847020c75dba78a6263cce10b0ee2aa3090fbc6be5e25b032d8131c",
+    "lib/integrations/accounting/provider-contract.ts": "c4ee222cb04f1132826efe0ec5da7cd3189afd93ba98470830844cd55fb1c25f",
+    "lib/integrations/accounting/provider.ts": "9856f836fd6989e4a80c5f9af783029a7ff73bede23c6cda0f83f2e20c3606cc",
+    "lib/integrations/accounting/qbo/account-utils.test.ts": "33b7a130c7034555c2b1f99b4d4f9f2c07332087f7824bda1f95be43da9644b5",
+    "lib/integrations/accounting/qbo/account-utils.ts": "233aa49b130f208e7f6152bd6e634a48bb8ae0400ef94ea270bcb8af0054d607",
+    "lib/integrations/accounting/qbo/adapter.ts": "a8ce1660e7712f54f6ab46e5ad42b5b7b2fc5bca06c76fb3dc48c1cbdd627bb4",
+    "lib/integrations/accounting/qbo/auth.ts": "111c2e4eb69e63ea6fd52b3a50717a6ab79af408dfc54f16df8dfc6bee335472",
+    "lib/integrations/accounting/qbo/client.test.ts": "c4fb7ff18ff8708857c57a512fbaaa33dc456b6be68a5ec42ddb3dc1d392f5c8",
+    "lib/integrations/accounting/qbo/client.ts": "9dbd618d76c8ed36ee4523a835cb6a053315bed03db3877392216714607095d8",
+    "lib/integrations/accounting/qbo/config.ts": "076ce1712d3ca937a75fc459cc5825887262ac4b20377ecee67208decf913290",
+    "lib/integrations/accounting/qbo/connections.ts": "db92c8cb902b3cbbe0e7d05777228396cb26dbdaebf9591b43c55901f115bc2f",
+    "lib/integrations/accounting/qbo/error-rules.test.ts": "e5d671b498714a0db761c5d5cc3be5c63850b47073f370fba65f9d97dbb4d27b",
+    "lib/integrations/accounting/qbo/error-rules.ts": "11978cd60e34c5e8486264552d0779ec69b828be5451bba49d4c3f1667381afb",
+    "lib/integrations/accounting/qbo/import-rules.ts": "abdb8a48d9f13b5c88f49abfa4345aaa70a9db6ccf7641d6030742649bfea8f4",
+    "lib/integrations/accounting/qbo/import.ts": "ba197044db33ab561a24c5a52cd6317daf4a0620ce6d5649498ef45440782474",
+    "lib/integrations/accounting/qbo/invoice-items.ts": "1fc158819c3df346fd7c5f53068664d3fc69d88061ffb617b44ee552897738af",
+    "lib/integrations/accounting/qbo/links.ts": "4b72f798245bb231a55e2c8182a5191a9daa7046d70743724e8f0885a6ce5d1e",
+    "lib/integrations/accounting/qbo/query.ts": "ed10a991854b4139f1d5546e74ed6673f22cad6caa0ca94318f9624d20b4b809",
+    "lib/integrations/accounting/qbo/reconcile.ts": "bcefca767bcb0cf4f838fa0dcc511840eb2f3cd83d0b24ec30f9f4048a2faa6d",
+    "lib/integrations/accounting/qbo/settings.ts": "ae443acfe48bdf7c31d05e3981b8f2413e1d03b956a8138f6207f06e64758e2b",
+    "lib/integrations/accounting/qbo/sync-safety.test.ts": "26af12e57204ce0a1b0238c437fa6391d68d3921a449e0d064a3e028088898d4",
+    "lib/integrations/accounting/qbo/sync-safety.ts": "dda7501954da3ee31f8995d224f6817fcf57dd09d01d9f644b9136496510a8c9",
+    "lib/integrations/accounting/qbo/webhook.test.ts": "69d908da15ef79072185098e2f2771adffae762ffe8b147e7f512439a2e5d18e",
+    "lib/integrations/accounting/qbo/webhook.ts": "fbf12f2bdd20113a15bc6ff58635eaa10b9402709187ca6e39c40489f48147d0",
+    "lib/integrations/accounting/registry.ts": "0e248df16b414d35612a5bfe3725c4933e4de2c0efef4e380b4486685c96ac56",
+    "lib/integrations/accounting/settings.ts": "18d5236de93ab03d7166f1cd8b53d2ff074c68eb87858fb4446443e95ee4f23f",
+    "lib/services/accounting-acceptance-rules.ts": "88e5631a84da429ed33b821c7ecc6c840a0248144344f5985dfffd6477135548",
+    "lib/services/accounting-acceptance.ts": "f572dc2785f20ebf1c07a836015639df4ebca5d4150fc1b7613377773b4d210b",
+    "lib/services/accounting-batches.ts": "72b295565b0ed94f5bbb1576113706aecaf54a33cd0f38bf1939ad451d290786",
+    "lib/services/accounting-coding.ts": "293f6fe53da1d876057af121fe0165c61d3e47c8f7f34cb8b431f4ca8850b33f",
+    "lib/services/accounting-connections.ts": "27763618626a1627e3696e57b17fe2c8d208a68a911dc7ad74c9e63d64ffc606",
+    "lib/services/accounting-delivery.ts": "225ce99322570c7a3e7b04974542790767c66aeb38d4de6f28388547e830ba6a",
+    "lib/services/accounting-enqueue.ts": "4d16eb21b9771e65988b9ed2558c2f22d39ec7589c03e0ab7f0cbdd35c1665c4",
+    "lib/services/accounting-import.ts": "8ae132e3fcc386565e693fce02f14e3585cba3afca448f5a746978502760353a",
+    "lib/services/accounting-invoice-line-links.ts": "3896ca31db30c99493b5e6922d736c0541c9cd2d2763ec4bb5af038532317bf1",
+    "lib/services/accounting-job-types.ts": "c56aa4cd0aed4b7bd110ed18207d12120855c5b602ce5e9141220a4a4d794a8d",
+    "lib/services/accounting-logger.ts": "2abd3fcec40aeecd80d915a026c51f91322c43e0e95e849ccd54c1c5fed606c9",
+    "lib/services/accounting-requests.ts": "c43008c0cba19b77ec7b774211d97777f54e6e470e60414ffc53a4b223a93ee7",
+    "lib/services/accounting-rules.ts": "ef44934f16361d7c6b74a6552f406c124a9074e4706829590cc0ebcd9893a2e9",
+    "lib/services/accounting-sync-attempts.ts": "dd2084d8741cd46e1f42ea7c8847c9a790ac0033933c01c5d6f4df5f5579e315",
+    "lib/services/accounting-sync-state.ts": "3e57b346d84073f59e9d9ed4640378809e153c72ab8d856093f80a229813bbe4",
+    "lib/services/accounting-sync.ts": "4feb751e6d3d7ac84c48fb5842eb55feab7b37ff2ca94ad5fb2b60e0b482f064",
+    "lib/services/accounting-target.ts": "b95ffbdbb6643f98cab4b90cbabca116e62136d2b361f43b4b566df564dd0766",
+    "lib/services/books/reconciliation.ts": "53b81b0137eb55e27407e6409b5a05b5b33e41c4b0f3ef859990d057847bca2a",
+    "lib/services/receivable-adjustments.ts": "2a93bcdd7087b9198f8430da184b123c2e87996580fb2561c30c1e2f641bf084",
+    "package.json": "d15da60eb8032be493e87bf64ecd21705c8674d1a72184f191330e399d5d7dfd",
+    "proxy.ts": "c14a292ea698cc12844f7e881883992b7d74fbf7f8768087d9fffb91d0203fa9",
+    "tests/accounting-abstraction.test.js": "62c9658093a2f173f285dbcd5fcc7cfa75a591fb5eeb99619c3d57ad2dc1043a",
+    "tests/accounting-d2-closure.test.js": "c06fc3d133a45d99c884e627b284ea6a39fb1620ebf6a73d06c9d09feac6f0c7",
+    "tests/accounting-experience.test.js": "f5f77f33b8642814018b20e4633554c385a58ac6fdfd20de5447ad3b9473ae36",
+    "tests/accounting-inbound-closure.test.js": "7e500067727cfa06458d965937ec0b7ef26daea5761fa29f151e7fe9328afaf7",
+    "tests/accounting-neutral-consumers.test.js": "cef531a8c218798561cb206d5f31a497182c6643688608a2f11fa2a71b9a130f",
+    "tests/accounting-provider-contract.test.js": "116d59b271ca20b47c8647b0290dfdc1ddaf13fb903fd63abada7a381769bc1a",
+    "tests/accounting-qbo-adapter.test.js": "10412a033f13551dacef0f192a33ea7784513edb2a6381344d712ff676186888",
+    "tests/accounting-qbo-recovery.test.js": "44b4232070cfee3852c736ddce1e72fd03527a70e32c1a8b45defde67e773323",
+    "tests/accounting-sync-lifecycle.test.js": "be5b5793aaab92d6281ff0c13187f015e53088f8ff0cd66e879e8e1dcadb726b",
+    "tests/qbo-import-reliability.test.js": "4e4d5dffc344c4f614f6bf6396bbd0260646e0ed0dd9ff5b02239a628432a706",
+    "tests/qbo-invoice-item-safety.test.js": "0f29c7bd1c44dfd597784f9562db6d942c7c6262cd2d474dc9e9b7926c60e468",
+    "vercel.json": "95d67c038210b27da225d58e617b7a435fed7a45edcbdd0271cd282c41c5e221"
+  },
+  "reviewedIntegrations": [
+    {
+      "package": "Q04 and reopened Q02 import compatibility",
+      "commit": "75e9810dad944ffefacbfd515edbcb182b00956a",
+      "files": [
+        {
+          "path": "app/api/accounting/process-changes/route.ts",
+          "before_sha256": "1dd2a7c91f8964a2ff1420bdcae20475fc4ede18a6a30f06283fda3bf10cac7e",
+          "after_sha256": "48a1dbacb9444f3a8310db25e18b62250494cc9292f2fc0b8d58839b2ceecaa2",
+          "new": false
+        },
+        {
+          "path": "lib/integrations/accounting/provider.ts",
+          "before_sha256": "45cd5e3715b108df214a5d4759b9ddcccc3a8e88bd5a057621289f80a9493b60",
+          "after_sha256": "4d5cf7e6b1c0f305652093f3eda8a3bb58f704466395a95d2ea4c385f0b021f7",
+          "new": false
+        },
+        {
+          "path": "lib/integrations/accounting/qbo/cdc-recovery.ts",
+          "before_sha256": null,
+          "after_sha256": "5c0bb9de57520c8ce7218eee8a25e7650e726dcb88bb9d5ba0b854745e58e214",
+          "new": true
+        },
+        {
+          "path": "lib/integrations/accounting/qbo/cdc.ts",
+          "before_sha256": null,
+          "after_sha256": "6afd20be2f8b13fa2bbd6b7364e64b9d63c56987920c1aa675374507574f0ccb",
+          "new": true
+        },
+        {
+          "path": "lib/integrations/accounting/qbo/client.ts",
+          "before_sha256": "db95c77c58be8551d671d9b56b32843f96fcaed334a8fc60da794cd7f715ca62",
+          "after_sha256": "3b1646581aae526f2db2fb08529090736272facd91981a16735745b8728301f4",
+          "new": false
+        },
+        {
+          "path": "lib/integrations/accounting/qbo/import.ts",
+          "before_sha256": "ba197044db33ab561a24c5a52cd6317daf4a0620ce6d5649498ef45440782474",
+          "after_sha256": "8ecfa340a4c24fc44a90e259193ebd55bea7c5518512be008575aa3f1f4fc71c",
+          "new": false
+        },
+        {
+          "path": "lib/integrations/accounting/qbo/reconcile.ts",
+          "before_sha256": "00fb473f521243910db30feb69df6ce0e9e7da12f7a6ccec50e27405ba67f954",
+          "after_sha256": "1adcfcff30a85302530095478832a8f927d2afec610c12dee394c3081857430b",
+          "new": false
+        },
+        {
+          "path": "lib/services/accounting-import.ts",
+          "before_sha256": "8ae132e3fcc386565e693fce02f14e3585cba3afca448f5a746978502760353a",
+          "after_sha256": "3b4eef547a7bb10581e0bd4bf49377c2ba1abc9cde348e13018fc25a6f820138",
+          "new": false
+        },
+        {
+          "path": "lib/services/books/reconciliation.ts",
+          "before_sha256": "53b81b0137eb55e27407e6409b5a05b5b33e41c4b0f3ef859990d057847bca2a",
+          "after_sha256": "b1b6e469abaca609313958ba6bce7b75ada6ba4228929208d7105d93a0cf473c",
+          "new": false
+        },
+        {
+          "path": "supabase/migrations/20261005050640_qbo_cdc_recovery.sql",
+          "before_sha256": null,
+          "after_sha256": "69872beecafe2512d7bf35b15917d9afd21dafa275e3c564de47442fc3f93b05",
+          "new": true
+        },
+        {
+          "path": "supabase/migrations/20261005053644_qbo_import_completion_fences.sql",
+          "before_sha256": null,
+          "after_sha256": "e048381e350ac57e26eb5e1a18c98ec810a9556cc92ae550cf3d136988eb7367",
+          "new": true
+        },
+        {
+          "path": "tests/accounting-abstraction.test.js",
+          "before_sha256": "e3a2b5445c2bd1f67e3c3a1edeb3eada7990d5c85e978b1ba8573f8a178782e3",
+          "after_sha256": "8ec47d052e2bdae2d1571d24a47c62944e9c32ae7af1ef93dfd441ccb8ddcecb",
+          "new": false
+        },
+        {
+          "path": "tests/accounting-authorization-db.test.js",
+          "before_sha256": "6901d4f9936047135da118029f4e05f22c0f20efacf843bee971aacdb3384a58",
+          "after_sha256": "454baebb3cd3a2cecafaf0bfc1916b3085e2464b9fc439f3686fddc6162290cb",
+          "new": false
+        },
+        {
+          "path": "tests/accounting-cdc-recovery-services.test.js",
+          "before_sha256": null,
+          "after_sha256": "ad4b783a568609d7edf116f130131b2407e05632256ac48d2486e3460cfd79d2",
+          "new": true
+        },
+        {
+          "path": "tests/accounting-inbound-closure.test.js",
+          "before_sha256": "e88d78e293f7729e16073cf2815e3283d81ee9da1d68b5403720bf71317f27ef",
+          "after_sha256": "82b21dc6087e4debb492a93a5023ab8530eef25ea377462001f85416399cb58a",
+          "new": false
+        },
+        {
+          "path": "tests/accounting-worker-deadlines.test.js",
+          "before_sha256": "9e920b8ff7e9c624bf3f6dc67c7029f5d6de55f6764caf3b9705e99708be16a4",
+          "after_sha256": "310bb4faf44efe23a4d5b849dce6dfa9a17a67cd0e6be1a8a48ad989a0278d2a",
+          "new": false
+        },
+        {
+          "path": "tests/fixtures/qbo-cdc-database.js",
+          "before_sha256": null,
+          "after_sha256": "f8626fedcb2070a0d03c8d3453ac352d014b091a24683ad14ae0f08bc1162767",
+          "new": true
+        },
+        {
+          "path": "tests/fixtures/qbo-cdc-runtime.js",
+          "before_sha256": null,
+          "after_sha256": "cee792e4cfb094ea1cbe680fe0f3d3fc0f0ba1b253e6f2797c9ff3ec1bf832b0",
+          "new": true
+        },
+        {
+          "path": "tests/fixtures/qbo-import-completion-database.js",
+          "before_sha256": null,
+          "after_sha256": "a0e03a8e8df48003cf81440dabba03c9f7d146f33eae5704fd284e1c43b64327",
+          "new": true
+        },
+        {
+          "path": "tests/fixtures/qbo-import-runtime.js",
+          "before_sha256": null,
+          "after_sha256": "97acde44dc65e2c0e97ef9f9f97d087e4c9f93ffb1c7fd36f72be6fff016c33a",
+          "new": true
+        },
+        {
+          "path": "tests/fixtures/qbo-original-completion.js",
+          "before_sha256": null,
+          "after_sha256": "5869d01c4bf733a4a438fa85cf61cc6b5223ae74020e5123cc6697cd8b374857",
+          "new": true
+        },
+        {
+          "path": "tests/qbo-cdc-completeness.test.js",
+          "before_sha256": null,
+          "after_sha256": "638028f136fb754cbb5b0da4c1b55111545111275ee5ab358d1228907a389d8a",
+          "new": true
+        },
+        {
+          "path": "tests/qbo-cdc-recovery-db.test.js",
+          "before_sha256": null,
+          "after_sha256": "39a270802934517195beb4a947e3e84219f9e05d3c546289446cfae8531819ca",
+          "new": true
+        },
+        {
+          "path": "tests/qbo-import-completion.test.js",
+          "before_sha256": null,
+          "after_sha256": "a00edbe68c561e54ef36f0d0ab44a22d6800d200b1d9e3b113976e547eb9443f",
+          "new": true
+        },
+        {
+          "path": "tests/qbo-webhook-contract.test.js",
+          "before_sha256": "6613704aea94af9c9e0c9d4619fb942c2e32c50f05b20f1e58f20f76e9358fe4",
+          "after_sha256": "204ff898648970470395c243fb1c4ab394728f0924ac70929c53f317fa3e0790",
+          "new": false
+        },
+        {
+          "path": "tests/qbo-webhook-receipts-db.test.js",
+          "before_sha256": "aa8048b99e2b068ae84c5b5f1bd09852b966eaf472b72edd21a0d16ee13aa75b",
+          "after_sha256": "bbb924fbd98bf0a168a35760e8f8d59a6fb1cfd1235cfa2169d86a79d96e3c45",
+          "new": false
+        },
+        {
+          "path": "tests/qbo-worker-reliability.test.js",
+          "before_sha256": "7d831cb363aae5397c3006ca83dba24ce1dba537f36d76d02ac1918889edd1a4",
+          "after_sha256": "f495b9cba41d234117e4443b104956accc46516ddb18fc9186db5fa77562995d",
+          "new": false
+        }
+      ],
+      "integrationHashReport": "/private/tmp/q04-integration-hashes.json"
+    }
+  ]
+}

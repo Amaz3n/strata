@@ -26,9 +26,9 @@ const WINDOWS: Array<{ key: FieldWindow; label: string }> = [
 
 const TILE_HREF: Record<string, string> = {
   starts: "/starts",
-  closings: "/sales?tab=closings",
+  closings: "/sales?due=closing_soon",
   construction: "/projects",
-  backlog: "/sales?tab=backlog",
+  backlog: "/reports/closing-backlog",
   purchasing: "/purchasing?tab=variance",
 }
 
@@ -56,7 +56,7 @@ export function ProductionHome({ data, showCustomProjects }: { data: ProductionH
           </p>
           <div className="mt-5 flex gap-4 text-sm">
             <Link className="font-medium underline underline-offset-4" href="/communities">Create a community</Link>
-            <Link className="text-muted-foreground underline underline-offset-4" href="/admin/provision">Open onboarding</Link>
+            <Link className="text-muted-foreground underline underline-offset-4" href="/settings/imports">Import production data</Link>
           </div>
         </div>
       </div>

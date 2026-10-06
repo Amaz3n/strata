@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { notFound } from "next/navigation"
 
 import { CommunityInventory } from "@/components/communities/community-inventory"
@@ -63,6 +64,7 @@ function sortByMargin(
 }
 
 export default async function CommunityInventoryPage({ params, searchParams }: InventoryPageProps) {
+  await connection()
   const [{ id }, query] = await Promise.all([params, searchParams])
   const view = query.view === "map" ? "map" : "table"
   const direction = query.dir === "desc" ? "desc" : "asc"

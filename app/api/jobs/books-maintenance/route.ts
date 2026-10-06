@@ -26,7 +26,7 @@ async function handler(request: NextRequest) {
   // Each unprojectable source becomes a reconciliation item with an owner and a
   // cure. Some of them — a bill edited after its period closed — fail identically
   // on every pass, so retrying is not a fix and a person has to decide.
-  const surfaced = await recordProjectionFailures(repair.results)
+  const surfaced = await recordProjectionFailures(repair.results, { full: true })
   const rebuilds = await runScheduledLedgerRebuildDrills()
   // The repair path exists BECAUSE failures were once invisible. Reporting `ok`
   // over a sweep that could not repair what it found is the same defect again, so

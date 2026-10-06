@@ -403,7 +403,7 @@ export async function classifyProjectEmail(input: { orgId: string; projectEmailI
   const body = input.body ?? (await loadBody(input.orgId, (email.body_file_id as string | null) ?? null)).body
 
   const result = await runAiObject({
-    feature: "document_extraction",
+    feature: "text_assistance",
     schema: classificationSchema,
     system: CLASSIFY_PROMPT,
     prompt: `Subject: ${email.subject}\nFrom: ${email.from_address}\nBody: ${body.slice(0, 20_000)}`,

@@ -1,0 +1,6 @@
+1..5
+ok 1 - rehearsed runtime functions have no legacy column dependency
+ok 2 - unqualified legacy column reads are detected
+ok 3 - record field and names-only reads are detected
+ok 4 - a changed cached-output routine loses its reviewed exception
+ok 5 - only the service collector can inspect routine census

@@ -2,10 +2,10 @@
 
 import { revalidatePath } from "next/cache"
 
-import { getCloseoutPackage, createCloseoutItem, updateCloseoutItem } from "@/lib/services/closeout"
+import { getCloseoutPackage, prepareCloseoutPackage, createCloseoutItem, updateCloseoutItem } from "@/lib/services/closeout"
 import { settleGmpSavings } from "@/lib/services/gmp-control"
 import { getProjectCloseReadiness } from "@/lib/services/project-close-readiness"
-import { closeoutItemInputSchema, closeoutItemUpdateSchema } from "@/lib/validation/closeout"
+import { closeoutItemInputSchema, closeoutItemUpdateSchema, closeoutPreparationSchema } from "@/lib/validation/closeout"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 
@@ -19,6 +19,15 @@ async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
 
 export async function getCloseoutPackageAction(projectId: string) {
       return getCloseoutPackage(projectId)
+}
+
+export async function prepareCloseoutPackageAction(input: unknown) {
+  return run(async () => {
+    const { projectId } = closeoutPreparationSchema.parse(input)
+    const pkg = await prepareCloseoutPackage(projectId)
+    revalidatePath(`/projects/${projectId}/closeout`)
+    return pkg
+  })
 }
 
 export async function getProjectCloseReadinessAction(projectId: string) {

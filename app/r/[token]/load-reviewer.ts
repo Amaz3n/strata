@@ -2,18 +2,18 @@ import { notFound } from "next/navigation"
 
 import { assertPortalActionAccess, loadReviewerPortalData } from "@/lib/services/portal-access"
 
-/**
- * Shared access check + data load for reviewer portal pages. The layout has
- * already run the account and PIN gates; this re-asserts the token so a page
- * can never be reached without them.
- */
-export async function loadReviewerPortalPage(token: string) {
-  let access
+/** Re-assert the account and PIN gates before a reviewer page reads data. */
+export async function loadReviewerPortalAccess(token: string) {
   try {
-    access = await assertPortalActionAccess(token, { portalType: "reviewer", requireProject: true })
+    return await assertPortalActionAccess(token, { portalType: "reviewer", requireProject: true })
   } catch {
     notFound()
   }
+}
+
+/** Shared scoped payload for the reviewer Overview and RFIs pages. */
+export async function loadReviewerPortalPage(token: string) {
+  const access = await loadReviewerPortalAccess(token)
 
   const data = await loadReviewerPortalData({
     orgId: access.org_id,

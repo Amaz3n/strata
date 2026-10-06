@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server"
+import { connection, NextResponse } from "next/server"
+import { unstable_rethrow } from "next/navigation"
 
 import { logger } from "@/lib/logging/logger"
 import { requireOrgContext } from "@/lib/services/context"
@@ -16,11 +17,13 @@ import { listProjectNavigationItemsWithClient } from "@/lib/services/projects"
  * empty array, which callers could not tell apart from an org with no projects.
  */
 export async function GET() {
+  await connection()
   try {
     const { supabase, orgId } = await requireOrgContext()
     const projects = await listProjectNavigationItemsWithClient(supabase, orgId)
     return NextResponse.json({ projects })
   } catch (error) {
+    unstable_rethrow(error)
     logger.error("api.projects.list_failed", { route: "/api/projects", error })
     return NextResponse.json({ error: "Unable to load projects." }, { status: 500 })
   }

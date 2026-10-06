@@ -114,6 +114,10 @@ export const awardBidSubmissionInputSchema = z.object({
   bid_submission_id: z.string().uuid(),
   notes: z.string().optional().nullable(),
   accepted_alternate_ids: z.array(z.string().uuid()).default([]),
+  reviewed_scope: z.string().trim().min(1, "Review the subcontract scope"),
+  reviewed_terms: z.string().trim().min(1, "Review the subcontract terms"),
+  readiness_exception: z.string().trim().optional(),
+  bond_verified: z.boolean().default(false),
 })
 
 export const rescindBidAwardInputSchema = z.object({
@@ -181,4 +185,16 @@ export const answerBidPackageRfiInputSchema = z.object({
   rfi_id: z.string().uuid(),
   body: z.string().trim().min(1, "Answer is required"),
   broadcast_as_addendum: z.boolean().default(true),
+})
+
+export const selectBidForPricingInputSchema = z.object({
+  bid_submission_id: z.string().uuid(),
+  accepted_alternate_ids: z.array(z.string().uuid()).default([]),
+  rationale: z.string().trim().min(1, "Record the pricing decision"),
+  gaps: z.array(z.object({
+    scope_item_id: z.string(), description: z.string().trim().min(1),
+    amount_cents: z.number().int().nonnegative(),
+    disposition: z.enum(["unresolved", "allowance", "self_perform", "other_package", "owner_exclusion"]),
+    owner: z.string().trim().min(1), note: z.string().default(""),
+  })).default([]),
 })

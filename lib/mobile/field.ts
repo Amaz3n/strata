@@ -132,24 +132,12 @@ export async function updateMobilePunchStatus(
   const parsed = punchUpdateSchema.safeParse(input)
   if (!parsed.success) throw new MobileAPIError(422, "invalid_punch_item", "A valid status is required.")
 
-  const closing = parsed.data.status === "closed"
-  const update: Record<string, unknown> = {
-    status: parsed.data.status,
-    resolved_at: closing ? new Date().toISOString() : null,
-    resolved_by: closing ? context.user.id : null,
-  }
-
-  const { data, error } = await context.serviceSupabase
-    .from("punch_items")
-    .update(update)
-    .eq("org_id", context.orgId)
-    .eq("project_id", projectId)
-    .eq("id", punchItemId)
-    .select("id, project_id, title, description, status, due_date, severity, location, resolved_at")
-    .maybeSingle()
-  if (error) throw new MobileAPIError(500, "punch_update_failed", "The punch item could not be updated.")
-  if (!data) throw new MobileAPIError(404, "punch_item_not_found", "Punch item not found.")
-
-  await recordEvent({ orgId: context.orgId, eventType: "punch_item_status_changed", entityType: "punch_item", entityId: punchItemId, payload: { project_id: projectId, status: parsed.data.status } })
-  return mapPunch(data)
+  // Use the web's canonical lifecycle so verification stamps, rejected work,
+  // audit history and dispatch behavior remain consistent across devices.
+  const { runWithServiceOrgContext } = await import("@/lib/services/context")
+  return runWithServiceOrgContext(context.serviceContext, async () => {
+    const result = await (await import("@/app/(app)/projects/[id]/actions")).updateProjectPunchItemAction(projectId, punchItemId, { status: parsed.data.status })
+    if (!result.success) throw new MobileAPIError(422, "punch_update_failed", result.error)
+    return mapPunch(result.data)
+  })
 }

@@ -19,15 +19,29 @@ export function TeamSettingsPanel({
   const [data, setData] = useState(initialData)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const inFlight = useRef(false)
-  const lastInitialData = useRef(initialData)
-  useEffect(() => {
-    if (lastInitialData.current === initialData) return
-    lastInitialData.current = initialData
+  const [source, setSource] = useState(initialData)
+  if (source !== initialData) {
+    setSource(initialData)
     setData(initialData)
+    setLoading(false)
+    setError(null)
+  }
+  const inFlight = useRef(false)
+  const mounted = useRef(false)
+  const requestSequence = useRef(0)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+  useEffect(() => {
+    requestSequence.current++
+    inFlight.current = false
   }, [initialData])
   async function load(append = false) {
-    if (inFlight.current) return
+    if (!mounted.current || inFlight.current) return
+    const request = ++requestSequence.current
     inFlight.current = true
     setLoading(true)
     setError(null)
@@ -35,6 +49,7 @@ export function TeamSettingsPanel({
       const result = await getTeamSettingsDataAction({
         offset: append ? data.teamMembers.length : 0,
       })
+      if (!mounted.current || request !== requestSequence.current) return
       setData((previous) => ({
         ...result,
         teamMembers: append
@@ -49,10 +64,13 @@ export function TeamSettingsPanel({
           : result.teamMembers,
       }))
     } catch {
+      if (!mounted.current || request !== requestSequence.current) return
       setError("Unable to load team members. Please try again.")
     } finally {
-      inFlight.current = false
-      setLoading(false)
+      if (mounted.current && request === requestSequence.current) {
+        inFlight.current = false
+        setLoading(false)
+      }
     }
   }
   return (

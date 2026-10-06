@@ -123,6 +123,22 @@ export function SubmittalsClient({ submittals, projects, companies, initialSubmi
   const initialSubmittal = initialSubmittalId ? submittals.find((submittal) => submittal.id === initialSubmittalId) ?? null : null
   const [detailSheetOpen, setDetailSheetOpen] = useState(Boolean(initialSubmittal))
   const [selectedSubmittal, setSelectedSubmittal] = useState<Submittal | null>(initialSubmittal)
+  const [submittalSource, setSubmittalSource] = useState(submittals)
+  const [submittalIdSource, setSubmittalIdSource] = useState(initialSubmittalId)
+  if (submittalSource !== submittals) {
+    setSubmittalSource(submittals)
+    setItems(submittals)
+    if (selectedSubmittal) {
+      const updated = submittals.find((submittal) => submittal.id === selectedSubmittal.id) ?? null
+      setSelectedSubmittal(updated)
+      if (!updated) setDetailSheetOpen(false)
+    }
+  }
+  if (submittalIdSource !== initialSubmittalId) {
+    setSubmittalIdSource(initialSubmittalId)
+    setSelectedSubmittal(initialSubmittal)
+    setDetailSheetOpen(Boolean(initialSubmittal))
+  }
   const [isPending, startTransition] = useTransition()
 
   const handleSubmittalClick = (submittal: Submittal) => {
@@ -242,6 +258,7 @@ export function SubmittalsClient({ submittals, projects, companies, initialSubmi
       />
 
       <SubmittalDetailSheet
+        key={selectedSubmittal?.id ?? "none"}
         submittal={selectedSubmittal}
         project={projects.find((p) => p.id === selectedSubmittal?.project_id)}
         companies={companies}
@@ -547,5 +564,4 @@ export function SubmittalsClient({ submittals, projects, companies, initialSubmi
     </>
   )
 }
-
 

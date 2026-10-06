@@ -1,0 +1,10 @@
+begin;
+select plan(6);
+select ok(not prosecdef,'Payment document marker uses invoker privileges') from pg_proc where oid='public.mark_books_private_payroll_payment_documents()'::regprocedure;
+select ok(not has_function_privilege('authenticated','public.mark_books_private_payroll_payment_documents()','execute'),'Ordinary users cannot invoke payment document marker');
+select ok(not has_function_privilege('anon','public.is_books_private_payroll_object(uuid,text)','execute'),'Anonymous users cannot inspect payroll source paths');
+select ok(has_function_privilege('service_role','public.is_books_private_payroll_object(uuid,text)','execute'),'Accounting service can classify retained payment paths');
+select ok(exists(select 1 from pg_trigger where tgrelid='public.books_payroll_payment_reviews'::regclass and tgname='books_private_payroll_payment_documents' and not tgisinternal),'New reviews atomically mark supporting originals private');
+select ok(exists(select 1 from pg_indexes where schemaname='public' and indexname='books_private_payroll_payment_proofs_idx'),'Retained supporting proof paths have an indexed lookup');
+select * from finish();
+rollback;

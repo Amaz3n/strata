@@ -1,0 +1,428 @@
+{
+  "schemaVersion": 1,
+  "workload": "real PDF metadata extraction and durable render-progress reconciliation; no live backend",
+  "configuration": {
+    "sizes": [
+      1,
+      24,
+      25,
+      300
+    ],
+    "samples": 3,
+    "network": "blocked",
+    "rendering": "not measured",
+    "clock": "performance.now"
+  },
+  "hardware": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "cpu": "Apple M4 Max",
+    "node": "v22.22.0"
+  },
+  "results": [
+    {
+      "pages": 1,
+      "splitSession": {
+        "medianMs": 6.777459000000022,
+        "p95Ms": 25.05174999999997,
+        "samples": 3,
+        "sourceDownloads": 1,
+        "sourceOpens": 1,
+        "storagePuts": 1,
+        "registrationCalls": 1,
+        "firstPageMs": 5.220875000000035,
+        "peakProcessRSSMiB": 229.25,
+        "storage": "in-memory",
+        "database": "in-memory"
+      },
+      "fixtureBytes": 949,
+      "revisionBytes": 951,
+      "reorderedBytes": 949,
+      "metadataExtraction": {
+        "medianMs": 1.1132499999999936,
+        "p95Ms": 8.711749999999995,
+        "samples": 3
+      },
+      "stages": {
+        "transfer": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "registration": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "queue_wait": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "first_viewable_page": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "review_readiness": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "verification": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "publish": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "deletion_acknowledgement": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "split": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "render": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "cleanup": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        }
+      },
+      "counts": {
+        "attempts": 1,
+        "bytesTransferred": 0,
+        "sourceDownloads": 0,
+        "pagesRendered": 0,
+        "pagesReused": 0,
+        "storageDeletions": 0,
+        "databaseCalls": 1
+      }
+    },
+    {
+      "pages": 24,
+      "splitSession": {
+        "medianMs": 8.84050000000002,
+        "p95Ms": 8.954165999999987,
+        "samples": 3,
+        "sourceDownloads": 1,
+        "sourceOpens": 1,
+        "storagePuts": 24,
+        "registrationCalls": 3,
+        "firstPageMs": 6.940833999999995,
+        "peakProcessRSSMiB": 262.5,
+        "storage": "in-memory",
+        "database": "in-memory"
+      },
+      "fixtureBytes": 7600,
+      "revisionBytes": 7602,
+      "reorderedBytes": 7610,
+      "metadataExtraction": {
+        "medianMs": 3.1530409999999733,
+        "p95Ms": 3.8704999999999927,
+        "samples": 3
+      },
+      "stages": {
+        "transfer": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "registration": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "queue_wait": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "first_viewable_page": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "review_readiness": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "verification": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "publish": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "deletion_acknowledgement": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "split": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "render": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "cleanup": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        }
+      },
+      "counts": {
+        "attempts": 1,
+        "bytesTransferred": 0,
+        "sourceDownloads": 0,
+        "pagesRendered": 0,
+        "pagesReused": 0,
+        "storageDeletions": 0,
+        "databaseCalls": 1
+      }
+    },
+    {
+      "pages": 25,
+      "splitSession": {
+        "medianMs": 8.606167000000028,
+        "p95Ms": 9.071124999999938,
+        "samples": 3,
+        "sourceDownloads": 1,
+        "sourceOpens": 1,
+        "storagePuts": 25,
+        "registrationCalls": 4,
+        "firstPageMs": 6.614166999999952,
+        "peakProcessRSSMiB": 277.5,
+        "storage": "in-memory",
+        "database": "in-memory"
+      },
+      "fixtureBytes": 7888,
+      "revisionBytes": 7889,
+      "reorderedBytes": 7896,
+      "metadataExtraction": {
+        "medianMs": 3.676417000000015,
+        "p95Ms": 4.338624999999979,
+        "samples": 3
+      },
+      "stages": {
+        "transfer": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "registration": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "queue_wait": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "first_viewable_page": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "review_readiness": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "verification": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "publish": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "deletion_acknowledgement": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "split": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "render": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "cleanup": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        }
+      },
+      "counts": {
+        "attempts": 1,
+        "bytesTransferred": 0,
+        "sourceDownloads": 0,
+        "pagesRendered": 0,
+        "pagesReused": 0,
+        "storageDeletions": 0,
+        "databaseCalls": 1
+      }
+    },
+    {
+      "pages": 300,
+      "splitSession": {
+        "medianMs": 38.54250000000002,
+        "p95Ms": 38.62129099999993,
+        "samples": 3,
+        "sourceDownloads": 1,
+        "sourceOpens": 1,
+        "storagePuts": 300,
+        "registrationCalls": 38,
+        "firstPageMs": 6.9367919999999685,
+        "peakProcessRSSMiB": 332.421875,
+        "storage": "in-memory",
+        "database": "in-memory"
+      },
+      "fixtureBytes": 89399,
+      "revisionBytes": 89400,
+      "reorderedBytes": 89391,
+      "metadataExtraction": {
+        "medianMs": 24.36004200000002,
+        "p95Ms": 27.076875000000086,
+        "samples": 3
+      },
+      "stages": {
+        "transfer": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "registration": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "queue_wait": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "first_viewable_page": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "review_readiness": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "verification": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "publish": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "deletion_acknowledgement": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "split": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "render": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        },
+        "cleanup": {
+          "measured": false,
+          "medianMs": null,
+          "p95Ms": null,
+          "samples": 0
+        }
+      },
+      "counts": {
+        "attempts": 1,
+        "bytesTransferred": 0,
+        "sourceDownloads": 0,
+        "pagesRendered": 0,
+        "pagesReused": 0,
+        "storageDeletions": 0,
+        "databaseCalls": 1
+      }
+    }
+  ]
+}

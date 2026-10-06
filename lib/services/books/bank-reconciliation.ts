@@ -13,6 +13,7 @@ import {
 } from "@/lib/services/books/bank-match-rules";
 import { selectBankRule } from "@/lib/services/books/bank-rule-matching";
 import { loadBankRuleCandidates } from "@/lib/services/books/bank-rules-data";
+import { loadBankAiSuggestions, type BankAiSuggestion } from "@/lib/services/books/bank-ai-suggestions";
 import { recordAudit } from "@/lib/services/audit";
 import { recordEvent } from "@/lib/services/events";
 
@@ -84,6 +85,7 @@ export type BankReconciliationDetail = {
   outstandingBalanceCents: number;
   bookDifferenceCents: number;
   evidenceDigest: string | null;
+  legacyTransactionEvidence?: boolean;
   outstandingItems: Array<{ journal_line_id: string; amount_cents: number }>;
   items: Array<{
     transactionId: string;
@@ -113,7 +115,18 @@ export async function getBankReconciliationDetail(
   if (reconciliationError || !reconciliation)
     throw new Error("Bank reconciliation not found");
 
-  const data = await collectBooksRows((from, to) => service
+  const { data: proof, error: proofError } = await service.rpc("preview_books_bank_reconciliation", { p_org_id: context.orgId, p_reconciliation_id: reconciliationId });
+  if (proofError) throw new Error(proofError.message);
+  const transactionSchema = z.object({
+    id: z.string(), transaction_date: z.string(), description: z.string(), merchant_name: z.string().nullable(),
+    direction: z.enum(["inflow", "outflow"]), amount_cents: z.coerce.number().int().safe(), excluded: z.boolean(),
+    matches: z.array(z.object({ matched_amount_cents: z.coerce.number().int().safe(), status: z.string() })),
+  });
+  const evidence = z.object({ frozen: z.boolean().default(false), statement_transactions: z.array(transactionSchema).optional(), book_balance_cents: z.coerce.number(), outstanding_balance_cents: z.coerce.number(), direction_factor: z.number(), items: z.array(z.object({ journal_line_id: z.string().nullable(), amount_cents: z.coerce.number(), item_status: z.string() })) }).parse(proof);
+  if (reconciliation.status === "closed" && !evidence.frozen) {
+    throw new Error("This closed statement has no preserved accounting evidence; reopen and reconcile it before relying on its details");
+  }
+  const data = evidence.frozen ? evidence.statement_transactions ?? [] : await collectBooksRows((from, to) => service
     .from("bank_transactions")
     .select("id, transaction_date, description, merchant_name, direction, amount_cents, excluded, matches:bank_transaction_matches(matched_amount_cents,status)")
     .eq("org_id", context.orgId)
@@ -124,9 +137,6 @@ export async function getBankReconciliationDetail(
     .order("transaction_date", { ascending: true })
     .order("id", { ascending: true })
     .range(from, to));
-  const { data: proof, error: proofError } = await service.rpc("preview_books_bank_reconciliation", { p_org_id: context.orgId, p_reconciliation_id: reconciliationId });
-  if (proofError) throw new Error(proofError.message);
-  const evidence = z.object({ frozen: z.boolean().default(false), book_balance_cents: z.coerce.number(), outstanding_balance_cents: z.coerce.number(), direction_factor: z.number(), items: z.array(z.object({ journal_line_id: z.string().nullable(), amount_cents: z.coerce.number(), item_status: z.string() })) }).parse(proof);
 
   const rows = (data ?? []).map((transaction) => {
     const confirmed = (transaction.matches ?? []).filter((match) => match.status === "confirmed");
@@ -147,7 +157,7 @@ export async function getBankReconciliationDetail(
       status,
     };
   });
-  const clearedBalanceCents = rows.reduce(
+  const clearedBalanceCents = evidence.frozen ? Number(reconciliation.ending_balance_cents) : rows.reduce(
     (balance, row) => row.status !== "cleared"
       ? balance
       : balance + (row.direction === "inflow" ? row.amountCents : -row.amountCents) * evidence.direction_factor,
@@ -168,6 +178,7 @@ export async function getBankReconciliationDetail(
     bookBalanceCents: evidence.book_balance_cents,
     outstandingBalanceCents: evidence.outstanding_balance_cents,
     bookDifferenceCents: Number(reconciliation.ending_balance_cents) + evidence.outstanding_balance_cents - evidence.book_balance_cents,
+    legacyTransactionEvidence: evidence.frozen && !evidence.statement_transactions,
     evidenceDigest: evidence.frozen ? reconciliation.digest ?? null : null,
     outstandingItems: evidence.items.filter((item) => item.item_status === "outstanding" && item.journal_line_id).map((item) => ({ journal_line_id: item.journal_line_id!, amount_cents: item.amount_cents })),
     items: rows,
@@ -211,12 +222,17 @@ export type BankReviewRow = {
    */
   ruleSuggestion: {
     glAccountId: string;
+    vendorId: string | null;
+    projectId: string | null;
+    costCodeId: string | null;
     accountCode: string;
     accountName: string;
     ruleId: string;
     confidence: number;
     autoApplies: boolean;
+    source: "manual_rule" | "learned_pattern";
   } | null;
+  aiSuggestion: BankAiSuggestion | null;
 };
 
 /**
@@ -236,9 +252,12 @@ export type BankReviewRow = {
 export async function reviewUnmatchedBankTransactions(
   input: {
     bankAccountId?: string | null;
+    /** Resolve exactly one Banking page without relying on the global tray cap. */
+    transactionIds?: string[];
     orgId?: string;
   } = {},
 ) {
+  const transactionIds = z.array(z.string().uuid()).max(50).optional().parse(input.transactionIds);
   const context = await requireReconciliationContext(input.orgId);
   const service = createServiceSupabaseClient();
 
@@ -280,8 +299,10 @@ export async function reviewUnmatchedBankTransactions(
   const transactions: Array<z.infer<typeof transactionSchema>> = [];
   let scanned = 0;
   let sourceExhausted = false;
+  const requestedPage = Boolean(transactionIds?.length);
+  const resultCap = requestedPage ? transactionIds?.length ?? 0 : REVIEW_TRAY_CAP;
   while (
-    transactions.length <= REVIEW_TRAY_CAP &&
+    transactions.length <= resultCap &&
     scanned < REVIEW_TRAY_SCAN_CAP &&
     !sourceExhausted
   ) {
@@ -302,6 +323,8 @@ export async function reviewUnmatchedBankTransactions(
         "bank_account_id",
         input.bankAccountId,
       );
+    if (transactionIds?.length)
+      transactionQuery = transactionQuery.in("id", transactionIds);
     const { data: transactionData, error: transactionError } =
       await transactionQuery;
     if (transactionError)
@@ -309,7 +332,7 @@ export async function reviewUnmatchedBankTransactions(
         `Failed to load bank transactions: ${transactionError.message}`,
       );
     const batch = z.array(transactionSchema).parse(transactionData ?? []);
-    sourceExhausted = batch.length < REVIEW_TRAY_PAGE_SIZE;
+    sourceExhausted = requestedPage || batch.length < REVIEW_TRAY_PAGE_SIZE;
     scanned += batch.length;
     transactions.push(
       ...batch.filter((transaction) => {
@@ -324,9 +347,9 @@ export async function reviewUnmatchedBankTransactions(
     );
   }
 
-  const truncated =
-    transactions.length > REVIEW_TRAY_CAP ||
-    (!sourceExhausted && scanned >= REVIEW_TRAY_SCAN_CAP);
+  const truncated = !requestedPage &&
+    (transactions.length > REVIEW_TRAY_CAP ||
+    (!sourceExhausted && scanned >= REVIEW_TRAY_SCAN_CAP));
   const page = truncated
     ? transactions.slice(0, REVIEW_TRAY_CAP)
     : transactions;
@@ -377,12 +400,13 @@ export async function reviewUnmatchedBankTransactions(
 
   // Learned rules, plus the chart, so a row with no ledger match can still say
   // where it probably belongs.
-  const [ruleCandidates, glAccountRows] = await Promise.all([
+  const [ruleCandidates, glAccountRows, aiSuggestions] = await Promise.all([
     loadBankRuleCandidates(context.orgId),
     service
       .from("gl_accounts")
       .select("id, code, name")
       .eq("org_id", context.orgId),
+    loadBankAiSuggestions(context.orgId, page.map((transaction) => transaction.id)),
   ]);
   const glAccountById = new Map(
     z
@@ -422,6 +446,7 @@ export async function reviewUnmatchedBankTransactions(
         alternatives: [],
         accountUnmapped: true,
         ruleSuggestion: null,
+        aiSuggestion: aiSuggestions.get(transaction.id) ?? null,
       };
     }
 
@@ -473,13 +498,18 @@ export async function reviewUnmatchedBankTransactions(
         rule && ruleAccount
           ? {
               glAccountId: rule.glAccountId,
+              vendorId: rule.vendorId,
+              projectId: rule.projectId,
+              costCodeId: rule.costCodeId,
               accountCode: ruleAccount.code,
               accountName: ruleAccount.name,
               ruleId: rule.ruleId,
               confidence: rule.confidence,
               autoApplies: rule.autoApplies,
+              source: rule.source,
             }
           : null,
+      aiSuggestion: aiSuggestions.get(transaction.id) ?? null,
     };
   });
 

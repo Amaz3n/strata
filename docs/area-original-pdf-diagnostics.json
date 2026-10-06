@@ -1,0 +1,72 @@
+{
+  "status": "Development evidence only; source PDFs remain private/local. These are not independently annotated holdouts.",
+  "cases": [
+    {
+      "source": {
+        "file": "Tornincaso.pdf",
+        "page": 4,
+        "sha256": "2a0477c86d2806167e890e9f79ed5df3ef4a77a3741920e15a601c1d2b81b803",
+        "feetPerPdfPoint": 0.05555555555555555
+      },
+      "category": "layered-vector",
+      "role": "development",
+      "engine": 8,
+      "proposedZones": 20,
+      "recognizedLabels": 18,
+      "unresolvedLabels": [],
+      "invalidGeometry": [],
+      "elapsedMs": 10153.090166999998,
+      "independentAccuracyQualified": false
+    },
+    {
+      "source": {
+        "file": "Tornincaso.pdf",
+        "page": 5,
+        "sha256": "2a0477c86d2806167e890e9f79ed5df3ef4a77a3741920e15a601c1d2b81b803",
+        "feetPerPdfPoint": 0.05555555555555555
+      },
+      "category": "layered-vector",
+      "role": "development",
+      "engine": 8,
+      "proposedZones": 18,
+      "recognizedLabels": 0,
+      "unresolvedLabels": [],
+      "invalidGeometry": [],
+      "elapsedMs": 7830.711874999999,
+      "independentAccuracyQualified": false
+    },
+    {
+      "source": {
+        "file": "Burke.pdf",
+        "page": 4,
+        "sha256": "3c9dcd23dd13436eac484da549ca2d6449d29269b47400a73fedf06ef65acf62"
+      },
+      "category": "layered-vector",
+      "role": "development",
+      "engine": 8,
+      "proposedZones": 17,
+      "printedDimensionChecks": [
+        {
+          "label": "BEDROOM 2",
+          "expectedSqft": 118,
+          "predictedSqft": 117.97986010694945,
+          "areaErrorPct": 0.017067705975046397
+        },
+        {
+          "label": "BEDROOM 3",
+          "expectedSqft": 118,
+          "predictedSqft": 117.97976461617066,
+          "areaErrorPct": 0.01714863036385149
+        },
+        {
+          "label": "MASTER BEDROOM",
+          "expectedSqft": 180,
+          "predictedSqft": 180.4760814416303,
+          "areaErrorPct": 0.2644896897946107
+        }
+      ],
+      "independentAccuracyQualified": false,
+      "elapsedMs": 843.119542
+    }
+  ]
+}

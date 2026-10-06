@@ -96,6 +96,7 @@ export function BankReconciliationDetail({
           </div>
         ))}
       </div>
+      {detail.legacyTransactionEvidence ? <p className="border-b p-4 text-sm text-muted-foreground">This older close preserved totals and outstanding entries, but not transaction descriptions. Its transaction list is unavailable.</p> : null}
       <div className="border-b p-3">
         <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search statement transactions" className="h-9 w-full border bg-background px-3 text-sm outline-none focus:border-ring" />
       </div>
@@ -108,7 +109,7 @@ export function BankReconciliationDetail({
             <span className="font-mono tabular-nums">{row.direction === "outflow" ? "−" : ""}{formatMoneyCentsExact(row.amountCents)}</span>
           </div>
         ))}
-        {rows.length === 0 ? <p className="p-8 text-center text-sm text-muted-foreground">No statement transactions match.</p> : null}
+        {rows.length === 0 && !detail.legacyTransactionEvidence ? <p className="p-8 text-center text-sm text-muted-foreground">No statement transactions match.</p> : null}
       </div>
       {detail.outstandingItems.length > 0 ? <div className="border-t p-4"><p className="text-sm font-medium">Outstanding book entries</p>{detail.outstandingItems.map((item) => <p key={item.journal_line_id} className="mt-2 flex justify-between gap-4 text-xs"><span className="font-mono">{item.journal_line_id}</span><span>{formatMoneyCentsExact(item.amount_cents)}</span></p>)}</div> : null}
       {detail.evidenceDigest ? <p className="break-all border-t p-4 text-xs text-muted-foreground">Closed evidence: {detail.evidenceDigest}</p> : null}

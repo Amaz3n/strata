@@ -836,7 +836,7 @@ export async function getReceivePaymentWorkspace(input: {
   orgId?: string;
 } = {}) {
   const context = await requireOrgContext(input.orgId);
-  await requireAuthorization({
+  const permission = await requireAuthorization({
     permission: "payment.read",
     userId: context.userId,
     orgId: context.orgId,
@@ -846,29 +846,29 @@ export async function getReceivePaymentWorkspace(input: {
     logDecision: true,
   });
   const service = createServiceSupabaseClient();
+  let groupQuery = service.from("receivable_payment_groups")
+    .select("id, received_at, total_cents, method, reference, party_type, party_id, created_at")
+    .eq("org_id", context.orgId);
+  if (input.partyType && input.partyId) groupQuery = groupQuery.eq("party_type", input.partyType).eq("party_id", input.partyId);
   const [{ data: invoiceRows, error: invoiceError }, { data: groups, error: groupError }] = await Promise.all([
-    service
+    context.supabase
       .from("invoices")
       .select(
-        "id, invoice_number, project_id, customer_name, total_cents, balance_due_cents, due_date, status, metadata, " +
-          "project:projects!inner(id, name, client_id)",
+        "id, invoice_number, project_id, total_cents, balance_due_cents, due_date, status, metadata, " +
+          "project:projects(id, name, client_id, client:contacts(full_name))",
       )
       .eq("org_id", context.orgId)
       .in("status", ["sent", "partial", "overdue"])
       .gt("balance_due_cents", 0)
       .order("due_date", { ascending: true, nullsFirst: false })
       .limit(500),
-    service
-      .from("receivable_payment_groups")
-      .select("id, received_at, total_cents, method, reference, party_type, party_id, created_at")
-      .eq("org_id", context.orgId)
-      .order("received_at", { ascending: false })
-      .limit(20),
+    permission.divisionScope === "assigned" ? Promise.resolve({ data: [], error: null }) : groupQuery.order("received_at", { ascending: false }).limit(20),
   ]);
   if (invoiceError) throw new Error(`Failed to load open invoices: ${invoiceError.message}`);
   if (groupError) throw new Error(`Failed to load receipt history: ${groupError.message}`);
 
   let allowedProjectIds: Set<string> | null = null;
+  let allowedContactIds: Set<string> | null = null;
   if (input.partyType && input.partyId) {
     const { getFinancialPartyReceivables } = await import("@/lib/services/financial-parties");
     const party = await getFinancialPartyReceivables({
@@ -877,6 +877,7 @@ export async function getReceivePaymentWorkspace(input: {
       orgId: context.orgId,
     });
     allowedProjectIds = new Set(party.projects.map((project) => project.project_id));
+    allowedContactIds = new Set(party.included_contact_ids);
   }
 
   return {
@@ -888,18 +889,19 @@ export async function getReceivePaymentWorkspace(input: {
         return {
           id: String(row.id),
           invoiceNumber: String(row.invoice_number ?? "Invoice"),
-          projectId: String(row.project_id),
-          projectName: String(project?.name ?? "Project"),
-          clientContactId: project?.client_id ? String(project.client_id) : null,
-          customerName: String(row.customer_name ?? row.metadata?.customer_name ?? "Customer"),
+          projectId: row.project_id ? String(row.project_id) : null,
+          projectName: String(project?.name ?? "General billing"),
+          clientContactId: row.project_id ? project?.client_id ?? null : row.metadata?.customer_id ?? null,
+          customerKey: String((row.project_id ? project?.client_id : row.metadata?.customer_id ?? row.metadata?.qbo_customer_id) ?? row.project_id ?? row.id),
+          customerName: String(project?.client?.full_name ?? row.metadata?.customer_name ?? project?.name ?? "Customer"),
           totalCents: Number(row.total_cents ?? 0),
           balanceCents: Number(row.balance_due_cents ?? 0),
           dueDate: row.due_date ? String(row.due_date) : null,
           status: String(row.status),
         };
       })
-      .filter((invoice) => !allowedProjectIds || allowedProjectIds.has(invoice.projectId)),
-    recentGroups: groups ?? [],
+      .filter((invoice) => !allowedProjectIds || (invoice.projectId ? allowedProjectIds.has(invoice.projectId) : Boolean(invoice.clientContactId && allowedContactIds?.has(invoice.clientContactId)))),
+    recentGroups: (groups ?? []).filter(group => !input.partyId || (group.party_id === input.partyId && group.party_type === input.partyType)),
   };
 }
 
@@ -921,6 +923,25 @@ export async function recordMultiInvoicePayment(input: ReceivePaymentInput, orgI
     resourceId: parsed.party_id ?? context.orgId,
     logDecision: true,
   });
+  const { data: invoices, error: invoiceError } = await context.supabase.from("invoices")
+    .select("id,project_id,metadata,project:projects(client_id)")
+    .eq("org_id", context.orgId).in("id", parsed.allocations.map(item => item.invoice_id));
+  if (invoiceError || invoices?.length !== parsed.allocations.length) throw new Error("One or more invoices are unavailable");
+  const customerKeys = new Set<string>();
+  let party: Awaited<ReturnType<typeof import("@/lib/services/financial-parties").getFinancialPartyReceivables>> | null = null;
+  if (parsed.party_type && parsed.party_id) {
+    const { getFinancialPartyReceivables } = await import("@/lib/services/financial-parties");
+    party = await getFinancialPartyReceivables({ partyType: parsed.party_type, partyId: parsed.party_id, orgId: context.orgId });
+  }
+  for (const invoice of invoices) {
+    const permission = await requireAuthorization({ permission: "payment.release", userId: context.userId, orgId: context.orgId, projectId: invoice.project_id ?? undefined, supabase: context.supabase, resourceType: "invoice", resourceId: invoice.id, logDecision: true });
+    if (!invoice.project_id && permission.divisionScope === "assigned") throw new Error("Organization-wide payment access is required for general billing");
+    const project = Array.isArray(invoice.project) ? invoice.project[0] : invoice.project;
+    const contactId = invoice.project_id ? project?.client_id : invoice.metadata?.customer_id;
+    if (party && !(invoice.project_id ? party.projects.some(project => project.project_id === invoice.project_id) : party.included_contact_ids.includes(String(contactId)))) throw new Error("An invoice does not belong to this customer");
+    customerKeys.add(String(contactId ?? invoice.metadata?.qbo_customer_id ?? invoice.project_id ?? invoice.id));
+  }
+  if (!party && customerKeys.size > 1) throw new Error("Record a separate receipt for each customer");
   const service = createServiceSupabaseClient();
   const { data, error } = await service.rpc("apply_multi_invoice_payment_atomic", {
     p_org_id: context.orgId,

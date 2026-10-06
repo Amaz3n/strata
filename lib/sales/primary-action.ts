@@ -1,3 +1,4 @@
+import type { AgreementSigningState } from "@/lib/sales/agreement-signing-state"
 import type { SalesDeal } from "@/lib/services/sales-deals"
 
 /**
@@ -32,7 +33,7 @@ export interface DealPrimaryAction {
  * Design Studio owns selection appointments. Sales points at them, it does not
  * reimplement them.
  */
-export function resolveDealPrimaryAction(deal: SalesDeal): DealPrimaryAction {
+export function resolveDealPrimaryAction(deal: SalesDeal, signing?: AgreementSigningState | null): DealPrimaryAction {
   switch (deal.stage) {
     case "inquiry":
     case "working":
@@ -57,7 +58,7 @@ export function resolveDealPrimaryAction(deal: SalesDeal): DealPrimaryAction {
           label: "View agreement",
           kind: "link",
           href: deal.projectId ? `/projects/${deal.projectId}/documents` : null,
-          hint: "Out for signature — waiting on the buyer.",
+          hint: signing?.detail ?? "Review the saved agreement’s signing preparation, delivery and signature status.",
         }
       }
       if (!deal.contractId) {

@@ -3,6 +3,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react"
 import { usePathname } from "next/navigation"
 import type { AppBreadcrumbItem } from "./app-header"
+import { BUILDER_PROFILE, type BusinessProfile } from "@/lib/business-profile"
 import type { ProductTier, ProjectPosture } from "@/lib/product-tier"
 
 export interface ProjectShellContext {
@@ -20,6 +21,7 @@ interface PageTitleContextType {
   fullBleed: boolean
   projectContext: ProjectShellContext | null
   productTier: ProductTier
+  businessProfile: BusinessProfile
   setTitle: (title: string) => void
   setBreadcrumbs: (breadcrumbs: AppBreadcrumbItem[]) => void
   setFullBleed: (value: boolean) => void
@@ -33,6 +35,7 @@ interface PageTitleProviderProps {
   title?: string
   breadcrumbs?: AppBreadcrumbItem[]
   productTier?: ProductTier
+  businessProfile?: BusinessProfile
 }
 
 type Scoped<T> = { path: string; value: T } | undefined
@@ -42,6 +45,7 @@ export function PageTitleProvider({
   title: initialTitle,
   breadcrumbs: initialBreadcrumbs,
   productTier = "residential",
+  businessProfile = BUILDER_PROFILE,
 }: PageTitleProviderProps) {
   const pathname = usePathname()
 
@@ -82,12 +86,13 @@ export function PageTitleProvider({
       fullBleed,
       projectContext,
       productTier,
+      businessProfile,
       setTitle,
       setBreadcrumbs,
       setFullBleed,
       setProjectContext,
     }),
-    [title, breadcrumbs, fullBleed, projectContext, productTier, setTitle, setBreadcrumbs],
+    [title, breadcrumbs, fullBleed, projectContext, productTier, businessProfile, setTitle, setBreadcrumbs],
   )
 
   return <PageTitleContext.Provider value={value}>{children}</PageTitleContext.Provider>

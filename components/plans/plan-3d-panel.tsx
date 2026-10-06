@@ -1,4 +1,4 @@
-"use client"
+"use client";
 
 /**
  * The 3D model panel on the plan workbench.
@@ -9,14 +9,20 @@
  * an unreviewed model is a claim rather than a fact — the walkthrough is one
  * click away and stays there.
  *
- * Three.js is behind a dynamic import in `plan-3d-viewer`, so opening a plan
+ * Three.js is imported when the model viewer mounts, so opening a plan
  * that has no model costs nothing.
  */
 
-import dynamic from "next/dynamic"
-import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react"
-import { useRouter } from "next/navigation"
-import { toast } from "sonner"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 
 import {
   interpretFloorplanAction,
@@ -24,9 +30,22 @@ import {
   loadFloorplanModelAction,
   publishFloorplanAction,
   unpublishFloorplanAction,
-} from "@/app/(app)/floorplan/actions"
-import { FloorplanReview } from "@/components/plans/floorplan-review"
-import { AlertTriangle, Box, Loader2, RefreshCcw, Sparkles } from "@/components/icons"
+  restoreFloorplanDraftAction,
+} from "@/app/(app)/floorplan/actions";
+import { ModelPreparation } from "./model-preparation";
+import { ModelHistory } from "./model-history";
+import { ModelInspector } from "./model-inspector";
+import type { ModelSourceSelection } from "@/lib/drawings/architectural-model";
+import { validateArchitecturalModel } from "@/lib/drawings/architectural-validation";
+import { FloorplanReview } from "@/components/plans/floorplan-review";
+import { ModelStage } from "@/components/plans/model-viewer/model-stage";
+import {
+  AlertTriangle,
+  Box,
+  Loader2,
+  RefreshCcw,
+  Sparkles,
+} from "@/components/icons";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -36,34 +55,25 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { unwrapAction } from "@/lib/action-result"
+} from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { unwrapAction } from "@/lib/action-result";
 import {
   applyFloorplanEdit,
-  modelConfidence,
   modelFloorAreaSqft,
   type FloorplanEdit,
   type FloorplanModel,
-} from "@/lib/drawings/floorplan-model"
-import type { FloorplanModelDto, FloorplanSheetView, FloorplanTarget } from "@/lib/services/floorplan-models"
-import { cn } from "@/lib/utils"
+} from "@/lib/drawings/floorplan-model";
+import type {
+  FloorplanModelDto,
+  FloorplanSheetView,
+  FloorplanTarget,
+} from "@/lib/services/floorplan-models";
+import { cn } from "@/lib/utils";
 
-const Plan3dViewer = dynamic(
-  () => import("@/components/plans/plan-3d-viewer").then((module) => module.Plan3dViewer),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" />
-        Loading the viewer…
-      </div>
-    ),
-  },
-)
 
-type Surface = "review" | "walk"
+type Surface = "review" | "walk";
 
 /**
  * How hard the panel watches a queued interpretation.
@@ -72,53 +82,69 @@ type Surface = "review" | "walk"
  * so the wait is metered: interpretation usually lands inside a minute, and a
  * job still queued after that is not one more second of work away.
  */
-const POLL_INITIAL_MS = 15_000
-const POLL_MAX_MS = 60_000
-const POLL_BACKOFF = 1.5
+const POLL_INITIAL_MS = 15_000;
+const POLL_MAX_MS = 60_000;
+const POLL_BACKOFF = 1.5;
 
 export interface Plan3dPanelProps {
   /** Which house this model belongs to — a plan edition, or a project. */
-  target: FloorplanTarget
+  target: FloorplanTarget;
   /** Caption shown in the viewer, e.g. "2340 — The Ashford" or the address. */
-  title: string
+  title: string;
   /** Status only — the geometry is fetched on demand, it is far too big to ship. */
-  status: FloorplanModelDto | null
-  canWrite: boolean
+  status: FloorplanModelDto | null;
+  canWrite: boolean;
   /** Plan id, so plan-surface writes revalidate the right pages. */
-  planId?: string
+  planId?: string;
   /**
    * Why there is nothing to interpret yet, when that is knowable up front.
    * Null means the source is ready and the button is live.
    */
-  blockedReason?: string | null
+  blockedReason?: string | null;
   /**
    * Fill the page instead of the workbench's fixed 560px band. The dedicated
    * model route is a viewer, not a panel — the model gets every pixel the
    * layout has.
    */
-  fill?: boolean
+  fill?: boolean;
 }
 
-export function Plan3dPanel({ target, title, status, canWrite, planId, blockedReason, fill = false }: Plan3dPanelProps) {
-  const router = useRouter()
-  const [pending, startTransition] = useTransition()
-  const [record, setRecord] = useState<FloorplanModelDto | null>(status)
-  const [model, setModel] = useState<FloorplanModel | null>(null)
-  const [sheets, setSheets] = useState<FloorplanSheetView[]>([])
-  const [loadingModel, setLoadingModel] = useState(false)
-  const [surface, setSurface] = useState<Surface>("review")
-  const [levelId, setLevelId] = useState<string | null>(null)
-  const [saving, setSaving] = useState(false)
-  const [confirmReinterpret, setConfirmReinterpret] = useState(false)
+export function Plan3dPanel({
+  target,
+  title,
+  status,
+  canWrite,
+  planId,
+  blockedReason,
+  fill = false,
+}: Plan3dPanelProps) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [record, setRecord] = useState<FloorplanModelDto | null>(status);
+  const [model, setModel] = useState<FloorplanModel | null>(null);
+  const [sheets, setSheets] = useState<FloorplanSheetView[]>([]);
+  const [loadingModel, setLoadingModel] = useState(false);
+  const [surface, setSurface] = useState<Surface>("review");
+  const [levelId, setLevelId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [confirmReinterpret, setConfirmReinterpret] = useState(false);
+  const [preparing, setPreparing] = useState(false);
+  const [selection, setSelection] = useState<string | null>(null);
+  const [history, setHistory] = useState<FloorplanModel[]>([]);
+  const [future, setFuture] = useState<FloorplanModel[]>([]);
+  const savingRef = useRef(false);
+  const [retry, setRetry] = useState(0);
+  const targetKey =
+    target.kind === "project" ? target.projectId : target.housePlanVersionId;
 
   // A completed job only shows up if the panel notices the server's newer
   // status. `useState` ignores prop changes after mount, so sync explicitly —
   // on scalars, not on the object, which is a fresh identity every render.
-  const statusKey = status ? `${status.status}:${status.updated_at}` : "none"
+  const statusKey = status ? `${status.status}:${status.updated_at}` : "none";
   useEffect(() => {
-    setRecord(status)
+    setRecord(status);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statusKey])
+  }, [statusKey]);
 
   /**
    * Fetch the geometry once per (target, revision) — and exactly once.
@@ -129,10 +155,14 @@ export function Plan3dPanel({ target, title, status, canWrite, planId, blockedRe
    * and returned without ever clearing the spinner. The panel then sat on
    * "Loading the model" forever with perfectly good data on the wire.
    */
-  const hasDocument = record?.status === "draft" || record?.status === "published"
-  const documentKey = record ? `${record.id}:${record.updated_at}` : null
-  const fetchedKeyRef = useRef<string | null>(null)
-  const [loadError, setLoadError] = useState<string | null>(null)
+  const hasDocument =
+    !!record &&
+    (record.level_count > 0 ||
+      record.status === "draft" ||
+      record.status === "published");
+  const documentKey = record ? `${record.id}:${record.updated_at}` : null;
+  const fetchedKeyRef = useRef<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   /**
    * Adopt a record this panel just wrote.
@@ -142,37 +172,40 @@ export function Plan3dPanel({ target, title, status, canWrite, planId, blockedRe
    * the model the server just echoed back.
    */
   const adopt = useCallback((next: FloorplanModelDto) => {
-    fetchedKeyRef.current = `${next.id}:${next.updated_at}`
-    setRecord(next)
-  }, [])
+    fetchedKeyRef.current = `${next.id}:${next.updated_at}`;
+    setRecord(next);
+  }, []);
 
   useEffect(() => {
-    if (!hasDocument || !documentKey) return
-    if (fetchedKeyRef.current === documentKey) return
-    fetchedKeyRef.current = documentKey
-    let cancelled = false
-    setLoadingModel(true)
-    setLoadError(null)
+    if (!hasDocument || !documentKey) return;
+    if (fetchedKeyRef.current === documentKey) return;
+    fetchedKeyRef.current = documentKey;
+    let cancelled = false;
+    setLoadingModel(true);
+    setLoadError(null);
     void (async () => {
       try {
-        const loaded = unwrapAction(await loadFloorplanModelAction(target))
-        if (cancelled) return
-        setModel(loaded.record?.model ?? null)
-        setSheets(loaded.sheets)
-        setLevelId(loaded.record?.model?.levels[0]?.id ?? null)
+        const loaded = unwrapAction(await loadFloorplanModelAction(target));
+        if (cancelled) return;
+        setModel(loaded.record?.model ?? null);
+        setSheets(loaded.sheets);
+        setLevelId(loaded.record?.model?.levels[0]?.id ?? null);
       } catch (error) {
-        if (cancelled) return
+        if (cancelled) return;
         // Never a silent forever-spinner: a failed load says so and offers a
         // retry, because the alternative is indistinguishable from a hang.
-        setLoadError(error instanceof Error ? error.message : "Could not load the model")
+        setLoadError(
+          error instanceof Error ? error.message : "Could not load the model",
+        );
       } finally {
-        if (!cancelled) setLoadingModel(false)
+        if (!cancelled) setLoadingModel(false);
       }
-    })()
+    })();
     return () => {
-      cancelled = true
-    }
-  }, [documentKey, hasDocument, target])
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [documentKey, hasDocument, targetKey, retry]);
 
   /**
    * Watch a queued job until it lands — otherwise the panel would sit on
@@ -185,60 +218,70 @@ export function Plan3dPanel({ target, title, status, canWrite, planId, blockedRe
    * moment the answer is most likely already waiting.
    */
   useEffect(() => {
-    if (record?.status !== "processing") return
+    if (record?.status !== "processing") return;
 
-    let timer: number | undefined
-    let delay = POLL_INITIAL_MS
+    let timer: number | undefined;
+    let delay = POLL_INITIAL_MS;
 
     const stop = () => {
-      if (timer !== undefined) window.clearTimeout(timer)
-      timer = undefined
-    }
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = undefined;
+    };
 
     const poll = () => {
-      stop()
-      router.refresh()
-      delay = Math.min(delay * POLL_BACKOFF, POLL_MAX_MS)
-      timer = window.setTimeout(poll, delay)
-    }
+      stop();
+      router.refresh();
+      delay = Math.min(delay * POLL_BACKOFF, POLL_MAX_MS);
+      timer = window.setTimeout(poll, delay);
+    };
 
     const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") poll()
-      else stop()
-    }
+      if (document.visibilityState === "visible") poll();
+      else stop();
+    };
 
-    if (document.visibilityState === "visible") timer = window.setTimeout(poll, delay)
-    document.addEventListener("visibilitychange", onVisibilityChange)
+    if (document.visibilityState === "visible")
+      timer = window.setTimeout(poll, delay);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
-      stop()
-      document.removeEventListener("visibilitychange", onVisibilityChange)
-    }
-  }, [record?.status, router])
+      stop();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [record?.status, router]);
 
-  const levels = useMemo(() => model?.levels ?? [], [model])
-  const level = levels.find((item) => item.id === levelId) ?? levels[0] ?? null
+  const levels = useMemo(() => model?.levels ?? [], [model]);
+  const level = levels.find((item) => item.id === levelId) ?? levels[0] ?? null;
   const sheetByVersion = useMemo(
     () => new Map(sheets.map((sheet) => [sheet.sheetVersionId, sheet])),
     [sheets],
-  )
+  );
 
   const queueInterpretation = useCallback(
-    (force: boolean) => {
+    (force: boolean, sources?: ModelSourceSelection[]) => {
       startTransition(async () => {
         try {
-          const next = unwrapAction(await interpretFloorplanAction(target, force, planId))
-          setRecord(next)
-          setModel(null)
-          setSheets([])
-          toast.success("Interpreting the plan sheets — this takes a minute")
-          router.refresh()
+          const next = unwrapAction(
+            await interpretFloorplanAction(target, force, planId, sources),
+          );
+          setRecord(next);
+          setPreparing(false);
+          setHistory([]);
+          setFuture([]);
+          toast.success(
+            "Model generation started. Your published version stays available.",
+          );
+          router.refresh();
         } catch (error) {
-          toast.error(error instanceof Error ? error.message : "Could not start interpretation")
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : "Could not start interpretation",
+          );
         }
-      })
+      });
     },
     [planId, router, target],
-  )
+  );
 
   /**
    * Apply a correction optimistically, then persist it.
@@ -249,59 +292,149 @@ export function Plan3dPanel({ target, title, status, canWrite, planId, blockedRe
    */
   const applyEdit = useCallback(
     (edit: FloorplanEdit) => {
-      if (!model) return
-      const next = applyFloorplanEdit(model, edit)
-      if (next === model) return
-      const previous = model
-      setModel(next)
-      setSaving(true)
+      if (!model || savingRef.current || !record) return;
+      const next = applyFloorplanEdit(model, edit);
+      if (next === model) {
+        toast.error(
+          "This edit is not valid. Check dimensions, overlaps, and wall limits.",
+        );
+        return;
+      }
+      const errors = validateArchitecturalModel(next).filter(
+        (issue) => issue.severity === "error",
+      );
+      const previousErrors = new Set(
+        validateArchitecturalModel(model)
+          .filter((issue) => issue.severity === "error")
+          .map((issue) => issue.id),
+      );
+      const introduced = errors.find((issue) => !previousErrors.has(issue.id));
+      if (
+        introduced &&
+        edit.type !== "wall.add" &&
+        edit.type !== "wall.delete"
+      ) {
+        toast.error(introduced.message);
+        return;
+      }
+      savingRef.current = true;
+      const previous = model;
+      setModel(next);
+      setSaving(true);
       void (async () => {
         try {
-          const saved = unwrapAction(await correctFloorplanAction(target, [edit], planId))
-          adopt(saved)
-          if (saved.model) setModel(saved.model)
+          const saved = unwrapAction(
+            await correctFloorplanAction(
+              target,
+              [edit],
+              planId,
+              record.updated_at,
+            ),
+          );
+          adopt(saved);
+          setHistory((items) => [...items, previous].slice(-50));
+          setFuture([]);
+          if (saved.model) setModel(saved.model);
         } catch (error) {
-          setModel(previous)
-          toast.error(error instanceof Error ? error.message : "Could not save the correction")
+          setModel(previous);
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : "Could not save the correction",
+          );
         } finally {
-          setSaving(false)
+          setSaving(false);
+          savingRef.current = false;
         }
-      })()
+      })();
     },
-    [adopt, model, planId, target],
-  )
+    [adopt, model, planId, target, record],
+  );
+
+  const restore = useCallback(
+    async (direction: "undo" | "redo") => {
+      const stack = direction === "undo" ? history : future;
+      const previous = stack.at(-1);
+      if (!previous || !model || !record || savingRef.current) return;
+      savingRef.current = true;
+      setSaving(true);
+      try {
+        const saved = unwrapAction(
+          await restoreFloorplanDraftAction(
+            target,
+            previous,
+            record.updated_at,
+            planId,
+          ),
+        );
+        adopt(saved);
+        setModel(saved.model);
+        if (direction === "undo") {
+          setHistory((h) => h.slice(0, -1));
+          setFuture((h) => [...h, model]);
+        } else {
+          setFuture((h) => h.slice(0, -1));
+          setHistory((h) => [...h, model]);
+        }
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Could not restore edit",
+        );
+      } finally {
+        savingRef.current = false;
+        setSaving(false);
+      }
+    },
+    [adopt, future, history, model, planId, record, target],
+  );
 
   const publish = useCallback(() => {
     startTransition(async () => {
       try {
-        const next = unwrapAction(await publishFloorplanAction(target, planId))
-        adopt(next)
-        toast.success("3D model published")
-        router.refresh()
+        const next = unwrapAction(await publishFloorplanAction(target, planId));
+        adopt(next);
+        toast.success("3D model published");
+        router.refresh();
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : "Could not publish the model")
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Could not publish the model",
+        );
       }
-    })
-  }, [adopt, planId, router, target])
+    });
+  }, [adopt, planId, router, target]);
 
   const unpublish = useCallback(() => {
     startTransition(async () => {
       try {
-        const next = unwrapAction(await unpublishFloorplanAction(target, planId))
-        adopt(next)
-        toast.success("3D model unpublished")
-        router.refresh()
+        const next = unwrapAction(
+          await unpublishFloorplanAction(target, planId),
+        );
+        adopt(next);
+        toast.success("3D model unpublished");
+        router.refresh();
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : "Could not unpublish the model")
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Could not unpublish the model",
+        );
       }
-    })
-  }, [adopt, planId, router, target])
+    });
+  }, [adopt, planId, router, target]);
 
-  const confidence = model ? modelConfidence(model) : (record?.confidence ?? 0)
-  const hasGeometry = !!model && model.levels.some((item) => item.walls.length > 0)
+  const issues = model ? validateArchitecturalModel(model) : [];
+  const hasGeometry = !!model && model.levels.length > 0;
 
   return (
-    <section id="plan-3d" className={cn("border-t border-border", fill && "flex min-h-0 flex-1 flex-col")}>
+    <section
+      id="plan-3d"
+      className={cn(
+        "border-t border-border",
+        fill && "flex min-h-0 flex-1 flex-col",
+      )}
+    >
       <header className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-6">
         <div className="flex items-center gap-2">
           <Box className="h-4 w-4 text-muted-foreground" />
@@ -317,11 +450,21 @@ export function Plan3dPanel({ target, title, status, canWrite, planId, blockedRe
 
         {hasGeometry ? (
           <p className="text-xs text-muted-foreground tabular-nums">
-            {model!.levels.length} {model!.levels.length === 1 ? "level" : "levels"} ·{" "}
-            {model!.levels.reduce((total, item) => total + item.rooms.length, 0)} rooms ·{" "}
-            {modelFloorAreaSqft(model!).toLocaleString("en-US")} SF ·{" "}
-            <span className={cn(confidence < 0.6 && "text-warning")}>{Math.round(confidence * 100)}% confidence</span>
-            {record && record.correction_count > 0 ? ` · ${record.correction_count} corrections` : null}
+            {model!.levels.length}{" "}
+            {model!.levels.length === 1 ? "level" : "levels"} ·{" "}
+            {model!.levels.reduce(
+              (total, item) => total + item.rooms.length,
+              0,
+            )}{" "}
+            rooms · {modelFloorAreaSqft(model!).toLocaleString("en-US")} SF ·{" "}
+            <span>
+              {issues.length
+                ? `${issues.length} review items`
+                : "Ready to present"}
+            </span>
+            {record && record.correction_count > 0
+              ? ` · ${record.correction_count} corrections`
+              : null}
           </p>
         ) : null}
 
@@ -333,26 +476,72 @@ export function Plan3dPanel({ target, title, status, canWrite, planId, blockedRe
                 variant={surface === "review" ? "secondary" : "ghost"}
                 onClick={() => setSurface("review")}
               >
-                Review
+                Floor plan
               </Button>
-              <Button size="sm" variant={surface === "walk" ? "secondary" : "ghost"} onClick={() => setSurface("walk")}>
-                Walk through
+              <Button
+                size="sm"
+                variant={surface === "walk" ? "secondary" : "ghost"}
+                onClick={() => setSurface("walk")}
+              >
+                3D studio
               </Button>
             </div>
           ) : null}
 
           {canWrite ? (
             <>
+              {model && (
+                <>
+                  {record && (
+                    <ModelHistory
+                      target={target}
+                      expectedUpdatedAt={record.updated_at}
+                      planId={planId}
+                      disabled={
+                        saving || pending || record.status === "processing"
+                      }
+                      onRestore={(next) => {
+                        setRecord(next);
+                        setModel(next.model);
+                        setHistory([]);
+                        setFuture([]);
+                        setSelection(null);
+                        router.refresh();
+                      }}
+                    />
+                  )}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={saving || !history.length}
+                    onClick={() => void restore("undo")}
+                  >
+                    Undo
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={saving || !future.length}
+                    onClick={() => void restore("redo")}
+                  >
+                    Redo
+                  </Button>
+                </>
+              )}
               {!record || record.status === "failed" ? (
                 <Button
                   size="sm"
                   className="gap-1.5"
                   disabled={pending || !!blockedReason}
                   title={blockedReason ?? undefined}
-                  onClick={() => queueInterpretation(false)}
+                  onClick={() => setPreparing(true)}
                 >
-                  {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                  Interpret sheets
+                  {pending ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3.5 w-3.5" />
+                  )}
+                  Create from plans
                 </Button>
               ) : (
                 <Button
@@ -361,21 +550,36 @@ export function Plan3dPanel({ target, title, status, canWrite, planId, blockedRe
                   className="gap-1.5"
                   disabled={pending || record.status === "processing"}
                   onClick={() => {
-                    if (record.correction_count > 0) setConfirmReinterpret(true)
-                    else queueInterpretation(false)
+                    if (record.correction_count > 0)
+                      setConfirmReinterpret(true);
+                    else setPreparing(true);
                   }}
                 >
                   <RefreshCcw className="h-3.5 w-3.5" />
-                  Re-interpret
+                  Sources
                 </Button>
               )}
               {hasGeometry ? (
                 record?.status === "published" ? (
-                  <Button size="sm" variant="ghost" disabled={pending} onClick={unpublish}>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={pending}
+                    onClick={unpublish}
+                  >
                     Unpublish
                   </Button>
                 ) : (
-                  <Button size="sm" disabled={pending} onClick={publish}>
+                  <Button
+                    size="sm"
+                    disabled={
+                      pending ||
+                      saving ||
+                      !!issues.length ||
+                      record?.status === "processing"
+                    }
+                    onClick={publish}
+                  >
                     Publish
                   </Button>
                 )
@@ -385,13 +589,20 @@ export function Plan3dPanel({ target, title, status, canWrite, planId, blockedRe
         </div>
       </header>
 
+      {record?.status === "failed" && model && (
+        <p
+          role="alert"
+          className="border-t border-warning/40 bg-warning/10 px-4 py-2 text-sm"
+        >
+          {record.error ??
+            "Generation failed. Your previous draft is preserved."}
+        </p>
+      )}
       {model?.warnings?.length ? (
         <div className="flex items-start gap-2 border-t border-warning/40 bg-warning/10 px-4 py-2 sm:px-6">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
           <div className="text-xs text-foreground">
-            <p className="font-medium">
-              {model.warnings.length === 1 ? "A sheet was skipped" : `${model.warnings.length} sheets were skipped`}
-            </p>
+            <p className="font-medium">Source review notes</p>
             <ul className="mt-0.5 space-y-0.5 text-muted-foreground">
               {model.warnings.map((warning) => (
                 <li key={warning}>{warning}</li>
@@ -401,7 +612,12 @@ export function Plan3dPanel({ target, title, status, canWrite, planId, blockedRe
         </div>
       ) : null}
 
-      <div className={cn("border-t border-border", fill ? "min-h-0 flex-1" : "h-[560px]")}>
+      <div
+        className={cn(
+          "border-t border-border",
+          fill ? "min-h-0 flex-1" : "h-[560px]",
+        )}
+      >
         {loadError && !model ? (
           <EmptyState
             icon={<AlertTriangle className="h-5 w-5 text-warning" />}
@@ -412,9 +628,9 @@ export function Plan3dPanel({ target, title, status, canWrite, planId, blockedRe
                 size="sm"
                 variant="outline"
                 onClick={() => {
-                  fetchedKeyRef.current = null
-                  setLoadError(null)
-                  setRecord((current) => (current ? { ...current } : current))
+                  fetchedKeyRef.current = null;
+                  setLoadError(null);
+                  setRetry((value) => value + 1);
                 }}
               >
                 Try again
@@ -430,10 +646,10 @@ export function Plan3dPanel({ target, title, status, canWrite, planId, blockedRe
         ) : record?.status === "processing" ? (
           <EmptyState
             icon={<Loader2 className="h-5 w-5 animate-spin" />}
-            title="Reading the floorplan sheets"
-            body="Walls, doors and rooms are being traced from the plan set's vector linework. This usually finishes within a minute."
+            title={`Generating model · ${record.generation_stage ?? "queued"}`}
+            body="Preparing sources, recognizing architecture, reconciling spaces, and validating the editable model. The last published version remains available."
           />
-        ) : record?.status === "failed" ? (
+        ) : record?.status === "failed" && !model ? (
           <EmptyState
             icon={<AlertTriangle className="h-5 w-5 text-warning" />}
             title="Interpretation did not produce a model"
@@ -448,38 +664,84 @@ export function Plan3dPanel({ target, title, status, canWrite, planId, blockedRe
               "Interpret the floorplan sheets to lift a walkable model out of them. Clients and superintendents can then walk the house in the browser."
             }
           />
-        ) : surface === "walk" ? (
-          <Plan3dViewer model={model!} caption={title} />
         ) : level ? (
-          <div className="flex h-full flex-col">
-            {levels.length > 1 ? (
+          <div className="flex h-full min-h-0 flex-col md:flex-row">
+            <div className="flex min-h-[360px] min-w-0 flex-1 flex-col">
               <div className="flex items-center gap-1 border-b border-border px-3 py-1.5">
                 {levels.map((item) => (
                   <Button
                     key={item.id}
                     size="sm"
                     variant={item.id === level.id ? "secondary" : "ghost"}
-                    onClick={() => setLevelId(item.id)}
+                    onClick={() => {
+                      setLevelId(item.id);
+                      setSelection(null);
+                    }}
                   >
                     {item.name}
                   </Button>
                 ))}
               </div>
-            ) : null}
-            <div className="min-h-0 flex-1">
-              <FloorplanReview
-                level={level}
-                sheet={sheetByVersion.get(level.source.sheetVersionId) ?? null}
-                editable={canWrite}
-                saving={saving}
-                onEdit={applyEdit}
-              />
+              <div
+                className={cn("min-h-0 flex-1", surface !== "walk" && "hidden")}
+              >
+                <ModelStage
+                  model={model!}
+                  title={title}
+                  selected={selection}
+                  onSelect={(pick) => {
+                    if (pick) setLevelId(pick.levelId);
+                    setSelection(pick?.id ?? null);
+                  }}
+                  onSaveView={(view) =>
+                    applyEdit({ type: "view.save", levelId: level.id, view })
+                  }
+                />
+              </div>
+              <div
+                className={cn(
+                  "min-h-0 flex-1",
+                  surface !== "review" && "hidden",
+                )}
+              >
+                <FloorplanReview
+                  level={level}
+                  sheet={
+                    sheetByVersion.get(level.source.sheetVersionId) ?? null
+                  }
+                  editable={canWrite && !saving}
+                  saving={saving}
+                  onEdit={applyEdit}
+                  selection={selection}
+                  onSelect={setSelection}
+                />
+              </div>
             </div>
+            {canWrite && (
+              <ModelInspector
+                model={model!}
+                level={level}
+                selection={selection}
+                onSelect={setSelection}
+                onEdit={applyEdit}
+                disabled={saving || pending}
+              />
+            )}
           </div>
         ) : null}
       </div>
 
-      <AlertDialog open={confirmReinterpret} onOpenChange={setConfirmReinterpret}>
+      <ModelPreparation
+        target={target}
+        open={preparing}
+        onClose={() => setPreparing(false)}
+        onGenerate={(sources) => queueInterpretation(true, sources)}
+        busy={pending}
+      />
+      <AlertDialog
+        open={confirmReinterpret}
+        onOpenChange={setConfirmReinterpret}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
@@ -487,16 +749,18 @@ export function Plan3dPanel({ target, title, status, canWrite, planId, blockedRe
               {record?.correction_count === 1 ? "correction" : "corrections"}?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              Interpretation starts from the plan sheets again. Every wall deleted or drawn, every opening retyped and
-              every room named by hand on this edition is lost.
+              Generation starts from the source sheets again. Your existing
+              draft is archived and the published model stays available. Every
+              wall deleted or drawn, every opening retyped and every room named
+              by hand on this edition is lost.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Keep the corrections</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
-                setConfirmReinterpret(false)
-                queueInterpretation(true)
+                setConfirmReinterpret(false);
+                setPreparing(true);
               }}
             >
               Discard and re-interpret
@@ -505,20 +769,22 @@ export function Plan3dPanel({ target, title, status, canWrite, planId, blockedRe
         </AlertDialogContent>
       </AlertDialog>
     </section>
-  )
+  );
 }
 
 function StatusBadge({ record }: { record: FloorplanModelDto | null }) {
-  if (!record) return <Badge variant="outline">Not interpreted</Badge>
+  if (!record) return <Badge variant="outline">Not interpreted</Badge>;
   switch (record.status) {
     case "processing":
-      return <Badge variant="secondary">Interpreting</Badge>
+      return <Badge variant="secondary">Interpreting</Badge>;
     case "draft":
-      return <Badge variant="outline">Draft</Badge>
+      return <Badge variant="outline">Draft</Badge>;
     case "published":
-      return <Badge className="bg-success text-success-foreground">Published</Badge>
+      return (
+        <Badge className="bg-success text-success-foreground">Published</Badge>
+      );
     case "failed":
-      return <Badge variant="destructive">Failed</Badge>
+      return <Badge variant="destructive">Failed</Badge>;
   }
 }
 
@@ -528,10 +794,10 @@ function EmptyState({
   body,
   action,
 }: {
-  icon: React.ReactNode
-  title: string
-  body: string
-  action?: React.ReactNode
+  icon: React.ReactNode;
+  title: string;
+  body: string;
+  action?: React.ReactNode;
 }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
@@ -540,5 +806,5 @@ function EmptyState({
       <p className="max-w-md text-xs text-muted-foreground">{body}</p>
       {action ? <div className="mt-1">{action}</div> : null}
     </div>
-  )
+  );
 }

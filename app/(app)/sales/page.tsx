@@ -1,5 +1,5 @@
-import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
+import { connection } from "next/server"
 
 import { PageLayout } from "@/components/layout/page-layout"
 import { DealBoard } from "@/components/sales/deal-board"
@@ -39,28 +39,25 @@ async function SalesPageContent({ searchParams }: SalesPageProps) {
 }
 
 async function SalesBoardBand({ view, filter }: { view: DealView; filter: DealFilter }) {
-  // Ambient scope is a true dependency of the deal query, so it stays
-  // sequential. The team roster is not — it only ever fed the owner lookup, and
-  // waiting for the board to land before starting it was a pure waterfall.
-  const ambient = await getAmbientDeskContext()
-  const [deals, teamMembers] = await Promise.all([
-    listSalesDeals({
+  await connection()
+  const boardPromise = getAmbientDeskContext().then(async (ambient) => {
+    const deals = await listSalesDeals({
       divisionId: ambient.divisionId,
       communityId: ambient.communityId,
       includeClosed: view !== "open",
       limit: ROW_CAP,
-    }),
-    listTeamMembers().catch(() => []),
-  ])
-
-  // Lost reasons are keyed off the prospects on the board, so this one genuinely
-  // has to follow the deals.
-  const lostReasons =
-    view === "lost"
+    })
+    const lostReasons = view === "lost"
       ? await listLostReasons(
           deals.flatMap((deal) => (deal.stage === "lost" && deal.prospectId ? [deal.prospectId] : [])),
         )
       : new Map<string, string>()
+    return { ambient, deals, lostReasons }
+  })
+  const [{ ambient, deals, lostReasons }, teamMembers] = await Promise.all([
+    boardPromise,
+    listTeamMembers(undefined, { includeProjectCounts: false }).catch(() => []),
+  ])
 
   const communityOptions = ambient.communities.map(({ id, name }) => ({ id, name }))
   const owners = Object.fromEntries(teamMembers.map((member) => [member.user.id, member.user.full_name]))
@@ -88,7 +85,7 @@ async function SalesBoardBand({ view, filter }: { view: DealView; filter: DealFi
 
 export default function SalesPage(props: Parameters<typeof SalesPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLayout title="Sales"><SalesBoardSkeleton /></PageLayout>}>
       <SalesPageContent {...props} />
     </Suspense>
   )

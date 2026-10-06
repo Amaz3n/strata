@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { SignaturesHubClient } from "@/components/esign/signatures-hub-client"
@@ -7,11 +8,11 @@ import {
 } from "./actions"
 import { Skeleton } from "@/components/ui/skeleton"
 
-import { unwrapAction } from "@/lib/action-result"
 
 // desk-rule: reachable via dashboard/search/feature flows only, not workspace nav.
 
 async function SignaturesData() {
+  await connection()
   const [data, projectsForNewEnvelope] = await Promise.all([
     listSignaturesHubAction(),
     listSignatureEnvelopeProjectsAction(),

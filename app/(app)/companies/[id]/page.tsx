@@ -5,7 +5,7 @@ export const instant = false;
 
 interface LegacyCompanyPageProps {
   params: Promise<{ id: string }>;
-  searchParams?: Promise<{ tab?: string }>;
+  searchParams?: Promise<{ tab?: string | string[] }>;
 }
 
 /**
@@ -27,6 +27,6 @@ export default async function LegacyCompanyDetailPage({
 }: LegacyCompanyPageProps) {
   const { id } = await params;
   const { tab } = (await searchParams) ?? {};
-  const segment = tab ? TAB_ROUTES[tab] : undefined;
+  const segment = typeof tab === "string" && Object.hasOwn(TAB_ROUTES, tab) ? TAB_ROUTES[tab] : undefined;
   redirect(segment ? `/directory/${id}/${segment}` : `/directory/${id}`);
 }

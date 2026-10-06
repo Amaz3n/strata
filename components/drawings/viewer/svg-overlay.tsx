@@ -1,7 +1,7 @@
 "use client"
 
 import { memo, useImperativeHandle, useLayoutEffect, useMemo, useRef } from "react"
-import type { Ref } from "react"
+import type { Ref, ReactNode } from "react"
 import type { ImageToScreenMatrix } from "./tiled-drawing-viewer"
 import { cn } from "@/lib/utils"
 import { isDeductionGeometry, measurementLabel } from "@/lib/drawings/measure"
@@ -18,6 +18,7 @@ export interface SVGOverlayHandle {
 
 export interface SVGOverlayProps {
   ref?: Ref<SVGOverlayHandle>
+  areaOverlay?: ReactNode
   className?: string
   container: { width: number; height: number } | null
   imageSize: { width: number; height: number }
@@ -200,6 +201,7 @@ function MeasurementLabel({
 
 export function SVGOverlay({
   ref,
+  areaOverlay,
   className,
   container,
   imageSize,
@@ -389,6 +391,8 @@ export function SVGOverlay({
             })}
           </g>
         )}
+
+        {areaOverlay}
 
         {/* Pins */}
         {showPins &&

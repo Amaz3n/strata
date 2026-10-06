@@ -2,6 +2,8 @@
 
 import { revalidatePath } from "next/cache"
 import {
+  beginBidScopeRevision,
+  selectBidForPricing,
   awardBidSubmission,
   bulkCreateBidInvites,
   createBidAddendum,
@@ -10,6 +12,7 @@ import {
   createManualBidSubmission,
   generateBidInviteLink,
   getBidPackage,
+  getBidPackageAward,
   getProjectBuyoutSummary,
   listBidAddenda,
   listBidInvites,
@@ -22,11 +25,13 @@ import {
   listProspectBidQuotes,
   answerBidPackageRfi,
   pauseBidInviteAccess,
+  removeBidInvite,
   rescindBidAward,
   resendBidInvite,
   resumeBidInviteAccess,
   revokeBidInviteAccess,
   saveBidScopeItems,
+  sendBidPackage,
   setBidInviteRequireAccount,
   updateBidPackage,
   updateBidSubmissionItemLeveling,
@@ -52,6 +57,8 @@ export interface BidContext {
 
 function revalidateBids(context: BidContext) {
   revalidatePath("/bids")
+  revalidatePath("/purchasing")
+  if (context.bidPackageId) revalidatePath(`/purchasing/bids/${context.bidPackageId}`)
   if (context.projectId) {
     revalidatePath(`/projects/${context.projectId}/bids`)
     if (context.bidPackageId) {
@@ -90,6 +97,10 @@ export async function listBidInvitesAction(bidPackageId: string) {
   return listBidInvites(bidPackageId)
 }
 
+export async function getBidPackageAwardAction(bidPackageId: string) {
+  return getBidPackageAward(bidPackageId)
+}
+
 export async function listBidAddendaAction(bidPackageId: string) {
   return listBidAddenda(bidPackageId)
 }
@@ -123,8 +134,7 @@ export async function getCostCodeBidHistoryAction(costCodeId: string) {
 }
 
 export async function getVendorBidStatsAction(companyIds: string[]) {
-  const stats = await getVendorBidStats(companyIds)
-  return Object.fromEntries(stats)
+  return run(async () => Object.fromEntries(await getVendorBidStats(companyIds)))
 }
 
 // ---------------------------------------------------------------- writes
@@ -163,6 +173,21 @@ export async function createBidInviteAction(context: BidContext, input: unknown)
     const invite = await createBidInvite({ input })
     revalidateBids({ ...context, bidPackageId: invite.bid_package_id })
     return invite
+  })
+}
+
+export async function sendBidPackageAction(context: BidContext, bidPackageId: string) {
+  return run(async () => {
+    const result = await sendBidPackage({ bidPackageId })
+    revalidateBids({ ...context, bidPackageId })
+    return result
+  })
+}
+
+export async function removeBidInviteAction(context: BidContext, inviteId: string) {
+  return run(async () => {
+    await removeBidInvite({ inviteId })
+    revalidateBids(context)
   })
 }
 
@@ -289,4 +314,20 @@ export async function rescindBidAwardAction(context: BidContext, input: unknown)
     }
     return result
   })
+}
+
+export async function selectBidForPricingAction(context: BidContext, input: unknown) {
+  return run(async () => { const result = await selectBidForPricing({input}); revalidateBids(context); revalidatePath("/pipeline"); return result })
+}
+export async function beginBidScopeRevisionAction(context: BidContext, reason: string) {
+  return run(async () => { if (!context.bidPackageId) throw new Error("Package is required"); const result = await beginBidScopeRevision({bidPackageId:context.bidPackageId,reason}); revalidateBids(context); return result })
+}
+
+export async function searchProductionBidVendorsAction(input: unknown) {
+  try {
+    const { searchProductionBidVendors } = await import("@/lib/services/production-bid-vendors")
+    return { success: true as const, data: await searchProductionBidVendors(input) }
+  } catch (error) {
+    return actionError(error, "Unable to search bid vendors")
+  }
 }

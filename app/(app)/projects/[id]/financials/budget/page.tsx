@@ -1,3 +1,5 @@
+import { connection } from "next/server"
+import { ProjectInventoryLink } from "@/components/books/project-accounting-tools";
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
 
@@ -11,21 +13,26 @@ import { FinancialSetupStatusBanner } from "@/components/financials/financial-se
 import { PageLayout } from "@/components/layout/page-layout";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getProjectFinancialSetupStatusForProject } from "@/lib/services/project-financial-setup";
-import { getProjectFinancialFeatureConfig } from "@/lib/financials/billing-model";
+import { getProjectFinancialFeatureConfig, resolveRevenueRecognitionBasis } from "@/lib/financials/billing-model";
 import { hasPermission } from "@/lib/services/permissions";
 
 interface PageProps {
   params: Promise<{ id: string }>;
 }
 
-export default async function FinancialsBudgetPage({ params }: PageProps) {
-  const { id } = await params;
-
+export default function FinancialsBudgetPage({ params }: PageProps) {
   return (
     <Suspense fallback={<FinancialsBudgetSkeleton />}>
-      <FinancialsBudgetData id={id} />
+      <FinancialsBudgetPageRoute params={params} />
     </Suspense>
   );
+}
+
+async function FinancialsBudgetPageRoute({ params }: PageProps) {
+  await connection()
+  const { id } = await params;
+
+  return <FinancialsBudgetData id={id} />
 }
 
 async function FinancialsBudgetData({ id }: { id: string }) {
@@ -50,6 +57,7 @@ async function FinancialsBudgetData({ id }: { id: string }) {
       ]}
     >
       <FinancialSetupStatusBanner setup={setupStatus} />
+      <Suspense fallback={null}><ProjectInventoryLink projectId={id} applicable={resolveRevenueRecognitionBasis(featureConfig) === "closing"} /></Suspense>
       <BudgetTab
         projectId={project.id}
         project={project}

@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { Suspense } from "react"
 import { notFound } from "next/navigation"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -12,9 +13,7 @@ interface ProjectDecisionsPageProps {
   params: Promise<{ id: string }>
 }
 
-export default async function ProjectDecisionsPage({ params }: ProjectDecisionsPageProps) {
-  const { id } = await params
-
+export default function ProjectDecisionsPage({ params }: ProjectDecisionsPageProps) {
   return (
     <>
       <PageLayout title="Decisions" breadcrumbs={[
@@ -31,10 +30,17 @@ export default async function ProjectDecisionsPage({ params }: ProjectDecisionsP
           </div>
         </div>
       }>
-        <ProjectDecisionsData id={id} />
+        <ProjectDecisionsPageRoute params={params} />
       </Suspense>
     </>
   )
+}
+
+async function ProjectDecisionsPageRoute({ params }: ProjectDecisionsPageProps) {
+  await connection()
+  const { id } = await params
+
+  return <ProjectDecisionsData id={id} />
 }
 
 async function ProjectDecisionsData({ id }: { id: string }) {

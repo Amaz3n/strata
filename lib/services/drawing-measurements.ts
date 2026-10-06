@@ -1,4 +1,6 @@
 import "server-only"
+import { isDeepStrictEqual } from "node:util"
+import { z } from "zod"
 
 /**
  * Server-side measurement of drawing markups.
@@ -18,12 +20,12 @@ import {
   MEASURE_UOM_LABELS,
   MEASURING_MARKUP_TYPES,
   MEASURING_TYPE_UOM,
-  type ConditionFactors,
-  type ConditionUom,
   type ImageSize,
   type MeasureUom,
 } from "@/lib/drawings/measure"
-import type { MarkupData } from "@/lib/validation/drawings"
+import { drawingMarkupRevisionSchema, markupDataSchema, measureUomSchema, storedSheetCalibrationSchema, storedDrawingManifestSchema, type MarkupData } from "@/lib/validation/drawings"
+import { storedConditionMeasurementSchema, storedMeasurementQuantitySchema } from "@/lib/validation/takeoff"
+import { readAllRowsById } from "@/lib/land/paging"
 
 
 /**
@@ -41,35 +43,49 @@ export interface MeasurementContext {
  * the tile manifest (authoritative for tiled sheets) and fall back to the
  * stored render size; calibration comes from the version's extracted metadata.
  *
- * Uses the caller's scoped client so RLS still applies.
+ * Uses the caller's client and validates the source ancestry. Caller-specific
+ * authorization still belongs to the owning workflow, including worker paths.
  */
 export async function loadMeasurementContext(
   supabase: SupabaseClient,
   orgId: string,
   sheetVersionId: string,
+  expectedSheetId?: string,
 ): Promise<MeasurementContext> {
-  const { data } = await supabase
+  z.string().uuid().parse(orgId)
+  z.string().uuid().parse(sheetVersionId)
+  if (expectedSheetId !== undefined) z.string().uuid().parse(expectedSheetId)
+  const { data, error } = await supabase
     .from("drawing_sheet_versions")
-    .select("id, image_width, image_height, tile_manifest, calibration:extracted_metadata->calibration")
+    .select("id,org_id,drawing_sheet_id,drawing_revision_id,image_width,image_height,tile_manifest,extracted_metadata,drawing_sheets!inner(id,org_id,project_id),drawing_revisions!inner(id,org_id,project_id)")
     .eq("org_id", orgId)
     .eq("id", sheetVersionId)
     .maybeSingle()
 
-  if (!data) return { imageSize: null, feetPerImagePx: null }
+  if (error) throw new Error(`Failed to load measurement source: ${error.message}`)
+  if (!data) throw new Error("Measurement source unavailable. Reload the drawing before retrying.")
+  const parentSchema = z.object({ id: z.string().uuid(), org_id: z.string().uuid(), project_id: z.string().uuid() })
+  const source = z.object({
+    id: z.string().uuid(), org_id: z.string().uuid(), drawing_sheet_id: z.string().uuid(), drawing_revision_id: z.string().uuid(),
+    image_width: z.number().int().nonnegative().safe().nullable(), image_height: z.number().int().nonnegative().safe().nullable(),
+    tile_manifest: storedDrawingManifestSchema, extracted_metadata: z.record(z.unknown()).nullable(),
+    drawing_sheets: z.union([parentSchema, z.array(parentSchema).length(1)]),
+    drawing_revisions: z.union([parentSchema, z.array(parentSchema).length(1)]),
+  }).parse(data)
+  const sheet = Array.isArray(source.drawing_sheets) ? source.drawing_sheets[0] : source.drawing_sheets
+  const revision = Array.isArray(source.drawing_revisions) ? source.drawing_revisions[0] : source.drawing_revisions
+  if (source.id !== sheetVersionId || source.org_id !== orgId || (expectedSheetId !== undefined && source.drawing_sheet_id !== expectedSheetId) || sheet.id !== source.drawing_sheet_id || sheet.org_id !== orgId ||
+    revision.id !== source.drawing_revision_id || revision.org_id !== orgId || revision.project_id !== sheet.project_id) throw new Error("Measurement source scope unavailable. Reload the drawing before retrying.")
 
-  const manifestSize = (data.tile_manifest as any)?.Image?.Size
-  const width = Number(manifestSize?.Width ?? data.image_width ?? 0)
-  const height = Number(manifestSize?.Height ?? data.image_height ?? 0)
-  const calibration = data.calibration as { feet_per_image_px?: unknown } | null
-
-  const feetPerImagePx =
-    typeof calibration?.feet_per_image_px === "number" && calibration.feet_per_image_px > 0
-      ? calibration.feet_per_image_px
-      : null
+  const metadata = source.extracted_metadata ?? {}
+  const calibration = storedSheetCalibrationSchema.nullish().parse(metadata.calibration)
+  const manifestSize = source.tile_manifest?.Image?.Size
+  const width = manifestSize?.Width ?? source.image_width ?? 0
+  const height = manifestSize?.Height ?? source.image_height ?? 0
 
   return {
     imageSize: width > 0 && height > 0 ? { width, height } : null,
-    feetPerImagePx,
+    feetPerImagePx: calibration?.feet_per_image_px ?? null,
   }
 }
 
@@ -113,7 +129,7 @@ export async function assertConditionAcceptsUom(
 ): Promise<void> {
   const { data: condition, error } = await supabase
     .from("takeoff_conditions")
-    .select("id, name, uom, depth_in, height_ft, pitch_rise, tons_per_cy")
+    .select("id, org_id, name, uom, depth_in, height_ft, pitch_rise, tons_per_cy")
     .eq("org_id", orgId)
     .eq("id", conditionId)
     .maybeSingle()
@@ -121,26 +137,21 @@ export async function assertConditionAcceptsUom(
   if (error) {
     throw new Error(`Failed to load takeoff condition: ${error.message}`)
   }
-  if (!condition) {
+  if (!condition || condition.id !== conditionId || condition.org_id !== orgId) {
     throw new Error("Takeoff condition not found")
   }
   if (!uom) {
     throw new Error("Only measurements (linear, area, or count) can belong to a takeoff condition")
   }
 
-  const factors: ConditionFactors = {
-    depth_in: condition.depth_in === null ? null : Number(condition.depth_in),
-    height_ft: condition.height_ft === null ? null : Number(condition.height_ft),
-    pitch_rise: condition.pitch_rise === null ? null : Number(condition.pitch_rise),
-    tons_per_cy: condition.tons_per_cy === null ? null : Number(condition.tons_per_cy),
-  }
-  const expected = conditionSourceUom(condition.uom as ConditionUom, factors)
+  const measured = storedConditionMeasurementSchema.parse(condition)
+  const expected = conditionSourceUom(measured.uom, measured)
 
   if (expected !== uom) {
-    const reports = MEASURE_UOM_LABELS[condition.uom as ConditionUom]
+    const reports = MEASURE_UOM_LABELS[measured.uom]
     const measures = MEASURE_UOM_LABELS[expected]
     throw new Error(
-      expected === (condition.uom as string)
+      expected === measured.uom
         ? `"${condition.name}" measures in ${measures} — this markup measures in ${MEASURE_UOM_LABELS[uom]}`
         : `"${condition.name}" reports ${reports} and is measured in ${measures} — this markup measures in ${MEASURE_UOM_LABELS[uom]}`,
     )
@@ -155,6 +166,7 @@ export async function assertConditionAcceptsUom(
  */
 const RECOMPUTE_PAGE_SIZE = 1000
 const RECOMPUTE_WRITE_CONCURRENCY = 20
+const RECOMPUTE_VALIDATION_CAP = 200_000
 
 export async function recomputeMarkupQuantitiesForVersion(
   supabase: SupabaseClient,
@@ -163,64 +175,75 @@ export async function recomputeMarkupQuantitiesForVersion(
 ): Promise<number> {
   const context = await loadMeasurementContext(supabase, orgId, sheetVersionId)
 
-  // Keyset-paginated: an uncapped select silently truncates at PostgREST's
-  // default row limit, which would leave the tail of a dense sheet holding
-  // quantities computed against the OLD scale with no signal at all.
-  const rows: Array<{ id: string; data: unknown; quantity: unknown; uom: string | null }> = []
-  let cursor: string | null = null
-  for (;;) {
-    let query = supabase
-      .from("drawing_markups")
-      .select("id, data, quantity, uom")
-      .eq("org_id", orgId)
-      .eq("sheet_version_id", sheetVersionId)
-      .in("data->>type", [...MEASURING_MARKUP_TYPES])
-      .order("id", { ascending: true })
-      .limit(RECOMPUTE_PAGE_SIZE)
-    if (cursor) query = query.gt("id", cursor)
-
-    const { data: page, error } = await query
-    if (error) {
-      throw new Error(`Failed to load markups for recompute: ${error.message}`)
+  // Only an empty page proves exhaustion: a transport may cap responses below
+  // the requested page size. Inspect the complete supported set before writing.
+  const rows = await readAllRowsById(async (afterId, limit) => {
+    let query = supabase.from("drawing_markups")
+      .select("id,org_id,sheet_version_id,drawing_sheet_id,condition_id,created_by,updated_at,data,quantity,uom")
+      .eq("org_id", orgId).eq("sheet_version_id", sheetVersionId)
+      .in("data->>type", [...MEASURING_MARKUP_TYPES]).order("id", { ascending: true }).limit(limit)
+    if (afterId) query = query.gt("id", afterId)
+    const result = await query
+    if (result.data?.some((row) => row.org_id !== orgId || row.sheet_version_id !== sheetVersionId)) {
+      throw new Error("Recompute measurement scope unavailable. Reload before retrying.")
     }
-    if (!page || page.length === 0) break
-    rows.push(...page)
-    if (page.length < RECOMPUTE_PAGE_SIZE) break
-    cursor = page[page.length - 1].id as string
-  }
+    return result
+  }, { cap: RECOMPUTE_VALIDATION_CAP, pageSize: RECOMPUTE_PAGE_SIZE, label: "Unable to load all measurements for recompute" })
 
-  if (rows.length === 0) return 0
-
-  const pending: Array<{ id: string; quantity: number | null; uom: string | null }> = []
+  const pending: Array<{ source: (typeof rows)[number]; quantity: number | null; uom: MeasureUom | null }> = []
+  const conditions = new Map<string, Set<MeasureUom>>()
   for (const row of rows) {
-    const next = measureMarkup(row.data as MarkupData, context)
-    const previousQuantity = row.quantity === null || row.quantity === undefined ? null : Number(row.quantity)
-    const sameQuantity =
-      previousQuantity === null
-        ? next.quantity === null
-        : next.quantity !== null && Math.abs(previousQuantity - next.quantity) < 1e-9
-    if (sameQuantity && row.uom === next.uom) continue
-    pending.push({ id: row.id, quantity: next.quantity, uom: next.uom })
+    drawingMarkupRevisionSchema.parse(row)
+    const geometry = markupDataSchema.parse(row.data)
+    if (!isMeasuringMarkupType(geometry.type)) throw new Error("Unexpected nonmeasuring recompute source")
+    const next = measureMarkup(geometry, context)
+    const previousQuantity = storedMeasurementQuantitySchema.parse(row.quantity)
+    const previousUom = measureUomSchema.nullable().parse(row.uom)
+    if (row.condition_id !== null) {
+      if (typeof row.condition_id !== "string" || !row.condition_id) throw new Error("Recompute condition source unavailable")
+      if (!next.uom) throw new Error("Assigned recompute source is not a measurement")
+      const units = conditions.get(row.condition_id) ?? new Set<MeasureUom>()
+      units.add(next.uom)
+      conditions.set(row.condition_id, units)
+    }
+    const sameQuantity = previousQuantity === null
+      ? next.quantity === null
+      : next.quantity !== null && Math.abs(previousQuantity - next.quantity) < 1e-9
+    if (!sameQuantity || previousUom !== next.uom) pending.push({ source: row, ...next })
   }
 
-  // Each row gets a different value, so these are per-row updates by nature —
-  // but they run in bounded parallel batches instead of one at a time.
-  for (let i = 0; i < pending.length; i += RECOMPUTE_WRITE_CONCURRENCY) {
-    const batch = pending.slice(i, i + RECOMPUTE_WRITE_CONCURRENCY)
-    const results = await Promise.all(
-      batch.map((item) =>
-        supabase
-          .from("drawing_markups")
-          .update({ quantity: item.quantity, uom: item.uom })
-          .eq("org_id", orgId)
-          .eq("id", item.id),
-      ),
-    )
-    const failed = results.find((result) => result.error)
-    if (failed?.error) {
-      throw new Error(`Failed to recompute markup quantity: ${failed.error.message}`)
+  // Validate all assigned units before the first quantity write, including
+  // members whose quantity already matches. Deduplicate repeated conditions.
+  const targets = [...conditions].flatMap(([conditionId, units]) => [...units].map((uom) => ({ conditionId, uom })))
+  for (let offset = 0; offset < targets.length; offset += RECOMPUTE_WRITE_CONCURRENCY) {
+    await Promise.all(targets.slice(offset, offset + RECOMPUTE_WRITE_CONCURRENCY)
+      .map(({ conditionId, uom }) => assertConditionAcceptsUom(supabase, orgId, conditionId, uom)))
+  }
+
+  // Existing bounded per-row writes now fence the source revision and verify
+  // the returned measurement. This still needs atomic calibration recovery.
+  for (let offset = 0; offset < pending.length; offset += RECOMPUTE_WRITE_CONCURRENCY) {
+    const results = await Promise.allSettled(pending.slice(offset, offset + RECOMPUTE_WRITE_CONCURRENCY).map(async (item) => {
+      const { data, error } = await supabase.from("drawing_markups")
+        .update({ quantity: item.quantity, uom: item.uom })
+        .eq("org_id", orgId).eq("sheet_version_id", sheetVersionId)
+        .eq("id", item.source.id).eq("updated_at", item.source.updated_at)
+        .select("id,org_id,sheet_version_id,drawing_sheet_id,condition_id,created_by,updated_at,data,quantity,uom")
+        .maybeSingle()
+      if (error) throw new Error(`Failed to recompute markup quantity: ${error.message}`)
+      if (!data) throw new Error("Measurement changed during recalibration. Reload before retrying.")
+      if (data.id !== item.source.id || data.org_id !== orgId || data.sheet_version_id !== sheetVersionId ||
+        data.drawing_sheet_id !== item.source.drawing_sheet_id || data.condition_id !== item.source.condition_id ||
+        data.created_by !== item.source.created_by || !isDeepStrictEqual(data.data, item.source.data) ||
+        storedMeasurementQuantitySchema.parse(data.quantity) !== item.quantity || data.uom !== item.uom ||
+        !drawingMarkupRevisionSchema.safeParse(data).success) {
+        throw new Error("Recomputed measurement could not be confirmed. Reload before retrying.")
+      }
+    }))
+    const failed = results.find((result) => result.status === "rejected")
+    if (failed?.status === "rejected") {
+      throw failed.reason instanceof Error ? failed.reason : new Error("Unable to confirm recalibrated measurements")
     }
   }
-
   return pending.length
 }

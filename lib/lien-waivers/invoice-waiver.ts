@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { additionalWaiverSignersSchema, customWaiverValuesSchema } from "@/lib/templates/waiver-document"
 import type { WaiverTemplateDraft } from "@/lib/templates/waiver-template"
 import { INVOICE_WAIVER_TYPES, type InvoiceLienWaiver, type Payment, type PaymentReversal } from "@/lib/types"
 
@@ -28,6 +29,9 @@ export const dateOnlySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Choose a 
 export const prepareWaiverSchema = z.object({
   request_id: z.string().uuid(), invoice_id: z.string().uuid(),
   replaces_draft_id: z.string().uuid().optional(),
+  custom_values: customWaiverValuesSchema.optional(),
+  execution_method: z.enum(["electronic", "physical"]).optional(),
+  additional_signers: additionalWaiverSignersSchema.optional(),
   source: z.enum(["arc", "template", "upload"]), template_id: z.string().uuid().optional(),
   waiver_type: z.enum(INVOICE_WAIVER_TYPES), amount_cents: z.number().int().positive().max(999_999_999_99),
   project_name: z.string().trim().max(300).default(""),
@@ -60,7 +64,7 @@ export const templateInputSchema = z.object({
   }
 })
 export type WaiverTemplateInput = z.infer<typeof templateInputSchema>
-export type WaiverTemplate = WaiverTemplateInput & { id: string; version: number; created_at: string; project_id: string | null; editable?: WaiverTemplateDraft; status?: "draft" | "published" }
+export type WaiverTemplate = WaiverTemplateInput & { id: string; version: number; created_at: string; project_id: string | null; editable?: WaiverTemplateDraft; sourceFileId?: string; status?: "draft" | "published" }
 
 export type InvoiceWaiverWorkflow = {
   version: 2; lifecycle: "draft" | "signed"; source: PrepareWaiverInput["source"];
@@ -69,6 +73,7 @@ export type InvoiceWaiverWorkflow = {
   template_path?: string; fields?: WaiverPlacement[]; prepared_at: string;
   signed_at?: string; signed_by?: string; recorded_by?: string; recorded_at?: string; consent?: string; payment_id?: string; payment_ids?: string[];
   invoice_revision: string | null; invoice_content_hash?: string;
+  resolved_values?: Record<string,string>;
   editable_template?: WaiverTemplateDraft; signing_document_id?: string; sharing_requested?: boolean; envelope_id?: string; needs_review?: boolean;
 }
 
@@ -109,4 +114,10 @@ export function preferredWaiverTemplate(templates: WaiverTemplate[], kind: strin
 
 export function waiverPaymentIds(value: { payment_id?: string; payment_ids?: string[] }): string[] {
   return [...new Set([...(value.payment_ids ?? []), ...(value.payment_id ? [value.payment_id] : [])])]
+}
+
+export function chooseBillingWaiverTemplate(templates:WaiverTemplate[],kind:string) {
+ const score=(t:WaiverTemplate)=>(t.editable?.defaults?.projectIds.length?8:0)+(t.project_id?8:0)+(t.editable?.defaults?.customerName?4:0)+(t.editable?.jurisdiction?2:0)+(t.preferred?1:0);
+ const matches=templates.filter(t=>t.waiver_type===kind&&t.status!=="draft").sort((a,b)=>score(b)-score(a));
+ return matches.length===1||matches.length>1&&score(matches[0])>score(matches[1])?matches[0]:undefined;
 }

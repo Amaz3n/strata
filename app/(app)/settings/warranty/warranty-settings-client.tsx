@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 
 import { AlertTriangle, Plus, Trash2 } from "@/components/icons"
@@ -124,11 +124,18 @@ export function WarrantySettingsClient({
   targets: WarrantySlaTargetDTO[]
   posture: ProjectPosture
 }) {
-  const [programs, setPrograms] = useState(initialPrograms)
-  const [targets, setTargets] = useState(initialTargets)
+  const [programState, setProgramState] = useState({ source: initialPrograms, rows: initialPrograms })
+  const [targetState, setTargetState] = useState({ source: initialTargets, rows: initialTargets })
   const [editingProgramId, setEditingProgramId] = useState<string | null>(null)
   const [creatingProgram, setCreatingProgram] = useState(false)
   const [editingTargets, setEditingTargets] = useState(false)
+  if (programState.source !== initialPrograms) {
+    setProgramState({ source: initialPrograms, rows: initialPrograms })
+    if (editingProgramId && !initialPrograms.some(program => program.id === editingProgramId)) setEditingProgramId(null)
+  }
+  if (targetState.source !== initialTargets) setTargetState({ source: initialTargets, rows: initialTargets })
+  const programs = programState.source === initialPrograms ? programState.rows : initialPrograms
+  const targets = targetState.source === initialTargets ? targetState.rows : initialTargets
 
   const roster = usesWarrantyProgramRoster(posture)
   const severities = getWarrantySeverities(posture)
@@ -297,7 +304,9 @@ export function WarrantySettingsClient({
           setEditingProgramId(null)
         }}
         onSaved={(saved) => {
-          setPrograms((rows) => {
+          setProgramState((current) => {
+            if (current.source !== initialPrograms) return current
+            const rows = current.rows
             const existing = rows.find((row) => row.id === saved.id)
             const merged = { ...saved, enrolled_count: existing?.enrolled_count ?? 0 }
             const next = existing
@@ -307,7 +316,7 @@ export function WarrantySettingsClient({
             const withDefaults = saved.is_default
               ? next.map((row) => (row.id === saved.id ? row : { ...row, is_default: false }))
               : next
-            return withDefaults.sort((a, b) => a.name.localeCompare(b.name))
+            return { ...current, rows: withDefaults.sort((a, b) => a.name.localeCompare(b.name)) }
           })
           setCreatingProgram(false)
           setEditingProgramId(null)
@@ -320,7 +329,7 @@ export function WarrantySettingsClient({
         severities={severities}
         onOpenChange={setEditingTargets}
         onSaved={(saved) => {
-          setTargets(saved)
+          setTargetState((current) => current.source === initialTargets ? { ...current, rows: saved } : current)
           setEditingTargets(false)
         }}
       />
@@ -368,8 +377,22 @@ function ProgramDialog({
   const [terms, setTerms] = useState<TermDraft[]>([])
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const mounted = useRef(false)
+  const inFlight = useRef(false)
+  const requestVersion = useRef(0)
+  const editorSource = useRef<string | null>(null)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
 
   useEffect(() => {
+    const source = open ? `${roster}:${program?.id ?? "new"}` : null
+    if (editorSource.current === source) return
+    editorSource.current = source
+    requestVersion.current++
+    inFlight.current = false
+    setSaving(false)
     if (!open) return
     setName(program?.name ?? "")
     setDescription(program?.description ?? "")
@@ -377,7 +400,7 @@ function ProgramDialog({
     setIsActive(program?.is_active ?? true)
     setTerms(toTermDrafts(program))
     setError(null)
-  }, [open, program])
+  }, [open, program, roster])
 
   const updateTerm = (index: number, patch: Partial<TermDraft>) => {
     setTerms((rows) => rows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row)))
@@ -385,6 +408,7 @@ function ProgramDialog({
   }
 
   const submit = async () => {
+    if (!mounted.current || !open || inFlight.current) return
     // Outside the roster the program has no name field — it keeps the one it was
     // seeded with, since there's only ever one.
     const trimmedName = roster ? name.trim() : name.trim() || "Standard warranty"
@@ -425,22 +449,34 @@ function ProgramDialog({
     }
 
     setSaving(true)
+    inFlight.current = true
+    const request = requestVersion.current
     setError(null)
-    const result = await saveWarrantyProgramAction({
-      id: program?.id,
-      name: trimmedName,
-      description: description.trim() || null,
-      is_default: isDefault,
-      is_active: isActive,
-      terms: payloadTerms,
-    })
-    setSaving(false)
-    if (!result.success) {
-      setError(result.error)
-      return
+    try {
+      const result = await saveWarrantyProgramAction({
+        id: program?.id,
+        name: trimmedName,
+        description: description.trim() || null,
+        is_default: isDefault,
+        is_active: isActive,
+        terms: payloadTerms,
+      })
+      if (!mounted.current || request !== requestVersion.current) return
+      if (!result.success) {
+        setError(result.error)
+        return
+      }
+      toast.success(!roster ? "Coverage saved" : program ? "Coverage program saved" : "Coverage program created")
+      onSaved({ ...result.data, enrolled_count: program?.enrolled_count ?? 0 })
+    } catch (failure) {
+      if (!mounted.current || request !== requestVersion.current) return
+      setError(failure instanceof Error ? failure.message : "Coverage could not be saved")
+    } finally {
+      if (mounted.current && request === requestVersion.current) {
+        inFlight.current = false
+        setSaving(false)
+      }
     }
-    toast.success(!roster ? "Coverage saved" : program ? "Coverage program saved" : "Coverage program created")
-    onSaved({ ...result.data, enrolled_count: program?.enrolled_count ?? 0 })
   }
 
   return (
@@ -652,8 +688,22 @@ function TargetsDialog({
   const [drafts, setDrafts] = useState<TargetDraft[]>([])
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const mounted = useRef(false)
+  const inFlight = useRef(false)
+  const requestVersion = useRef(0)
+  const editorSource = useRef<string | null>(null)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
 
   useEffect(() => {
+    const source = open ? severities.map(severity => severity.key).join(":") : null
+    if (editorSource.current === source) return
+    editorSource.current = source
+    requestVersion.current++
+    inFlight.current = false
+    setSaving(false)
     if (!open) return
     setDrafts(
       severities.map((severity) => {
@@ -669,6 +719,7 @@ function TargetsDialog({
   }, [open, targets, severities])
 
   const submit = async () => {
+    if (!mounted.current || !open || inFlight.current) return
     const payload: WarrantySlaTargetDTO[] = []
     for (const draft of drafts) {
       const label = severities.find((severity) => severity.key === draft.severity)?.label ?? draft.severity
@@ -686,15 +737,27 @@ function TargetsDialog({
     }
 
     setSaving(true)
+    inFlight.current = true
+    const request = requestVersion.current
     setError(null)
-    const result = await saveWarrantySlaTargetsAction({ targets: payload })
-    setSaving(false)
-    if (!result.success) {
-      setError(result.error)
-      return
+    try {
+      const result = await saveWarrantySlaTargetsAction({ targets: payload })
+      if (!mounted.current || request !== requestVersion.current) return
+      if (!result.success) {
+        setError(result.error)
+        return
+      }
+      toast.success("Response targets saved")
+      onSaved(payload)
+    } catch (failure) {
+      if (!mounted.current || request !== requestVersion.current) return
+      setError(failure instanceof Error ? failure.message : "Response targets could not be saved")
+    } finally {
+      if (mounted.current && request === requestVersion.current) {
+        inFlight.current = false
+        setSaving(false)
+      }
     }
-    toast.success("Response targets saved")
-    onSaved(payload)
   }
 
   return (

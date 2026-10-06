@@ -25,6 +25,8 @@ function parseDollars(value: string) {
 export function ReceivePaymentWorkspace({ workspace }: { workspace: Workspace }) {
   const router = useRouter()
   const [search, setSearch] = useState("")
+  const [customerKey, setCustomerKey] = useState("")
+  const customers = Array.from(new Map(workspace.invoices.map(invoice => [invoice.customerKey, invoice.customerName])).entries())
   const [method, setMethod] = useState<"ach" | "card" | "wire" | "check">("check")
   const [reference, setReference] = useState("")
   const [receivedOn, setReceivedOn] = useState(format(new Date(), "yyyy-MM-dd"))
@@ -34,10 +36,10 @@ export function ReceivePaymentWorkspace({ workspace }: { workspace: Workspace })
   const visible = useMemo(() => {
     const query = search.trim().toLowerCase()
     return workspace.invoices.filter((invoice) =>
-      !query || `${invoice.invoiceNumber} ${invoice.customerName} ${invoice.projectName}`.toLowerCase().includes(query),
+      (workspace.partyId || invoice.customerKey === customerKey) && (!query || `${invoice.invoiceNumber} ${invoice.customerName} ${invoice.projectName}`.toLowerCase().includes(query)),
     )
-  }, [search, workspace.invoices])
-  const allocations = workspace.invoices
+  }, [search, workspace.invoices, workspace.partyId, customerKey])
+  const allocations = workspace.invoices.filter(invoice => workspace.partyId || invoice.customerKey === customerKey)
     .map((invoice) => ({ invoice_id: invoice.id, amount_cents: parseDollars(amounts[invoice.id] ?? "") }))
     .filter((allocation) => allocation.amount_cents > 0)
   const total = allocations.reduce((sum, allocation) => sum + allocation.amount_cents, 0)
@@ -85,7 +87,7 @@ export function ReceivePaymentWorkspace({ workspace }: { workspace: Workspace })
           <div>
             <p className="microlabel">Customer receipt</p>
             <h1 className="mt-2 text-2xl font-semibold tracking-tight">Apply one payment across open invoices</h1>
-            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">The receipt stays one auditable event while each invoice keeps its own projected payment fact.</p>
+            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">Choose a customer and apply their payment to one or more invoices.</p>
           </div>
           <div className="text-right"><p className="microlabel">Applied total</p><p className="mt-1 font-mono text-3xl font-medium tabular-nums">{formatMoneyCentsExact(total)}</p></div>
         </div>
@@ -97,6 +99,7 @@ export function ReceivePaymentWorkspace({ workspace }: { workspace: Workspace })
             <div><h2 className="text-sm font-semibold">Open invoices</h2><p className="text-xs text-muted-foreground">Enter only the amount from this receipt.</p></div>
             <div className="relative w-full sm:w-72"><Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" /><Input value={search} onChange={(event) => setSearch(event.target.value)} className="pl-8" placeholder="Invoice, customer, or project" /></div>
           </div>
+          {!workspace.partyId ? <div className="border-b px-4 py-3"><Select value={customerKey} onValueChange={value => { setCustomerKey(value); setAmounts({}) }}><SelectTrigger className="max-w-sm" aria-label="Customer"><SelectValue placeholder="Choose a customer" /></SelectTrigger><SelectContent>{customers.map(([key, name]) => <SelectItem key={key} value={key}>{name}</SelectItem>)}</SelectContent></Select></div> : null}
           <div className="overflow-x-auto">
             <table className="w-full min-w-[760px] text-sm">
               <thead><tr className="border-b bg-muted/30 text-left text-xs text-muted-foreground"><th className="px-4 py-2 font-medium">Invoice</th><th className="px-3 py-2 font-medium">Customer / project</th><th className="px-3 py-2 text-right font-medium">Open</th><th className="px-4 py-2 text-right font-medium">Apply</th></tr></thead>
@@ -112,7 +115,7 @@ export function ReceivePaymentWorkspace({ workspace }: { workspace: Workspace })
                     </tr>
                   )
                 })}
-                {!visible.length ? <tr><td colSpan={4} className="px-5 py-12 text-center text-sm text-muted-foreground">No open invoices match this account or search.</td></tr> : null}
+                {!visible.length ? <tr><td colSpan={4} className="px-5 py-12 text-center text-sm text-muted-foreground">Choose a customer to see their open invoices, or adjust your search.</td></tr> : null}
               </tbody>
             </table>
           </div>

@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { Suspense } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageLayout } from "@/components/layout/page-layout";
@@ -118,6 +119,7 @@ async function loadVendorData(
 }
 
 async function DirectoryData({ searchParams }: DirectoryPageProps) {
+  await connection()
   const [context, resolved] = await Promise.all([requireOrgContext(), searchParams]);
   const { orgId, productTier } = context;
 

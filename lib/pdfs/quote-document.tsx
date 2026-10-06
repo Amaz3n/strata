@@ -1,3 +1,4 @@
+import { documentTheme } from "@/lib/pdfs/document-theme"
 import { Document, Image, Page, StyleSheet, Text, View, renderToBuffer } from "@react-pdf/renderer"
 import sharp from "sharp"
 
@@ -63,6 +64,8 @@ export type QuoteDocumentData = {
   subtotalCents?: number | null
   taxCents?: number | null
   totalCents?: number | null
+  /** A budget prints its range in place of a total. */
+  totalRange?: { lowCents: number; highCents: number } | null
   /** Contingency already included in totalCents; rendered as its own row. */
   contingencyCents?: number | null
   contingencyPercent?: number | null
@@ -75,7 +78,7 @@ export type QuoteDocumentData = {
   lines: QuoteLine[]
 }
 
-const DEFAULT_ACCENT = "#1a1a1a"
+const DEFAULT_ACCENT = documentTheme.colors.text
 
 function resolveAccent(value?: string | null): string {
   if (typeof value !== "string") return DEFAULT_ACCENT
@@ -96,69 +99,58 @@ function resolveFontFamily(css?: string | null): string {
   return "Helvetica"
 }
 
-// Tuned to mirror the portal's QuoteDocumentView (letterhead → full-width title →
-// border-y meta grid → scope → "qty × unit" line items → single full-width total →
-// boxed terms) so the exported PDF reads as the same document.
-const MUTED = "#8a8a8a"
-const HAIRLINE = "#e6e6e6"
-const ROW_LINE = "#f0f0f0"
+// Shared invoice identity, with room for scope qualifications and signatures.
+const MUTED = documentTheme.colors.muted
+const HAIRLINE = documentTheme.colors.line
+const ROW_LINE = documentTheme.colors.line
 
 const styles = StyleSheet.create({
-  page: { paddingVertical: 44, paddingHorizontal: 48, fontSize: 10, fontFamily: "Helvetica", color: "#1a1a1a" },
-
-  // Letterhead
-  letterhead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 2, paddingBottom: 14 },
-  brand: { flexDirection: "row", alignItems: "center", gap: 8 },
-  logo: { width: 36, height: 36, objectFit: "contain", borderWidth: 1, borderColor: HAIRLINE },
-  brandText: { flexDirection: "column" },
-  orgName: { fontSize: 12, fontWeight: "bold" },
-  orgAddr: { fontSize: 8, color: MUTED, marginTop: 1.5 },
-  docLabel: { fontSize: 8.5, textTransform: "uppercase", letterSpacing: 1.6, fontWeight: "bold" },
-
-  title: { fontSize: 22, fontWeight: "bold", marginTop: 26, letterSpacing: -0.3 },
-
-  // Meta grid (border-y, four cells)
-  metaGrid: { flexDirection: "row", marginTop: 22, borderTopWidth: 1, borderBottomWidth: 1, borderColor: HAIRLINE, paddingVertical: 16, gap: 16 },
-  metaCol: { flexGrow: 1, flexBasis: 0 },
-  metaLabel: { fontSize: 7.5, color: MUTED, textTransform: "uppercase", letterSpacing: 0.7, marginBottom: 4 },
-  metaValue: { fontSize: 10 },
-  metaSub: { fontSize: 8, color: MUTED, marginTop: 2 },
+  page: { ...documentTheme.page, paddingBottom: 60, color: documentTheme.colors.text },
+  letterhead: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 24 },
+  logo: { maxWidth: 160, maxHeight: 56, objectFit: "contain" },
+  docLabel: documentTheme.title,
+  subtitle: { fontSize: 10.5, marginTop: 4, color: MUTED },
+  title: { fontSize: 16, fontWeight: "bold", marginTop: 28, letterSpacing: -0.1 },
+  metaGrid: { marginTop: 22 },
+  metaRow: { flexDirection: "row", marginBottom: 5 },
+  metaLabel: { ...documentTheme.label, width: 96 },
+  metaValue: { fontSize: 10, flex: 1 },
+  parties: { marginTop: 22, flexDirection: "row", gap: 32 },
+  party: { flex: 1 },
+  partyLabel: { ...documentTheme.label, marginBottom: 5 },
+  partyLine: { fontSize: 10, lineHeight: 1.4 },
 
   introText: { fontSize: 10, lineHeight: 1.6, color: "#2a2a2a", marginTop: 22 },
 
   scopeBlock: { marginTop: 22 },
-  blockLabel: { fontSize: 7.5, textTransform: "uppercase", letterSpacing: 0.7, color: MUTED, marginBottom: 6 },
+  blockLabel: { fontSize: 9.5, fontWeight: "bold", color: documentTheme.colors.text, marginBottom: 6 },
   scopeText: { fontSize: 10, lineHeight: 1.5, color: "#2a2a2a" },
 
   // Line items
   breakdownHeader: { flexDirection: "row", justifyContent: "space-between", borderBottomWidth: 1, paddingBottom: 6, marginTop: 28 },
-  breakdownLabel: { fontSize: 7.5, textTransform: "uppercase", letterSpacing: 0.7, color: MUTED },
+  breakdownLabel: { fontSize: 9.5, fontWeight: "bold", color: documentTheme.colors.text },
   sectionRow: { paddingTop: 16, paddingBottom: 2 },
   sectionText: { fontSize: 9, fontWeight: "bold", textTransform: "uppercase", letterSpacing: 0.6 },
-  itemRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", paddingVertical: 11, borderBottomWidth: 1, borderColor: ROW_LINE },
+  itemRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", ...documentTheme.row },
   itemLeft: { flexGrow: 1, flexBasis: 0, paddingRight: 18 },
-  itemDesc: { fontSize: 10, fontWeight: "bold" },
+  itemDesc: { fontSize: 10 },
   itemNotes: { fontSize: 8, color: MUTED, marginTop: 2, lineHeight: 1.4 },
   itemUnitLine: { fontSize: 8, color: MUTED, marginTop: 3 },
-  itemAmount: { fontSize: 10, fontWeight: "bold", textAlign: "right" },
+  itemAmount: { fontSize: 10, textAlign: "right" },
 
   // Optional add-ons
   optionalSection: { marginTop: 22 },
   optionalRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", paddingVertical: 9, borderBottomWidth: 1, borderColor: ROW_LINE, borderStyle: "dashed" },
   optionalAmount: { fontSize: 10, fontWeight: "bold", textAlign: "right" },
 
-  // Contingency (muted row above the total)
-  contingencyRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 18 },
-  contingencyText: { fontSize: 9, color: MUTED },
-
-  // Total (single full-width row)
-  totalRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderTopWidth: 2, paddingTop: 14, marginTop: 22 },
-  totalLabel: { fontSize: 10, textTransform: "uppercase", letterSpacing: 0.7, color: MUTED, fontWeight: "bold" },
-  totalValue: { fontSize: 22, fontWeight: "bold" },
-
-  // Terms (boxed, muted background)
-  termsBox: { marginTop: 28, borderWidth: 1, borderColor: HAIRLINE, backgroundColor: "#f7f7f7", padding: 16 },
-  termsText: { fontSize: 9, lineHeight: 1.5, color: "#555" },
+  totals: { width: documentTheme.totalsWidth, marginLeft: "auto", marginTop: 16 },
+  contingencyRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 4 },
+  contingencyText: { fontSize: 9.5, color: MUTED },
+  totalRow: { flexDirection: "row", justifyContent: "space-between", borderTopWidth: 1, paddingTop: 8, marginTop: 6 },
+  totalLabel: { fontSize: 10, fontWeight: "bold" },
+  totalValue: { fontSize: 11, fontWeight: "bold" },
+  termsBox: { marginTop: 20 },
+  termsText: { fontSize: 9.5, lineHeight: 1.5, color: documentTheme.colors.text },
 
   // Signature block (proposal variant)
   sigSection: { marginTop: 32 },
@@ -201,12 +193,12 @@ function formatDate(value?: string | null) {
     const day = parseInt(match[3], 10)
     const d = new Date(Date.UTC(year, month, day))
     if (!Number.isNaN(d.getTime())) {
-      return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" })
+      return d.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" })
     }
   }
   const d = new Date(value)
   if (Number.isNaN(d.getTime())) return value
-  return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })
+  return d.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
 }
 
 function lineTotalCents(line: QuoteLine): number {
@@ -249,49 +241,34 @@ function QuoteDocument({ data }: { data: QuoteDocumentData }) {
   return (
     <Document>
       <Page size="LETTER" style={[styles.page, { fontFamily: resolveFontFamily(data.fontFamily) }]}>
-        {/* Letterhead */}
-        <View style={[styles.letterhead, { borderColor: accent }]}>
-          <View style={styles.brand}>
-            {/* eslint-disable-next-line jsx-a11y/alt-text -- @react-pdf Image has no alt prop */}
-            {data.orgLogoUrl ? <Image src={data.orgLogoUrl} style={styles.logo} /> : null}
-            <View style={styles.brandText}>
-              {data.orgName ? <Text style={styles.orgName}>{data.orgName}</Text> : null}
-              {addressLines.map((line, i) => (
-                <Text key={`addr-${i}`} style={styles.orgAddr}>
-                  {line}
-                </Text>
-              ))}
+        <View style={styles.letterhead} wrap={false}>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.docLabel, { color: accent }]}>{label}</Text>
+            {data.projectName ? <Text style={styles.subtitle}>{data.projectName}</Text> : null}
+          </View>
+          {/* eslint-disable-next-line jsx-a11y/alt-text -- PDF image */}
+          {data.orgLogoUrl ? <Image src={data.orgLogoUrl} style={styles.logo} /> : null}
+        </View>
+        <View style={styles.metaGrid} wrap={false}>
+          {[["Document number", data.number], ["Date of issue", issued], ["Valid until", validUntil]].filter(([, value]) => value).map(([name, value]) => (
+            <View key={name} style={styles.metaRow}>
+              <Text style={styles.metaLabel}>{name}</Text><Text style={styles.metaValue}>{value}</Text>
             </View>
-          </View>
-          <Text style={[styles.docLabel, { color: accent }]}>
-            {label}
-            {data.number ? ` · ${data.number}` : ""}
-          </Text>
+          ))}
         </View>
-
-        {/* Title */}
-        <Text style={styles.title}>{data.title}</Text>
-
-        {/* Meta grid */}
-        <View style={styles.metaGrid}>
-          <View style={styles.metaCol}>
-            <Text style={styles.metaLabel}>Client</Text>
-            <Text style={styles.metaValue}>{data.recipientName ?? "—"}</Text>
-            {data.recipientEmail ? <Text style={styles.metaSub}>{data.recipientEmail}</Text> : null}
+        <View style={styles.parties} wrap={false}>
+          <View style={styles.party}>
+            <Text style={styles.partyLabel}>From</Text>
+            <Text style={styles.partyLine}>{data.orgName ?? ""}</Text>
+            {addressLines.map((line, i) => <Text key={i} style={styles.partyLine}>{line}</Text>)}
           </View>
-          <View style={styles.metaCol}>
-            <Text style={styles.metaLabel}>Project</Text>
-            <Text style={styles.metaValue}>{data.projectName ?? "—"}</Text>
-          </View>
-          <View style={styles.metaCol}>
-            <Text style={styles.metaLabel}>Issued</Text>
-            <Text style={styles.metaValue}>{issued ?? "—"}</Text>
-          </View>
-          <View style={styles.metaCol}>
-            <Text style={styles.metaLabel}>Valid until</Text>
-            <Text style={styles.metaValue}>{validUntil ?? "—"}</Text>
+          <View style={styles.party}>
+            <Text style={styles.partyLabel}>Prepared for</Text>
+            <Text style={styles.partyLine}>{data.recipientName ?? "—"}</Text>
+            {data.recipientEmail ? <Text style={styles.partyLine}>{data.recipientEmail}</Text> : null}
           </View>
         </View>
+        <Text style={styles.title} minPresenceAhead={36}>{data.title}</Text>
 
         {/* Cover note */}
         {data.intro ? <Text style={styles.introText}>{data.intro}</Text> : null}
@@ -299,19 +276,19 @@ function QuoteDocument({ data }: { data: QuoteDocumentData }) {
         {/* Scope */}
         {data.summary ? (
           <View style={styles.scopeBlock}>
-            <Text style={styles.blockLabel}>Scope</Text>
+
             <Text style={styles.scopeText}>{data.summary}</Text>
           </View>
         ) : null}
 
         {/* Line items */}
-        <View style={[styles.breakdownHeader, { borderColor: accent }]}>
-          <Text style={styles.breakdownLabel}>Pricing breakdown</Text>
+        <View style={[styles.breakdownHeader, { borderColor: accent }]} minPresenceAhead={48}>
+          <Text style={styles.breakdownLabel}>Scope & pricing</Text>
           {showAmounts ? <Text style={styles.breakdownLabel}>Amount</Text> : null}
         </View>
         {mainLines.map((line, idx) =>
           line.item_type === "group" ? (
-            <View key={`group-${idx}`} style={styles.sectionRow}>
+            <View key={`group-${idx}`} style={styles.sectionRow} minPresenceAhead={36}>
               <Text style={[styles.sectionText, { color: accent }]}>{line.description}</Text>
             </View>
           ) : (
@@ -356,45 +333,55 @@ function QuoteDocument({ data }: { data: QuoteDocumentData }) {
           </View>
         ) : null}
 
-        {/* Contingency — inside the total, shown so the number is honest */}
-        {data.contingencyCents && data.contingencyCents > 0 ? (
-          <View style={styles.contingencyRow}>
-            <Text style={styles.contingencyText}>
-              Contingency{data.contingencyPercent ? ` (${data.contingencyPercent}%)` : ""}
-            </Text>
-            <Text style={styles.contingencyText}>{formatCurrency(data.contingencyCents)}</Text>
-          </View>
-        ) : null}
-
-        {/* Total */}
-        <View style={[styles.totalRow, { borderColor: accent }]}>
-          <Text style={styles.totalLabel}>Total</Text>
-          <Text style={[styles.totalValue, { color: accent }]}>{formatCurrency(data.totalCents)}</Text>
+        <View style={styles.totals} wrap={false}>
+          {showAmounts && data.subtotalCents != null ? (
+            <View style={styles.contingencyRow}><Text style={styles.contingencyText}>Subtotal</Text><Text>{formatCurrency(data.totalCents != null ? data.totalCents - (data.taxCents ?? 0) - (data.contingencyCents ?? 0) : data.subtotalCents)}</Text></View>
+          ) : null}
+          {(data.contingencyCents ?? 0) > 0 ? (
+            <View style={styles.contingencyRow}><Text style={styles.contingencyText}>Contingency{data.contingencyPercent ? ` (${data.contingencyPercent}%)` : ""}</Text><Text>{formatCurrency(data.contingencyCents)}</Text></View>
+          ) : null}
+          {(data.taxCents ?? 0) > 0 ? (
+            <View style={styles.contingencyRow}><Text style={styles.contingencyText}>Tax</Text><Text>{formatCurrency(data.taxCents)}</Text></View>
+          ) : null}
+          {data.totalRange ? (
+            <>
+              <View style={[styles.totalRow, { borderColor: accent }]}>
+                <Text style={styles.totalLabel}>Expected range</Text>
+                <Text style={styles.totalValue}>{formatCurrency(data.totalRange.lowCents)} – {formatCurrency(data.totalRange.highCents)}</Text>
+              </View>
+              <Text style={styles.contingencyText}>A budget to plan with, not a contract. The fixed price follows once trade quotes and measurements are in.</Text>
+            </>
+          ) : (
+            <View style={[styles.totalRow, { borderColor: accent }]}>
+              <Text style={styles.totalLabel}>Total</Text>
+              <Text style={styles.totalValue}>{formatCurrency(data.totalCents)} USD</Text>
+            </View>
+          )}
         </View>
 
         {data.inclusions ? (
-          <View style={styles.termsBox} wrap={false}>
-            <Text style={styles.blockLabel}>Included in this price</Text>
+          <View style={styles.termsBox} wrap={data.inclusions.length > 1200}>
+            <Text style={styles.blockLabel} minPresenceAhead={28}>Included in this price</Text>
             <Text style={styles.termsText}>{data.inclusions}</Text>
           </View>
         ) : null}
         {data.exclusions ? (
-          <View style={styles.termsBox} wrap={false}>
-            <Text style={styles.blockLabel}>Not included</Text>
+          <View style={styles.termsBox} wrap={data.exclusions.length > 1200}>
+            <Text style={styles.blockLabel} minPresenceAhead={28}>Not included</Text>
             <Text style={styles.termsText}>{data.exclusions}</Text>
           </View>
         ) : null}
 
         {data.terms ? (
-          <View style={styles.termsBox} wrap={false}>
-            <Text style={styles.blockLabel}>Terms &amp; conditions</Text>
+          <View style={styles.termsBox} wrap={data.terms.length > 1200}>
+            <Text style={styles.blockLabel} minPresenceAhead={28}>Terms &amp; conditions</Text>
             <Text style={styles.termsText}>{data.terms}</Text>
           </View>
         ) : null}
 
         {data.variant === "proposal" ? (
           <View style={styles.sigSection} wrap={false}>
-            <Text style={styles.blockLabel}>Acceptance &amp; Signatures</Text>
+            <Text style={styles.blockLabel} minPresenceAhead={28}>Acceptance &amp; Signatures</Text>
             <View style={styles.sigRow}>
               {signers.map((signer, idx) => (
                 <View key={`sig-${idx}`} style={styles.sigCol}>
@@ -417,7 +404,7 @@ function QuoteDocument({ data }: { data: QuoteDocumentData }) {
         ) : null}
 
         <View style={styles.footer} fixed>
-          <Text>{data.orgName ?? ""}</Text>
+          <Text>{[data.orgName, data.number].filter(Boolean).join(" · ")}</Text>
           <Text
             render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`}
           />

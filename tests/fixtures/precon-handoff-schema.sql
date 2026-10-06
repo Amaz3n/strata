@@ -1,0 +1,27 @@
+-- Minimal PostgreSQL fixture for behavioral migration tests; no production data.
+create role anon; create role authenticated; create role service_role bypassrls;
+create type public.project_property_type as enum ('residential','commercial','production');
+create type public.project_work_type as enum ('new_construction','remodel','addition','renovation','repair');
+create table public.orgs(id uuid primary key,name text);
+create table public.app_users(id uuid primary key,email text);
+create function public.is_org_member(uuid) returns boolean language sql as $$select false$$;
+create function public.tg_set_updated_at() returns trigger language plpgsql as $$begin new.updated_at=now();return new;end$$;
+create table public.prospects(id uuid primary key,org_id uuid references public.orgs(id),name text,status text,notes text,jobsite_location jsonb,won_at timestamptz,updated_at timestamptz default now());
+create table public.contacts(id uuid primary key default gen_random_uuid(),org_id uuid,full_name text,email text,phone text,role text,contact_type text,created_at timestamptz default now());
+create table public.prospect_contacts(id uuid primary key default gen_random_uuid(),org_id uuid,prospect_id uuid,contact_id uuid,promoted_contact_id uuid,full_name text,email text,phone text,role text,is_primary boolean default false,created_at timestamptz default now(),updated_at timestamptz);
+create table public.projects(id uuid primary key default gen_random_uuid(),org_id uuid,prospect_id uuid unique,name text,status text,phase text,location jsonb,created_by uuid,start_date date,end_date date,property_type public.project_property_type,project_type public.project_work_type,client_id uuid,description text,total_value integer,total_contract_value_cents integer,retainage_percent numeric,updated_at timestamptz default now());
+create table public.estimates(id uuid primary key,org_id uuid,prospect_id uuid,project_id uuid,status text,is_current_version boolean default true,metadata jsonb default '{}',currency text default 'usd',total_cents integer,subtotal_cents integer,executed_at timestamptz,executed_file_id uuid,signature_envelope_id uuid,signature_document_id uuid,signature_data jsonb,updated_at timestamptz default now());
+create table public.estimate_items(id uuid primary key default gen_random_uuid(),org_id uuid,estimate_id uuid,description text,quantity numeric,unit_cost_cents integer,item_type text,metadata jsonb default '{}');
+create table public.contracts(id uuid primary key default gen_random_uuid(),org_id uuid,project_id uuid,title text,status text,total_cents integer,currency text,signed_at timestamptz,effective_date date,terms text,signature_data jsonb,contract_type text,markup_percent numeric,gmp_cents integer,fixed_fee_cents integer,retainage_percent numeric,contingency_cents integer,snapshot jsonb default '{}',created_at timestamptz default now(),updated_at timestamptz default now());
+create table public.budgets(id uuid primary key default gen_random_uuid(),org_id uuid,project_id uuid,version integer,status text,total_cents integer,currency text,metadata jsonb default '{}',created_at timestamptz default now(),updated_at timestamptz default now());
+create table public.cost_codes(id uuid primary key,org_id uuid);
+create table public.budget_lines(id uuid primary key default gen_random_uuid(),org_id uuid,budget_id uuid,cost_code_id uuid,description text,amount_cents integer,sort_order integer,metadata jsonb default '{}');
+create table public.allowances(id uuid primary key default gen_random_uuid(),org_id uuid,project_id uuid,contract_id uuid,name text,budget_cents integer check(budget_cents>=0),metadata jsonb);
+create table public.invoices(id uuid primary key default gen_random_uuid(),org_id uuid,project_id uuid);
+create table public.files(id uuid primary key default gen_random_uuid(),org_id uuid,prospect_id uuid,project_id uuid,folder_path text);
+create table public.bid_packages(id uuid primary key default gen_random_uuid(),org_id uuid,prospect_id uuid,project_id uuid);
+create table public.documents(id uuid primary key default gen_random_uuid(),org_id uuid,prospect_id uuid,project_id uuid);
+create table public.envelopes(id uuid primary key default gen_random_uuid(),org_id uuid,prospect_id uuid,project_id uuid);
+create table public.file_links(id uuid primary key default gen_random_uuid(),org_id uuid,file_id uuid,project_id uuid,entity_type text,entity_id uuid,link_role text);
+create table public.project_financial_settings(id uuid primary key default gen_random_uuid(),org_id uuid,project_id uuid,billing_model text,open_book_required boolean,metadata jsonb,updated_at timestamptz,unique(org_id,project_id));
+create table public.events(id uuid primary key default gen_random_uuid(),org_id uuid,event_type text,entity_type text,entity_id uuid,payload jsonb);

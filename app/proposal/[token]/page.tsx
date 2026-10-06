@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { createHmac } from "crypto"
@@ -48,6 +49,7 @@ function pickNextRequiredRequest(
 }
 
 async function ProposalPageContent({ params }: Params) {
+  await connection()
   const { token } = await params
   const tokenHash = createHmac("sha256", requireProposalSecret()).update(token).digest("hex")
   const supabase = createServiceSupabaseClient()
@@ -147,7 +149,7 @@ async function ProposalPageContent({ params }: Params) {
 
 export default function ProposalPage(props: Parameters<typeof ProposalPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLoadingSkeleton title="Proposal" />}>
       <ProposalPageContent {...props} />
     </Suspense>
   )

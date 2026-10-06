@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -10,6 +11,7 @@ async function PageContent({
 }: {
   searchParams: Promise<Record<string, string | undefined>>
 }) {
+  await connection()
   const q = await searchParams,
     scope = await resolveProductionDeskScope({ communityId: q.community })
   const ids = (await listProjects())
@@ -35,7 +37,7 @@ async function PageContent({
 
 export default function Page(props: Parameters<typeof PageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLayout title="Payables · Waivers" fullBleed><PageLoadingSkeleton /></PageLayout>}>
       <PageContent {...props} />
     </Suspense>
   )

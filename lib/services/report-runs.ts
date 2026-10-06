@@ -1,9 +1,11 @@
 import "server-only"
 
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { authorizeReport } from "@/lib/services/report-workspace"
 import type { ReportContext, ReportFormat, ReportResult } from "@/lib/reports/types"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
-import { requirePermission } from "@/lib/services/permissions"
+import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 
 /**
  * Immutable history of every report pulled out of Arc.
@@ -32,7 +34,7 @@ export interface ReportRunDetail extends ReportRunDTO {
 }
 
 const RUN_SELECT =
-  "id, slug, scope, project_id, params, row_count, format, title, subtitle, created_at, run_by:app_users(full_name)"
+  "sources:snapshot->sources, id, slug, scope, project_id, params, row_count, format, title, subtitle, created_at, run_by:app_users(full_name)"
 
 function countRows(result: ReportResult) {
   return result.tables.reduce((total, table) => total + table.rows.length, 0)
@@ -68,9 +70,10 @@ export async function recordReportRun(input: {
   orgId?: string
 }): Promise<string | null> {
   const { supabase, orgId, userId } = await requireOrgContext(input.orgId)
-  await requirePermission("report.read", { supabase, orgId, userId })
+  await requireAnyPermission(["report.read", "books.read"], { supabase, orgId, userId })
 
-  const { data, error } = await supabase
+  await authorizeReport(input.slug, input.context.projectId)
+  const { data, error } = await createServiceSupabaseClient()
     .from("report_runs")
     .insert({
       org_id: orgId,
@@ -115,9 +118,9 @@ export async function listReportRuns(
   orgId?: string,
 ): Promise<ReportRunDTO[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("report.read", { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["report.read", "books.read"], { supabase, orgId: resolvedOrgId, userId })
 
-  let query = supabase
+  let query = createServiceSupabaseClient()
     .from("report_runs")
     .select(RUN_SELECT)
     .eq("org_id", resolvedOrgId)
@@ -129,14 +132,17 @@ export async function listReportRuns(
 
   const { data, error } = await query
   if (error) throw new Error(`Failed to load report runs: ${error.message}`)
-  return (data ?? []).map(mapRun)
+  const rows = await Promise.all((data ?? []).map(async row => {
+    try { await authorizeReport(row.slug, row.project_id); for (const source of (row.sources as ReportResult["sources"]) ?? []) await authorizeReport(source.slug, source.projectId); return mapRun(row) } catch { return null }
+  }))
+  return rows.filter((row): row is ReportRunDTO => row !== null)
 }
 
 export async function getReportRun(id: string, orgId?: string): Promise<ReportRunDetail | null> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("report.read", { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["report.read", "books.read"], { supabase, orgId: resolvedOrgId, userId })
 
-  const { data, error } = await supabase
+  const { data, error } = await createServiceSupabaseClient()
     .from("report_runs")
     .select(`${RUN_SELECT}, snapshot`)
     .eq("org_id", resolvedOrgId)
@@ -145,5 +151,7 @@ export async function getReportRun(id: string, orgId?: string): Promise<ReportRu
 
   if (error) throw new Error(`Failed to load report run: ${error.message}`)
   if (!data) return null
+  await authorizeReport(data.slug, data.project_id)
+  for (const source of (data.snapshot as ReportResult).sources ?? []) await authorizeReport(source.slug, source.projectId)
   return { ...mapRun(data), snapshot: data.snapshot as ReportResult }
 }

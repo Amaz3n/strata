@@ -1,0 +1,1701 @@
+diff --git a/lib/services/community-sales.ts b/lib/services/community-sales.ts
+index 6b84b082..d8c2017f 100644
+--- a/lib/services/community-sales.ts
++++ b/lib/services/community-sales.ts
+@@ -1,6 +1,12 @@
++import { readAgreementCatalogRevision } from "@/lib/services/agreement-catalog-revision"
++import { logger } from "@/lib/logging/logger"
++import { saveAgreementCreation, agreementCreationExpected, type AgreementCreationReceipt } from "@/lib/services/agreement-creation"
++import { agreementQuoteFingerprint, AgreementQuoteChangedError } from "@/lib/sales/agreement-quote"
++import { readAllRowsById } from "@/lib/land/paging"
++import { assertSalesConfiguration } from "@/lib/services/configuration-rules"
+ import { composePurchaseAgreementPricing, describeIncentiveIneligibility, evaluateIncentiveEligibility, type PurchaseAgreementPricedItem, type PurchaseAgreementPricing } from "@/lib/financials/purchase-agreement-pricing"
+ import { recordAudit } from "@/lib/services/audit"
+-import { getDivisionAccessForUser } from "@/lib/services/authorization"
++import { getDivisionAccessForUser, requireAuthorization } from "@/lib/services/authorization"
+ import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
+ import { createInvoice } from "@/lib/services/invoices"
+ import { listCatalog, resolveOptionPricing } from "@/lib/services/option-catalog"
+@@ -38,9 +44,10 @@ import { createFileRecord } from "@/lib/services/files"
+ import { getOrgBranding } from "@/lib/services/estimate-portal"
+ import { renderProposalPdf } from "@/lib/pdfs/proposal"
+ import { buildOrgScopedPath, getFilesStorageProvider, uploadFilesObject } from "@/lib/storage/files-storage"
++import { createRecoverableSigningToken } from "@/lib/esign/signing-tokens"
+ import { buildUnifiedSigningUrl } from "@/lib/esign/unified-contracts"
+-import { getOrgSenderEmail, renderEmailTemplate, sendEmail } from "@/lib/services/mailer"
+-import { SignatureEmail } from "@/lib/emails/signature-email"
++import { sendSignerRequestEmail } from "@/lib/services/signature-delivery"
++import { publishOwnedAgreementDocument, reserveAgreementSigningDocument } from "@/lib/services/agreement-signing-ownership"
+ import {
+   agreementConfigurationSchema,
+   communityBulkRepriceSchema,
+@@ -48,6 +55,7 @@ import {
+   createLotHoldSchema,
+   createPurchaseAgreementSchema,
+   convertReservationSchema,
++  reservationConversionSourceSchema,
+   incentiveSchema,
+   releaseReservationSchema,
+   voidPurchaseAgreementSchema,
+@@ -415,15 +423,48 @@ export async function convertHoldToReservation(input: unknown, orgId?: string) {
+   const parsed = convertReservationSchema.parse(input)
+   const context = await requireOrgContext(orgId)
+   await requirePermission("sales.manage", context)
+-  const { data: reservation } = await context.supabase.from("lot_reservations").select("*, lot:lots(*)").eq("org_id", context.orgId).eq("id", parsed.reservationId).maybeSingle()
+-  if (!reservation || reservation.status !== "hold") throw new Error("Active lot hold not found")
+-  let projectId = reservation.lot.project_id as string | null
++  const source = await context.supabase.from("lot_reservations")
++    .select("id, org_id, community_id, lot_id, buyer_contact_id, co_buyer_contact_id, prospect_id, status, expires_at, updated_at, deposit_invoice_id, contract_id, lot:lots(id, org_id, community_id, division_id, lot_number, status, project_id, updated_at)")
++    .eq("org_id", context.orgId).eq("id", parsed.reservationId).maybeSingle()
++  if (source.error) throw new Error(`Failed to verify the lot hold: ${source.error.message}`)
++  const reservation = reservationConversionSourceSchema.parse(source.data)
++  if (reservation.id !== parsed.reservationId || reservation.org_id !== context.orgId || reservation.lot.id !== reservation.lot_id || reservation.lot.org_id !== context.orgId || reservation.lot.community_id !== reservation.community_id) throw new Error("The hold or lot ownership changed. Review the buyer file before reserving.")
++  if (reservation.expires_at && Date.parse(reservation.expires_at) <= Date.now()) throw new Error("This lot hold has expired. Review available inventory before reserving.")
++  if (reservation.deposit_invoice_id || reservation.contract_id) throw new Error("This hold already has a deposit or agreement. Review its saved records before reserving.")
++  const [community, buyers, deposits] = await Promise.all([
++    context.supabase.from("communities").select("id, division_id").eq("org_id", context.orgId).eq("id", reservation.community_id).maybeSingle(),
++    context.supabase.from("contacts").select("id").eq("org_id", context.orgId).in("id", [reservation.buyer_contact_id, ...(reservation.co_buyer_contact_id ? [reservation.co_buyer_contact_id] : [])]),
++    context.supabase.from("invoices").select("id").eq("org_id", context.orgId).eq("metadata->>invoice_kind", "earnest_deposit").eq("metadata->>source_reservation_id", reservation.id).limit(1),
++  ])
++  if (community.error || buyers.error || deposits.error) throw new Error("The community, buyer or previous deposit could not be verified. No conversion was started.")
++  if (!community.data || (reservation.lot.division_id && reservation.lot.division_id !== community.data.division_id)) throw new Error("The lot community or division changed. Review the buyer file before reserving.")
++  const access = await getSalesDivisionAccess(context)
++  if (access.assignedOnly && (!community.data.division_id || !access.divisionIds.includes(community.data.division_id))) throw new Error("This community is outside your sales division access.")
++  if (!buyers.data?.some(buyer => buyer.id === reservation.buyer_contact_id) || (reservation.co_buyer_contact_id && (reservation.co_buyer_contact_id === reservation.buyer_contact_id || !buyers.data.some(buyer => buyer.id === reservation.co_buyer_contact_id)))) throw new Error("The reservation buyer or co-buyer is unavailable in this organization.")
++  if (!deposits.data || deposits.data.length) throw new Error("A previous deposit may already exist for this hold. Inspect its invoice before retrying the reservation.")
++  let homeSource: { client_id: string | null; updated_at: string } | null = null
++  if (reservation.lot.project_id) {
++    await requireAuthorization({ ...context, projectId: reservation.lot.project_id, permission: "sales.manage" })
++    const [home, agreements] = await Promise.all([
++      context.supabase.from("projects").select("id, property_type, client_id, updated_at").eq("org_id", context.orgId).eq("id", reservation.lot.project_id).maybeSingle(),
++      context.supabase.from("contracts").select("id").eq("org_id", context.orgId).eq("project_id", reservation.lot.project_id).eq("contract_type", "purchase_agreement").in("status", ["draft", "active"]).limit(1),
++    ])
++    if (home.error || agreements.error || !home.data || !agreements.data) throw new Error("The held home or existing agreement could not be verified.")
++    if (home.data.property_type !== "production" || (home.data.client_id && home.data.client_id !== reservation.buyer_contact_id) || agreements.data.length) throw new Error("This home already belongs to another sale or cannot be reserved.")
++    homeSource = { client_id: home.data.client_id, updated_at: home.data.updated_at }
++  }
++  let projectId = reservation.lot.project_id
+   if (!projectId) {
+     const project = await createProject({ input: { name: parsed.projectName ?? `Lot ${reservation.lot.lot_number}`, property_type: "production", status: "planning", client_id: reservation.buyer_contact_id, prospect_id: reservation.prospect_id ?? null }, orgId: context.orgId, context, authorizationPermission: "sales.manage" })
+     projectId = project.id
+-    await context.supabase.from("lots").update({ project_id: projectId, status: "assigned" }).eq("org_id", context.orgId).eq("id", reservation.lot_id)
++    const linked = await context.supabase.from("lots").update({ project_id: projectId, status: "assigned" }).eq("org_id", context.orgId).eq("id", reservation.lot_id).is("project_id", null).eq("updated_at", reservation.lot.updated_at).select("id").maybeSingle()
++    if (linked.error || !linked.data) throw new Error("The home was created, but its lot link could not be confirmed. Review the home and lot before retrying.")
+   } else {
+-    await context.supabase.from("projects").update({ client_id: reservation.buyer_contact_id }).eq("org_id", context.orgId).eq("id", projectId)
++    if (!homeSource) throw new Error("The held home source is unavailable.")
++    let link = context.supabase.from("projects").update({ client_id: reservation.buyer_contact_id }).eq("org_id", context.orgId).eq("id", projectId).eq("updated_at", homeSource.updated_at)
++    link = homeSource.client_id ? link.eq("client_id", homeSource.client_id) : link.is("client_id", null)
++    const linked = await link.select("id").maybeSingle()
++    if (linked.error || !linked.data) throw new Error("The held home changed or could not be assigned. No new deposit was created.")
+   }
+   let invoiceId: string | null = null
+   if (parsed.depositCents > 0) {
+@@ -435,8 +476,8 @@ export async function convertHoldToReservation(input: unknown, orgId?: string) {
+     }, orgId: context.orgId, context, authorizationPermission: "sales.manage", sendAuthorizationPermission: "sales.manage" })
+     invoiceId = invoice.id
+   }
+-  const { data, error } = await context.supabase.from("lot_reservations").update({ status: "reserved", deposit_required_cents: parsed.depositCents, deposit_invoice_id: invoiceId }).eq("org_id", context.orgId).eq("id", reservation.id).select("*, lot:lots(lot_number, project_id), buyer:contacts!lot_reservations_buyer_contact_id_fkey(full_name)").single()
+-  if (error || !data) throw new Error(`Failed to reserve lot: ${error?.message}`)
++  const { data, error } = await context.supabase.from("lot_reservations").update({ status: "reserved", deposit_required_cents: parsed.depositCents, deposit_invoice_id: invoiceId }).eq("org_id", context.orgId).eq("id", reservation.id).eq("status", "hold").eq("updated_at", reservation.updated_at).or(liveReservationOrFilter()).is("deposit_invoice_id", null).is("contract_id", null).select("*, lot:lots(lot_number, project_id), buyer:contacts!lot_reservations_buyer_contact_id_fkey(full_name)").maybeSingle()
++  if (error || !data) throw new Error(`Reservation completion could not be confirmed. Inspect the home and deposit invoice before retrying: ${error?.message ?? "The hold changed"}`)
+   await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "lot_reserved", entityType: "lot_reservation", entityId: data.id, payload: { project_id: projectId, deposit_invoice_id: invoiceId } })
+   return reservationDto(data)
+ }
+@@ -812,17 +853,18 @@ export async function listIncentives(opts: { communityId?: string; status?: stri
+   await requirePermission("sales.read", context)
+   if (opts.communityId) await assertCommunityInSalesScope(context, opts.communityId)
+   const allowedCommunityIds = opts.communityId ? null : await getSalesCommunityIds(context)
+-  let query = context.supabase.from("incentives").select("*").eq("org_id", context.orgId)
+-  if (opts.communityId) query = query.or(`community_id.is.null,community_id.eq.${opts.communityId}`)
+-  else if (allowedCommunityIds) {
+-    query = allowedCommunityIds.length > 0
+-      ? query.or(`community_id.is.null,community_id.in.(${allowedCommunityIds.join(",")})`)
+-      : query.is("community_id", null)
+-  }
+-  if (opts.status) query = query.eq("status", opts.status)
+-  const { data, error } = await query.order("created_at", { ascending: false })
+-  if (error) throw new Error(`Failed to load incentives: ${error.message}`)
+-  const rows = data ?? []
++  const rows = await readAllRowsById((afterId, take) => {
++    let query = context.supabase.from("incentives").select("*").eq("org_id", context.orgId).order("id").limit(take)
++    if (opts.communityId) query = query.or(`community_id.is.null,community_id.eq.${opts.communityId}`)
++    else if (allowedCommunityIds) {
++      query = allowedCommunityIds.length > 0
++        ? query.or(`community_id.is.null,community_id.in.(${allowedCommunityIds.join(",")})`)
++        : query.is("community_id", null)
++    }
++    if (opts.status) query = query.eq("status", opts.status)
++    return afterId ? query.gt("id", afterId) : query
++  }, { cap: 2000, label: "Sales incentives", pageSize: 500 })
++  rows.sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? "") || a.id.localeCompare(b.id))
+   // Only metered incentives need a usage count, and counting scans agreements —
+   // so do not pay for it on the common unmetered ones.
+   const meteredIds = rows.filter((row) => typeof row.max_uses === "number" && row.max_uses > 0).map((row) => row.id)
+@@ -851,23 +893,36 @@ export async function upsertIncentive(input: IncentiveInput, orgId?: string) {
+   return result.data
+ }
+ 
+-/**
+- * Counts executed agreements already carrying each incentive, so `max_uses`
+- * means something. Usage lives in the agreement's pricing snapshot rather than
+- * a counter column, which keeps the count honest if an agreement is voided.
+- */
++/** Draft and active capacity is authoritative on the atomic creation path. */
+ async function countIncentiveUses(context: OrgServiceContext, incentiveIds: string[]) {
+   const counts = new Map<string, number>()
++  if (incentiveIds.length === 0) return counts
++  if (process.env.ARC_AGREEMENT_ATOMIC_CREATION_ENABLED === "true") {
++    const ids = [...new Set(incentiveIds)]
++    const pages = await Promise.all(Array.from({ length: Math.ceil(ids.length / 500) }, async (_, index) => {
++      const pageIds = ids.slice(index * 500, (index + 1) * 500)
++      const { data, error } = await context.supabase.from("agreement_incentive_capacity")
++        .select("incentive_id,used_count").eq("org_id", context.orgId).in("incentive_id", pageIds).limit(pageIds.length)
++      if (error || !data || data.length !== pageIds.length) throw new Error("Incentive capacity could not be verified")
++      return data
++    }))
++    for (const row of pages.flat()) {
++      const count = typeof row.used_count === "string" && /^[0-9]+$/.test(row.used_count) ? Number(row.used_count) : row.used_count
++      if (!ids.includes(row.incentive_id) || counts.has(row.incentive_id) || !Number.isSafeInteger(count) || count < 0) throw new Error("Incentive capacity evidence is invalid")
++      counts.set(row.incentive_id, count)
++    }
++    return counts
++  }
+   await Promise.all(incentiveIds.map(async (incentiveId) => {
+     const { count, error } = await context.supabase
+       .from("contracts")
+       .select("id", { count: "exact", head: true })
+       .eq("org_id", context.orgId)
+       .eq("contract_type", "purchase_agreement")
+-      .eq("status", "active")
++      .in("status", ["draft", "active"])
+       .contains("snapshot", { purchase_agreement: { pricing: { incentives: [{ incentiveId }] } } })
+-    if (error) throw new Error(`Failed to count incentive usage: ${error.message}`)
+-    counts.set(incentiveId, count ?? 0)
++    if (error || count === null || count === undefined) throw new Error(`Failed to count incentive usage: ${error?.message ?? "Exact usage count unavailable"}`)
++    counts.set(incentiveId, count)
+   }))
+   return counts
+ }
+@@ -905,26 +960,55 @@ export async function priceAgreementDraft(input: AgreementConfigurationInput, or
+   await requirePermission("sales.read", context)
+   const { data: lot, error } = await context.supabase.from("lots").select("id, community_id, project_id, premium_cents, house_plan_id, house_plan_version_id, house_plan_elevation_id, swing, plan:house_plans(name), elevation:house_plan_elevations(name, code)").eq("org_id", context.orgId).eq("id", parsed.lotId).maybeSingle()
+   if (error || !lot) throw new Error("Lot not found")
++  await assertCommunityInSalesScope(context, lot.community_id)
++  if (lot.project_id) await requireAuthorization({ permission: "sales.read", userId: context.userId, orgId: context.orgId,
++    projectId: lot.project_id, supabase: context.supabase })
++  const catalogRevision = process.env.ARC_AGREEMENT_ATOMIC_CREATION_ENABLED === "true" ? await readAgreementCatalogRevision(context) : null
+   const versionId = parsed.housePlanVersionId ?? lot.house_plan_version_id
+   if (!versionId) throw new Error("Choose a released plan version")
+   if (lot.project_id && lot.house_plan_version_id && parsed.housePlanVersionId && parsed.housePlanVersionId !== lot.house_plan_version_id) throw new Error("A spec home's pinned plan version cannot be changed")
+   if (parsed.swing && lot.swing !== "either" && parsed.swing !== lot.swing) throw new Error(`This lot only supports a ${lot.swing}-swing plan`)
+-  const { data: version } = await context.supabase.from("house_plan_versions").select("id, house_plan_id, status, label, plan:house_plans(name)").eq("org_id", context.orgId).eq("id", versionId).maybeSingle()
+-  if (!version || version.status !== "released") throw new Error("The selected plan version is not released")
+-  const elevationId = parsed.elevationId ?? lot.house_plan_elevation_id ?? null
++  const { data: version, error: versionError } = await context.supabase.from("house_plan_versions").select("id, house_plan_id, status, label, plan:house_plans!inner(name,org_id)").eq("org_id", context.orgId).eq("id", versionId).eq("plan.org_id", context.orgId).maybeSingle()
++  if (versionError || !version || version.status !== "released") throw new Error("The selected plan version is not released or could not be verified")
++  if (lot.project_id && lot.house_plan_id && version.house_plan_id !== lot.house_plan_id) throw new Error("A pinned home's plan ancestry is inconsistent; reconcile it before writing an agreement")
++  const elevationId = parsed.elevationId === undefined ? lot.house_plan_elevation_id ?? null : parsed.elevationId
++  if (lot.project_id && lot.house_plan_elevation_id && elevationId !== lot.house_plan_elevation_id) throw new Error("A spec home's pinned elevation cannot be changed")
++  let selectedElevation: { name: string | null; code: string } | null = null
++  if (elevationId) {
++    const elevation = await context.supabase.from("house_plan_elevations").select("id,name,code")
++      .eq("org_id", context.orgId).eq("id", elevationId).eq("house_plan_id", version.house_plan_id).eq("is_active", true).maybeSingle()
++    if (elevation.error || !elevation.data) throw new Error("The selected elevation is inactive or does not belong to this plan")
++    selectedElevation = elevation.data
++  }
++  const swing = parsed.swing ?? (lot.swing === "left" || lot.swing === "right" ? lot.swing : null)
++  if (!swing) throw new Error("Choose a left or right swing before pricing the agreement")
++  const offerDate = new Date().toISOString().slice(0, 10)
+   let availabilityQuery = context.supabase.from("community_plan_availability").select("base_price_cents").eq("org_id", context.orgId).eq("community_id", lot.community_id).eq("house_plan_id", version.house_plan_id).eq("is_available", true)
+   availabilityQuery = elevationId ? availabilityQuery.eq("elevation_id", elevationId) : availabilityQuery.is("elevation_id", null)
+-  const { data: availability } = await availabilityQuery.maybeSingle()
+-  if (!availability) throw new Error("This plan and elevation are not available in the community")
++  availabilityQuery = availabilityQuery.or(`and(effective_start.is.null,effective_end.is.null),and(effective_start.is.null,effective_end.gte.${offerDate}),and(effective_start.lte.${offerDate},effective_end.is.null),and(effective_start.lte.${offerDate},effective_end.gte.${offerDate})`)
++  const { data: availability, error: availabilityError } = await availabilityQuery.maybeSingle()
++  if (availabilityError) throw new Error(`Unable to verify effective community pricing: ${availabilityError.message}`)
++  if (!availability) throw new Error("This plan and elevation are not available in the community on the quote date")
+   const resolved = await resolveOptionPricing({ orgId: context.orgId, items: parsed.optionItems, housePlanVersionId: versionId, communityId: lot.community_id })
+-  if (resolved.some((item) => !item.available)) throw new Error("One or more configured options are unavailable")
++  if (resolved.length !== parsed.optionItems.length || resolved.some((item) => !item.available)) throw new Error("One or more configured options are unavailable or could not be fully priced")
++  await assertSalesConfiguration(context.orgId, resolved, { communityId: lot.community_id, housePlanVersionId: versionId })
+   const optionIds = resolved.map((item) => item.optionId).filter(Boolean) as string[]
+   const packageIds = resolved.map((item) => item.packageId).filter(Boolean) as string[]
+-  const [{ data: options }, { data: packages }, { data: incentiveRows }] = await Promise.all([
++  const [optionsResult, packagesResult, incentivesResult] = await Promise.all([
+     optionIds.length ? context.supabase.from("selection_options").select("id, name, option_scope, category:selection_categories(name)").eq("org_id", context.orgId).in("id", optionIds) : Promise.resolve({ data: [] }),
+     packageIds.length ? context.supabase.from("selection_packages").select("id, name").eq("org_id", context.orgId).in("id", packageIds) : Promise.resolve({ data: [] }),
+     parsed.incentiveIds.length ? context.supabase.from("incentives").select("*").eq("org_id", context.orgId).in("id", parsed.incentiveIds) : Promise.resolve({ data: [] }),
+   ])
++  const options = optionsResult.data
++  const packages = packagesResult.data
++  const incentiveRows = incentivesResult.data
++  if (("error" in optionsResult && optionsResult.error) || ("error" in packagesResult && packagesResult.error)
++    || optionIds.some(id => !options?.some(row => row.id === id)) || packageIds.some(id => !packages?.some(row => row.id === id))
++    || options?.some(row => typeof row.name !== "string" || !row.name.trim() || !["structural", "design_studio"].includes(row.option_scope))
++    || packages?.some(row => typeof row.name !== "string" || !row.name.trim())) {
++    throw new Error("Configured option names and categories could not be fully verified")
++  }
++  if ("error" in incentivesResult && incentivesResult.error) throw new Error("Configured incentives could not be verified")
+   const requestedIncentives = incentiveRows ?? []
+   if (requestedIncentives.length !== parsed.incentiveIds.length) throw new Error("One or more incentives could not be found")
+   const incentiveUses = await countIncentiveUses(context, parsed.incentiveIds)
+@@ -944,7 +1028,15 @@ export async function priceAgreementDraft(input: AgreementConfigurationInput, or
+     return { optionId: item.optionId, packageId: item.packageId, label: option?.name ?? selectionPackage?.name ?? "Option", category: category?.name ?? null, priceCents: item.priceCents, source: item.source, scope: option?.option_scope } as PurchaseAgreementPricedItem & { scope?: string }
+   })
+   const pricing = composePurchaseAgreementPricing({ basePriceCents: Number(availability.base_price_cents), lotPremiumCents: Number(lot.premium_cents ?? 0), structuralOptions: priced.filter((item: any) => item.scope === "structural"), designSelections: priced.filter((item: any) => item.scope !== "structural"), incentives: requestedIncentives.map((row: any) => ({ incentiveId: row.id, name: row.name, incentiveType: row.incentive_type, appliesTo: row.applies_to, amountCents: row.amount_cents, percent: row.percent })) })
+-  return { ...pricing, lotId: lot.id, communityId: lot.community_id, housePlanId: version.house_plan_id, housePlanVersionId: version.id, elevationId, swing: parsed.swing ?? lot.swing, planLabel: (version as any).plan?.name ?? version.label ?? "Plan", elevationLabel: (lot as any).elevation?.name ?? (lot as any).elevation?.code ?? null, optionItems: parsed.optionItems }
++  const choicePrices = parsed.optionItems.map((choice, index) => {
++    const item = resolved[index]
++    if (!item) throw new Error("Configured choices could not be fully priced")
++    return { ...choice, priceCents: item.priceCents }
++  })
++  const quote = { ...pricing, choicePrices, lotId: lot.id, communityId: lot.community_id, housePlanId: version.house_plan_id, housePlanVersionId: version.id, elevationId, swing, planLabel: (Array.isArray(version.plan) ? version.plan[0] : version.plan)?.name ?? version.label ?? "Plan", elevationLabel: selectedElevation?.name ?? selectedElevation?.code ?? null, optionItems: parsed.optionItems }
++  if (catalogRevision !== null && await readAgreementCatalogRevision(context) !== catalogRevision) throw new AgreementQuoteChangedError()
++  const reviewedQuote = catalogRevision === null ? quote : { ...quote, catalogRevision }
++  return { ...reviewedQuote, quoteHash: agreementQuoteFingerprint(reviewedQuote), catalogRevision }
+ }
+ 
+ /** What a priced-but-unwritten configuration looks like. */
+@@ -975,6 +1067,7 @@ export type AgreementDraftContext = {
+   swing: "left" | "right" | "either" | null
+   /** Set when the lot pins a version (a spec home) and it cannot be changed. */
+   pinnedVersionId: string | null
++  pinnedElevationId: string | null
+   versions: { id: string; label: string; isPinned: boolean }[]
+   elevations: { id: string; label: string }[]
+   structuralOptions: AgreementCatalogItem[]
+@@ -1016,7 +1109,7 @@ export async function getAgreementDraftContext(
+   const context = await requireOrgContext(orgId)
+   await requirePermission("sales.manage", context)
+ 
+-  const { data: reservation } = await context.supabase
++  const { data: reservation, error: reservationError } = await context.supabase
+     .from("lot_reservations")
+     .select(
+       "id, status, lot_id, community_id, buyer_contact_id, buyer:contacts!lot_reservations_buyer_contact_id_fkey(full_name, email), lot:lots(id, community_id, project_id, house_plan_id, house_plan_version_id, house_plan_elevation_id, swing, block, lot_number, plan:house_plans(name), elevation:house_plan_elevations(name, code))",
+@@ -1024,7 +1117,7 @@ export async function getAgreementDraftContext(
+     .eq("org_id", context.orgId)
+     .eq("id", reservationId)
+     .maybeSingle()
+-  if (!reservation) throw new Error("Reservation not found")
++  if (reservationError || !reservation) throw new Error("Reservation not found or could not be verified")
+   if (reservation.status !== "reserved") {
+     throw new Error("Take the reservation first — an agreement needs a reserved lot")
+   }
+@@ -1032,28 +1125,33 @@ export async function getAgreementDraftContext(
+   if (!lot) throw new Error("Reservation is not attached to a lot")
+   if (!lot.house_plan_id) throw new Error("Assign a plan to the lot before writing the agreement")
+   await assertCommunityInSalesScope(context, lot.community_id)
++  if (lot.project_id) await requireAuthorization({ permission: "sales.manage", userId: context.userId, orgId: context.orgId,
++    projectId: lot.project_id, supabase: context.supabase })
+ 
+   const buyer = Array.isArray(reservation.buyer) ? reservation.buyer[0] : reservation.buyer
+   const plan = Array.isArray(lot.plan) ? lot.plan[0] : lot.plan
+   const elevation = Array.isArray(lot.elevation) ? lot.elevation[0] : lot.elevation
+ 
+-  const [{ data: versions }, { data: elevations }, catalog, incentiveRows] = await Promise.all([
+-    context.supabase
+-      .from("house_plan_versions")
+-      .select("id, label, released_at")
+-      .eq("org_id", context.orgId)
+-      .eq("house_plan_id", lot.house_plan_id)
+-      .eq("status", "released")
+-      .order("released_at", { ascending: false }),
+-    context.supabase
+-      .from("house_plan_elevations")
+-      .select("id, name, code")
+-      .eq("org_id", context.orgId)
+-      .eq("house_plan_id", lot.house_plan_id)
+-      .order("name"),
+-    listCatalog({ communityId: lot.community_id }),
++  const [versions, elevations, catalog, incentiveRows] = await Promise.all([
++    readAllRowsById((afterId, take) => {
++      const query = context.supabase.from("house_plan_versions").select("id, label, released_at")
++        .eq("org_id", context.orgId).eq("house_plan_id", lot.house_plan_id).eq("status", "released")
++        .order("id").limit(take)
++      return afterId ? query.gt("id", afterId) : query
++    }, { cap: 2000, label: "Agreement plan versions", pageSize: 500 }),
++    readAllRowsById((afterId, take) => {
++      const query = context.supabase.from("house_plan_elevations").select("id, name, code")
++        .eq("org_id", context.orgId).eq("house_plan_id", lot.house_plan_id).eq("is_active", true)
++        .order("id").limit(take)
++      return afterId ? query.gt("id", afterId) : query
++    }, { cap: 2000, label: "Agreement elevations", pageSize: 500 }),
++    listCatalog({ communityId: lot.community_id }, context.orgId),
+     listIncentives({ communityId: lot.community_id, status: "active", eligibleOnly: true }, context.orgId),
+   ])
++  versions.sort((a, b) => (b.released_at ?? "").localeCompare(a.released_at ?? "") || a.id.localeCompare(b.id))
++  elevations.sort((a, b) => (a.name ?? a.code ?? "").localeCompare(b.name ?? b.code ?? "") || a.id.localeCompare(b.id))
++  if (lot.project_id && lot.house_plan_version_id && !versions.some(row => row.id === lot.house_plan_version_id)) throw new Error("The home's pinned plan version is no longer released; reconcile it before preparing an agreement")
++  if (lot.project_id && lot.house_plan_elevation_id && !elevations.some(row => row.id === lot.house_plan_elevation_id)) throw new Error("The home's pinned elevation is no longer active; reconcile it before preparing an agreement")
+ 
+   const toItem = (option: { id: string; name: string; price_cents: number | null }, category: string | null) => ({
+     optionId: option.id,
+@@ -1078,6 +1176,7 @@ export async function getAgreementDraftContext(
+     elevationLabel: elevation?.name ?? elevation?.code ?? null,
+     swing: (lot.swing ?? null) as AgreementDraftContext["swing"],
+     pinnedVersionId: lot.project_id && lot.house_plan_version_id ? lot.house_plan_version_id : null,
++    pinnedElevationId: lot.project_id ? lot.house_plan_elevation_id ?? null : null,
+     versions: (versions ?? []).map((version) => ({
+       id: version.id as string,
+       label: (version.label as string | null) ?? "Released version",
+@@ -1120,10 +1219,20 @@ export async function createPurchaseAgreement(input: unknown, orgId?: string) {
+   const parsed = createPurchaseAgreementSchema.parse(input)
+   const context = await requireOrgContext(orgId)
+   await requirePermission("sales.manage", context)
+-  const { data: reservation } = await context.supabase.from("lot_reservations").select("*, lot:lots(project_id, lot_number)").eq("org_id", context.orgId).eq("id", parsed.reservationId).maybeSingle()
+-  if (!reservation || reservation.status !== "reserved" || !reservation.lot?.project_id) throw new Error("Reserved lot with a project is required")
++  if (process.env.ARC_AGREEMENT_ATOMIC_CREATION_ENABLED === "true") return createPurchaseAgreementAtomically(parsed, context)
++  const { data: reservation, error: reservationError } = await context.supabase.from("lot_reservations").select("*, lot:lots(project_id, lot_number)").eq("org_id", context.orgId).eq("id", parsed.reservationId).maybeSingle()
++  if (reservationError || !reservation || reservation.status !== "reserved" || !reservation.lot?.project_id) throw new Error("Reserved lot with a project is required and must be verified")
+   if (reservation.lot_id !== parsed.lotId) throw new Error("Reservation and lot do not match")
++  await requireAuthorization({ permission: "sales.manage", userId: context.userId, orgId: context.orgId,
++    projectId: reservation.lot.project_id, supabase: context.supabase })
++  if (reservation.contract_id) throw new Error("This reservation already has a purchase agreement. Reconcile the existing agreement before creating another")
++  const { count: openAgreementCount, error: openAgreementError } = await context.supabase.from("contracts")
++    .select("id", { count: "exact", head: true }).eq("org_id", context.orgId)
++    .eq("project_id", reservation.lot.project_id).eq("contract_type", "purchase_agreement").in("status", ["draft", "active"])
++  if (openAgreementError || openAgreementCount === null || openAgreementCount === undefined) throw new Error("Existing purchase agreements could not be verified; no new agreement was created")
++  if (openAgreementCount > 0) throw new Error("This home already has an open purchase agreement. Resume or reconcile the existing agreement before creating another")
+   const pricing = await priceAgreementDraft(parsed, context.orgId)
++  if (pricing.quoteHash !== parsed.expectedQuoteHash) throw new AgreementQuoteChangedError()
+   const now = new Date()
+   const number = `PA-${now.getUTCFullYear()}-${now.getTime().toString().slice(-7)}`
+   const snapshot = { purchase_agreement: { version: 1, configuration: { lot_id: parsed.lotId, house_plan_id: pricing.housePlanId, house_plan_version_id: pricing.housePlanVersionId, elevation_id: pricing.elevationId, swing: pricing.swing, option_items: pricing.optionItems }, pricing, deposits: reservation.deposit_invoice_id ? [{ invoice_id: reservation.deposit_invoice_id, kind: "earnest_deposit" }] : [], incentive_ids: parsed.incentiveIds } }
+@@ -1134,9 +1243,12 @@ export async function createPurchaseAgreement(input: unknown, orgId?: string) {
+     // necessarily who signed this agreement.
+     buyer_contact_id: reservation.buyer_contact_id ?? null,
+     co_buyer_contact_id: reservation.co_buyer_contact_id ?? null }).select("*").single()
++  if (error?.code === "23505" && error.message.includes("contracts_open_purchase_agreement_home_unique")) throw new Error("Another purchase agreement already owns this home. Reconcile the existing agreement instead of retrying creation")
+   if (error || !contract) throw new Error(`Failed to create purchase agreement: ${error?.message}`)
+-  await context.supabase.from("lot_reservations").update({ contract_id: contract.id }).eq("org_id", context.orgId).eq("id", reservation.id)
+-  await context.supabase.from("lots").update({ house_plan_id: pricing.housePlanId, house_plan_version_id: pricing.housePlanVersionId, house_plan_elevation_id: pricing.elevationId }).eq("org_id", context.orgId).eq("id", parsed.lotId)
++  const linked = await context.supabase.from("lot_reservations").update({ contract_id: contract.id }).eq("org_id", context.orgId).eq("id", reservation.id).eq("status", "reserved").is("contract_id", null).select("id").single()
++  if (linked.error || !linked.data) throw new Error("The agreement was saved but reservation ownership could not be recorded. Reconcile the existing agreement before retrying")
++  const configured = await context.supabase.from("lots").update({ house_plan_id: pricing.housePlanId, house_plan_version_id: pricing.housePlanVersionId, house_plan_elevation_id: pricing.elevationId, swing: pricing.swing }).eq("org_id", context.orgId).eq("id", parsed.lotId).eq("project_id", contract.project_id).select("id").single()
++  if (configured.error || !configured.data) throw new Error("The agreement was saved but its home configuration could not be recorded. Reconcile the existing agreement before sending")
+   await Promise.all([
+     recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "purchase_agreement_created", entityType: "contract", entityId: contract.id, payload: { project_id: contract.project_id, total_cents: contract.total_cents } }),
+     recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "contract", entityId: contract.id, after: contract }),
+@@ -1145,18 +1257,114 @@ export async function createPurchaseAgreement(input: unknown, orgId?: string) {
+   return { ...contract, pricing, signing }
+ }
+ 
+-export async function generatePurchaseAgreementSigningDocument(contractId: string, orgId?: string) {
+-  if (getFilesStorageProvider() !== "r2") return { documentId: null, envelopeId: null, reason: "Document signing storage is not configured" }
++/** Save once, then report signing preparation separately from the committed sale. */
++async function createPurchaseAgreementAtomically(parsed: z.infer<typeof createPurchaseAgreementSchema>, context: OrgServiceContext) {
++  if (process.env.ARC_AGREEMENT_DURABLE_SIGNING_ENABLED !== "true") throw new Error("Atomic agreement creation requires durable signing recovery to be enabled")
++  const request = { ...parsed, terms: parsed.terms ?? null }
++  const base = { orgId: context.orgId, actorId: context.userId, reservationId: parsed.reservationId, request }
++  let receipt = await saveAgreementCreation(base)
++  if (!receipt) {
++    const { data: reservation, error } = await context.supabase.from("lot_reservations").select("*, lot:lots(*)")
++      .eq("org_id", context.orgId).eq("id", parsed.reservationId).maybeSingle()
++    if (error || !reservation || reservation.status !== "reserved" || reservation.contract_id || reservation.lot_id !== parsed.lotId || !reservation.lot?.project_id) throw new Error("Unowned reserved lot with an actual home is required")
++    await requireAuthorization({ permission: "sales.manage", userId: context.userId, orgId: context.orgId,
++      projectId: reservation.lot.project_id, supabase: context.supabase })
++    const expectedFacts = agreementCreationExpected(reservation, reservation.lot)
++    const pricing = await priceAgreementDraft(parsed, context.orgId)
++    if (pricing.quoteHash !== parsed.expectedQuoteHash) throw new AgreementQuoteChangedError()
++    if (!pricing.catalogRevision) throw new Error("Atomic agreement creation requires a verified catalog revision")
++    const expected = { ...expectedFacts, catalog_revision: pricing.catalogRevision }
++    const snapshot = { purchase_agreement: { version: 1, configuration: {
++      lot_id: parsed.lotId, house_plan_id: pricing.housePlanId, house_plan_version_id: pricing.housePlanVersionId,
++      elevation_id: pricing.elevationId, swing: pricing.swing, option_items: pricing.optionItems,
++    }, pricing, deposits: reservation.deposit_invoice_id ? [{ invoice_id: reservation.deposit_invoice_id, kind: "earnest_deposit" }] : [], incentive_ids: parsed.incentiveIds } }
++    receipt = await saveAgreementCreation({ ...base, expected, snapshot })
++    if (!receipt) throw new Error("Agreement creation receipt was not returned; reconcile the sale before retrying")
++  }
++  return finishReceiptedPurchaseAgreement(receipt, context)
++}
++
++async function finishReceiptedPurchaseAgreement(receipt: AgreementCreationReceipt, context: OrgServiceContext) {
++  const contract = receipt.contract
++  await requireAuthorization({ permission: "sales.manage", userId: context.userId, orgId: context.orgId, projectId: contract.project_id, supabase: context.supabase })
++  let signing: { documentId: string | null; envelopeId: string | null; reason: string | null }
++  if (contract.status !== "draft") {
++    signing = { documentId: null, envelopeId: null, reason: "The existing agreement was recovered. Review its current status before preparing signatures." }
++  } else {
++    try {
++      signing = await generatePurchaseAgreementSigningDocument(contract.id, context.orgId, { expectedProjectId: contract.project_id })
++    } catch (error) {
++      try {
++        logger.warn("agreement_signing_preparation_unconfirmed", { domain: "sales", orgId: context.orgId, projectId: contract.project_id,
++          contractId: contract.id, receiptId: receipt.receipt_id, errorType: error instanceof Error ? error.name : "Unknown" })
++      } catch { /* Telemetry failure must not obscure the committed sale. */ }
++      signing = { documentId: null, envelopeId: null, reason: "The agreement was saved. Signing preparation could not be confirmed; review its signing status and resume the saved packet." }
++    }
++  }
++  return { ...contract, pricing: contract.snapshot.purchase_agreement.pricing as AgreementDraftPricing, signing,
++    creationReceiptId: receipt.receipt_id, recovered: !receipt.created }
++}
++
++/** Resume only after proving the saved sale owns its reservation and home configuration. */
++export async function resumePurchaseAgreementSigning(input: unknown, orgId?: string) {
++  const parsed = z.object({ contractId: z.string().uuid(), projectId: z.string().uuid() }).parse(input)
+   const context = await requireOrgContext(orgId)
+   await requirePermission("sales.manage", context)
+-  const { data: contract, error } = await context.supabase.from("contracts").select("*, project:projects(name, client_id, client:contacts(id, full_name, email))").eq("org_id", context.orgId).eq("id", contractId).eq("contract_type", "purchase_agreement").maybeSingle()
++  const { data: contract, error } = await context.supabase.from("contracts").select("id,project_id,status,snapshot")
++    .eq("org_id", context.orgId).eq("id", parsed.contractId).eq("contract_type", "purchase_agreement").maybeSingle()
++  if (error || !contract || contract.project_id !== parsed.projectId || contract.status !== "draft") throw new Error("The draft agreement or home changed. Reload before resuming signatures.")
++  await requireAuthorization({permission:"sales.manage",orgId:context.orgId,userId:context.userId,projectId:contract.project_id,supabase:context.supabase})
++  if (process.env.ARC_AGREEMENT_DURABLE_SIGNING_ENABLED !== "true") throw new Error("Agreement signing recovery is not enabled yet")
++  const snapshot = z.object({ purchase_agreement: z.object({ configuration: z.object({
++    lot_id: z.string().uuid(), house_plan_id: z.string().uuid().nullable(), house_plan_version_id: z.string().uuid().nullable(),
++    elevation_id: z.string().uuid().nullable(), swing: z.enum(["left","right"]),
++  }) }) }).safeParse(contract.snapshot)
++  if (!snapshot.success) throw new Error("The saved agreement configuration needs reconciliation before signing")
++  const configuration = snapshot.data.purchase_agreement.configuration
++  const [lot,reservations] = await Promise.all([
++    context.supabase.from("lots").select("project_id,status,house_plan_id,house_plan_version_id,house_plan_elevation_id,swing")
++      .eq("org_id",context.orgId).eq("id",configuration.lot_id).maybeSingle(),
++    context.supabase.from("lot_reservations").select("id,lot_id,status").eq("org_id",context.orgId)
++      .eq("contract_id",contract.id).limit(2),
++  ])
++  if (lot.error || !lot.data || reservations.error || reservations.data?.length !== 1 || reservations.data[0].lot_id !== configuration.lot_id || reservations.data[0].status !== "reserved" || lot.data.project_id !== contract.project_id
++    || !SELLABLE_LOT_STATUSES.includes(lot.data.status) || lot.data.house_plan_id !== configuration.house_plan_id || lot.data.house_plan_version_id !== configuration.house_plan_version_id
++    || lot.data.house_plan_elevation_id !== configuration.elevation_id || lot.data.swing !== configuration.swing) throw new Error("The saved agreement, reservation and home configuration need reconciliation before signing")
++  return generatePurchaseAgreementSigningDocument(contract.id,context.orgId,{expectedProjectId:parsed.projectId})
++}
++
++export async function generatePurchaseAgreementSigningDocument(contractId: string, orgId?: string, options: { expectedProjectId?: string } = {}) {
++  const context = await requireOrgContext(orgId)
++  await requirePermission("sales.manage", context)
++  const { data: contract, error } = await context.supabase.from("contracts").select("*, project:projects(name)").eq("org_id", context.orgId).eq("id", contractId).eq("contract_type", "purchase_agreement").maybeSingle()
+   if (error || !contract) throw new Error("Purchase agreement not found")
++  if (options.expectedProjectId && contract.project_id !== options.expectedProjectId) throw new Error("The agreement home changed. Reload before resuming signatures.")
++  await requireAuthorization({ permission: "sales.manage", userId: context.userId, orgId: context.orgId,
++    projectId: contract.project_id, supabase: context.supabase })
++  if (contract.status !== "draft") throw new Error("Only a draft purchase agreement can be prepared for signature")
++  if (getFilesStorageProvider() !== "r2") return { documentId: null, envelopeId: null, reason: "Document signing storage is not configured" }
++  const signingSecret = process.env.DOCUMENT_SIGNING_SECRET
++  if (!signingSecret) throw new Error("Missing DOCUMENT_SIGNING_SECRET environment variable")
++  if (!contract.buyer_contact_id) throw new Error("The agreement needs a buyer of record before signing")
++  if (contract.co_buyer_contact_id === contract.buyer_contact_id) throw new Error("Buyer and co-buyer must be different contacts")
++  const durableSigning = process.env.ARC_AGREEMENT_DURABLE_SIGNING_ENABLED === "true"
++  if (durableSigning) {
++    const owned = await reserveAgreementSigningDocument({ orgId: context.orgId, actorId: context.userId, contract })
++    if (owned) return publishOwnedAgreementDocument({ orgId: context.orgId, actorId: context.userId, document: owned })
++  }
+   const project = Array.isArray(contract.project) ? contract.project[0] : contract.project
+-  const buyer = Array.isArray(project?.client) ? project.client[0] : project?.client
+-  const { data: reservation } = await context.supabase.from("lot_reservations").select("co_buyer_contact_id, co_buyer:contacts!lot_reservations_co_buyer_contact_id_fkey(id, full_name, email)").eq("org_id", context.orgId).eq("contract_id", contractId).maybeSingle()
+-  const coBuyer = Array.isArray(reservation?.co_buyer) ? reservation.co_buyer[0] : reservation?.co_buyer
+-  const { data: builder } = await context.supabase.from("app_users").select("id, full_name, email").eq("id", context.userId).maybeSingle()
++  const contactIds = [contract.buyer_contact_id, ...(contract.co_buyer_contact_id ? [contract.co_buyer_contact_id] : [])]
++  const [contactsResult, builderResult] = await Promise.all([
++    context.supabase.from("contacts").select("id, full_name, email").eq("org_id", context.orgId).in("id", contactIds),
++    context.supabase.from("app_users").select("id, full_name, email").eq("id", context.userId).maybeSingle(),
++  ])
++  if (contactsResult.error || contactsResult.data?.length !== contactIds.length) throw new Error("Agreement signer contacts could not be verified in this organization")
++  if (builderResult.error) throw new Error("The builder signer could not be verified")
++  const buyer = contactsResult.data.find((contact) => contact.id === contract.buyer_contact_id)
++  const coBuyer = contract.co_buyer_contact_id ? contactsResult.data.find((contact) => contact.id === contract.co_buyer_contact_id) : null
++  const builder = builderResult.data
+   if (!buyer?.email) throw new Error("Buyer email is required before creating a signing envelope")
++  if (contract.co_buyer_contact_id && !coBuyer?.email) throw new Error("Co-buyer email is required before creating a signing envelope")
+   if (!builder?.email) throw new Error("The builder signer needs an email address")
+   const pricing = (contract.snapshot as any)?.purchase_agreement?.pricing as PurchaseAgreementPricing
+   const lines = [
+@@ -1169,34 +1377,55 @@ export async function generatePurchaseAgreementSigningDocument(contractId: strin
+   const branding = await getOrgBranding(context.orgId, context.supabase)
+   const pdf = await renderProposalPdf({ orgName: branding.name, orgLogoUrl: branding.logoUrl, orgAddress: branding.address, proposalTitle: contract.title, proposalNumber: contract.number, recipientName: buyer.full_name, recipientEmail: buyer.email, projectName: project?.name ?? null, summary: "New home purchase agreement", terms: contract.terms ?? null, subtotalCents: pricing.totalCents, taxCents: 0, totalCents: pricing.totalCents, validUntil: null, signers: [{ role: "Buyer", name: buyer.full_name }, ...(coBuyer ? [{ role: "Co-buyer", name: coBuyer.full_name }] : []), { role: branding.name ?? "Builder", name: builder.full_name }], lines })
+   const fileName = `purchase-agreement-${contract.number ?? contract.id}.pdf`.replace(/[^a-zA-Z0-9.-]/g, "_")
+-  const storagePath = buildOrgScopedPath(context.orgId, "projects", contract.project_id, "esign", "source", `${Date.now()}_${fileName}`)
++  const storagePath = buildOrgScopedPath(context.orgId, "projects", contract.project_id, "esign", "source", `${randomUUID()}_${fileName}`)
+   await uploadFilesObject({ supabase: context.supabase, orgId: context.orgId, path: storagePath, bytes: pdf, contentType: "application/pdf", upsert: false })
+-  const file = await createFileRecord({ project_id: contract.project_id, file_name: fileName, storage_path: storagePath, mime_type: "application/pdf", size_bytes: pdf.length, visibility: "private", category: "contracts", folder_path: "/contracts", source: "generated" }, context.orgId, { authorizationPermission: "sales.manage" })
+-  const document = await createDocument({ project_id: contract.project_id, document_type: "contract", title: contract.title, source_file_id: file.id, source_entity_type: "contract", source_entity_id: contract.id, metadata: { contract_id: contract.id, purchase_agreement: true } }, context.orgId, { authorizationPermission: "sales.manage" })
+-  const envelope = await ensureDraftEnvelopeForDocument({ document_id: document.id, source_entity_type: "contract", source_entity_id: contract.id, subject: contract.title, metadata: { contract_id: contract.id } }, context.orgId, "sales.manage")
++  const file = await createFileRecord({ project_id: contract.project_id, file_name: fileName, storage_path: storagePath, mime_type: "application/pdf", size_bytes: pdf.length, checksum: createHash("sha256").update(pdf).digest("hex"), visibility: "private", category: "contracts", folder_path: "/contracts", source: "generated" }, context.orgId, { authorizationPermission: "sales.manage" })
+   const recipients = [
+     { recipient_type: "contact" as const, contact_id: buyer.id, name: buyer.full_name, email: buyer.email, role: "signer" as const, signer_role: "buyer", sequence: 1, required: true },
+     ...(coBuyer?.email ? [{ recipient_type: "contact" as const, contact_id: coBuyer.id, name: coBuyer.full_name, email: coBuyer.email, role: "signer" as const, signer_role: "co_buyer", sequence: 1, required: true }] : []),
+     { recipient_type: "internal_user" as const, user_id: builder.id, name: builder.full_name, email: builder.email, role: "signer" as const, signer_role: "builder", sequence: 2, required: true },
+   ]
++  // Probe and reservation share contract ownership; a concurrent winner is
++  // resumed instead of replacing its file, builder signer or invitation IDs.
++  // Never fall back after an uncertain reservation/publication reply.
++  if (durableSigning) {
++    const owned = await reserveAgreementSigningDocument({ orgId: context.orgId, actorId: context.userId, contract, fileId: file.id,
++      recipients: recipients.map(recipient => ({ type: recipient.recipient_type, name: recipient.name, email: recipient.email, role: recipient.role,
++        signer_role: recipient.signer_role, sequence: recipient.sequence, required: recipient.required,
++        contact_id: "contact_id" in recipient ? recipient.contact_id : null, user_id: "user_id" in recipient ? recipient.user_id : null })) })
++    if (!owned) throw new Error("Agreement signing document reservation is missing. Reconcile before retrying.")
++    return publishOwnedAgreementDocument({ orgId: context.orgId, actorId: context.userId, document: owned })
++  }
++  const document = await createDocument({ project_id: contract.project_id, document_type: "contract", title: contract.title, source_file_id: file.id, source_entity_type: "contract", source_entity_id: contract.id, metadata: { contract_id: contract.id, purchase_agreement: true } }, context.orgId, { authorizationPermission: "sales.manage" })
++  const envelope = await ensureDraftEnvelopeForDocument({ document_id: document.id, source_entity_type: "contract", source_entity_id: contract.id, subject: contract.title, metadata: { contract_id: contract.id } }, context.orgId, "sales.manage")
+   await replaceEnvelopeRecipients({ envelope_id: envelope.id, recipients }, context.orgId, "sales.manage")
+   const signingRequests = await createEnvelopeSigningRequests({ envelope_id: envelope.id }, context.orgId, "sales.manage")
+-  const signingSecret = process.env.DOCUMENT_SIGNING_SECRET
+-  if (!signingSecret) throw new Error("Missing DOCUMENT_SIGNING_SECRET environment variable")
+-  const firstBatch = (signingRequests.requests ?? []).filter((request: any) => Number(request.sequence ?? 1) === 1 && request.sent_to_email)
++  const requests = signingRequests.requests ?? []
++  if (requests.length !== recipients.length || recipients.some((recipient) => {
++    const matches = requests.filter((request) => request.signer_role === recipient.signer_role)
++    return matches.length !== 1 || matches[0].sent_to_email !== recipient.email || Number(matches[0].sequence) !== recipient.sequence
++      || matches[0].required !== true || matches[0].org_id !== context.orgId || matches[0].envelope_id !== envelope.id
++      || matches[0].document_id !== document.id || !matches[0].token_hash
++      || matches[0].recipient_contact_id !== ("contact_id" in recipient ? recipient.contact_id : null)
++  })) throw new Error("Signing requests do not match the agreement's required recipients")
++  const firstBatch = requests.filter((request) => Number(request.sequence) === 1)
+   await Promise.all(firstBatch.map(async (request: any) => {
+-    const token = randomBytes(32).toString("hex")
+-    const tokenHash = createHmac("sha256", signingSecret).update(token).digest("hex")
+-    await context.supabase.from("document_signing_requests").update({ token_hash: tokenHash, status: "sent", sent_at: new Date().toISOString() }).eq("org_id", context.orgId).eq("id", request.id)
++    const signingUrl = buildUnifiedSigningUrl(createRecoverableSigningToken(request))
++    const { data: prepared, error: requestError } = await context.supabase.from("document_signing_requests").update({ status: "sent", sent_at: new Date().toISOString() }).eq("org_id", context.orgId).eq("id", request.id).eq("token_hash", request.token_hash).eq("status", "draft").select("id").single()
++    if (requestError || !prepared) throw new Error(`Failed to prepare signing delivery: ${requestError?.message ?? "Signing request changed or disappeared"}`)
+     const recipient = recipients.find((row) => row.signer_role === request.signer_role)
+-    const html = await renderEmailTemplate(SignatureEmail({ documentTitle: contract.title, signingLink: buildUnifiedSigningUrl(token), recipientName: recipient?.name ?? undefined, orgName: branding.name, orgLogoUrl: branding.logoUrl, eventLabel: "Purchase Agreement", headline: "Your purchase agreement is ready", bodyText: "Review and sign your new home purchase agreement.", detailLabel: "Agreement", detailText: "Review the price, selections, incentives, and terms before signing.", buttonText: "Review and Sign" }))
+-    await sendEmail({ to: [request.sent_to_email], subject: `Signature requested: ${contract.title}`, html, from: getOrgSenderEmail(undefined, branding.name) })
++    await sendSignerRequestEmail({ orgId: context.orgId, toEmail: request.sent_to_email,
++      requestId: request.id, expectedTokenHash: request.token_hash, documentId: document.id,
++      documentTitle: contract.title, signingUrl, recipientName: recipient?.name ?? undefined,
++      subject: `Signature requested: ${contract.title}`, message: "Review and sign your new home purchase agreement.",
++      idempotencyKey: `esign-invitation:${request.id}:${createHash("sha256").update(request.token_hash).digest("hex").slice(0, 24)}` })
+   }))
+   const sentAt = new Date().toISOString()
+-  await Promise.all([
++  const sentResults = await Promise.all([
+     context.supabase.from("documents").update({ status: "sent", updated_at: sentAt }).eq("org_id", context.orgId).eq("id", document.id),
+     context.supabase.from("envelopes").update({ status: "sent", sent_at: sentAt, updated_at: sentAt }).eq("org_id", context.orgId).eq("id", envelope.id),
+   ])
++  if (sentResults.some((result) => result.error)) throw new Error("Signing delivery completed but document status could not be recorded; reconciliation is required")
+   return { documentId: document.id, envelopeId: envelope.id, reason: null }
+ }
+ 
+@@ -1209,34 +1438,37 @@ export async function hasExecutedPurchaseAgreement(projectId: string, orgId?: st
+ 
+ export async function executePurchaseAgreementFromEnvelopeExecution(input: { orgId: string; contractId: string; envelopeId: string; executedFileId?: string | null }) {
+   const supabase = createServiceSupabaseClient()
+-  const { data: contract } = await supabase.from("contracts").select("*, project:projects(end_date)").eq("org_id", input.orgId).eq("id", input.contractId).eq("contract_type", "purchase_agreement").maybeSingle()
++  const checked = <T extends { error: any }>(result: T): T => {
++    if (result.error) throw new Error(`Purchase agreement execution failed: ${result.error.message}`)
++    return result
++  }
++  const { data: contract } = checked(await supabase.from("contracts").select("*, project:projects(end_date)").eq("org_id", input.orgId).eq("id", input.contractId).eq("contract_type", "purchase_agreement").maybeSingle())
+   if (!contract) throw new Error("Purchase agreement not found")
+-  if (contract.status === "active") return
+-  const now = new Date().toISOString()
+-  await supabase.from("contracts").update({ status: "active", signed_at: now, signature_data: { envelope_id: input.envelopeId, executed_file_id: input.executedFileId ?? null } }).eq("org_id", input.orgId).eq("id", contract.id)
+-  const { data: projectLot } = await supabase.from("lots").select("id, community_id, status").eq("org_id", input.orgId).eq("project_id", contract.project_id).maybeSingle()
+-  let convertedProspectId: string | null = null
++  if (contract.status === "void") throw new Error("Purchase agreement was voided")
++  if (contract.status === "active" && contract.signature_data?.execution_effects_completed === true) return
++  const now = contract.signed_at ?? new Date().toISOString()
++  const signatureData = { ...(contract.signature_data ?? {}), envelope_id: input.envelopeId, executed_file_id: input.executedFileId ?? null }
++  checked(await supabase.from("contracts").update({ status: "active", signed_at: now, signature_data: signatureData }).eq("org_id", input.orgId).eq("id", contract.id))
++  const { data: projectLot } = checked(await supabase.from("lots").select("id, community_id, status").eq("org_id", input.orgId).eq("project_id", contract.project_id).maybeSingle())
+   if (projectLot) {
+-    const { data: convertedReservations } = await supabase.from("lot_reservations").update({ status: "converted", converted_at: now, contract_id: contract.id }).eq("org_id", input.orgId).eq("lot_id", projectLot.id).eq("status", "reserved").select("prospect_id")
+-    convertedProspectId = (convertedReservations ?? []).find((row) => row.prospect_id)?.prospect_id ?? null
+-  }
+-  // Close the lead-pipeline loop: an executed agreement IS the win.
+-  if (convertedProspectId) {
+-    await supabase.from("prospects").update({ status: "won", won_at: now, lost_at: null, lost_reason: null, updated_at: now }).eq("org_id", input.orgId).eq("id", convertedProspectId).neq("status", "won")
++    checked(await supabase.from("lot_reservations").update({ status: "converted", converted_at: now, contract_id: contract.id }).eq("org_id", input.orgId).eq("lot_id", projectLot.id).eq("status", "reserved"))
++    // Recovery must also find the reservation converted by an earlier attempt.
++    const { data: reservations } = checked(await supabase.from("lot_reservations").select("prospect_id").eq("org_id", input.orgId).eq("contract_id", contract.id).eq("status", "converted"))
++    for (const reservation of reservations ?? []) {
++      if (reservation.prospect_id) checked(await supabase.from("prospects").update({ status: "won", won_at: now, lost_at: null, lost_reason: null, updated_at: now }).eq("org_id", input.orgId).eq("id", reservation.prospect_id).neq("status", "won"))
++    }
+   }
+-  // Stand the buyer's selection groups up at execution, not at release. The
+-  // start gate asks "are structural selections locked?", and a gate whose
+-  // evidence is only created during the release it guards can never block one.
+   await instantiateSelectionGroupsForProject(contract.project_id, input.orgId)
+-  await supabase.from("project_selections").update({ locked_at: now }).eq("org_id", input.orgId).eq("project_id", contract.project_id).is("locked_at", null)
++  checked(await supabase.from("project_selections").update({ locked_at: now }).eq("org_id", input.orgId).eq("project_id", contract.project_id).is("locked_at", null))
+   if (projectLot) {
+-    const { data: existingClosing } = await supabase.from("closings").select("id").eq("org_id", input.orgId).eq("project_id", contract.project_id).neq("status", "cancelled").maybeSingle()
+-    if (!existingClosing) await supabase.from("closings").insert({ org_id: input.orgId, project_id: contract.project_id, lot_id: projectLot.id, community_id: projectLot.community_id, status: "projected", scheduled_date: contract.project?.end_date ?? null, buyer_contact_id: contract.buyer_contact_id ?? null })
++    const { data: existingClosing } = checked(await supabase.from("closings").select("id").eq("org_id", input.orgId).eq("project_id", contract.project_id).neq("status", "cancelled").maybeSingle())
++    if (!existingClosing) checked(await supabase.from("closings").insert({ org_id: input.orgId, project_id: contract.project_id, lot_id: projectLot.id, community_id: projectLot.community_id, status: "projected", scheduled_date: contract.project?.end_date ?? null, buyer_contact_id: contract.buyer_contact_id ?? null }))
+   }
+   await Promise.all([
+     recordEvent({ orgId: input.orgId, eventType: "purchase_agreement_executed", entityType: "contract", entityId: contract.id, payload: { project_id: contract.project_id, envelope_id: input.envelopeId } }),
+     recordAudit({ orgId: input.orgId, action: "update", entityType: "contract", entityId: contract.id, after: { status: "active", signed_at: now } }),
+   ])
++  checked(await supabase.from("contracts").update({ signature_data: { ...signatureData, execution_effects_completed: true } }).eq("org_id", input.orgId).eq("id", contract.id))
+ }
+ 
+ export async function voidPurchaseAgreement(input: unknown, orgId?: string) {
+@@ -1260,4 +1492,4 @@ export async function voidPurchaseAgreement(input: unknown, orgId?: string) {
+   ])
+   await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "purchase_agreement_voided", entityType: "contract", entityId: contract.id, payload: { reason: parsed.reason } })
+ }
+-import { createHmac, randomBytes } from "crypto"
++import { createHash, randomUUID } from "crypto"
+diff --git a/lib/services/invoices.ts b/lib/services/invoices.ts
+index e8eead5e..e1a780ab 100644
+--- a/lib/services/invoices.ts
++++ b/lib/services/invoices.ts
+@@ -1,3 +1,4 @@
++import { after } from "next/server"
+ import { randomUUID } from "crypto"
+ import type { SupabaseClient } from "@supabase/supabase-js"
+ 
+@@ -12,7 +13,8 @@ import {
+ } from "@/lib/financials/invoice-totals"
+ import { dollarsToCents } from "@/lib/financials/money"
+ import { getProjectPosture, normalizeProductTier, type ProductTier, type ProjectPosture } from "@/lib/product-tier"
+-import { getReceivablesPosturePolicy } from "@/lib/receivables/policy"
++import { validateGeneralInvoice } from "@/lib/receivables/general-invoice"
++import { getReceivablesPosturePolicy, getGeneralReceivablesPolicy } from "@/lib/receivables/policy"
+ import { createApprovedCostInvoiceFromPreview } from "@/lib/services/approved-cost-invoicing"
+ import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
+ import { createServiceSupabaseClient } from "@/lib/supabase/server"
+@@ -95,7 +97,7 @@ async function resolveInvoicePosture(params: {
+   projectId?: string | null
+   productTier: ProductTier
+ }): Promise<ProjectPosture> {
+-  if (!params.projectId) return params.productTier
++  if (!params.projectId) return "residential"
+   const { data, error } = await params.supabase
+     .from("projects")
+     .select("property_type")
+@@ -113,7 +115,7 @@ async function requireInvoicePermission(params: {
+   projectId?: string | null
+   invoiceId?: string
+ }) {
+-  await requireAuthorization({
++  const decision = await requireAuthorization({
+     permission: params.permission,
+     userId: params.userId,
+     orgId: params.orgId,
+@@ -123,6 +125,21 @@ async function requireInvoicePermission(params: {
+     resourceType: "invoice",
+     resourceId: params.invoiceId,
+   })
++  if (!params.projectId && params.permission !== "invoice.read" && decision.divisionScope === "assigned") {
++    throw new Error("Organization-wide invoice access is required for general billing")
++  }
++}
++
++async function assertInvoiceCustomer(supabase: SupabaseClient, orgId: string, input: InvoiceInput) {
++  const problem = validateGeneralInvoice(input)
++  if (problem) throw new Error(problem)
++  if (!input.project_id && input.metadata?.invoice_kind === "earnest_deposit") {
++    const { data: settings, error } = await supabase.from("books_settings").select("workspace_enabled,ledger_authority").eq("org_id", orgId).maybeSingle()
++    if (error || !settings?.workspace_enabled || settings.ledger_authority !== "arc") throw new Error("General deposit requests require Arc Books as your accounting system")
++  }
++  if (!input.customer_id) return
++  const { data, error } = await supabase.from("contacts").select("id").eq("org_id", orgId).eq("id", input.customer_id).maybeSingle()
++  if (error || !data) throw new Error("Choose a customer from this organization")
+ }
+ 
+ async function assertInvoiceBudgetLinks(
+@@ -216,10 +233,11 @@ function issuedInvoiceSnapshot(params: {
+   input: InvoiceInput
+   lines: InvoiceLine[]
+   totals: InvoiceTotals
++  issuedAt?: string
+ }) {
+   return {
+     schema_version: 1,
+-    issued_at: new Date().toISOString(),
++    issued_at: params.issuedAt ?? new Date().toISOString(),
+     product_posture: params.posture,
+     invoice_number: params.input.invoice_number,
+     title: params.input.title,
+@@ -931,6 +949,7 @@ export type InvoiceQueueKey =
+ export interface ListInvoicesOptions {
+   orgId?: string
+   projectId?: string
++  generalCustomerIds?: string[]
+   limit?: number
+   offset?: number
+   /** Case-insensitive match on invoice number, title, or customer name. */
+@@ -1042,6 +1061,10 @@ export async function listInvoicePage(options: ListInvoicesOptions = {}): Promis
+     .order("created_at", { ascending: false })
+ 
+   if (options.projectId) query = query.eq("project_id", options.projectId)
++  if (options.generalCustomerIds) {
++    if (!options.generalCustomerIds.length) return { invoices: [], totalCount: 0, hasMore: false }
++    query = query.is("project_id", null).in("metadata->>customer_id", options.generalCustomerIds)
++  }
+   query = applyInvoiceQueueFilter(query, options.queue ?? "all", todayIso)
+   query = applyInvoiceSearchFilter(query, options.search)
+ 
+@@ -1189,6 +1212,111 @@ export async function getProjectInvoiceArSummary({
+   }
+ }
+ 
++/** Normalize amounts through the original invoice calculation without writes. */
++export function prepareInvoiceAmounts(input: InvoiceInput, sourceContext: SourceBillingContext | null) {
++  const lines = applySourceDerivedBillingLines(normalizeLines(input.lines), sourceContext)
++  const totals = calculateInvoiceTotalsWithRetainage(lines, input.tax_rate, discountFromInput(input))
++  return { lines, totals }
++}
++
++/** Prepare the original invoice header/lines for the owner's chosen transaction.
++ * This performs no authorization or writes; callers must validate current sources.
++ */
++export function prepareInvoiceCreation({
++  input, orgId: resolvedOrgId, userId, productPosture, approvalStatus,
++  sourceContext, lines, totals, orgInfo: orgData, token, now,
++}: {
++  input: InvoiceInput
++  orgId: string
++  userId: string
++  productPosture: ProjectPosture
++  approvalStatus: NonNullable<Invoice["approval_status"]>
++  sourceContext: SourceBillingContext | null
++  lines: InvoiceLine[]
++  totals: InvoiceTotals
++  orgInfo: { name?: string | null; email?: string | null; phone?: string | null; address?: unknown } | null
++  token: string | null
++  now: string
++}) {
++  const shouldIssue = input.issue === true
++  if (shouldIssue && approvalStatus !== "approved" && approvalStatus !== "not_required") {
++    throw new Error(`${getReceivablesPosturePolicy(productPosture).customerLabel} billing must be approved before it can be issued.`)
++  }
++  if (shouldIssue && !token) throw new Error("An issued invoice requires its original token.")
++  const lifecycleStatus: InvoiceLifecycleStatus = shouldIssue ? "sent" : "draft"
++  const sourceType = input.source_type ?? "manual"
++  const sourceDrawId = input.source_draw_id ?? null
++  const sourceChangeOrderId = input.source_change_order_id ?? null
++  const sourcePayApplicationId = input.source_pay_application_id ?? null
++  const payload = {
++    org_id: resolvedOrgId,
++    project_id: input.project_id ?? null,
++    token,
++    invoice_number: input.invoice_number,
++    title: input.title,
++    status: lifecycleStatus,
++    issue_date: input.issue_date ?? null,
++    due_date: input.due_date ?? null,
++    notes: input.notes ?? null,
++    client_visible: shouldIssue,
++    subtotal_cents: totals.subtotal_cents,
++    tax_cents: totals.tax_cents,
++    tax_jurisdiction_id: input.tax_jurisdiction_id ?? null,
++    total_cents: totals.total_cents,
++    balance_due_cents: totals.total_cents,
++    product_posture: productPosture,
++    approval_status: approvalStatus,
++    delivery_status: shouldIssue ? "queued" : "not_sent",
++    issued_snapshot: shouldIssue
++      ? issuedInvoiceSnapshot({ posture: productPosture, input, lines, totals, issuedAt: now })
++      : null,
++    source_type: sourceType,
++    source_draw_id: sourceDrawId,
++    source_change_order_id: sourceChangeOrderId,
++    source_pay_application_id: sourcePayApplicationId,
++    metadata: {
++      ...(input.metadata ?? {}),
++      lines,
++      totals,
++      tax_rate: input.tax_rate,
++      tax_jurisdiction_id: input.tax_jurisdiction_id ?? null,
++      tax_jurisdiction: input.tax_jurisdiction_name ?? null,
++      created_by: userId,
++      payment_terms_days: input.payment_terms_days,
++      customer_id: input.customer_id,
++      customer_name: input.customer_name,
++      customer_address: input.customer_address,
++      customer_email: input.sent_to_emails?.[0],
++      accounting_customer_ref: input.qbo_customer_id
++        ? { id: input.qbo_customer_id, name: input.qbo_customer_name ?? null }
++        : null,
++      from_name: input.from_name ?? orgData?.name ?? null,
++      from_email: input.from_email ?? orgData?.email ?? null,
++      from_address: input.from_address ?? orgData?.address ?? null,
++      source_type: sourceType,
++      source_draw_id: sourceDrawId,
++      source_change_order_id: sourceChangeOrderId,
++      source_pay_application_id: sourcePayApplicationId,
++      source_contract_id: sourceContext?.contractId ?? null,
++      billing_context: sourceContext?.metadata ?? null,
++      retainage_percent: sourceContext?.retainagePercent ?? null,
++      retainage_applies_to_fee: sourceContext?.retainageAppliesToFee ?? null,
++      retainage_amount_cents: sourceContext?.retainageAmountCents ?? null,
++      qbo_income_account_id: input.qbo_income_account_id ?? null,
++      qbo_income_account_name: input.qbo_income_account_name ?? null,
++      // Store org info for invoice display
++      org_name: orgData?.name ?? null,
++      org_email: orgData?.email ?? null,
++      org_phone: orgData?.phone ?? null,
++      org_address: orgData?.address ?? null,
++    },
++    sent_at: shouldIssue ? now : null,
++    sent_to_emails: input.sent_to_emails ?? null,
++  }
++
++  return { invoice: payload, lines: invoiceLineRows(lines, sourceType) }
++}
++
+ export async function createInvoice({
+   input,
+   orgId,
+@@ -1215,6 +1343,7 @@ export async function createInvoice({
+     permission: authorizationPermission,
+     projectId: input.project_id,
+   })
++  await assertInvoiceCustomer(supabase, resolvedOrgId, input)
+   await assertInvoiceBudgetLinks(supabase, resolvedOrgId, input.project_id, input.lines)
+   await assertInvoiceAccountingAccounts(supabase, resolvedOrgId, input.lines)
+   const shouldIssue = input.issue === true
+@@ -1244,7 +1373,7 @@ export async function createInvoice({
+     projectId: input.project_id,
+     productTier,
+   })
+-  const receivablesPolicy = getReceivablesPosturePolicy(productPosture)
++  const receivablesPolicy = input.project_id ? getReceivablesPosturePolicy(productPosture) : getGeneralReceivablesPolicy()
+   await assertDirectChangeOrderInvoiceAllowed({
+     supabase,
+     orgId: resolvedOrgId,
+@@ -1262,16 +1391,15 @@ export async function createInvoice({
+     sourcePayApplicationId,
+     baseLines: normalizeLines(input.lines),
+   })
+-  const sourceContext = receivablesPolicy.supportsRetainage
++  const sourceContext = receivablesPolicy.supportsRetainage && input.metadata?.invoice_kind !== "earnest_deposit"
+     ? resolvedSourceContext
+     : resolvedSourceContext
+       ? { ...resolvedSourceContext, retainagePercent: 0, retainageAmountCents: 0 }
+       : null
+-  const lines = applySourceDerivedBillingLines(normalizeLines(input.lines), sourceContext)
++  const { lines, totals } = prepareInvoiceAmounts(input, sourceContext)
+   if (sourceType === "from_costs" && !input.project_id) {
+     throw new Error("Project is required to invoice approved costs")
+   }
+-  const totals = calculateInvoiceTotalsWithRetainage(lines, input.tax_rate, discountFromInput(input))
+   const approvalStatus =
+     sourceType === "pay_application"
+       ? "approved"
+@@ -1397,71 +1525,10 @@ export async function createInvoice({
+     sourcePayApplicationId,
+   })
+ 
+-  const payload = {
+-    org_id: resolvedOrgId,
+-    project_id: input.project_id ?? null,
+-    token,
+-    invoice_number: input.invoice_number,
+-    title: input.title,
+-    status: lifecycleStatus,
+-    issue_date: input.issue_date ?? null,
+-    due_date: input.due_date ?? null,
+-    notes: input.notes ?? null,
+-    client_visible: shouldIssue,
+-    subtotal_cents: totals.subtotal_cents,
+-    tax_cents: totals.tax_cents,
+-    tax_jurisdiction_id: input.tax_jurisdiction_id ?? null,
+-    total_cents: totals.total_cents,
+-    balance_due_cents: totals.total_cents,
+-    product_posture: productPosture,
+-    approval_status: approvalStatus,
+-    delivery_status: shouldIssue ? "queued" : "not_sent",
+-    issued_snapshot: shouldIssue
+-      ? issuedInvoiceSnapshot({ posture: productPosture, input, lines, totals })
+-      : null,
+-    source_type: sourceType,
+-    source_draw_id: sourceDrawId,
+-    source_change_order_id: sourceChangeOrderId,
+-    source_pay_application_id: sourcePayApplicationId,
+-    metadata: {
+-      ...(input.metadata ?? {}),
+-      lines,
+-      totals,
+-      tax_rate: input.tax_rate,
+-      tax_jurisdiction_id: input.tax_jurisdiction_id ?? null,
+-      tax_jurisdiction: input.tax_jurisdiction_name ?? null,
+-      created_by: userId,
+-      payment_terms_days: input.payment_terms_days,
+-      customer_id: input.customer_id,
+-      customer_name: input.customer_name,
+-      customer_address: input.customer_address,
+-      customer_email: input.sent_to_emails?.[0],
+-      accounting_customer_ref: input.qbo_customer_id
+-        ? { id: input.qbo_customer_id, name: input.qbo_customer_name ?? null }
+-        : null,
+-      from_name: input.from_name ?? orgData?.name ?? null,
+-      from_email: input.from_email ?? orgData?.email ?? null,
+-      from_address: input.from_address ?? orgData?.address ?? null,
+-      source_type: sourceType,
+-      source_draw_id: sourceDrawId,
+-      source_change_order_id: sourceChangeOrderId,
+-      source_pay_application_id: sourcePayApplicationId,
+-      source_contract_id: sourceContext?.contractId ?? null,
+-      billing_context: sourceContext?.metadata ?? null,
+-      retainage_percent: sourceContext?.retainagePercent ?? null,
+-      retainage_applies_to_fee: sourceContext?.retainageAppliesToFee ?? null,
+-      retainage_amount_cents: sourceContext?.retainageAmountCents ?? null,
+-      qbo_income_account_id: input.qbo_income_account_id ?? null,
+-      qbo_income_account_name: input.qbo_income_account_name ?? null,
+-      // Store org info for invoice display
+-      org_name: orgData?.name ?? null,
+-      org_email: orgData?.email ?? null,
+-      org_phone: orgData?.phone ?? null,
+-      org_address: orgData?.address ?? null,
+-    },
+-    sent_at: shouldIssue ? new Date().toISOString() : null,
+-    sent_to_emails: input.sent_to_emails ?? null,
+-  }
++  const { invoice: payload, lines: preparedLines } = prepareInvoiceCreation({
++    input, orgId: resolvedOrgId, userId, productPosture, approvalStatus,
++    sourceContext, lines, totals, orgInfo: orgData, token, now: new Date().toISOString(),
++  })
+ 
+   // Header + lines land in one transaction (create_invoice_atomic) so a failure
+   // anywhere leaves no partial invoice behind; only the cost locks need undoing.
+@@ -1469,7 +1536,7 @@ export async function createInvoice({
+   const { data: rpcResult, error } = await service.rpc("create_invoice_atomic", {
+     p_org_id: resolvedOrgId,
+     p_invoice: payload,
+-    p_lines: invoiceLineRows(lines, sourceType),
++    p_lines: preparedLines,
+   })
+ 
+   const created = rpcResult as { invoice: InvoiceRow; lines: Array<{ id: string; metadata: Record<string, any> }> } | null
+@@ -1537,10 +1604,12 @@ export async function updateInvoice({
+   invoiceId,
+   input,
+   orgId,
++  expectedUpdatedAt,
+ }: {
+   invoiceId: string
+   input: InvoiceInput
+   orgId?: string
++  expectedUpdatedAt?: string
+ }) {
+   const { supabase, orgId: resolvedOrgId, userId, productTier } = await requireOrgContext(orgId)
+   const { data: existing, error: existingError } = await supabase
+@@ -1553,6 +1622,9 @@ export async function updateInvoice({
+   if (existingError || !existing) {
+     throw new Error(existingError?.message ?? "Invoice not found")
+   }
++  if (expectedUpdatedAt && existing.updated_at !== expectedUpdatedAt) {
++    throw new Error("This invoice changed since you opened it. Reload the draft before saving.")
++  }
+   const existingAccountingState = await getAccountingSyncState(supabase, {
+     orgId: resolvedOrgId,
+     entityType: "invoice",
+@@ -1592,6 +1664,7 @@ export async function updateInvoice({
+   const sourceDrawId = input.source_draw_id ?? (existing.metadata as any)?.source_draw_id ?? null
+   const sourceChangeOrderId = input.source_change_order_id ?? (existing.metadata as any)?.source_change_order_id ?? null
+   const projectId = existing.project_id ?? null
++  await assertInvoiceCustomer(supabase, resolvedOrgId, { ...input, project_id: projectId })
+   await assertInvoiceBudgetLinks(supabase, resolvedOrgId, projectId, input.lines)
+   await assertInvoiceAccountingAccounts(supabase, resolvedOrgId, input.lines)
+   const productPosture = await resolveInvoicePosture({
+@@ -1599,7 +1672,7 @@ export async function updateInvoice({
+     projectId,
+     productTier,
+   })
+-  const receivablesPolicy = getReceivablesPosturePolicy(productPosture)
++  const receivablesPolicy = projectId ? getReceivablesPosturePolicy(productPosture) : getGeneralReceivablesPolicy()
+   if (sourceType === "from_costs" || (existing.metadata as any)?.source_type === "from_costs") {
+     throw new Error("Approved-cost invoices are controlled by the cost ledger. Revise and reissue instead of editing.")
+   }
+@@ -1625,7 +1698,7 @@ export async function updateInvoice({
+     sourceChangeOrderId,
+     baseLines: normalizeLines(input.lines),
+   })
+-  const sourceContext = receivablesPolicy.supportsRetainage
++  const sourceContext = receivablesPolicy.supportsRetainage && input.metadata?.invoice_kind !== "earnest_deposit"
+     ? resolvedSourceContext
+     : resolvedSourceContext
+       ? { ...resolvedSourceContext, retainagePercent: 0, retainageAmountCents: 0 }
+@@ -1941,28 +2014,17 @@ export async function runScheduledInvoiceSend(orgId: string, payload: Record<str
+  * owner certifying a pay application in their portal. The actor is the org
+  * member who set the send in motion, so permission is checked against them.
+  */
+-export async function issueInvoiceWithContext(
+-  context: { supabase: SupabaseClient; orgId: string; userId: string; productTier: ProductTier },
+-  { invoiceId, recipients }: { invoiceId: string; recipients?: string[] },
++export async function assertInvoiceCanIssue(
++  { supabase, orgId, userId, productTier }: { supabase: SupabaseClient; orgId: string; userId: string; productTier: ProductTier },
++  existing: { id: string; project_id?: string | null; status: string; approval_status?: string | null },
+ ) {
+-  const { supabase, orgId: resolvedOrgId, userId, productTier } = context
+-  const { data: existing, error } = await supabase
+-    .from("invoices")
+-    .select(
+-      "id, project_id, invoice_number, title, status, token, client_visible, sent_at, sent_to_emails, subtotal_cents, tax_cents, total_cents, balance_due_cents, issue_date, due_date, approval_status, product_posture, source_type, metadata",
+-    )
+-    .eq("org_id", resolvedOrgId)
+-    .eq("id", invoiceId)
+-    .maybeSingle()
+-  if (error || !existing) throw new Error(error?.message ?? "Invoice not found")
+-
+   await requireInvoicePermission({
+     supabase,
+-    orgId: resolvedOrgId,
++    orgId,
+     userId,
+     permission: "invoice.send",
+     projectId: existing.project_id,
+-    invoiceId,
++    invoiceId: existing.id,
+   })
+ 
+   if (isIssuedInvoiceStatus(existing.status)) {
+@@ -1973,7 +2035,7 @@ export async function issueInvoiceWithContext(
+   }
+ 
+   const posture = await resolveInvoicePosture({ supabase, projectId: existing.project_id, productTier })
+-  const policy = getReceivablesPosturePolicy(posture)
++  const policy = existing.project_id ? getReceivablesPosturePolicy(posture) : getGeneralReceivablesPolicy()
+   if (
+     policy.approvalMode === "required_review" &&
+     existing.approval_status !== "approved" &&
+@@ -1982,6 +2044,25 @@ export async function issueInvoiceWithContext(
+     throw new Error(`${policy.customerLabel} billing must be approved before it can be issued.`)
+   }
+ 
++  return posture
++}
++
++export async function issueInvoiceWithContext(
++  context: { supabase: SupabaseClient; orgId: string; userId: string; productTier: ProductTier },
++  { invoiceId, recipients }: { invoiceId: string; recipients?: string[] },
++) {
++  const { supabase, orgId: resolvedOrgId, userId } = context
++  const { data: existing, error } = await supabase
++    .from("invoices")
++    .select(
++      "id, project_id, invoice_number, title, status, token, client_visible, sent_at, sent_to_emails, subtotal_cents, tax_cents, total_cents, balance_due_cents, issue_date, due_date, approval_status, product_posture, source_type, metadata, notes",
++    )
++    .eq("org_id", resolvedOrgId)
++    .eq("id", invoiceId)
++    .maybeSingle()
++  if (error || !existing) throw new Error(error?.message ?? "Invoice not found")
++
++  const posture = await assertInvoiceCanIssue(context, existing)
+   await (await import("@/lib/services/invoice-waiver-packet")).assertInvoiceWaiverPacketReady(supabase,resolvedOrgId,existing)
+ 
+   const sentTo = recipients && recipients.length > 0 ? recipients : existing.sent_to_emails ?? []
+@@ -2029,6 +2110,7 @@ export async function issueInvoiceWithContext(
+     })
+     .eq("org_id", resolvedOrgId)
+     .eq("id", invoiceId)
++    .eq("status", existing.status)
+     .select("id, total_cents, due_date")
+     .single()
+   if (issueError || !issued) {
+@@ -2728,7 +2810,7 @@ export async function ensureInvoiceToken(invoiceId: string, orgId?: string) {
+     projectId: data.project_id,
+     productTier,
+   })
+-  const policy = getReceivablesPosturePolicy(productPosture)
++  const policy = data.project_id ? getReceivablesPosturePolicy(productPosture) : getGeneralReceivablesPolicy()
+   if (policy.approvalMode === "required_review" && data.approval_status !== "approved") {
+     throw new Error(`${policy.customerLabel} billing must be approved before its share link is published.`)
+   }
+@@ -2892,8 +2974,8 @@ export interface InvoiceIssuanceJobPayload {
+  * building" was unrecoverable and invisible — the invoice said sent and nobody
+  * had been billed.
+  *
+- * So: write ONE durable job first, then do the work inline so the user still sees
+- * it happen, then close the job. A crash anywhere in the middle leaves the job
++ * So: write ONE durable job first, return promptly, then deliver after the response
++ * and close the job. A crash anywhere in the middle leaves the job
+  * pending and the outbox worker finishes it. Every step is idempotent, so running
+  * it twice bills nobody twice.
+  */
+@@ -2914,7 +2996,7 @@ async function deliverIssuedInvoice(params: {
+     due_date: params.dueDate,
+     sent_to_emails: params.recipients,
+   }
+-  // Two minutes of headroom so the cron never races the inline attempt below.
++  // Two minutes of headroom so the cron does not immediately race the after-response attempt.
+   const enqueued = await enqueueOutboxJob({
+     orgId: params.orgId,
+     jobType: INVOICE_ISSUANCE_JOB_TYPE,
+@@ -2923,16 +3005,22 @@ async function deliverIssuedInvoice(params: {
+     runAt: new Date(Date.now() + 2 * 60 * 1000).toISOString(),
+   })
+ 
+-  try {
+-    await runInvoiceIssuance(params.orgId, payload)
+-    await completeOutboxJob(enqueued.enqueued ? enqueued.id : undefined)
+-  } catch (error) {
+-    if (!enqueued.enqueued && enqueued.reason === "error") {
+-      // Nothing durable exists to retry this, so the caller has to hear about it.
+-      throw error
++  const deliver = async () => {
++    try {
++      await runInvoiceIssuance(params.orgId, payload)
++      await completeOutboxJob(enqueued.enqueued ? enqueued.id : undefined)
++    } catch (error) {
++      if (!enqueued.enqueued && enqueued.reason === "error") throw error
++      console.error("[invoices.deliverIssuedInvoice] deferred to outbox retry", params.invoiceId, error)
+     }
+-    console.error("[invoices.deliverIssuedInvoice] deferred to outbox retry", params.invoiceId, error)
+   }
++  if (!enqueued.enqueued && enqueued.reason === "error") {
++    await deliver()
++  } else {
++    // The durable job survives a stopped request; network delivery need not block its response.
++    try { after(deliver) } catch { await deliver() }
++  }
++
+ }
+ 
+ /** The issuance job body. Idempotent; safe to run again after a partial failure. */
+diff --git a/lib/services/project-financial-setup.ts b/lib/services/project-financial-setup.ts
+index 759c9001..b3ab1b73 100644
+--- a/lib/services/project-financial-setup.ts
++++ b/lib/services/project-financial-setup.ts
+@@ -11,6 +11,7 @@ import {
+   type ProjectBillingModel,
+   resolveProjectBillingModel,
+ } from "@/lib/financials/billing-model"
++import type { Contract } from "@/lib/types"
+ import type { ProjectInput } from "@/lib/validation/projects"
+ import { requireOrgContext } from "@/lib/services/context"
+ import { recordAudit } from "@/lib/services/audit"
+@@ -72,7 +73,7 @@ export interface ProjectFinancialSetupStatusResult {
+ type ContractLike = {
+   id?: string | null
+   title?: string | null
+-  contract_type?: string | null
++  contract_type?: Contract["contract_type"] | null
+   total_cents?: number | null
+   currency?: string | null
+   markup_percent?: number | null
+@@ -592,37 +593,23 @@ export async function getProjectFinancialSetupStatus({
+   }
+ }
+ 
+-export async function upsertProjectFinancialSettingsFromProjectInput(args: {
+-  supabase: SupabaseClient
++/** Calculate settings without writing; null cost coding continues to inherit the org default. */
++export function prepareProjectFinancialSettings(args: {
+   orgId: string
+   projectId: string
+   userId?: string | null
+   input: Partial<ProjectInput>
+   existingContract?: ContractLike | null
++  existingSettings?: ProjectFinancialSettings | null
++  existingRawCostCodesEnabled: boolean | null
++  now: string
+ }) {
+-  const existingSettings = await getProjectFinancialSettings({
+-    supabase: args.supabase,
+-    orgId: args.orgId,
+-    projectId: args.projectId,
+-  }).catch(() => null)
+-  // The resolved DTO can't tell "inherit" (null) from an explicit value, so read the
+-  // raw column to preserve it when the caller doesn't touch cost coding.
+-  const [existingRawResult, orgCostCodesDefault] = await Promise.all([
+-    args.supabase
+-      .from("project_financial_settings")
+-      .select("cost_codes_enabled")
+-      .eq("org_id", args.orgId)
+-      .eq("project_id", args.projectId)
+-      .maybeSingle(),
+-    getOrgCostCodesEnabled(args.supabase, args.orgId),
+-  ])
+-  const existingRawCostCodesEnabled = (existingRawResult.data?.cost_codes_enabled ?? null) as boolean | null
++  const { existingSettings, existingRawCostCodesEnabled, now } = args
+   const billingModel =
+     normalizeBillingModel(args.input.billing_model) ??
+     existingSettings?.billing_model ??
+-    resolveProjectBillingModel(args.existingContract as any)
++    resolveProjectBillingModel({ ...args.existingContract, contract_type: args.existingContract?.contract_type ?? undefined, snapshot: args.existingContract?.snapshot ?? undefined })
+   const isCostPlus = billingModel === "cost_plus_percent" || billingModel === "cost_plus_fixed_fee" || billingModel === "cost_plus_gmp"
+-  const now = new Date().toISOString()
+   const metadata = {
+     source: "project_settings",
+     updated_from_project_form_at: now,
+@@ -637,9 +624,9 @@ export async function upsertProjectFinancialSettingsFromProjectInput(args: {
+         ? args.input.fixed_price_billing_basis ?? existingSettings?.fixed_price_billing_basis ?? "draws"
+         : "draws",
+     paid_costs_required:
+-      args.input.paid_costs_required ?? Boolean((args.existingContract?.snapshot as any)?.paid_costs_required ?? false),
++      args.input.paid_costs_required ?? Boolean(args.existingContract?.snapshot?.paid_costs_required ?? false),
+     proof_required:
+-      args.input.proof_required ?? Boolean((args.existingContract?.snapshot as any)?.proof_required ?? false),
++      args.input.proof_required ?? Boolean(args.existingContract?.snapshot?.proof_required ?? false),
+     client_cost_approval_required:
+       args.input.requires_client_cost_approval ?? args.existingContract?.requires_client_cost_approval ?? false,
+     open_book_required: isCostPlus ? args.input.open_book ?? args.existingContract?.open_book ?? true : false,
+@@ -653,6 +640,38 @@ export async function upsertProjectFinancialSettingsFromProjectInput(args: {
+     metadata,
+   }
+ 
++  return payload
++}
++
++export async function upsertProjectFinancialSettingsFromProjectInput(args: {
++  supabase: SupabaseClient
++  orgId: string
++  projectId: string
++  userId?: string | null
++  input: Partial<ProjectInput>
++  existingContract?: ContractLike | null
++}) {
++  const existingSettings = await getProjectFinancialSettings({
++    supabase: args.supabase,
++    orgId: args.orgId,
++    projectId: args.projectId,
++  }).catch(() => null)
++  // The resolved DTO can't tell "inherit" (null) from an explicit value, so read the
++  // raw column to preserve it when the caller doesn't touch cost coding.
++  const [existingRawResult, orgCostCodesDefault] = await Promise.all([
++    args.supabase
++      .from("project_financial_settings")
++      .select("cost_codes_enabled")
++      .eq("org_id", args.orgId)
++      .eq("project_id", args.projectId)
++      .maybeSingle(),
++    getOrgCostCodesEnabled(args.supabase, args.orgId),
++  ])
++  const existingRawCostCodesEnabled = (existingRawResult.data?.cost_codes_enabled ?? null) as boolean | null
++  const payload = prepareProjectFinancialSettings({
++    ...args, existingSettings, existingRawCostCodesEnabled, now: new Date().toISOString(),
++  })
++
+   const { data, error } = await args.supabase
+     .from("project_financial_settings")
+     .upsert(payload, { onConflict: "org_id,project_id" })
+diff --git a/lib/services/projects.ts b/lib/services/projects.ts
+index 34eedc55..f8ac0c4c 100644
+--- a/lib/services/projects.ts
++++ b/lib/services/projects.ts
+@@ -217,7 +217,7 @@ async function mapProjectsWithAccounting(supabase: SupabaseClient, orgId: string
+   return rows.map((row) => mapProject(row, dimensions.get(row.id)))
+ }
+ 
+-async function resolveVisibleProjectIds(input: {
++export async function resolveVisibleProjectIds(input: {
+   supabase: SupabaseClient
+   orgId: string
+   userId: string
+@@ -226,12 +226,13 @@ async function resolveVisibleProjectIds(input: {
+   const divisionProjectIds = await getDivisionScopedProjectIds(input)
+   if (divisionProjectIds?.length === 0) return []
+ 
+-  const { data: scopeRows } = await input.supabase
++  const { data: scopeRows, error: scopeError } = await input.supabase
+     .from("memberships")
+     .select("project_scope")
+     .eq("org_id", input.orgId)
+     .eq("user_id", input.userId)
+     .eq("status", "active")
++  if (scopeError) throw new Error("Unable to resolve project membership scope.")
+   const assignedOnly = (scopeRows ?? []).some(
+     (row) => (row as { project_scope?: string }).project_scope === "assigned",
+   )
+@@ -258,6 +259,25 @@ async function resolveVisibleProjectIds(input: {
+     .filter((id): id is string => id !== null && (!divisionSet || divisionSet.has(id)))
+ }
+ 
++export function prepareProjectAccountingDimensions(params: {
++  existingDimensions?: ProjectAccountingDimensions | null
++  classId?: string | null
++  className?: string | null
++  customerId?: string | null
++  customerName?: string | null
++}) {
++  const dimensions = { ...(params.existingDimensions ?? {}) }
++  if (params.classId !== undefined || params.className !== undefined) {
++    if (params.classId) dimensions.class = { id: params.classId, name: params.className ?? null }
++    else delete dimensions.class
++  }
++  if (params.customerId !== undefined || params.customerName !== undefined) {
++    if (params.customerId) dimensions.customer = { id: params.customerId, name: params.customerName ?? null }
++    else delete dimensions.customer
++  }
++  return dimensions
++}
++
+ async function saveProjectAccountingDimensions(params: {
+   supabase: SupabaseClient
+   orgId: string
+@@ -289,15 +309,9 @@ async function saveProjectAccountingDimensions(params: {
+     connectionId = defaultMap?.connection_id ?? null
+   }
+   if (!connectionId) return
+-  const dimensions = { ...((existing?.dimensions as ProjectAccountingDimensions | null) ?? {}) }
+-  if (params.classId !== undefined || params.className !== undefined) {
+-    if (params.classId) dimensions.class = { id: params.classId, name: params.className ?? null }
+-    else delete dimensions.class
+-  }
+-  if (params.customerId !== undefined || params.customerName !== undefined) {
+-    if (params.customerId) dimensions.customer = { id: params.customerId, name: params.customerName ?? null }
+-    else delete dimensions.customer
+-  }
++  const dimensions = prepareProjectAccountingDimensions({
++    ...params, existingDimensions: existing?.dimensions,
++  })
+   const query = existing?.id
+     ? params.supabase.from("accounting_entity_map").update({ dimensions }).eq("id", existing.id)
+     : params.supabase.from("accounting_entity_map").insert({
+@@ -545,20 +559,13 @@ export async function getProjectWithFinancials({
+   return mapped[0] ?? null
+ }
+ 
+-export async function createProject({
+-  input,
+-  orgId,
+-  context,
+-  authorizationPermission = "project.manage",
+-}: {
++/** Prepare the original project row without creating it or its financial records. */
++export function prepareProjectCreation({ input, orgId, userId, productTier }: {
+   input: ProjectInput
+-  orgId?: string
+-  context?: OrgServiceContext
+-  authorizationPermission?: string
++  orgId: string
++  userId: string
++  productTier: OrgServiceContext["productTier"]
+ }) {
+-  const { supabase, orgId: resolvedOrgId, userId, productTier } = context || await requireOrgContext(orgId)
+-  await requirePermission(authorizationPermission, { supabase, orgId: resolvedOrgId, userId })
+-
+   const propertyType = input.property_type ?? getDefaultProjectPropertyType(productTier)
+   const retainagePercent =
+     input.retainage_percent ?? (getProjectPosture(propertyType, productTier) === "commercial" ? 10 : 0)
+@@ -569,7 +576,7 @@ export async function createProject({
+   }
+ 
+   const payload = {
+-    org_id: resolvedOrgId,
++    org_id: orgId,
+     name: normalizedInput.name,
+     status: normalizedInput.status ?? "active",
+     phase: normalizedInput.phase ?? "delivery",
+@@ -586,6 +593,27 @@ export async function createProject({
+     prospect_id: normalizedInput.prospect_id || null,
+   }
+ 
++  return { input: normalizedInput, project: payload }
++}
++
++export async function createProject({
++  input,
++  orgId,
++  context,
++  authorizationPermission = "project.manage",
++}: {
++  input: ProjectInput
++  orgId?: string
++  context?: OrgServiceContext
++  authorizationPermission?: string
++}) {
++  const { supabase, orgId: resolvedOrgId, userId, productTier } = context || await requireOrgContext(orgId)
++  await requirePermission(authorizationPermission, { supabase, orgId: resolvedOrgId, userId })
++
++  const { input: normalizedInput, project: payload } = prepareProjectCreation({
++    input, orgId: resolvedOrgId, userId, productTier,
++  })
++
+   const { data, error } = await supabase
+     .from("projects")
+     .insert(payload)
+@@ -734,72 +762,18 @@ export async function updateProject({
+   return mapped[0]
+ }
+ 
+-async function upsertProjectBillingContract({
+-  supabase,
+-  orgId,
+-  userId,
+-  projectId,
+-  projectName,
+-  input,
+-}: {
+-  supabase: SupabaseClient
++/** Preserve billing defaults and existing terms before choosing the commit boundary. */
++export function prepareProjectBillingContract({ input, existing, existingSettings, orgId, projectId, projectName }: {
++  input: Partial<ProjectInput>
++  existing?: Partial<Contract> | null
++  existingSettings?: { billing_model?: string | null } | null
+   orgId: string
+-  userId: string
+   projectId: string
+   projectName: string
+-  input: Partial<ProjectInput>
+ }) {
+-  const billingKeys: Array<keyof ProjectInput> = [
+-    "contract_type",
+-    "billing_model",
+-    "markup_percent",
+-    "gmp_cents",
+-    "contingency_cents",
+-    "fixed_fee_cents",
+-    "fee_presentation",
+-    "savings_split_owner_pct",
+-    "savings_split_builder_pct",
+-    "labor_burden_multiplier",
+-    "rate_schedule_id",
+-    "requires_client_cost_approval",
+-    "open_book",
+-    "paid_costs_required",
+-    "proof_required",
+-    "cost_codes_enabled",
+-    "retainage_percent",
+-    "retainage_applies_to_fee",
+-    "fixed_price_billing_basis",
+-    "retainage_schedule",
+-    "stored_materials_retainage_percent",
+-    "total_contract_value_cents",
+-  ]
+-  const hasBillingInput = billingKeys.some((key) => Object.prototype.hasOwnProperty.call(input, key))
+-  if (!hasBillingInput) return
+-
+   const ownerPct = input.savings_split_owner_pct ?? 0
+   const builderPct = input.savings_split_builder_pct ?? 0
+-  if (ownerPct + builderPct > 100) {
+-    throw new Error("Savings split percentages cannot exceed 100%.")
+-  }
+-
+-  const [existingResult, existingSettings] = await Promise.all([
+-    supabase
+-      .from("contracts")
+-      .select("*")
+-      .eq("org_id", orgId)
+-      .eq("project_id", projectId)
+-      .eq("status", "active")
+-      .order("created_at", { ascending: false })
+-      .limit(1)
+-      .maybeSingle(),
+-    getProjectFinancialSettings({ supabase, orgId, projectId }).catch(() => null),
+-  ])
+-
+-  if (existingResult.error) {
+-    throw new Error(`Failed to load project billing contract: ${existingResult.error.message}`)
+-  }
+-
+-  const existing = existingResult.data
++  if (ownerPct + builderPct > 100) throw new Error("Savings split percentages cannot exceed 100%.")
+   const billingModel = billingModelForContractInput(input, existing, existingSettings)
+   const contractType = input.billing_model ? contractTypeForBillingModel(billingModel) : input.contract_type ?? contractTypeForBillingModel(billingModel)
+   const isFixedPrice = billingModel === "fixed_price"
+@@ -809,7 +783,7 @@ async function upsertProjectBillingContract({
+     normalizeFeePresentation(existing?.fee_presentation) ??
+     normalizeFeePresentation(existing?.snapshot?.fee_presentation) ??
+     (existing ? "embedded" : defaultFeePresentationForBillingModel(billingModel))
+-  const existingSnapshot = (existing?.snapshot ?? {}) as Record<string, any>
++  const existingSnapshot = existing?.snapshot ?? {}
+   const {
+     billing_model: _legacySnapshotBillingModel,
+     fixed_fee_cents: _legacySnapshotFixedFeeCents,
+@@ -871,6 +845,79 @@ async function upsertProjectBillingContract({
+     },
+   }
+ 
++  return { billingModel, contract: payload }
++}
++
++async function upsertProjectBillingContract({
++  supabase,
++  orgId,
++  userId,
++  projectId,
++  projectName,
++  input,
++}: {
++  supabase: SupabaseClient
++  orgId: string
++  userId: string
++  projectId: string
++  projectName: string
++  input: Partial<ProjectInput>
++}) {
++  const billingKeys: Array<keyof ProjectInput> = [
++    "contract_type",
++    "billing_model",
++    "markup_percent",
++    "gmp_cents",
++    "contingency_cents",
++    "fixed_fee_cents",
++    "fee_presentation",
++    "savings_split_owner_pct",
++    "savings_split_builder_pct",
++    "labor_burden_multiplier",
++    "rate_schedule_id",
++    "requires_client_cost_approval",
++    "open_book",
++    "paid_costs_required",
++    "proof_required",
++    "cost_codes_enabled",
++    "retainage_percent",
++    "retainage_applies_to_fee",
++    "fixed_price_billing_basis",
++    "retainage_schedule",
++    "stored_materials_retainage_percent",
++    "total_contract_value_cents",
++  ]
++  const hasBillingInput = billingKeys.some((key) => Object.prototype.hasOwnProperty.call(input, key))
++  if (!hasBillingInput) return
++
++  const ownerPct = input.savings_split_owner_pct ?? 0
++  const builderPct = input.savings_split_builder_pct ?? 0
++  if (ownerPct + builderPct > 100) {
++    throw new Error("Savings split percentages cannot exceed 100%.")
++  }
++
++  const [existingResult, existingSettings] = await Promise.all([
++    supabase
++      .from("contracts")
++      .select("*")
++      .eq("org_id", orgId)
++      .eq("project_id", projectId)
++      .eq("status", "active")
++      .order("created_at", { ascending: false })
++      .limit(1)
++      .maybeSingle(),
++    getProjectFinancialSettings({ supabase, orgId, projectId }).catch(() => null),
++  ])
++
++  if (existingResult.error) {
++    throw new Error(`Failed to load project billing contract: ${existingResult.error.message}`)
++  }
++
++  const existing = existingResult.data
++  const { billingModel, contract: payload } = prepareProjectBillingContract({
++    input, existing, existingSettings, orgId, projectId, projectName,
++  })
++
+   const contractSave = await saveBillingContractWithAmendment({
+     supabase,
+     orgId,
+diff --git a/package.json b/package.json
+index 2338b37a..fe63bf31 100644
+--- a/package.json
++++ b/package.json
+@@ -7,6 +7,11 @@
+     "typecheck": "NODE_OPTIONS=--max-old-space-size=8192 tsc --noEmit",
+     "verify": "pnpm accounting:d2:check && pnpm health:repo --check && pnpm security:audit && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+     "verify:e2e": "playwright test",
++    "enterprise:inventory": "node scripts/enterprise-production-inventory.cjs --check",
++    "test:enterprise-inventory": "node --test tests/enterprise-production-inventory.test.js tests/enterprise-production-dependencies.test.js",
++    "enterprise:dependencies": "node scripts/enterprise-production-dependencies.cjs --check",
++    "fixture:catalog:recovery": "node scripts/serve-catalog-recovery-fixture.mjs",
++    "test:recognition-evaluation": "node --test tests/recognition-metrics.test.js tests/recognition-reference.test.js tests/recognition-scope-adapter.test.js",
+     "predev": "node scripts/prune-turbopack-cache.mjs",
+     "health:repo": "node scripts/repo-health.mjs",
+     "security:audit": "pnpm audit --prod --audit-level high",
+@@ -29,20 +34,45 @@
+     "lint:tokens": "eslint app components --ext .tsx",
+     "test": "pnpm test:node && pnpm test:bun",
+     "test:node": "node --test --test-reporter=dot tests/*.test.js",
++    "test:precon": "node scripts/test-precon.mjs",
+     "test:bun": "bun test --preload ./scripts/bun-test-setup.js lib",
+-    "test:financials": "node --test tests/accounting-experience.test.js tests/pay-app-entry.test.js tests/pay-app-certification.test.js tests/commercial-budget.test.js tests/financials-regression.test.js tests/control-tower.test.js tests/ledger-definition-parity.test.js tests/invoice-reconcile.test.js tests/pdf-raster-plan.test.js tests/field-provenance.test.js tests/qbo-import-reliability.test.js tests/accounting-abstraction.test.js tests/accounting-qbo-adapter.test.js tests/pay-app-math.test.js tests/pay-app-lifecycle.test.js tests/waiver-chase-policy.test.js tests/lien-waiver-forms.test.js tests/waiver-register.test.js tests/change-order-math.test.js tests/commitment-position.test.js tests/prequalification-program.test.js tests/budget-transfer-math.test.js tests/plan-pricing.test.js tests/takeoff-import.test.js tests/takeoff-measure.test.js tests/takeoff-scale.test.js tests/takeoff-rollup.test.js tests/option-catalog-design-studio.test.js tests/price-resolution.test.js tests/po-generation-math.test.js tests/vpo-approval-thresholds.test.js tests/production-margin.test.js tests/billing-cycle-summary.test.js tests/purchase-agreement-pricing.test.js tests/spec-inventory-aging.test.js tests/community-traffic-capture.test.js tests/selection-variance-orders.test.js tests/purchasing-hardening.test.js tests/warranty-service.test.js tests/warranty-operations.test.js tests/fintech-payment-domain.test.js tests/fintech-payment-phase-behavior.test.js tests/fintech-payment-guards.test.js tests/arc-books.test.js tests/payable-line-matching-math.test.js tests/even-flow-and-schedule-advisories.test.js tests/payment-notification-coverage.test.js tests/phase-e-vendor.test.js tests/compliance-system.test.js",
+-    "test:auth": "node --test tests/authorization-policy.test.js tests/ai-grounding.test.js tests/numeric-audit.test.js tests/search-visibility.test.js tests/answer-cache-key.test.js tests/eval-scoring.test.js tests/payment-action-hygiene.test.js",
+-    "test:mobile": "node --test tests/mobile-api-contract.test.js",
++    "test:books:payroll-ui": "node --test tests/browser/books-payroll-workspace.test.js",
++    "test:financials": "node --test tests/books-native-*.test.js tests/payment-settings-access.test.js tests/books-release-acceptance-runtime.test.js tests/books-acceptance-bootstrap.test.js tests/books-engine-readiness.test.js tests/books-core-ledger-ownership.test.js tests/books-exact-reversal.test.js tests/books-journal-resolutions.test.js tests/books-journal-resolution-restore.test.js tests/books-journal-recovery.test.js tests/books-journal-preparation-intents.test.js tests/books-journal-proposal-workspace.test.js tests/books-journal-proposal-review.test.js tests/books-adjustment-pair.test.js tests/books-legal-entities.test.js tests/books-project-entity-ownership.test.js tests/books-project-owner-archive.test.js tests/books-project-owner-workflow.test.js tests/books-project-owner-recovery.test.js tests/books-project-owner-render.test.js tests/books-entity-chart.test.js tests/books-entity-chart-workspace.test.js tests/books-entity-chart-editor-workspace.test.js tests/books-entity-calendars.test.js tests/books-entity-calendar-workspace.test.js tests/books-legal-entity-archive.test.js tests/books-legacy-ownership-inventory.test.js tests/books-legacy-entity-ownership.test.js tests/books-entity-review-workspace.test.js tests/books-entity-evidence-download.test.js tests/books-payroll-payment-workspace.test.js tests/books-payroll-project-payment-review.test.js tests/books-payroll-support-versions.test.js tests/books-private-payroll-storage-service.test.js tests/books-payroll-workspace-reads.test.js tests/books-payroll-review-format.test.js tests/books-payroll-correction-construction-decisions.test.js tests/books-payroll-correction-construction-policy.test.js tests/books-payroll-correction-lineage.test.js tests/books-payroll-correction-atomic-posting.test.js tests/books-payroll-correction-proposal-service.test.js tests/books-payroll-correction-proposals.test.js tests/books-payroll-correction-context.test.js tests/books-payroll-correction-math.test.js tests/books-payroll-atomic-posting.test.js tests/books-payroll-native-ownership.test.js tests/books-payroll-correction-plan.test.js tests/books-payroll-correction-service.test.js tests/books-payroll-correction-sources.test.js tests/books-payroll-correction-source-service.test.js tests/books-period-posting-fences.test.js tests/books-payroll-posting-controls.test.js tests/books-payroll-posting-proposals.test.js tests/books-payroll-posting-proposal-service.test.js tests/books-payroll-posting-plan.test.js tests/books-payroll-payment-reviews.test.js tests/books-payroll-payment-service.test.js tests/books-payroll-workflow-evidence.test.js tests/books-payroll-liability-history.test.js tests/books-payroll-construction-impact.test.js tests/books-payroll-import-service.test.js tests/books-payroll-drafts-db.test.js tests/books-payroll-register-source.test.js tests/books-payroll-labor-snapshot.test.js tests/books-labor-evidence.test.js tests/books-payroll-import.test.js tests/books-tax-attachment-db.test.js tests/books-tax-attachment-download.test.js tests/books-tax-attachments.test.js tests/books-historical-document-export.test.js tests/warranty-completion-transaction-db.test.js tests/warranty-mutation-scope.test.js tests/warranty-desk-scope.test.js tests/warranty-desk-query.test.js tests/warranty-tech-queue.test.js tests/agreement-ownership-db.test.js tests/agreement-creation-db.test.js tests/agreement-creation-service.test.js tests/catalog-price-form-recovery.test.js tests/catalog-price-recovery-storage.test.js tests/catalog-price-publication-service.test.js tests/catalog-price-publication-db.test.js tests/catalog-package-form-recovery.test.js tests/package-member-picker.test.js tests/catalog-package-members-service.test.js tests/catalog-package-recovery-storage.test.js tests/catalog-package-cost-db.test.js tests/catalog-package-cost-service.test.js tests/catalog-publication-reconciliation-db.test.js tests/catalog-publication-reconciliation-service.test.js tests/catalog-publication-reconciliation-form.test.js tests/catalog-publication-review.test.js tests/catalog-package-publication-db.test.js tests/catalog-group-publication-db.test.js tests/catalog-group-recovery-db.test.js tests/catalog-group-publication-service.test.js tests/catalog-group-recovery-storage.test.js tests/catalog-group-categories-db.test.js tests/catalog-group-categories-service.test.js tests/catalog-package-publication-service.test.js tests/agreement-incentive-capacity-db.test.js tests/agreement-catalog-revision-db.test.js tests/agreement-catalog-revision-service.test.js tests/agreement-signing-identity.test.js tests/agreement-signing-publication-db.test.js tests/agreement-signing-ownership-db.test.js tests/agreement-signing-ownership-service.test.js tests/agreement-signing-state.test.js tests/agreement-signing-status.test.js tests/agreement-signing-recovery-service.test.js tests/agreement-signing-recovery-view.test.js tests/agreement-configuration-eligibility.test.js tests/agreement-quote-fingerprint.test.js tests/agreement-catalog.test.js tests/agreement-quote-concurrency.test.js tests/configuration-rules.test.js tests/configuration-rules-db.test.js tests/catalog-completeness.test.js tests/catalog-eligibility.test.js tests/id-keyset-paging.test.js tests/mobile-warranty-visits.test.js tests/warranty-actor-analytics-db.test.js tests/warranty-actor-analytics.test.js tests/closing-evidence-guards-db.test.js tests/warranty-courtesy-reservation-db.test.js tests/warranty-courtesy-reservations.test.js tests/warranty-enrollment.test.js tests/closing-readiness.test.js tests/books-tax-adjustments.test.js tests/books-cash-profit-loss-report.test.js tests/books-cash-profit-loss.test.js tests/books-restore-plan.test.js tests/books-restore-preflight.test.js tests/books-cash-settlement-ancillary.test.js tests/books-cash-expense-snapshot.test.js tests/books-cash-cost-snapshot.test.js tests/books-cash-costs.test.js tests/books-cash-income-snapshot.test.js tests/books-cash-settlement-ledger.test.js tests/books-cash-document-evidence.test.js tests/books-cash-settlements.test.js tests/books-settlement-allocations.test.js tests/books-settlement-evidence.test.js tests/books-poc-revenue-allocations.test.js tests/books-revenue-basis.test.js tests/books-source-revision.test.js tests/books-posting-status-service.test.js tests/books-posting-receipt.test.js tests/books-projection-status.test.js tests/books-bank-statement-evidence.test.js tests/books-bank-statement-sequence.test.js tests/books-export-snapshot-db.test.js tests/books-export-continuity.test.js tests/books-expected-loss.test.js tests/books-wip-arithmetic.test.js tests/books-wip-carryforward-db.test.js tests/books-wip-preparation-db.test.js tests/books-wip-review-db.test.js tests/books-wip-project-scope.test.js tests/books-wip-period.test.js tests/books-retainage-history.test.js tests/books-historical-aging.test.js tests/books-subledger-settlements.test.js tests/books-invoice-revenue.test.js tests/books-close-control-integrity.test.js tests/books-close-posting-db.test.js tests/vendor-1099-report.test.js tests/accounting-experience.test.js tests/pay-app-entry.test.js tests/pay-app-certification.test.js tests/commercial-budget.test.js tests/financials-regression.test.js tests/control-tower.test.js tests/ledger-definition-parity.test.js tests/invoice-reconcile.test.js tests/pdf-raster-plan.test.js tests/field-provenance.test.js tests/qbo-import-reliability.test.js tests/accounting-abstraction.test.js tests/accounting-qbo-adapter.test.js tests/pay-app-math.test.js tests/pay-app-lifecycle.test.js tests/waiver-chase-policy.test.js tests/lien-waiver-forms.test.js tests/waiver-register.test.js tests/change-order-math.test.js tests/bid-package-move.test.js tests/bid-package-send.test.js tests/commitment-position.test.js tests/prequalification-program.test.js tests/budget-transfer-math.test.js tests/plan-pricing.test.js tests/takeoff-import.test.js tests/takeoff-measure.test.js tests/takeoff-scale.test.js tests/takeoff-rollup.test.js tests/option-catalog-design-studio.test.js tests/price-resolution.test.js tests/po-generation-math.test.js tests/vpo-approval-thresholds.test.js tests/production-margin.test.js tests/billing-cycle-summary.test.js tests/purchase-agreement-pricing.test.js tests/spec-inventory-aging.test.js tests/community-traffic-capture.test.js tests/selection-variance-orders.test.js tests/purchasing-hardening.test.js tests/warranty-service.test.js tests/warranty-program-usage.test.js tests/warranty-operations.test.js tests/fintech-payment-domain.test.js tests/fintech-payment-phase-behavior.test.js tests/fintech-payment-guards.test.js tests/arc-books.test.js tests/payable-line-matching-math.test.js tests/even-flow-and-schedule-advisories.test.js tests/payment-notification-coverage.test.js tests/phase-e-vendor.test.js tests/compliance-system.test.js tests/catalog-publication-history-db.test.js tests/catalog-publication-history-service.test.js tests/catalog-publication-history-form.test.js tests/catalog-publication-intents-db.test.js tests/cost-coding-settings.test.js tests/financial-template-read-integrity.test.js tests/cost-code-mutation-integrity.test.js tests/catalog-template-discovery.test.js tests/waiver-template-discovery.test.js tests/takeoff-template-read-integrity.test.js tests/takeoff-template-application-integrity.test.js tests/takeoff-template-harvest-integrity.test.js tests/takeoff-template-crud-integrity.test.js tests/takeoff-template-discovery.test.js tests/takeoff-condition-create-integrity.test.js tests/takeoff-condition-update-integrity.test.js tests/takeoff-condition-delete-integrity.test.js tests/takeoff-measurement-scope-integrity.test.js tests/takeoff-assignment-integrity.test.js tests/drawing-markup-condition-unit-integrity.test.js tests/drawing-recompute-integrity.test.js tests/drawing-calibration-integrity.test.js tests/drawing-scale-detection-integrity.test.js tests/drawing-calibration-read-integrity.test.js tests/drawing-measurement-context-integrity.test.js tests/takeoff-reanchor-integrity.test.js tests/area-revision-service.test.js tests/takeoff-reanchor-review-integrity.test.js tests/takeoff-reanchor-confirm-integrity.test.js tests/takeoff-stale-estimate-integrity.test.js tests/takeoff-condition-discovery-integrity.test.js tests/takeoff-rollup-rate-integrity.test.js tests/takeoff-member-read-integrity.test.js tests/takeoff-sync-read-integrity.test.js tests/takeoff-landing-integrity.test.js tests/purchasing-queue-scope.test.js tests/closing-read-workbench.test.js tests/inspection-completion-handoff.test.js tests/inspection-obligation-lifecycle-db.test.js tests/inspection-lifecycle-workbench.test.js tests/closeout-preparation.test.js tests/safety-workbench.test.js tests/sales-deal-file.test.js tests/reservation-conversion.test.js tests/reservation-creation-preparation.test.js",
++    "test:auth": "node --test tests/import-pagination.test.js tests/import-mixed-org-access.test.js tests/import-page-navigation.test.js tests/payment-settings-access.test.js tests/authorization-project-scope.test.js tests/authorization-policy.test.js tests/ai-grounding.test.js tests/numeric-audit.test.js tests/search-visibility.test.js tests/answer-cache-key.test.js tests/eval-scoring.test.js tests/payment-action-hygiene.test.js tests/platform-authorization-boundary.test.js tests/platform-onboarding-authorization.test.js tests/cost-coding-settings.test.js tests/financial-template-read-integrity.test.js tests/cost-code-mutation-integrity.test.js tests/catalog-template-discovery.test.js tests/cost-code-hierarchy.test.js tests/waiver-template-discovery.test.js tests/checklist-settings-integrity.test.js tests/takeoff-template-read-integrity.test.js tests/takeoff-template-application-integrity.test.js tests/takeoff-template-harvest-integrity.test.js tests/takeoff-template-crud-integrity.test.js tests/takeoff-template-discovery.test.js tests/takeoff-condition-create-integrity.test.js tests/takeoff-condition-update-integrity.test.js tests/takeoff-condition-delete-integrity.test.js tests/takeoff-measurement-scope-integrity.test.js tests/takeoff-assignment-integrity.test.js tests/drawing-markup-condition-unit-integrity.test.js tests/drawing-recompute-integrity.test.js tests/drawing-calibration-integrity.test.js tests/drawing-scale-detection-integrity.test.js tests/drawing-calibration-read-integrity.test.js tests/drawing-measurement-context-integrity.test.js tests/takeoff-reanchor-integrity.test.js tests/area-revision-service.test.js tests/takeoff-reanchor-review-integrity.test.js tests/takeoff-reanchor-confirm-integrity.test.js tests/takeoff-stale-estimate-integrity.test.js tests/takeoff-condition-discovery-integrity.test.js tests/takeoff-rollup-rate-integrity.test.js tests/takeoff-member-read-integrity.test.js tests/takeoff-sync-read-integrity.test.js tests/takeoff-landing-integrity.test.js tests/purchasing-queue-scope.test.js tests/closing-read-workbench.test.js tests/inspection-completion-handoff.test.js tests/inspection-obligation-lifecycle-db.test.js tests/inspection-lifecycle-workbench.test.js tests/closeout-preparation.test.js tests/safety-workbench.test.js tests/trade-lookahead-scale.test.js tests/trade-lookahead-workspace-db.test.js tests/sales-deal-file.test.js tests/reservation-conversion.test.js tests/reservation-creation-preparation.test.js",
++    "test:mobile": "node --test tests/mobile-*.test.js tests/safety-workbench.test.js tests/sales-deal-file.test.js",
+     "test:phase-d": "node --test tests/phase-d-builder.test.js tests/mobile-api-contract.test.js",
+     "test:navigation": "node --test tests/instant-navigation-contract.test.js tests/project-read-model.test.js",
+-    "test:schedule": "node --test tests/schedule-calc.test.js",
++    "test:navigation:browser": "node scripts/test-native-navigation.mjs",
++    "test:compiler:forms": "bun scripts/test-compiler-forms.mjs",
++    "test:payroll:browser": "bun scripts/test-payroll-navigation.mjs",
++    "test:admin:browser": "bun scripts/test-admin-refresh.mjs",
++    "test:specs:browser": "bun scripts/test-specs-refresh.mjs",
++    "test:notifications:browser": "bun scripts/test-notification-navigation.mjs",
++    "test:field:browser": "bun scripts/test-field-client-refresh.mjs",
++    "test:imports:browser": "bun scripts/test-import-navigation.mjs",
++    "test:schedule": "node --test tests/schedule-calc.test.js tests/trade-lookahead-scale.test.js tests/trade-lookahead-workspace-db.test.js",
+     "test:land": "node --test tests/product-posture-terminology.test.js tests/directory-party-roles.test.js tests/land-foundation.test.js tests/land-runway.test.js tests/land-plat.test.js tests/land-scope.test.js tests/land-supply.test.js",
+-    "test:starts": "node --test tests/starts.test.js tests/starts-gates.test.js tests/starts-release.test.js tests/plan-instantiation-ledger.test.js",
+-    "test:onboarding": "node --test tests/onboarding-imports.test.js",
+-    "test:drawings": "node --test tests/change-impact.test.js tests/set-coherence.test.js tests/symbol-verify.test.js tests/drawing-viewer-scene.test.js tests/drawing-viewer-gestures.test.js tests/drawing-viewer-tile-cache.test.js tests/drawing-viewer-ink-diff.test.js tests/drawing-region-snapshot.test.js tests/takeoff-snap.test.js tests/takeoff-vector-merge.test.js tests/takeoff-symbol-match.test.js tests/callout-links.test.js tests/vision-windows.test.js",
+-    "test:takeoff": "node --test tests/symbol-verify.test.js tests/takeoff-measure.test.js tests/takeoff-scale.test.js tests/takeoff-rollup.test.js tests/takeoff-symbol-match.test.js tests/takeoff-import.test.js tests/vision-windows.test.js",
+-    "test:floorplan": "node --test tests/floorplan-interpret.test.js tests/floorplan-geometry.test.js tests/floorplan-golden.test.js tests/floorplan-vision.test.js",
+-    "start": "next start"
++    "test:starts": "node --test tests/starts.test.js tests/starts-gates.test.js tests/starts-release.test.js tests/plan-instantiation-ledger.test.js tests/trade-lookahead-scale.test.js tests/trade-lookahead-workspace-db.test.js",
++    "test:onboarding": "node --test tests/import-pagination.test.js tests/import-mixed-org-access.test.js tests/import-page-navigation.test.js tests/onboarding-imports.test.js tests/platform-onboarding-authorization.test.js tests/sample-home-provenance.test.js tests/open-wip-companion-scope.test.js tests/open-wip-commit.test.js",
++    "test:drawings": "node --test tests/drawing-upload-operations.test.js tests/drawing-lifecycle-transactions.test.js tests/drawing-deletion.test.js tests/drawing-job-leases.test.js tests/drawing-page-artifacts.test.js tests/drawing-artifact-lifecycle-db.test.js tests/drawing-split-session.test.js tests/multipart-upload-client.test.js tests/drawing-upload-transport.test.js tests/drawing-lifecycle.test.js tests/drawing-sheet-metadata.test.js tests/drawing-metadata-pipeline.test.js tests/change-impact.test.js tests/set-coherence.test.js tests/symbol-verify.test.js tests/drawing-viewer-scene.test.js tests/drawing-viewer-gestures.test.js tests/drawing-viewer-tile-cache.test.js tests/drawing-viewer-ink-diff.test.js tests/drawing-region-snapshot.test.js tests/takeoff-snap.test.js tests/takeoff-vector-merge.test.js tests/takeoff-symbol-match.test.js tests/callout-links.test.js tests/vision-windows.test.js tests/architectural-image-registration.test.js tests/takeoff-template-discovery.test.js tests/takeoff-condition-create-integrity.test.js tests/takeoff-condition-update-integrity.test.js tests/takeoff-condition-delete-integrity.test.js tests/takeoff-measurement-scope-integrity.test.js tests/takeoff-assignment-integrity.test.js tests/drawing-markup-condition-unit-integrity.test.js tests/drawing-recompute-integrity.test.js tests/drawing-calibration-integrity.test.js tests/drawing-scale-detection-integrity.test.js tests/drawing-calibration-read-integrity.test.js tests/drawing-measurement-context-integrity.test.js tests/takeoff-reanchor-integrity.test.js tests/area-revision-service.test.js tests/takeoff-reanchor-review-integrity.test.js tests/takeoff-reanchor-confirm-integrity.test.js tests/takeoff-stale-estimate-integrity.test.js tests/takeoff-condition-discovery-integrity.test.js tests/takeoff-rollup-rate-integrity.test.js tests/takeoff-member-read-integrity.test.js tests/takeoff-sync-read-integrity.test.js tests/takeoff-landing-integrity.test.js",
++    "test:area-takeoff": "node --test tests/raster-face-overlap.test.js tests/raster-pair-paint.test.js tests/raster-straight-runs.test.js tests/raster-swing-doors.test.js tests/raster-context.test.js tests/raster-geometry-tiles.test.js tests/raster-geometry-tile-service.test.js tests/raster-context-service.test.js tests/pdf-raster-sampling.test.js tests/original-sheet-raster.test.js tests/architectural-raster-text-service.test.js tests/raster-text.test.js tests/local-raster-text.test.js tests/area-deduction-union.test.js tests/area-takeoff.test.js tests/area-takeoff-service.test.js tests/area-revision-service.test.js tests/area-takeoff-benchmark.test.js tests/area-architecture.test.js tests/building-reconstruction.test.js tests/vector-wall-network.test.js tests/vector-wall-material.test.js tests/vector-leaf-doors.test.js tests/wall-body-reconciliation.test.js tests/reconstruction-review-groups.test.js tests/raster-evidence.test.js tests/architectural-image-registration.test.js tests/raster-strokes.test.js tests/pdf-region-raster.test.js tests/area-windows.test.js tests/window-schedules.test.js tests/window-schedule-matching.test.js tests/window-jamb-hosts.test.js tests/architectural-recognition-service.test.js tests/architectural-recognition-original.test.js tests/architectural-recognition-windows.test.js tests/architectural-recognition-assemblies.test.js tests/architectural-recognition-swing-cues.test.js tests/architectural-recognition-context.test.js tests/classified-wall-network.test.js tests/raster-unfilled-pairs.test.js tests/native-assembly-workload.test.js tests/wall-hypothesis-semantics.test.js tests/wall-span-recognition-plan.test.js tests/localized-wall-doors.test.js tests/raster-leaf-cap.test.js tests/raster-boundary-intervals.test.js tests/raster-contour-chunks.test.js tests/raster-door-host-alignment.test.js tests/recognition-source-facts.test.js tests/drawing-source-cache-storage.test.js",
++    "test:area-ui": "bun scripts/test-area-ui.mjs",
++    "test:drawing-workspace": "bun scripts/test-drawing-workspace.mjs",
++    "test:estimating-continuity": "bun scripts/test-estimating-continuity.mjs",
++    "benchmark:area-takeoff": "node scripts/benchmark-area-takeoff.js",
++    "test:takeoff": "node --test tests/sheet-building-record.test.js tests/model-takeoff.test.js tests/area-takeoff.test.js tests/area-takeoff-service.test.js tests/area-revision-service.test.js tests/area-takeoff-benchmark.test.js tests/symbol-verify.test.js tests/takeoff-measure.test.js tests/takeoff-scale.test.js tests/takeoff-rollup.test.js tests/takeoff-symbol-match.test.js tests/takeoff-import.test.js tests/vision-windows.test.js tests/area-architecture.test.js tests/building-reconstruction.test.js tests/vector-wall-network.test.js tests/vector-wall-material.test.js tests/vector-leaf-doors.test.js tests/wall-body-reconciliation.test.js tests/raster-evidence.test.js tests/architectural-image-registration.test.js tests/raster-strokes.test.js tests/pdf-region-raster.test.js tests/area-windows.test.js tests/window-schedules.test.js tests/window-schedule-matching.test.js tests/window-jamb-hosts.test.js tests/architectural-recognition-service.test.js tests/architectural-recognition-original.test.js tests/architectural-recognition-windows.test.js tests/architectural-recognition-assemblies.test.js tests/architectural-recognition-swing-cues.test.js tests/architectural-recognition-context.test.js tests/classified-wall-network.test.js tests/raster-unfilled-pairs.test.js tests/native-assembly-workload.test.js tests/wall-hypothesis-semantics.test.js tests/wall-span-recognition-plan.test.js tests/localized-wall-doors.test.js tests/raster-leaf-cap.test.js tests/raster-boundary-intervals.test.js tests/raster-contour-chunks.test.js tests/raster-door-host-alignment.test.js tests/recognition-source-facts.test.js tests/drawing-source-cache-storage.test.js",
++    "test:floorplan": "node --test tests/camera-tour.test.js tests/model-diff.test.js tests/sheet-building-record.test.js tests/sun-position.test.js tests/furniture-layout.test.js tests/model-options.test.js tests/raster-face-overlap.test.js tests/raster-pair-paint.test.js tests/raster-straight-runs.test.js tests/raster-swing-doors.test.js tests/raster-context.test.js tests/raster-geometry-tiles.test.js tests/raster-geometry-tile-service.test.js tests/raster-context-service.test.js tests/pdf-raster-sampling.test.js tests/original-sheet-raster.test.js tests/architectural-raster-text-service.test.js tests/raster-text.test.js tests/local-raster-text.test.js tests/area-deduction-union.test.js tests/floorplan-model.test.js tests/floorplan-geometry.test.js tests/floorplan-architecture.test.js tests/floorplan-revisions-db.test.js tests/building-reconstruction.test.js tests/vector-wall-network.test.js tests/vector-wall-material.test.js tests/vector-leaf-doors.test.js tests/wall-body-reconciliation.test.js tests/reconstruction-review-groups.test.js tests/raster-evidence.test.js tests/floorplan-engine-service.test.js tests/architectural-image-registration.test.js tests/raster-strokes.test.js tests/pdf-region-raster.test.js tests/area-windows.test.js tests/window-schedules.test.js tests/window-schedule-matching.test.js tests/window-jamb-hosts.test.js tests/architectural-recognition-service.test.js tests/architectural-recognition-original.test.js tests/architectural-recognition-windows.test.js tests/architectural-recognition-assemblies.test.js tests/architectural-recognition-swing-cues.test.js tests/architectural-recognition-context.test.js tests/classified-wall-network.test.js tests/raster-unfilled-pairs.test.js tests/native-assembly-workload.test.js tests/wall-hypothesis-semantics.test.js tests/wall-span-recognition-plan.test.js tests/localized-wall-doors.test.js tests/raster-leaf-cap.test.js tests/raster-boundary-intervals.test.js tests/raster-contour-chunks.test.js tests/raster-door-host-alignment.test.js tests/recognition-source-facts.test.js tests/drawing-source-cache-storage.test.js",
++    "takeoff:score": "node scripts/score-area-reference.mjs",
++    "takeoff:scoreboard": "node scripts/dev-scoreboard.mjs",
++    "test:floorplan-ui": "bun scripts/test-floorplan-ui.mjs",
++    "test:model-render": "bun scripts/test-model-render.mjs",
++    "start": "next start",
++    "test:drawings-ui": "bun scripts/test-drawing-lifecycle-ui.mjs",
++    "benchmark:drawings": "node scripts/benchmark-drawing-lifecycle.mjs --synthetic --assert --output /tmp/arc-drawing-lifecycle-benchmark.json",
++    "test:documents": "node --test tests/document-transfer-recovery.test.js tests/document-transfer-client.test.js tests/document-transfer-streams.test.js tests/document-exports.test.js tests/document-export-client.test.js tests/document-transfers-db.test.js tests/document-transfer-queue.test.js tests/documents-view-state.test.js tests/project-file-upload.test.js tests/file-version-permissions.test.js tests/file-view-url.test.js tests/document-upload-object.test.js tests/upload-document-form.test.js tests/document-mutations-db.test.js tests/document-mutations-service.test.js tests/documents-integrity-db.test.js tests/multipart-upload-client.test.js",
++    "test:documents-ui": "bun scripts/test-document-transfers-ui.mjs",
++    "test:ios-field": "node --test tests/ios-service-visits.test.js tests/ios-service-completion-journal.test.js",
++    "test:external-access": "node --test tests/external-access-directory.test.js tests/external-access-loading.test.js"
+   },
+   "dependencies": {
+     "@ai-sdk/google": "^3.0.30",
+@@ -56,6 +86,7 @@
+     "@dnd-kit/utilities": "^3.2.2",
+     "@hookform/resolvers": "^3.10.0",
+     "@napi-rs/canvas": "^0.1.88",
++    "@noble/hashes": "1.8.0",
+     "@number-flow/react": "^0.6.0",
+     "@radix-ui/react-accordion": "1.2.2",
+     "@radix-ui/react-alert-dialog": "1.1.4",
+@@ -90,6 +121,7 @@
+     "@supabase/ssr": "^0.8.0",
+     "@supabase/supabase-js": "^2.86.0",
+     "@tanstack/react-virtual": "^3.13.13",
++    "@tesseract.js-data/eng": "1.0.0",
+     "@vercel/analytics": "1.3.1",
+     "ai": "^6.0.97",
+     "bcryptjs": "^3.0.3",
+@@ -98,6 +130,8 @@
+     "cmdk": "1.0.4",
+     "date-fns": "4.1.0",
+     "embla-carousel-react": "8.5.1",
++    "fflate": "0.8.2",
++    "fontkit": "2.0.4",
+     "framer-motion": "^11.15.0",
+     "heic-convert": "^2.1.0",
+     "idb-keyval": "^6.2.2",
+@@ -105,7 +139,7 @@
+     "lucide-react": "^0.454.0",
+     "mammoth": "^1.12.0",
+     "mupdf": "^1.28.0",
+-    "next": "16.3.2",
++    "next": "16.3.8",
+     "next-themes": "^0.4.6",
+     "pdf-lib": "^1.17.1",
+     "pdfjs-dist": "^5.4.449",
+@@ -121,13 +155,18 @@
+     "sonner": "^1.7.4",
+     "stripe": "^17.6.0",
+     "tailwind-merge": "^2.5.5",
++    "tesseract.js": "7.0.0",
++    "tesseract.js-core": "7.0.0",
+     "three": "^0.180.0",
++    "three-gpu-pathtracer": "^0.0.26",
++    "three-mesh-bvh": "^0.9.15",
+     "thumbhash": "^0.1.1",
+     "vaul": "^1.1.2",
+     "zod": "3.25.76"
+   },
+   "devDependencies": {
+-    "@next/playwright": "16.3.2",
++    "@electric-sql/pglite": "0.5.8",
++    "@next/playwright": "16.3.8",
+     "@playwright/test": "^1.62.1",
+     "@tailwindcss/postcss": "^4.1.9",
+     "@types/bcryptjs": "^2.4.6",
+@@ -136,8 +175,9 @@
+     "@types/react-dom": "^19",
+     "@types/three": "^0.180.0",
+     "@webgpu/types": "^0.1.71",
++    "babel-plugin-react-compiler": "^1.0.0",
+     "eslint": "^9.39.5",
+-    "eslint-config-next": "^16.3.2",
++    "eslint-config-next": "^16.3.8",
+     "postcss": "8.5.26",
+     "prettier": "3.8.1",
+     "tailwindcss": "^4.1.9",

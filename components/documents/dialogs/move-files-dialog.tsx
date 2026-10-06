@@ -1,7 +1,10 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
-import { Check, FolderClosed, Loader2, Search } from "lucide-react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Check, ChevronRight, FolderClosed, Loader2, Search } from "lucide-react"
+import { listChildFoldersAction, listFoldersAction } from "@/app/(app)/documents/actions"
+import { folderParent } from "../view-state"
+import { Skeleton } from "@/components/ui/skeleton"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -40,15 +43,24 @@ export function MoveFilesDialog({
   onMoveFiles,
   onRequestNewFolder,
 }: MoveFilesDialogProps) {
-  const { files, folders, currentPath } = useDocuments()
+  const { files, projectId, currentPath } = useDocuments()
   const [targetFolder, setTargetFolder] = useState("")
   const [searchQuery, setSearchQuery] = useState("")
+  const [browsePath, setBrowsePath] = useState("")
+  const [folderOptions, setFolderOptions] = useState<string[]>([])
+  const [isLoadingFolders, setIsLoadingFolders] = useState(false)
+  const [folderError, setFolderError] = useState<string | null>(null)
+  const [retry, setRetry] = useState(0)
+  const [visibleLimit, setVisibleLimit] = useState(100)
+  const searchIndexRef = useRef<Promise<string[]> | null>(null)
 
   useEffect(() => {
     if (!open) return
+    searchIndexRef.current = null
     setTargetFolder(currentPath || "")
     setSearchQuery("")
-  }, [open, currentPath])
+    setBrowsePath(currentPath || "")
+  }, [open, currentPath, projectId])
 
   // Where the selected files live now. A destination they already share is not
   // a move, so it is offered as "current folder" and cannot be submitted —
@@ -67,24 +79,34 @@ export function MoveFilesDialog({
 
   const targetIsNoOp = isNoOpTarget(targetFolder)
 
-  const folderOptions = useMemo(() => {
-    const allFolderPaths = new Set<string>(folders)
-    for (const file of files) {
-      if (file.folder_path) {
-        const normalized = normalizeFolderPath(file.folder_path)
-        if (normalized) {
-          allFolderPaths.add(normalized)
-        }
-      }
-    }
-    return Array.from(allFolderPaths).sort((a, b) => a.localeCompare(b))
-  }, [files, folders])
-
-  const filteredFolderOptions = useMemo(() => {
+  // This browser owns its listing; opening the main Explorer is never a prerequisite.
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setIsLoadingFolders(true)
+    setFolderError(null)
+    setFolderOptions([])
+    setVisibleLimit(100)
     const query = searchQuery.trim().toLowerCase()
-    if (!query) return folderOptions
-    return folderOptions.filter((folder) => folder.toLowerCase().includes(query))
-  }, [folderOptions, searchQuery])
+    const timeout = window.setTimeout(async () => {
+      try {
+        const paths = query
+          ? (await (searchIndexRef.current ??= listFoldersAction(projectId))).filter((path) => path.toLowerCase().includes(query))
+          : (await listChildFoldersAction(projectId, browsePath || undefined)).map((folder) => folder.path)
+        if (!cancelled) setFolderOptions(paths.sort((a, b) => a.localeCompare(b)))
+      } catch (error) {
+        if (!cancelled) {
+          searchIndexRef.current = null
+          setFolderError(error instanceof Error ? error.message : "Could not load folders")
+        }
+      } finally {
+        if (!cancelled) setIsLoadingFolders(false)
+      }
+    }, query ? 250 : 0)
+    return () => { cancelled = true; window.clearTimeout(timeout) }
+  }, [open, projectId, browsePath, searchQuery, retry])
+
+  const filteredFolderOptions = folderOptions.slice(0, visibleLimit)
 
   const handleConfirm = useCallback(async () => {
     if (fileIds.length === 0 || isNoOpTarget(targetFolder)) return
@@ -155,7 +177,7 @@ export function MoveFilesDialog({
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
-              placeholder="Filter folders"
+              placeholder="Search all project folders"
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
               className="pl-9"
@@ -164,6 +186,12 @@ export function MoveFilesDialog({
           </div>
 
           <div className="grid gap-2">
+            <div className="flex items-center gap-2 text-sm">
+              <Button variant="ghost" size="sm" disabled={isMoving || !browsePath} onClick={() => { setSearchQuery(""); setBrowsePath(folderParent(browsePath)) }}>
+                Up
+              </Button>
+              <span className="truncate text-muted-foreground">{searchQuery.trim() ? "Search results" : browsePath || "Root"}</span>
+            </div>
             <button
               type="button"
               onClick={() => setTargetFolder("")}
@@ -189,14 +217,18 @@ export function MoveFilesDialog({
             </button>
             <ScrollArea className="max-h-64 rounded-lg border">
               <div className="space-y-1 p-2">
-                {filteredFolderOptions.length === 0 ? (
+                {isLoadingFolders ? (
+                  <div className="space-y-2 p-2" aria-label="Loading folders">{[0, 1, 2].map((row) => <Skeleton key={row} className="h-8 w-full" />)}</div>
+                ) : folderError ? (
+                  <div className="p-3 text-sm" role="alert">{folderError}<Button variant="ghost" size="sm" onClick={() => setRetry((value) => value + 1)}>Retry</Button></div>
+                ) : filteredFolderOptions.length === 0 ? (
                   <div className="px-2 py-8 text-center text-sm text-muted-foreground">
-                    No folders match that search. Use New folder to add one first.
+                    {searchQuery.trim() ? "No folders match that search." : "No subfolders here."} Use New folder to add one.
                   </div>
                 ) : (
                   filteredFolderOptions.map((folder) => (
+                    <div key={folder} className="flex items-center">
                     <button
-                      key={folder}
                       type="button"
                       onClick={() => setTargetFolder(folder)}
                       className={cn(
@@ -213,7 +245,14 @@ export function MoveFilesDialog({
                         <Check className="h-4 w-4 shrink-0" />
                       ) : null}
                     </button>
+                    <Button variant="ghost" size="icon" disabled={isMoving} aria-label={`Browse ${folder}`} onClick={() => { setSearchQuery(""); setBrowsePath(folder) }}>
+                      <ChevronRight className="h-4 w-4" />
+                    </Button>
+                    </div>
                   ))
+                )}
+                {!isLoadingFolders && folderOptions.length > visibleLimit && (
+                  <Button variant="ghost" className="w-full" onClick={() => setVisibleLimit((limit) => limit + 100)}>Show more ({visibleLimit} of {folderOptions.length})</Button>
                 )}
               </div>
             </ScrollArea>

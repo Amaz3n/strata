@@ -1,4 +1,5 @@
-import { notFound } from "next/navigation"
+import { connection } from "next/server"
+import { notFound, unstable_rethrow } from "next/navigation"
 
 import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
@@ -11,6 +12,7 @@ interface Params {
 
 
 export default async function SelectionsPortalPage({ params }: Params) {
+  await connection()
   const { token } = await params
   try {
     await assertPortalActionAccess(token, {
@@ -18,7 +20,8 @@ export default async function SelectionsPortalPage({ params }: Params) {
       requireProject: true,
       permission: "can_submit_selections",
     })
-  } catch {
+  } catch (error) {
+    unstable_rethrow(error)
     notFound()
   }
 

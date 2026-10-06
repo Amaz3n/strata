@@ -1,5 +1,8 @@
 import { z } from "zod"
 
+// Keep database timestamp precision intact: this is an opaque concurrency token.
+export const warrantyRecordRevisionSchema = z.object({ updated_at: z.string().min(1) })
+
 export const warrantyStatusSchema = z.enum(["open", "in_progress", "resolved", "closed"]).default("open")
 export const warrantyPrioritySchema = z.enum(["low", "normal", "high", "urgent"]).default("normal")
 export const warrantySeveritySchema = z.enum(["emergency", "routine_30", "routine_60"]).default("routine_30")
@@ -82,7 +85,10 @@ const warrantyVisitScheduleBaseSchema = z.object({
   note: nullableText(2000),
 })
 
-export const warrantyVisitScheduleSchema = warrantyVisitScheduleBaseSchema.superRefine((value, ctx) => {
+function validateWarrantyVisitAssignment(
+  value: Pick<z.infer<typeof warrantyVisitScheduleBaseSchema>, "assignee_kind" | "assigned_user_id" | "assigned_company_id" | "window_start" | "window_end">,
+  ctx: z.RefinementCtx,
+) {
   if (new Date(value.window_end) <= new Date(value.window_start)) {
     ctx.addIssue({ code: "custom", path: ["window_end"], message: "Visit window must end after it starts" })
   }
@@ -92,7 +98,12 @@ export const warrantyVisitScheduleSchema = warrantyVisitScheduleBaseSchema.super
   if (value.assignee_kind === "trade" && !value.assigned_company_id) {
     ctx.addIssue({ code: "custom", path: ["assigned_company_id"], message: "Trade is required" })
   }
-})
+}
+
+export const warrantyVisitScheduleSchema = warrantyVisitScheduleBaseSchema.superRefine(validateWarrantyVisitAssignment)
+
+export const warrantyVisitConflictInputSchema = warrantyVisitScheduleBaseSchema.omit({ request_id: true, note: true })
+  .extend({ exclude_visit_id: nullableUuid }).superRefine(validateWarrantyVisitAssignment)
 
 export const warrantyVisitRescheduleSchema = warrantyVisitScheduleBaseSchema.pick({
   window_start: true,

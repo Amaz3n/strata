@@ -68,6 +68,7 @@ const SOURCE_TYPE_LABELS: Record<string, string> = {
   project_expense: "Expense",
   project_expense_line: "Expense",
   time_entry: "Labor",
+  payroll_import: "Payroll adjustment",
 };
 
 export function BudgetBucketSheet({

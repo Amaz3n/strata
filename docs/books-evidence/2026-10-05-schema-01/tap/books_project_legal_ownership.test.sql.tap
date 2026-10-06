@@ -1,0 +1,5 @@
+1..4
+ok 1 - project ownership review is private
+ok 2 - project ownership preparation preserves invoker authority
+ok 3 - browser cannot assign actual project owners directly
+ok 4 - entity-owned projects are fenced from legacy fact insertion

@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -99,7 +100,8 @@ async function AuditPageContent({
 }: {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>
 }) {
-  await requireAnyPermissionGuard(["audit.read", "platform.support.read"])
+  await connection()
+  await requireAnyPermissionGuard(["platform.support.read"])
   const params = await searchParams
 
   const search = typeof params.search === "string" ? params.search : ""
@@ -169,7 +171,17 @@ async function AuditPageContent({
 
 export default function AuditPage(props: Parameters<typeof AuditPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={
+      <PageLayout
+      title="Audit Log"
+      breadcrumbs={[
+        { label: "Admin", href: "/admin" },
+        { label: "Audit Log" },
+      ]}
+    >
+        <PageLoadingSkeleton />
+      </PageLayout>
+    }>
       <AuditPageContent {...props} />
     </Suspense>
   )

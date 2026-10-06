@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 
-import { requireAuth } from "@/lib/auth/context"
-import { requireAnyPermission } from "@/lib/services/permissions"
+import { requireAnyPlatformPermission } from "@/lib/services/platform-access"
 import { getAuditLogs } from "@/lib/services/admin"
 
 
@@ -33,8 +32,7 @@ function param(request: NextRequest, key: string): string {
 
 export async function GET(request: NextRequest) {
   try {
-    const { user } = await requireAuth()
-    await requireAnyPermission(["audit.read", "platform.support.read"], { userId: user.id })
+    await requireAnyPlatformPermission(["platform.support.read"])
   } catch {
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 })
   }

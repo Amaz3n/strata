@@ -37,6 +37,8 @@ export interface BidPortalPackage {
   due_tz?: string | null
   mode: "quote" | "tender"
   bond_required: boolean
+  scope_revision: number
+  pricing_available?: boolean
   status: string
 }
 
@@ -319,6 +321,8 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
     return null
   }
 
+  const revisionResult = await supabase.from("bid_packages").select("scope_revision").eq("id",inviteRow.bid_package_id).maybeSingle()
+  if (revisionResult.error && !["42703","PGRST204"].includes(revisionResult.error.code)) throw new Error(revisionResult.error.message)
   let job: { id: string; org_id: string; name: string; status: string } | null = null
 
   if (bidPackage.project_id) {
@@ -423,6 +427,8 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
       due_tz: bidPackage.due_tz ?? null,
       mode: (bidPackage.mode as "quote" | "tender") ?? "quote",
       bond_required: !!bidPackage.bond_required,
+      scope_revision: revisionResult.data?.scope_revision ?? 1,
+      pricing_available: !revisionResult.error,
       status: bidPackage.status,
     },
     project: {
@@ -762,6 +768,7 @@ export async function submitBidFromPortal({
 }: {
   access: BidPortalAccess
   input: {
+    scope_revision: number
     total_cents: number
     currency?: string | null
     valid_until?: string | null
@@ -784,9 +791,10 @@ export async function submitBidFromPortal({
     }>
   }
 }): Promise<BidPortalSubmission> {
+  if (access.bidPackage.pricing_available === false) throw new Error("Bid submission is temporarily unavailable while the builder completes a database update.")
   const supabase = createServiceSupabaseClient()
 
-  const disallowedStatuses = ["closed", "awarded", "cancelled"]
+  const disallowedStatuses = ["draft", "closed", "awarded", "cancelled"]
   if (disallowedStatuses.includes(access.bidPackage.status)) {
     throw new Error("Bidding is closed for this package")
   }
@@ -846,7 +854,7 @@ export async function submitBidFromPortal({
           (response.unit_rate_cents != null && response.quantity != null
             ? Math.round(response.unit_rate_cents * response.quantity)
             : null)
-        if (amount == null || amount < 0) {
+        if (amount == null || (amount < 0 && scopeRow.item_type !== "alternate")) {
           throw new Error(`A price is required for scope line "${scopeRow.description}"`)
         }
       }
@@ -897,6 +905,7 @@ export async function submitBidFromPortal({
     p_org_id: access.org_id,
     p_bid_invite_id: access.bid_invite_id,
     p_payload: {
+      scope_revision: input.scope_revision,
       total_cents: input.total_cents,
       currency: input.currency ?? "usd",
       valid_until: input.valid_until ?? null,
@@ -1111,7 +1120,7 @@ export async function declineBidFromPortal({
   const supabase = createServiceSupabaseClient()
   const now = new Date().toISOString()
 
-  const disallowedStatuses = ["closed", "awarded", "cancelled"]
+  const disallowedStatuses = ["draft", "closed", "awarded", "cancelled"]
   if (disallowedStatuses.includes(access.bidPackage.status)) {
     throw new Error("Bidding is closed for this package")
   }

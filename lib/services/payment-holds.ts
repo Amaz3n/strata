@@ -8,6 +8,7 @@ import { getComplianceRules, getComplianceRulesWithClient } from "@/lib/services
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
+import { deliverAutomaticSigningReminder } from "@/lib/services/signature-delivery"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { ensurePortalLink } from "@/lib/services/portal-links"
 import { getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
@@ -197,11 +198,9 @@ export async function evaluateHolds(
     complianceCurrent: compliance?.is_compliant ?? true,
     insuranceCurrent: insurance.current,
     insuranceContradiction: insurance.contradiction,
-    // A waiver is only a hold when org policy or the project's sub-tier rule
-    // actually asks for one. `assertBillReleasable` gates its hard waiver checks
-    // on these same two flags — the hold must agree or it blocks payment for a
-    // document nothing requires.
-    waiverRequired: Boolean(bill.project_id) && (Boolean(rules.require_lien_waiver) || Boolean(projectControls?.require_subtier_waivers)),
+    // Explicit bill requests and project policy use the same requirement in
+    // the visible hold and the hard payment-release gate.
+    waiverRequired: Boolean(bill.project_id) && (Boolean(rules.require_lien_waiver) || Boolean(projectControls?.require_subtier_waivers) || bill.lien_waiver_status === "requested" || bill.lien_waiver_status === "received"),
     // "received" is the schema's only waiver-in-hand state. The legacy value
     // "signed" is normalized to "received" at the validation boundary
     // (lib/validation/vendor-bills.ts) and backfilled in the data.
@@ -329,7 +328,7 @@ export async function assertBillReleasable(
     }
   }
 
-  const waiverRequired = Boolean(bill.project_id) && (Boolean(rules.require_lien_waiver) || Boolean(projectControls?.require_subtier_waivers))
+  const waiverRequired = Boolean(bill.project_id) && (Boolean(rules.require_lien_waiver) || Boolean(projectControls?.require_subtier_waivers) || bill.lien_waiver_status === "requested" || bill.lien_waiver_status === "received")
   const { data: waiverRows, error: waiverError } = await supabase.from("lien_waivers")
     .select("id,waiver_type,status,amount_cents,through_date,signed_at,signed_file_id,document_file_id,signature_data,metadata")
     .eq("org_id", resolvedOrgId).eq("bill_id", billId).eq("status", "signed")
@@ -450,12 +449,15 @@ export async function sendVendorBillWaiverChase(
     const {data:requests,error:requestError}=await client.from("document_signing_requests").select("id,status,sent_to_email,sequence,required,envelope_id").eq("org_id",orgId).eq("document_id",native.metadata.document_id).in("status",["sent","viewed"]).order("sequence")
     if(requestError)throw new Error("Could not load signing recipients")
     if(!requests?.length)throw new Error("Prepare and send the waiver from Payables before requesting a reminder")
-    const {issueSigningLinkForRequest,sendSignerRequestEmail}=await import("@/lib/services/signature-delivery")
     const sequence=requests[0].sequence
     for(const request of requests.filter(r=>r.sequence===sequence)){
       if(!request.sent_to_email)throw new Error("Signer email missing")
-      const link=await issueSigningLinkForRequest(client,{orgId,requestId:request.id,markSent:false})
-      await sendSignerRequestEmail({orgId,toEmail:request.sent_to_email,documentTitle:`Waiver · ${bill.bill_number??"Payable"}`,signingUrl:link.url,isReminder:true})
+      const deliveryKey = `manual:waiver:${billId}:${native.id}:${kind}:${attempt}:${request.id}`
+      const queued = await enqueueOutboxJob({ orgId, jobType: "send_esign_reminder",
+        payload: { signing_request_id: request.id, envelope_id: request.envelope_id, delivery_key: deliveryKey },
+        dedupeByPayloadKeys: ["delivery_key"] })
+      if (!queued.enqueued && queued.reason !== "duplicate") throw new Error("Could not queue waiver signing reminder")
+      await deliverAutomaticSigningReminder({ orgId, requestId: request.id, deliveryKey })
     }
     const {error:recordError}=await client.from("vendor_bills").update({metadata:{...bill.metadata,waiver_chase:{kind,attempt,at:new Date().toISOString(),delivery:"sent"}}}).eq("org_id",orgId).eq("id",billId)
     if(recordError)throw new Error("Reminder delivered; could not record delivery")

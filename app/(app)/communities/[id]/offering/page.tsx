@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { CommunitySpecInventory, type SpecRow } from "@/components/communities/community-spec-inventory"
 import { CommunityTrafficPanel, weekOf, type TrafficWeek } from "@/components/communities/community-traffic-panel"
 import { OfferingIncentives } from "@/components/communities/offering-incentives"
@@ -29,25 +30,29 @@ const TRAFFIC_WINDOW_DAYS = 90
  * below because they are the evidence the decision is made against.
  */
 export default async function CommunityOfferingPage({ params }: { params: Promise<{ id: string }> }) {
+  await connection()
   const { id } = await params
-  const [sheet, permissions, traffic, specs, lane, costs] = await Promise.all([
-    getCommunityPriceSheet(id),
+  const sheetPromise = getCommunityPriceSheet(id)
+  const modelsPromise = sheetPromise.then((sheet) =>
+    listPlansWithPublishedModels([...new Set(sheet.rows.map((row) => row.planId))])
+      .catch(() => new Set<string>()),
+  )
+  const [sheet, permissions, traffic, specs, lane, costs, offerablePlans, plansWith3d] = await Promise.all([
+    sheetPromise,
     getCurrentUserPermissions(),
     listCommunityTraffic(id, { days: TRAFFIC_WINDOW_DAYS }).catch(() => []),
     listSpecInventory({ communityId: id, limit: 100 }).catch(() => []),
     getCommunityLane(id).catch(() => null),
     getCommunityOfferingCosts(id).catch(() => null),
+    listOfferablePlans(id).catch((error) => {
+      console.error("Failed to load offerable plans for the community offering tab", { communityId: id, error })
+      return []
+    }),
+    modelsPromise,
   ])
-  const offerablePlans = await listOfferablePlans(id).catch((error) => {
-    console.error("Failed to load offerable plans for the community offering tab", { communityId: id, error })
-    return []
-  })
   const canManage = permissions.permissions.some((permission) =>
     ["sales.manage", "org.admin", "*"].includes(permission),
   )
-  const plansWith3d = await listPlansWithPublishedModels([
-    ...new Set(sheet.rows.map((row) => row.planId)),
-  ]).catch(() => new Set<string>())
 
   const rows: OfferingPlanRow[] = sheet.rows.map((row, index) => ({
     key: `${row.planId}:${row.elevationId ?? index}`,

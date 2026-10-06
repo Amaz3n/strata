@@ -1,5 +1,7 @@
 "use client"
 
+import { ReservationReviewDialog } from "@/components/sales/reservation-review-dialog"
+import type { ReservationConversionScope } from "@/lib/validation/reservation-conversion"
 import { useRouter } from "next/navigation"
 import { useEffect, useState, useTransition } from "react"
 
@@ -17,6 +19,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useToast } from "@/hooks/use-toast"
 import { unwrapAction } from "@/lib/action-result"
+import { parseReservationDeposit, reservationDepositInput, MAX_RESERVATION_DEPOSIT_CENTS } from "@/lib/sales/reservation-deposit"
 import { formatMoneyCents } from "@/lib/utils"
 
 /** A round default that reads as a deposit rather than a computed number. */
@@ -24,6 +27,8 @@ const DEFAULT_DEPOSIT_CENTS = 500_000
 
 export interface ReserveLotTarget {
   reservationId: string
+  conversionScope?: ReservationConversionScope
+  atomicConversionEnabled?: boolean
   lotLabel: string | null
   buyerName: string
   askingPriceCents: number | null
@@ -36,11 +41,21 @@ export interface ReserveLotTarget {
  * Taking the reservation: the moment a hold becomes a sale.
  *
  * Three things happen at once and the dialog says so, because two of them are
- * hard to undo — the job is opened, the earnest invoice is sent to the buyer, and
+ * hard to undo — the job is opened, the earnest invoice is created for the buyer, and
  * the lot stops being inventory. Consultants do this at a desk with the buyer
  * sitting opposite them, so the summary is the whole point.
  */
-export function ReserveLotDialog({
+export function ReserveLotDialog(props: {
+  target: ReserveLotTarget
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}) {
+  return props.target.atomicConversionEnabled
+    ? <ReservationReviewDialog {...props} />
+    : <LegacyReserveLotDialog {...props} />
+}
+
+function LegacyReserveLotDialog({
   target,
   open,
   onOpenChange,
@@ -58,13 +73,13 @@ export function ReserveLotDialog({
   useEffect(() => {
     if (!open) return
     const cents = target.depositRequiredCents > 0 ? target.depositRequiredCents : DEFAULT_DEPOSIT_CENTS
-    setDeposit(String(Math.round(cents / 100)))
+    setDeposit(reservationDepositInput(cents))
     setProjectName("")
   }, [open, target])
 
-  const depositDollars = Number(deposit)
-  const depositValid = Number.isFinite(depositDollars) && depositDollars >= 0
-  const depositCents = depositValid ? Math.round(depositDollars * 100) : 0
+  const parsedDepositCents = parseReservationDeposit(deposit)
+  const depositValid = parsedDepositCents !== null
+  const depositCents = parsedDepositCents ?? 0
 
   const reserve = () => {
     if (!depositValid) return
@@ -81,7 +96,7 @@ export function ReserveLotDialog({
           title: `Lot reserved for ${target.buyerName}`,
           description:
             depositCents > 0
-              ? `${formatMoneyCents(depositCents)} earnest invoice sent.`
+              ? `${formatMoneyCents(depositCents)} earnest invoice created.`
               : "No deposit invoiced.",
         })
         onOpenChange(false)
@@ -100,7 +115,7 @@ export function ReserveLotDialog({
             Take the reservation{target.lotLabel ? ` on Lot ${target.lotLabel}` : ""}
           </DialogTitle>
           <DialogDescription>
-            This opens the job, sends the earnest invoice, and takes the lot off the shelf.
+            This opens the job, creates the earnest invoice, and takes the lot off the shelf.
           </DialogDescription>
         </DialogHeader>
 
@@ -114,16 +129,19 @@ export function ReserveLotDialog({
               <Input
                 id="reserve-deposit"
                 inputMode="decimal"
+                aria-invalid={deposit.trim() !== "" && !depositValid}
+                aria-describedby="reserve-deposit-help"
+                disabled={pending}
                 value={deposit}
                 onChange={(event) => setDeposit(event.target.value)}
                 className="h-9 rounded-none tabular-nums"
               />
             </div>
-            <p className="text-[11px] text-muted-foreground">
+            <p id="reserve-deposit-help" className="text-[11px] text-muted-foreground">
               {target.askingPriceCents
                 ? `Asking ${formatMoneyCents(target.askingPriceCents)}. `
                 : ""}
-              Zero invoices nothing and still reserves the lot.
+              {deposit.trim() !== "" && !depositValid ? `Enter a deposit from zero to ${formatMoneyCents(MAX_RESERVATION_DEPOSIT_CENTS)}.` : "Zero invoices nothing and still reserves the lot."}
             </p>
           </div>
 
@@ -136,6 +154,7 @@ export function ReserveLotDialog({
               </Label>
               <Input
                 id="reserve-project"
+                disabled={pending}
                 value={projectName}
                 onChange={(event) => setProjectName(event.target.value)}
                 placeholder={target.lotLabel ? `Lot ${target.lotLabel}` : "Lot"}

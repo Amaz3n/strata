@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { Suspense } from "react"
 import Link from "next/link"
 
@@ -22,7 +23,8 @@ function formatBytes(bytes: number): string {
 }
 
 async function AnalyticsData() {
-  await requireAnyPermissionGuard(["billing.manage", "platform.billing.manage"])
+  await connection()
+  await requireAnyPermissionGuard(["platform.billing.manage"])
 
   // Demo-org usage is a usage metric, so it reads from this page rather than
   // from a launcher on the Platform index that had nothing else to do.

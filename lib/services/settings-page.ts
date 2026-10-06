@@ -1,4 +1,6 @@
 import "server-only"
+import { unstable_rethrow } from "next/navigation"
+import { actionError, type ActionResult } from "@/lib/action-result"
 
 import { requireOrgMembership } from "@/lib/auth/context"
 import { requireOrgContext } from "@/lib/services/context"
@@ -10,15 +12,26 @@ import { listComplianceDocumentTypes } from "@/lib/services/compliance-documents
 import { getPrequalificationTemplate } from "@/lib/services/prequalification"
 import { getDocumentNumbering } from "@/lib/services/document-numbering"
 import { getPaymentRailSettings } from "@/lib/services/payment-rail-setup"
-import { getBooksModuleSettings } from "@/lib/services/books/module"
+import { getBooksModuleSettings, isBooksWorkspaceEnabled } from "@/lib/services/books/module"
 import { listOrganizationSigners } from "@/lib/services/team"
 import {
   getBillingPageDataAction,
   getOrganizationSettingsAction,
   getTeamSettingsDataAction,
   getNotificationPreferencesAction,
+  listContractTemplatesAction,
+  type ContractTemplateSummary,
 } from "@/app/(app)/settings/actions"
 import { canViewSettingsItem, settingsSections, type SettingsTab } from "@/lib/settings/sections"
+
+async function loadContractTemplates(): Promise<ActionResult<ContractTemplateSummary[]>> {
+  try {
+    return { success: true, data: await listContractTemplatesAction() }
+  } catch (error) {
+    unstable_rethrow(error)
+    return actionError(error, "Unable to load contract templates")
+  }
+}
 
 /** One section per request. Identity caching remains request-scoped; never cache authorization across users. */
 export async function loadSettingsPanel(tab: SettingsTab, expectedOrgId: string) {
@@ -46,12 +59,13 @@ export async function loadSettingsPanel(tab: SettingsTab, expectedOrgId: string)
           .join(" "),
       }
     case "organization": {
-      const [settings, numbering, signers] = await Promise.all([
+      const [settings, numbering, signers, contractTemplates] = await Promise.all([
         getOrganizationSettingsAction(),
         getDocumentNumbering(),
         listOrganizationSigners(),
+        can("billing.manage") ? loadContractTemplates() : Promise.resolve({ success: true as const, data: [] }),
       ])
-      return { tab, settings, numbering, signers }
+      return { tab, settings, numbering, signers, contractTemplates }
     }
     case "invoicing":
       return { tab, settings: await getOrganizationSettingsAction() }
@@ -69,8 +83,10 @@ export async function loadSettingsPanel(tab: SettingsTab, expectedOrgId: string)
       }
     case "payments":
       return { tab, settings: await getPaymentRailSettings() }
-    case "integrations":
-      return { tab, stripe: await getStripeConnectedAccount() }
+    case "integrations": {
+      const [stripe, booksEnabled] = await Promise.all([getStripeConnectedAccount(), isBooksWorkspaceEnabled(orgId)])
+      return { tab, stripe, booksEnabled }
+    }
     case "team":
       return {
         tab,

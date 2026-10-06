@@ -50,6 +50,7 @@ export function ProvisionOrgSheet() {
   const [slug, setSlug] = useState("")
   const [billingModel, setBillingModel] = useState<"subscription" | "license">("subscription")
   const [productTier, setProductTier] = useState<ProductTier>("residential")
+  const [businessKind, setBusinessKind] = useState("builder")
   const [priceOpen, setPriceOpen] = useState(false)
   const [collectionMethod, setCollectionMethod] = useState<"checkout" | "invoice">("checkout")
   const [sendInvites, setSendInvites] = useState(false)
@@ -114,6 +115,14 @@ export function ProvisionOrgSheet() {
                     <h3 className="text-sm font-medium">Access</h3>
                     <p className="mt-1 text-sm text-muted-foreground">This creates the customer workspace before billing starts.</p>
                   </div>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2"><Label htmlFor="business-kind">Workspace</Label>
+                      <select id="business-kind" name="businessKind" value={businessKind} onChange={(event) => { setBusinessKind(event.target.value); if (event.target.value === "trade") { setSeedSampleProject(false); setSeedSampleCommunity(false); setProductTier("residential") } }} className={selectClassName}>
+                        <option value="builder">Arc for builders</option><option value="trade">Arc Trade</option>
+                      </select>
+                    </div>
+                    {businessKind === "trade" && <div className="space-y-2"><Label htmlFor="specialty">Trade specialty</Label><Input id="specialty" name="specialty" defaultValue="Electrical" maxLength={80} required /></div>}
+                  </div>
                   <div className="grid gap-4 md:grid-cols-3">
                     <div className="flex flex-col gap-2">
                       <Label htmlFor="platform-billing-model">Billing model</Label>
@@ -129,7 +138,7 @@ export function ProvisionOrgSheet() {
                       </select>
                     </div>
                     <div className="flex flex-col gap-2">
-                      <Label htmlFor="platform-product-tier">Product posture</Label>
+                      <Label htmlFor="platform-product-tier">{businessKind === "trade" ? "Default job type" : "Product posture"}</Label>
                       <select
                         id="platform-product-tier"
                         name="productTier"
@@ -144,9 +153,9 @@ export function ProvisionOrgSheet() {
                         }}
                         className={selectClassName}
                       >
-                        <option value="residential">Arc</option>
-                        <option value="commercial">Arc Commercial</option>
-                        <option value="production">Arc Production</option>
+                        <option value="residential">{businessKind === "trade" ? "Residential" : "Arc"}</option>
+                        <option value="commercial">{businessKind === "trade" ? "Commercial" : "Arc Commercial"}</option>
+                        {businessKind !== "trade" && <option value="production">Arc Production</option>}
                       </select>
                     </div>
                     <div className="flex flex-col gap-2">
@@ -154,7 +163,7 @@ export function ProvisionOrgSheet() {
                       <Input id="platform-trial-days" name="trialDays" type="number" min="1" max="60" defaultValue="30" />
                     </div>
                   </div>
-                  <div className="flex items-center justify-between gap-3 border bg-muted/20 px-4 py-3">
+                  {businessKind !== "trade" && <div className="flex items-center justify-between gap-3 border bg-muted/20 px-4 py-3">
                     <div className="grid gap-1.5">
                       <Label htmlFor={productTier === "production" ? "platform-seed-sample-community" : "platform-seed-sample-project"} className="text-sm font-medium">
                         {productTier === "production" ? "Seed sample production community" : "Seed sample project"}
@@ -172,7 +181,7 @@ export function ProvisionOrgSheet() {
                     )}
                     <input type="hidden" name="seedSampleProject" value={seedSampleProject ? "true" : "false"} />
                     <input type="hidden" name="seedSampleCommunity" value={seedSampleCommunity ? "true" : "false"} />
-                  </div>
+                  </div>}
                 </section>
 
                 <section className="flex flex-col gap-4">

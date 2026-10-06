@@ -1,7 +1,7 @@
 // Browser-private account data; runtime-prefetched by the bounded tab strip.
 export const instant = true;
 
-import { notFound, redirect } from "next/navigation";
+import { notFound, redirect, unstable_rethrow } from "next/navigation";
 import { Suspense } from "react";
 import { z } from "zod";
 
@@ -50,9 +50,18 @@ async function CompanyComplianceContent({ id }: { id: string }) {
   // client component that refetched the status the layout had already loaded.
   const [status, documentTypes, held, rules, permissionResult] = await Promise.all([
     loadComplianceStatus(id),
-    listComplianceDocumentTypes().catch(() => []),
-    getComplianceHeldPayables(id).catch(() => ({ heldCents: 0, billCount: 0 })),
-    getComplianceRules().catch(() => null),
+    listComplianceDocumentTypes().catch((error) => {
+      unstable_rethrow(error);
+      return [];
+    }),
+    getComplianceHeldPayables(id).catch((error) => {
+      unstable_rethrow(error);
+      return { heldCents: 0, billCount: 0 };
+    }),
+    getComplianceRules().catch((error) => {
+      unstable_rethrow(error);
+      return null;
+    }),
     getCurrentUserPermissions(),
   ]);
 

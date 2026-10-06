@@ -121,7 +121,7 @@ export function OrgSwitcher({
 
       const isProjectScoped =
         (pathname.startsWith("/projects/") && pathname !== "/projects") ||
-        (pathname.startsWith("/pipeline/prospects/") && pathname !== "/pipeline/prospects") ||
+        /^\/pipeline\/[^/]+/.test(pathname) ||
         searchParams.has("project") ||
         searchParams.has("project_id") ||
         searchParams.has("prospect") ||
@@ -166,7 +166,10 @@ export function OrgSwitcher({
         {renderOrgMark(activeOrg.logo_url, activeOrg.org_name)}
         {state !== "collapsed" && (
           <>
-            <span className="min-w-0 flex-1 truncate whitespace-nowrap font-medium text-sm">{activeOrg.org_name}</span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate whitespace-nowrap font-medium text-sm">{activeOrg.org_name}</span>
+              {org.plan === "Arc Trade" && <span className="block text-xs text-sidebar-foreground/60">Arc Trade</span>}
+            </span>
             {isPending ? <Loader2 className="ml-auto size-4 animate-spin" /> : <ChevronsUpDown className="ml-auto size-4" />}
           </>
         )}

@@ -7,6 +7,7 @@ import type {
   BankFeedTransaction,
   TransactionSyncPage,
 } from "@/lib/integrations/banking/provider"
+import { BankFeedProviderError } from "@/lib/integrations/banking/provider"
 
 const linkTokenSchema = z.object({ link_token: z.string(), expiration: z.string() })
 const exchangeSchema = z.object({ access_token: z.string(), item_id: z.string() })
@@ -83,10 +84,15 @@ async function request(path: string, body: Record<string, unknown>) {
   })
   const payload: unknown = await response.json().catch(() => null)
   if (!response.ok) {
-    const message = payload && typeof payload === "object" && "error_message" in payload
-      ? String(payload.error_message)
+    const details = payload && typeof payload === "object" ? payload : null
+    const message = details && "error_message" in details
+      ? String(details.error_message)
       : `HTTP ${response.status}`
-    throw new Error(`Plaid ${path} failed: ${message}`)
+    throw new BankFeedProviderError(
+      `Plaid ${path} failed: ${message}`,
+      details && "error_type" in details ? String(details.error_type) : null,
+      details && "error_code" in details ? String(details.error_code) : null,
+    )
   }
   return payload
 }
@@ -137,11 +143,10 @@ export const plaidBankFeedProvider: BankFeedProvider = {
     const payload = linkTokenSchema.parse(await request("/link/token/create", {
       user: { client_user_id: input.clientUserId },
       client_name: input.organizationName,
-      products: ["transactions"],
+      ...(input.accessToken ? { access_token: input.accessToken } : { products: ["transactions"], transactions: { days_requested: 730 } }),
       country_codes: ["US"],
       language: "en",
       webhook: input.webhookUrl,
-      transactions: { days_requested: 730 },
     }))
     return { linkToken: payload.link_token, expiresAt: payload.expiration }
   },

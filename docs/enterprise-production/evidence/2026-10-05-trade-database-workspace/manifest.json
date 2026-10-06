@@ -1,0 +1,132 @@
+{
+  "date": "2026-10-05",
+  "classification": "progress_original_trade_database_query_and_transport_verification_not_acceptance",
+  "previousGoalTurnClassification": "no_progress_status_explanation",
+  "taskIds": [
+    "E07-03.TRADE-DISCOVERY",
+    "F02",
+    "F03",
+    "E02-02"
+  ],
+  "sourceSnapshots": [
+    {
+      "path": "lib/services/trade-lookahead.ts",
+      "sha256": "c0e8a003c13f3a1d46660ce2133d9f20a62c860149c3277378d54da75567e2a7"
+    },
+    {
+      "path": "lib/validation/starts.ts",
+      "sha256": "279f05c65cdcac2d54104fbcb385e4653f3051614d28f11bc60d7ab6e8e31fb7"
+    },
+    {
+      "path": "tests/trade-lookahead-scale.test.js",
+      "sha256": "a9f10f67bc3e3d6b3c71a505e26a581ce0ecaf2b0b3e01fe6c83dc733b82950c"
+    },
+    {
+      "path": "tests/trade-lookahead-workspace-db.test.js",
+      "sha256": "c0109f8ecfe72f96b58c75cb71dce33196181f58b33184f0b504804a0951b4d1"
+    },
+    {
+      "path": "supabase/migrations/20261005105415_trade_lookahead_database_workspace.sql",
+      "sha256": "1bf6cf173ee0213adeb6dc3eaba78bc11fb574553f02f826cbd54ef962446885"
+    },
+    {
+      "path": ".env.example",
+      "sha256": "25a40b1c9271fb5b017eaf1b29ba4a66434b079e6ec812a9bfb574a1ee459738"
+    },
+    {
+      "path": "package.json",
+      "sha256": "98180a361eeb618d3a37c94f505f5145351ab9691a9d269dd8482ccd07998f67"
+    }
+  ],
+  "checks": [
+    {
+      "name": "focused",
+      "command": "node --test tests/trade-lookahead-scale.test.js tests/trade-lookahead-workspace-db.test.js",
+      "exitCode": 0,
+      "log": "focused.log",
+      "sha256": "33f6124f9a075dd0349b3148d805a788f38d7a39cac9482b60c0e88b66f8f4dd",
+      "tests": 30,
+      "passCount": 30,
+      "failCount": 0,
+      "skipped": 0
+    },
+    {
+      "name": "auth",
+      "command": "pnpm test:auth",
+      "exitCode": 0,
+      "log": "auth.log",
+      "sha256": "370c763d643b9934086dba9220e0dba7b08a216163df6daa4905591d8118b24e",
+      "tests": 1685,
+      "passCount": 1685,
+      "failCount": 0,
+      "skipped": 0
+    },
+    {
+      "name": "starts",
+      "command": "pnpm test:starts",
+      "exitCode": 0,
+      "log": "starts.log",
+      "sha256": "0e4ff894c8da68e45a8d4e6457146c032061d0c1f4ea4218098c8205dfd494aa",
+      "tests": 109,
+      "passCount": 109,
+      "failCount": 0,
+      "skipped": 0
+    },
+    {
+      "name": "typecheck",
+      "command": "pnpm typecheck",
+      "exitCode": 0,
+      "log": "typecheck.log",
+      "sha256": "3129e0dd6fffe6e39cca0949fc31cbaf641f8d72bc70baa672ede1b949b7603b"
+    },
+    {
+      "name": "lint",
+      "command": "pnpm lint",
+      "exitCode": 0,
+      "log": "lint.log",
+      "sha256": "8ecf36ad9a01a38ba89fc8054307d3aa095367bbeb12f35a74dfa741fb135a2d"
+    },
+    {
+      "name": "diff-check",
+      "command": "git diff --check",
+      "exitCode": 0,
+      "log": "diff-check.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "inventory-refresh",
+      "command": "node scripts/enterprise-production-inventory.cjs --refresh",
+      "exitCode": 0,
+      "log": "inventory-refresh.log",
+      "sha256": "b3762b088110207b69056320d3bcee1a679bd535d7b6c5a3d48d1221e48a41fe"
+    },
+    {
+      "name": "engine",
+      "command": "read-only Docker /version socket probe outside sandbox",
+      "exitCode": 1,
+      "log": "engine.log",
+      "sha256": "dacf23ff8117ae8ebfdff7c267efc27577e142ccd975936903183e4423f998ea"
+    },
+    {
+      "name": "inventory-check",
+      "command": "node scripts/enterprise-production-inventory.cjs --check",
+      "exitCode": 1,
+      "log": "inventory-check.log",
+      "sha256": "8458d1944156af3f4fffa9d4f6092cd7dc4154d40d1b87808e45d577b0c400ab",
+      "meaning": "Unaccepted or unmapped production surfaces remain; failure is not waived."
+    }
+  ],
+  "dataset": "Synthetic original service and actual Supabase SDK custom-fetch tests, plus PGlite explicitly partial source schema. No real JWT, full migration-chain, direct RLS, concurrent independent sessions, production writes or provider sends.",
+  "migrationApplied": false,
+  "featureFlagDefault": false,
+  "implementationAcceptance": false,
+  "releaseAcceptance": false,
+  "remaining": [
+    "Approved full-schema PostgreSQL environment/current JWT/RLS/independent sessions and authenticated personas remain unavailable; Docker /version returned empty or invalid JSON outside sandbox.",
+    "Reconcile the domain SQL permission resolver against original authorization, platform overrides, direct Data API policies/grants, composite ancestry constraints and legacy writers before activation.",
+    "Measure representative tenant skew and query plans/SLOs. Grouping materializes the scoped schedule; bounded reply size is not proof of bounded database cost. Validate index lock duration and deployment compatibility.",
+    "Migration remains unapplied and ARC_TRADE_DATABASE_WORKSPACE_ENABLED defaults false. The active legacy path still aggregates schedule source in the service. Human-controlled migration and activation approval are required.",
+    "Trade dispatch still requires atomic durable intent/claim/receipt, reviewed scope and recipients, provider ambiguity, cancellation, retry/dead-letter recovery, and committing actor authority.",
+    "All broader national-builder task, lifecycle, device, restore, integration and customer release acceptance remains open."
+  ]
+}

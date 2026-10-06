@@ -95,7 +95,11 @@ export async function renderSheetWindowImage(params: {
   imageHeight: number
   window: { x0: number; y0: number; x1: number; y1: number }
   maxEdge?: number
-}): Promise<VisionImage | null> {
+  /** Recognition cannot treat a missing tile as blank plan content. */
+  requireComplete?: boolean
+  /** Preserve source pixels for contour measurement, without a second lossy encode. */
+  lossless?: boolean
+}): Promise<(VisionImage & { sourceRegion: { x0: number; y0: number; x1: number; y1: number } }) | null> {
   const { supabase, tilesBasePath, imageWidth, imageHeight, window } = params
   const maxEdge = params.maxEdge ?? VISION_IMAGE_MAX_EDGE
   if (!(imageWidth > 0) || !(imageHeight > 0)) return null
@@ -117,8 +121,8 @@ export async function renderSheetWindowImage(params: {
 
   const left = Math.floor(window.x0 * width)
   const top = Math.floor(window.y0 * height)
-  const cropWidth = Math.max(1, Math.min(width - left, Math.ceil(spanX * width)))
-  const cropHeight = Math.max(1, Math.min(height - top, Math.ceil(spanY * height)))
+  const cropWidth = Math.max(1, Math.min(width - left, Math.ceil(window.x1 * width) - left))
+  const cropHeight = Math.max(1, Math.min(height - top, Math.ceil(window.y1 * height) - top))
 
   const firstCol = Math.floor(left / TILE_SIZE)
   const lastCol = Math.floor((left + cropWidth - 1) / TILE_SIZE)
@@ -142,7 +146,8 @@ export async function renderSheetWindowImage(params: {
           top: row * TILE_SIZE - firstRow * TILE_SIZE,
         })
       } catch {
-        // A missing edge tile is survivable; the window renders without it.
+        if (params.requireComplete) return null
+        // A missing edge tile is survivable for preview rendering.
       }
     }
   }
@@ -152,18 +157,24 @@ export async function renderSheetWindowImage(params: {
   const canvasHeight = (lastRow - firstRow + 1) * TILE_SIZE
 
   const sharp = (await import("sharp")).default
-  const composed = await sharp({
+  // Sharp applies extraction before compositing within one pipeline. Commit
+  // the tiled canvas first, otherwise a small crop rejects its larger tiles.
+  const raster = await sharp({
     create: { width: canvasWidth, height: canvasHeight, channels: 3, background: { r: 255, g: 255, b: 255 } },
   })
     .composite(tiles)
+    .raw()
+    .toBuffer({ resolveWithObject: true })
+  const composed = sharp(raster.data, { raw: { width: raster.info.width, height: raster.info.height, channels: raster.info.channels } })
     .extract({
       left: left - firstCol * TILE_SIZE,
       top: top - firstRow * TILE_SIZE,
       width: Math.min(cropWidth, canvasWidth - (left - firstCol * TILE_SIZE)),
       height: Math.min(cropHeight, canvasHeight - (top - firstRow * TILE_SIZE)),
     })
-    .webp({ quality: 82 })
-    .toBuffer()
-
-  return { data: composed, mediaType: "image/webp" }
+  const data = params.lossless ? await composed.png().toBuffer() : await composed.webp({ quality: 82 }).toBuffer()
+  return {
+    data, mediaType: params.lossless ? "image/png" : "image/webp",
+    sourceRegion: { x0: left / width, y0: top / height, x1: (left + cropWidth) / width, y1: (top + cropHeight) / height },
+  }
 }

@@ -1,3 +1,9 @@
+import { invoiceHref } from "@/lib/financials/invoice-destinations"
+import { SEARCH_CONFIGS } from "@/lib/services/search-config"
+import { arAgingSummary } from "@/lib/reports/ar-aging-result"
+import { buildTaxWorkpaperReport } from "@/lib/services/books/tax-adjustments"
+import { buildCashProfitAndLoss } from "@/lib/services/books/cash-activity"
+import { buildSalesUseTaxSummary } from "@/lib/services/books/accountant-package"
 import { formatMoneyCents, formatPercent } from "@/lib/reports/format"
 import { isToggleOn, periodRange } from "@/lib/reports/params"
 import type { ReportDefinition, ReportRow, ReportTable } from "@/lib/reports/types"
@@ -49,6 +55,43 @@ const BILLING_MODEL_LABELS: Record<string, string> = {
 
 async function booksOrgId() {
   return (await requireOrgContext()).orgId
+}
+
+const salesUseTax: ReportDefinition = {
+  slug: "sales-use-tax",
+  title: "Sales & Use Tax",
+  summary: "Review taxable sales, credits, and accrued use tax by jurisdiction.",
+  group: "compliance",
+  scopes: ["org"],
+  permissions: ["books.tax"],
+  available: (ctx) => ctx.hasArcBooks,
+  params: [{ key: "period", kind: "period", label: "Period" }],
+  run: async (ctx) => {
+    const range = periodRange(ctx.params.period ?? "ytd")
+    const report = await buildSalesUseTaxSummary({
+      startDate: range.from ?? "1900-01-01",
+      endDate: range.to ?? new Date().toISOString().slice(0, 10),
+    })
+    return {
+      subtitle: `${report.startDate} – ${report.endDate}`,
+      notice: { tone: "warning", message: [report.warning, ...report.limitations].join(" ") },
+      tables: [{
+        key: "jurisdictions",
+        columns: [
+          { key: "jurisdiction", header: "Jurisdiction" },
+          { key: "taxable", header: "Taxable sales", type: "money" },
+          { key: "exempt", header: "Exempt sales", type: "money" },
+          { key: "unclassified", header: "Unclassified sales", type: "money" },
+          { key: "salesTax", header: "Sales tax", type: "money" },
+          { key: "useTax", header: "Accrued use tax", type: "money" },
+        ],
+        rows: report.rows.map(row => ({
+          key: row.jurisdiction,
+          cells: { jurisdiction: row.jurisdiction, taxable: row.taxableSalesCents, exempt: row.exemptSalesCents, unclassified: row.unclassifiedSalesCents, salesTax: row.taxCents, useTax: row.useTaxCents },
+        })),
+      }],
+    }
+  },
 }
 
 const booksTrialBalance: ReportDefinition = {
@@ -134,6 +177,103 @@ const booksProfitAndLoss: ReportDefinition = {
   },
 }
 
+const booksCashProfitAndLoss: ReportDefinition = {
+  slug: "books-cash-profit-loss",
+  title: "Cash Profit & Loss",
+  summary: "Collected income and paid costs by their posted accounts and construction dimensions, with sales tax and capitalized purchases separate.",
+  group: "financial",
+  scopes: ["org"],
+  permissions: ["books.read"],
+  available: (ctx) => ctx.hasArcBooks,
+  params: [{ key: "period", kind: "period", label: "Period" }],
+  run: async (ctx) => {
+    const range = periodRange(ctx.params.period ?? "ytd")
+    const start = range.from ?? "1900-01-01", end = range.to ?? new Date().toISOString().slice(0, 10)
+    const report = await buildCashProfitAndLoss(start, end)
+    const columns: ReportTable["columns"] = [
+      { key: "code", header: "Account" }, { key: "kind", header: "Type", type: "status" },
+      { key: "projectName", header: "Project" }, { key: "companyName", header: "Company" }, { key: "costCodeName", header: "Cost code" },
+      { key: "project", header: "Project ID", exportOnly: true }, { key: "company", header: "Company ID", exportOnly: true },
+      { key: "costCode", header: "Cost code ID", exportOnly: true }, { key: "amount", header: "Amount", type: "money" },
+    ]
+    const accountRows = report.rows.map(row => ({ key: row.key, cells: { code: row.accountCode, kind: row.kind, projectName: row.projectName, companyName: row.companyName, costCodeName: row.costCodeName,
+      project: typeof row.dimensions.project_id === "string" ? row.dimensions.project_id : null,
+      company: typeof row.dimensions.company_id === "string" ? row.dimensions.company_id : null,
+      costCode: typeof row.dimensions.cost_code_id === "string" ? row.dimensions.cost_code_id : null,
+      amount: row.amountCents } }))
+    return {
+      subtitle: `${start} through ${end} · cash basis`,
+      provenance: { source: "Arc Books collections and paid purchases", status: "Reconciled posted sources", generatedAt: report.capturedAt, scope: ctx.scopeLabel },
+      notice: { tone: "info" as const, message: "Sales tax and capitalized purchases are separate from profit and loss. Tax adjustments are not included." },
+      stats: [
+        { key: "income", label: "Collected income", value: formatMoneyCents(report.revenueCents) },
+        { key: "gross", label: "Gross profit", value: formatMoneyCents(report.grossProfitCents) },
+        { key: "net", label: "Net income", value: formatMoneyCents(report.netIncomeCents) },
+      ],
+      tables: [
+        { key: "cash-accounts", title: "Income and paid costs", columns,
+          rows: accountRows.filter((_, index) => report.rows[index].kind !== "capitalized"),
+          totals: { code: "Net income", amount: report.netIncomeCents } },
+        { key: "cash-exclusions", title: "Cash movement reconciliation", columns: [{ key: "label", header: "Activity" }, { key: "amount", header: "Amount", type: "money" }],
+          rows: [{ key: "income", cells: { label: "Net income", amount: report.netIncomeCents } },
+            { key: "tax", cells: { label: "Sales tax collected, net of refunds", amount: report.salesTaxCollectedCents } },
+            { key: "capitalized", cells: { label: "Capitalized purchases, net of refunds", amount: -report.capitalizedPurchasesCents } }],
+          totals: { label: "Net cash movement", amount: report.netCashMovementCents } },
+        { key: "cash-evidence", title: "Source detail", columns: [
+          { key: "source", header: "Source" }, { key: "label", header: "Document" }, { key: "projectName", header: "Project" }, { key: "code", header: "Account" }, { key: "kind", header: "Type", type: "status" },
+          { key: "document", header: "Document ID", exportOnly: true }, { key: "fact", header: "Posting fact ID", exportOnly: true },
+          { key: "dimensions", header: "Dimensions", exportOnly: true }, { key: "amount", header: "Amount", type: "money" },
+        ], rows: report.evidence.map((row,index) => ({ key: String(index),
+          href: row.source === "invoice_income" ? invoiceHref(row.documentId, typeof row.dimensions.project_id === "string" ? row.dimensions.project_id : null)
+            : row.source === "paid_bill" ? (typeof row.dimensions.project_id === "string" ? SEARCH_CONFIGS.payable.hrefTemplate.replace("{project_id}", row.dimensions.project_id).replace("{id}", row.documentId) : `/payables?bill=${row.documentId}`)
+            : row.source === "direct_expense" && typeof row.dimensions.project_id === "string" ? SEARCH_CONFIGS.expense.hrefTemplate.replace("{project_id}", row.dimensions.project_id).replace("{id}", row.documentId) : undefined,
+          cells: { source: row.source.replace(/_/g, " "), label: row.documentLabel, projectName: row.projectName, code: row.accountCode, kind: row.kind, document: row.documentId, fact: row.snapshotId,
+            dimensions: JSON.stringify(row.dimensions), amount: row.amountCents } })) },
+      ],
+    }
+  },
+}
+
+const booksTaxWorkpaper: ReportDefinition = {
+  slug: "books-tax-workpaper", title: "Tax Adjustment Workpaper",
+  summary: "Reviewed permanent and timing adjustments reconciled to the exact cash P&L period.",
+  group: "financial", scopes: ["org"], permissions: ["books.read"], available: ctx => ctx.hasArcBooks,
+  params: [{ key: "period", kind: "period", label: "Period" }],
+  run: async ctx => {
+    const range = periodRange(ctx.params.period ?? "lastyear")
+    const start = range.from ?? "1900-01-01", end = range.to ?? new Date().toISOString().slice(0,10)
+    const report = await buildTaxWorkpaperReport(start, end)
+    return {
+      subtitle: `${start} through ${end} · reviewed cash tax workpaper`,
+      provenance: { source: "Arc Books approved tax workpaper", status: "Reviewed", generatedAt: report.reviewedAt, scope: ctx.scopeLabel },
+      notice: { tone: "info" as const, message: "This workpaper applies reviewed manual adjustments to book income. It does not determine filing eligibility or tax elections." },
+      stats: [{ key: "books", label: "Cash book income", value: formatMoneyCents(report.bookIncomeCents) },
+        { key: "adjustments", label: "Reviewed adjustments", value: formatMoneyCents(report.totalCents) },
+        { key: "adjusted", label: "Adjusted income", value: formatMoneyCents(report.adjustedIncomeCents) }],
+      tables: [{ key: "tax-bridge", title: "Book income to adjusted income", columns: [{ key: "line", header: "Line" }, { key: "amount", header: "Amount", type: "money" }],
+        rows: [{ key: "books", cells: { line: "Cash book income", amount: report.bookIncomeCents } },
+          { key: "permanent", cells: { line: "Permanent adjustments", amount: report.permanentCents } },
+          { key: "timing", cells: { line: "Timing adjustments", amount: report.timingCents } }],
+        totals: { line: "Adjusted income", amount: report.adjustedIncomeCents } },
+      { key: "tax-evidence", title: "Reviewed adjustments and evidence", columns: [
+        { key: "description", header: "Adjustment" }, { key: "kind", header: "Type", type: "status" },
+        { key: "evidence", header: "Evidence reference" }, { key: "file", header: "Evidence file ID", exportOnly: true },
+        { key: "version", header: "Frozen document version ID", exportOnly: true }, { key: "checksum", header: "Frozen attachment SHA-256", exportOnly: true },
+        { key: "path", header: "Frozen attachment path", exportOnly: true },
+        { key: "workpaper", header: "Workpaper ID", exportOnly: true }, { key: "basis", header: "Book basis digest", exportOnly: true },
+        { key: "preparer", header: "Preparer ID", exportOnly: true }, { key: "reviewer", header: "Reviewer ID", exportOnly: true },
+        { key: "project", header: "Project ID", exportOnly: true }, { key: "amount", header: "Signed adjustment", type: "money" }],
+        rows: [...report.lines.map(line => ({ key: line.id, cells: { description: line.description, kind: line.kind, evidence: line.evidence_reference,
+          file: line.evidence_file_id, version: line.evidence_snapshot?.document_version_id ?? null, checksum: line.evidence_snapshot?.checksum ?? null, path: line.evidence_snapshot?.storage_path ?? null,
+          workpaper: report.workpaperId, basis: report.baseDigest, preparer: report.preparedBy, reviewer: report.reviewedBy, project: line.project_id, amount: line.amount_cents } })),
+          ...(report.lines.length === 0 ? [{ key: "no-adjustments", cells: { description: "Reviewed no-adjustments confirmation", kind: "confirmation", evidence: report.preparationNotes, file: null, workpaper: report.workpaperId, basis: report.baseDigest, preparer: report.preparedBy, reviewer: report.reviewedBy, project: null, amount: 0 } }] : [])] },
+      { key: "tax-review", title: "Preparation and independent review", columns: [{ key: "stage", header: "Stage" }, { key: "explanation", header: "Explanation" }], rows: [
+        { key: "prepared", cells: { stage: "Preparation", explanation: report.preparationNotes || "See individual adjustment evidence" } },
+        { key: "reviewed", cells: { stage: "Independent review", explanation: report.reviewNotes } }] }],
+    }
+  },
+}
+
 const booksBalanceSheet: ReportDefinition = {
   slug: "books-balance-sheet",
   title: "Balance Sheet",
@@ -212,15 +352,11 @@ const booksCashFlow: ReportDefinition = {
   },
 }
 
-/**
- * The statement a cash-basis filer hands their accountant at year end. Presented
- * as the conversion, not just the result — the adjustment lines are what let a
- * CPA tie it back to the accrual statements in the same catalog.
- */
+/** Operating cash reconciliation; the native cash P&L is a separate definition. */
 const booksCashBasis: ReportDefinition = {
   slug: "books-cash-basis",
-  title: "Cash Basis Summary",
-  summary: "Accrual results converted to a cash basis, showing every conversion adjustment.",
+  title: "Operating Cash",
+  summary: "Operating receipts and disbursements reconciled to accrual results.",
   group: "financial",
   scopes: ["org"],
   permissions: ["books.read"],
@@ -249,7 +385,7 @@ const booksCashBasis: ReportDefinition = {
     return {
       subtitle: `${start} through ${end} · cost of revenue and operating expenses converted together`,
       stats: [
-        { key: "cash", label: "Net income, cash basis", value: formatMoneyCents(report.cashNetIncomeCents) },
+        { key: "cash", label: "Net operating receipts less disbursements", value: formatMoneyCents(report.cashNetIncomeCents) },
         { key: "accrual", label: "Net income, accrual basis", value: formatMoneyCents(report.accrualNetIncomeCents) },
       ],
       tables: [
@@ -260,7 +396,7 @@ const booksCashBasis: ReportDefinition = {
             { key: "amount", header: "Amount", type: "money" },
           ],
           rows,
-          totals: { line: "Net income, cash basis", amount: report.cashNetIncomeCents },
+          totals: { line: "Net operating receipts less disbursements", amount: report.cashNetIncomeCents },
         },
       ],
     }
@@ -513,9 +649,11 @@ const arAging: ReportDefinition = {
   group: "financial",
   scopes: ["org", "project"],
   permissions: ["report.read"],
-  params: [{ key: "asOf", kind: "date", label: "As of" }],
+  params: [{ key: "asOf", kind: "date", label: "As of" }, { key: "view", kind: "select", label: "View", options: [{value:"client",label:"By client"},{value:"project",label:"By project"},{value:"invoices",label:"Invoice detail"}] }],
   run: async (ctx) => {
     const report = await getArAgingReport({ projectId: ctx.projectId, asOf: ctx.params.asOf })
+    if (ctx.params.view !== "invoices") return arAgingSummary(report, ctx.params.view === "project" ? "project" : "client")
+    const openRows = report.rows.filter(row => row.open_balance_cents > 0)
     const buckets: AgingBucket[] = ["current", "1_30", "31_60", "61_90", "90_plus"]
 
     return {
@@ -543,7 +681,7 @@ const arAging: ReportDefinition = {
             { key: "open_balance_cents", header: "Open", type: "money" },
             { key: "status", header: "status", exportOnly: true },
           ],
-          rows: report.rows.map((row) => ({
+          rows: openRows.map((row) => ({
             key: row.invoice_id,
             href: `/invoices/${row.invoice_id}`,
             cells: {
@@ -563,8 +701,8 @@ const arAging: ReportDefinition = {
             },
           })),
           totals: {
-            invoice_number: `${report.rows.length} invoice${report.rows.length === 1 ? "" : "s"}`,
-            total_cents: report.totals.total_invoiced_cents,
+            invoice_number: `${openRows.length} invoice${openRows.length === 1 ? "" : "s"}`,
+            total_cents: openRows.reduce((sum, row) => sum + row.total_cents, 0),
             open_balance_cents: report.totals.total_open_cents,
           },
           emptyMessage: "No open receivables as of this date.",
@@ -1535,9 +1673,12 @@ function taxYearOptions() {
 }
 
 export const FINANCIAL_REPORTS: ReportDefinition[] = [
+  salesUseTax,
   booksTrialBalance,
   booksProfitAndLoss,
   booksCashBasis,
+  booksCashProfitAndLoss,
+  booksTaxWorkpaper,
   booksBalanceSheet,
   booksCashFlow,
   booksGeneralLedger,

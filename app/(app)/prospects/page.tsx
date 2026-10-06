@@ -6,5 +6,5 @@ export const instant = false
 
 export default async function ProspectsPage() {
   await connection()
-  redirect("/pipeline?view=prospects")
+  redirect("/pipeline")
 }

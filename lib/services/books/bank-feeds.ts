@@ -13,6 +13,8 @@ import { requireBooksAuthorization as requireAuthorization } from "@/lib/service
 import { booksDigest } from "@/lib/services/books/hash"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
+import { processBankAiSuggestionsForOrg } from "@/lib/services/books/bank-ai-suggestions"
+import { bankFeedFailureState, bankFeedSuccessState, bankFeedWebhookFailureState, canSyncBankFeed } from "@/lib/services/books/bank-feed-health"
 
 const connectionSchema = z.object({
   id: z.string().uuid(),
@@ -21,6 +23,7 @@ const connectionSchema = z.object({
   external_item_id: z.string(),
   secret_ref: z.string(),
   cursor: z.string().nullable(),
+  status: z.enum(["pending", "active", "reauth_required", "error", "disconnected"]),
 })
 
 async function requireBankContext(orgId?: string) {
@@ -412,6 +415,13 @@ async function applyTransactionChange(input: {
     provider_event_id: input.eventId ?? null,
   }, { onConflict: "bank_transaction_id,payload_hash", ignoreDuplicates: true })
   if (revisionResult.error) throw new Error(`Failed to save bank transaction revision: ${revisionResult.error.message}`)
+  if (input.transaction.lifecycleStatus === "posted") {
+    const queueResult = await service.from("bank_transaction_ai_suggestions").upsert({
+      org_id: input.orgId,
+      transaction_id: transactionId,
+    }, { onConflict: "transaction_id", ignoreDuplicates: true })
+    if (queueResult.error) console.error("[banking-ai] Failed to queue bank coding suggestion", queueResult.error)
+  }
 }
 
 async function applyRemovedTransaction(orgId: string, externalTransactionId: string, eventId?: string) {
@@ -447,16 +457,18 @@ async function applyRemovedTransaction(orgId: string, externalTransactionId: str
   if (revisionResult.error) throw new Error(`Failed to record removed transaction: ${revisionResult.error.message}`)
 }
 
-export async function syncBankFeedConnection(connectionId: string, eventId?: string) {
+export async function syncBankFeedConnection(connectionId: string, eventId?: string, options: { runAiSuggestions?: boolean } = {}) {
   const service = createServiceSupabaseClient()
   const { data, error } = await service
     .from("bank_feed_connections")
-    .select("id, org_id, provider, external_item_id, secret_ref, cursor")
+    .select("id, org_id, provider, external_item_id, secret_ref, cursor, status")
     .eq("id", connectionId)
-    .eq("status", "active")
     .single()
   if (error) throw new Error(`Failed to load bank-feed connection: ${error.message}`)
   const connection = connectionSchema.parse(data)
+  if (!canSyncBankFeed(connection.status)) {
+    return { added: 0, modified: 0, removed: 0, cursor: connection.cursor, aiSuggestions: { assessed: 0, failed: 0 }, skipped: true as const }
+  }
   const provider = getBankFeedProvider(connection.provider)
   const accessToken = decryptIntegrationSecret(connection.secret_ref)
   const accountIds = await accountMap(connection.org_id, connection.id)
@@ -464,30 +476,53 @@ export async function syncBankFeedConnection(connectionId: string, eventId?: str
   let added = 0
   let modified = 0
   let removed = 0
-  do {
-    const page = await provider.syncTransactions(accessToken, cursor)
-    for (const transaction of page.added) {
-      await applyTransactionChange({ orgId: connection.org_id, accountIds, transaction, changeKind: "added", eventId })
-      added += 1
+  try {
+    do {
+      const page = await provider.syncTransactions(accessToken, cursor)
+      for (const transaction of page.added) {
+        await applyTransactionChange({ orgId: connection.org_id, accountIds, transaction, changeKind: "added", eventId })
+        added += 1
+      }
+      for (const transaction of page.modified) {
+        await applyTransactionChange({ orgId: connection.org_id, accountIds, transaction, changeKind: "modified", eventId })
+        modified += 1
+      }
+      for (const externalId of page.removedExternalIds) {
+        await applyRemovedTransaction(connection.org_id, externalId, eventId)
+        removed += 1
+      }
+      cursor = page.nextCursor
+      const cursorResult = await service.from("bank_feed_connections").update({
+        cursor,
+      }).eq("org_id", connection.org_id).eq("id", connection.id).neq("status", "disconnected")
+      if (cursorResult.error) throw new Error(`Failed to advance Plaid cursor: ${cursorResult.error.message}`)
+      if (!page.hasMore) break
+    } while (true)
+  } catch (syncError) {
+    const failure = bankFeedFailureState(syncError)
+    const failureResult = await service.from("bank_feed_connections").update({ status: failure.status, last_error: failure.lastError }).eq("org_id", connection.org_id).eq("id", connection.id).neq("status", "disconnected")
+    if (failureResult.error) console.error("[banking] Failed to persist bank-feed error", failureResult.error)
+    throw syncError
+  }
+  const success = bankFeedSuccessState()
+  const successResult = await service.from("bank_feed_connections").update({
+    status: success.status,
+    last_error: success.lastError,
+    last_refresh_at: new Date().toISOString(),
+  }).eq("org_id", connection.org_id).eq("id", connection.id).neq("status", "disconnected").select("id").maybeSingle()
+  if (successResult.error) throw new Error(`Failed to complete Plaid sync: ${successResult.error.message}`)
+  if (!successResult.data) {
+    return { added, modified, removed, cursor, aiSuggestions: { assessed: 0, failed: 0 }, skipped: true as const }
+  }
+  let aiSuggestions = { assessed: 0, failed: 0 }
+  if (options.runAiSuggestions !== false) {
+    try {
+      aiSuggestions = await processBankAiSuggestionsForOrg(connection.org_id)
+    } catch (error) {
+      console.error("[banking-ai] Suggestion processing failed after bank sync", error)
     }
-    for (const transaction of page.modified) {
-      await applyTransactionChange({ orgId: connection.org_id, accountIds, transaction, changeKind: "modified", eventId })
-      modified += 1
-    }
-    for (const externalId of page.removedExternalIds) {
-      await applyRemovedTransaction(connection.org_id, externalId, eventId)
-      removed += 1
-    }
-    cursor = page.nextCursor
-    const cursorResult = await service.from("bank_feed_connections").update({
-      cursor,
-      last_refresh_at: new Date().toISOString(),
-      last_error: null,
-    }).eq("org_id", connection.org_id).eq("id", connection.id)
-    if (cursorResult.error) throw new Error(`Failed to advance Plaid cursor: ${cursorResult.error.message}`)
-    if (!page.hasMore) break
-  } while (true)
-  return { added, modified, removed, cursor }
+  }
+  return { added, modified, removed, cursor, aiSuggestions }
 }
 
 export async function receivePlaidWebhook(rawBody: string, verificationHeader: string | null) {
@@ -532,7 +567,7 @@ export async function processPendingBankFeedEvents(limit = 25) {
   const service = createServiceSupabaseClient()
   const { data, error } = await service
     .from("bank_feed_events")
-    .select("id, org_id, connection_id, event_type, attempt_count")
+    .select("id, org_id, connection_id, event_type, attempt_count, payload")
     .eq("provider", "plaid")
     .in("processing_status", ["pending", "failed"])
     .lt("attempt_count", 8)
@@ -562,8 +597,12 @@ export async function processPendingBankFeedEvents(limit = 25) {
     }
     if (!claimed) continue
     try {
-      if (String(row.event_type).startsWith("TRANSACTIONS.")) {
-        await syncBankFeedConnection(row.connection_id, row.id)
+      if (row.event_type === "ITEM.ERROR") {
+        const failure = bankFeedWebhookFailureState(row.payload)
+        const connectionUpdate = await service.from("bank_feed_connections").update({ status: failure.status, last_error: failure.lastError }).eq("org_id", row.org_id).eq("id", row.connection_id).neq("status", "disconnected")
+        if (connectionUpdate.error) throw new Error(`Failed to record Plaid connection error: ${connectionUpdate.error.message}`)
+      } else if (String(row.event_type).startsWith("TRANSACTIONS.") || row.event_type === "ITEM.LOGIN_REPAIRED") {
+        await syncBankFeedConnection(row.connection_id, row.id, { runAiSuggestions: false })
       }
       await service.from("bank_feed_events").update({ processing_status: "processed", processed_at: new Date().toISOString() }).eq("id", row.id)
       processed += 1
@@ -574,4 +613,15 @@ export async function processPendingBankFeedEvents(limit = 25) {
     }
   }
   return { attempted: data?.length ?? 0, processed, failures }
+}
+
+/** Repair the existing connection without creating another bank account. */
+export async function createPlaidReconnectToken(bankAccountId: string) {
+  const context = await requireBankContext()
+  const service = createServiceSupabaseClient()
+  const { data: account, error: accountError } = await service.from("bank_accounts").select("connection_id").eq("org_id", context.orgId).eq("id", z.string().uuid().parse(bankAccountId)).single()
+  if (accountError || !account?.connection_id) throw new Error("This account does not have a live bank connection")
+  const { data: connection, error } = await service.from("bank_feed_connections").select("secret_ref").eq("org_id", context.orgId).eq("id", account.connection_id).single()
+  if (error || !connection) throw new Error("Bank connection not found")
+  return getBankFeedProvider("plaid").createLinkToken({clientUserId: `${context.orgId}:${context.userId}`, organizationName: "Arc", webhookUrl: webhookUrl(), accessToken: decryptIntegrationSecret(connection.secret_ref)})
 }

@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 
 import { runBooksProjection } from "@/lib/services/books/projector"
+import { recordProjectionFailures } from "@/lib/services/books/reconciliation"
 import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
 import { withCronRun } from "@/lib/services/job-runs"
 
@@ -14,8 +15,9 @@ async function handler(request: NextRequest) {
   // `books-maintenance`, which runs the same pass nightly).
   const full = ["1", "true"].includes((request.nextUrl.searchParams.get("full") ?? "").toLowerCase())
   const result = await runBooksProjection({ full })
+  const surfaced = await recordProjectionFailures(result.results, { full })
   const failures = result.results.reduce((sum, item) => sum + item.failures.length, 0)
-  return NextResponse.json({ ok: failures === 0, failures, ...result }, { status: failures === 0 ? 200 : 207 })
+  return NextResponse.json({ ok: failures === 0, failures, surfaced, ...result }, { status: failures === 0 ? 200 : 207 })
 }
 
 export const GET = withCronRun("books-projection", handler)

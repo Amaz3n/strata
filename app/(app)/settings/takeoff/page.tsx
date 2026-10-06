@@ -1,28 +1,28 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { TakeoffTemplatesPanel } from "@/components/settings/takeoff-templates-panel"
 import { unwrapAction } from "@/lib/action-result"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
-import { groupTemplates } from "@/lib/services/takeoff-templates"
+import { groupTemplates, templateGroupNames } from "@/lib/drawings/condition-templates"
 import { TEMPLATE_LIST_CAP } from "@/lib/validation/takeoff"
 import {
   listConditionTemplatesAction,
   listTakeoffCostCodesAction,
-  listTemplateGroupsAction,
 } from "@/app/(app)/drawings/takeoff-actions"
 
 
 async function TakeoffSettingsPageContent() {
-  const [templatesResult, groupsResult, costCodes, permissionResult] = await Promise.all([
+  await connection()
+  const [templatesResult, costCodes, permissionResult] = await Promise.all([
     listConditionTemplatesAction(),
-    listTemplateGroupsAction(),
     listTakeoffCostCodesAction(),
     getCurrentUserPermissions(),
   ])
 
   const templates = unwrapAction(templatesResult)
-  const groups = unwrapAction(groupsResult)
+  const groups = templateGroupNames(templates)
   const permissions = permissionResult.permissions
   const canManage =
     permissions.includes("*") ||
@@ -49,7 +49,11 @@ async function TakeoffSettingsPageContent() {
 
 export default function TakeoffSettingsPage() {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLayout
+      fullBleed
+      title="Takeoff"
+      breadcrumbs={[{ label: "Settings", href: "/settings" }, { label: "Takeoff" }]}
+    ><PageLoadingSkeleton /></PageLayout>}>
       <TakeoffSettingsPageContent />
     </Suspense>
   )

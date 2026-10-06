@@ -1,5 +1,6 @@
 "use client"
 
+import { useRouter } from "next/navigation"
 import { useState, useTransition, type FormEvent } from "react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
@@ -119,7 +120,9 @@ export function CustomersClient({
   onEnterContext,
   onSetStatus,
 }: CustomersClientProps) {
-  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
+  const router = useRouter()
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null)
+  const selectedCustomer = customers.find((customer) => customer.id === selectedCustomerId) ?? null
   const [sheetOpen, setSheetOpen] = useState(false)
   const [billingCustomer, setBillingCustomer] = useState<Customer | null>(null)
   const [billingStatus, setBillingStatus] = useState("active")
@@ -145,7 +148,7 @@ export function CustomersClient({
           toast.success("Organization deleted", { description: result.message })
           setCustomerToDelete(null)
           setDeleteConfirmationText("")
-          window.location.reload()
+          router.refresh()
         }
       } catch (error: any) {
         console.error(error)
@@ -155,7 +158,7 @@ export function CustomersClient({
   }
 
   const handleViewCustomer = (customer: Customer) => {
-    setSelectedCustomer(customer)
+    setSelectedCustomerId(customer.id)
     setSheetOpen(true)
   }
 
@@ -206,7 +209,7 @@ export function CustomersClient({
           description: "Local billing state was updated for this organization.",
         })
         setBillingCustomer(null)
-        window.location.reload()
+        router.refresh()
       } catch (error: any) {
         console.error(error)
         toast.error("Failed to update subscription", {
@@ -485,6 +488,7 @@ export function CustomersClient({
       )}
 
       <CustomerSheet
+        key={selectedCustomerId ?? "none"}
         customer={selectedCustomer}
         open={sheetOpen}
         onOpenChange={setSheetOpen}

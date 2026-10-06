@@ -1,0 +1,46 @@
+1..45
+ok 1 - check: September retains outstanding amount
+ok 2 - check: close freezes statement description
+ok 3 - check: closed totals cannot be edited
+ok 4 - check: closed transactions cannot move to another cycle
+ok 5 - check: overlapping cycles are rejected
+ok 6 - check: a missing day is rejected
+ok 7 - check: opening must match prior close
+ok 8 - check: October clears the prior item
+ok 9 - check: October ties to real GL
+ok 10 - check: close retry preserves evidence
+ok 11 - check: later clearing preserves September evidence
+ok 12 - check: earlier reopening is blocked
+ok 13 - check: September reopening archives evidence
+ok 14 - check: October reopening archives evidence
+ok 15 - check: ordered reclose ties again
+ok 16 - deposit: September retains outstanding amount
+ok 17 - deposit: close freezes statement description
+ok 18 - deposit: closed totals cannot be edited
+ok 19 - deposit: closed transactions cannot move to another cycle
+ok 20 - deposit: overlapping cycles are rejected
+ok 21 - deposit: a missing day is rejected
+ok 22 - deposit: opening must match prior close
+ok 23 - deposit: October clears the prior item
+ok 24 - deposit: October ties to real GL
+ok 25 - deposit: close retry preserves evidence
+ok 26 - deposit: later clearing preserves September evidence
+ok 27 - deposit: earlier reopening is blocked
+ok 28 - deposit: September reopening archives evidence
+ok 29 - deposit: October reopening archives evidence
+ok 30 - deposit: ordered reclose ties again
+ok 31 - card: September retains outstanding amount
+ok 32 - card: close freezes statement description
+ok 33 - card: closed totals cannot be edited
+ok 34 - card: closed transactions cannot move to another cycle
+ok 35 - card: overlapping cycles are rejected
+ok 36 - card: a missing day is rejected
+ok 37 - card: opening must match prior close
+ok 38 - card: October clears the prior item
+ok 39 - card: October ties to real GL
+ok 40 - card: close retry preserves evidence
+ok 41 - card: later clearing preserves September evidence
+ok 42 - card: earlier reopening is blocked
+ok 43 - card: September reopening archives evidence
+ok 44 - card: October reopening archives evidence
+ok 45 - card: ordered reclose ties again

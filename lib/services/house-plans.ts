@@ -1,3 +1,4 @@
+import { readAllRows } from "@/lib/land/paging"
 import type { CostType } from "@/lib/cost-types"
 import {
   diffPlanTakeoffs,
@@ -242,10 +243,10 @@ function mapPlan(row: PlanRow, aggregates: Awaited<ReturnType<typeof loadPlanAgg
   }
 }
 
-export async function listHousePlans(
+async function loadHousePlanCollection(
   filters: { status?: HousePlanDto["status"]; divisionId?: string; communityId?: string } = {},
   orgId?: string,
-): Promise<HousePlanDto[]> {
+) {
   const context = await requireOrgContext(orgId)
   await requirePermission("plan.read", context)
   const divisionAccess = await getDivisionAccessForUser({
@@ -257,14 +258,14 @@ export async function listHousePlans(
     divisionAccess.assignedOnly &&
     !divisionAccess.divisionIds.includes(filters.divisionId)
   ) {
-    return []
+    return { plans: [] as HousePlanDto[], aggregates: await loadPlanAggregates(context, []) }
   }
   const scopedDivisionIds = filters.divisionId
     ? [filters.divisionId]
     : divisionAccess.assignedOnly
       ? divisionAccess.divisionIds
       : null
-  let query = context.supabase.from("house_plans").select(planSelect).eq("org_id", context.orgId).order("code").limit(100)
+  let query = context.supabase.from("house_plans").select(planSelect).eq("org_id", context.orgId).order("code").order("id")
   if (filters.status) query = query.eq("status", filters.status)
   if (scopedDivisionIds) {
     query = scopedDivisionIds.length > 0
@@ -275,14 +276,23 @@ export async function listHousePlans(
     const { data, error } = await context.supabase.from("community_plan_availability").select("house_plan_id").eq("org_id", context.orgId).eq("community_id", filters.communityId).eq("is_available", true)
     if (error) throw new Error(`Failed to filter community plans: ${error.message}`)
     const ids = Array.from(new Set((data ?? []).map((row) => row.house_plan_id)))
-    if (ids.length === 0) return []
+    if (ids.length === 0) return { plans: [] as HousePlanDto[], aggregates: await loadPlanAggregates(context, []) }
     query = query.in("id", ids)
   }
-  const { data, error } = await query
-  if (error) throw new Error(`Failed to list house plans: ${error.message}`)
-  const rows = (data ?? []) as PlanRow[]
-  const aggregates = await loadPlanAggregates(context, rows.map((row) => row.id))
-  return rows.map((row) => mapPlan(row, aggregates))
+  const result = await readAllRows<PlanRow>(
+    (from, to) => query.range(from, to),
+    { cap: 10_000, pageSize: 500, label: "Failed to list house plans" },
+  )
+  if (result.truncated) throw new Error("Too many plans. Select a division or community to narrow the library.")
+  const aggregates = await loadPlanAggregates(context, result.rows.map((row) => row.id))
+  return { plans: result.rows.map((row) => mapPlan(row, aggregates)), aggregates }
+}
+
+export async function listHousePlans(
+  filters: { status?: HousePlanDto["status"]; divisionId?: string; communityId?: string } = {},
+  orgId?: string,
+): Promise<HousePlanDto[]> {
+  return (await loadHousePlanCollection(filters, orgId)).plans
 }
 
 async function loadVersionDetails(context: Awaited<ReturnType<typeof requireOrgContext>>, versions: VersionRow[]): Promise<HousePlanVersionDto[]> {
@@ -1110,14 +1120,10 @@ export async function getPlanLadder(
   const context = await requireOrgContext(orgId)
   await requirePermission("plan.read", context)
   const asOf = new Date().toISOString().slice(0, 10)
-  const plans = await listHousePlans(filters, context.orgId)
+  const { plans, aggregates } = await loadHousePlanCollection(filters, context.orgId)
   if (plans.length === 0) return { as_of: asOf, pricing_available: false, rungs: [] }
 
-  const planIds = plans.map((plan) => plan.id)
-  const [aggregates, priceBookDecision] = await Promise.all([
-    loadPlanAggregates(context, planIds),
-    authorize({ permission: "price_book.read", userId: context.userId, orgId: context.orgId, supabase: context.supabase }),
-  ])
+  const priceBookDecision = await authorize({ permission: "price_book.read", userId: context.userId, orgId: context.orgId, supabase: context.supabase })
 
   const liveVersions = aggregates.versions.filter((version) => version.status !== "superseded")
   const versionIds = liveVersions.map((version) => version.id)

@@ -1,5 +1,7 @@
 "use server"
 
+import { taskPeople } from "@/lib/services/task-people"
+import { resolveTaskMentions } from "@/lib/tasks/mentions"
 import { revalidatePath } from "next/cache"
 import { z } from "zod"
 
@@ -237,6 +239,7 @@ function mapFullTask(row: any): Task {
     actual_hours: metadata.actual_hours ?? undefined,
     checklist: metadata.checklist ?? undefined,
     tags: metadata.tags ?? undefined,
+    mentioned_user_ids: metadata.mentioned_user_ids ?? [],
     created_by: row.created_by ?? undefined,
     created_by_name: creator?.full_name ?? undefined,
     assigned_by: row.assigned_by ?? undefined,
@@ -248,6 +251,7 @@ function mapFullTask(row: any): Task {
 /** Metadata (jsonb) holds the construction-specific fields not in dedicated columns. */
 function buildMetadata(base: Record<string, any>, input: Partial<TaskInput>): Record<string, any> {
   const metadata = { ...base }
+  if (input.mentioned_user_ids !== undefined) metadata.mentioned_user_ids = input.mentioned_user_ids
   if (input.location !== undefined) metadata.location = input.location || undefined
   if (input.trade !== undefined) metadata.trade = input.trade || undefined
   if (input.estimated_hours !== undefined) metadata.estimated_hours = input.estimated_hours
@@ -282,15 +286,17 @@ async function fetchTaskById(
 export async function listMyTasksAction(): Promise<Task[]> {
       const { supabase, orgId, userId } = await requireOrgContext()
 
-      const { data: myAssignments } = await supabase
+      const { data: myAssignments, error: assignmentsError } = await supabase
         .from("task_assignments")
         .select("task_id")
         .eq("org_id", orgId)
         .eq("user_id", userId)
 
+      if (assignmentsError) throw new Error(`Failed to load task assignments: ${assignmentsError.message}`)
+
       const assignedIds = [...new Set((myAssignments ?? []).map((row: any) => row.task_id as string))]
 
-      let orClause = `created_by.eq.${userId}`
+      let orClause = `created_by.eq.${userId},metadata->mentioned_user_ids.cs.["${userId}"]`
       if (assignedIds.length > 0) orClause += `,id.in.(${assignedIds.join(",")})`
 
       const { data, error } = await supabase
@@ -340,6 +346,9 @@ export async function createMyTaskAction(input: unknown): Promise<ActionResult<T
       const parsed = taskInputSchema.parse(input)
       const { supabase, orgId, userId } = await requireOrgContext()
 
+      const people = await taskPeople({ supabase, orgId, userId } as Awaited<ReturnType<typeof requireOrgContext>>, parsed.project_id)
+      if (parsed.assignee_kind === "user" && !people.some(person => person.id === parsed.assignee_id)) throw new Error("Choose someone with access to this task")
+      parsed.mentioned_user_ids = resolveTaskMentions(parsed.description ?? "", people.map(person => ({ id: person.id, name: person.full_name })))
       const metadata = buildMetadata({}, parsed)
 
       const { data, error } = await supabase
@@ -393,7 +402,7 @@ export async function updateMyTaskAction(taskId: string, input: Partial<TaskInpu
 
       const { data: existing, error: fetchError } = await supabase
         .from("tasks")
-        .select("id, status, metadata, due_date, reminder_at")
+        .select("id, status, metadata, due_date, reminder_at, description, project_id")
         .eq("org_id", orgId)
         .eq("id", taskId)
         .single()
@@ -402,6 +411,13 @@ export async function updateMyTaskAction(taskId: string, input: Partial<TaskInpu
         throw new Error("Task not found or not accessible")
       }
 
+      if (parsed.description !== undefined || parsed.mentioned_user_ids !== undefined || parsed.project_id !== undefined || parsed.assignee_kind === "user") {
+        const people = await taskPeople({ supabase, orgId, userId } as Awaited<ReturnType<typeof requireOrgContext>>, parsed.project_id ?? existing.project_id)
+        if (parsed.assignee_kind === "user" && !people.some(person => person.id === parsed.assignee_id)) throw new Error("Choose someone with access to this task")
+        if (parsed.description !== undefined || parsed.mentioned_user_ids !== undefined || parsed.project_id !== undefined) {
+          parsed.mentioned_user_ids = resolveTaskMentions(parsed.description ?? existing.description ?? "", people.map(person => ({ id: person.id, name: person.full_name })))
+        }
+      }
       const updateData: Record<string, unknown> = {}
       if (parsed.title !== undefined) updateData.title = parsed.title
       if (parsed.description !== undefined) updateData.description = parsed.description || null
@@ -437,8 +453,9 @@ export async function updateMyTaskAction(taskId: string, input: Partial<TaskInpu
       }
 
       // Reassignment: only touch assignments when an assignee was explicitly provided.
-      if (parsed.assignee_id !== undefined && parsed.assignee_kind) {
-        await supabase.from("task_assignments").delete().eq("org_id", orgId).eq("task_id", taskId)
+      if (parsed.clear_assignee || (parsed.assignee_id !== undefined && parsed.assignee_kind)) {
+        const { error: assignmentError } = await supabase.from("task_assignments").delete().eq("org_id", orgId).eq("task_id", taskId)
+        if (assignmentError) throw new Error("Unable to clear task assignment")
         await applyAssignment(supabase, orgId, userId, taskId, {
           assignee_id: parsed.assignee_id,
           assignee_kind: parsed.assignee_kind,
@@ -517,7 +534,7 @@ export async function listOrgAssignableResourcesAction(): Promise<AssignableReso
           .from("memberships")
           .select(`
             user_id,
-            app_users!inner(id, full_name, email, avatar_url),
+            app_users!memberships_user_id_fkey!inner(id, full_name, email, avatar_url),
             roles!inner(key, label)
           `)
           .eq("org_id", orgId)
@@ -561,4 +578,10 @@ export async function listOrgAssignableResourcesAction(): Promise<AssignableReso
       }
 
       return resources
+}
+
+/** People who can actually open the task; shared by the composer and detail dialog. */
+export async function listTaskPeopleAction(projectId?: string, prospectiveProject = false) {
+  if (projectId) z.string().uuid().parse(projectId)
+  return taskPeople(await requireOrgContext(), projectId, z.boolean().parse(prospectiveProject))
 }

@@ -1,0 +1,7 @@
+1..6
+ok 1 - Payment document marker uses invoker privileges
+ok 2 - Ordinary users cannot invoke payment document marker
+ok 3 - Anonymous users cannot inspect payroll source paths
+ok 4 - Accounting service can classify retained payment paths
+ok 5 - New reviews atomically mark supporting originals private
+ok 6 - Retained supporting proof paths have an indexed lookup

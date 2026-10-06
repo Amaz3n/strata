@@ -1,3 +1,6 @@
+import { cdcTimestamp } from "@/lib/integrations/accounting/qbo/cdc"
+import { upsertAccountingEntityMap } from "@/lib/services/accounting-target"
+import { requirePermission } from "@/lib/services/permissions"
 import { withAccountingDeliveryGroup } from "@/lib/services/accounting-delivery"
 import type { AccountingImportListing, AccountingImportResult } from "@/lib/integrations/accounting/import"
 import { buildAccountingCoding } from "@/lib/services/accounting-coding"
@@ -346,6 +349,8 @@ type ResolvedContext = {
   externalAccountId: string
   batch: QboImportBatchCache
   importClaimToken?: string
+  importClaimType?: QboImportEntityType
+  importClaimExternalId?: string
 }
 
 /** The set of QBO ids already linked to an Arc record, per entity classification. */
@@ -1256,8 +1261,27 @@ async function persistImportChildren(
   return { data: (data ?? []).map((id: string) => ({ id })), error: null }
 }
 
-/** Write the inbound sync-record link so the existing two-way sync adopts the record. */
+type ImportCompletionContext = Pick<
+  ResolvedContext,
+  "orgId" | "connectionId" | "externalAccountId" | "importClaimToken" | "importClaimType" | "importClaimExternalId"
+>
+
+function completionScope(ctx: ImportCompletionContext, externalId: string) {
+  if (!ctx.importClaimToken || !ctx.importClaimType || ctx.importClaimExternalId !== externalId)
+    throw new Error("An owned import completion is required")
+  return {
+    p_org_id: ctx.orgId,
+    p_connection_id: ctx.connectionId,
+    p_realm_id: ctx.externalAccountId,
+    p_claim_token: ctx.importClaimToken,
+    p_import_type: ctx.importClaimType,
+    p_external_id: externalId,
+  }
+}
+
+/** Merge completion against the current identity under the existing import lease. */
 async function linkSyncRecord(params: {
+  ctx: ImportCompletionContext
   supabase: ReturnType<typeof createServiceSupabaseClient>
   orgId: string
   connectionId: string
@@ -1265,43 +1289,27 @@ async function linkSyncRecord(params: {
   entityId: string
   qboId: string
   syncToken?: string | null
-  /** False for inbound-only shadow records (e.g. journal-entry lines) the outbound sync must never push. */
   pushable?: boolean
   metadata?: Record<string, unknown>
+  expectedPayment?: {
+    provider_payment_id: string
+    amount_cents: number
+    invoice_id?: string
+    bill_id?: string
+  }
 }) {
-  const { data: previous, error: lookupError } = await checkedDatabase(
-    params.supabase
-      .from("accounting_sync_records")
-      .select("metadata, external_version, external_id")
-      .eq("org_id", params.orgId)
-      .eq("connection_id", params.connectionId)
-      .eq("entity_type", params.entityType)
-      .eq("entity_id", params.entityId)
-      .maybeSingle(),
-  )
-  if (lookupError) throw new Error(lookupError.message)
-  if (previous?.external_id && previous.external_id !== params.qboId) throw new Error("Existing accounting identity cannot be overwritten")
-  const { error } = await checkedDatabase(
-    params.supabase.from("accounting_sync_records").upsert(
-      {
-        org_id: params.orgId,
-        connection_id: params.connectionId,
-        entity_type: params.entityType,
-        entity_id: params.entityId,
-        provider: "qbo",
-        external_id: params.qboId,
-        external_version: params.syncToken ?? previous?.external_version ?? null,
-        last_synced_at: new Date().toISOString(),
-        sync_direction: "inbound",
-        status: "synced",
-        error_message: null,
-        pushable: params.pushable ?? true,
-        metadata: { ...(previous?.metadata ?? {}), ...(params.metadata ?? {}), import_complete: true },
-      },
-      { onConflict: "org_id,connection_id,entity_type,entity_id" },
-    ),
-  )
-  if (error) throw new Error(`Failed to save QuickBooks import mapping: ${error.message}`)
+  if (params.orgId !== params.ctx.orgId || params.connectionId !== params.ctx.connectionId)
+    throw new Error("Import completion scope mismatch")
+  const { data, error } = await createServiceSupabaseClient().rpc("complete_qbo_import_identity", {
+    ...completionScope(params.ctx, params.qboId),
+    p_entity_type: params.entityType,
+    p_entity_id: params.entityId,
+    p_sync_token: params.syncToken ?? null,
+    p_pushable: params.pushable ?? true,
+    p_metadata: params.metadata ?? {},
+    p_expected_payment: params.expectedPayment ?? null,
+  })
+  if (error || data !== true) throw new Error(`Failed to complete import identity: ${error?.message ?? "Import lease was lost"}`)
   if (params.entityType === "invoice") {
     const { error: openingError } = await createServiceSupabaseClient().rpc("reconcile_accounting_invoice_opening_payment", {
       p_org_id: params.orgId,
@@ -1311,31 +1319,16 @@ async function linkSyncRecord(params: {
   }
 }
 
-/**
- * Clear any "ignored / unmatched" webhook events for this QBO id so it leaves
- * the drift queue. Scoped by entity name: QBO ids are per-entity-type
- * sequences, so Bill 1042 and Invoice 1042 routinely coexist in one realm —
- * an unscoped resolve silently discarded the OTHER entity's pending change.
- */
-async function markEventsResolved(
-  supabase: ReturnType<typeof createServiceSupabaseClient>,
-  qboId: string,
-  realmId: string,
-  entityNames: string[],
-) {
-  await checkedDatabase(
-    supabase
-      .from("qbo_webhook_events")
-      .update({
-        process_status: "reconciled",
-        process_error: null,
-        processed_at: new Date().toISOString(),
-      })
-      .eq("realm_id", realmId)
-      .eq("entity_qbo_id", qboId)
-      .in("entity_name", entityNames)
-      .in("process_status", ["ignored", "pending", "error"]),
-  )
+/** Later or ambiguous changes remain eligible for the ordinary inbound drain. */
+async function markEventsResolved(ctx: ImportCompletionContext, qboId: string, entityNames: string[], snapshot?: unknown) {
+  const canonical = QBO_ENTITY_BY_TYPE[ctx.importClaimType as QboImportEntityType]
+  if (!canonical || !entityNames.includes(canonical)) throw new Error("Import completion namespace mismatch")
+  const record = snapshot as { MetaData?: { LastUpdatedTime?: unknown } } | undefined
+  const { data, error } = await createServiceSupabaseClient().rpc("resolve_qbo_import_events", {
+    ...completionScope(ctx, qboId),
+    p_snapshot_timestamp: cdcTimestamp(record?.MetaData?.LastUpdatedTime),
+  })
+  if (error || data !== true) throw new Error(`Failed to resolve import events: ${error?.message ?? "Import lease was lost"}`)
 }
 
 /**
@@ -1345,6 +1338,149 @@ async function markEventsResolved(
  * future import auto-maps it — but never clobber a project that is already linked to a customer, and
  * never re-map a customer that already resolves elsewhere.
  */
+/** Permission/routing failure occurs before the item's first financial create. */
+async function preflightImportRouting(
+  ctx: ResolvedContext,
+  client: QBOClient,
+  item: {
+    entityType: QboImportEntityType
+    qboId: string
+    projectId?: string
+    allocations?: Record<string, string>
+  },
+  accounts: { expense: Set<string>; income: Set<string> } = { expense: new Set(), income: new Set() },
+): Promise<QBOClient> {
+  const allocations = Object.entries(item.allocations ?? {})
+  const getters = {
+    expense: "getPurchaseById",
+    expense_credit: "getPurchaseById",
+    bill: "getBillById",
+    vendor_credit: "getVendorCreditById",
+    journal_entry: "getJournalEntryById",
+    client_deposit: "getJournalEntryById",
+  } as const
+  const getter = getters[item.entityType as keyof typeof getters]
+  if (!getter) return client
+  const remote = await client[getter](item.qboId)
+  if (!remote) throw new Error("Accounting record not found during preflight")
+  const lines = (remote.Line ?? []) as Array<Record<string, any>>
+  const targetProjects = new Set<string>()
+  const applicableLines = new Set<Record<string, any>>()
+  for (const line of lines) {
+    const detail = line.AccountBasedExpenseLineDetail ?? line.ItemBasedExpenseLineDetail
+    const journal = line.JournalEntryLineDetail
+    const applicable =
+      item.entityType === "journal_entry"
+        ? accounts.expense.has(refValue(journal?.AccountRef) ?? "")
+        : item.entityType === "client_deposit"
+          ? accounts.income.has(refValue(journal?.AccountRef) ?? "") &&
+            String(journal?.PostingType).toLowerCase() === "credit" &&
+            toCents(line.Amount) > 0
+          : Boolean(detail)
+    if (!applicable) continue
+    applicableLines.add(line)
+    const customer = detail?.CustomerRef ?? (String(journal?.Entity?.Type).toLowerCase() === "customer" ? journal.Entity.EntityRef : null)
+    const customerId = refValue(customer)
+    const project =
+      item.allocations?.[String(line.Id)] ?? (customerId ? ctx.batch.projectByCustomer.get(customerId) : null) ?? item.projectId
+    if (project) targetProjects.add(project)
+  }
+  for (const projectId of targetProjects)
+    for (const permission of ["bill.write", "invoice.write"] as const)
+      await requireAuthorization({
+        permission,
+        userId: ctx.userId,
+        orgId: ctx.orgId,
+        projectId,
+        resourceType: "project",
+        resourceId: projectId,
+        supabase: ctx.supabase,
+        logDecision: true,
+      })
+  const proposedCustomerByProject = new Map<string, string>()
+  const planned: Array<{
+    lineId: string
+    customerId: string
+    customerName: string | null
+    projectId: string
+  }> = []
+  const routeByProject = new Map<string, { id: string; connection_id: string; dimensions: unknown } | null>()
+  for (const [lineId, projectId] of allocations) {
+    const matches = lines.filter((line) => String(line.Id) === lineId)
+    if (matches.length !== 1) throw new Error("Allocated accounting line is missing or ambiguous")
+    const line = matches[0]
+    if (!applicableLines.has(line)) throw new Error("Allocated accounting line is not applicable to this import type")
+    const detail = line.AccountBasedExpenseLineDetail ?? line.ItemBasedExpenseLineDetail
+    const journalEntity = line.JournalEntryLineDetail?.Entity
+    const customer = detail?.CustomerRef ?? (String(journalEntity?.Type).toLowerCase() === "customer" ? journalEntity.EntityRef : null)
+    const customerId = refValue(customer)
+    if (!routeByProject.has(projectId)) {
+      const { data } = await checkedDatabase(
+        ctx.supabase
+          .from("accounting_entity_map")
+          .select("id,connection_id,dimensions")
+          .eq("org_id", ctx.orgId)
+          .eq("project_id", projectId)
+          .maybeSingle(),
+      )
+      routeByProject.set(projectId, data)
+    }
+    const map = routeByProject.get(projectId)
+    if (map && map.connection_id !== ctx.connectionId)
+      throw new Error("The selected project is routed to a different accounting connection")
+    const linkedCustomer = (map?.dimensions as { customer?: { id?: string } } | null)?.customer?.id
+    if (customerId && !ctx.batch.projectByCustomer.has(customerId)) {
+      if (linkedCustomer && linkedCustomer !== customerId)
+        throw new Error("The selected project is already linked to another accounting customer")
+      const proposedCustomer = proposedCustomerByProject.get(projectId)
+      if (proposedCustomer && proposedCustomer !== customerId)
+        throw new Error("The selected project has conflicting proposed accounting customers")
+      proposedCustomerByProject.set(projectId, customerId)
+      planned.push({
+        lineId,
+        customerId,
+        customerName: refName(customer),
+        projectId,
+      })
+    }
+  }
+  // Check every proposed routing effect before any map or financial mutation.
+  if (planned.length) {
+    await requirePermission("accounting.entity_map.manage", await requireOrgContext(ctx.orgId))
+    for (const link of planned)
+      await requireAuthorization({
+        permission: "accounting.entity_map.manage",
+        userId: ctx.userId,
+        orgId: ctx.orgId,
+        projectId: link.projectId,
+        resourceType: "accounting_entity_map",
+        supabase: ctx.supabase,
+        logDecision: true,
+      })
+    for (const link of planned)
+      await resolveLineProject({
+        supabase: ctx.supabase,
+        orgId: ctx.orgId,
+        connectionId: ctx.connectionId,
+        userId: ctx.userId,
+        lineId: link.lineId,
+        qboCustomerId: link.customerId,
+        qboCustomerName: link.customerName,
+        allocations: { [link.lineId]: link.projectId },
+        projectByCustomer: ctx.batch.projectByCustomer,
+        fallbackProjectId: link.projectId,
+      })
+  }
+  // Cache the inspected source record without mutating a shared client instance.
+  return new Proxy(client, {
+    get(target, key) {
+      if (key === getter) return async (id: string) => (id === item.qboId ? remote : target[getter](id))
+      const value = Reflect.get(target, key, target)
+      return typeof value === "function" ? value.bind(target) : value
+    },
+  })
+}
+
 async function resolveLineProject(params: {
   supabase: ReturnType<typeof createServiceSupabaseClient>
   orgId: string
@@ -1374,22 +1510,20 @@ async function resolveLineProject(params: {
       }
       const dimensions = {
         ...((existingMap?.dimensions as Record<string, unknown> | null) ?? {}),
-        customer: { id: qboCustomerId, name: params.qboCustomerName ?? null },
+        customer: {
+          id: qboCustomerId,
+          name: params.qboCustomerName ?? "Customer",
+        },
       }
-      const { error } = existingMap
-        ? await checkedDatabase(
-            params.supabase.from("accounting_entity_map").update({ dimensions }).eq("org_id", params.orgId).eq("id", existingMap.id),
-          )
-        : await checkedDatabase(
-            params.supabase.from("accounting_entity_map").insert({
-              org_id: params.orgId,
-              connection_id: params.connectionId,
-              project_id: override,
-              dimensions,
-              created_by: params.userId,
-            }),
-          )
-      if (error) throw new Error(`Unable to save accounting customer mapping: ${error.message}`)
+      const existingCustomer = (existingMap?.dimensions as { customer?: { id?: string } } | null)?.customer?.id
+      if (existingCustomer && existingCustomer !== qboCustomerId)
+        throw new Error("The selected project is already linked to another accounting customer")
+      await upsertAccountingEntityMap({
+        id: existingMap?.id,
+        connectionId: params.connectionId,
+        projectId: override,
+        dimensions,
+      })
       projectByCustomer.set(qboCustomerId, override)
     }
     return override
@@ -1596,6 +1730,7 @@ async function importInvoice(ctx: ResolvedContext, client: QBOClient, connection
   }
 
   await linkSyncRecord({
+    ctx,
     syncToken: qbo.SyncToken ?? null,
     supabase,
     orgId,
@@ -1627,7 +1762,7 @@ async function importInvoice(ctx: ResolvedContext, client: QBOClient, connection
     externalInvoiceId: qboId,
     lines: linkedLines,
   })
-  await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["Invoice"])
+  await markEventsResolved(ctx, qboId, ["Invoice"], qbo)
   await recordEvent({
     orgId,
     actorId: ctx.userId,
@@ -1819,6 +1954,7 @@ async function importExpense(
 
     await postJobCostActualsForImportedExpense(ctx, expenseRow.id)
     await linkSyncRecord({
+      ctx,
       syncToken: qbo.SyncToken ?? null,
       supabase,
       orgId,
@@ -1827,7 +1963,7 @@ async function importExpense(
       entityId: expenseRow.id,
       qboId,
     })
-    await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["Purchase", "Bill"])
+    await markEventsResolved(ctx, qboId, ["Purchase", "Bill"], qbo)
     await recordEvent({
       orgId,
       actorId: ctx.userId,
@@ -1903,6 +2039,7 @@ async function importExpense(
 
     await postJobCostActualsForImportedExpense(ctx, expenseRow.id)
     await linkSyncRecord({
+      ctx,
       syncToken: qbo.SyncToken ?? null,
       supabase,
       orgId,
@@ -1931,7 +2068,7 @@ async function importExpense(
     created += 1
   }
 
-  await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["Purchase", "Bill"])
+  await markEventsResolved(ctx, qboId, ["Purchase", "Bill"], qbo)
   return { skipped: created === 0, entityId: firstEntityId ?? undefined }
 }
 
@@ -2097,6 +2234,7 @@ async function importExpenseCredit(
 
     await postJobCostActualsForImportedExpense(ctx, expenseRow.id)
     await linkSyncRecord({
+      ctx,
       syncToken: qbo.SyncToken ?? null,
       supabase,
       orgId,
@@ -2107,7 +2245,7 @@ async function importExpenseCredit(
       pushable: false,
       metadata: { source: "expense_credit" },
     })
-    await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["Purchase"])
+    await markEventsResolved(ctx, qboId, ["Purchase"], qbo)
     await recordEvent({
       orgId,
       actorId: ctx.userId,
@@ -2180,6 +2318,7 @@ async function importExpenseCredit(
 
     await postJobCostActualsForImportedExpense(ctx, expenseRow.id)
     await linkSyncRecord({
+      ctx,
       syncToken: qbo.SyncToken ?? null,
       supabase,
       orgId,
@@ -2208,7 +2347,7 @@ async function importExpenseCredit(
     created += 1
   }
 
-  await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["Purchase"])
+  await markEventsResolved(ctx, qboId, ["Purchase"], qbo)
   return { skipped: created === 0, entityId: firstEntityId ?? undefined }
 }
 
@@ -2369,6 +2508,7 @@ async function importBill(
     await postJobCostActualsForImportedBill(ctx, billRow.id)
   }
   await linkSyncRecord({
+    ctx,
     syncToken: qbo.SyncToken ?? null,
     supabase,
     orgId,
@@ -2394,7 +2534,7 @@ async function importBill(
       .eq("id", billRow.id),
   )
   if (completeBillError) throw new Error(`Failed to finalize imported bill: ${completeBillError.message}`)
-  await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["Bill"])
+  await markEventsResolved(ctx, qboId, ["Bill"], qbo)
   await recordEvent({
     orgId,
     actorId: ctx.userId,
@@ -2547,6 +2687,7 @@ async function importVendorCredit(
 
   await postJobCostActualsForImportedBill(ctx, creditRow.id)
   await linkSyncRecord({
+    ctx,
     syncToken: qbo.SyncToken ?? null,
     supabase,
     orgId,
@@ -2573,7 +2714,7 @@ async function importVendorCredit(
   if (completeCreditError) {
     throw new Error(`Failed to finalize imported vendor credit: ${completeCreditError.message}`)
   }
-  await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["VendorCredit"])
+  await markEventsResolved(ctx, qboId, ["VendorCredit"], qbo)
   await recordEvent({
     orgId,
     actorId: ctx.userId,
@@ -2683,6 +2824,7 @@ async function importPayment(ctx: ResolvedContext, client: QBOClient, connection
       throw new Error(`Linked invoice ${application.qboId} not found in Arc. Import all linked invoices first.`)
     }
 
+    if (invoice.project_id) await requireAuthorization({ permission: "invoice.write", userId: ctx.userId, orgId, projectId: invoice.project_id, resourceType: "invoice", resourceId: invoice.id, supabase, logDecision: true })
     const amountCents = application.amountCents
     if (amountCents <= 0) continue
     const providerPaymentId = qboImportProviderPaymentId({
@@ -2706,13 +2848,17 @@ async function importPayment(ctx: ResolvedContext, client: QBOClient, connection
       if (Number(existingPayment.amount_cents) !== amountCents || existingPayment.invoice_id !== invoice.id) {
         throw new Error("Existing payment amount or allocation changed; authorize a payment correction before replay")
       }
+      const adopted = await persistImportRow(ctx, connectionId, "payments", "payment", "Payment", qboId, { org_id: orgId, project_id: invoice.project_id, invoice_id: invoice.id, amount_cents: amountCents, provider: "qbo", provider_payment_id: providerPaymentId })
+      if (adopted.data?.id !== existingPayment.id) throw new Error("Existing payment identity changed during adoption")
       firstEntityId ??= existingPayment.id
       await linkSyncRecord({
+        ctx,
         syncToken: qbo.SyncToken ?? null,
         supabase,
         orgId,
         connectionId,
         entityType: "payment",
+        expectedPayment: { provider_payment_id: providerPaymentId, amount_cents: amountCents, invoice_id: invoice.id },
         entityId: existingPayment.id,
         qboId,
         pushable: true,
@@ -2767,11 +2913,13 @@ async function importPayment(ctx: ResolvedContext, client: QBOClient, connection
     firstEntityId ??= paymentRow.id
 
     await linkSyncRecord({
+      ctx,
       syncToken: qbo.SyncToken ?? null,
       supabase,
       orgId,
       connectionId,
       entityType: "payment",
+      expectedPayment: { provider_payment_id: providerPaymentId, amount_cents: amountCents, invoice_id: invoice.id },
       entityId: paymentRow.id,
       qboId,
       pushable: true,
@@ -2796,7 +2944,7 @@ async function importPayment(ctx: ResolvedContext, client: QBOClient, connection
     created += 1
   }
 
-  await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["Payment"])
+  await markEventsResolved(ctx, qboId, ["Payment"], qbo)
 
   return { skipped: created === 0, entityId: firstEntityId ?? undefined }
 }
@@ -2841,6 +2989,7 @@ async function importBillPayment(ctx: ResolvedContext, client: QBOClient, connec
       throw new Error(`Linked bill ${linkedTxn.TxnId} not found in Arc. Import all linked bills first.`)
     }
 
+    if (bill.project_id) await requireAuthorization({ permission: "bill.write", userId: ctx.userId, orgId, projectId: bill.project_id, resourceType: "bill", resourceId: bill.id, supabase, logDecision: true })
     const lineTotalCents = toCents(line.Amount)
     if (lineTotalCents <= 0) continue
 
@@ -2917,13 +3066,17 @@ async function importBillPayment(ctx: ResolvedContext, client: QBOClient, connec
         if (Number(existingPayment.amount_cents) !== p.amount_cents || existingPayment.bill_id !== bill.id) {
           throw new Error("Existing bill payment amount or allocation changed; authorize a payment correction before replay")
         }
+        const adopted = await persistImportRow(ctx, connectionId, "payments", "bill_payment", "BillPayment", qboId, { org_id: orgId, project_id: bill.project_id, bill_id: bill.id, amount_cents: p.amount_cents, provider: "qbo", provider_payment_id: p.provider_payment_id, metadata: p.metadata })
+        if (adopted.data?.id !== existingPayment.id) throw new Error("Existing bill payment identity changed during adoption")
         firstEntityId ??= existingPayment.id
         await linkSyncRecord({
+          ctx,
           syncToken: qbo.SyncToken ?? null,
           supabase,
           orgId,
           connectionId,
           entityType: "bill_payment",
+          expectedPayment: { provider_payment_id: p.provider_payment_id, amount_cents: p.amount_cents, bill_id: bill.id },
           entityId: existingPayment.id,
           qboId,
           pushable: !shouldSplit,
@@ -2963,11 +3116,13 @@ async function importBillPayment(ctx: ResolvedContext, client: QBOClient, connec
       firstEntityId ??= paymentRow.id
 
       await linkSyncRecord({
+        ctx,
         syncToken: qbo.SyncToken ?? null,
         supabase,
         orgId,
         connectionId,
         entityType: "bill_payment",
+        expectedPayment: { provider_payment_id: p.provider_payment_id, amount_cents: p.amount_cents, bill_id: bill.id },
         entityId: paymentRow.id,
         qboId,
         pushable: !shouldSplit,
@@ -3040,7 +3195,7 @@ async function importBillPayment(ctx: ResolvedContext, client: QBOClient, connec
     }
   }
 
-  await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["BillPayment"])
+  await markEventsResolved(ctx, qboId, ["BillPayment"], qbo)
 
   return { skipped: !insertedAny, entityId: firstEntityId ?? undefined }
 }
@@ -3172,6 +3327,7 @@ async function importJournalEntry(
 
     await postJobCostActualsForImportedExpense(ctx, expenseRow.id)
     await linkSyncRecord({
+      ctx,
       syncToken: qbo.SyncToken ?? null,
       supabase,
       orgId,
@@ -3197,7 +3353,7 @@ async function importJournalEntry(
     created += 1
   }
 
-  await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["JournalEntry"])
+  await markEventsResolved(ctx, qboId, ["JournalEntry"], qbo)
   return { skipped: created === 0 }
 }
 
@@ -3353,6 +3509,7 @@ async function importClientDeposit(
     if (paymentError || !paymentRow) throw new Error(paymentError?.message ?? "Failed to record historical deposit payment")
 
     await linkSyncRecord({
+      ctx,
       syncToken: qbo.SyncToken ?? null,
       supabase,
       orgId,
@@ -3364,6 +3521,7 @@ async function importClientDeposit(
       metadata: { source: "client_deposit", qbo_je_line_id: String(line.Id) },
     })
     await linkSyncRecord({
+      ctx,
       syncToken: qbo.SyncToken ?? null,
       supabase,
       orgId,
@@ -3372,6 +3530,7 @@ async function importClientDeposit(
       entityId: paymentRow.id,
       qboId,
       pushable: false,
+      expectedPayment: { provider_payment_id: `qbo_deposit_${connectionId}_${qboId}_${line.Id}`, amount_cents: amountCents, invoice_id: invoiceRow.id },
       metadata: { source: "client_deposit", qbo_je_line_id: String(line.Id) },
     })
     await recalcInvoiceBalanceAndStatus({
@@ -3394,7 +3553,7 @@ async function importClientDeposit(
     created += 1
   }
 
-  await markEventsResolved(supabase, qboId, ctx.externalAccountId, ["JournalEntry"])
+  await markEventsResolved(ctx, qboId, ["JournalEntry"], qbo)
   return { skipped: created === 0, entityId: firstEntityId ?? undefined }
 }
 
@@ -3421,9 +3580,14 @@ export async function linkExistingQboImportRecord({
   })
 
   const connection = await requireAccountingConnectionForOrg(connectionId, resolvedOrgId, { activeOnly: true, provider: "qbo" })
+  const localTable = entityType === "invoice" ? "invoices" : entityType === "expense" ? "project_expenses" : "vendor_bills"
+  const { data: local } = await checkedDatabase(supabase.from(localTable).select("id,project_id").eq("org_id", resolvedOrgId).eq("id", existingEntityId).maybeSingle())
+  if (!local) throw new Error("Existing import target is outside this organization")
+  if (local.project_id) await requireAuthorization({ permission: entityType === "invoice" ? "invoice.write" : "bill.write", userId, orgId: resolvedOrgId, projectId: local.project_id, resourceType: entityType, resourceId: existingEntityId, supabase, logDecision: true })
   // Import claims are an internal concurrency primitive whose RPCs are deliberately service-only.
   // The caller has already passed org membership and accounting authorization above; keep the
-  // actual record reads/writes on the user client so RLS still applies, and elevate only the lease.
+  // actual financial reads/writes retain user RLS or existing owned import RPCs;
+  // only claims and scoped, fenced identity/event completion use service privileges.
   const claimSupabase = createServiceSupabaseClient()
   const { data: claimToken, error: claimError } = await claimSupabase.rpc("accounting_claim_import", {
     p_org_id: resolvedOrgId,
@@ -3461,9 +3625,9 @@ export async function linkExistingQboImportRecord({
         if (error || !data) throw new Error(error?.message ?? "Unable to adopt accounting identity")
       },
     )
-    await markEventsResolved(supabase, qboId, connection.external_account_id, [
-      entityType === "invoice" ? "Invoice" : entityType === "expense" ? "Purchase" : "Bill",
-    ])
+    await markEventsResolved({ orgId: resolvedOrgId, connectionId, externalAccountId: connection.external_account_id,
+      importClaimToken: String(claimToken), importClaimType: entityType, importClaimExternalId: qboId,
+    }, qboId, [entityType === "invoice" ? "Invoice" : entityType === "expense" ? "Purchase" : "Bill"])
     await recordEvent({
       orgId: resolvedOrgId,
       actorId: userId,
@@ -3521,13 +3685,14 @@ export async function importQboRecords({
   // Each record carries its own destination project (org-wide import). Validate every distinct
   // destination belongs to the org in one query. Payments derive their project from the linked
   // document, so they may omit projectId.
-  const projectIds = Array.from(new Set(items.map((item) => item.projectId).filter((id): id is string => Boolean(id))))
+  const projectIds = Array.from(new Set(items.flatMap((item) => [item.projectId, ...Object.values(item.allocations ?? {})]).filter((id): id is string => Boolean(id))))
   if (projectIds.length > 0) {
     const { data: validProjects } = await checkedDatabase(
       supabase.from("projects").select("id").eq("org_id", resolvedOrgId).in("id", projectIds),
     )
     const validIds = new Set((validProjects ?? []).map((row) => row.id))
     if (projectIds.some((id) => !validIds.has(id))) throw new Error("Project not found")
+    for (const projectId of projectIds) for (const permission of ["bill.write", "invoice.write"] as const) await requireAuthorization({ permission, userId, orgId: resolvedOrgId, projectId, resourceType: "project", resourceId: projectId, supabase, logDecision: true })
   }
 
   const connection = await requireAccountingConnectionForOrg(connectionId, resolvedOrgId, { activeOnly: true, provider: "qbo" })
@@ -3600,10 +3765,11 @@ export async function importQboRecords({
     errors: [],
   }
   const affectedProjectIds = new Set<string>()
-  // See linkExistingQboImportRecord: only the internal claim lease uses service privileges.
+  // Claims and completion use narrow fenced service RPCs; financial rows retain
+  // their existing owned import RPCs or user RLS paths.
   const claimSupabase = createServiceSupabaseClient()
 
-  const importOne = async (item: (typeof ordered)[number], ctx: ResolvedContext): Promise<{ skipped: boolean }> => {
+  const importOne = async (item: (typeof ordered)[number], ctx: ResolvedContext, client: QBOClient): Promise<{ skipped: boolean }> => {
     // Project-bound types must name a destination; payments resolve theirs from the linked doc.
     const isPayment = item.entityType === "payment" || item.entityType === "bill_payment"
     if (!isPayment && !item.projectId) throw new Error("No destination project selected")
@@ -3643,7 +3809,8 @@ export async function importQboRecords({
     if (!claimToken) return { skipped: true as const }
 
     try {
-      const outcome = await importOne(item, { ...ctx, importClaimToken: String(claimToken) })
+      const preparedClient = await preflightImportRouting(ctx, client, item, { expense: jeExpenseAccountIds, income: incomeAccountIds })
+      const outcome = await importOne(item, { ...ctx, importClaimToken: String(claimToken), importClaimType: item.entityType, importClaimExternalId: item.qboId }, preparedClient)
       const { data: finished, error: finishError } = await claimSupabase.rpc("accounting_finish_import", {
         p_connection_id: connectionId,
         p_external_entity_type: item.entityType,

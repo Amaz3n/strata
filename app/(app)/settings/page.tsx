@@ -1,25 +1,34 @@
+import { connection } from "next/server"
+import { unstable_rethrow } from "next/navigation"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { SettingsWindow } from "@/components/settings/settings-window"
 import { SettingsSkeleton } from "@/components/settings/settings-skeleton"
 import { requireOrgMembership } from "@/lib/auth/context"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
-import { loadSettingsPanel } from "@/lib/services/settings-page"
+import { loadSettingsPanel, type SettingsPanelData } from "@/lib/services/settings-page"
 import { isSettingsTab } from "@/lib/settings/sections"
-import { runAction } from "@/lib/action-result"
+import { actionError, type ActionResult } from "@/lib/action-result"
 
 export const instant = true
 
 type SettingsPageProps = { searchParams: Promise<{ tab?: string }> }
 
 async function SettingsData({ searchParams }: SettingsPageProps) {
+  await connection()
   const [context, resolved, permissionResult] = await Promise.all([
     requireOrgMembership(),
     searchParams,
     getCurrentUserPermissions(),
   ])
   const tab = isSettingsTab(resolved.tab) ? resolved.tab : "profile"
-  const initialPanel = await runAction(() => loadSettingsPanel(tab, context.orgId))
+  let initialPanel: ActionResult<SettingsPanelData>
+  try {
+    initialPanel = { success: true, data: await loadSettingsPanel(tab, context.orgId) }
+  } catch (error) {
+    unstable_rethrow(error)
+    initialPanel = actionError(error)
+  }
   return (
     <SettingsWindow
       key={`${context.orgId}:${context.user.id}`}

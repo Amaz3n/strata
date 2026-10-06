@@ -1,7 +1,10 @@
+import { getAgreementSigningState } from "@/lib/services/agreement-signing-status"
+import type { AgreementSigningState } from "@/lib/sales/agreement-signing-state"
 import type { PurchaseAgreementPricing } from "@/lib/financials/purchase-agreement-pricing"
-import { getDivisionAccessForUser } from "@/lib/services/authorization"
+import { salesAgreementDetailSchema, salesReservationDetailSchema } from "@/lib/validation/sales-deals"
+import { authorize, requireAuthorization, getDivisionAccessForUser } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
-import { requirePermission } from "@/lib/services/permissions"
+import { hasPermission, requirePermission } from "@/lib/services/permissions"
 import { getProspect, listProspectActivity, type Prospect, type ProspectActivity } from "@/lib/services/prospects"
 
 /**
@@ -206,6 +209,9 @@ export interface SalesDealReservation {
 }
 
 export interface SalesDealDetail {
+  viewer: { orgId: string; actorId: string }
+  capabilities: { canEditProspect: boolean; canManageSale: boolean }
+  signing: AgreementSigningState | null
   deal: SalesDeal
   reservation: SalesDealReservation | null
   /** Priced breakdown off the executed agreement snapshot, when there is one. */
@@ -246,39 +252,56 @@ export async function listLostReasons(prospectIds: string[], orgId?: string): Pr
  * price breakdown, and the event timeline. Everything the detail page renders.
  */
 export async function getSalesDealDetail(dealId: string, orgId?: string): Promise<SalesDealDetail | null> {
-  const deal = await getSalesDeal(dealId, orgId)
-  if (!deal) return null
-
   const context = await requireOrgContext(orgId)
-  const [reservationResult, contractResult, activity, prospect] = await Promise.all([
+  const deal = await getSalesDeal(dealId, context.orgId)
+  if (!deal) return null
+  await requirePermission("sales.read", context)
+  if (deal.projectId) await requireAuthorization({ ...context, projectId: deal.projectId, permission: "sales.read" })
+  const [editOrg, manageOrg, editHome, manageHome] = await Promise.all([
+    hasPermission("org.member", context), hasPermission("sales.manage", context),
+    deal.projectId ? authorize({ ...context, projectId: deal.projectId, permission: "project.manage" }).then(result => result.allowed) : Promise.resolve(true),
+    deal.projectId ? authorize({ ...context, projectId: deal.projectId, permission: "sales.manage" }).then(result => result.allowed) : Promise.resolve(true),
+  ])
+  const [reservationResult, contractResult, activity, prospect, signing] = await Promise.all([
     deal.reservationId
       ? context.supabase
           .from("lot_reservations")
-          .select("id, status, expires_at, asking_price_cents, deposit_required_cents, deposit_invoice_id, notes")
+          .select("id, lot_id, community_id, prospect_id, contract_id, status, expires_at, asking_price_cents, deposit_required_cents, deposit_invoice_id, notes")
           .eq("org_id", context.orgId)
           .eq("id", deal.reservationId)
           .maybeSingle()
-      : Promise.resolve({ data: null }),
+      : Promise.resolve({ data: null, error: null }),
     deal.contractId
       ? context.supabase
           .from("contracts")
-          .select("snapshot")
+          .select("project_id, contract_type, snapshot")
           .eq("org_id", context.orgId)
           .eq("id", deal.contractId)
           .maybeSingle()
-      : Promise.resolve({ data: null }),
+      : Promise.resolve({ data: null, error: null }),
     deal.prospectId ? listProspectActivity(deal.prospectId, context.orgId, 60) : Promise.resolve([]),
     deal.prospectId ? getProspect(deal.prospectId, context.orgId) : Promise.resolve(null),
+    deal.contractId && deal.contractStatus === "draft" ? getAgreementSigningState(deal.contractId,context.orgId) : Promise.resolve(null),
   ])
 
-  const reservationRow = reservationResult.data
-  const snapshot = contractResult.data?.snapshot as
-    | { purchase_agreement?: { pricing?: PurchaseAgreementPricing } }
-    | null
-    | undefined
+  if (reservationResult.error) throw new Error(`Failed to load deal reservation: ${reservationResult.error.message}`)
+  if (contractResult.error) throw new Error(`Failed to load deal agreement: ${contractResult.error.message}`)
+  if (deal.reservationId && !reservationResult.data) throw new Error("The deal reservation is unavailable. Reload the buyer file before continuing.")
+  if (deal.contractId && !contractResult.data) throw new Error("The deal agreement is unavailable. Reload the buyer file before continuing.")
+  const reservationRow = reservationResult.data ? salesReservationDetailSchema.parse(reservationResult.data) : null
+  const contract = contractResult.data ? salesAgreementDetailSchema.parse(contractResult.data) : null
+  if (reservationRow && (reservationRow.id !== deal.reservationId || reservationRow.lot_id !== deal.lotId || reservationRow.community_id !== deal.communityId || reservationRow.prospect_id !== deal.prospectId || reservationRow.contract_id !== deal.contractId)) throw new Error("The deal reservation changed. Reload the buyer file before continuing.")
+  if (contract && contract.project_id !== deal.projectId) throw new Error("The deal agreement belongs to another home. Reload the buyer file before continuing.")
+  if (reservationRow) {
+    const { data: lot, error: lotError } = await context.supabase.from("lots").select("id, community_id, project_id").eq("org_id", context.orgId).eq("id", reservationRow.lot_id).maybeSingle()
+    if (lotError || !lot || lot.community_id !== deal.communityId || lot.project_id !== deal.projectId) throw new Error("The reserved lot changed or is unavailable. Reload the buyer file before continuing.")
+  }
 
   return {
     deal,
+    viewer: { orgId: context.orgId, actorId: context.userId },
+    capabilities: { canEditProspect: editOrg && editHome, canManageSale: manageOrg && manageHome },
+    signing,
     reservation: reservationRow
       ? {
           id: String(reservationRow.id),
@@ -290,7 +313,7 @@ export async function getSalesDealDetail(dealId: string, orgId?: string): Promis
           notes: reservationRow.notes ?? null,
         }
       : null,
-    pricing: snapshot?.purchase_agreement?.pricing ?? null,
+    pricing: contract?.snapshot.purchase_agreement?.pricing ?? null,
     activity,
     prospect,
   }

@@ -1,3 +1,4 @@
+import { after } from "next/server"
 import { randomUUID } from "crypto"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
@@ -12,7 +13,8 @@ import {
 } from "@/lib/financials/invoice-totals"
 import { dollarsToCents } from "@/lib/financials/money"
 import { getProjectPosture, normalizeProductTier, type ProductTier, type ProjectPosture } from "@/lib/product-tier"
-import { getReceivablesPosturePolicy } from "@/lib/receivables/policy"
+import { validateGeneralInvoice } from "@/lib/receivables/general-invoice"
+import { getReceivablesPosturePolicy, getGeneralReceivablesPolicy } from "@/lib/receivables/policy"
 import { createApprovedCostInvoiceFromPreview } from "@/lib/services/approved-cost-invoicing"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -95,7 +97,7 @@ async function resolveInvoicePosture(params: {
   projectId?: string | null
   productTier: ProductTier
 }): Promise<ProjectPosture> {
-  if (!params.projectId) return params.productTier
+  if (!params.projectId) return "residential"
   const { data, error } = await params.supabase
     .from("projects")
     .select("property_type")
@@ -113,7 +115,7 @@ async function requireInvoicePermission(params: {
   projectId?: string | null
   invoiceId?: string
 }) {
-  await requireAuthorization({
+  const decision = await requireAuthorization({
     permission: params.permission,
     userId: params.userId,
     orgId: params.orgId,
@@ -123,6 +125,21 @@ async function requireInvoicePermission(params: {
     resourceType: "invoice",
     resourceId: params.invoiceId,
   })
+  if (!params.projectId && params.permission !== "invoice.read" && decision.divisionScope === "assigned") {
+    throw new Error("Organization-wide invoice access is required for general billing")
+  }
+}
+
+async function assertInvoiceCustomer(supabase: SupabaseClient, orgId: string, input: InvoiceInput) {
+  const problem = validateGeneralInvoice(input)
+  if (problem) throw new Error(problem)
+  if (!input.project_id && input.metadata?.invoice_kind === "earnest_deposit") {
+    const { data: settings, error } = await supabase.from("books_settings").select("workspace_enabled,ledger_authority").eq("org_id", orgId).maybeSingle()
+    if (error || !settings?.workspace_enabled || settings.ledger_authority !== "arc") throw new Error("General deposit requests require Arc Books as your accounting system")
+  }
+  if (!input.customer_id) return
+  const { data, error } = await supabase.from("contacts").select("id").eq("org_id", orgId).eq("id", input.customer_id).maybeSingle()
+  if (error || !data) throw new Error("Choose a customer from this organization")
 }
 
 async function assertInvoiceBudgetLinks(
@@ -216,10 +233,11 @@ function issuedInvoiceSnapshot(params: {
   input: InvoiceInput
   lines: InvoiceLine[]
   totals: InvoiceTotals
+  issuedAt?: string
 }) {
   return {
     schema_version: 1,
-    issued_at: new Date().toISOString(),
+    issued_at: params.issuedAt ?? new Date().toISOString(),
     product_posture: params.posture,
     invoice_number: params.input.invoice_number,
     title: params.input.title,
@@ -931,6 +949,7 @@ export type InvoiceQueueKey =
 export interface ListInvoicesOptions {
   orgId?: string
   projectId?: string
+  generalCustomerIds?: string[]
   limit?: number
   offset?: number
   /** Case-insensitive match on invoice number, title, or customer name. */
@@ -1042,6 +1061,10 @@ export async function listInvoicePage(options: ListInvoicesOptions = {}): Promis
     .order("created_at", { ascending: false })
 
   if (options.projectId) query = query.eq("project_id", options.projectId)
+  if (options.generalCustomerIds) {
+    if (!options.generalCustomerIds.length) return { invoices: [], totalCount: 0, hasMore: false }
+    query = query.is("project_id", null).in("metadata->>customer_id", options.generalCustomerIds)
+  }
   query = applyInvoiceQueueFilter(query, options.queue ?? "all", todayIso)
   query = applyInvoiceSearchFilter(query, options.search)
 
@@ -1189,6 +1212,111 @@ export async function getProjectInvoiceArSummary({
   }
 }
 
+/** Normalize amounts through the original invoice calculation without writes. */
+export function prepareInvoiceAmounts(input: InvoiceInput, sourceContext: SourceBillingContext | null) {
+  const lines = applySourceDerivedBillingLines(normalizeLines(input.lines), sourceContext)
+  const totals = calculateInvoiceTotalsWithRetainage(lines, input.tax_rate, discountFromInput(input))
+  return { lines, totals }
+}
+
+/** Prepare the original invoice header/lines for the owner's chosen transaction.
+ * This performs no authorization or writes; callers must validate current sources.
+ */
+export function prepareInvoiceCreation({
+  input, orgId: resolvedOrgId, userId, productPosture, approvalStatus,
+  sourceContext, lines, totals, orgInfo: orgData, token, now,
+}: {
+  input: InvoiceInput
+  orgId: string
+  userId: string
+  productPosture: ProjectPosture
+  approvalStatus: NonNullable<Invoice["approval_status"]>
+  sourceContext: SourceBillingContext | null
+  lines: InvoiceLine[]
+  totals: InvoiceTotals
+  orgInfo: { name?: string | null; email?: string | null; phone?: string | null; address?: unknown } | null
+  token: string | null
+  now: string
+}) {
+  const shouldIssue = input.issue === true
+  if (shouldIssue && approvalStatus !== "approved" && approvalStatus !== "not_required") {
+    throw new Error(`${getReceivablesPosturePolicy(productPosture).customerLabel} billing must be approved before it can be issued.`)
+  }
+  if (shouldIssue && !token) throw new Error("An issued invoice requires its original token.")
+  const lifecycleStatus: InvoiceLifecycleStatus = shouldIssue ? "sent" : "draft"
+  const sourceType = input.source_type ?? "manual"
+  const sourceDrawId = input.source_draw_id ?? null
+  const sourceChangeOrderId = input.source_change_order_id ?? null
+  const sourcePayApplicationId = input.source_pay_application_id ?? null
+  const payload = {
+    org_id: resolvedOrgId,
+    project_id: input.project_id ?? null,
+    token,
+    invoice_number: input.invoice_number,
+    title: input.title,
+    status: lifecycleStatus,
+    issue_date: input.issue_date ?? null,
+    due_date: input.due_date ?? null,
+    notes: input.notes ?? null,
+    client_visible: shouldIssue,
+    subtotal_cents: totals.subtotal_cents,
+    tax_cents: totals.tax_cents,
+    tax_jurisdiction_id: input.tax_jurisdiction_id ?? null,
+    total_cents: totals.total_cents,
+    balance_due_cents: totals.total_cents,
+    product_posture: productPosture,
+    approval_status: approvalStatus,
+    delivery_status: shouldIssue ? "queued" : "not_sent",
+    issued_snapshot: shouldIssue
+      ? issuedInvoiceSnapshot({ posture: productPosture, input, lines, totals, issuedAt: now })
+      : null,
+    source_type: sourceType,
+    source_draw_id: sourceDrawId,
+    source_change_order_id: sourceChangeOrderId,
+    source_pay_application_id: sourcePayApplicationId,
+    metadata: {
+      ...(input.metadata ?? {}),
+      lines,
+      totals,
+      tax_rate: input.tax_rate,
+      tax_jurisdiction_id: input.tax_jurisdiction_id ?? null,
+      tax_jurisdiction: input.tax_jurisdiction_name ?? null,
+      created_by: userId,
+      payment_terms_days: input.payment_terms_days,
+      customer_id: input.customer_id,
+      customer_name: input.customer_name,
+      customer_address: input.customer_address,
+      customer_email: input.sent_to_emails?.[0],
+      accounting_customer_ref: input.qbo_customer_id
+        ? { id: input.qbo_customer_id, name: input.qbo_customer_name ?? null }
+        : null,
+      from_name: input.from_name ?? orgData?.name ?? null,
+      from_email: input.from_email ?? orgData?.email ?? null,
+      from_address: input.from_address ?? orgData?.address ?? null,
+      source_type: sourceType,
+      source_draw_id: sourceDrawId,
+      source_change_order_id: sourceChangeOrderId,
+      source_pay_application_id: sourcePayApplicationId,
+      source_contract_id: sourceContext?.contractId ?? null,
+      billing_context: sourceContext?.metadata ?? null,
+      retainage_percent: sourceContext?.retainagePercent ?? null,
+      retainage_applies_to_fee: sourceContext?.retainageAppliesToFee ?? null,
+      retainage_amount_cents: sourceContext?.retainageAmountCents ?? null,
+      qbo_income_account_id: input.qbo_income_account_id ?? null,
+      qbo_income_account_name: input.qbo_income_account_name ?? null,
+      // Store org info for invoice display
+      org_name: orgData?.name ?? null,
+      org_email: orgData?.email ?? null,
+      org_phone: orgData?.phone ?? null,
+      org_address: orgData?.address ?? null,
+    },
+    sent_at: shouldIssue ? now : null,
+    sent_to_emails: input.sent_to_emails ?? null,
+  }
+
+  return { invoice: payload, lines: invoiceLineRows(lines, sourceType) }
+}
+
 export async function createInvoice({
   input,
   orgId,
@@ -1215,6 +1343,7 @@ export async function createInvoice({
     permission: authorizationPermission,
     projectId: input.project_id,
   })
+  await assertInvoiceCustomer(supabase, resolvedOrgId, input)
   await assertInvoiceBudgetLinks(supabase, resolvedOrgId, input.project_id, input.lines)
   await assertInvoiceAccountingAccounts(supabase, resolvedOrgId, input.lines)
   const shouldIssue = input.issue === true
@@ -1244,7 +1373,7 @@ export async function createInvoice({
     projectId: input.project_id,
     productTier,
   })
-  const receivablesPolicy = getReceivablesPosturePolicy(productPosture)
+  const receivablesPolicy = input.project_id ? getReceivablesPosturePolicy(productPosture) : getGeneralReceivablesPolicy()
   await assertDirectChangeOrderInvoiceAllowed({
     supabase,
     orgId: resolvedOrgId,
@@ -1262,16 +1391,15 @@ export async function createInvoice({
     sourcePayApplicationId,
     baseLines: normalizeLines(input.lines),
   })
-  const sourceContext = receivablesPolicy.supportsRetainage
+  const sourceContext = receivablesPolicy.supportsRetainage && input.metadata?.invoice_kind !== "earnest_deposit"
     ? resolvedSourceContext
     : resolvedSourceContext
       ? { ...resolvedSourceContext, retainagePercent: 0, retainageAmountCents: 0 }
       : null
-  const lines = applySourceDerivedBillingLines(normalizeLines(input.lines), sourceContext)
+  const { lines, totals } = prepareInvoiceAmounts(input, sourceContext)
   if (sourceType === "from_costs" && !input.project_id) {
     throw new Error("Project is required to invoice approved costs")
   }
-  const totals = calculateInvoiceTotalsWithRetainage(lines, input.tax_rate, discountFromInput(input))
   const approvalStatus =
     sourceType === "pay_application"
       ? "approved"
@@ -1397,71 +1525,10 @@ export async function createInvoice({
     sourcePayApplicationId,
   })
 
-  const payload = {
-    org_id: resolvedOrgId,
-    project_id: input.project_id ?? null,
-    token,
-    invoice_number: input.invoice_number,
-    title: input.title,
-    status: lifecycleStatus,
-    issue_date: input.issue_date ?? null,
-    due_date: input.due_date ?? null,
-    notes: input.notes ?? null,
-    client_visible: shouldIssue,
-    subtotal_cents: totals.subtotal_cents,
-    tax_cents: totals.tax_cents,
-    tax_jurisdiction_id: input.tax_jurisdiction_id ?? null,
-    total_cents: totals.total_cents,
-    balance_due_cents: totals.total_cents,
-    product_posture: productPosture,
-    approval_status: approvalStatus,
-    delivery_status: shouldIssue ? "queued" : "not_sent",
-    issued_snapshot: shouldIssue
-      ? issuedInvoiceSnapshot({ posture: productPosture, input, lines, totals })
-      : null,
-    source_type: sourceType,
-    source_draw_id: sourceDrawId,
-    source_change_order_id: sourceChangeOrderId,
-    source_pay_application_id: sourcePayApplicationId,
-    metadata: {
-      ...(input.metadata ?? {}),
-      lines,
-      totals,
-      tax_rate: input.tax_rate,
-      tax_jurisdiction_id: input.tax_jurisdiction_id ?? null,
-      tax_jurisdiction: input.tax_jurisdiction_name ?? null,
-      created_by: userId,
-      payment_terms_days: input.payment_terms_days,
-      customer_id: input.customer_id,
-      customer_name: input.customer_name,
-      customer_address: input.customer_address,
-      customer_email: input.sent_to_emails?.[0],
-      accounting_customer_ref: input.qbo_customer_id
-        ? { id: input.qbo_customer_id, name: input.qbo_customer_name ?? null }
-        : null,
-      from_name: input.from_name ?? orgData?.name ?? null,
-      from_email: input.from_email ?? orgData?.email ?? null,
-      from_address: input.from_address ?? orgData?.address ?? null,
-      source_type: sourceType,
-      source_draw_id: sourceDrawId,
-      source_change_order_id: sourceChangeOrderId,
-      source_pay_application_id: sourcePayApplicationId,
-      source_contract_id: sourceContext?.contractId ?? null,
-      billing_context: sourceContext?.metadata ?? null,
-      retainage_percent: sourceContext?.retainagePercent ?? null,
-      retainage_applies_to_fee: sourceContext?.retainageAppliesToFee ?? null,
-      retainage_amount_cents: sourceContext?.retainageAmountCents ?? null,
-      qbo_income_account_id: input.qbo_income_account_id ?? null,
-      qbo_income_account_name: input.qbo_income_account_name ?? null,
-      // Store org info for invoice display
-      org_name: orgData?.name ?? null,
-      org_email: orgData?.email ?? null,
-      org_phone: orgData?.phone ?? null,
-      org_address: orgData?.address ?? null,
-    },
-    sent_at: shouldIssue ? new Date().toISOString() : null,
-    sent_to_emails: input.sent_to_emails ?? null,
-  }
+  const { invoice: payload, lines: preparedLines } = prepareInvoiceCreation({
+    input, orgId: resolvedOrgId, userId, productPosture, approvalStatus,
+    sourceContext, lines, totals, orgInfo: orgData, token, now: new Date().toISOString(),
+  })
 
   // Header + lines land in one transaction (create_invoice_atomic) so a failure
   // anywhere leaves no partial invoice behind; only the cost locks need undoing.
@@ -1469,7 +1536,7 @@ export async function createInvoice({
   const { data: rpcResult, error } = await service.rpc("create_invoice_atomic", {
     p_org_id: resolvedOrgId,
     p_invoice: payload,
-    p_lines: invoiceLineRows(lines, sourceType),
+    p_lines: preparedLines,
   })
 
   const created = rpcResult as { invoice: InvoiceRow; lines: Array<{ id: string; metadata: Record<string, any> }> } | null
@@ -1537,10 +1604,12 @@ export async function updateInvoice({
   invoiceId,
   input,
   orgId,
+  expectedUpdatedAt,
 }: {
   invoiceId: string
   input: InvoiceInput
   orgId?: string
+  expectedUpdatedAt?: string
 }) {
   const { supabase, orgId: resolvedOrgId, userId, productTier } = await requireOrgContext(orgId)
   const { data: existing, error: existingError } = await supabase
@@ -1552,6 +1621,9 @@ export async function updateInvoice({
 
   if (existingError || !existing) {
     throw new Error(existingError?.message ?? "Invoice not found")
+  }
+  if (expectedUpdatedAt && existing.updated_at !== expectedUpdatedAt) {
+    throw new Error("This invoice changed since you opened it. Reload the draft before saving.")
   }
   const existingAccountingState = await getAccountingSyncState(supabase, {
     orgId: resolvedOrgId,
@@ -1592,6 +1664,7 @@ export async function updateInvoice({
   const sourceDrawId = input.source_draw_id ?? (existing.metadata as any)?.source_draw_id ?? null
   const sourceChangeOrderId = input.source_change_order_id ?? (existing.metadata as any)?.source_change_order_id ?? null
   const projectId = existing.project_id ?? null
+  await assertInvoiceCustomer(supabase, resolvedOrgId, { ...input, project_id: projectId })
   await assertInvoiceBudgetLinks(supabase, resolvedOrgId, projectId, input.lines)
   await assertInvoiceAccountingAccounts(supabase, resolvedOrgId, input.lines)
   const productPosture = await resolveInvoicePosture({
@@ -1599,7 +1672,7 @@ export async function updateInvoice({
     projectId,
     productTier,
   })
-  const receivablesPolicy = getReceivablesPosturePolicy(productPosture)
+  const receivablesPolicy = projectId ? getReceivablesPosturePolicy(productPosture) : getGeneralReceivablesPolicy()
   if (sourceType === "from_costs" || (existing.metadata as any)?.source_type === "from_costs") {
     throw new Error("Approved-cost invoices are controlled by the cost ledger. Revise and reissue instead of editing.")
   }
@@ -1625,7 +1698,7 @@ export async function updateInvoice({
     sourceChangeOrderId,
     baseLines: normalizeLines(input.lines),
   })
-  const sourceContext = receivablesPolicy.supportsRetainage
+  const sourceContext = receivablesPolicy.supportsRetainage && input.metadata?.invoice_kind !== "earnest_deposit"
     ? resolvedSourceContext
     : resolvedSourceContext
       ? { ...resolvedSourceContext, retainagePercent: 0, retainageAmountCents: 0 }
@@ -1941,28 +2014,17 @@ export async function runScheduledInvoiceSend(orgId: string, payload: Record<str
  * owner certifying a pay application in their portal. The actor is the org
  * member who set the send in motion, so permission is checked against them.
  */
-export async function issueInvoiceWithContext(
-  context: { supabase: SupabaseClient; orgId: string; userId: string; productTier: ProductTier },
-  { invoiceId, recipients }: { invoiceId: string; recipients?: string[] },
+export async function assertInvoiceCanIssue(
+  { supabase, orgId, userId, productTier }: { supabase: SupabaseClient; orgId: string; userId: string; productTier: ProductTier },
+  existing: { id: string; project_id?: string | null; status: string; approval_status?: string | null },
 ) {
-  const { supabase, orgId: resolvedOrgId, userId, productTier } = context
-  const { data: existing, error } = await supabase
-    .from("invoices")
-    .select(
-      "id, project_id, invoice_number, title, status, token, client_visible, sent_at, sent_to_emails, subtotal_cents, tax_cents, total_cents, balance_due_cents, issue_date, due_date, approval_status, product_posture, source_type, metadata",
-    )
-    .eq("org_id", resolvedOrgId)
-    .eq("id", invoiceId)
-    .maybeSingle()
-  if (error || !existing) throw new Error(error?.message ?? "Invoice not found")
-
   await requireInvoicePermission({
     supabase,
-    orgId: resolvedOrgId,
+    orgId,
     userId,
     permission: "invoice.send",
     projectId: existing.project_id,
-    invoiceId,
+    invoiceId: existing.id,
   })
 
   if (isIssuedInvoiceStatus(existing.status)) {
@@ -1973,7 +2035,7 @@ export async function issueInvoiceWithContext(
   }
 
   const posture = await resolveInvoicePosture({ supabase, projectId: existing.project_id, productTier })
-  const policy = getReceivablesPosturePolicy(posture)
+  const policy = existing.project_id ? getReceivablesPosturePolicy(posture) : getGeneralReceivablesPolicy()
   if (
     policy.approvalMode === "required_review" &&
     existing.approval_status !== "approved" &&
@@ -1982,6 +2044,25 @@ export async function issueInvoiceWithContext(
     throw new Error(`${policy.customerLabel} billing must be approved before it can be issued.`)
   }
 
+  return posture
+}
+
+export async function issueInvoiceWithContext(
+  context: { supabase: SupabaseClient; orgId: string; userId: string; productTier: ProductTier },
+  { invoiceId, recipients }: { invoiceId: string; recipients?: string[] },
+) {
+  const { supabase, orgId: resolvedOrgId, userId } = context
+  const { data: existing, error } = await supabase
+    .from("invoices")
+    .select(
+      "id, project_id, invoice_number, title, status, token, client_visible, sent_at, sent_to_emails, subtotal_cents, tax_cents, total_cents, balance_due_cents, issue_date, due_date, approval_status, product_posture, source_type, metadata, notes",
+    )
+    .eq("org_id", resolvedOrgId)
+    .eq("id", invoiceId)
+    .maybeSingle()
+  if (error || !existing) throw new Error(error?.message ?? "Invoice not found")
+
+  const posture = await assertInvoiceCanIssue(context, existing)
   await (await import("@/lib/services/invoice-waiver-packet")).assertInvoiceWaiverPacketReady(supabase,resolvedOrgId,existing)
 
   const sentTo = recipients && recipients.length > 0 ? recipients : existing.sent_to_emails ?? []
@@ -2029,6 +2110,7 @@ export async function issueInvoiceWithContext(
     })
     .eq("org_id", resolvedOrgId)
     .eq("id", invoiceId)
+    .eq("status", existing.status)
     .select("id, total_cents, due_date")
     .single()
   if (issueError || !issued) {
@@ -2728,7 +2810,7 @@ export async function ensureInvoiceToken(invoiceId: string, orgId?: string) {
     projectId: data.project_id,
     productTier,
   })
-  const policy = getReceivablesPosturePolicy(productPosture)
+  const policy = data.project_id ? getReceivablesPosturePolicy(productPosture) : getGeneralReceivablesPolicy()
   if (policy.approvalMode === "required_review" && data.approval_status !== "approved") {
     throw new Error(`${policy.customerLabel} billing must be approved before its share link is published.`)
   }
@@ -2892,8 +2974,8 @@ export interface InvoiceIssuanceJobPayload {
  * building" was unrecoverable and invisible — the invoice said sent and nobody
  * had been billed.
  *
- * So: write ONE durable job first, then do the work inline so the user still sees
- * it happen, then close the job. A crash anywhere in the middle leaves the job
+ * So: write ONE durable job first, return promptly, then deliver after the response
+ * and close the job. A crash anywhere in the middle leaves the job
  * pending and the outbox worker finishes it. Every step is idempotent, so running
  * it twice bills nobody twice.
  */
@@ -2914,7 +2996,7 @@ async function deliverIssuedInvoice(params: {
     due_date: params.dueDate,
     sent_to_emails: params.recipients,
   }
-  // Two minutes of headroom so the cron never races the inline attempt below.
+  // Two minutes of headroom so the cron does not immediately race the after-response attempt.
   const enqueued = await enqueueOutboxJob({
     orgId: params.orgId,
     jobType: INVOICE_ISSUANCE_JOB_TYPE,
@@ -2923,16 +3005,22 @@ async function deliverIssuedInvoice(params: {
     runAt: new Date(Date.now() + 2 * 60 * 1000).toISOString(),
   })
 
-  try {
-    await runInvoiceIssuance(params.orgId, payload)
-    await completeOutboxJob(enqueued.enqueued ? enqueued.id : undefined)
-  } catch (error) {
-    if (!enqueued.enqueued && enqueued.reason === "error") {
-      // Nothing durable exists to retry this, so the caller has to hear about it.
-      throw error
+  const deliver = async () => {
+    try {
+      await runInvoiceIssuance(params.orgId, payload)
+      await completeOutboxJob(enqueued.enqueued ? enqueued.id : undefined)
+    } catch (error) {
+      if (!enqueued.enqueued && enqueued.reason === "error") throw error
+      console.error("[invoices.deliverIssuedInvoice] deferred to outbox retry", params.invoiceId, error)
     }
-    console.error("[invoices.deliverIssuedInvoice] deferred to outbox retry", params.invoiceId, error)
   }
+  if (!enqueued.enqueued && enqueued.reason === "error") {
+    await deliver()
+  } else {
+    // The durable job survives a stopped request; network delivery need not block its response.
+    try { after(deliver) } catch { await deliver() }
+  }
+
 }
 
 /** The issuance job body. Idempotent; safe to run again after a partial failure. */

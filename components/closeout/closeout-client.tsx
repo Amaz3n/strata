@@ -1,13 +1,15 @@
 "use client"
 
+import { useRouter } from "next/navigation"
 import { useEffect, useMemo, useState, useTransition } from "react"
 import { format, isBefore, parseISO, startOfToday } from "date-fns"
 import { toast } from "sonner"
 
 import type { CloseoutItem, CloseoutPackage } from "@/lib/types"
 import type { CloseReadinessCategory, CloseReadinessSection, ProjectCloseReadiness } from "@/lib/services/project-close-readiness"
-import { createCloseoutItemAction, updateCloseoutItemAction } from "@/app/(app)/closeout/actions"
-import { listAttachmentsAction, detachFileLinkAction, uploadFileAction, attachFileAction } from "@/app/(app)/documents/actions"
+import { createCloseoutItemAction, updateCloseoutItemAction, prepareCloseoutPackageAction } from "@/app/(app)/closeout/actions"
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
+import { listAttachmentsAction, detachFileLinkAction, attachFileAction } from "@/app/(app)/documents/actions"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { cn } from "@/lib/utils"
@@ -262,17 +264,61 @@ function ReadinessPanel({ readiness }: { readiness: ProjectCloseReadiness }) {
   )
 }
 
-export function CloseoutClient({
+interface CloseoutClientProps {
+  projectId: string
+  closeoutPackage: CloseoutPackage | null
+  canWrite: boolean
+  preparationRequired?: boolean
+  items: CloseoutItem[]
+  readiness: ProjectCloseReadiness
+}
+
+export function CloseoutClient(props: CloseoutClientProps) {
+  if (!props.closeoutPackage) {
+    return <CloseoutPreparation key={props.projectId} {...props} />
+  }
+  return <>
+    {props.preparationRequired && <CloseoutPreparation key={`${props.projectId}-preparation`} {...props} showReadiness={false} />}
+    <CloseoutContent key={props.projectId} {...props} canWrite={props.canWrite && !props.preparationRequired} closeoutPackage={props.closeoutPackage} />
+  </>
+}
+
+function CloseoutPreparation({ projectId, canWrite, readiness, showReadiness = true }: CloseoutClientProps & { showReadiness?: boolean }) {
+  const router = useRouter()
+  const [isPending, startTransition] = useTransition()
+  const [error, setError] = useState<string | null>(null)
+  function prepare() {
+    if (!canWrite || isPending) return
+    startTransition(async () => {
+      setError(null)
+      try {
+        unwrapAction(await prepareCloseoutPackageAction({ projectId }))
+        router.refresh()
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "Could not prepare closeout. Try again.")
+      }
+    })
+  }
+  return <div className="space-y-6">
+    {showReadiness && <ReadinessPanel readiness={readiness} />}
+    <div className="border-t py-6 space-y-3">
+      <h2 className="text-sm font-semibold">Closeout checklist needs preparation</h2>
+      <p className="text-sm text-muted-foreground">{canWrite
+        ? "Prepare the six standard requirements before tracking closeout documents. Retrying preserves existing requirements and their progress."
+        : "A team member with closeout write access must prepare this project's checklist."}</p>
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+      {canWrite && <Button onClick={prepare} disabled={isPending}>{isPending ? "Preparing…" : "Prepare checklist"}</Button>}
+    </div>
+  </div>
+}
+
+function CloseoutContent({
   projectId,
   closeoutPackage,
   items,
   readiness,
-}: {
-  projectId: string
-  closeoutPackage: CloseoutPackage
-  items: CloseoutItem[]
-  readiness: ProjectCloseReadiness
-}) {
+  canWrite,
+}: CloseoutClientProps & { closeoutPackage: CloseoutPackage }) {
   const isMobile = useIsMobile()
   const [isPending, startTransition] = useTransition()
   const [rows, setRows] = useState<CloseoutItem[]>(items)
@@ -285,27 +331,47 @@ export function CloseoutClient({
   const [attachmentsLoading, setAttachmentsLoading] = useState(false)
   const [draft, setDraft] = useState({ responsible_party: "", due_date: "", notes: "" })
 
-  useEffect(() => setRows(items), [items])
-
-  useEffect(() => {
-    if (!selectedItem) return
+  const [itemSource, setItemSource] = useState(items)
+  if (itemSource !== items) {
+    setItemSource(items)
+    setRows(items)
+    if (selectedItem) {
+      const updated = items.find((item) => item.id === selectedItem.id) ?? null
+      setSelectedItem(updated)
+      if (!updated) {
+        setDetailsOpen(false)
+        setAttachments([])
+      }
+    }
+  }
+  const [draftSource, setDraftSource] = useState(selectedItem)
+  if (draftSource !== selectedItem) {
+    setDraftSource(selectedItem)
+    const changedItem = draftSource?.id !== selectedItem?.id
     setDraft({
-      responsible_party: selectedItem.responsible_party ?? "",
-      due_date: selectedItem.due_date ?? "",
-      notes: selectedItem.notes ?? "",
+      responsible_party: changedItem || draftSource?.responsible_party !== selectedItem?.responsible_party
+        ? selectedItem?.responsible_party ?? "" : draft.responsible_party,
+      due_date: changedItem || draftSource?.due_date !== selectedItem?.due_date
+        ? selectedItem?.due_date ?? "" : draft.due_date,
+      notes: changedItem || draftSource?.notes !== selectedItem?.notes
+        ? selectedItem?.notes ?? "" : draft.notes,
     })
-  }, [selectedItem])
+  }
 
   useEffect(() => {
     if (!detailsOpen || !selectedItem) return
+    let cancelled = false
+    setAttachments([])
     setAttachmentsLoading(true)
     listAttachmentsAction("closeout_item", selectedItem.id)
-      .then((links) => setAttachments(mapAttachments(links)))
+      .then((links) => { if (!cancelled) setAttachments(mapAttachments(links)) })
       .catch((error) => {
+        if (cancelled) return
         console.error("Failed to load closeout attachments", error)
         toast.error("Could not load closeout files")
       })
-      .finally(() => setAttachmentsLoading(false))
+      .finally(() => { if (!cancelled) setAttachmentsLoading(false) })
+    return () => { cancelled = true }
   }, [detailsOpen, selectedItem])
 
   const progress = useMemo(() => {
@@ -345,6 +411,7 @@ export function CloseoutClient({
   }
 
   function handleCreate() {
+    if (!canWrite || isPending) return
     if (!newTitle.trim()) {
       toast.error("Add a closeout item title")
       return
@@ -367,6 +434,7 @@ export function CloseoutClient({
   }
 
   function handleStatusChange(item: CloseoutItem, status: string) {
+    if (!canWrite || isPending) return
     startTransition(async () => {
       try {
         const updated = unwrapAction(await updateCloseoutItemAction(item.id, projectId, { status }))
@@ -378,7 +446,7 @@ export function CloseoutClient({
   }
 
   function handleSaveDetails() {
-    if (!selectedItem) return
+    if (!canWrite || !selectedItem) return
     startTransition(async () => {
       try {
         const updated = unwrapAction(await updateCloseoutItemAction(selectedItem.id, projectId, {
@@ -402,7 +470,7 @@ export function CloseoutClient({
   }
 
   async function handleAttach(files: File[], linkRole?: string) {
-    if (!selectedItem) return
+    if (!canWrite || !selectedItem) return
     for (const file of files) {
       const formData = new FormData()
       formData.append("file", file)
@@ -416,7 +484,7 @@ export function CloseoutClient({
   }
 
   async function handleDetach(linkId: string) {
-    if (!selectedItem) return
+    if (!canWrite || !selectedItem) return
     unwrapAction(await detachFileLinkAction(linkId))
     await refreshAttachments(selectedItem.id)
   }
@@ -456,7 +524,7 @@ export function CloseoutClient({
               </Select>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              <div className="flex w-full gap-2 sm:w-auto">
+              {canWrite && <div className="flex w-full gap-2 sm:w-auto">
                 <Input
                   value={newTitle}
                   onChange={(event) => setNewTitle(event.target.value)}
@@ -470,7 +538,7 @@ export function CloseoutClient({
                   <Plus className="mr-2 h-4 w-4" />
                   Add
                 </Button>
-              </div>
+              </div>}
               <Button asChild variant="outline" className="w-full sm:w-auto">
                 <a href={`/projects/${projectId}/closeout/export`} target="_blank" rel="noreferrer">
                   <Download className="mr-2 h-4 w-4" />
@@ -579,7 +647,7 @@ export function CloseoutClient({
                       </div>
                     </TableCell>
                     <TableCell className="text-center" onClick={(event) => event.stopPropagation()}>
-                      <Select value={item.status ?? "missing"} onValueChange={(value) => handleStatusChange(item, value)}>
+                      <Select disabled={!canWrite || isPending || item.title === "Final lien waivers"} value={item.status ?? "missing"} onValueChange={(value) => handleStatusChange(item, value)}>
                         <SelectTrigger className="mx-auto h-8 w-32">
                           <SelectValue />
                         </SelectTrigger>
@@ -645,6 +713,7 @@ export function CloseoutClient({
                   <Label htmlFor="closeout-owner">Responsible</Label>
                   <Input
                     id="closeout-owner"
+                    readOnly={!canWrite}
                     value={draft.responsible_party}
                     onChange={(event) => setDraft((prev) => ({ ...prev, responsible_party: event.target.value }))}
                     placeholder="Company or person"
@@ -654,6 +723,7 @@ export function CloseoutClient({
                   <Label htmlFor="closeout-due">Due date</Label>
                   <Input
                     id="closeout-due"
+                    readOnly={!canWrite}
                     type="date"
                     value={draft.due_date}
                     onChange={(event) => setDraft((prev) => ({ ...prev, due_date: event.target.value }))}
@@ -663,6 +733,7 @@ export function CloseoutClient({
                   <Label htmlFor="closeout-notes">Notes</Label>
                   <Textarea
                     id="closeout-notes"
+                    readOnly={!canWrite}
                     value={draft.notes}
                     onChange={(event) => setDraft((prev) => ({ ...prev, notes: event.target.value }))}
                     placeholder="What is needed to call this complete?"
@@ -678,16 +749,16 @@ export function CloseoutClient({
                 attachments={attachments}
                 onAttach={handleAttach}
                 onDetach={handleDetach}
-                readOnly={attachmentsLoading}
+                readOnly={!canWrite || attachmentsLoading}
                 compact
               />
             </div>
           )}
 
           <DialogFooter>
-            <Button onClick={handleSaveDetails} disabled={isPending || !selectedItem}>
+            {canWrite && <Button onClick={handleSaveDetails} disabled={isPending || !selectedItem}>
               Save details
-            </Button>
+            </Button>}
           </DialogFooter>
         </DialogContent>
       </Dialog>

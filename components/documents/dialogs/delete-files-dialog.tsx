@@ -14,7 +14,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { unwrapAction } from "@/lib/action-result"
-import { bulkDeleteFilesAction } from "@/app/(app)/documents/actions"
+import { bulkDeleteFilesAction, undoDocumentMutationAction } from "@/app/(app)/documents/actions"
 
 interface DeleteFilesDialogProps {
   open: boolean
@@ -37,9 +37,18 @@ export function DeleteFilesDialog({
 
     setIsDeleting(true)
     try {
-      unwrapAction(await bulkDeleteFilesAction(fileIds))
+      const result = unwrapAction(await bulkDeleteFilesAction(fileIds))
       toast.success(
         `Moved ${fileIds.length} file${fileIds.length === 1 ? "" : "s"} to trash`,
+        { duration: 10000, action: result.receiptId ? { label: "Undo", onClick: () => {
+          void (async () => {
+            try {
+              unwrapAction(await undoDocumentMutationAction(result.receiptId!))
+              await onDeleted()
+              toast.success("Files restored")
+            } catch (error) { toast.error(error instanceof Error ? error.message : "Could not undo archive") }
+          })()
+        } } : undefined },
       )
       onOpenChange(false)
       await onDeleted()

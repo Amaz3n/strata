@@ -1,0 +1,24 @@
+ok 1 - all D2 business cache columns are absent during consumer execution
+ok 2 - approval executes with neutral state
+ok 3 - approval marks the actual bill ledger type pending
+ok 4 - approval retains financial transition
+ok 5 - already approved bill cannot be approved twice
+ok 6 - duplicate trigger protects neutral bill
+ok 7 - active-run trigger accepts edits when no active payment run owns bill
+ok 8 - scorecard routine executes neutral status query
+ok 9 - tax readiness executes neutral company links query
+ok 10 - directory merge routine executes connection-scoped identity query
+ok 11 - invoice replacement executes without cache columns
+ok 12 - invoice replacement retains exactly one financial line
+ok 13 - receivable adjustment flags neutral identity for review
+ok 14 - void adjustment executes neutral state transition
+ok 15 - adjustment financial status preserved
+ok 16 - post-mapping opening payment reconciliation executes
+ok 17 - neutral mapping produces correct opening paid balance
+
+ok 18 - opening payment retry cannot duplicate money
+ok 19 - retainage release preserves neutral accounting coding
+ok 20 - retainage preserves the current waiver lifecycle line distribution
+ok 21 - retainage release apportions exact cents across original lines
+ok 22 - distributed retainage lines conserve the release amount
+1..22

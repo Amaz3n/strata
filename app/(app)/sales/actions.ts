@@ -8,7 +8,11 @@ import type { SellableHome } from "@/lib/sales/inventory"
 import {
   bulkRepriceCommunityPlans,
   convertHoldToReservation,
+  registerReservationConversion,
+  inspectReservationConversion,
+  cancelReservationConversion,
   createPurchaseAgreement,
+  resumePurchaseAgreementSigning,
   endIncentive,
   getAgreementDraftContext,
   listSpecInventory,
@@ -39,6 +43,7 @@ import {
   productionInquiryInputSchema,
   updateDealDetailsInputSchema,
 } from "@/lib/validation/prospects"
+import { createProspectLotHoldSchema } from "@/lib/validation/community-sales"
 
 async function run<T>(operation: () => Promise<T>, paths: string[] = ["/sales"]): Promise<ActionResult<T>> {
   try {
@@ -61,6 +66,18 @@ async function run<T>(operation: () => Promise<T>, paths: string[] = ["/sales"])
 /** hold → reserved: takes the deposit, opens the job, and makes the lot the buyer's. */
 export async function convertHoldToReservationAction(input: unknown) {
   return run(() => convertHoldToReservation(input))
+}
+
+/** Saved review/recovery never creates another home or deposit. */
+export async function registerReservationConversionAction(input: unknown) {
+  return run(() => registerReservationConversion(input))
+}
+export async function inspectReservationConversionAction(input: unknown) {
+  try { return { success: true as const, data: await inspectReservationConversion(input) } }
+  catch (error) { return actionError(error) }
+}
+export async function cancelReservationConversionAction(input: unknown) {
+  return run(() => cancelReservationConversion(input))
 }
 
 /** Puts the lot back on the shelf. The only thing that un-holds inventory. */
@@ -100,6 +117,10 @@ export async function priceAgreementDraftAction(
  */
 export async function createPurchaseAgreementAction(input: unknown) {
   return run(() => createPurchaseAgreement(input))
+}
+
+export async function resumePurchaseAgreementSigningAction(input: unknown) {
+  return run(() => resumePurchaseAgreementSigning(input))
 }
 
 /** Unwinds an agreement: releases the lot and un-wins the lead. */
@@ -225,4 +246,22 @@ export async function updateDealDetailsAction(prospectId: string, input: unknown
  */
 export async function deleteDealAction(prospectId: string) {
   return run(() => deleteProspect({ prospectId: prospectIdSchema.parse(prospectId) }))
+}
+
+export async function listSellableLotsAction(communityId: string) {
+  return run(async () => {
+    const { listSellableLots } = await import("@/lib/services/community-sales")
+    return listSellableLots(communityId)
+  }, [])
+}
+
+export async function createProspectLotHoldAction(input: unknown) {
+  return run(async () => {
+    const parsed = createProspectLotHoldSchema.parse(input)
+    const { createLotHoldFromProspect } = await import("@/lib/services/community-sales")
+    const reservation = await createLotHoldFromProspect(parsed)
+    revalidatePath(`/sales/${parsed.prospectId}`)
+    revalidatePath(`/communities/${reservation.communityId}`)
+    return reservation
+  })
 }

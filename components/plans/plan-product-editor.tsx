@@ -6,7 +6,7 @@ import { toast } from "sonner"
 
 import { Plus, Save } from "@/components/icons"
 import { updateHousePlanAction, upsertElevationAction } from "@/app/(app)/plans/actions"
-import { uploadFileAction } from "@/app/(app)/documents/actions"
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
 import { PlanImageAttachment, PLAN_IMAGE_TYPES } from "@/components/plans/plan-image-attachment"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"

@@ -46,6 +46,18 @@ test('invoice create, edit and revision preserve project budget allocations', { 
     const create = (lines) => db.query('select create_invoice_atomic($1,$2::jsonb,$3::jsonb) result', [org, JSON.stringify(header), JSON.stringify(lines)])
     const update = (id, lines) => db.query('select update_invoice_atomic($1,$2,$3::jsonb,$4::jsonb) result', [org, id, JSON.stringify(header), JSON.stringify(lines)])
     let invoice
+    await t.test('general invoices can be created, edited and revised without a project', async () => {
+      const generalHeader = { ...header, project_id: null, invoice_number: 'GENERAL-1', metadata: { customer_id: randomUUID() } }
+      const generalLines = [{ description: 'Consultation', quantity: 1, unit_price_cents: 10000 }]
+      const created = (await db.query('select create_invoice_atomic($1,$2::jsonb,$3::jsonb) result', [org, JSON.stringify(generalHeader), JSON.stringify(generalLines)])).rows[0].result.invoice
+      assert.equal(created.project_id, null)
+      await db.query('select update_invoice_atomic($1,$2,$3::jsonb,$4::jsonb) result', [org, created.id, JSON.stringify(generalHeader), JSON.stringify(generalLines)])
+      await db.query("update invoices set status='sent', client_visible=true, sent_at=now() where id=$1", [created.id])
+      const revised = (await db.query('select revise_invoice_atomic($1,$2,$3,$4) result', [org, created.id, randomUUID(), 'GENERAL-2'])).rows[0].result
+      assert.equal(revised.replacement.project_id, null)
+      assert.equal(revised.replacement.metadata.customer_id, generalHeader.metadata.customer_id)
+      assert.equal(revised.replacement.status, 'draft')
+    })
     await t.test('creation persists the code-off budget link', async () => {
       invoice = (await create([line])).rows[0].result.invoice
       assert.equal((await db.query('select budget_line_id from invoice_lines where invoice_id=$1', [invoice.id])).rows[0].budget_line_id, budgetLine)

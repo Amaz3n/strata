@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react"
 
 import { listSellableHomesAction } from "@/app/(app)/sales/actions"
 import { ArrowLeft, Home, Search, X } from "@/components/icons"
-import type { PipelineCommunityOption } from "@/components/prospects/prospect-presentation"
+import type { SalesCommunityOption } from "@/components/sales/community-option"
 import { LotHoldForm, type HoldBuyer, type HoldLot } from "@/components/sales/lot-hold-form"
 import { Button } from "@/components/ui/button"
 import {
@@ -65,7 +65,7 @@ interface FindAHomeDialogProps {
    * and without one every row would be a dead end.
    */
   buyer: HoldBuyer
-  communities: PipelineCommunityOption[]
+  communities: SalesCommunityOption[]
   open: boolean
   onOpenChange: (open: boolean) => void
 }

@@ -1,3 +1,4 @@
+import { signMobilePhotos } from "@/lib/mobile/photo-media"
 import { mobileDataResponse, mobileErrorResponse, mobileRequestId } from "@/lib/mobile/api"
 import { requireMobileOrg } from "@/lib/mobile/auth"
 import { runWithServiceOrgContext } from "@/lib/services/context"
@@ -50,7 +51,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ proj
         ),
         listPhotoAlbums(projectId, context.orgId),
       ])
-      return { ...page, albums }
+      const permission = await (await import("@/lib/services/authorization")).authorize({ permission: "daily_log.write", userId: context.user.id, orgId: context.orgId, projectId, supabase: context.serviceSupabase })
+      return { ...page, photos: await signMobilePhotos(context, page.photos), albums, can_upload: permission.allowed }
     })
     return mobileDataResponse(result, requestId)
   } catch (error) { return mobileErrorResponse(error, requestId) }
@@ -64,5 +66,18 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ pr
     const body = await request.json()
     const photo = await runWithServiceOrgContext(context.serviceContext, () => updatePhotoMetadata({ ...body, project_id: projectId }, context.orgId))
     return mobileDataResponse(photo, requestId)
+  } catch (error) { return mobileErrorResponse(error, requestId) }
+}
+
+export async function POST(request: Request, { params }: { params: Promise<{ projectId: string }> }) {
+  const requestId = mobileRequestId(request)
+  try {
+    const context = await requireMobileOrg(request)
+    const { projectId } = await params
+    const { z } = await import("zod")
+    const { local_date } = z.object({ local_date: z.string().date() }).parse(await request.json())
+    const result = await runWithServiceOrgContext(context.serviceContext, async () =>
+      (await import("@/lib/services/photos")).ensureTodayDailyLogForPhotos(projectId, local_date, context.orgId))
+    return mobileDataResponse(result, requestId)
   } catch (error) { return mobileErrorResponse(error, requestId) }
 }

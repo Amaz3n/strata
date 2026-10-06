@@ -432,6 +432,58 @@ test("SQL and TypeScript do not emit duplicate events for the same mutation path
   assert.match(submission, /for \(const event of events\) await createNotificationsFromEvent/)
   const distinctSubmissionEvent = emitter => emitter.functionName === "public.create_daily_log_submission" &&
     ["daily_log_created", "schedule_item_updated"].includes(emitter.eventType)
+  // Upload finalization and bulk document mutation own events in SQL. Legacy
+  // single-file record/archive services are independent TypeScript mutations.
+  // Verify the separation before permitting the shared event names.
+  const ts = require("typescript")
+  function body(file, name) {
+    const source = ts.createSourceFile(file, fs.readFileSync(path.join(ROOT, file), "utf8"), ts.ScriptTarget.Latest, true)
+    const declaration = source.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === name)
+    assert.ok(declaration?.body, `${name} must remain an inspectable mutation boundary`)
+    return declaration.body.getText(source)
+  }
+  const uploadCommit = body("lib/services/files.ts", "persistUploadedFile")
+  assert.match(uploadCommit, /rpc\("commit_document_upload"/)
+  assert.doesNotMatch(uploadCommit, /recordEvent\(|createFileRecord\(/)
+  const fileCreate = body("lib/services/files.ts", "createFileRecord")
+  assert.match(fileCreate, /eventType: "file_created"/)
+  assert.doesNotMatch(fileCreate, /commit_document_upload|persistUploadedFile\(/)
+  const bulkDocuments = body("lib/services/document-mutations.ts", "mutateDocuments")
+  assert.match(bulkDocuments, /rpc\("mutate_documents"/)
+  assert.doesNotMatch(bulkDocuments, /recordEvent\(|archiveFile\(/)
+  const fileArchive = body("lib/services/files.ts", "archiveFile")
+  assert.match(fileArchive, /eventType: "file_archived"/)
+  assert.doesNotMatch(fileArchive, /mutate_documents|mutateDocuments\(/)
+  const distinctDocumentEvent = emitter =>
+    (emitter.functionName === "public.commit_document_upload" && emitter.eventType === "file_created") ||
+    (emitter.functionName === "public.mutate_documents" && emitter.eventType === "file_archived")
+  // Gated office completion returns before the independent legacy emitter.
+  // SQL owns the atomic path's original event and audit, including retries.
+  const completionCommit = body("lib/services/warranty-completion-transactions.ts", "commitOfficeWarrantyCompletion")
+  assert.match(completionCommit, /rpc\("complete_warranty_visit_atomic"/)
+  assert.doesNotMatch(completionCommit, /recordEvent\(|recordAudit\(/)
+  const completion = body("lib/services/warranty-operations.ts", "completeVisitWithClient")
+  const transactionBranch = completion.indexOf("if (await warrantyCompletionTransactionsEnabled")
+  const legacyEmitter = completion.indexOf('eventType: "warranty_visit_completed"')
+  assert.ok(transactionBranch >= 0 && legacyEmitter > transactionBranch)
+  assert.match(completion.slice(transactionBranch, legacyEmitter), /await commitOfficeWarrantyCompletion\([\s\S]*?return loadVisit\(/)
+  const distinctWarrantyEvent = emitter => emitter.functionName === "public.complete_warranty_visit_atomic" && emitter.eventType === "warranty_visit_completed"
+  // The staged inspection cutover returns after SQL completion, before the
+  // retained legacy event owner. Verify that separation rather than exempting
+  // a shared event name without proof.
+  const inspectionOwner = body("lib/services/inspections.ts", "completeInspection")
+  const inspectionSource = ts.createSourceFile("owner.ts", `function owner() ${inspectionOwner}`, ts.ScriptTarget.Latest, true)
+  const inspectionBranch = inspectionSource.statements[0].body.statements.find(node => ts.isIfStatement(node) && node.expression.getText(inspectionSource) === "isInspectionLifecycleEnabled()")
+  assert.ok(inspectionBranch && ts.isBlock(inspectionBranch.thenStatement))
+  const atomicInspection = inspectionBranch.thenStatement.getText(inspectionSource)
+  assert.match(atomicInspection, /rpc\("complete_inspection_attempt"/)
+  assert.doesNotMatch(atomicInspection, /recordEvent\(|recordAudit\(/)
+  const finalInspectionStatement = inspectionBranch.thenStatement.statements.at(-1)
+  assert.ok(ts.isReturnStatement(finalInspectionStatement))
+  assert.match(finalInspectionStatement.getText(inspectionSource), /^return getInspection\(/)
+  assert.ok(inspectionOwner.indexOf('eventType: "inspection_completed"') > inspectionOwner.indexOf(atomicInspection))
+  const distinctInspectionEvent = emitter => emitter.functionName === "public.complete_inspection_attempt" && emitter.eventType === "inspection_completed"
+
   // WS-F1. `approve_vendor_bills_atomic` inserted `vendor_bill_approved` while
   // `approveVendorBillsAtomic` raised the same type through `recordEvent`, so
   // bulk-approving fifty payables produced a hundred events and two
@@ -440,7 +492,7 @@ test("SQL and TypeScript do not emit duplicate events for the same mutation path
   const shadowed = SQL_EVENT_EMITTERS.filter(
     (emitter) =>
       (isPaymentDomain(emitter.eventType) || NOTIFICATION_TYPES.includes(emitter.eventType)) &&
-      EMITTED.literals.has(emitter.eventType) && !distinctSubmissionEvent(emitter),
+      EMITTED.literals.has(emitter.eventType) && !distinctSubmissionEvent(emitter) && !distinctDocumentEvent(emitter) && !distinctWarrantyEvent(emitter) && !distinctInspectionEvent(emitter),
   ).map((emitter) => `${emitter.functionName} (${emitter.file}) → ${emitter.eventType}`)
   assert.deepEqual(
     shadowed,

@@ -1,0 +1,129 @@
+{
+  "date": "2026-10-04",
+  "taskId": "E09-03.INSPECTION-CLOSING-CONTRACT",
+  "status": "staged_lifecycle_local_checks_pass_release_unaccepted",
+  "previousGoalTurn": "progress: inspection handoff and reader controls changed authoritative source and durable evidence",
+  "head": "9f1549af84a6998eb2d851415ec6f119ab89a96f",
+  "dirtyTreeSha256": "a1893e196e6775e8f1550c79201403bb60590cd2a469241cf390f89befddda81",
+  "sourceSha256": {
+    "supabase/migrations/20261005031540_inspection_obligation_lifecycle.sql": "d9726f1f692c88c03e385240cdbfd28bb90fa89cf1a18d5254055520098aafbf",
+    "lib/services/inspections.ts": "98031dca93e34b9375550c3b5460b0cdc239dd64ad42b3bb9683b95aec9b657f",
+    "lib/services/closing-readiness.ts": "9ed13241050b766d148041be0c2e83250e8cf7a56e84988be3f4a5b62832ab10",
+    "lib/inspections/lifecycle.ts": "a111eb648a2515408f549f638b8b12c66e226d5d80eea34cb519f49ca4715acb",
+    "components/inspections/inspection-lifecycle-controls.tsx": "4039aa10a3bd96c3d4cbb7f9409cd0f3adc9474e475fd6aad3c965067357eeba",
+    "app/(app)/projects/[id]/inspections/page.tsx": "dbefbe314d085a4a3373005995ea0cee3cb661cfb40db59659ce86ed6d169d26",
+    "app/(app)/projects/[id]/inspections/inspections-client.tsx": "0593985293f8bc6f8e403e36d6e180f2668473ffaa2d9d9e41fe683b671c94bd",
+    "app/(app)/projects/[id]/inspections/actions.ts": "71ef98a7b8e9d938734544928de5765fe7767ed8d2a98e7fdffe2a116cfd152d",
+    "lib/services/events.ts": "5e576e283272aa76219a2c95747f57e5d5b37c3683464f1783da863133f8b739",
+    "tests/inspection-obligation-lifecycle-db.test.js": "9bd4e18b2b16752523d349ac9206b5d0067d361d833ecab2b5f602d7692e92ff",
+    "tests/inspection-lifecycle-workbench.test.js": "095628ec9ca4d97fe73178713e3d3eacb6c1ea724740cace6687e272f0457b37",
+    "tests/inspection-completion-handoff.test.js": "e3806314e97efa30351452fbaefdbd2d03be7ca233bf0733524e4d157c28546b",
+    "tests/payment-notification-coverage.test.js": "f14d398b6a0b966067a4c88090bb47e59472c314f0476995139483ff72b6ff57",
+    "package.json": "8de855ee2bf354fde7964c4d96b8949a91b58c3295bff9db3a6de4309f8044d4",
+    ".env.example": "fc802c94ea3b43f8bc98fb26380751b26d8747a1119051f22ef488e25f8145c1"
+  },
+  "sourceUnchangedAcrossFinalChecks": true,
+  "migration": {
+    "path": "supabase/migrations/20261005031540_inspection_obligation_lifecycle.sql",
+    "applied": false,
+    "flag": "INSPECTION_LIFECYCLE_ENABLED",
+    "default": false
+  },
+  "dataset": "Disposable partial-schema PGlite fixtures, actual Supabase SDK with isolated transport, actual React declarations/SSR and controlled hook interaction; synthetic home/actor/punch IDs. No production mutations.",
+  "actors": [
+    "active inspection writer",
+    "independent inspection reviewer",
+    "read-only home reader",
+    "revoked tenant member",
+    "assigned division denial",
+    "authenticated session/actor mismatch"
+  ],
+  "commands": [
+    {
+      "command": "node --test tests/inspection-obligation-lifecycle-db.test.js tests/inspection-lifecycle-workbench.test.js tests/inspection-completion-handoff.test.js tests/closing-readiness.test.js tests/payment-notification-coverage.test.js",
+      "exitCode": 0,
+      "tests": 84
+    },
+    {
+      "command": "pnpm typecheck",
+      "exitCode": 0
+    },
+    {
+      "command": "pnpm lint",
+      "exitCode": 0
+    },
+    {
+      "command": "pnpm test:auth",
+      "exitCode": 0,
+      "tests": 1624
+    },
+    {
+      "command": "pnpm test:financials",
+      "exitCode": 0,
+      "tests": 3374
+    },
+    {
+      "command": "git diff --check",
+      "exitCode": 0
+    },
+    {
+      "command": "node scripts/enterprise-production-inventory.cjs --refresh",
+      "exitCode": 0
+    },
+    {
+      "command": "node scripts/enterprise-production-inventory.cjs --check",
+      "exitCode": 1,
+      "limit": "Unmapped/unaccepted surfaces remain; not a release pass."
+    }
+  ],
+  "failureHistory": [
+    "Initial SQL suite5/7: ambiguous attempt record alias, and the fixture numbering function omitted the real function search_path. Fixed query alias and made fixture match the original owner; no assertions relaxed.",
+    "Initial financials3367:3366passed/1failed. Duplicate-event ownership guard did not recognize atomic inspection cutover. Added AST proof that the RPC branch has no TS emitters and returns before the legacy emitter; exact SQL function/event exclusion follows that proof.",
+    "Additional source and corrective association checks changed the candidate after earlier green runs; retained those logs and reran final frozen sources."
+  ],
+  "observedWorkflow": [
+    "Failed original attempt remains immutable; resolved actual-home corrective punch work and reviewed association bind a new empty-answer reinspection.",
+    "Passing required attempt remains pending independent review; acceptance binds original source, event/audit/receipt and advances its noncancelled same-home slot.",
+    "Closing transition rejects unaccepted, stale, reopened or altered accepted evidence.",
+    "Atomic handoff failures roll back completion/event/audit/receipt; committed request retries retain exact source/body/key and original outcomes.",
+    "Reader controls omit mutation/corrective actions; newer attempts and accepted obligations omit inappropriate acceptance controls.",
+    "Bounded discovery resolves selected off-page attempts independently and rejects foreign scope."
+  ],
+  "dockerObservation": {
+    "sessionId": 20780,
+    "observed": "live_no_output",
+    "meaning": "Not full-schema availability or acceptance; no restart/DB application performed"
+  },
+  "remaining": [
+    "Migration unapproved/unapplied and feature flag false; legacy completed inspections need governed reconciliation.",
+    "Full compatible schema/current JWT/RLS and independent PostgreSQL sessions with races, revocation, source/parent movement and deadlock recovery.",
+    "Complete intermediate-attempt history, original desk/history completeness, required inspection/permit population and policy/source-version acceptance.",
+    "Reload-persistent original-request recovery and durable pre-commit intent/receipt inspection across all writers.",
+    "Corrective punch creation/linking/assignment/dispatch still uses legacy separate requests; orphan and competing-link recovery need the E09 transaction contract.",
+    "New lifecycle table archive/restore, search, mobile/portal/report and notification/outbox fanout contracts remain open.",
+    "Actual authenticated reviewer/inspector/reader field-to-closing QA, accessibility, dark/mobile/device and representative load evidence."
+  ],
+  "implementationAcceptance": false,
+  "releaseAcceptance": false,
+  "fieldPageAudit": {
+    "path": "docs/enterprise-production/field-handoff-page-audit.md",
+    "sourcePagesReviewed": 29,
+    "indexedApplicationPages": 181,
+    "accepted": false,
+    "sourceSha256": {
+      "docs/enterprise-production/field-handoff-page-audit.md": "3d76e7fc7f4b7d1ceeae975667972d5af70500e22bca63836a2460cb9b46e1c8",
+      "app/(app)/documents/page.tsx": "a17f4833d11e5466c22d9e9eb72305cd63f361994fa4c2b3e4d077c432f32d55",
+      "app/(app)/projects/[id]/documents/page.tsx": "71365913e7fbc909f9f13d1b74360aa8a46037391b464699637d4d7c5e440664",
+      "app/(app)/projects/[id]/punch/page.tsx": "93e125fb41e7ae567cbc17ca8742da0bb5afa58a85d1806f9ef91202ba2b22bd",
+      "app/(app)/projects/[id]/safety/page.tsx": "bdf4282df0c2ccda27abdd66018157a58cb34626396a9c5b4e8ef1fbb79249b4",
+      "app/(app)/projects/[id]/closeout/page.tsx": "5287d2cd1a318b676ef71b91ec30af84e9c30d83f24efb02ad380523cbf8011c",
+      "components/documents/project-documents-page.tsx": "9438436a2e38c7bede3962f585ceafffe33fbcc73ca5ff343e34e4f676279515",
+      "components/punch/punch-tab.tsx": "2c016c455524ca3ae5a605c8c07d6593bb1fad20b5207cfe0e8edc77af6193f1",
+      "lib/services/closeout.ts": "e42340ce3f9754f0d55405767597e9da6f055a6c093207fa2eaebc4d1bcfa3e4",
+      "lib/services/project-close-readiness.ts": "3bf87f13b1de924c56577be421b7789c38842abc7e111d46074eb887c445dc13",
+      "lib/services/safety.ts": "fbd5b61bc88ea10fc7580add5f4a64658a968589f794d591e359ffcb6d871244",
+      "lib/project-modules.ts": "4b8517d9cae6290ca7fe6e5c0ec74fa2f0900216b0f476aaa44cf09335b98736",
+      "components/layout/project-nav-items.ts": "12426d2201cdad3ccac90603c9489fe4a77367850dacea446eded2205608aa2f"
+    }
+  }
+}

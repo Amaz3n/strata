@@ -1,3 +1,9 @@
+import { triggerDrawingsPipeline } from "@/lib/services/drawings-pipeline-trigger"
+import { z } from "zod"
+import { isDeepStrictEqual } from "node:util"
+import { requireAuthorization } from "@/lib/services/authorization"
+import { startDrawingLifecycleStage } from "@/lib/drawings/lifecycle-metrics"
+import { deleteDrawings } from "@/lib/services/drawing-storage-cleanup"
 import type {
   DrawingSetInput,
   DrawingSetUpdate,
@@ -16,7 +22,11 @@ import type {
   CalibrationMethod,
 } from "@/lib/validation/drawings"
 import {
-  calibrationMethodSchema,
+  storedSheetCalibrationSchema,
+  storedSheetCalibrationProposalSchema,
+  storedSheetCalibrationScanSchema,
+  storedSpaceCalibrationSchema,
+  storedDrawingManifestSchema,
   setSheetVersionCalibrationInputSchema,
   drawingSetInputSchema,
   drawingSetUpdateSchema,
@@ -35,13 +45,8 @@ import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { buildDrawingsImageUrl } from "@/lib/storage/drawings-urls"
 import { getDrawingPdfSignedUrl } from "@/lib/storage/drawings-pdfs-storage"
-import {
-  deleteTilesObjects,
-  listTilesObjects,
-} from "@/lib/storage/drawings-tiles-storage"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import {
-  enqueueDrawingChangeDetection,
   enqueuePageTextBackfill,
 } from "@/lib/services/drawings-pipeline"
 import { recomputeMarkupQuantitiesForVersion } from "@/lib/services/drawing-measurements"
@@ -59,104 +64,6 @@ function sanitizeIlikeSearch(value: string): string {
   return value.replace(/[(),]/g, " ").replace(/\s+/g, " ").trim()
 }
 
-type VersionStorageRow = {
-  id: string
-  tiles_base_path?: string | null
-  extracted_metadata?: Record<string, any> | null
-  page_index?: number | null
-}
-
-/**
- * Best-effort removal of derived storage (tile pyramids, temp renders) for
- * deleted sheet versions. Tile paths are content-addressed by source hash, so
- * a prefix is only deleted when no surviving version still references it
- * (re-uploading the same PDF reuses the same paths).
- */
-async function cleanupSheetVersionStorage(versionRows: VersionStorageRow[]) {
-  if (versionRows.length === 0) return
-  const supabase = createServiceSupabaseClient()
-  const deletedIds = new Set(versionRows.map((row) => row.id))
-
-  const directPaths: string[] = []
-  const candidatePrefixes = new Set<string>()
-
-  for (const row of versionRows) {
-    const metadata = row.extracted_metadata ?? {}
-    if (typeof metadata.temp_png_path === "string" && metadata.temp_png_path) {
-      directPaths.push(metadata.temp_png_path)
-    }
-    if (typeof metadata.source_hash === "string" && metadata.source_hash) {
-      // Temp per-page PDF written by the split job (already gone if the page
-      // finished processing; discard mid-flight leaves it behind).
-      const orgPrefix = row.tiles_base_path?.split("/")[0]
-      const pageIndex = row.page_index ?? metadata.page_index
-      if (orgPrefix && typeof pageIndex === "number") {
-        directPaths.push(`${orgPrefix}/${metadata.source_hash}/temp/page-${pageIndex}.pdf`)
-      }
-    }
-    if (row.tiles_base_path) {
-      candidatePrefixes.add(row.tiles_base_path)
-    }
-  }
-
-  try {
-    if (directPaths.length > 0) {
-      await deleteTilesObjects({ supabase, paths: directPaths })
-    }
-
-    for (const prefix of candidatePrefixes) {
-      const { data: stillReferenced } = await supabase
-        .from("drawing_sheet_versions")
-        .select("id")
-        .eq("tiles_base_path", prefix)
-        .limit(10)
-      const survivors = (stillReferenced ?? []).filter((row) => !deletedIds.has(row.id as string))
-      if (survivors.length > 0) continue
-
-      const objects = await listTilesObjects({ supabase, prefix: `${prefix}/`, limit: 1000 })
-      if (objects.length > 0) {
-        await deleteTilesObjects({ supabase, paths: objects.map((object) => object.name) })
-      }
-    }
-  } catch (error) {
-    console.error("[drawings] Failed to clean up version storage:", error)
-  }
-}
-
-/**
- * Enqueue an async refresh of the drawing_sheets_list materialized view via
- * the outbox instead of blocking the request on the refresh RPC. Best-effort:
- * the process-outbox cron drains the queue if the insert fails.
- */
-export async function enqueueSheetsListRefresh(orgId: string) {
-  try {
-    const { supabase } = await requireOrgContext(orgId)
-    // Coalesce: the refresh rebuilds the WHOLE materialized view (all orgs),
-    // so one pending job covers every caller. Without this, an estimator
-    // tracing sixty rooms enqueues sixty full rebuilds.
-    const { data: pending } = await supabase
-      .from("outbox")
-      .select("id")
-      .eq("job_type", "refresh_drawing_sheets_list")
-      .eq("status", "pending")
-      .limit(1)
-    if (pending && pending.length > 0) return
-
-    await supabase.from("outbox").insert({
-      org_id: orgId,
-      // outbox.event_id may have an FK to events; leave null unless you have a real event row
-      event_id: null,
-      job_type: "refresh_drawing_sheets_list",
-      status: "pending",
-      run_at: new Date().toISOString(),
-      retry_count: 0,
-      last_error: "",
-      payload: {},
-    })
-  } catch (e) {
-    console.error("[drawings] Failed to enqueue drawing_sheets_list refresh:", e)
-  }
-}
 
 export interface DrawingSet {
   id: string
@@ -405,7 +312,7 @@ async function listDrawingSheetsOptimized(
   const supabase = createServiceSupabaseClient()
 
   let query = supabase
-    .from("drawing_sheets_list_mv")
+    .from("drawing_current_register")
     .select("*")
     .eq("org_id", resolvedOrgId)
 
@@ -723,60 +630,8 @@ export async function updateDrawingSet(
 /**
  * Delete a drawing set and all related data
  */
-export async function deleteDrawingSet(setId: string, orgId?: string): Promise<void> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-
-  const { data: existing, error: fetchError } = await supabase
-    .from("drawing_sets")
-    .select("*")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", setId)
-    .single()
-
-  if (fetchError || !existing) {
-    throw new Error("Drawing set not found")
-  }
-
-  await requireProjectPermission(userId, existing.project_id, "drawing.upload")
-
-  // Collect derived-storage paths before the cascade removes the version rows.
-  const { data: setVersions } = await supabase
-    .from("drawing_sheet_versions")
-    .select("id, tiles_base_path, extracted_metadata, page_index, drawing_sheets!inner(drawing_set_id)")
-    .eq("org_id", resolvedOrgId)
-    .eq("drawing_sheets.drawing_set_id", setId)
-
-  // Delete cascade will handle sheets, versions, etc.
-  const { error } = await supabase
-    .from("drawing_sets")
-    .delete()
-    .eq("org_id", resolvedOrgId)
-    .eq("id", setId)
-
-  if (error) {
-    throw new Error(`Failed to delete drawing set: ${error.message}`)
-  }
-
-  await cleanupSheetVersionStorage((setVersions ?? []) as VersionStorageRow[])
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "delete",
-    entityType: "drawing_set",
-    entityId: setId,
-    before: existing,
-  })
-
-  await recordEvent({
-    orgId: resolvedOrgId,
-    eventType: "drawing_set_deleted",
-    entityType: "drawing_set",
-    entityId: setId,
-    payload: { title: existing.title },
-  })
-
-  await enqueueSheetsListRefresh(resolvedOrgId)
+export async function deleteDrawingSet(setId:string,orgId?:string):Promise<void> {
+  await deleteDrawings({kind:"set",targetIds:[setId]},orgId)
 }
 
 // ============================================================================
@@ -989,43 +844,8 @@ export async function updateDrawingRevision(
 /**
  * Delete a revision
  */
-export async function deleteDrawingRevision(
-  revisionId: string,
-  orgId?: string
-): Promise<void> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-
-  const { data: existing, error: fetchError } = await supabase
-    .from("drawing_revisions")
-    .select("*")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", revisionId)
-    .single()
-
-  if (fetchError || !existing) {
-    throw new Error("Drawing revision not found")
-  }
-
-  await requireProjectPermission(userId, existing.project_id, "drawing.upload")
-
-  const { error } = await supabase
-    .from("drawing_revisions")
-    .delete()
-    .eq("org_id", resolvedOrgId)
-    .eq("id", revisionId)
-
-  if (error) {
-    throw new Error(`Failed to delete drawing revision: ${error.message}`)
-  }
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "delete",
-    entityType: "drawing_revision",
-    entityId: revisionId,
-    before: existing,
-  })
+export async function deleteDrawingRevision(revisionId:string,orgId?:string):Promise<void> {
+  await deleteDrawings({kind:"revision",targetIds:[revisionId]},orgId)
 }
 
 // ============================================================================
@@ -1486,7 +1306,6 @@ export async function updateDrawingSheet(
     },
   })
 
-  await enqueueSheetsListRefresh(resolvedOrgId)
 
   return mapDrawingSheet(data)
 }
@@ -1548,50 +1367,8 @@ export async function bulkUpdateSheetSharing(
 /**
  * Delete a sheet
  */
-export async function deleteDrawingSheet(sheetId: string, orgId?: string): Promise<void> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-
-  const { data: existing, error: fetchError } = await supabase
-    .from("drawing_sheets")
-    .select("*")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", sheetId)
-    .single()
-
-  if (fetchError || !existing) {
-    throw new Error("Drawing sheet not found")
-  }
-
-  await requireProjectPermission(userId, existing.project_id, "drawing.upload")
-
-  const { data: sheetVersions } = await supabase
-    .from("drawing_sheet_versions")
-    .select("id, tiles_base_path, extracted_metadata, page_index")
-    .eq("org_id", resolvedOrgId)
-    .eq("drawing_sheet_id", sheetId)
-
-  const { error } = await supabase
-    .from("drawing_sheets")
-    .delete()
-    .eq("org_id", resolvedOrgId)
-    .eq("id", sheetId)
-
-  if (error) {
-    throw new Error(`Failed to delete drawing sheet: ${error.message}`)
-  }
-
-  await cleanupSheetVersionStorage((sheetVersions ?? []) as VersionStorageRow[])
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "delete",
-    entityType: "drawing_sheet",
-    entityId: sheetId,
-    before: existing,
-  })
-
-  await enqueueSheetsListRefresh(resolvedOrgId)
+export async function deleteDrawingSheet(sheetId:string,orgId?:string):Promise<void> {
+  await deleteDrawings({kind:"sheets",targetIds:[sheetId]},orgId)
 }
 
 // ============================================================================
@@ -1965,12 +1742,13 @@ export async function getSheetCalibration(
   sheetId: string,
   orgId?: string
 ): Promise<SheetCalibration | null> {
+  z.string().uuid().parse(sheetId)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("drawing.read", { supabase, orgId: resolvedOrgId, userId })
+  const sheetSchema = z.object({ id: z.string().uuid(), org_id: z.string().uuid(), project_id: z.string().uuid(), current_revision_id: z.string().uuid().nullable() })
 
   const { data: sheet, error: sheetError } = await supabase
     .from("drawing_sheets")
-    .select("id, current_revision_id")
+    .select("id,org_id,project_id,current_revision_id")
     .eq("org_id", resolvedOrgId)
     .eq("id", sheetId)
     .maybeSingle()
@@ -1978,86 +1756,80 @@ export async function getSheetCalibration(
   if (sheetError) {
     throw new Error(`Failed to load sheet: ${sheetError.message}`)
   }
-  if (!sheet?.current_revision_id) return null
+  if (!sheet) return null
+  const sourceSheet = sheetSchema.parse(sheet)
+  if (sourceSheet.id !== sheetId || sourceSheet.org_id !== resolvedOrgId) throw new Error("Calibration sheet unavailable")
+  await requireAuthorization({ permission: "drawing.read", orgId: resolvedOrgId, userId, supabase, projectId: sourceSheet.project_id, logDecision: true })
+  if (sourceSheet.current_revision_id === null) return null
 
   const { data: version, error: versionError } = await supabase
     .from("drawing_sheet_versions")
     .select(
-      "id, image_width, image_height, tile_manifest, calibration:extracted_metadata->calibration, proposal:extracted_metadata->calibration_proposal, scan:extracted_metadata->calibration_scan, spaces:extracted_metadata->spaces",
+      "id,org_id,drawing_sheet_id,drawing_revision_id,image_width,image_height,tile_manifest,extracted_metadata,drawing_revisions!inner(id,org_id,project_id)",
     )
     .eq("org_id", resolvedOrgId)
     .eq("drawing_sheet_id", sheetId)
-    .eq("drawing_revision_id", sheet.current_revision_id)
+    .eq("drawing_revision_id", sourceSheet.current_revision_id)
     .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
     .limit(1)
     .maybeSingle()
 
   if (versionError) {
     throw new Error(`Failed to load sheet version: ${versionError.message}`)
   }
-  if (!version) return null
+  if (!version) throw new Error("Current sheet version unavailable. Reload before retrying.")
+  const revisionSchema = z.object({ id: z.string().uuid(), org_id: z.string().uuid(), project_id: z.string().uuid() })
+  const source = z.object({
+    id: z.string().uuid(), org_id: z.string().uuid(), drawing_sheet_id: z.string().uuid(), drawing_revision_id: z.string().uuid(),
+    image_width: z.number().int().nonnegative().safe().nullable(), image_height: z.number().int().nonnegative().safe().nullable(),
+    tile_manifest: storedDrawingManifestSchema, extracted_metadata: z.record(z.unknown()).nullable(),
+    drawing_revisions: z.union([revisionSchema, z.array(revisionSchema).length(1)]),
+  }).parse(version)
+  if (source.org_id !== resolvedOrgId || source.drawing_sheet_id !== sheetId || source.drawing_revision_id !== sourceSheet.current_revision_id) throw new Error("Calibration source unavailable. Reload before retrying.")
+  const revision = Array.isArray(source.drawing_revisions) ? source.drawing_revisions[0] : source.drawing_revisions
+  if (revision.id !== source.drawing_revision_id || revision.org_id !== resolvedOrgId || revision.project_id !== sourceSheet.project_id) throw new Error("Calibration revision unavailable. Reload before retrying.")
 
-  const calibration = (version as { calibration?: unknown }).calibration as
-    | {
-        feet_per_image_px?: unknown
-        method?: unknown
-        source_label?: unknown
-        carried_from_version_id?: unknown
-      }
-    | null
-    | undefined
-  const feetPerImagePx =
-    typeof calibration?.feet_per_image_px === "number" && calibration.feet_per_image_px > 0
-      ? calibration.feet_per_image_px
-      : null
+  const metadata = source.extracted_metadata ?? {}
+  const calibration = storedSheetCalibrationSchema.nullish().parse(metadata.calibration)
+  const rawProposal = storedSheetCalibrationProposalSchema.nullish().parse(metadata.calibration_proposal)
+  const storedProposal: SheetCalibrationProposal | null = rawProposal ? {
+    feet_per_image_px: rawProposal.feet_per_image_px, method: rawProposal.method, raw: rawProposal.raw ?? null,
+    ...(rawProposal.sample_count != null ? { sample_count: rawProposal.sample_count } : {}),
+    ...(rawProposal.spread_pct != null ? { spread_pct: rawProposal.spread_pct } : {}),
+  } : null
+  const scan = storedSheetCalibrationScanSchema.nullish().parse(metadata.calibration_scan)
+  // Older space metadata also occurs as an array; only the inference record
+  // supplies a scale. Preserve those unrelated shapes and proposal precedence.
+  const spaces = z.record(z.unknown()).safeParse(metadata.spaces)
+  const inferred = !storedProposal && spaces.success && spaces.data.inferred_feet_per_image_px != null
+    ? storedSpaceCalibrationSchema.parse(spaces.data) : null
+  const spaceProposal: SheetCalibrationProposal | null = inferred ? {
+    feet_per_image_px: inferred.inferred_feet_per_image_px, method: "space_area", raw: null,
+    ...(inferred.verified_count != null ? { sample_count: inferred.verified_count } : {}),
+  } : null
 
-  const manifestSize = (version.tile_manifest as any)?.Image?.Size
-  const imageWidth = Number(manifestSize?.Width ?? version.image_width ?? 0) || null
-  const imageHeight = Number(manifestSize?.Height ?? version.image_height ?? 0) || null
+  const { data: currentSheet, error: currentError } = await supabase.from("drawing_sheets")
+    .select("id,org_id,project_id,current_revision_id").eq("org_id", resolvedOrgId).eq("id", sheetId).maybeSingle()
+  if (currentError || !currentSheet || !isDeepStrictEqual(sheetSchema.parse(currentSheet), sourceSheet)) throw new Error("Sheet changed while loading calibration. Reload before retrying.")
+  await requireAuthorization({ permission: "drawing.read", orgId: resolvedOrgId, userId, supabase, projectId: sourceSheet.project_id, logDecision: true })
 
-  const method = calibrationMethodSchema.safeParse(calibration?.method)
-  const storedProposal = normalizeCalibrationProposal(
-    (version as { proposal?: unknown }).proposal,
-  )
-  const spaces = (version as { spaces?: unknown }).spaces
-  const spacesRecord =
-    spaces && typeof spaces === "object" && !Array.isArray(spaces)
-      ? (spaces as Record<string, unknown>)
-      : null
-  const inferredSpaceScale = spacesRecord?.inferred_feet_per_image_px
-  const spaceProposal: SheetCalibrationProposal | null =
-    !storedProposal &&
-    typeof inferredSpaceScale === "number" &&
-    Number.isFinite(inferredSpaceScale) &&
-    inferredSpaceScale > 0
-      ? {
-          feet_per_image_px: inferredSpaceScale,
-          method: "space_area",
-          raw: null,
-          ...(typeof spacesRecord?.verified_count === "number"
-            ? { sample_count: spacesRecord.verified_count }
-            : {}),
-        }
-      : null
+  const feetPerImagePx = calibration?.feet_per_image_px ?? null
+  const manifestSize = source.tile_manifest?.Image?.Size
 
   return {
-    sheet_version_id: version.id as string,
+    sheet_version_id: source.id,
     feet_per_image_px: feetPerImagePx,
     // Legacy rows predate `method`; a stored scale with no method was dragged.
-    method: method.success ? method.data : feetPerImagePx ? "two_point" : null,
-    source_label: typeof calibration?.source_label === "string" ? calibration.source_label : null,
-    carried_from_version_id:
-      typeof calibration?.carried_from_version_id === "string"
-        ? calibration.carried_from_version_id
-        : null,
-    image_width: imageWidth,
-    image_height: imageHeight,
+    method: calibration?.method ?? (feetPerImagePx ? "two_point" : null),
+    source_label: calibration?.source_label ?? null,
+    carried_from_version_id: calibration?.carried_from_version_id ?? null,
+    image_width: (manifestSize?.Width ?? source.image_width) || null,
+    image_height: (manifestSize?.Height ?? source.image_height) || null,
     proposal: storedProposal ?? spaceProposal,
     // A proposal implies a scan even on rows written before the marker existed.
     scanned:
-      !!(version as { scan?: unknown }).scan ||
-      !!(version as { proposal?: unknown }).proposal ||
-      !!spaceProposal,
+      !!scan || !!storedProposal || !!spaceProposal,
   }
 }
 
@@ -2080,20 +1852,24 @@ export async function setSheetVersionCalibration(
   const { data: version, error: fetchError } = await supabase
     .from("drawing_sheet_versions")
     .select(
-      "id, extracted_metadata, image_width, image_height, tile_manifest, drawing_sheets!inner(project_id)",
+      "id,org_id,drawing_sheet_id,extracted_metadata,image_width,image_height,tile_manifest,drawing_sheets!inner(id,org_id,project_id)",
     )
     .eq("org_id", resolvedOrgId)
     .eq("id", parsed.sheet_version_id)
     .single()
 
-  if (fetchError || !version) {
+  if (fetchError || !version || version.id !== parsed.sheet_version_id || version.org_id !== resolvedOrgId) {
     throw new Error("Sheet version not found")
   }
 
-  const projectId = (version.drawing_sheets as unknown as { project_id: string }).project_id
-  await requireProjectPermission(userId, projectId, "drawing.markup")
+  const sheets = Array.isArray(version.drawing_sheets) ? version.drawing_sheets : version.drawing_sheets ? [version.drawing_sheets] : []
+  if (sheets.length !== 1 || sheets[0].id !== version.drawing_sheet_id || sheets[0].org_id !== resolvedOrgId) {
+    throw new Error("Calibration sheet unavailable. Reload before retrying.")
+  }
+  const projectId = z.string().uuid().parse(sheets[0].project_id)
+  await requireAuthorization({ permission: "drawing.markup", orgId: resolvedOrgId, userId, supabase, projectId, logDecision: true })
 
-  const existingMetadata = (version.extracted_metadata ?? {}) as Record<string, unknown>
+  const existingMetadata = z.record(z.unknown()).parse(version.extracted_metadata === null ? {} : version.extracted_metadata)
   const calibration: Record<string, unknown> = {
     feet_per_image_px: parsed.feet_per_image_px,
     method: parsed.method,
@@ -2104,14 +1880,29 @@ export async function setSheetVersionCalibration(
   // Confirming a carried-forward scale drops the "verify me" flag — that IS
   // the confirmation gesture, so it must not be preserved here.
 
-  const { error: updateError } = await supabase
+  const expectedMetadata = { ...existingMetadata, calibration }
+  let saveQuery = supabase
     .from("drawing_sheet_versions")
-    .update({ extracted_metadata: { ...existingMetadata, calibration } })
+    .update({ extracted_metadata: expectedMetadata })
     .eq("org_id", resolvedOrgId)
     .eq("id", parsed.sheet_version_id)
+    .eq("drawing_sheet_id", version.drawing_sheet_id)
+  saveQuery = version.extracted_metadata === null
+    ? saveQuery.is("extracted_metadata", null)
+    : saveQuery.eq("extracted_metadata", JSON.stringify(version.extracted_metadata))
+  const { data: saved, error: updateError } = await saveQuery
+    .select("id,org_id,drawing_sheet_id,extracted_metadata,image_width,image_height,tile_manifest,drawing_sheets!inner(id,org_id,project_id)")
+    .maybeSingle()
 
   if (updateError) {
     throw new Error(`Failed to save calibration: ${updateError.message}`)
+  }
+  if (!saved) throw new Error("Drawing metadata changed during calibration. Reload before retrying.")
+  if (saved.id !== version.id || saved.org_id !== resolvedOrgId || saved.drawing_sheet_id !== version.drawing_sheet_id ||
+    !isDeepStrictEqual(saved.extracted_metadata, expectedMetadata) ||
+    saved.image_width !== version.image_width || saved.image_height !== version.image_height ||
+    !isDeepStrictEqual(saved.tile_manifest, version.tile_manifest) || !isDeepStrictEqual(saved.drawing_sheets, version.drawing_sheets)) {
+    throw new Error("Saved calibration could not be confirmed. Reload before retrying.")
   }
 
   const recomputed = await recomputeMarkupQuantitiesForVersion(
@@ -2119,6 +1910,7 @@ export async function setSheetVersionCalibration(
     resolvedOrgId,
     parsed.sheet_version_id,
   )
+  if (!Number.isSafeInteger(recomputed) || recomputed < 0) throw new Error("Recalibrated measurement count unavailable")
 
   await recordAudit({
     orgId: resolvedOrgId,
@@ -2149,7 +1941,7 @@ export async function setSheetVersionCalibration(
     sheet_version_id: parsed.sheet_version_id,
     feet_per_image_px: parsed.feet_per_image_px,
     method: parsed.method,
-    source_label: parsed.source_label ?? null,
+    source_label: parsed.source_label || null,
     carried_from_version_id: null,
     image_width: Number(manifestSize?.Width ?? version.image_width ?? 0) || null,
     image_height: Number(manifestSize?.Height ?? version.image_height ?? 0) || null,
@@ -2175,25 +1967,44 @@ export async function setSheetVersionCalibration(
  * Gated on `drawing.markup` rather than `drawing.read` because it writes, and
  * because only someone who could apply the scale has any use for it.
  */
+const SCALE_SCAN_VERSION_SELECT = "id,org_id,drawing_sheet_id,file_id,page_index,image_width,image_height,tile_manifest,extracted_metadata,drawing_sheets!inner(id,org_id,project_id)"
+const scaleScanSheetSchema = z.object({ id: z.string().uuid(), org_id: z.string().uuid(), project_id: z.string().uuid() })
+const scaleScanVersionSchema = z.object({
+  id: z.string().uuid(),
+  org_id: z.string().uuid(),
+  drawing_sheet_id: z.string().uuid(),
+  file_id: z.string().uuid().nullable(),
+  page_index: z.number().int().nullable(),
+  image_width: z.number().int().nullable(),
+  image_height: z.number().int().nullable(),
+  tile_manifest: z.record(z.unknown()).nullable(),
+  extracted_metadata: z.record(z.unknown()).nullable(),
+  drawing_sheets: z.union([scaleScanSheetSchema, z.array(scaleScanSheetSchema).length(1)]),
+})
+
 export async function detectSheetVersionScale(
   sheetVersionId: string,
   orgId?: string,
 ): Promise<SheetCalibrationProposal | null> {
+  z.string().uuid().parse(sheetVersionId)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
 
   const { data: version, error } = await supabase
     .from("drawing_sheet_versions")
-    .select("id, file_id, page_index, image_width, image_height, tile_manifest, extracted_metadata, drawing_sheets!inner(project_id)")
+    .select(SCALE_SCAN_VERSION_SELECT)
     .eq("org_id", resolvedOrgId)
     .eq("id", sheetVersionId)
     .single()
 
-  if (error || !version) throw new Error("Sheet version not found")
+  if (error || !version || version.id !== sheetVersionId || version.org_id !== resolvedOrgId) throw new Error("Sheet version not found")
 
-  const projectId = (version.drawing_sheets as unknown as { project_id: string }).project_id
-  await requireProjectPermission(userId, projectId, "drawing.markup")
+  const source = scaleScanVersionSchema.parse(version)
+  const sheet = Array.isArray(source.drawing_sheets) ? source.drawing_sheets[0] : source.drawing_sheets
+  if (sheet.id !== source.drawing_sheet_id || sheet.org_id !== resolvedOrgId) throw new Error("Scale detection sheet unavailable. Reload before retrying.")
+  const projectId = sheet.project_id
+  await requireAuthorization({ permission: "drawing.markup", orgId: resolvedOrgId, userId, supabase, projectId, logDecision: true })
 
-  const metadata = (version.extracted_metadata ?? {}) as Record<string, unknown>
+  const metadata = source.extracted_metadata ?? {}
   // Already calibrated by a human — never second-guess it.
   if ((metadata.calibration as { feet_per_image_px?: number } | null)?.feet_per_image_px) {
     return null
@@ -2206,22 +2017,19 @@ export async function detectSheetVersionScale(
   const widthPx = Number(manifestSize?.Width ?? version.image_width ?? 0)
   const heightPx = Number(manifestSize?.Height ?? version.image_height ?? 0)
 
-  if (!version.file_id) {
-    await markScaleScanned(supabase, resolvedOrgId, sheetVersionId, metadata, null)
+  if (!source.file_id) {
+    await markScaleScanned(supabase, resolvedOrgId, source, null)
     return null
   }
 
-  const { data: file } = await supabase
+  const { data: file, error: fileError } = await supabase
     .from("files")
-    .select("storage_path")
+    .select("id,org_id,storage_path")
     .eq("org_id", resolvedOrgId)
-    .eq("id", version.file_id)
+    .eq("id", source.file_id)
     .maybeSingle()
 
-  if (!file?.storage_path) {
-    await markScaleScanned(supabase, resolvedOrgId, sheetVersionId, metadata, null)
-    return null
-  }
+  if (fileError || !file || file.id !== source.file_id || file.org_id !== resolvedOrgId || typeof file.storage_path !== "string" || !file.storage_path.trim()) throw new Error("Scale detection source file unavailable. Retry after the file is restored.")
 
   const { detectCalibrationProposal } = await import("@/lib/services/drawings-pipeline")
   const { loadMupdf } = await import("@/lib/services/mupdf-loader")
@@ -2261,10 +2069,12 @@ export async function detectSheetVersionScale(
     // this sheet. Deliberately NOT marked as scanned, so it retries once the
     // environment is fixed instead of being written off forever.
     console.error("[drawings] Scale detection could not read the PDF:", pdfError)
-    return null
+    throw new Error("Scale detection could not read the PDF. Retry when the PDF is available.")
   }
 
-  await markScaleScanned(supabase, resolvedOrgId, sheetVersionId, metadata, proposal)
+  // PDF work can outlive the permission decision that started it.
+  await requireAuthorization({ permission: "drawing.markup", orgId: resolvedOrgId, userId, supabase, projectId, logDecision: true })
+  await markScaleScanned(supabase, resolvedOrgId, source, proposal)
   return proposal
 }
 
@@ -2273,29 +2083,36 @@ export async function detectSheetVersionScale(
 async function markScaleScanned(
   supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"],
   orgId: string,
-  sheetVersionId: string,
-  metadata: Record<string, unknown>,
+  source: z.infer<typeof scaleScanVersionSchema>,
   proposal: SheetCalibrationProposal | null,
 ): Promise<void> {
-  const { error } = await supabase
+  const expectedMetadata = {
+    ...source.extracted_metadata,
+    calibration_scan: {
+      at: new Date().toISOString(),
+      found: !!proposal,
+      ...(proposal ? { method: proposal.method } : {}),
+    },
+    ...(proposal ? { calibration_proposal: proposal } : {}),
+  }
+  let query = supabase
     .from("drawing_sheet_versions")
-    .update({
-      extracted_metadata: {
-        ...metadata,
-        calibration_scan: {
-          at: new Date().toISOString(),
-          found: !!proposal,
-          ...(proposal ? { method: proposal.method } : {}),
-        },
-        ...(proposal ? { calibration_proposal: proposal } : {}),
-      },
-    })
+    .update({ extracted_metadata: expectedMetadata })
     .eq("org_id", orgId)
-    .eq("id", sheetVersionId)
+    .eq("id", source.id)
+    .eq("drawing_sheet_id", source.drawing_sheet_id)
+  // Fence the PDF page, raster context and complete metadata loaded before detection.
+  for (const field of ["file_id", "page_index", "image_width", "image_height", "tile_manifest", "extracted_metadata"] as const) {
+    const value = source[field]
+    query = value === null ? query.is(field, null) : query.eq(field, typeof value === "object" ? JSON.stringify(value) : value)
+  }
+  const { data: saved, error } = await query.select(SCALE_SCAN_VERSION_SELECT).maybeSingle()
 
   if (error) {
     throw new Error(`Failed to record scale scan: ${error.message}`)
   }
+  if (!saved) throw new Error("Drawing changed during scale detection. Reload before retrying.")
+  if (!isDeepStrictEqual(scaleScanVersionSchema.parse(saved), { ...source, extracted_metadata: expectedMetadata })) throw new Error("Saved scale scan could not be confirmed. Reload before retrying.")
 }
 
 // ============================================================================
@@ -2321,6 +2138,8 @@ export interface RevisionDiffSheet {
   current_sheet_number?: string | null
   current_sheet_title?: string | null
   current_discipline?: DrawingDiscipline | null
+  verificationStatus: "pending" | "verified" | "needs_review"
+  rendered: boolean
   draft: RevisionVersionPreview
   current?: RevisionVersionPreview | null
 }
@@ -2334,6 +2153,8 @@ export interface RevisionUnchangedSheet {
 }
 
 export interface RevisionDraftStatus {
+  updated_at?: string
+  manifest_complete?: boolean
   id: string
   revision_label: string
   status: string
@@ -2377,12 +2198,16 @@ export async function getDraftRevisionStatus(
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
     .from("drawing_revisions")
-    .select("id, project_id, drawing_set_id, revision_label, status, issuance_type, issued_date, issued_by, received_from, notes, processing_stage, processed_pages, total_pages, error_message")
+    .select("id, project_id, drawing_set_id, revision_label, status, issuance_type, issued_date, issued_by, received_from, notes, processing_stage, processed_pages, total_pages, error_message, updated_at")
     .eq("org_id", resolvedOrgId)
     .eq("id", revisionId)
     .maybeSingle()
   if (error) throw new Error(`Failed to load revision: ${error.message}`)
-  return (data as RevisionDraftStatus) ?? null
+  if(!data) return null
+  await requireProjectPermission(userId,data.project_id,"drawing.read")
+  const manifest=await supabase.rpc("drawing_revision_manifest_complete",{p_org_id:resolvedOrgId,p_revision_id:data.id})
+  if(manifest.error) throw new Error(`Failed to check page manifest: ${manifest.error.message}`)
+  return {...data,manifest_complete:manifest.data===true} as RevisionDraftStatus
 }
 
 export async function getPendingDraftRevision(
@@ -2394,7 +2219,7 @@ export async function getPendingDraftRevision(
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
     .from("drawing_revisions")
-    .select("id, project_id, drawing_set_id, revision_label, status, issuance_type, issued_date, issued_by, received_from, notes, processing_stage, processed_pages, total_pages, error_message")
+    .select("id, project_id, drawing_set_id, revision_label, status, issuance_type, issued_date, issued_by, received_from, notes, processing_stage, processed_pages, total_pages, error_message, updated_at")
     .eq("org_id", resolvedOrgId)
     .eq("project_id", projectId)
     .in("status", ["processing", "draft"])
@@ -2402,7 +2227,11 @@ export async function getPendingDraftRevision(
     .limit(1)
     .maybeSingle()
   if (error) throw new Error(`Failed to load pending revision: ${error.message}`)
-  return (data as RevisionDraftStatus) ?? null
+  if(!data) return null
+  await requireProjectPermission(userId,data.project_id,"drawing.read")
+  const manifest=await supabase.rpc("drawing_revision_manifest_complete",{p_org_id:resolvedOrgId,p_revision_id:data.id})
+  if(manifest.error) throw new Error(`Failed to check page manifest: ${manifest.error.message}`)
+  return {...data,manifest_complete:manifest.data===true} as RevisionDraftStatus
 }
 
 export async function getRevisionDiff(revisionId: string, orgId?: string): Promise<RevisionDiff> {
@@ -2417,7 +2246,7 @@ export async function getRevisionDiff(revisionId: string, orgId?: string): Promi
     supabase
       .from("drawing_sheet_versions")
       .select(`
-        id, drawing_sheet_id, page_index, proposed:extracted_metadata->proposed,
+        id, drawing_sheet_id, page_index, proposed:extracted_metadata->proposed, detection:extracted_metadata->sheet_detection, identity_reviewed:extracted_metadata->identity_reviewed,
         thumb_path, tile_base_url, tile_manifest, thumbnail_url, image_width, image_height,
         drawing_sheets!inner(id, sheet_number, sheet_title, discipline, current_revision_id, sort_order)
       `)
@@ -2437,6 +2266,8 @@ export async function getRevisionDiff(revisionId: string, orgId?: string): Promi
     const sheet = (dv as any).drawing_sheets
     draftSheetIds.add(sheet.id)
     const proposed = ((dv as any).proposed ?? {}) as any
+    const detection=z.object({vision_pending:z.boolean().optional(),confidence:z.string().optional(),vision_error:z.unknown().optional()}).passthrough().safeParse(dv.detection)
+    const verification=detection.success ? detection.data : {}
     const isNew = !sheet.current_revision_id
     const entry: RevisionDiffSheet = {
       sheet_id: sheet.id,
@@ -2445,6 +2276,8 @@ export async function getRevisionDiff(revisionId: string, orgId?: string): Promi
       sheet_number: proposed.sheet_number ?? sheet.sheet_number,
       sheet_title: proposed.sheet_title ?? sheet.sheet_title ?? null,
       discipline: (proposed.discipline ?? sheet.discipline ?? null) as DrawingDiscipline | null,
+      rendered: Boolean(dv.tile_manifest?.Image?.Size?.Width && dv.tile_manifest?.Image?.Size?.Height && !dv.tile_manifest?.Partial),
+      verificationStatus: dv.identity_reviewed ? "verified" : verification.vision_pending ? "pending" : verification.confidence==="high" && !verification.vision_error ? "verified" : "needs_review",
       draft: revisionPreviewFromVersionRow(dv),
     }
     if (isNew) {
@@ -2473,7 +2306,7 @@ export async function getRevisionDiff(revisionId: string, orgId?: string): Promi
       : Promise.resolve({ data: [] }),
     // Unchanged: live sheets in the project not touched by this draft.
     supabase
-      .from("drawing_sheets_list_mv")
+      .from("drawing_current_register")
       .select("id, sheet_number, sheet_title, discipline, current_version_id, thumbnail_url, tile_base_url, tile_manifest, image_width, image_height")
       .eq("org_id", resolvedOrgId)
       .eq("project_id", revision.project_id),
@@ -2522,10 +2355,19 @@ export interface PublishRevisionInput {
   receivedFrom?: string
   notes?: string
   decisions?: Record<string, boolean>
-  sheetEdits?: Record<string, { sheet_number?: string; sheet_title?: string; discipline?: DrawingDiscipline }>
+  expectedRevisionUpdatedAt?: string
+  sheetEdits?: Record<string, { sheet_number?: string; sheet_title?: string; discipline?: DrawingDiscipline; version_id?:string; identity_reviewed?:boolean }>
 }
 
-export async function publishRevision(input: PublishRevisionInput, orgId?: string): Promise<void> {
+const publishRevisionInputSchema=z.object({
+ revisionId:z.string().uuid(),label:z.string().max(250).optional(),issuanceType:z.enum(["revision","asi","bulletin","addendum","ifc_set","permit_set","bid_set","sketch","record_set","other"]).optional(),
+ issuedDate:z.string().max(40).optional(),issuedBy:z.string().max(250).optional(),receivedFrom:z.string().max(250).optional(),notes:z.string().max(10000).optional(),
+ expectedRevisionUpdatedAt:z.string().datetime({offset:true}).optional(),
+ decisions:z.record(z.string().uuid(),z.boolean()).optional(),
+ sheetEdits:z.record(z.string().uuid(),z.object({sheet_number:z.string().max(100).optional(),sheet_title:z.string().max(500).optional(),discipline:z.enum(["A","S","M","E","P","C","L","I","FP","G","T","SP","D","X"]).optional(),version_id:z.string().uuid().optional(),identity_reviewed:z.boolean().optional()}).strict()).optional(),
+}).strict()
+async function publishRevisionTransaction(input: PublishRevisionInput, orgId?: string): Promise<void> {
+  input=publishRevisionInputSchema.parse(input)
   const { orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const supabase = createServiceSupabaseClient()
 
@@ -2537,7 +2379,6 @@ export async function publishRevision(input: PublishRevisionInput, orgId?: strin
     .single()
   if (revError || !revision) throw new Error(`Revision not found: ${revError?.message}`)
   await requireProjectPermission(userId, revision.project_id, "drawing.upload")
-  if (revision.status === "published") throw new Error("Revision already published")
 
   const { error: publishError } = await supabase.rpc("publish_drawing_revision", {
     p_org_id: resolvedOrgId,
@@ -2550,141 +2391,40 @@ export async function publishRevision(input: PublishRevisionInput, orgId?: strin
     p_received_from: input.receivedFrom?.trim() || null,
     p_notes: input.notes?.trim() || null,
     p_decisions: input.decisions ?? {},
-    p_sheet_edits: input.sheetEdits ?? {},
+    p_sheet_edits: {...(input.sheetEdits ?? {}),...(input.expectedRevisionUpdatedAt ? {__expected_revision_updated_at:input.expectedRevisionUpdatedAt} : {})},
   })
 
   if (publishError) {
     throw new Error(`Failed to publish revision: ${publishError.message}`)
   }
 
-  // Carry measured quantities onto the new versions. Without this, publishing
-  // a revision silently drops every measurement on the affected sheets out of
-  // its condition's rollup — see docs/takeoff-reanchor-design.md. Runs as an
-  // outbox job: publish never blocks on it, and a failure retries instead of
-  // silently losing the carry-forward (the exact failure this exists to stop).
-  const { error: reanchorEnqueueError } = await supabase.from("outbox").insert({
-    org_id: resolvedOrgId,
-    event_id: null,
-    job_type: "reanchor_takeoff_markups",
-    status: "pending",
-    run_at: new Date().toISOString(),
-    retry_count: 0,
-    last_error: "",
-    payload: { revision_id: input.revisionId },
-  })
-  if (reanchorEnqueueError) {
-    // The revision IS published; losing the queue row means measurements
-    // silently vanish from rollups, so this one is worth failing loudly.
-    throw new Error(
-      `Revision published, but measurement carry-forward could not be queued: ${reanchorEnqueueError.message}`,
-    )
-  }
-
-  // Per-sheet visual change detection. Unlike the carry-forward above this is
-  // pure signal, so the helper dedupes per revision and never throws — a
-  // publish must not fail because we could not queue a diff.
-  await enqueueDrawingChangeDetection({
-    orgId: resolvedOrgId,
-    revisionId: input.revisionId,
-  })
-
-  await recordEvent({
-    orgId: resolvedOrgId,
-    eventType: "drawing_revision_published",
-    entityType: "drawing_revision",
-    entityId: input.revisionId,
-    payload: { project_id: revision.project_id },
-  })
 }
 
-export async function discardRevision(revisionId: string, orgId?: string): Promise<void> {
-  const { orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+export async function discardRevision(revisionId:string,orgId?:string):Promise<void> {
+  await deleteDrawings({kind:"discard",targetIds:[revisionId]},orgId)
+}
+
+export async function publishRevision(input: PublishRevisionInput, orgId?: string): Promise<void> {
+  const finish = startDrawingLifecycleStage("publish", { revisionId: input.revisionId })
+  try {
+    await publishRevisionTransaction(input, orgId)
+    finish("success")
+  } catch (error) {
+    finish("failure")
+    throw error
+  }
+}
+
+/** Manual retry repairs durable split receipts and jobs in one transaction. */
+export async function retryDraftRevision(revisionId: string): Promise<string> {
+  z.string().uuid().parse(revisionId)
+  const { orgId, userId } = await requireOrgContext()
   const supabase = createServiceSupabaseClient()
-
-  const { data: revision, error: revError } = await supabase
-    .from("drawing_revisions")
-    .select("id, project_id, status")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", revisionId)
-    .single()
-  if (revError || !revision) throw new Error(`Revision not found: ${revError?.message}`)
+  const { data: revision, error } = await supabase.from("drawing_revisions").select("id,project_id,status").eq("org_id", orgId).eq("id", revisionId).maybeSingle()
+  if (error || !revision) throw new Error("Revision not found")
   await requireProjectPermission(userId, revision.project_id, "drawing.upload")
-  if (revision.status === "published") throw new Error("Cannot discard a published revision")
-
-  // Only the storage-cleanup keys of extracted_metadata are needed here; the
-  // full JSON blob can be large per version.
-  const { data: draftVersions } = await supabase
-    .from("drawing_sheet_versions")
-    .select("id, drawing_sheet_id, tiles_base_path, page_index, temp_png_path:extracted_metadata->>temp_png_path, source_hash:extracted_metadata->>source_hash, drawing_sheets!inner(id, current_revision_id)")
-    .eq("org_id", resolvedOrgId)
-    .eq("drawing_revision_id", revisionId)
-
-  const draftOnlySheetIds = new Set<string>()
-  for (const dv of draftVersions ?? []) {
-    const sheet = (dv as any).drawing_sheets
-    if (!sheet.current_revision_id) draftOnlySheetIds.add(sheet.id)
-  }
-
-  await supabase
-    .from("drawing_sheet_versions")
-    .delete()
-    .eq("org_id", resolvedOrgId)
-    .eq("drawing_revision_id", revisionId)
-
-  const storageRows: VersionStorageRow[] = (draftVersions ?? []).map((dv: any) => ({
-    id: dv.id,
-    tiles_base_path: dv.tiles_base_path ?? null,
-    page_index: dv.page_index ?? null,
-    extracted_metadata: {
-      temp_png_path: dv.temp_png_path ?? undefined,
-      source_hash: dv.source_hash ?? undefined,
-    },
-  }))
-  await cleanupSheetVersionStorage(storageRows)
-
-  const deletedSheetIds: string[] = []
-  for (const sheetId of draftOnlySheetIds) {
-    const { count } = await supabase
-      .from("drawing_sheet_versions")
-      .select("*", { count: "exact", head: true })
-      .eq("org_id", resolvedOrgId)
-      .eq("drawing_sheet_id", sheetId)
-    if (!count) {
-      await supabase.from("drawing_sheets").delete().eq("org_id", resolvedOrgId).eq("id", sheetId)
-      deletedSheetIds.push(sheetId)
-    }
-  }
-
-  await supabase
-    .from("drawing_revisions")
-    .delete()
-    .eq("org_id", resolvedOrgId)
-    .eq("id", revisionId)
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "delete",
-    entityType: "drawing_revision",
-    entityId: revisionId,
-    before: {
-      ...revision,
-      discarded_version_ids: (draftVersions ?? []).map((dv: any) => dv.id),
-      discarded_sheet_ids: deletedSheetIds,
-    },
-  })
-
-  await recordEvent({
-    orgId: resolvedOrgId,
-    eventType: "drawing_revision_discarded",
-    entityType: "drawing_revision",
-    entityId: revisionId,
-    payload: {
-      project_id: revision.project_id,
-      discarded_version_count: draftVersions?.length ?? 0,
-      discarded_sheet_count: deletedSheetIds.length,
-    },
-  })
-
-  await enqueueSheetsListRefresh(resolvedOrgId)
+  const retry = await supabase.rpc("retry_drawing_revision_pipeline", { p_org_id: orgId, p_revision_id: revisionId })
+  if (retry.error) throw new Error(retry.error.message)
+  void triggerDrawingsPipeline().catch(() => undefined)
+  return revision.project_id
 }

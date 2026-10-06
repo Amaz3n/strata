@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 
 import {
@@ -13,7 +13,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { FileText, Loader2, Trash2, Upload } from "@/components/icons"
 
-import { unwrapAction } from "@/lib/action-result"
+import { unwrapAction, type ActionResult } from "@/lib/action-result"
 
 const TEMPLATE_TYPES: Array<{ value: ContractTemplateFor; label: string }> = [
   { value: "estimate", label: "Estimate" },
@@ -28,77 +28,161 @@ function formatSize(bytes?: number | null) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-export function ContractTemplateSettings({ canManage }: { canManage: boolean }) {
-  const [templates, setTemplates] = useState<ContractTemplateSummary[]>([])
-  const [loading, setLoading] = useState(true)
+export function ContractTemplateSettings({ canManage, initialTemplates }: {
+  canManage: boolean
+  initialTemplates: ActionResult<ContractTemplateSummary[]>
+}) {
+  const [state, setState] = useState(() => ({
+    source: initialTemplates,
+    templates: initialTemplates.success ? initialTemplates.data : [],
+    error: initialTemplates.success ? null : initialTemplates.error,
+  }))
+  if (state.source !== initialTemplates) {
+    setState({
+      source: initialTemplates,
+      templates: initialTemplates.success ? initialTemplates.data : [],
+      error: initialTemplates.success ? null : initialTemplates.error,
+    })
+  }
+  const [loading, setLoading] = useState(false)
   const [uploadingFor, setUploadingFor] = useState<ContractTemplateFor | null>(null)
   const [removingId, setRemovingId] = useState<string | null>(null)
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({})
+  const mounted = useRef(false)
+  const inFlight = useRef(false)
+  const epoch = useRef(0)
+  const canManageRef = useRef(canManage)
+  const sourceRef = useRef(initialTemplates)
+  const invalidateRequests = useCallback(() => {
+    epoch.current++
+    inFlight.current = false
+  }, [])
 
-  const loadTemplates = async () => {
+  useEffect(() => {
+    mounted.current = true
+    setLoading(false)
+    setUploadingFor(null)
+    setRemovingId(null)
+    for (const input of Object.values(inputRefs.current)) if (input) input.value = ""
+    return () => {
+      mounted.current = false
+      invalidateRequests()
+    }
+  }, [invalidateRequests])
+
+  useEffect(() => {
+    sourceRef.current = initialTemplates
+    canManageRef.current = canManage
+    if (!canManage) {
+      invalidateRequests()
+      setLoading(false)
+      setUploadingFor(null)
+      setRemovingId(null)
+      for (const input of Object.values(inputRefs.current)) if (input) input.value = ""
+    }
+  }, [initialTemplates, canManage, invalidateRequests])
+
+  const isCurrent = (request: number) => mounted.current && canManageRef.current && epoch.current === request
+
+  const loadTemplates = async (request: number, source: typeof initialTemplates) => {
     setLoading(true)
     try {
-      setTemplates(await listContractTemplatesAction())
+      const templates = await listContractTemplatesAction()
+      if (!isCurrent(request)) return
+      setState(current => current.source === source ? { ...current, templates, error: null } : current)
     } catch (error) {
-      console.error(error)
-      toast.error("Unable to load contract templates")
+      if (!isCurrent(request)) return
+      setState(current => current.source === source ? {
+        ...current,
+        error: error instanceof Error ? error.message : "Unable to load contract templates",
+      } : current)
     } finally {
-      setLoading(false)
+      if (isCurrent(request)) setLoading(false)
     }
   }
 
-  useEffect(() => {
-    void loadTemplates()
-  }, [])
+  const retry = async () => {
+    if (!mounted.current || !canManageRef.current || inFlight.current) return
+    inFlight.current = true
+    const request = epoch.current
+    try {
+      await loadTemplates(request, initialTemplates)
+    } finally {
+      if (isCurrent(request)) inFlight.current = false
+    }
+  }
 
-  const byType = new Map(templates.map((template) => [template.template_for, template]))
+  const byType = new Map(state.templates.map((template) => [template.template_for, template]))
+  const busy = loading || uploadingFor !== null || removingId !== null
 
   const uploadTemplate = async (templateFor: ContractTemplateFor, file?: File | null) => {
-    if (!file) return
+    if (!file || !mounted.current || !canManageRef.current || inFlight.current) return
+    inFlight.current = true
+    const request = epoch.current
     const formData = new FormData()
     formData.append("file", file)
     setUploadingFor(templateFor)
     try {
-      const result = unwrapAction(await uploadContractTemplateAction(templateFor, formData))
+      const reply = await uploadContractTemplateAction(templateFor, formData)
+      if (!isCurrent(request)) return
+      const result = unwrapAction(reply)
       if (result?.error) {
         toast.error("Unable to upload template", { description: result.error })
         return
       }
       toast.success("Contract template updated")
-      await loadTemplates()
+      if (sourceRef.current === initialTemplates) await loadTemplates(request, initialTemplates)
     } catch (error) {
-      console.error(error)
-      toast.error("Unable to upload template", { description: (error as Error).message })
+      if (!isCurrent(request)) return
+      toast.error("Unable to upload template", { description: error instanceof Error ? error.message : undefined })
     } finally {
-      setUploadingFor(null)
-      const input = inputRefs.current[templateFor]
-      if (input) input.value = ""
+      if (isCurrent(request)) {
+        inFlight.current = false
+        setUploadingFor(null)
+        const input = inputRefs.current[templateFor]
+        if (input) input.value = ""
+      }
     }
   }
 
   const removeTemplate = async (template: ContractTemplateSummary) => {
+    if (!mounted.current || !canManageRef.current || inFlight.current) return
+    inFlight.current = true
+    const request = epoch.current
     setRemovingId(template.id)
     try {
-      const result = unwrapAction(await removeContractTemplateAction(template.id))
+      const reply = await removeContractTemplateAction(template.id)
+      if (!isCurrent(request)) return
+      const result = unwrapAction(reply)
       if (result?.error) {
         toast.error("Unable to remove template", { description: result.error })
         return
       }
       toast.success("Contract template removed")
-      await loadTemplates()
+      if (sourceRef.current === initialTemplates) await loadTemplates(request, initialTemplates)
     } catch (error) {
-      console.error(error)
-      toast.error("Unable to remove template", { description: (error as Error).message })
+      if (!isCurrent(request)) return
+      toast.error("Unable to remove template", { description: error instanceof Error ? error.message : undefined })
     } finally {
-      setRemovingId(null)
+      if (isCurrent(request)) {
+        inFlight.current = false
+        setRemovingId(null)
+      }
     }
   }
 
   return (
     <>
+      {state.error ? (
+        <div role="alert" className="flex items-center justify-between gap-3 py-3 text-sm text-destructive">
+          <p>{state.error}</p>
+          <Button variant="outline" size="sm" disabled={!canManage || busy} onClick={() => void retry()}>
+            Retry template loading
+          </Button>
+        </div>
+      ) : null}
       {TEMPLATE_TYPES.map((type) => {
         const template = byType.get(type.value)
-        const busy = uploadingFor === type.value || (template ? removingId === template.id : false)
         return (
           <div
             key={type.value}
@@ -124,6 +208,8 @@ export function ContractTemplateSettings({ canManage }: { canManage: boolean }) 
                   inputRefs.current[type.value] = node
                 }}
                 type="file"
+                aria-label={`Upload ${type.label} template`}
+                disabled={!canManage || busy}
                 accept="application/pdf"
                 className="hidden"
                 onChange={(event) => void uploadTemplate(type.value, event.target.files?.[0] ?? null)}

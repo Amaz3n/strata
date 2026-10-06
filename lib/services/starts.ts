@@ -1,4 +1,8 @@
 import "server-only"
+import { loadPurchasingEnabledByCommunity } from "@/lib/services/purchasing-readiness"
+import { confirmationRecoveryEnabled, loadStartConfirmationJobs, queueStartConfirmationRecovery, queueStartNotificationRecovery, readStartNotificationDeliveries, type StartConfirmationJobDTO } from "@/lib/services/starts-confirmation-recovery"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { assertProjectConfiguration } from "@/lib/services/configuration-rules"
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 
@@ -13,6 +17,7 @@ import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { requirePermission } from "@/lib/services/permissions"
 import { getDivisionAccessForUser } from "@/lib/services/authorization"
 import { createProject } from "@/lib/services/projects"
+import { readAllRows } from "@/lib/land/paging"
 import { triggerStartsPipeline } from "@/lib/services/starts-pipeline-trigger"
 import {
   gateAttestSchema,
@@ -106,9 +111,22 @@ export interface StartPackageListItemDTO {
 }
 
 export interface StartPackageDetailDTO extends StartPackageListItemDTO {
+  confirmationJobs: StartConfirmationJobDTO[]
+  confirmationRecoveryEnabled: boolean
   gates: StartGateDTO[]
   steps: Array<{ stepKey: string; status: string; attempt: number; error: string | null; detail: Record<string, unknown>; completedAt: string | null }>
   notes: string | null
+  tradeNotices: StartTradeNoticeDTO[]
+}
+
+export interface StartTradeNoticeDTO {
+  id: string
+  companyId: string
+  companyName: string
+  status: "pending" | "processing" | "completed" | "failed"
+  retryCount: number
+  error: string | null
+  runAt: string
 }
 
 type Relation = Record<string, unknown>
@@ -241,17 +259,6 @@ function mapGate(row: Relation): StartGateDTO {
   }
 }
 
-async function loadPurchasingEnabledByCommunity(supabase: SupabaseClient, orgId: string, communityIds: string[]) {
-  const unique = Array.from(new Set(communityIds))
-  if (!unique.length) return new Map<string, boolean>()
-  const { data, error } = await supabase.from("vendor_price_agreements").select("community_id")
-    .eq("org_id", orgId).eq("status", "active")
-    .or(`community_id.in.(${unique.join(",")}),community_id.is.null`).limit(10_000)
-  if (error) throw new Error(`Failed to check purchasing readiness: ${error.message}`)
-  const scoped = new Set((data ?? []).flatMap((row) => row.community_id ? [row.community_id as string] : []))
-  const orgWide = (data ?? []).some((row) => row.community_id === null)
-  return new Map(unique.map((id) => [id, orgWide || scoped.has(id)]))
-}
 
 async function loadPurchasingEnabled(supabase: SupabaseClient, orgId: string, communityId: string) {
   const map = await loadPurchasingEnabledByCommunity(supabase, orgId, [communityId])
@@ -300,7 +307,21 @@ async function loadPackageRow(supabase: SupabaseClient, orgId: string, packageId
   const { data, error } = await supabase.from("start_packages").select("*")
     .eq("org_id", orgId).eq("id", packageId).maybeSingle()
   if (error || !data) throw new Error("Start package not found")
+  await assertStartCommunityAccess(supabase, orgId, data.community_id)
   return data
+}
+
+export async function assertStartCommunityAccess(supabase: SupabaseClient, orgId: string, communityId: string) {
+  const context = await requireOrgContext(orgId)
+  const access = await getDivisionAccessForUser(context)
+  if (access.assignedOnly) {
+    const { data: community, error: communityError } = await supabase.from("communities").select("division_id")
+      .eq("org_id", orgId).eq("id", communityId).maybeSingle()
+    if (communityError || !community || !community.division_id || !access.divisionIds.includes(community.division_id)) {
+      throw new Error("Start package is outside your division access")
+    }
+  }
+  return access
 }
 
 async function loadGateRows(supabase: SupabaseClient, orgId: string, packageId: string) {
@@ -310,6 +331,44 @@ async function loadGateRows(supabase: SupabaseClient, orgId: string, packageId: 
   `).eq("org_id", orgId).eq("start_package_id", packageId).order("created_at")
   if (error) throw new Error(`Failed to load start gates: ${error.message}`)
   return data ?? []
+}
+
+/** Recheck current definitions and applicability immediately before publication. */
+export async function assertReleaseGateCompletion(
+  supabase: SupabaseClient, orgId: string, packageId: string,
+  expected: { projectId: string; lotId: string; communityId: string; startDate: string; purchasingEnabled: boolean },
+) {
+  const [pkg, definitions, gates] = await Promise.all([
+    supabase.from("start_packages").select("status,project_id,lot_id,community_id,scheduled_start_date,is_financed")
+      .eq("org_id", orgId).eq("id", packageId).maybeSingle(),
+    readAllRows((from, to) => supabase.from("start_gate_definitions").select("id,key,check_kind,auto_source,applies_when")
+      .eq("org_id", orgId).eq("is_active", true).order("id").range(from, to),
+    { cap: 1001, label: "Failed to verify release gate definitions" }),
+    readAllRows((from, to) => supabase.from("start_package_gates").select("gate_definition_id,status,waived_reason")
+      .eq("org_id", orgId).eq("start_package_id", packageId).order("id").range(from, to),
+    { cap: 1001, label: "Failed to verify release gates" }),
+  ])
+  if (pkg.error || !pkg.data) throw new Error(`Failed to verify release gates: ${pkg.error?.message ?? "Package unavailable"}`)
+  if (pkg.data.status !== "releasing" || pkg.data.project_id !== expected.projectId || pkg.data.lot_id !== expected.lotId
+    || pkg.data.community_id !== expected.communityId || pkg.data.scheduled_start_date !== expected.startDate) throw new Error("Release package scope or date changed before publication")
+  if (definitions.truncated || gates.truncated) throw new Error("Release gate verification exceeds the supported limit")
+  if (!definitions.rows.length) throw new Error("Release has no active gate definitions")
+  const purchasingEnabled = await loadPurchasingEnabled(supabase, orgId, pkg.data.community_id)
+  if (purchasingEnabled !== expected.purchasingEnabled) throw new Error("Purchasing applicability changed during release; retry with the current price book")
+  const byDefinition = new Map(gates.rows.map(row => [row.gate_definition_id, row]))
+  if (byDefinition.size !== gates.rows.length) throw new Error("Release contains duplicate gate evidence")
+  for (const definition of definitions.rows) {
+    if (!isGateApplicable({ appliesWhen: definition.applies_when as GateAppliesWhen }, { isFinanced: pkg.data.is_financed, purchasingEnabled })) continue
+    const gate = byDefinition.get(definition.id)
+    if (!gate || !["passed", "waived"].includes(gate.status)
+      || (gate.status === "waived" && String(gate.waived_reason ?? "").trim().length < 10)) {
+      throw new Error(`Release completion is not proven for the ${definition.key} gate`)
+    }
+    if (gate.status === "passed" && definition.check_kind === "auto"
+      && !await deriveAutoGate(supabase, orgId, pkg.data, String(definition.auto_source))) {
+      throw new Error(`Release evidence no longer satisfies the ${definition.key} gate`)
+    }
+  }
 }
 
 async function recomputePackageStatus(supabase: SupabaseClient, orgId: string, packageId: string) {
@@ -360,15 +419,17 @@ async function deriveAutoGate(
 ) {
   const projectId = text(pkg.project_id)
   if (source === "plan_pinned") {
-    const { data } = await supabase.from("lots").select("house_plan_version_id,house_plan_elevation_id,version:house_plan_versions(status)")
+    const { data, error } = await supabase.from("lots").select("house_plan_version_id,house_plan_elevation_id,version:house_plan_versions(status)")
       .eq("org_id", orgId).eq("id", String(pkg.lot_id)).maybeSingle()
+    if (error) throw new Error(`Failed to check pinned plan: ${error.message}`)
     const version = relation(data?.version)
     return Boolean(data?.house_plan_version_id && data.house_plan_elevation_id && version?.status === "released")
   }
   if (!projectId) return false
   if (source === "plot_plan_file") {
-    const { count } = await supabase.from("files").select("id", { count: "exact", head: true })
+    const { count, error } = await supabase.from("files").select("id", { count: "exact", head: true })
       .eq("org_id", orgId).eq("project_id", projectId).eq("metadata->>document_kind", "plot_plan").is("archived_at", null)
+    if (error || count === null) throw new Error(`Failed to check plot plan: ${error?.message ?? "Evidence count unavailable"}`)
     return (count ?? 0) > 0
   }
   if (source === "selections_locked") {
@@ -385,16 +446,19 @@ async function deriveAutoGate(
     ])
     if (total.error) throw new Error(`Failed to check selection groups: ${total.error.message}`)
     if (open.error) throw new Error(`Failed to check open selections: ${open.error.message}`)
+    if (total.count === null || open.count === null) throw new Error("Selection evidence counts unavailable")
     return (total.count ?? 0) > 0 && (open.count ?? 0) === 0
   }
   if (source === "budget_generated") {
-    const { count } = await supabase.from("budgets").select("id", { count: "exact", head: true })
+    const { count, error } = await supabase.from("budgets").select("id", { count: "exact", head: true })
       .eq("org_id", orgId).eq("project_id", projectId)
+    if (error || count === null) throw new Error(`Failed to check generated budget: ${error?.message ?? "Evidence count unavailable"}`)
     return (count ?? 0) > 0
   }
   if (source === "pos_generated") {
-    const { count } = await supabase.from("po_generation_runs").select("id", { count: "exact", head: true })
+    const { count, error } = await supabase.from("po_generation_runs").select("id", { count: "exact", head: true })
       .eq("org_id", orgId).eq("project_id", projectId).eq("mode", "commit").in("status", ["succeeded", "succeeded_with_exceptions"])
+    if (error || count === null) throw new Error(`Failed to check generated purchase orders: ${error?.message ?? "Evidence count unavailable"}`)
     return (count ?? 0) > 0
   }
   if (source === "po_exceptions_clear") {
@@ -410,6 +474,7 @@ async function deriveAutoGate(
     ])
     if (runs.error) throw new Error(`Failed to check price-book runs: ${runs.error.message}`)
     if (open.error) throw new Error(`Failed to check purchase-order exceptions: ${open.error.message}`)
+    if (runs.count === null || open.count === null) throw new Error("Purchase-order evidence counts unavailable")
     return (runs.count ?? 0) > 0 && (open.count ?? 0) === 0
   }
   return false
@@ -455,17 +520,22 @@ export async function refreshAutoGates(packageId: string, orgId?: string): Promi
   await Promise.all(rows.map(async (row) => {
     const definition = relation(row.definition)
     if (!definition) return
+    const updateStatus = async (patch: { status: GateStatus; passed_via: "auto" | null }) => {
+      const { data, error } = await context.supabase.from("start_package_gates").update(patch)
+        .eq("org_id", context.orgId).eq("id", row.id).select("id")
+      if (error || data?.length !== 1) throw new Error(`Failed to refresh the ${String(definition.key)} gate: ${error?.message ?? "Gate no longer exists"}`)
+    }
     const applicable = isGateApplicable({ appliesWhen: definition.applies_when as GateAppliesWhen }, { isFinanced: pkg.is_financed, purchasingEnabled })
     if (!applicable) {
-      await context.supabase.from("start_package_gates").update({ status: "not_applicable", passed_via: null }).eq("org_id", context.orgId).eq("id", row.id)
+      await updateStatus({ status: "not_applicable", passed_via: null })
       return
     }
     if (row.status === "waived" || definition.check_kind !== "auto") {
-      if (row.status === "not_applicable") await context.supabase.from("start_package_gates").update({ status: "pending" }).eq("org_id", context.orgId).eq("id", row.id)
+      if (row.status === "not_applicable") await updateStatus({ status: "pending", passed_via: null })
       return
     }
     const passed = await deriveAutoGate(context.supabase, context.orgId, pkg, String(definition.auto_source))
-    await context.supabase.from("start_package_gates").update({ status: passed ? "passed" : "pending", passed_via: passed ? "auto" : null }).eq("org_id", context.orgId).eq("id", row.id)
+    await updateStatus({ status: passed ? "passed" : "pending", passed_via: passed ? "auto" : null })
   }))
   await recomputePackageStatus(context.supabase, context.orgId, packageId)
   return (await loadGateRows(context.supabase, context.orgId, packageId)).map((row) => mapGate(row))
@@ -475,10 +545,12 @@ export async function openStartPackage(lotId: string, input: { isFinanced?: bool
   const parsed = startPackageInputSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("start.write", context)
-  await seedDefaultGateDefinitions(context.orgId)
   const { data: lot, error } = await context.supabase.from("lots").select("id,community_id,division_id,project_id,status,lot_number,address,community:communities(name,code)")
     .eq("org_id", context.orgId).eq("id", lotId).maybeSingle()
   if (error || !lot) throw new Error("Lot not found")
+  const access = await assertStartCommunityAccess(context.supabase, context.orgId, lot.community_id)
+  if (access.assignedOnly && (!lot.division_id || !access.divisionIds.includes(lot.division_id))) throw new Error("Lot is outside your division access")
+  await seedDefaultGateDefinitions(context.orgId)
   if (!["developed", "assigned"].includes(lot.status)) throw new Error("Only developed or assigned lots can enter the start pipeline.")
   const { count: activePackages } = await context.supabase.from("start_packages")
     .select("id", { count: "exact", head: true }).eq("org_id", context.orgId).eq("lot_id", lot.id).neq("status", "cancelled")
@@ -648,6 +720,7 @@ export async function releaseStart(packageId: string, input: { scheduledStartDat
     pkg = { ...pkg, project_id: project.id }
   }
 
+  await assertProjectConfiguration(context.orgId, pkg.project_id)
   const target = await getReleaseSlotTarget(context.orgId, pkg.community_id, targetWeek)
   const now = new Date().toISOString()
 
@@ -953,16 +1026,95 @@ export async function getStartPackage(id: string, orgId?: string): Promise<Start
   const result = await listStartPackages({ id, pageSize: 1 }, context.orgId)
   const item = result.packages.find((pkg) => pkg.id === id)
   if (!item) throw new Error("Start package not found")
-  const [gates, stepsResult, pkg] = await Promise.all([
+  const [gates, stepsResult, pkg, tradeNotices, confirmationJobs, recoveryEnabled] = await Promise.all([
     loadGateRows(context.supabase, context.orgId, id),
     context.supabase.from("start_release_steps").select("*").eq("org_id", context.orgId).eq("start_package_id", id).order("created_at"),
     loadPackageRow(context.supabase, context.orgId, id),
+    loadStartTradeNotices(context.supabase, context.orgId, id),
+    item.status === "released" ? loadStartConfirmationJobs(context.supabase, context.orgId, id) : Promise.resolve([]),
+    item.status === "released" ? confirmationRecoveryEnabled(context.supabase, context.orgId) : Promise.resolve(false),
   ])
   if (stepsResult.error) throw new Error(`Failed to load release steps: ${stepsResult.error.message}`)
   return {
-    ...item, notes: pkg.notes, gates: gates.map((gate) => mapGate(gate)),
+    ...item, confirmationJobs, confirmationRecoveryEnabled: recoveryEnabled, notes: pkg.notes, tradeNotices, gates: gates.map((gate) => mapGate(gate)),
     steps: (stepsResult.data ?? []).map((step) => ({ stepKey: step.step_key, status: step.status, attempt: Number(step.attempt), error: step.error, detail: step.detail ?? {}, completedAt: step.completed_at })),
   }
+}
+
+export async function retryStartConfirmation(packageId: string, input: { jobId: string; reason: string }, orgId?: string) {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("start.release", context)
+  const pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
+  if (pkg.status !== "released") throw new Error("Only released homes can retry confirmation")
+  const receipt = await queueStartConfirmationRecovery({ ...input, supabase: createServiceSupabaseClient(),
+    orgId: context.orgId, packageId, actorId: context.userId })
+  void triggerStartsPipeline()
+  return receipt
+}
+
+export async function retryStartNotificationDelivery(packageId: string, input: { receiptId: string; requestId: string; reason: string }, orgId?: string) {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("start.release", context)
+  const pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
+  if (pkg.status !== "released") throw new Error("Only released homes can recover alert delivery")
+  return queueStartNotificationRecovery({ ...input, supabase: createServiceSupabaseClient(), orgId: context.orgId,
+    packageId, actorId: context.userId })
+}
+
+export async function inspectStartNotificationDeliveries(packageId: string, input: { after: string | null; failedOnly: boolean }, orgId?: string) {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("start.release", context)
+  const pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
+  if (pkg.status !== "released") throw new Error("Only released homes have alert delivery history")
+  return readStartNotificationDeliveries({ ...input, supabase: createServiceSupabaseClient(), orgId: context.orgId, packageId, actorId: context.userId })
+}
+
+async function loadStartTradeNotices(supabase: SupabaseClient, orgId: string, packageId: string): Promise<StartTradeNoticeDTO[]> {
+  const notices = await readAllRows((from, to) => supabase.from("outbox").select("id,status,payload,retry_count,last_error,run_at")
+    .eq("org_id", orgId).eq("job_type", "start_release_trade_notice").eq("payload->>start_package_id", packageId)
+    .order("id").range(from, to), { cap: 10001, label: "Failed to load trade notice delivery" })
+  if (notices.truncated) throw new Error("Trade notice delivery exceeds the supported limit")
+  const companyIds = Array.from(new Set(notices.rows.flatMap((row) => {
+    const id = text(relation(row.payload)?.company_id)
+    return id ? [id] : []
+  })))
+  const names = new Map<string, string>()
+  for (let offset = 0; offset < companyIds.length; offset += 100) {
+    const { data, error } = await supabase.from("companies").select("id,name").eq("org_id", orgId).in("id", companyIds.slice(offset, offset + 100))
+    if (error) throw new Error(`Failed to load trade notice companies: ${error.message}`)
+    for (const company of data ?? []) names.set(company.id, company.name)
+  }
+  return notices.rows.map((row) => {
+    const companyId = text(relation(row.payload)?.company_id)
+    if (!companyId || !["pending", "processing", "completed", "failed"].includes(row.status)) throw new Error("Invalid trade notice delivery record")
+    return {
+      id: String(row.id), companyId, companyName: names.get(companyId) ?? "Unavailable trade company",
+      status: row.status as StartTradeNoticeDTO["status"], retryCount: Number(row.retry_count),
+      error: row.last_error, runAt: row.run_at,
+    }
+  })
+}
+
+export async function retryStartTradeNotice(packageId: string, noticeId: string, orgId?: string) {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("start.release", context)
+  await requirePermission("start.write", context)
+  const pkg = await loadPackageRow(context.supabase, context.orgId, packageId)
+  if (pkg.status !== "released") throw new Error("Only released houses can retry trade delivery")
+  const { data: before, error: readError } = await context.supabase.from("outbox").select("id,status,payload,retry_count,last_error")
+    .eq("org_id", context.orgId).eq("id", noticeId).eq("job_type", "start_release_trade_notice")
+    .eq("payload->>start_package_id", packageId).maybeSingle()
+  if (readError || !before) throw new Error("Trade notice not found")
+  if (before.status !== "failed") throw new Error("Only failed trade notices can be retried")
+  const payload = { ...relation(before.payload), actor_id: context.userId }
+  const { data: updated, error } = await context.supabase.from("outbox").update({
+    status: "pending", retry_count: 0, last_error: null, run_at: new Date().toISOString(), payload,
+  }).eq("org_id", context.orgId).eq("id", noticeId).eq("job_type", "start_release_trade_notice")
+    .eq("payload->>start_package_id", packageId).eq("status", "failed").select("id")
+  if (error || updated?.length !== 1) throw new Error(`Unable to retry trade delivery: ${error?.message ?? "Notice state changed; refresh and try again"}`)
+  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "start_trade_notice", entityId: noticeId, before, after: { status: "pending", actor_id: context.userId, start_package_id: packageId } })
+  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "start.trade_notice_retried", entityType: "start_package", entityId: packageId, payload: { notice_id: noticeId, company_id: relation(before.payload)?.company_id } })
+  void triggerStartsPipeline()
 }
 
 export interface SuperintendentCandidateDTO {

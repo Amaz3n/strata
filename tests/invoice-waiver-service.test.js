@@ -24,7 +24,7 @@ test("waiver service preserves uploaded bytes, isolates scope, signs deliberatel
       then: (resolve, reject) => Promise.resolve().then(() => {
         let rows = (db[table] ?? []).filter((r) => filters.every((f) => f(r)))
         if (operation?.kind === "insert") {
-          const row = { created_at: new Date().toISOString(), ...structuredClone(operation.row) }
+          const row = { updated_at: new Date().toISOString(), created_at: new Date().toISOString(), ...structuredClone(operation.row) }
           if (db[table].some((r) => r.id === row.id)) return { data: null, error: { code: "23505" } }
           db[table].push(row); rows = [row]
         }
@@ -129,4 +129,26 @@ test("waiver service preserves uploaded bytes, isolates scope, signs deliberatel
   assert.notEqual(executed.metadata.workflow.sha256, custom.metadata.workflow.sha256)
   assert.ok(audits.some((a) => a.after.sha256 && a.after.consent))
   assert.ok(permissions.some((p) => p.projectId === projectId && p.permission === "invoice.write"))
+  const physical = await service.prepareInvoiceWaiver({ ...input, request_id: randomUUID(), source: "template", template_id: revised[0].id, execution_method: "physical" }, undefined)
+  db.invoices[0].metadata = { waiver_packet: { enabled: true, waiver_id: physical.id, delivery_mode: "after_physical_execution" } }
+  let deliveries = 0
+  const loader = Module._load
+  Module._load = function(request, ...args) {
+    if (request === "@/lib/services/invoice-waiver-auto-send") return { sendInvoiceAfterWaiverSignature: async () => { deliveries++ } }
+    return loader.call(this,request,...args)
+  }
+  try {
+    await assert.rejects(service.uploadExecutedInvoiceWaiver(invoiceId, physical.id, file, false), /Confirm/)
+    await assert.rejects(service.uploadExecutedInvoiceWaiver(invoiceId, physical.id, {size:1,arrayBuffer:async()=>Buffer.from("bad")}, true))
+    const uploaded = await service.uploadExecutedInvoiceWaiver(invoiceId, physical.id, file, true)
+    assert.equal(uploaded.metadata.workflow.lifecycle, "signed")
+    assert.equal(uploaded.metadata.physical_execution.original_file_id, physical.metadata.workflow.file_id)
+    assert.deepEqual(objects.get(uploaded.metadata.workflow.document_path), bytes, "deliver the unmodified executed scan")
+    assert.equal(uploaded.metadata.physical_execution.confirmed_by, userId)
+    assert.equal(deliveries, 1)
+    const count = objects.size
+    await service.uploadExecutedInvoiceWaiver(invoiceId, physical.id, file, true)
+    assert.equal(objects.size, count, "delivery retry does not replace the executed PDF")
+  } finally { Module._load = loader }
+
 })

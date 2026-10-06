@@ -46,8 +46,9 @@ function buildInstantiationHarness({ projectMetadata = {}, onCreateBudget } = {}
     house_plan_elevations: [],
   })
   const context = { supabase, orgId: ORG, userId: ACTOR, productTier: "production" }
-  const calls = { budgets: [], schedules: [], inspections: [], selectionGroups: [] }
+  const calls = { budgets: [], schedules: [], inspections: [], selectionGroups: [], copies: [] }
 
+  stubModule("@/lib/supabase/server", { createServiceSupabaseClient: () => supabase })
   stubModule("@/lib/services/context", {
     requireOrgContext: async () => context,
     runWithServiceOrgContext: async (_context, work) => work(),
@@ -74,7 +75,7 @@ function buildInstantiationHarness({ projectMetadata = {}, onCreateBudget } = {}
     instantiateSelectionGroupsForProject: async () => { calls.selectionGroups.push(1); return { groups: 1, selections: 1 } },
   })
   stubModule("@/lib/storage/files-storage", {
-    buildOrgScopedPath: () => "path", createFilesDownloadUrl: async () => ({ downloadUrl: "" }), uploadFilesObject: async () => undefined,
+    buildOrgScopedPath: (...parts) => parts.join("/"), copyFilesObject: async (params) => { calls.copies.push(params); return { size: 100, sourceEtag: "source-etag", etag: "copy-etag" } },
   })
   delete require.cache[require.resolve("@/lib/services/plan-instantiation")]
   return { supabase, calls, service: require("@/lib/services/plan-instantiation") }
@@ -156,4 +157,46 @@ test("a legacy ledger with no seq is upgraded rather than double-run", async () 
   assert.equal(harness.calls.budgets.length, 0)
   assert.equal(harness.calls.inspections.length, 0, "the snapshot has no checklists to seed")
   assert.equal(ledger(harness.supabase).seq, 1)
+})
+
+function drawingContext(harness) {
+  harness.supabase.store.files = [{ id: 'plan-pdf', org_id: ORG, file_name: 'plan.pdf', storage_path: 'source.pdf', mime_type: 'application/pdf', size_bytes: 100, checksum: 'hash' }]
+  return { supabase: harness.supabase, orgId: ORG, userId: ACTOR, project: harness.supabase.store.projects[0], version: version(VERSION_ONE), snapshot: { ...SNAPSHOT, drawing_source_file_id: 'plan-pdf' } }
+}
+test('pending drawing review is checked before copying or inserting the plan PDF', async () => {
+  const harness = buildInstantiationHarness(), context = drawingContext(harness)
+  harness.supabase.store.drawing_revisions = [{ id: 'pending', org_id: ORG, project_id: PROJECT, status: 'processing' }]
+  await assert.rejects(harness.service.queuePlanDrawings(input(VERSION_ONE, ['drawings']), context), /already pending review/)
+  assert.equal(harness.calls.copies.length, 0)
+  assert.equal(harness.supabase.store.files.length, 1)
+})
+test('uncertain pending drawing state fails before storage writes', async () => {
+  const harness = buildInstantiationHarness(), context = drawingContext(harness), from = harness.supabase.from.bind(harness.supabase)
+  harness.supabase.from = table => {
+    const query = from(table)
+    if (table === 'drawing_revisions') query.then = resolve => Promise.resolve({ data: null, error: { message: 'database unavailable' } }).then(resolve)
+    return query
+  }
+  await assert.rejects(harness.service.queuePlanDrawings(input(VERSION_ONE, ['drawings']), context), /Failed to check pending drawing revisions/)
+  assert.equal(harness.calls.copies.length, 0)
+  assert.equal(harness.supabase.store.files.length, 1)
+})
+test('drawing copies persist storage version evidence and use a fresh destination on each attempt', async () => {
+  const harness = buildInstantiationHarness(), context = drawingContext(harness)
+  await harness.service.queuePlanDrawings(input(VERSION_ONE, ['drawings']), context)
+  const first = harness.supabase.store.files.find(file => file.project_id === PROJECT)
+  assert.equal(first.size_bytes, 100)
+  assert.equal(first.metadata.source_storage_etag, 'source-etag')
+  assert.equal(first.metadata.storage_etag, 'copy-etag')
+  assert.equal(harness.calls.copies[0].sourcePath, 'source.pdf')
+  assert.equal(harness.calls.copies[0].expectedSize, 100)
+  harness.supabase.store.drawing_revisions[0].status = 'published'
+  await harness.service.queuePlanDrawings(input(VERSION_ONE, ['drawings']), context)
+  assert.notEqual(harness.calls.copies[0].destinationPath, harness.calls.copies[1].destinationPath)
+  assert.match(harness.calls.copies[0].destinationPath, new RegExp(`${PROJECT}/plans/${VERSION_ONE}/[a-f0-9-]+/plan.pdf$`))
+})
+test('disabling transactions with a durable attempt refuses a duplicate legacy copy', async () => {
+  const harness = buildInstantiationHarness({ projectMetadata: { plan_instantiation: { drawing_copy_attempt: { status: 'reserved' } } } }), context = drawingContext(harness)
+  await assert.rejects(harness.service.queuePlanDrawings(input(VERSION_ONE, ['drawings']), context), /Recover the reserved drawing copy/)
+  assert.equal(harness.calls.copies.length, 0)
 })

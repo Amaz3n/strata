@@ -1,3 +1,4 @@
+import { projectionFindingWasEvaluated } from "@/lib/services/books/reconciliation-rules"
 import "server-only"
 
 import { z } from "zod"
@@ -53,6 +54,7 @@ const connectionSchema = z.object({
   last_sync_at: z.string().nullable(),
   last_inbound_poll_at: z.string().nullable(),
   status: z.string(),
+  settings: z.unknown().optional(),
 })
 
 async function collectPages<T>(
@@ -101,7 +103,7 @@ async function collectConnectionItems(orgId: string): Promise<ReconciliationFind
   const service = createServiceSupabaseClient()
   const { data: connectionRows, error: connectionError } = await service
     .from("accounting_connections")
-    .select("id, org_id, provider, last_sync_at, last_inbound_poll_at, status")
+    .select("id, org_id, provider, last_sync_at, last_inbound_poll_at, status, settings")
     .eq("org_id", orgId)
     .in("status", [...RECONCILABLE_CONNECTION_STATUSES])
   if (connectionError) throw new Error(`Failed to load accounting connections: ${connectionError.message}`)
@@ -111,6 +113,46 @@ async function collectConnectionItems(orgId: string): Promise<ReconciliationFind
 
   const items: ReconciliationFinding[] = []
   for (const connection of connections) {
+    const settings =
+      connection.settings && typeof connection.settings === "object" && !Array.isArray(connection.settings)
+        ? (connection.settings as Record<string, unknown>)
+        : {}
+    const recovery = settings.qbo_cdc_recovery
+    if (connection.provider === "qbo" && recovery !== undefined && recovery !== null) {
+      const parsed = z
+        .object({
+          run_id: z.string().uuid(),
+          original_boundary: z.string().nullable(),
+          checkpoint: z.string(),
+        first_checkpoint: z.string().optional(),
+        first_changed_since: z.string().optional(),
+          reasons: z.array(z.string()),
+          status: z.enum(["required", "catching_up", "complete"]),
+          mapped_failure_count: z.number().int().nonnegative().optional(),
+          mapped_failures_truncated: z.boolean().optional(),
+          mapped_failures: z
+            .array(
+              z.object({
+                mapping_id: z.string().uuid(),
+                entity_name: z.string(),
+                entity_qbo_id: z.string().max(255),
+                reason: z.literal("malformed_read"),
+              }),
+            )
+            .max(10)
+            .optional(),
+        })
+        .safeParse(recovery)
+      if (!parsed.success || parsed.data.status !== "complete")
+        items.push({
+          category: "connection_cdc_recovery",
+          entityType: "accounting_connection",
+          entityId: connection.id,
+          details: parsed.success
+            ? { provider: connection.provider, ...parsed.data }
+            : { provider: connection.provider, status: "required", reason: "unreadable_recovery_evidence" },
+        })
+    }
     if (connection.status !== "active") {
       items.push({
         category: "connection_unhealthy",
@@ -854,7 +896,8 @@ export async function resolveReconciliationItem(input: {
  * cannot reproduce these — leaves them alone.
  */
 export async function recordProjectionFailures(
-  results: Array<{ orgId: string; failures: Array<{ sourceType: string; sourceId: string; error: string }> }>,
+  results: Array<{ orgId: string; failures: Array<{ sourceType: string; sourceId: string; error: string }>; evaluatedSourceKeys?: string[]; fullScanCompleted?: boolean }>,
+  options: { full?: boolean } = {},
 ) {
   const runDate = new Date().toISOString().slice(0, 10)
   const ownsCategory = (category: string) => isProjectionCategory(category)
@@ -876,7 +919,12 @@ export async function recordProjectionFailures(
         href: "/books/close",
       },
     }))
-    const existing = (await loadUnresolvedItems(result.orgId)).filter((item) => ownsCategory(item.category))
+    const evaluated = new Set([
+      ...(result.evaluatedSourceKeys ?? []),
+      ...result.failures.map(failure => `${failure.sourceType}:${failure.sourceId}`),
+    ])
+    const existing = (await loadUnresolvedItems(result.orgId)).filter((item) => ownsCategory(item.category)
+      && ((options.full === true && result.fullScanCompleted === true) || projectionFindingWasEvaluated(item, evaluated)))
     if (findings.length === 0 && existing.length === 0) continue
 
     // Attaches to the day's run if the spine has already made one, and never

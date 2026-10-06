@@ -5,6 +5,7 @@ struct ProjectDrawingsView: View {
     @Environment(AppDependencies.self) private var dependencies
     @Environment(AppRouter.self) private var router
     @State private var query = ""
+    @State private var downloadedOnly = false
     @State private var disciplineFilter: String?
     @State private var setFilter: String?
     let project: MobileProject
@@ -20,7 +21,7 @@ struct ProjectDrawingsView: View {
             let matchesSearch = term.isEmpty
                 || sheet.sheetNumber.lowercased().contains(term)
                 || (sheet.sheetTitle?.lowercased().contains(term) ?? false)
-            return matchesDiscipline && matchesSet && matchesSearch
+            return matchesDiscipline && matchesSet && matchesSearch && (!downloadedOnly || store.localImage(for: sheet) != nil)
         }
     }
 
@@ -51,11 +52,13 @@ struct ProjectDrawingsView: View {
         }
         .navigationTitle("Drawings")
         .navigationBarTitleDisplayMode(.inline)
+        .projectOfflineDownload(project: project)
         .searchable(text: $query, prompt: "Search sheet number or title")
         .toolbar {
             if !store.sets.isEmpty {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
+                        Toggle("Downloaded only", isOn: $downloadedOnly)
                         Picker("Set", selection: $setFilter) {
                             Text("All sets").tag(String?.none)
                             ForEach(store.sets) { set in
@@ -77,6 +80,10 @@ struct ProjectDrawingsView: View {
     private var content: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                if store.isUsingOfflineData {
+                    Label("Saved drawing list · downloaded sheets available offline", systemImage: "wifi.slash")
+                        .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
+                }
                 if !store.disciplineCounts.isEmpty {
                     DisciplineFilterBar(
                         counts: store.disciplineCounts,
@@ -100,6 +107,14 @@ struct ProjectDrawingsView: View {
                                 router.navigate(to: .drawingSheet(id: sheet.id))
                             } label: {
                                 SheetCard(sheet: sheet)
+                                    .overlay(alignment: .topTrailing) {
+                                        if store.localImage(for: sheet) != nil {
+                                            Image(systemName: "arrow.down.circle.fill")
+                                                .foregroundStyle(.white, Color.accentColor)
+                                                .padding(8)
+                                                .accessibilityLabel("Downloaded")
+                                        }
+                                    }
                             }
                             .buttonStyle(.plain)
                         }

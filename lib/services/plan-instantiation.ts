@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { createServiceSupabaseClient } from "@/lib/supabase/server";
+import { planDrawingCopyTransactionsEnabled, publishPlanDrawingCopy } from "@/lib/services/plan-drawing-copy";
 import { z } from "zod";
 
 import type { CostType } from "@/lib/cost-types";
@@ -23,8 +26,7 @@ import { applyScheduleTemplateSnapshot } from "@/lib/services/schedule";
 import { instantiateSelectionGroupsForProject } from "@/lib/services/selection-cutoffs";
 import {
   buildOrgScopedPath,
-  createFilesDownloadUrl,
-  uploadFilesObject,
+  copyFilesObject,
 } from "@/lib/storage/files-storage";
 
 export type PriceResolver = (line: {
@@ -740,28 +742,41 @@ export async function queuePlanDrawings(
   if (sourceError || !source)
     throw new Error("Plan-set source file was not found");
   if (input.dryRun) return { drawing_set_id: "dry-run", queued: false };
+  if (await planDrawingCopyTransactionsEnabled(context.supabase, context.orgId)) {
+    return publishPlanDrawingCopy({ orgId: context.orgId, projectId: input.projectId, planVersionId: context.version.id, actorId: context.userId, source });
+  }
+  if (asRecord(context.project.metadata.plan_instantiation).drawing_copy_attempt) {
+    throw new Error("Recover the reserved drawing copy before disabling transactional publication");
+  }
+  const { data: pending, error: pendingError } = await context.supabase
+    .from("drawing_revisions")
+    .select("id")
+    .eq("org_id", context.orgId)
+    .eq("project_id", input.projectId)
+    .in("status", ["processing", "draft"])
+    .limit(1);
+  if (pendingError)
+    throw new Error(`Failed to check pending drawing revisions: ${pendingError.message}`);
+  if ((pending ?? []).length > 0)
+    throw new Error(
+      "A drawing revision is already pending review for this project",
+    );
   const destinationPath = buildOrgScopedPath(
     context.orgId,
     "projects",
     input.projectId,
     "plans",
     context.version.id,
+    randomUUID(),
     source.file_name,
   );
-  const download = await createFilesDownloadUrl({
-    supabase: context.supabase,
+  // Each attempt has an immutable destination, so a late worker cannot replace
+  // a PDF already referenced by another attempt's file or revision.
+  const copied = await copyFilesObject({
     orgId: context.orgId,
-    path: source.storage_path,
-    fileName: source.file_name,
-  });
-  const response = await fetch(download.downloadUrl);
-  if (!response.ok)
-    throw new Error(`Failed to copy plan PDF (${response.status})`);
-  await uploadFilesObject({
-    supabase: context.supabase,
-    orgId: context.orgId,
-    path: destinationPath,
-    bytes: Buffer.from(await response.arrayBuffer()),
+    sourcePath: source.storage_path,
+    destinationPath,
+    expectedSize: source.size_bytes ?? undefined,
     contentType: source.mime_type ?? "application/pdf",
   });
   const { data: projectFile, error: fileError } = await context.supabase
@@ -772,7 +787,7 @@ export async function queuePlanDrawings(
       file_name: source.file_name,
       storage_path: destinationPath,
       mime_type: source.mime_type,
-      size_bytes: source.size_bytes,
+      size_bytes: copied.size,
       checksum: source.checksum,
       visibility: "private",
       category: "plans",
@@ -782,6 +797,8 @@ export async function queuePlanDrawings(
       metadata: {
         source_plan_version_id: context.version.id,
         source_file_id: source.id,
+        source_storage_etag: copied.sourceEtag,
+        storage_etag: copied.etag,
       },
     })
     .select("id")
@@ -789,17 +806,6 @@ export async function queuePlanDrawings(
   if (fileError || !projectFile)
     throw new Error(
       `Failed to create project plan file: ${fileError?.message ?? "unknown error"}`,
-    );
-  const { data: pending } = await context.supabase
-    .from("drawing_revisions")
-    .select("id")
-    .eq("org_id", context.orgId)
-    .eq("project_id", input.projectId)
-    .in("status", ["processing", "draft"])
-    .limit(1);
-  if ((pending ?? []).length > 0)
-    throw new Error(
-      "A drawing revision is already pending review for this project",
     );
   const { data: existingSet, error: setLookupError } = await context.supabase
     .from("drawing_sets")
@@ -868,7 +874,7 @@ export async function queuePlanDrawings(
     throw new Error(
       `Failed to create drawing revision: ${revisionError?.message ?? "unknown error"}`,
     );
-  const { error: queueError } = await context.supabase.from("outbox").insert({
+  const { error: queueError } = await createServiceSupabaseClient().from("outbox").insert({
     org_id: context.orgId,
     job_type: "process_drawing_set",
     payload: {

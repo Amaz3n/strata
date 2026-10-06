@@ -1,0 +1,13 @@
+1..12
+ok 1 - browser cannot inspect native coding receipts directly
+ok 2 - anonymous cannot code native invoices
+ok 3 - server may append exact coding receipts
+ok 4 - native coding history cannot be rewritten
+ok 5 - browser cannot invoke private coding RPC
+ok 6 - authorized server may invoke native coding RPC
+ok 7 - coding retains invoker authority
+ok 8 - direct receipt insert enforces source/chart and atomic coding
+ok 9 - journal selection origin retains organization and entity foreign key
+ok 10 - income revision ordinal is unique within its scoped invoice
+ok 11 - journal preserves income selection identity
+ok 12 - schema28 capture remains private and invoker

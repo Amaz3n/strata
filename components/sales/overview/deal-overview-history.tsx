@@ -92,10 +92,12 @@ function sinceLabel(value: string): string {
  */
 export function DealOverviewHistory({
   activity,
+  canLog,
   truncated,
   prospectId,
   buyerName,
 }: {
+  canLog: boolean
   activity: ProspectActivity[]
   /** True when the query itself capped the log. */
   truncated: boolean
@@ -125,7 +127,7 @@ export function DealOverviewHistory({
           </span>
         )}
         {/* The one mutation this pane owns, at the head of the log it writes to. */}
-        {prospectId ? <LogActivityButton prospectId={prospectId} buyerName={buyerName} /> : null}
+        {canLog && prospectId ? <LogActivityButton prospectId={prospectId} buyerName={buyerName} /> : null}
       </BandHeader>
 
       <BandBody>
@@ -134,7 +136,7 @@ export function DealOverviewHistory({
             icon={<MessageSquare className="h-5 w-5 text-muted-foreground/70" />}
             tone="neutral"
             title="Nothing recorded yet"
-            description="Use Log activity, above. Holds, pricing and signatures land here on their own."
+            description={canLog ? "Use Log activity, above. Holds, pricing and signatures land here on their own." : "Holds, pricing, signatures and logged contact appear here."}
           />
         ) : (
           <div className="space-y-7">

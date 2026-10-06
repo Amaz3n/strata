@@ -81,16 +81,17 @@ struct ProjectTasksView: View {
             } else {
                 if !openTasks.isEmpty {
                     Section("Open (\(openTasks.count))") {
-                        ForEach(openTasks) { task in TaskRow(task: task, onToggle: { toggle(task) }) }
+                        ForEach(openTasks) { task in taskRow(task) }
                     }
                 }
                 if !doneTasks.isEmpty {
                     Section("Done (\(doneTasks.count))") {
-                        ForEach(doneTasks) { task in TaskRow(task: task, onToggle: { toggle(task) }) }
+                        ForEach(doneTasks) { task in taskRow(task) }
                     }
                 }
             }
         }
+        .fieldCreateAction(moduleID: "tasks", projectID: project.id) { await refresh() }
         .navigationTitle("Tasks")
         .navigationBarTitleDisplayMode(.inline)
         .projectSwitcherPullOrRefresh { await refresh() }
@@ -102,6 +103,15 @@ struct ProjectTasksView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(store.actionError ?? "")
+        }
+    }
+
+    private func taskRow(_ task: MobileTask) -> some View {
+        VStack(alignment: .leading) {
+            TaskRow(task: task, onToggle: { toggle(task) })
+            NavigationLink("Details & Actions") {
+                FieldWorkspaceRecordView(moduleID: "tasks", projectID: project.id, recordID: task.id, title: task.title)
+            }.font(.subheadline)
         }
     }
 
@@ -190,16 +200,17 @@ struct ProjectPunchView: View {
             } else {
                 if !openItems.isEmpty {
                     Section("Open (\(openItems.count))") {
-                        ForEach(openItems) { item in PunchRow(item: item, onToggle: { toggle(item) }) }
+                        ForEach(openItems) { item in punchRow(item) }
                     }
                 }
                 if !closedItems.isEmpty {
                     Section("Closed (\(closedItems.count))") {
-                        ForEach(closedItems) { item in PunchRow(item: item, onToggle: { toggle(item) }) }
+                        ForEach(closedItems) { item in punchRow(item) }
                     }
                 }
             }
         }
+        .fieldCreateAction(moduleID: "punch", projectID: project.id) { await refresh() }
         .navigationTitle("Punch List")
         .navigationBarTitleDisplayMode(.inline)
         .projectSwitcherPullOrRefresh { await refresh() }
@@ -211,6 +222,15 @@ struct ProjectPunchView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(store.actionError ?? "")
+        }
+    }
+
+    private func punchRow(_ item: MobilePunchItem) -> some View {
+        VStack(alignment: .leading) {
+            PunchRow(item: item, onToggle: { toggle(item) })
+            NavigationLink("Details & Actions") {
+                FieldWorkspaceRecordView(moduleID: "punch", projectID: project.id, recordID: item.id, title: item.title)
+            }.font(.subheadline)
         }
     }
 

@@ -35,6 +35,12 @@ export const AI_FEATURE_VALUES = [
   "spec_classification",
   "transcription",
   "meeting_minutes",
+  "bank_transaction_coding",
+  "text_assistance",
+  "photo_analysis",
+  "document_naming",
+  "drawing_metadata",
+
 ] as const
 export type AiFeature = (typeof AI_FEATURE_VALUES)[number]
 
@@ -66,6 +72,11 @@ export const AI_FEATURE_LABELS: Record<AiFeature, string> = {
   spec_classification: "Spec classification",
   transcription: "Transcription",
   meeting_minutes: "Meeting minutes",
+  bank_transaction_coding: "Bank transaction coding",
+  text_assistance: "Text classification & drafting",
+  photo_analysis: "Photo analysis",
+  document_naming: "Document naming",
+  drawing_metadata: "Drawing title blocks",
 }
 
 /** One line on what the feature actually does, for the operator picking its model. */
@@ -78,6 +89,11 @@ export const AI_FEATURE_DESCRIPTIONS: Record<AiFeature, string> = {
   spec_classification: "Filing specs and submittals into the right section.",
   transcription: "Voice notes and meeting audio turned into text.",
   meeting_minutes: "Summaries and action items from a transcript.",
+  bank_transaction_coding: "Category and vendor suggestions for uncoded bank transactions.",
+  text_assistance: "Email classification, import mapping, scope notes, quick capture and coding suggestions.",
+  photo_analysis: "Captions and tags from site photos.",
+  document_naming: "Short file names from document contents.",
+  drawing_metadata: "Sheet numbers, titles, disciplines and scales.",
 }
 
 /** Features that send images or PDFs, so a text-only model cannot serve them. */
@@ -89,6 +105,11 @@ export const AI_FEATURE_REQUIRES_VISION: Record<AiFeature, boolean> = {
   spec_classification: false,
   transcription: false,
   meeting_minutes: false,
+  bank_transaction_coding: false,
+  text_assistance: false,
+  photo_analysis: true,
+  document_naming: true,
+  drawing_metadata: true,
 }
 
 export const AI_TIER_HINTS: Record<AiTier, string> = {
@@ -120,7 +141,9 @@ export type AiFeatureTierConfig = AiFeatureDefaultConfig & {
   tier: AiTier
 }
 
-const PLATFORM_AI_SETTINGS_KEY = "ai_search_defaults"
+// Versioned so old deployments keep their old API-compatible routes during rollout.
+// The migration preserves ai_search_defaults for application rollback.
+const PLATFORM_AI_SETTINGS_KEY = "ai_routing_v2"
 const PLATFORM_CONFIG_CACHE_TTL_MS = 60_000
 
 let platformConfigCache: {
@@ -142,6 +165,9 @@ export interface AiModelCatalogEntry {
   outputPerMTokUsd: number | null
   /** Accepts image/PDF parts — required for extraction and drawings features. */
   vision: boolean
+  cachedInputPerMTokUsd?: number
+  cacheWritePerMTokUsd?: number
+  audioPerMinuteUsd?: number
   tier: AiTier
 }
 
@@ -155,6 +181,13 @@ export interface AiModelCatalogEntry {
  * see the promo note on the 3.6/3.7 Flash rows.
  */
 export const AI_MODEL_CATALOG: AiModelCatalogEntry[] = [
+  // Verified September 23, 2026. Keep older entries for historical usage.
+  { provider: "openai", model: "gpt-6-luna", label: "GPT-6 Luna", inputPerMTokUsd: 0.1, outputPerMTokUsd: 0.5, cachedInputPerMTokUsd: 0.01, cacheWritePerMTokUsd: 0.125, vision: true, tier: "fast" },
+  { provider: "openai", model: "gpt-6-sol", label: "GPT-6 Sol", inputPerMTokUsd: 2, outputPerMTokUsd: 10, cachedInputPerMTokUsd: 0.2, cacheWritePerMTokUsd: 2.5, vision: true, tier: "heavy" },
+  { provider: "google", model: "gemini-3.8-flash", label: "Gemini 3.8 Flash (promo to 31 Dec 2026)", inputPerMTokUsd: 0.75, outputPerMTokUsd: 3.75, cachedInputPerMTokUsd: 0.075, vision: true, tier: "standard" },
+  // OpenRouter rates depend on the selected backend: do not report a guessed price.
+  { provider: "openrouter", model: "deepseek/deepseek-v4.1-flash", label: "DeepSeek V4.1 Flash (evaluation)", inputPerMTokUsd: null, outputPerMTokUsd: null, vision: true, tier: "standard" },
+
   // Google — native provider, strongest on drawing and dense-image work.
   //
   // Google's list is NOT monotonic by version. `gemini-3.5-flash` costs double
@@ -191,12 +224,10 @@ export const AI_MODEL_CATALOG: AiModelCatalogEntry[] = [
   // PROMO: Sol's $4/$20 runs through 21 Nov 2026; the post-promo rate is not
   // published. Selectable, not a default — Terra is the heavy rung.
   { provider: "openai", model: "gpt-5.6-sol", label: "GPT-5.6 Sol (promo to 21 Nov 2026)", inputPerMTokUsd: 4, outputPerMTokUsd: 20, vision: true, tier: "heavy" },
-  // Transcription bills per MINUTE of audio, not per token, so a token-based
-  // estimate would be fiction. These rows carry latency and status; their cost
-  // reads "unpriced" until someone records a rate they actually want summed.
-  // For reference: gpt-4o-mini-transcribe $0.003/min, gpt-transcribe $0.0045/min.
-  { provider: "openai", model: "gpt-4o-mini-transcribe", label: "GPT-4o mini Transcribe", inputPerMTokUsd: null, outputPerMTokUsd: null, vision: false, tier: "fast" },
-  { provider: "openai", model: "gpt-transcribe", label: "GPT Transcribe", inputPerMTokUsd: null, outputPerMTokUsd: null, vision: false, tier: "standard" },
+  // Audio is estimated per minute when the provider supplies duration.
+  // Missing duration stays unpriced; text-token rates cannot stand in for audio.
+  { provider: "openai", model: "gpt-4o-mini-transcribe", label: "GPT-4o mini Transcribe", audioPerMinuteUsd: 0.003, inputPerMTokUsd: null, outputPerMTokUsd: null, vision: false, tier: "fast" },
+  { provider: "openai", model: "gpt-transcribe", label: "GPT Transcribe", audioPerMinuteUsd: 0.0045, inputPerMTokUsd: null, outputPerMTokUsd: null, vision: false, tier: "standard" },
 
   // Embeddings. Output tokens are always zero, so only the input rate is real.
   // `text-embedding-3-small` is the only entry at the 1536 dimensions the
@@ -240,109 +271,77 @@ export function supportsPdfInput(provider: AiProvider): boolean {
 // Defaults
 // ---------------------------------------------------------------------------
 
-/**
- * Per feature, per tier. `document_extraction` is the one that matters most:
- * a single-page receipt is a `fast` job, a dense multi-page invoice escalates to
- * `standard`, and only a document that fails deterministic verification twice
- * reaches `heavy`.
- *
- * WHY THE LADDER CROSSES PROVIDERS. It used to be Gemini on all three rungs,
- * and production showed why that is not an escalation ladder: of the first 102
- * logged extraction calls only 22 succeeded, and 55 of the 80 failures were the
- * same `no_object_generated` on every rung. The root cause was a `.regex()` on
- * the date fields that the Google adapter never forwards (see the catalog
- * note) — fixed in the schemas — but the lesson stands: a fault that is
- * provider-shaped cannot be escalated around by climbing further into the same
- * provider. Every rung just fails again, more expensively.
- *
- * So the rungs alternate vendors. Any feature whose output is a schema starts
- * on OpenAI, where `generateObject` constrains decoding, and escalates into
- * Gemini or a larger OpenAI model. Features whose difficulty is visual rather
- * than structural (`drawings_vision`) stay on Gemini, which reads dense sheets
- * better. Where a user is waiting on a long answer (`meeting_minutes`), the
- * rung they hit is the fastest model, not the cheapest.
- *
- * An operator can still point any rung anywhere from the AI console's routing
- * matrix; that is what the per-tier override is for, and it is the right place
- * for a choice that depends on someone's billing plan rather than on Arc.
- */
+/** Quality escalation is separate from availability fallback in the gateway.
+ * Lightweight consumers have independent routes so financial PDF changes cannot
+ * silently change captions, classification or title-block reads. */
 export const AI_FEATURE_TIER_DEFAULTS: Record<AiFeature, Record<AiTier, { provider: AiProvider; model: string }>> = {
-  // Assistant chat streams tool calls under a 10 s per-step budget, so time to
-  // first token is the felt metric. The base tier is `standard`, which is the
-  // rung users actually hit; 3.7 Flash is the same price as 3.6 and nearly
-  // twice as fast. Heavy crosses to OpenAI for tool-calling depth — the
-  // harness never escalates on its own, so it is reachable only by override.
   search: {
-    fast: { provider: "google", model: "gemini-3.1-flash-lite" },
-    standard: { provider: "google", model: "gemini-3.7-flash" },
-    heavy: { provider: "openai", model: "gpt-5.6-terra" },
+    fast: { provider: "google", model: "gemini-3.8-flash" }, // availability fallback
+    standard: { provider: "openai", model: "gpt-6-luna" },
+    heavy: { provider: "openai", model: "gpt-6-sol" },
   },
-  // Every tier is the same model on purpose. Embeddings have nothing to
-  // escalate TO: the vector column is fixed at 1536 dimensions, so a "better"
-  // model is not a drop-in, and nothing calls the escalation ladder for this
-  // feature. The three rows exist because the routing matrix is per-tier.
   embedding: {
     fast: { provider: "openai", model: "text-embedding-3-small" },
     standard: { provider: "openai", model: "text-embedding-3-small" },
     heavy: { provider: "openai", model: "text-embedding-3-small" },
   },
-  // The workload that pays for this file. Starts on OpenAI because strict
-  // decoding holds the nested provenance schema exactly, with native PDF input
-  // at the cheapest credible rate. Standard crosses to Gemini (fastest reader at
-  // the price, and native PDF text is not billed). Heavy is Terra, not Sol:
-  // this rung fires only after both cheaper rungs failed arithmetic verify, Sol
-  // is twice Terra's price and slower, and Sol's rate is a promo.
   document_extraction: {
-    fast: { provider: "openai", model: "gpt-5.6-luna" },
-    standard: { provider: "google", model: "gemini-3.7-flash" },
-    heavy: { provider: "openai", model: "gpt-5.6-terra" },
+    fast: { provider: "openai", model: "gpt-6-luna" },
+    standard: { provider: "google", model: "gemini-3.8-flash" },
+    heavy: { provider: "openai", model: "gpt-6-sol" },
   },
-  // Stays on Gemini end to end: what makes a sheet hard here is reading dense
-  // linework, not returning a shape, and Gemini is the stronger reader. Cost is
-  // dominated by input image tokens, so the cheap input rate is what matters.
-  // The wrapper does not escalate by default, so standard and heavy are
-  // override targets rather than rungs that fire.
   drawings_vision: {
-    fast: { provider: "google", model: "gemini-3.1-flash-lite" },
-    standard: { provider: "google", model: "gemini-3.7-flash" },
-    heavy: { provider: "google", model: "gemini-3.7-flash" },
+    fast: { provider: "openai", model: "gpt-6-luna" },
+    standard: { provider: "google", model: "gemini-3.8-flash" },
+    heavy: { provider: "openai", model: "gpt-6-sol" },
   },
-  // Short text in, one nullable enum out. The cheapest model that can be held
-  // to a fixed set of values wins, and strict decoding is exactly how you hold
-  // it there. The caller never escalates; the upper rungs are override targets.
+  drawing_metadata: {
+    fast: { provider: "google", model: "gemini-3.1-flash-lite" },
+    standard: { provider: "openai", model: "gpt-6-luna" },
+    heavy: { provider: "openai", model: "gpt-6-sol" },
+  },
   spec_classification: {
     fast: { provider: "openai", model: "gpt-5-nano" },
-    standard: { provider: "openai", model: "gpt-5.6-luna" },
-    heavy: { provider: "google", model: "gemini-3.7-flash" },
+    standard: { provider: "google", model: "gemini-3.1-flash-lite" },
+    heavy: { provider: "openai", model: "gpt-6-luna" },
   },
-  // Billed per minute, so tier is about accuracy, not tokens. `whisper-1` is
-  // retired: it is legacy, and costs twice what the better mini model does.
-  // Transcription never escalates; heavy is the Gemini audio path by override.
   transcription: {
     fast: { provider: "openai", model: "gpt-4o-mini-transcribe" },
     standard: { provider: "openai", model: "gpt-transcribe" },
-    heavy: { provider: "google", model: "gemini-3.7-flash" },
+    heavy: { provider: "google", model: "gemini-3.8-flash" },
   },
-  // Long transcript in, up to 250 structured items out, with a user waiting on
-  // a 90 s timeout. Output tokens per second is the binding constraint, not
-  // price, so the base tier (`standard`) is 3.7 Flash at ~370 t/s. Luna is the
-  // strict-decoding fallback for the uuid/date formats; Terra is the ceiling.
   meeting_minutes: {
-    fast: { provider: "openai", model: "gpt-5.6-luna" },
-    standard: { provider: "google", model: "gemini-3.7-flash" },
-    heavy: { provider: "openai", model: "gpt-5.6-terra" },
+    fast: { provider: "openai", model: "gpt-6-luna" },
+    standard: { provider: "google", model: "gemini-3.8-flash" },
+    heavy: { provider: "openai", model: "gpt-6-sol" },
+  },
+  bank_transaction_coding: {
+    fast: { provider: "openai", model: "gpt-6-luna" },
+    standard: { provider: "google", model: "gemini-3.8-flash" },
+    heavy: { provider: "openai", model: "gpt-6-sol" },
+  },
+  text_assistance: {
+    fast: { provider: "openai", model: "gpt-6-luna" },
+    standard: { provider: "google", model: "gemini-3.8-flash" },
+    heavy: { provider: "openai", model: "gpt-6-sol" },
+  },
+  photo_analysis: {
+    fast: { provider: "openai", model: "gpt-6-luna" },
+    standard: { provider: "google", model: "gemini-3.8-flash" },
+    heavy: { provider: "openai", model: "gpt-6-sol" },
+  },
+  document_naming: {
+    fast: { provider: "openai", model: "gpt-6-luna" },
+    standard: { provider: "google", model: "gemini-3.8-flash" },
+    heavy: { provider: "openai", model: "gpt-6-sol" },
   },
 }
 
-/** The tier a feature runs at when the caller does not ask for one. */
 export const AI_FEATURE_BASE_TIER: Record<AiFeature, AiTier> = {
-  search: "standard",
-  embedding: "fast",
-  document_extraction: "fast",
-  drawings_vision: "fast",
-  spec_classification: "fast",
-  transcription: "fast",
-  meeting_minutes: "standard",
+  search: "standard", embedding: "fast", document_extraction: "fast",
+  drawings_vision: "standard", drawing_metadata: "fast", spec_classification: "fast",
+  transcription: "fast", meeting_minutes: "fast", bank_transaction_coding: "fast",
+  text_assistance: "fast", photo_analysis: "fast", document_naming: "fast",
 }
 
 /** Next tier up, or null at the ceiling. Drives gateway escalation. */
@@ -444,7 +443,8 @@ function envNameForFeature(feature: AiFeature) {
   if (feature === "spec_classification") return "SPEC_CLASSIFICATION"
   if (feature === "transcription") return "TRANSCRIPTION"
   if (feature === "meeting_minutes") return "MEETING_MINUTES"
-  return "AI_SEARCH"
+  if (feature === "bank_transaction_coding") return "BANK_TRANSACTION_CODING"
+  return feature === "search" ? "AI_SEARCH" : feature.toUpperCase()
 }
 
 /**

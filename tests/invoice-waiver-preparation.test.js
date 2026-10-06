@@ -16,7 +16,7 @@ test('currency formatting preserves exact cents and rejects invalid input',()=>{
  assert.equal(editableWaiverValues({...input,through_date:''}).through_date,'[Work through date]')
 })
 test('editable waiver uses actual invoice values and places signing fields on the last page',async()=>{
- const template={name:'Company waiver',title:'Conditional waiver',body:'Project {{project_name}}. Payment {{amount}}. Through {{through_date}}. Signed {{signed_date}}. '+('Preserved company wording. '.repeat(600)),waiverType:'conditional_progress',status:'published',reviewed:true}
+ const template={name:'Company waiver',title:'Conditional waiver',body:'Project {{project_name}}. Payment {{amount}}. Through {{through_date}}. Signed {{signed_date}}. Exceptions {{exceptions}}. '+('Preserved company wording. '.repeat(600)),waiverType:'conditional_progress',status:'published',reviewed:true}
  const bytes=await renderEditableInvoiceWaiver(template,input,'INV-TEST')
  const fields=await waiverSignatureFields(bytes,1)
  const mupdf=await loadMupdf();const doc=mupdf.Document.openDocument(bytes,'application/pdf')

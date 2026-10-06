@@ -126,14 +126,15 @@ export async function getProductionHomeData(
   const [communitiesResult, closingsPage, backlog, packages, runway] = await Promise.all([
     scopedCommunityQuery(context, filters, "id", { count: "exact", head: true }, access.assignedOnly ? access.divisionIds : null),
     canSales
-      ? listClosings({ divisionId: filters.divisionId, communityId: filters.communityId, from: monthStart, to: monthEnd, limit: 500 }, context.orgId).catch(() => ({ closings: [], total: 0 }))
+      ? listClosings({ divisionId: filters.divisionId, communityId: filters.communityId, from: monthStart, to: monthEnd, limit: 500 }, context.orgId)
       : Promise.resolve({ closings: [] as any[], total: 0 }),
-    canSales ? getBacklogReport({ divisionId: filters.divisionId }, context.orgId).catch(() => []) : Promise.resolve([]),
+    canSales ? getBacklogReport({ divisionId: filters.divisionId }, context.orgId) : Promise.resolve([]),
     canStarts
-      ? listStartPackages({ divisionId: filters.divisionId, communityId: filters.communityId, status: ["open", "ready", "attention"], pageSize: 100 }, context.orgId).catch(() => ({ packages: [], total: 0 }))
+      ? listStartPackages({ divisionId: filters.divisionId, communityId: filters.communityId, status: ["open", "ready", "attention"], pageSize: 100 }, context.orgId)
       : Promise.resolve({ packages: [] as any[], total: 0 }),
-    canSelections ? getStudioRunway({ communityId: filters.communityId, divisionId: filters.divisionId }).catch(() => null) : Promise.resolve(null),
+    canSelections ? getStudioRunway({ communityId: filters.communityId, divisionId: filters.divisionId }) : Promise.resolve(null),
   ])
+  if (communitiesResult.error) throw new Error(`Failed to load communities: ${communitiesResult.error.message}`)
   const overdueSelections = (runway?.lanes ?? [])
     .flatMap((lane) => lane.homes.filter((home) => home.state === "overdue").map((home) => ({ lane, home })))
     .sort((a, b) => (a.home.daysToCutoff ?? 0) - (b.home.daysToCutoff ?? 0))
@@ -144,7 +145,7 @@ export async function getProductionHomeData(
     filters,
     access.assignedOnly ? access.divisionIds : null,
   )
-  const [{ data: statRollup, error: statError }, { data: vpos }, { data: stalled }, { data: takedowns }, { data: selectionDates }, { data: openClosingItems }, assigned, workGroups] = await Promise.all([
+  const [{ data: statRollup, error: statError }, { data: vpos, error: vposError }, { data: stalled, error: stalledError }, { data: takedowns, error: takedownsError }, { data: selectionDates, error: selectionDatesError }, { data: openClosingItems, error: openClosingItemsError }, assigned, workGroups] = await Promise.all([
     context.supabase.rpc("production_home_stat_rollup", {
       p_org_id: context.orgId,
       p_project_ids: scopedProjectIds,
@@ -155,23 +156,26 @@ export async function getProductionHomeData(
     }),
     canPurchasing && scopedProjectIds.length
       ? context.supabase.from("commitment_change_orders").select("id,project_id,title,total_cents,status,project:projects(name)").eq("org_id", context.orgId).in("project_id", scopedProjectIds).not("reason_code_id", "is", null).gte("created_at", `${mondayIso}T00:00:00Z`).in("status", ["draft", "sent", "approved", "executed"]).limit(250)
-      : Promise.resolve({ data: [] as any[] }),
+      : Promise.resolve({ data: [] as any[], error: null }),
     scopedProjectIds.length
       ? context.supabase.from("schedule_items").select("project_id,updated_at,project:projects(name)").eq("org_id", context.orgId).in("project_id", scopedProjectIds).neq("status", "completed").order("updated_at", { ascending: true }).limit(500)
-      : Promise.resolve({ data: [] as any[] }),
+      : Promise.resolve({ data: [] as any[], error: null }),
     canCommunity
       ? scopedCommunityQuery(context, filters, "id,name,lot_takedowns(id,name,scheduled_date,status)", undefined, access.assignedOnly ? access.divisionIds : null).gte("lot_takedowns.scheduled_date", todayIso).lte("lot_takedowns.scheduled_date", twoWeek).limit(100)
-      : Promise.resolve({ data: [] as any[] }),
+      : Promise.resolve({ data: [] as any[], error: null }),
     canSelections && scopedProjectIds.length
       ? context.supabase.from("project_selection_groups").select("id,project_id,cutoff_date,group:selection_groups(name),project:projects(name)").eq("org_id", context.orgId).in("project_id", scopedProjectIds).eq("status", "open").gte("cutoff_date", todayIso).lte("cutoff_date", twoWeek).order("cutoff_date").limit(50)
-      : Promise.resolve({ data: [] as any[] }),
+      : Promise.resolve({ data: [] as any[], error: null }),
     canSales && scopedProjectIds.length
       ? context.supabase.from("closing_checklist_items").select("id,closing_id,closing:closings!inner(project_id,scheduled_date,project:projects(name))").eq("org_id", context.orgId).eq("status", "open").gte("closing.scheduled_date", todayIso).lte("closing.scheduled_date", weekEnd).in("closing.project_id", scopedProjectIds).limit(100)
-      : Promise.resolve({ data: [] as any[] }),
+      : Promise.resolve({ data: [] as any[], error: null }),
     loadAssignedHouses(context.orgId, filters.divisionId, canStarts),
     canStarts ? listMyHouseWork({ window, divisionId: filters.divisionId }, context.orgId) : Promise.resolve([]),
   ])
   if (statError) throw new Error(`Failed to load production Home stats: ${statError.message}`)
+
+  const detailError = [vposError, stalledError, takedownsError, selectionDatesError, openClosingItemsError].find(Boolean)
+  if (detailError) throw new Error(`Failed to load production Home work: ${detailError.message}`)
 
   const aggregate = (statRollup ?? {}) as Record<string, unknown>
   const vpoWeekCents = Number(aggregate.vpo_week_cents ?? 0)
@@ -307,10 +311,12 @@ async function resolveScopedProjectIds(
   let query = context.supabase.from("projects").select("id").eq("org_id", context.orgId).eq("phase", "delivery").eq("property_type", "production").eq("status", "active")
   if (filters.divisionId) query = query.eq("division_id", filters.divisionId)
   if (authorizedIds) query = query.in("id", authorizedIds.length ? authorizedIds : ["00000000-0000-0000-0000-000000000000"])
-  const { data } = await query.limit(500)
+  const { data, error } = await query.limit(500)
+  if (error) throw new Error(`Failed to scope production Home projects: ${error.message}`)
   let ids = (data ?? []).map((row) => row.id as string)
   if (filters.communityId && ids.length) {
-    const { data: lots } = await context.supabase.from("lots").select("project_id").eq("org_id", context.orgId).eq("community_id", filters.communityId).in("project_id", ids)
+    const { data: lots, error: lotsError } = await context.supabase.from("lots").select("project_id").eq("org_id", context.orgId).eq("community_id", filters.communityId).in("project_id", ids)
+    if (lotsError) throw new Error(`Failed to scope production Home lots: ${lotsError.message}`)
     ids = (lots ?? []).flatMap((row) => row.project_id ? [row.project_id] : [])
   }
   return ids

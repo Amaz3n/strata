@@ -161,6 +161,7 @@ async function loadDependencyDetails(
 export async function listScheduleItems(
   orgId?: string,
   projectIds?: string[],
+  options: { excludeCancelled?: boolean; includeDependencies?: boolean } = {},
 ): Promise<ScheduleItem[]> {
   const {
     supabase,
@@ -172,16 +173,17 @@ export async function listScheduleItems(
     orgId: resolvedOrgId,
     userId,
   });
-  return listScheduleItemsWithClient(supabase, resolvedOrgId, projectIds);
+  return listScheduleItemsWithClient(supabase, resolvedOrgId, projectIds, options);
 }
 
 export async function listScheduleItemsWithClient(
   supabase: SupabaseClient,
   orgId: string,
   projectIds?: string[],
+  options: { excludeCancelled?: boolean; includeDependencies?: boolean } = {},
 ): Promise<ScheduleItem[]> {
   if (projectIds?.length === 0) return [];
-  const dependencyMap = await loadDependencies(supabase, orgId, projectIds);
+  const dependencyMap = options.includeDependencies === false ? {} : await loadDependencies(supabase, orgId, projectIds);
   const rows: any[] = [];
   for (let from = 0; ; from += 1000) {
     let query = supabase
@@ -195,6 +197,7 @@ export async function listScheduleItemsWithClient(
     `)
       .eq("org_id", orgId);
     if (projectIds) query = query.in("project_id", projectIds);
+    if (options.excludeCancelled) query = query.neq("status", "cancelled");
     const { data, error } = await query
       .order("sort_order", { ascending: true })
       .order("start_date", { ascending: true, nullsFirst: false })

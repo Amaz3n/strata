@@ -14,6 +14,8 @@ struct DrawingSheetViewerView: View {
     @State private var presentation: Presentation?
     @State private var selectedPin: MobileDrawingPin?
     @State private var showsPins = true
+    @State private var isDownloading = false
+    @State private var downloadMessage: String?
     let project: MobileProject
     let sheetID: String
 
@@ -27,7 +29,7 @@ struct DrawingSheetViewerView: View {
 
             if let sheet {
                 DrawingZoomableImage(
-                    imageURL: sheet.imageUrl ?? sheet.thumbnailUrl,
+                    imageURL: dependencies.drawings.localImage(for: sheet) ?? sheet.imageUrl ?? sheet.thumbnailUrl,
                     aspectRatio: sheet.aspectRatio,
                     pins: showsPins ? pins : [],
                     onSelectPin: { selectedPin = $0 }
@@ -57,6 +59,12 @@ struct DrawingSheetViewerView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
+                    Button {
+                        Task { await download() }
+                    } label: {
+                        Label(isDownloading ? "Downloading…" : "Download for Offline", systemImage: "arrow.down.circle")
+                    }
+                    .disabled(isDownloading)
                     if !pins.isEmpty {
                         Toggle(isOn: $showsPins) { Label("Show Pins", systemImage: "mappin") }
                         Button { presentation = .pins } label: {
@@ -77,6 +85,9 @@ struct DrawingSheetViewerView: View {
             }
         }
         .task(id: sheetID) { await load() }
+        .alert("Offline drawing", isPresented: Binding(get: { downloadMessage != nil }, set: { if !$0 { downloadMessage = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(downloadMessage ?? "") }
         .sheet(item: $presentation) { which in
             switch which {
             case .versions:
@@ -92,6 +103,19 @@ struct DrawingSheetViewerView: View {
         }
         .sheet(item: $selectedPin) { pin in
             DrawingPinDetailSheet(pin: pin)
+        }
+    }
+
+    private func download() async {
+        guard let organizationID else { return }
+        isDownloading = true
+        defer { isDownloading = false }
+        do {
+            try await dependencies.drawings.download(sheetID: sheetID, projectID: project.id, organizationID: organizationID)
+            detail = dependencies.drawings.cachedDetail(for: sheetID)
+            downloadMessage = "This revision is available offline. Download again after a new revision is published."
+        } catch {
+            downloadMessage = "Couldn't download this sheet. Check your connection and try again."
         }
     }
 
@@ -138,6 +162,10 @@ struct DrawingZoomableImage: View {
         GeometryReader { geo in
             let fitted = fittedSize(in: geo.size)
             ZStack {
+                Group {
+                    if let imageURL, imageURL.isFileURL, let image = UIImage(contentsOfFile: imageURL.path) {
+                        Image(uiImage: image).resizable().scaledToFit()
+                    } else {
                 AsyncImage(url: imageURL) { phase in
                     switch phase {
                     case .success(let image):
@@ -148,6 +176,8 @@ struct DrawingZoomableImage: View {
                         Image(systemName: "exclamationmark.triangle")
                             .font(.largeTitle)
                             .foregroundStyle(.white.opacity(0.5))
+                    }
+                }
                     }
                 }
                 .frame(width: fitted.width, height: fitted.height)

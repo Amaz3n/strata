@@ -34,7 +34,13 @@ export function MeetingsClient({ projectId, meetings, selected, linkOptions, tra
   const [pending, startTransition] = useTransition()
   const [series, setSeries] = useState("oac")
 
-  const submit = (work: () => Promise<void>) => startTransition(() => { void work().catch((error) => toast.error(error instanceof Error ? error.message : "Something went wrong")) })
+  const submit = (work: () => Promise<void>) => startTransition(async () => {
+    try {
+      await work()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Something went wrong")
+    }
+  })
 
   return (
     <div className="space-y-6">

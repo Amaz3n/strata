@@ -1,0 +1,35 @@
+1..31
+ok 1 - rail policy owns the enabled jurisdictions
+ok 2 - canceled runs record their actor
+ok 3 - canceled runs record a typed reason
+ok 4 - daily-limit reservations have a lifecycle
+ok 5 - risk evaluations have a signal-set identity
+ok 6 - new risk identities are isolated from append-only history
+ok 7 - invoice normalization is generated in the database
+ok 8 - name-only vendor normalization is generated in the database
+ok 9 - retainage release requests are timestamped
+ok 10 - Function public.release_retainage_atomic(uuid, uuid, uuid, bigint, boolean, timestamp with time zone) should exist
+ok 11 - Function public.record_automated_payment_risk_review(uuid, uuid, text, text, text, jsonb, numeric, timestamp with time zone) should exist
+ok 12 - Function public.latest_payment_risk_reviews(uuid, uuid[]) should exist
+ok 13 - Function public.discard_payment_run_draft_atomic(uuid, uuid, uuid) should exist
+ok 14 - SQL canonicalization ignores case, whitespace and punctuation
+ok 15 - zero-approver runs cannot become pending approval
+ok 16 - the preparer can discard a draft after submit validation fails
+ok 17 - discard frees the draft without weakening submitted-run cancellation
+ok 18 - first run reserves at submit
+ok 19 - second over-limit run fails at submit, not execution
+ok 20 - submit writes the pending daily-limit reservation
+ok 21 - the database rejects a fifteen-minute-old step-up
+ok 22 - a rail manager can cancel an absent-preparer run
+ok 23 - cancel releases the daily-limit reservation
+ok 24 - live reserved cents exclude released reservations
+b6c55ef9-186a-4a07-baee-2ff65dd2a357
+b6c55ef9-186a-4a07-baee-2ff65dd2a357
+b6c55ef9-186a-4a07-baee-2ff65dd2a357
+ok 25 - three identical risk evaluations produce one row
+ok 26 - name-only vendor invoices are canonicalized by the trigger
+ok 27 - retainage is released through the atomic workflow
+ok 28 - retainage released math is derived from the approved source bill
+ok 29 - retainage release writes its own event atomically
+ok 30 - browser roles cannot call cancellation RPC directly
+ok 31 - browser roles cannot call retainage release RPC directly

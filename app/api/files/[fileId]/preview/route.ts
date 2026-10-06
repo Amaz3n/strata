@@ -1,19 +1,27 @@
-import { NextResponse } from "next/server"
+import { isPayrollDocumentPrivate } from "@/lib/services/books/payroll-document-access"
+import { NextResponse } from "next/server";
 
-import { requireOrgMembership } from "@/lib/auth/context"
-import { requirePermission, requireProjectPermission } from "@/lib/services/permissions"
-import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { downloadFilesObject, getFilesObjectStream, uploadFilesObject } from "@/lib/storage/files-storage"
+import { requireOrgMembership } from "@/lib/auth/context";
+import {
+  requirePermission,
+  requireProjectPermission,
+} from "@/lib/services/permissions";
+import { createServiceSupabaseClient } from "@/lib/supabase/server";
+import {
+  downloadFilesObject,
+  getFilesObjectStream,
+  uploadFilesObject,
+} from "@/lib/storage/files-storage";
 
 function isHeicPreviewCandidate(file: {
-  mime_type?: string | null
-  file_name?: string | null
-  storage_path?: string | null
+  mime_type?: string | null;
+  file_name?: string | null;
+  storage_path?: string | null;
 }) {
-  const mimeType = file.mime_type
-  const lowerMime = mimeType?.toLowerCase() ?? ""
-  const lowerName = file.file_name?.toLowerCase() ?? ""
-  const lowerPath = file.storage_path?.toLowerCase() ?? ""
+  const mimeType = file.mime_type;
+  const lowerMime = mimeType?.toLowerCase() ?? "";
+  const lowerName = file.file_name?.toLowerCase() ?? "";
+  const lowerPath = file.storage_path?.toLowerCase() ?? "";
   return (
     lowerMime === "image/heic" ||
     lowerMime === "image/heif" ||
@@ -21,23 +29,35 @@ function isHeicPreviewCandidate(file: {
     lowerName.endsWith(".heif") ||
     lowerPath.endsWith(".heic") ||
     lowerPath.endsWith(".heif")
-  )
+  );
+}
+
+function isPdfPreviewCandidate(file: {
+  mime_type?: string | null;
+  file_name?: string | null;
+  storage_path?: string | null;
+}) {
+  return (
+    file.mime_type?.toLowerCase() === "application/pdf" ||
+    file.file_name?.toLowerCase().endsWith(".pdf") ||
+    file.storage_path?.toLowerCase().endsWith(".pdf")
+  );
 }
 
 interface PreviewSize {
-  width: number
-  path: string
-  content_type: string
+  width: number;
+  path: string;
+  content_type: string;
 }
 
 function isPreviewSize(value: unknown): value is PreviewSize {
-  if (!value || typeof value !== "object") return false
-  const size = value as Record<string, unknown>
+  if (!value || typeof value !== "object") return false;
+  const size = value as Record<string, unknown>;
   return (
     typeof size.width === "number" &&
     typeof size.path === "string" &&
     typeof size.content_type === "string"
-  )
+  );
 }
 
 /**
@@ -50,110 +70,239 @@ function selectLadderPath(
   requestedWidth: number | null,
   acceptsAvif: boolean,
 ): string | null {
-  if (!Array.isArray(sizes)) return null
-  const entries = sizes.filter(isPreviewSize)
-  if (entries.length === 0) return null
+  if (!Array.isArray(sizes)) return null;
+  const entries = sizes.filter(isPreviewSize);
+  if (entries.length === 0) return null;
 
-  const preferred = acceptsAvif ? "image/avif" : "image/webp"
-  const candidates = entries.filter((entry) => entry.content_type === preferred)
-  const pool = candidates.length > 0 ? candidates : entries
+  const preferred = acceptsAvif ? "image/avif" : "image/webp";
+  const candidates = entries.filter(
+    (entry) => entry.content_type === preferred,
+  );
+  const pool = candidates.length > 0 ? candidates : entries;
 
-  const widths = [...new Set(pool.map((entry) => entry.width))].sort((a, b) => a - b)
+  const widths = [...new Set(pool.map((entry) => entry.width))].sort(
+    (a, b) => a - b,
+  );
   const target =
     requestedWidth === null
       ? widths[widths.length - 1]
-      : widths.find((width) => width >= requestedWidth) ?? widths[widths.length - 1]
+      : (widths.find((width) => width >= requestedWidth) ??
+        widths[widths.length - 1]);
 
-  return pool.find((entry) => entry.width === target)?.path ?? null
+  return pool.find((entry) => entry.width === target)?.path ?? null;
 }
 
-export async function GET(req: Request, { params }: { params: Promise<{ fileId: string }> }) {
+export async function GET(
+  req: Request,
+  { params }: { params: Promise<{ fileId: string }> },
+) {
   try {
-    const { fileId } = await params
-    const svc = createServiceSupabaseClient()
+    const { fileId } = await params;
+    const svc = createServiceSupabaseClient();
 
     const { data: file, error } = await svc
       .from("files")
-      .select("id, org_id, project_id, file_name, storage_path, mime_type, metadata")
+      .select(
+        "id, org_id, project_id, file_name, storage_path, mime_type, metadata",
+      )
       .eq("id", fileId)
-      .maybeSingle()
+      .maybeSingle();
 
     if (error || !file) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+
+    if (await isPayrollDocumentPrivate(file.org_id, file.storage_path)) {
       return NextResponse.json({ error: "Not found" }, { status: 404 })
     }
 
     try {
-      const context = await requireOrgMembership(file.org_id)
+      const context = await requireOrgMembership(file.org_id);
       if (file.project_id) {
-        await requireProjectPermission(context.user.id, file.project_id, "docs.read")
+        await requireProjectPermission(
+          context.user.id,
+          file.project_id,
+          "docs.read",
+        );
       } else {
         await requirePermission("docs.read", {
           supabase: context.supabase,
           orgId: context.orgId,
           userId: context.user.id,
-        })
+        });
       }
     } catch {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const metadata = file.metadata && typeof file.metadata === "object" ? file.metadata as any : {}
-    const preview = metadata.preview && typeof metadata.preview === "object" ? metadata.preview : {}
+    const metadata =
+      file.metadata && typeof file.metadata === "object"
+        ? (file.metadata as any)
+        : {};
+    const preview =
+      metadata.preview && typeof metadata.preview === "object"
+        ? metadata.preview
+        : {};
 
-    const requestedWidthRaw = new URL(req.url).searchParams.get("w")
-    const parsedWidth = requestedWidthRaw ? Number.parseInt(requestedWidthRaw, 10) : Number.NaN
-    const requestedWidth = Number.isFinite(parsedWidth) && parsedWidth > 0 ? parsedWidth : null
-    const acceptsAvif = (req.headers.get("accept") ?? "").includes("image/avif")
+    const requestedWidthRaw = new URL(req.url).searchParams.get("w");
+    const parsedWidth = requestedWidthRaw
+      ? Number.parseInt(requestedWidthRaw, 10)
+      : Number.NaN;
+    const requestedWidth =
+      Number.isFinite(parsedWidth) && parsedWidth > 0 ? parsedWidth : null;
+    const acceptsAvif = (req.headers.get("accept") ?? "").includes(
+      "image/avif",
+    );
 
     let thumbnailPath =
       selectLadderPath(preview.sizes, requestedWidth, acceptsAvif) ??
-      (typeof preview.thumbnail_path === "string" ? preview.thumbnail_path : null)
+      (typeof preview.thumbnail_path === "string"
+        ? preview.thumbnail_path
+        : null);
 
     if (!thumbnailPath && isHeicPreviewCandidate(file)) {
-      thumbnailPath = await generateAndStoreHeicPreview(svc, file)
+      thumbnailPath = await generateAndStoreHeicPreview(svc, file);
+    }
+    if (!thumbnailPath && isPdfPreviewCandidate(file)) {
+      thumbnailPath = await generateAndStorePdfPreview(svc, file);
     }
 
     if (!thumbnailPath) {
-      return NextResponse.json({ error: "Preview not ready" }, { status: 404 })
+      return NextResponse.json({ error: "Preview not ready" }, { status: 404 });
     }
 
     const object = await getFilesObjectStream({
       supabase: svc,
       orgId: file.org_id,
       path: thumbnailPath,
-    })
+    });
 
-    const headers = new Headers()
-    headers.set("Content-Type", object.contentType ?? "image/webp")
-    headers.set("Cache-Control", "private, max-age=3600")
+    const headers = new Headers();
+    headers.set("Content-Type", object.contentType ?? "image/webp");
+    headers.set("Cache-Control", "private, max-age=3600");
     // The response body depends on the client's image-format support, so it
     // must not be reused across browsers with different Accept headers.
-    headers.set("Vary", "Accept")
-    headers.set("X-Content-Type-Options", "nosniff")
-    if (object.etag) headers.set("ETag", object.etag)
+    headers.set("Vary", "Accept");
+    headers.set("X-Content-Type-Options", "nosniff");
+    if (object.etag) headers.set("ETag", object.etag);
     if (object.contentLength !== undefined) {
-      headers.set("Content-Length", String(object.contentLength))
+      headers.set("Content-Length", String(object.contentLength));
     }
 
-    return new Response(object.body as BodyInit, { status: 200, headers })
+    return new Response(object.body as BodyInit, { status: 200, headers });
   } catch (error) {
-    console.error("[api/files/[fileId]/preview] Failed:", error)
-    return NextResponse.json({ error: "Unable to serve preview" }, { status: 500 })
+    console.error("[api/files/[fileId]/preview] Failed:", error);
+    return NextResponse.json(
+      { error: "Unable to serve preview" },
+      { status: 500 },
+    );
   }
 }
 
-
-async function generateAndStoreHeicPreview(supabase: ReturnType<typeof createServiceSupabaseClient>, file: any) {
+async function generateAndStorePdfPreview(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  file: any,
+) {
   const sourceBytes = await downloadFilesObject({
     supabase,
     orgId: file.org_id,
     path: file.storage_path,
-  })
+  });
+  const canvasModule = await import("@napi-rs/canvas");
+  if (typeof globalThis.DOMMatrix === "undefined")
+    globalThis.DOMMatrix = canvasModule.DOMMatrix as any;
+  if (typeof globalThis.DOMPoint === "undefined")
+    globalThis.DOMPoint = canvasModule.DOMPoint as any;
+  if (typeof globalThis.DOMRect === "undefined")
+    globalThis.DOMRect = canvasModule.DOMRect as any;
+  if (typeof globalThis.ImageData === "undefined")
+    globalThis.ImageData = canvasModule.ImageData as any;
+  if (typeof globalThis.Path2D === "undefined")
+    globalThis.Path2D = canvasModule.Path2D as any;
 
-  const preview = await convertHeicToJpegPreview(sourceBytes)
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  let pdf: any = null;
+  let result: { data: Buffer; info: { width: number; height: number } };
+  try {
+    pdf = await (pdfjs as any).getDocument({
+      data: new Uint8Array(sourceBytes),
+      disableWorker: true,
+      useSystemFonts: true,
+      isEvalSupported: false,
+    }).promise;
+    const page = await pdf.getPage(1);
+    const viewport = page.getViewport({ scale: 1 });
+    const scale = Math.min(480 / viewport.width, 480 / viewport.height, 2);
+    const scaled = page.getViewport({ scale });
+    const canvas = canvasModule.createCanvas(
+      Math.ceil(scaled.width),
+      Math.ceil(scaled.height),
+    );
+    await page.render({
+      canvasContext: canvas.getContext("2d"),
+      viewport: scaled,
+    }).promise;
+    const sharp = (await import("sharp")).default;
+    result = await sharp(canvas.toBuffer("image/png"))
+      .resize(320, 320, { fit: "inside", withoutEnlargement: true })
+      .webp({ quality: 76 })
+      .toBuffer({ resolveWithObject: true });
+  } finally {
+    await pdf?.destroy?.();
+  }
 
-  const safeBaseName = String(file.file_name ?? "preview").replace(/[^a-zA-Z0-9.-]/g, "_")
-  const thumbnailPath = `${file.org_id}/${file.project_id ?? "general"}/documents/previews/${file.id}/${Date.now()}_${safeBaseName}.jpg`
+  const safeName = String(file.file_name ?? "receipt").replace(
+    /[^a-zA-Z0-9.-]/g,
+    "_",
+  );
+  const thumbnailPath = `${file.org_id}/${file.project_id ?? "general"}/documents/previews/${file.id}/${Date.now()}_${safeName}.webp`;
+  await uploadFilesObject({
+    supabase,
+    orgId: file.org_id,
+    path: thumbnailPath,
+    bytes: new Uint8Array(result.data),
+    contentType: "image/webp",
+    cacheControl: "private, max-age=86400",
+  });
+  const metadata =
+    file.metadata && typeof file.metadata === "object" ? file.metadata : {};
+  await supabase
+    .from("files")
+    .update({
+      metadata: {
+        ...metadata,
+        preview: {
+          ...(metadata.preview ?? {}),
+          status: "ready",
+          thumbnail_path: thumbnailPath,
+          width: result.info.width,
+          height: result.info.height,
+          content_type: "image/webp",
+          generated_at: new Date().toISOString(),
+        },
+      },
+    })
+    .eq("id", file.id);
+  return thumbnailPath;
+}
+
+async function generateAndStoreHeicPreview(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  file: any,
+) {
+  const sourceBytes = await downloadFilesObject({
+    supabase,
+    orgId: file.org_id,
+    path: file.storage_path,
+  });
+
+  const preview = await convertHeicToJpegPreview(sourceBytes);
+
+  const safeBaseName = String(file.file_name ?? "preview").replace(
+    /[^a-zA-Z0-9.-]/g,
+    "_",
+  );
+  const thumbnailPath = `${file.org_id}/${file.project_id ?? "general"}/documents/previews/${file.id}/${Date.now()}_${safeBaseName}.jpg`;
 
   await uploadFilesObject({
     supabase,
@@ -162,9 +311,12 @@ async function generateAndStoreHeicPreview(supabase: ReturnType<typeof createSer
     bytes: preview.bytes,
     contentType: "image/jpeg",
     cacheControl: "private, max-age=86400",
-  })
+  });
 
-  const metadata = file.metadata && typeof file.metadata === "object" ? file.metadata as any : {}
+  const metadata =
+    file.metadata && typeof file.metadata === "object"
+      ? (file.metadata as any)
+      : {};
   await supabase
     .from("files")
     .update({
@@ -181,30 +333,34 @@ async function generateAndStoreHeicPreview(supabase: ReturnType<typeof createSer
         },
       },
     })
-    .eq("id", file.id)
+    .eq("id", file.id);
 
-  return thumbnailPath
+  return thumbnailPath;
 }
 
-async function convertHeicToJpegPreview(sourceBytes: Buffer): Promise<{ bytes: Uint8Array; width: number; height: number }> {
-  const convertModule = await import("heic-convert")
-  const convert = (convertModule as any).default ?? convertModule
+async function convertHeicToJpegPreview(
+  sourceBytes: Buffer,
+): Promise<{ bytes: Uint8Array; width: number; height: number }> {
+  const convertModule = await import("heic-convert");
+  const convert = (convertModule as any).default ?? convertModule;
   const jpegBytes = await convert({
     buffer: sourceBytes,
     format: "JPEG",
     quality: 0.92,
-  })
+  });
 
-  const sharp = (await import("sharp")).default
-  const result = await sharp(Buffer.from(jpegBytes), { limitInputPixels: false })
+  const sharp = (await import("sharp")).default;
+  const result = await sharp(Buffer.from(jpegBytes), {
+    limitInputPixels: false,
+  })
     .rotate()
     .resize(2048, 2048, { fit: "inside", withoutEnlargement: true })
     .jpeg({ quality: 86, mozjpeg: true })
-    .toBuffer({ resolveWithObject: true })
+    .toBuffer({ resolveWithObject: true });
 
   return {
     bytes: new Uint8Array(result.data),
     width: result.info.width,
     height: result.info.height,
-  }
+  };
 }

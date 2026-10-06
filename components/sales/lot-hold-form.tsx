@@ -3,8 +3,8 @@
 import { useEffect, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 
-import { createProspectLotHoldAction, listSellableLotsAction } from "@/app/(app)/pipeline/actions"
-import type { PipelineCommunityOption } from "@/components/prospects/prospect-presentation"
+import { createProspectLotHoldAction, listSellableLotsAction } from "@/app/(app)/sales/actions"
+import type { SalesCommunityOption } from "@/components/sales/community-option"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -46,7 +46,7 @@ const DEFAULT_HOLD_DAYS = 3
 
 interface LotHoldFormProps {
   buyer: HoldBuyer | null
-  communities: PipelineCommunityOption[]
+  communities: SalesCommunityOption[]
   /** When set, the community and lot are fixed and their pickers are not shown. */
   lot?: HoldLot | null
   cancelLabel?: string

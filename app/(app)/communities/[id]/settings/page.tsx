@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { notFound } from "next/navigation"
 
 import { CommunitySettingsForm } from "@/components/communities/community-settings-form"
@@ -11,13 +12,17 @@ import { listTeamMembers } from "@/lib/services/team"
 
 /** Only what you configure once. Phases and takedowns moved to the Land tab. */
 export default async function CommunitySettingsPage({ params }: { params: Promise<{ id: string }> }) {
+  await connection()
   const { id } = await params
   const [community, divisions, permissions, assignments, members] = await Promise.all([
-    getCommunity(id).catch(() => null),
-    listDivisions().catch(() => []),
+    getCommunity(id).catch((error: unknown) => {
+      if (error instanceof Error && error.message === "Community not found") return null
+      throw error
+    }),
+    listDivisions(),
     getCurrentUserPermissions(),
-    listCommunityAssignments(id).catch(() => []),
-    listTeamMembers(undefined, { includeProjectCounts: false }).catch(() => []),
+    listCommunityAssignments(id),
+    listTeamMembers(undefined, { includeProjectCounts: false }),
   ])
   if (!community) notFound()
   const canWrite = permissions.permissions.some((permission) =>

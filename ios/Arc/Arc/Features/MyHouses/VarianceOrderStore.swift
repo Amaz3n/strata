@@ -12,11 +12,6 @@ struct VarianceOrderPhoto: Identifiable, Equatable, Sendable {
 
 /// Backs field capture of a variance purchase order against one house.
 ///
-/// The mobile API has no purchase-order listing route, so the orders a variance
-/// can be charged to are recovered from the commitments this house's existing
-/// variances already reference (`GET /projects/{id}/vpos`). When a house has no
-/// variance history there is nothing to charge to and the composer says so
-/// rather than pretending.
 @MainActor
 @Observable
 final class VarianceOrderStore {
@@ -39,19 +34,7 @@ final class VarianceOrderStore {
         self.networkMonitor = networkMonitor
     }
 
-    /// Distinct purchase orders recoverable from this house's variance history,
-    /// newest reference first.
-    var purchaseOrders: [MobileVarianceCommitment] {
-        var seen: Set<String> = []
-        return recentOrders.compactMap { order in
-            guard seen.insert(order.commitmentId).inserted else { return nil }
-            return MobileVarianceCommitment(
-                id: order.commitmentId,
-                title: order.commitment?.title ?? "Purchase order",
-                companyName: order.company?.name
-            )
-        }
-    }
+    private(set) var purchaseOrders: [MobileVarianceCommitment] = []
 
     /// Filing needs a live connection: the evidence photos have to upload with
     /// the variance, and the offline mutation queue carries JSON only.
@@ -64,6 +47,7 @@ final class VarianceOrderStore {
             // house's list stand in while the new one loads — the server would
             // reject the charge, but only after the super had already picked it.
             recentOrders = []
+            purchaseOrders = []
         }
         loadedProjectID = projectID
         isLoadingContext = true
@@ -72,8 +56,10 @@ final class VarianceOrderStore {
 
         async let remoteReasons = api.loadVarianceReasonCodes(organizationID: organizationID)
         async let remoteOrders = api.loadVarianceOrders(projectID: projectID, organizationID: organizationID)
+        async let remotePurchaseOrders = api.loadPurchaseOrders(projectID: projectID, organizationID: organizationID)
         do {
-            let (reasons, orders) = try await (remoteReasons, remoteOrders)
+            let (reasons, orders, purchaseOrders) = try await (remoteReasons, remoteOrders, remotePurchaseOrders)
+            self.purchaseOrders = purchaseOrders
             reasonCodes = reasons
             recentOrders = orders
         } catch is CancellationError {
@@ -81,6 +67,7 @@ final class VarianceOrderStore {
         } catch {
             reasonCodes = []
             recentOrders = []
+            purchaseOrders = []
             contextError = (error as? APIError)?.userMessage ?? "Variance settings could not be loaded."
         }
     }

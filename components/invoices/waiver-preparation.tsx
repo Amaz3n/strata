@@ -1,4 +1,5 @@
 "use client";
+import { WaiverAdditionalSigners, WaiverCustomFields } from "./waiver-custom-fields";
 import dynamic from "next/dynamic";
 import { motion, useReducedMotion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -52,7 +53,7 @@ import {
 } from "@/lib/types";
 import {
   prepareWaiverSchema,
-  preferredWaiverTemplate,
+  chooseBillingWaiverTemplate,
   readWaiverWorkflow,
   type PrepareWaiverInput,
   type WaiverTemplate,
@@ -242,9 +243,7 @@ export default function WaiverPreparation({
               : "conditional_progress";
           const available = data.templates.filter((t) => t.status !== "draft");
           const preferred =
-            preferredWaiverTemplate(available, kind) ??
-            available.find((t) => t.waiver_type === kind) ??
-            available[0];
+            chooseBillingWaiverTemplate(available, kind);
           setInput((old) => ({
             ...old,
             project_name: data.project_name,
@@ -293,11 +292,17 @@ export default function WaiverPreparation({
     setPreviewReady(false);
   }
   function selectTemplate(t: WaiverTemplate) {
+    const preferredSigner = team.find(member => member.name === t.editable?.defaults?.signerName);
+    if (preferredSigner) setSignerId(preferredSigner.id);
     change("template_id", t.id);
     setInput((old) => ({
       ...old,
       source: "template",
       waiver_type: t.waiver_type,
+      custom_values: {},
+      additional_signers: [],
+      signer_title: t.editable?.defaults?.signerTitle || old.signer_title,
+      signer_name: preferredSigner?.name || old.signer_name,
       final_confirmed: false,
       received_confirmed: false,
       payment_id: undefined,
@@ -783,7 +788,8 @@ export default function WaiverPreparation({
 
                     {textField("signer_title", "Signer title")}
                   </div>
-                  {input.waiver_type.startsWith("unconditional") && (
+  <WaiverAdditionalSigners template={selectedTemplate?.editable} values={input.additional_signers} onChange={v=>change("additional_signers",v)}/><WaiverCustomFields template={selectedTemplate?.editable} values={input.custom_values} onChange={v => change("custom_values", v)} />
+                {input.waiver_type.startsWith("unconditional") && (
                     <div className="space-y-3 rounded-lg border p-3">
                       <p className="text-xs font-medium">Payment received</p>
                       <Select
@@ -921,6 +927,8 @@ export default function WaiverPreparation({
               ) : selectedTemplate?.editable ? (
                 <LivePreview
                   draft={selectedTemplate.editable}
+              sourceFileId={selectedTemplate.sourceFileId}
+              customValues={input.custom_values}
                   sample={false}
                   values={values}
                   invoiceNumber={invoice.invoice_number}

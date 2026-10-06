@@ -33,7 +33,9 @@ export type JobCostSourceType =
   | "project_expense_line"
   | "time_entry"
   | "bank_transaction"
-  | "inventory_event";
+  | "inventory_event"
+  | "payroll_import"
+  | "payroll_correction";
 
 /** An entry is `posted` from birth; the only transition is voiding it. */
 export type JobCostEntryStatus = "posted" | "voided";
@@ -481,6 +483,9 @@ export async function postJobCostEntryFromTimeEntry(
       burden_multiplier: entry.burden_multiplier ?? null,
       is_overtime: entry.is_overtime ?? false,
       ot_multiplier: entry.ot_multiplier ?? 1.5,
+      is_double_time: entry.is_double_time ?? false,
+      dt_multiplier: entry.dt_multiplier ?? 2,
+      labor_cost_policy_version: entry.labor_cost_policy_version ?? 0,
     },
   });
 }
@@ -589,6 +594,7 @@ export async function voidJobCostEntryForSource(
   } & JobCostPostingContext,
 ) {
   const { supabase, orgId: resolvedOrgId } = await resolveJobCostContext(args);
+  if (args.sourceType === "payroll_import" || args.sourceType === "payroll_correction") throw new Error("Posted payroll project costs require a coordinated payroll correction");
   const { error } = await supabase
     .from("job_cost_entries")
     .update({ status: "voided" })

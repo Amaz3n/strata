@@ -34,7 +34,7 @@ export async function getProjectCostCodesEnabled(
   orgId: string,
   projectId: string,
 ): Promise<boolean> {
-  const [{ data }, orgDefault] = await Promise.all([
+  const [{ data, error }, orgDefault] = await Promise.all([
     supabase
       .from("project_financial_settings")
       .select("cost_codes_enabled")
@@ -43,7 +43,8 @@ export async function getProjectCostCodesEnabled(
       .maybeSingle(),
     getOrgCostCodesEnabled(supabase, orgId),
   ])
-  return resolveCostCodesEnabled((data?.cost_codes_enabled ?? null) as boolean | null, orgDefault)
+  if (error) throw new Error(`Failed to load cost-code settings: ${error.message}`)
+  return resolveCostCodesEnabled(data?.cost_codes_enabled ?? null, orgDefault)
 }
 
 /**

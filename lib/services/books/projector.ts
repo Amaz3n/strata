@@ -1,5 +1,11 @@
 import "server-only";
+import { laborBasisFromJobCost } from "./labor-evidence";
+import { loadInvoiceRevenueLines } from "@/lib/services/books/invoice-revenue";
+import { timestampMicros } from "@/lib/services/books/posting-state";
+import { allocateInvoiceRevenue, invoiceRevenueBasis, invoiceHasAccountingPrincipal } from "@/lib/services/books/invoice-revenue-rules";
 import { loadBooksProjectDimensions } from "@/lib/services/books/dimensions";
+import { directSettlementEvidence, paymentProjectionSourceKeys } from "@/lib/services/books/settlement-evidence";
+import { loadPaymentAllocationEvidence } from "@/lib/services/books/settlement-allocation-loader";
 import { SYSTEM_ACCOUNT_CODES } from "@/lib/services/books/chart-of-accounts";
 
 import { z } from "zod";
@@ -22,6 +28,9 @@ import {
   selectFactsToRetire,
   sortFactCostLines,
   preserveLegacyDimensionPayload,
+  preserveLegacySettlementPayload,
+  preserveLegacyInvoiceIncomePayload,
+  preserveLegacyLaborPayload,
   type FactCostLine,
 } from "@/lib/services/books/fact-drafts";
 import { loadBooksFundingResolver } from "@/lib/services/books/funding";
@@ -437,7 +446,7 @@ async function loadLaborCostEntries(orgId: string, since: string | null) {
   return collectPages((from, to) => {
     let query = service
       .from("job_cost_entries")
-      .select("id, project_id, cost_cents, incurred_on, updated_at, status, cost_code_id, metadata")
+      .select("id, org_id, source_type, source_id, project_id, cost_cents, incurred_on, updated_at, status, cost_code_id, metadata")
       .eq("org_id", orgId)
       .eq("source_type", "time_entry");
     if (since) query = query.gte("updated_at", since);
@@ -584,6 +593,10 @@ async function projectionCandidates(
   ]);
 
   const candidates: ProjectionCandidate[] = [];
+  const invoiceIncome = await loadInvoiceRevenueLines(orgId, [
+    ...invoices.map(row => String(row.id)),
+    ...adjustments.filter(row => row.status === "posted" && row.adjustment_type === "credit_memo" && invoiceRevenueBasis(row.project_id, row.project_id ? basisByProject.get(row.project_id) : undefined) !== "percentage_of_completion").map(row => String(row.invoice_id)),
+  ]);
   const failures: ProjectionFailure[] = [];
   const fundingCode = (sourceType: string, sourceId: string, resolve: () => string) => {
     try { return resolve(); } catch (error) {
@@ -704,7 +717,7 @@ async function projectionCandidates(
     )
       continue;
     const totalCents = Number(row.total_cents ?? 0);
-    if (totalCents === 0) continue;
+    if (sourceType === "retainage_release" ? totalCents === 0 : !invoiceHasAccountingPrincipal(totalCents, retainageByInvoice.get(String(row.id)) ?? 0, invoiceRevenueBasis(row.project_id, row.project_id ? basisByProject.get(row.project_id) : undefined))) continue;
     liveSourceKeys.add(sourceKey);
     // A release invoice collects retainage billed on an earlier invoice. The amount
     // posted is the invoice's own total so AR keeps tying to invoice balances; any
@@ -726,9 +739,16 @@ async function projectionCandidates(
       continue;
     }
     const projectId = row.project_id ? String(row.project_id) : null;
-    const basis = projectId
-      ? (basisByProject.get(projectId) ?? "percentage_of_completion")
-      : "percentage_of_completion";
+    const basis = invoiceRevenueBasis(projectId, projectId ? basisByProject.get(projectId) : undefined);
+    if (invoiceIncome.errors.has(String(row.id))) {
+      failures.push({ sourceType: "invoice", sourceId: String(row.id), error: invoiceIncome.errors.get(String(row.id))! });
+      continue;
+    }
+    const capturedRevision = invoiceIncome.sourceVersions.get(String(row.id));
+    if (!capturedRevision || timestampMicros(capturedRevision) === null || timestampMicros(capturedRevision) !== timestampMicros(String(row.updated_at))) {
+      failures.push({ sourceType: "invoice", sourceId: String(row.id), error: "Invoice changed while its income evidence was captured. Refresh posting to capture the current revision." });
+      continue;
+    }
     candidates.push({
       sourceType: "invoice",
       sourceId: String(row.id),
@@ -742,10 +762,12 @@ async function projectionCandidates(
         retainage_cents: retainageByInvoice.get(String(row.id)) ?? 0,
         project_id: row.project_id ?? null,
         revenue_basis: basis,
+        revenue_lines: invoiceIncome.lines.get(String(row.id)) ?? [],
       },
     });
   }
 
+  const paymentAllocations = await loadPaymentAllocationEvidence(orgId, payments);
   for (const row of payments) {
     if (openingSources.payments.has(String(row.id))) continue;
     const metadata =
@@ -755,20 +777,29 @@ async function projectionCandidates(
     const isDepositReceipt =
       Boolean(row.invoice_id) && depositInvoiceIds.has(String(row.invoice_id));
     const isDepositApplication = metadata.customer_deposit_application === true;
+    const allocationEvidence = paymentAllocations.evidence.get(String(row.id));
     const classification = classifyPaymentPosting({
       method: typeof row.method === "string" ? row.method : null,
-      hasBill: Boolean(row.bill_id),
-      hasInvoice: Boolean(row.invoice_id),
+      hasBill: Boolean(row.bill_id) || Boolean(allocationEvidence?.allocations[0].bill_id),
+      hasInvoice: Boolean(row.invoice_id) || Boolean(allocationEvidence?.allocations[0].invoice_id),
       creditApplied: metadata.vendor_credit_applied === true,
     });
     const paymentIsLive = new Set(["succeeded", "completed", "paid"]).has(
       String(row.status),
     );
+    const paymentKeys = paymentProjectionSourceKeys(String(row.id));
+    if (!paymentIsLive) for (const key of paymentKeys) touchedSourceKeys.add(key);
+    if (paymentIsLive && paymentAllocations.errors.has(String(row.id))) {
+      for (const key of paymentKeys) liveSourceKeys.add(key);
+      failures.push({ sourceType: "payment", sourceId: String(row.id), error: paymentAllocations.errors.get(String(row.id))! });
+      continue;
+    }
     // A payment linked to neither a bill nor an invoice is not a customer
     // receipt — fee collections and standalone settlements land here. Guessing
     // would fabricate an AR credit, so it is reported instead of posted.
     if (classification.kind === "unpostable") {
       if (!paymentIsLive) continue;
+      for (const key of paymentKeys) liveSourceKeys.add(key);
       failures.push({
         sourceType: "payment",
         sourceId: String(row.id),
@@ -821,6 +852,14 @@ async function projectionCandidates(
       splitFeeCents > 0 ? splitFeeCents : Number(row.fee_cents ?? 0);
     const cashCode = paymentSourceType === "bill_payment" ? fundingCode(paymentSourceType, String(row.id), () => funding.resolve({ metadata, method: row.method })) : SYSTEM_ACCOUNT_CODES.operatingCash;
     if (!cashCode) continue;
+    let settlementEvidence;
+    try {
+      if (allocationEvidence && (isDepositApplication || isDepositReceipt)) throw new Error("Deposit allocations require the deposit workflow");
+      settlementEvidence = allocationEvidence ?? directSettlementEvidence({ paymentId: String(row.id), invoiceId: row.invoice_id, billId: row.bill_id });
+    } catch (error) {
+      failures.push({ sourceType: paymentSourceType, sourceId: String(row.id), error: `Payment document evidence is invalid: ${error instanceof Error ? error.message : String(error)}` });
+      continue;
+    }
     candidates.push({
       sourceType: paymentSourceType,
       sourceId: String(row.id),
@@ -844,6 +883,7 @@ async function projectionCandidates(
         project_id: row.project_id ?? null,
         ...(paymentSourceType === "bill_payment" && cashCode !== SYSTEM_ACCOUNT_CODES.operatingCash ? { cash_account_code: cashCode } : {}),
         deposit_payment_id: metadata.deposit_payment_id ?? null,
+        settlement_evidence: settlementEvidence,
       },
     });
   }
@@ -941,6 +981,13 @@ async function projectionCandidates(
     const hasBill = Boolean(row.bill_id);
     const cashCode = hasBill ? fundingCode(reversalSourceType, String(row.id), () => funding.reversal(String(row.payment_id))) : SYSTEM_ACCOUNT_CODES.undepositedFunds;
     if (!cashCode) continue;
+    let settlementEvidence;
+    try {
+      settlementEvidence = directSettlementEvidence({ paymentId: String(row.payment_id), invoiceId: row.invoice_id, billId: row.bill_id });
+    } catch (error) {
+      failures.push({ sourceType: reversalSourceType, sourceId: String(row.id), error: `Reversal document evidence is invalid: ${error instanceof Error ? error.message : String(error)}` });
+      continue;
+    }
     candidates.push({
       sourceType: reversalSourceType,
       sourceId: String(row.id),
@@ -956,6 +1003,7 @@ async function projectionCandidates(
         ...(hasBill && cashCode !== SYSTEM_ACCOUNT_CODES.operatingCash ? { cash_account_code: cashCode } : {}),
         side: hasBill ? "bill_payment" : "invoice_payment",
         project_id: row.project_id ?? null,
+        settlement_evidence: settlementEvidence,
       },
     });
   }
@@ -968,6 +1016,18 @@ async function projectionCandidates(
     if (amountCents <= 0) continue;
     liveSourceKeys.add(sourceKey);
     const projectId = row.project_id ? String(row.project_id) : null;
+    const basis = invoiceRevenueBasis(projectId, projectId ? basisByProject.get(projectId) : undefined);
+    let revenueLines: ReturnType<typeof allocateInvoiceRevenue> | undefined;
+    if (basis !== "percentage_of_completion" && row.adjustment_type === "credit_memo") {
+      try {
+        const error = invoiceIncome.errors.get(String(row.invoice_id));
+        if (error) throw new Error(error);
+        revenueLines = allocateInvoiceRevenue(amountCents - Number(row.tax_cents ?? 0), invoiceIncome.lines.get(String(row.invoice_id)) ?? []);
+      } catch (error) {
+        failures.push({ sourceType: "receivable_adjustment", sourceId: String(row.id), error: error instanceof Error ? error.message : String(error) });
+        continue;
+      }
+    }
     candidates.push({
       sourceType: "receivable_adjustment",
       sourceId: String(row.id),
@@ -980,9 +1040,8 @@ async function projectionCandidates(
         adjustment_type: row.adjustment_type,
         project_id: row.project_id ?? null,
         invoice_id: row.invoice_id,
-        revenue_basis: projectId
-          ? (basisByProject.get(projectId) ?? "percentage_of_completion")
-          : "percentage_of_completion",
+        revenue_basis: basis,
+        ...(revenueLines?.length ? { revenue_lines: revenueLines } : {}),
       },
     });
   }
@@ -993,6 +1052,7 @@ async function projectionCandidates(
     if (row.status !== "posted") continue;
     const amountCents = Number(row.cost_cents ?? 0);
     if (amountCents === 0) continue;
+    const laborBasis = laborBasisFromJobCost(orgId,row as unknown as Record<string,unknown>);
     liveSourceKeys.add(sourceKey);
     candidates.push({
       sourceType: "labor_cost",
@@ -1001,6 +1061,7 @@ async function projectionCandidates(
       occurredAt: String(row.updated_at),
       payload: {
         memo: "Field labor",
+        ...(laborBasis ? {labor_basis:laborBasis} : {}),
         dimensions: { cost_type: "labor", ...(row.cost_code_id ? { cost_code_id: row.cost_code_id } : {}) },
         ...(inventoryCostAccount(inventoryPolicies.get(String(row.project_id)), String(row.incurred_on), SYSTEM_ACCOUNT_CODES.laborCosts) !== SYSTEM_ACCOUNT_CODES.laborCosts ? { cost_account_code: inventoryCostAccount(inventoryPolicies.get(String(row.project_id)), String(row.incurred_on), SYSTEM_ACCOUNT_CODES.laborCosts) } : {}),
         amount_cents: amountCents,
@@ -1015,7 +1076,8 @@ async function projectionCandidates(
     ),
   );
   for (const candidate of candidates) {
-    const ids = new Set([candidate.payload.project_id, ...(Array.isArray(candidate.payload.cost_lines) ? candidate.payload.cost_lines.map((line: FactCostLine) => line.project_id) : [])].filter((id): id is string => typeof id === "string"));
+    const evidence = candidate.payload.settlement_evidence as { allocations?: Array<{ project_id: string | null }> } | undefined;
+    const ids = new Set([candidate.payload.project_id, ...(evidence?.allocations?.map(row => row.project_id) ?? []), ...(Array.isArray(candidate.payload.cost_lines) ? candidate.payload.cost_lines.map((line: FactCostLine) => line.project_id) : [])].filter((id): id is string => typeof id === "string"));
     const captured = Object.fromEntries([...ids].filter(id => projectDimensions.has(id)).map(id => [id, projectDimensions.get(id)]));
     if (Object.keys(captured).length) candidate.payload.project_dimensions = captured;
   }
@@ -1056,7 +1118,8 @@ async function projectCandidateAtomically(
       `Failed to inspect accounting fact: ${existingError.message}`,
     );
   const existing = existingRow ? factRowSchema.parse(existingRow) : null;
-  candidate = { ...candidate, payload: preserveLegacyDimensionPayload(candidate.sourceType, candidate.accountingDate, candidate.payload, existing) };
+  candidate = {...candidate,payload:preserveLegacyLaborPayload(candidate.sourceType,candidate.accountingDate,candidate.payload,existing)};
+  candidate = { ...candidate, payload: preserveLegacyDimensionPayload(candidate.sourceType, candidate.accountingDate, preserveLegacySettlementPayload(candidate.sourceType, candidate.accountingDate, preserveLegacyInvoiceIncomePayload(candidate.sourceType, candidate.accountingDate, candidate.payload, existing), existing), existing) };
   const { sourceVersion, payloadHash, idempotencyKey } = factTransitionIdentity({
     orgId, sourceType: candidate.sourceType, sourceId: candidate.sourceId,
     accountingDate: candidate.accountingDate,
@@ -1292,6 +1355,8 @@ export async function projectJournal(
       revised: 0,
       retired: 0,
       failures: [] as ProjectionFailure[],
+      fullScanCompleted: false,
+      evaluatedSourceKeys: [] as string[],
     };
   }
 
@@ -1317,11 +1382,13 @@ export async function projectJournal(
 
   const requestedKeys = options.sourceKeys ? new Set(options.sourceKeys) : null;
   const failures = candidateFailures.filter((row) => !requestedKeys || requestedKeys.has(factSourceKey(row.sourceType, row.sourceId)));
+  const evaluatedSourceKeys = new Set<string>(failures.map(row => factSourceKey(row.sourceType, row.sourceId)));
   let projected = 0;
   let skipped = 0;
   let revised = 0;
   for (const candidate of candidates) {
     if (requestedKeys && !requestedKeys.has(factSourceKey(candidate.sourceType, candidate.sourceId))) continue;
+    evaluatedSourceKeys.add(factSourceKey(candidate.sourceType, candidate.sourceId));
     try {
       const projection = await projectCandidateAtomically(
         orgId,
@@ -1329,6 +1396,11 @@ export async function projectJournal(
         policyVersion,
         projectionVersion,
       );
+      const { error: receiptError } = await service.rpc("record_books_projection_receipt", {
+        p_org_id: orgId, p_source_type: candidate.sourceType, p_source_id: candidate.sourceId,
+        p_source_observed_at: candidate.occurredAt, p_fact_id: projection.factId, p_journal_id: projection.journalId,
+      });
+      if (receiptError) throw new Error(`Journal recorded but posting verification could not be saved: ${receiptError.message}`);
       if (projection.superseded) revised += 1;
       if (projection.created || projection.journalCreated) projected += 1;
       else skipped += 1;
@@ -1367,6 +1439,7 @@ export async function projectJournal(
     );
     retired = retirement.retired;
     failures.push(...retirement.failures);
+    for (const key of retirementSourceKeys) evaluatedSourceKeys.add(key);
   }
   const inventoryPolicies = await loadInventoryPolicies(orgId);
   const requestedProjects = requestedKeys ? new Set(candidates.filter(candidate => requestedKeys.has(factSourceKey(candidate.sourceType, candidate.sourceId))).flatMap(candidate => {
@@ -1377,6 +1450,7 @@ export async function projectJournal(
     if (requestedProjects && !requestedProjects.has(projectId)) continue;
     const date = policy.soldOn ?? policy.completedOn;
     if (!date || !policy.evidenceUrl) continue;
+    evaluatedSourceKeys.add(factSourceKey("inventory_cost_relief", projectId));
     try {
       await transitionInventoryForService({ orgId, projectId, transition: policy.soldOn ? "sale_relief" : "completion", date, evidenceUrl: policy.evidenceUrl });
     } catch (error) {
@@ -1384,19 +1458,19 @@ export async function projectJournal(
     }
   }
   failures.push(...await reconcileWarrantyRecoveriesForService(orgId, requestedProjects));
-  return { projected, skipped, revised, retired, failures };
+  for (const failure of failures) evaluatedSourceKeys.add(factSourceKey(failure.sourceType, failure.sourceId));
+  return { projected, skipped, revised, retired, failures, evaluatedSourceKeys: [...evaluatedSourceKeys], fullScanCompleted: options.full === true && !requestedKeys };
 }
 
 export async function runBooksProjection(options: { full?: boolean } = {}) {
   const service = createServiceSupabaseClient();
-  const { data, error } = await service
+  const data = await collectPages((from, to) => service
     .from("books_settings")
     .select("org_id")
     .eq("workspace_enabled", true)
     .neq("arc_ledger_mode", "disabled")
-    .order("org_id");
-  if (error)
-    throw new Error(`Failed to load Books organizations: ${error.message}`);
+    .order("org_id")
+    .range(from, to), "Books organizations");
   const results = [];
   for (const row of data ?? [])
     results.push({

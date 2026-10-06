@@ -1,4 +1,4 @@
-import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
+import { accountingCutoff, isInvoiceReceivableAsOf, loadSubledgerSettlements } from "@/lib/services/books/subledger-settlements"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
 import { applyReportingExclusion, getReportingExcludedProjectIds } from "@/lib/services/reporting-scope"
@@ -14,6 +14,7 @@ export type ARAgingRow = {
   status: string | null
   issue_date: string | null
   due_date: string | null
+  customer_id?: string | null
   customer_name: string | null
   total_cents: number
   balance_due_cents: number
@@ -56,9 +57,7 @@ export async function getArAgingReport({
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("report.read", { supabase, orgId: resolvedOrgId, userId })
   const asOfDate = asOf ?? todayIsoDateOnly()
-  const asOfEndExclusive = new Date(`${asOfDate}T00:00:00.000Z`)
-  asOfEndExclusive.setUTCDate(asOfEndExclusive.getUTCDate() + 1)
-  const cutoff = asOfEndExclusive.toISOString()
+  accountingCutoff(asOfDate)
 
   let query = supabase
     .from("invoices")
@@ -68,6 +67,7 @@ export async function getArAgingReport({
     // as-of fact: an invoice paid or voided later was still open historically.
     .order("due_date", { ascending: true, nullsFirst: true })
     .order("created_at", { ascending: false })
+    .order("id")
 
   if (projectId) {
     query = query.eq("project_id", projectId)
@@ -79,80 +79,9 @@ export async function getArAgingReport({
   query = query.lte("issue_date", asOfDate)
   const data = await loadAll<any>((from, to) => query.range(from, to), "invoices for AR aging")
 
-  const invoiceRows = (data ?? []).filter((row: any) => {
-    if (typeof row.sent_at === "string" && row.sent_at >= cutoff) return false
-    if (BILLED_INVOICE_STATUSES.includes(row.status)) return true
-    if (row.status !== "void") return false
-    const voidedAt = row.metadata?.voided_at
-    return typeof voidedAt === "string" && voidedAt >= cutoff
-  })
+  const invoiceRows = data.filter(row => isInvoiceReceivableAsOf(row, asOfDate))
   const invoiceIds = invoiceRows.map((row: any) => String(row.id))
-  const paidByInvoice = new Map<string, number>()
-  if (invoiceIds.length > 0) {
-    for (let start = 0; start < invoiceIds.length; start += 200) {
-      const ids = invoiceIds.slice(start, start + 200)
-      const [payments, allocations, reversals, adjustments] = await Promise.all([
-        loadAll<any>(
-          (from, to) => supabase
-            .from("payments")
-            .select("id,invoice_id,amount_cents,status,received_at")
-            .eq("org_id", resolvedOrgId)
-            .in("invoice_id", ids)
-            .in("status", ["succeeded", "completed", "paid", "refunded"])
-            .lt("received_at", cutoff)
-            .range(from, to),
-          "invoice payments for AR aging",
-        ),
-        loadAll<any>(
-          (from, to) => supabase
-            .from("payment_allocations")
-            .select("invoice_id,amount_cents,payment:payments!inner(status,received_at)")
-            .eq("org_id", resolvedOrgId)
-            .in("invoice_id", ids)
-            .in("payment.status", ["succeeded", "completed", "paid", "refunded"])
-            .lt("payment.received_at", cutoff)
-            .range(from, to),
-          "payment allocations for AR aging",
-        ),
-        loadAll<any>(
-          (from, to) => supabase
-            .from("payment_reversals")
-            .select("invoice_id,amount_cents,status,occurred_at")
-            .eq("org_id", resolvedOrgId)
-            .in("invoice_id", ids)
-            .eq("status", "succeeded")
-            .lt("occurred_at", cutoff)
-            .range(from, to),
-          "payment reversals for AR aging",
-        ),
-        loadAll<any>(
-          (from, to) => supabase
-            .from("receivable_adjustments")
-            .select("invoice_id,amount_cents,status,effective_date,voided_at")
-            .eq("org_id", resolvedOrgId)
-            .in("invoice_id", ids)
-            .lte("effective_date", asOfDate)
-            .range(from, to),
-          "receivable adjustments for AR aging",
-        ),
-      ])
-      for (const payment of payments) {
-        if (!payment.invoice_id) continue
-        paidByInvoice.set(String(payment.invoice_id), (paidByInvoice.get(String(payment.invoice_id)) ?? 0) + Number(payment.amount_cents ?? 0))
-      }
-      for (const allocation of allocations) {
-        paidByInvoice.set(String(allocation.invoice_id), (paidByInvoice.get(String(allocation.invoice_id)) ?? 0) + Number(allocation.amount_cents ?? 0))
-      }
-      for (const reversal of reversals) {
-        paidByInvoice.set(String(reversal.invoice_id), (paidByInvoice.get(String(reversal.invoice_id)) ?? 0) - Number(reversal.amount_cents ?? 0))
-      }
-      for (const adjustment of adjustments) {
-        const wasActive = adjustment.status === "posted" || (typeof adjustment.voided_at === "string" && adjustment.voided_at >= cutoff)
-        if (!wasActive) continue
-        paidByInvoice.set(String(adjustment.invoice_id), (paidByInvoice.get(String(adjustment.invoice_id)) ?? 0) + Number(adjustment.amount_cents ?? 0))
-      }
-    }
-  }
+  const paidByInvoice = await loadSubledgerSettlements(supabase, resolvedOrgId, "receivable", invoiceIds, asOfDate)
 
   const totals: ARAgingTotals = {
     current: 0,
@@ -168,7 +97,7 @@ export async function getArAgingReport({
 
   const rows: ARAgingRow[] = invoiceRows.map((row: any) => {
     const totalCents = typeof row.total_cents === "number" ? row.total_cents : 0
-    const balanceDueCents = Math.max(0, totalCents - Math.max(0, paidByInvoice.get(String(row.id)) ?? 0))
+    const balanceDueCents = totalCents - (paidByInvoice.get(String(row.id)) ?? 0)
     const openBalanceCents = balanceDueCents
     const isPaid = openBalanceCents === 0
 
@@ -191,7 +120,8 @@ export async function getArAgingReport({
       status: row.status ?? null,
       issue_date: row.issue_date ?? null,
       due_date: row.due_date ?? null,
-      customer_name: row.metadata?.customer_name ?? null,
+      customer_id: row.metadata?.customer_id ? `${row.metadata.customer_type ?? "customer"}:${row.metadata.customer_id}` : row.metadata?.accounting_customer_ref?.id ? `accounting:${row.metadata.accounting_customer_ref.id}` : null,
+      customer_name: row.metadata?.customer_name ?? row.metadata?.accounting_customer_ref?.name ?? null,
       total_cents: totalCents,
       balance_due_cents: balanceDueCents,
       open_balance_cents: openBalanceCents,

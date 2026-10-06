@@ -1,7 +1,8 @@
+import { assertProjectConfiguration } from "@/lib/services/configuration-rules"
 import { z } from "zod"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { resolvePriceForLinePure, resolvedPriceTotal, type PriceAgreementCandidate } from "@/lib/financials/price-resolution"
+import { resolvePriceForLinePure, resolveSelectedAgreement, resolvedPriceTotal, type PriceAgreementCandidate } from "@/lib/financials/price-resolution"
 import {
   createPoGenerationFingerprint,
   groupGeneratedBudgetLines,
@@ -11,10 +12,10 @@ import {
 import { recordAudit } from "@/lib/services/audit"
 import {
   getDivisionAccessForUser,
-  getDivisionScopedProjectIds,
   requireAuthorization,
 } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
+import { purchasingQueueFiltersSchema, purchasingQueueProjectSelect, resolvePurchasingQueueReadScope, type PurchasingQueueFilters } from "@/lib/services/purchasing-queue-scope"
 import { recordEvent } from "@/lib/services/events"
 import { collectPagedRows, loadPriceAgreementCandidates } from "@/lib/services/price-book"
 import { getExpiringAgreementLeadDays } from "@/lib/services/purchasing-settings"
@@ -57,11 +58,8 @@ type GenerationContext = Awaited<ReturnType<typeof requireOrgContext>>
 
 const poExceptionStatusSchema = z.enum(["open", "resolved_agreement", "resolved_manual", "dismissed"])
 
-const poExceptionListSchema = z.object({
+const poExceptionListSchema = purchasingQueueFiltersSchema.extend({
   status: poExceptionStatusSchema.default("open"),
-  projectId: z.string().uuid().optional(),
-  page: z.number().int().min(1).default(1),
-  pageSize: z.number().int().min(1).max(100).default(50),
 })
 
 const OPEN_EXCEPTION_SCAN_LIMIT = 1000
@@ -224,11 +222,12 @@ function exceptionSourceId(exception: GenerationException) {
 }
 
 async function runGeneration(
-  parsed: { projectId: string; mode: "dry_run" | "commit"; asOfDate?: string },
+  parsed: { projectId: string; mode: "dry_run" | "commit"; asOfDate?: string; expectedFingerprint?: string },
   context: GenerationContext,
   options: { incremental?: boolean; pendingResolutions?: Map<string, Record<string, unknown>> } = {},
 ): Promise<PoGenerationResult> {
   const { supabase, orgId, userId } = context
+  await assertProjectConfiguration(orgId, parsed.projectId)
   const incremental = options.incremental === true
   const asOfDate = parsed.asOfDate ?? new Date().toISOString().slice(0, 10)
 
@@ -305,7 +304,9 @@ async function runGeneration(
     const chosenAgreement = override?.kind === "agreement" && typeof override.agreement_id === "string"
       ? candidates.find((candidate) => candidate.id === override.agreement_id && candidate.cost_code_id === line.cost_code_id)
       : undefined
-    const result = chosenAgreement
+    const result = override?.kind === "agreement" && typeof override.agreement_id === "string" && options.pendingResolutions?.has(generationSourceKey("takeoff_line", line.id))
+      ? resolveSelectedAgreement(input, candidates, override.agreement_id)
+      : chosenAgreement
       ? { resolved: { agreementId: chosenAgreement.id, companyId: chosenAgreement.company_id, pricingKind: chosenAgreement.pricing_kind, unitCostCents: chosenAgreement.unit_cost_cents ?? undefined, lumpSumCents: chosenAgreement.lump_sum_cents ?? undefined, scopeOfWork: chosenAgreement.scope_of_work ?? undefined } }
       : resolvePriceForLinePure(input, candidates)
     if (result.exception) {
@@ -350,7 +351,9 @@ async function runGeneration(
     const chosenAgreement = override?.kind === "agreement" && typeof override.agreement_id === "string"
       ? candidatePool.find((candidate) => candidate.id === override.agreement_id && candidate.cost_code_id === costCodeId)
       : undefined
-    const priceResult = chosenAgreement
+    const priceResult = override?.kind === "agreement" && typeof override.agreement_id === "string" && options.pendingResolutions?.has(generationSourceKey("option", sourceId))
+      ? resolveSelectedAgreement(input, candidatePool, override.agreement_id)
+      : chosenAgreement
       ? { resolved: { agreementId: chosenAgreement.id, companyId: chosenAgreement.company_id, pricingKind: chosenAgreement.pricing_kind, unitCostCents: chosenAgreement.unit_cost_cents ?? undefined, lumpSumCents: chosenAgreement.lump_sum_cents ?? undefined, scopeOfWork: chosenAgreement.scope_of_work ?? undefined } }
       : resolvePriceForLinePure(input, candidatePool)
     const companyId = hintedCompanyId ?? priceResult?.resolved?.companyId
@@ -373,6 +376,13 @@ async function runGeneration(
     })
   }
 
+  // A pending resolution must actually produce its source line before any run,
+  // budget, or PO is written. Removed selections and unpriceable lines remain open.
+  const resolvedSourceKeys = new Set(resolvedLines.map((line) => generationSourceKey(line.sourceKind, line.sourceId)))
+  for (const key of options.pendingResolutions?.keys() ?? []) {
+    if (!resolvedSourceKeys.has(key)) throw new Error("This exception could not be priced, or its source is no longer active. Refresh the queue before resolving it.")
+  }
+
   const purchaseOrders = groupPurchaseOrderLines(resolvedLines)
   const budgetLines = groupGeneratedBudgetLines(resolvedLines)
   const agreementEndsById = new Map<string, string | null>(
@@ -386,6 +396,10 @@ async function runGeneration(
       ...exceptions.map((item) => ({ sourceKind: item.source_kind, sourceId: Object.values(item.source_ref)[0] ?? item.description, quantity: item.quantity, unit: item.uom, agreementId: null, totalCents: null })),
     ],
   })
+
+  if (parsed.mode === "commit" && parsed.expectedFingerprint && parsed.expectedFingerprint !== inputFingerprint) {
+    throw new Error("Pricing or selections changed since the preview. Preview the purchase orders again before generating.")
+  }
 
   const { data: prior } = await supabase.from("po_generation_runs").select("id,input_fingerprint,status,summary")
     .eq("org_id", orgId).eq("project_id", parsed.projectId).eq("mode", "commit")
@@ -479,7 +493,7 @@ async function runGeneration(
   }
 }
 
-export async function generatePurchaseOrders(args: { projectId: string; mode: "dry_run" | "commit"; asOfDate?: string; orgId?: string }): Promise<PoGenerationResult> {
+export async function generatePurchaseOrders(args: { projectId: string; mode: "dry_run" | "commit"; asOfDate?: string; expectedFingerprint?: string; orgId?: string }): Promise<PoGenerationResult> {
   const parsed = poGenerationInputSchema.parse(args)
   const context = await authorizeGeneration("po.generate", parsed.projectId, args.orgId)
   return runGeneration(parsed, context)
@@ -492,17 +506,33 @@ export async function listGenerationRuns(projectId: string, orgId?: string) {
   return data ?? []
 }
 
-export async function listPoExceptions(filters: { status?: string; projectId?: string; page?: number; pageSize?: number; orgId?: string } = {}) {
-  const parsed = poExceptionListSchema.parse({
-    status: filters.status, projectId: filters.projectId, page: filters.page, pageSize: filters.pageSize,
-  })
-  const { supabase, orgId: resolvedOrgId, userId } = await authorizeGeneration("price_book.read", parsed.projectId, filters.orgId)
-  const scopedProjectIds = await getDivisionScopedProjectIds({ orgId: resolvedOrgId, userId, supabase })
-  if (scopedProjectIds?.length === 0) return { items: [], count: 0, page: parsed.page, pageSize: parsed.pageSize }
-  let query = supabase.from("po_generation_exceptions").select("*, project:projects(name), cost_code:cost_codes(code,name)", { count: "exact" }).eq("org_id", resolvedOrgId).eq("status", parsed.status).order("created_at")
+export type PoExceptionQueueRow = {
+  id: string
+  project_id: string
+  description: string
+  reason: string
+  quantity: number | string | null
+  uom: string | null
+  candidates: unknown
+  created_at: string
+  project: unknown
+  cost_code: unknown
+}
+
+export async function listPoExceptions(filters: PurchasingQueueFilters & { status?: string; orgId?: string } = {}) {
+  const parsed = poExceptionListSchema.parse(filters)
+  const context = await authorizeGeneration("price_book.read", parsed.projectId, filters.orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = context
+  const scope = await resolvePurchasingQueueReadScope(context, parsed.divisionId)
+  if (scope.divisionIds?.length === 0) return { items: [], count: 0, page: parsed.page, pageSize: parsed.pageSize }
+  const columns: string = `*, ${purchasingQueueProjectSelect("name", scope, parsed.communityId)}, cost_code:cost_codes(code,name)`
+  let query = supabase.from("po_generation_exceptions").select(columns, { count: "exact" })
+    .eq("org_id", resolvedOrgId).eq("project.org_id", resolvedOrgId).eq("status", parsed.status).order("created_at").order("id")
   if (parsed.projectId) query = query.eq("project_id", parsed.projectId)
-  if (scopedProjectIds) query = query.in("project_id", scopedProjectIds)
-  const { data, error, count } = await query.range((parsed.page - 1) * parsed.pageSize, parsed.page * parsed.pageSize - 1)
+  if (scope.divisionIds) query = query.in("project.division_id", scope.divisionIds)
+  if (parsed.communityId) query = query.eq("project.lot.community_id", parsed.communityId).eq("project.lot.org_id", resolvedOrgId).eq("project.lot.community.org_id", resolvedOrgId)
+  if (scope.projectMembershipRequired) query = query.eq("project.access.org_id", resolvedOrgId).eq("project.access.user_id", userId).eq("project.access.status", "active")
+  const { data, error, count } = await query.range((parsed.page - 1) * parsed.pageSize, parsed.page * parsed.pageSize - 1).returns<PoExceptionQueueRow[]>()
   if (error) throw new Error(`Failed to list PO exceptions: ${error.message}`)
   return { items: data ?? [], count: count ?? 0, page: parsed.page, pageSize: parsed.pageSize }
 }
@@ -512,6 +542,12 @@ export async function resolvePoException(exceptionId: string, resolution: PoExce
   const context = await authorizeExceptionAction(exceptionId, orgId)
   const { supabase, orgId: resolvedOrgId, userId, existing } = context
   if (existing.status !== "open") throw new Error("This PO exception has already been resolved or dismissed.")
+  if (parsed.kind === "manual") {
+    const { data: vendor, error: vendorError } = await supabase.from("companies").select("id")
+      .eq("org_id", resolvedOrgId).eq("id", parsed.company_id).maybeSingle()
+    if (vendorError) throw new Error(`Failed to validate the selected vendor: ${vendorError.message}`)
+    if (!vendor) throw new Error("The selected vendor is not available in this organization.")
+  }
   const sourceRef = existing.source_ref as Record<string, unknown>
   const sourceId = existing.source_kind === "takeoff_line" ? sourceRef.takeoff_line_id : sourceRef.project_selection_id
   if (typeof sourceId !== "string") throw new Error("This PO exception has no source line to price.")

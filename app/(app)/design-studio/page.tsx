@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -13,12 +14,15 @@ interface PageProps {
 }
 
 async function DesignStudioPageContent({ searchParams }: PageProps) {
-  const { community } = await searchParams
-  const ambient = await getAmbientDeskContext()
+  await connection()
+  const [{ community }, ambient, context] = await Promise.all([
+    searchParams,
+    getAmbientDeskContext(),
+    requireOrgContext(),
+  ])
   const communityId = community || ambient.communityId
   const scope = { communityId, divisionId: ambient.divisionId }
 
-  const context = await requireOrgContext()
   const [runway, bookableHomes, canManage] = await Promise.all([
     getStudioRunway(scope),
     listBookableHomes(scope),
@@ -39,7 +43,13 @@ async function DesignStudioPageContent({ searchParams }: PageProps) {
 
 export default function DesignStudioPage(props: Parameters<typeof DesignStudioPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense
+      fallback={
+        <PageLayout title="Design Studio" fullBleed>
+          <PageLoadingSkeleton />
+        </PageLayout>
+      }
+    >
       <DesignStudioPageContent {...props} />
     </Suspense>
   )

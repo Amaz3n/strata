@@ -2,7 +2,9 @@
 
 import { headers } from "next/headers"
 
+import { actionError, type ActionResult } from "@/lib/action-result"
 import {
+  answerEstimateQuestion,
   submitEstimateDecision,
   addClientEstimateComment,
   loadTakeoffEvidenceByToken,
@@ -59,4 +61,17 @@ export async function loadTakeoffEvidenceAction(input: {
   condition_id: string
 }): Promise<TakeoffEvidence | null> {
   return loadTakeoffEvidenceByToken(input.token, input.condition_id)
+}
+
+/** The client answers one of the builder's questions from the review link. */
+export async function answerEstimateQuestionAction(input: {
+  token: string
+  questionId: string
+  answer: string
+}): Promise<ActionResult<{ id: string }>> {
+  try {
+    return { success: true, data: await answerEstimateQuestion(input) }
+  } catch (error) {
+    return actionError(error)
+  }
 }

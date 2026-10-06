@@ -1,8 +1,9 @@
 import "server-only"
 
 import { cacheLife } from "next/cache"
-import { connection } from "next/server"
 
+import { getBusinessProfile } from "@/lib/services/business-profile"
+import { BUILDER_PROFILE, type BusinessProfile } from "@/lib/business-profile"
 import type { ProductTier } from "@/lib/product-tier"
 import type { ProjectNavigationItem, User } from "@/lib/types"
 import { getOrgAccessState, type OrgAccessState } from "@/lib/services/access"
@@ -19,12 +20,14 @@ import { getCurrentUserProfile } from "@/lib/services/users"
 import { isBooksWorkspaceEnabled } from "@/lib/services/books/module"
 
 export interface AppChromeContext {
+  orgId: string | null
   user: User | null
   permissions: string[]
   access: OrgAccessState
   platformAccess: PlatformAccessState
   platformSessionState: PlatformSessionState
   productTier: ProductTier
+  businessProfile: BusinessProfile
   ambientContext: AmbientDeskContext
   projects: ProjectNavigationItem[]
   hasProductionProjects: boolean
@@ -74,24 +77,20 @@ const EMPTY_AMBIENT: AmbientDeskContext = {
  * switchOrgAction and setDeskScopeAction.
  */
 export async function getAppChromeContext(): Promise<AppChromeContext> {
-  // This is the single uncached entry point for authenticated app chrome.
-  // Supabase checks session expiry with Date.now(), so establish request time
-  // before the shared auth helper constructs or uses a live cookie client.
-  // Never move this boundary into getAuthContext(): that helper is also called
-  // by private project and directory caches, where connection() is forbidden.
-  await connection()
-  const { user } = await getAuthContext()
-  if (!user) return SIGNED_OUT_CHROME
+  // Keep the session check inside the private cache. An uncached connection()
+  // here suspends the entire layout, including its children, during prefetch.
   return loadAppChromeContext()
 }
 
 const SIGNED_OUT_CHROME: AppChromeContext = {
+  orgId: null,
   user: null,
   permissions: [],
   access: { status: "unknown", locked: false },
   platformAccess: { canAccessPlatform: false, roles: [], isEnvSuperadmin: false },
   platformSessionState: NO_PLATFORM_SESSION,
   productTier: "residential",
+  businessProfile: BUILDER_PROFILE,
   ambientContext: EMPTY_AMBIENT,
   projects: [],
   hasProductionProjects: false,
@@ -102,6 +101,9 @@ const SIGNED_OUT_CHROME: AppChromeContext = {
 async function loadAppChromeContext(): Promise<AppChromeContext> {
   "use cache: private"
   cacheLife("session")
+
+  const { user: authenticatedUser } = await getAuthContext()
+  if (!authenticatedUser) return SIGNED_OUT_CHROME
 
   const [
     user,
@@ -114,6 +116,7 @@ async function loadAppChromeContext(): Promise<AppChromeContext> {
     hasProductionProjects,
     hasPriceAgreements,
     booksEnabled,
+    businessProfile,
   ] = await Promise.all([
     getCurrentUserProfile().catch(() => null),
     getCurrentUserPermissions().catch(() => ({ permissions: [] as string[] })),
@@ -127,6 +130,7 @@ async function loadAppChromeContext(): Promise<AppChromeContext> {
     orgHasProductionProjects().catch(() => false),
     orgHasPriceAgreements().catch(() => false),
     isBooksWorkspaceEnabled().catch(() => false),
+    getBusinessProfile(),
   ])
 
   // The switcher's project list used to be a client fetch to /api/projects on
@@ -137,12 +141,14 @@ async function loadAppChromeContext(): Promise<AppChromeContext> {
     : []
 
   return {
+    orgId: context?.orgId ?? null,
     user,
     permissions: permissionResult.permissions,
     access,
     platformAccess,
     platformSessionState,
     productTier: context?.productTier ?? "residential",
+    businessProfile,
     ambientContext,
     projects,
     hasProductionProjects,

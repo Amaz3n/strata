@@ -1,9 +1,14 @@
+import { warrantyActorAnalyticsEnabled, readActorWarrantyAnalytics } from "@/lib/services/warranty-actor-analytics"
+import { warrantyTechQueueSchema, decodeWarrantyTechCursor, encodeWarrantyTechCursor } from "@/lib/warranty/tech-queue"
+import { warrantyDeskPage, warrantyDeskSearchPattern, quoteWarrantySearchPattern } from "@/lib/warranty/desk-query"
+import { warrantyCompletionTransactionsEnabled, commitOfficeWarrantyCompletion } from "@/lib/services/warranty-completion-transactions"
+import { courtesyReservationsEnabled, generateReservedCourtesyInspections, authorizeCourtesyHome } from "@/lib/services/warranty-courtesy-reservations"
+import { enrollSystemWarrantyCoverage, readWarrantyEnrollmentTerms, warrantyEffectiveDateSchema } from "@/lib/services/warranty-enrollment"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { createServiceSupabaseClient as createBaseServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext as requireBaseOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
-import { getDivisionAccessForUser, getDivisionScopedProjectIds } from "@/lib/services/authorization"
-import { intersectProjectReadScopes } from "@/lib/services/authorization-policy"
+import { requireAuthorization, authorizeMany, getProjectReadScopeForUser } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { insertWithProjectNumberRetry } from "@/lib/services/project-sequence"
@@ -15,9 +20,11 @@ import { createProjectVendorBill, createProjectVendorCredit } from "@/lib/servic
 import {
   warrantyBackchargeInputSchema,
   warrantyProgramInputSchema,
+  warrantyRecordRevisionSchema,
   warrantyRequestInputSchema,
   warrantyRequestUpdateSchema,
   warrantySlaTargetsSchema,
+  warrantyVisitConflictInputSchema,
   warrantyVisitRescheduleSchema,
   warrantyVisitScheduleSchema,
   type WarrantyBackchargeInput,
@@ -72,14 +79,61 @@ async function requireOrgContext(orgId?: string) {
   return { ...context, supabase: context.supabase as unknown as SupabaseClient }
 }
 
-async function canReadProjectInDivisionScope(
-  supabase: SupabaseClient,
-  orgId: string,
-  userId: string,
+async function authorizeWarrantyHome(
+  context: { supabase: SupabaseClient; orgId: string; userId: string },
   projectId: string,
+  permission: "warranty.read" | "warranty.write" | "warranty.backcharge" | "bill.write",
 ) {
-  const authorizedProjectIds = await getDivisionScopedProjectIds({ orgId, userId, supabase })
-  return authorizedProjectIds === null || authorizedProjectIds.includes(projectId)
+  await requireAuthorization({ ...context, projectId, permission, resourceType: "project", resourceId: projectId, logDecision: true })
+}
+
+async function assertWarrantyRequestHome(supabase: SupabaseClient, orgId: string, requestId: string, projectId: string) {
+  const { data, error } = await supabase.from("warranty_requests").select("id,project_id").eq("org_id", orgId).eq("id", requestId).maybeSingle()
+  if (error) throw new Error(`Unable to verify warranty request home: ${error.message}`)
+  if (!data || data.project_id !== projectId) throw new Error("Warranty request belongs to another home or is unavailable")
+}
+
+async function assertWarrantyFiles(supabase: SupabaseClient, orgId: string, projectId: string, fileIds: string[]) {
+  const ids = [...new Set(fileIds)]
+  if (!ids.length) return
+  const { data, error } = await supabase.from("files").select("id").eq("org_id", orgId).eq("project_id", projectId).is("archived_at", null).in("id", ids).limit(ids.length + 1)
+  if (error) throw new Error(`Unable to verify warranty evidence files: ${error.message}`)
+  if (!data || data.length !== ids.length || ids.some((id) => !data.some((row) => row.id === id))) throw new Error("Warranty evidence files must be available and belong to this home")
+}
+
+async function warrantyDeskReadScope(orgId: string, userId: string, divisionId?: string) {
+  const scope = await getProjectReadScopeForUser({ orgId, userId })
+  return { ...scope, divisionIds: divisionId ? (scope.divisionIds === null || scope.divisionIds.includes(divisionId) ? [divisionId] : []) : scope.divisionIds }
+}
+
+function warrantyDeskProjectSelect(fields: string, membershipRequired: boolean, communityId?: string) {
+  const lot = communityId ? ",lot:lots!lots_project_id_fkey!inner(id,community_id,community:communities!inner(id))" : ""
+  return `project:projects!inner(${fields}${lot}${membershipRequired ? ",access:project_members!project_members_project_id_fkey!inner(id)" : ""})`
+}
+
+/** Read home history in bounded keyset pages; never report a truncated history. */
+async function readWarrantyHistory(
+  readPage: (cursor: string | null) => PromiseLike<{ data: unknown; error: { message: string } | null }>,
+  label: string,
+  onRow?: (row: Record<string, unknown>) => void,
+  maxRows = 10_000,
+) {
+  const rows: Record<string, unknown>[] = []
+  let cursor: string | null = null, readCount = 0
+  for (;;) {
+    const { data, error } = await readPage(cursor)
+    if (error || !Array.isArray(data)) throw new Error(`${label}: ${error?.message ?? "History page unavailable"}`)
+    if (data.length > 100) throw new Error(`${label}: Invalid history page`)
+    if (!data.length) return rows
+    for (const row of data) {
+      if (!row || typeof row.id !== "string" || (cursor && row.id <= cursor)) throw new Error(`${label}: History cursor did not advance`)
+      cursor = row.id
+      if (++readCount > maxRows) throw new Error(`${label}: History exceeds supported read size and cannot be returned completely`)
+      if (onRow) onRow(row); else rows.push(row)
+    }
+    // A smaller configured response ceiling can clip a requested page. Only an
+    // empty page proves exhaustion; continue from the last returned identity.
+  }
 }
 
 const WARRANTY_SELECT = `
@@ -323,12 +377,16 @@ export async function listWarrantyPrograms(orgId?: string): Promise<WarrantyProg
   // thousands of enrolled homes, and only the tally is shown.
   const counts = await Promise.all(
     programs.map(async (program) => {
-      const { count } = await supabase
+      const { count, error } = await supabase
         .from("project_warranty_coverage")
         .select("id", { count: "exact", head: true })
         .eq("org_id", resolvedOrgId)
         .eq("program_id", program.id)
-      return count ?? 0
+      if (error) throw new Error(`Failed to load warranty program usage: ${error.message}`)
+      if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
+        throw new Error("Warranty program usage is unavailable. Reload before reviewing coverage.")
+      }
+      return count
     }),
   )
   return programs.map((program, index) => ({ ...program, enrolled_count: counts[index] }))
@@ -386,8 +444,7 @@ async function loadCoverage(supabase: SupabaseClient, orgId: string, projectId: 
 export async function getProjectWarrantyCoverage(projectId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
-  const authorizedProjectIds = await getDivisionScopedProjectIds({ orgId: resolvedOrgId, userId, supabase })
-  if (authorizedProjectIds && !authorizedProjectIds.includes(projectId)) return null
+  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, projectId, "warranty.read")
   return loadCoverage(supabase, resolvedOrgId, projectId)
 }
 
@@ -398,24 +455,29 @@ export async function getProjectWarrantyCoverageForPortal(orgId: string, project
 export async function enrollProjectWarrantyCoverage(input: { projectId: string; programId?: string; effectiveDate?: string }, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.manage", { supabase, orgId: resolvedOrgId, userId })
-  await ensureWarrantyDefaults(supabase, resolvedOrgId)
-  const [{ data: existing }, { data: closing }] = await Promise.all([
+  await requireAuthorization({ permission: "warranty.manage", orgId: resolvedOrgId, userId, projectId: input.projectId, supabase, resourceType: "project", resourceId: input.projectId, logDecision: true })
+  const [existingResult, closingResult] = await Promise.all([
     supabase.from("project_warranty_coverage").select("id").eq("org_id", resolvedOrgId).eq("project_id", input.projectId).maybeSingle(),
     supabase.from("closings").select("actual_date,status").eq("org_id", resolvedOrgId).eq("project_id", input.projectId).maybeSingle(),
   ])
+  if (existingResult.error) throw new Error(`Unable to read existing warranty coverage: ${existingResult.error.message}`)
+  if (closingResult.error) throw new Error(`Unable to read warranty closing evidence: ${closingResult.error.message}`)
+  const existing = existingResult.data, closing = closingResult.data
   if (existing) throw new Error("This home already has warranty coverage")
-  const effectiveDate = input.effectiveDate ?? (closing?.status === "closed" ? closing.actual_date : null)
-  if (!effectiveDate) throw new Error("An effective date is required until the home is closed")
+  const effectiveDateValue = input.effectiveDate ?? (closing?.status === "closed" ? closing.actual_date : null)
+  if (!effectiveDateValue) throw new Error("An effective date is required until the home is closed")
+  const effectiveDate = warrantyEffectiveDateSchema.parse(effectiveDateValue)
+  await ensureWarrantyDefaults(supabase, resolvedOrgId)
   let query = supabase.from("warranty_programs").select("id").eq("org_id", resolvedOrgId).eq("is_active", true)
   query = input.programId ? query.eq("id", input.programId) : query.eq("is_default", true)
-  const { data: program } = await query.limit(1).maybeSingle()
-  if (!program) throw new Error("Warranty program not found")
-  const programs = await loadPrograms(supabase, resolvedOrgId)
-  const programDto = programs.find((candidate) => candidate.id === program.id)
-  if (!programDto) throw new Error("Warranty program not found")
+  const programResult = await query.order("id").limit(2)
+  if (programResult.error) throw new Error(`Unable to read warranty program: ${programResult.error.message}`)
+  if (programResult.data?.length !== 1) throw new Error("Exactly one active warranty program is required")
+  const program = programResult.data[0]
+  const terms = await readWarrantyEnrollmentTerms(supabase, resolvedOrgId, program.id)
   const { data, error } = await supabase.from("project_warranty_coverage").insert({
     org_id: resolvedOrgId, project_id: input.projectId, program_id: program.id, effective_date: effectiveDate,
-    effective_source: input.effectiveDate ? "manual" : "closing", terms_snapshot: buildCoverageSnapshot(effectiveDate, programDto.terms),
+    effective_source: input.effectiveDate ? "manual" : "closing", terms_snapshot: buildCoverageSnapshot(effectiveDate, terms),
   }).select("id").single()
   if (error || !data) throw new Error(`Failed to enroll warranty coverage: ${error?.message}`)
   await recordEvent({ orgId: resolvedOrgId, eventType: "warranty_coverage_enrolled", entityType: "warranty_coverage", entityId: data.id, payload: { project_id: input.projectId, effective_date: effectiveDate } })
@@ -431,48 +493,44 @@ export async function enrollProjectWarrantyCoverage(input: { projectId: string; 
  */
 export async function enrollProjectWarrantyCoverageFromSystem(input: { orgId: string; projectId: string; effectiveDate: string; source: "closing" | "completion" }) {
   const supabase = createServiceSupabaseClient()
-  await ensureWarrantyDefaults(supabase, input.orgId)
-  const { data: existing } = await supabase.from("project_warranty_coverage").select("id").eq("org_id", input.orgId).eq("project_id", input.projectId).maybeSingle()
-  if (existing) return { id: existing.id, enrolled: false }
-  const { data: program } = await supabase.from("warranty_programs").select("id").eq("org_id", input.orgId).eq("is_default", true).eq("is_active", true).maybeSingle()
-  if (!program) throw new Error("Default warranty program not found")
-  const programs = await loadPrograms(supabase, input.orgId), programDto = programs.find((candidate) => candidate.id === program.id)
-  if (!programDto) throw new Error("Default warranty program not found")
-  const { data, error } = await supabase.from("project_warranty_coverage").insert({ org_id: input.orgId, project_id: input.projectId, program_id: program.id, effective_date: input.effectiveDate, effective_source: input.source, terms_snapshot: buildCoverageSnapshot(input.effectiveDate, programDto.terms) }).select("id").single()
-  if (error || !data) throw new Error(`Failed to enroll warranty coverage: ${error?.message}`)
-  await recordEvent({ orgId: input.orgId, eventType: "warranty_coverage_enrolled", entityType: "warranty_coverage", entityId: data.id, payload: { project_id: input.projectId, effective_date: input.effectiveDate, source: input.source } })
-  return { id: data.id, enrolled: true }
+  return enrollSystemWarrantyCoverage(supabase, input, () => ensureWarrantyDefaults(supabase, input.orgId))
 }
 
 async function prepareRequestData(supabase: SupabaseClient, orgId: string, projectId: string, input: WarrantyRequestInput, source: "office" | "buyer_portal" | "mobile") {
   await ensureWarrantyDefaults(supabase, orgId)
   const createdAt = new Date()
   const severity = input.severity ?? "routine_30"
-  const [{ data: target }, coverage, { count: openPunchCount }] = await Promise.all([
+  const [{ data: target, error: targetError }, coverage, { count: openPunchCount, error: punchError }] = await Promise.all([
     supabase.from("warranty_sla_targets").select("first_response_hours,resolution_days").eq("org_id", orgId).eq("severity", severity).maybeSingle(),
     loadCoverage(supabase, orgId, projectId),
     supabase.from("punch_items").select("id", { count: "exact", head: true }).eq("org_id", orgId).eq("project_id", projectId).not("status", "in", '("closed","resolved")'),
   ])
+  if (targetError) throw new Error(`Failed to load warranty SLA policy: ${targetError.message}`)
+  if (punchError) throw new Error(`Failed to load warranty punch evidence: ${punchError.message}`)
+  if (typeof openPunchCount !== "number" || !Number.isSafeInteger(openPunchCount) || openPunchCount < 0) {
+    throw new Error("Warranty punch evidence is unavailable. Reload before creating a request.")
+  }
   const sla = stampWarrantySla(createdAt, target ?? DEFAULT_SLAS.find((item) => item.severity === severity)!)
-  const costDump = shouldFlagWarrantyCostDump({ createdAt, effectiveDate: coverage?.effective_date ?? null, openPunchCount: openPunchCount ?? 0 })
+  const costDump = shouldFlagWarrantyCostDump({ createdAt, effectiveDate: coverage?.effective_date ?? null, openPunchCount })
   return {
     org_id: orgId, project_id: projectId, title: input.title, description: input.description ?? null,
     status: input.status ?? "open", priority: input.priority ?? "normal", severity, category: input.category ?? null,
     cost_code_id: input.cost_code_id ?? null, coverage_term_key: input.coverage_term_key ?? null,
     coverage_status: classifyCoverage(coverage, input.coverage_term_key ?? null, createdAt), source,
     cost_dump_flag: costDump, ...sla,
-    metadata: costDump ? { cost_dump_reason: `Created within 60 days of coverage effective date with ${openPunchCount ?? 0} open punch items` } : {},
+    metadata: costDump ? { cost_dump_reason: `Created within 60 days of coverage effective date with ${openPunchCount} open punch items` } : {},
   }
 }
 
 async function attachRequestPhotos(supabase: SupabaseClient, orgId: string, requestId: string, fileIds: string[], userId: string | null) {
   if (fileIds.length === 0) return
-  const { error } = await supabase.from("warranty_request_photos").upsert(fileIds.map((fileId) => ({ org_id: orgId, request_id: requestId, file_id: fileId, created_by: userId })), { onConflict: "request_id,file_id" })
+  const { error } = await supabase.from("warranty_request_photos").upsert([...new Set(fileIds)].map((fileId) => ({ org_id: orgId, request_id: requestId, file_id: fileId, created_by: userId })), { onConflict: "request_id,file_id" })
   if (error) throw new Error(`Failed to attach warranty photos: ${error.message}`)
 }
 
 async function createRequestWithClient(input: WarrantyRequestInput, context: { supabase: SupabaseClient; orgId: string; userId: string | null; contactId?: string | null; source: "office" | "buyer_portal" | "mobile" }) {
   const parsed = warrantyRequestInputSchema.parse(input)
+  await assertWarrantyFiles(context.supabase, context.orgId, parsed.project_id, parsed.photo_file_ids ?? [])
   const payload = await prepareRequestData(context.supabase, context.orgId, parsed.project_id, parsed, context.source)
   const result = await insertWithProjectNumberRetry<Record<string, unknown>>({
     supabase: context.supabase, table: "warranty_requests", numberColumn: "request_number", rpcName: "next_warranty_request_number",
@@ -488,16 +546,21 @@ async function createRequestWithClient(input: WarrantyRequestInput, context: { s
 export async function listWarrantyRequests(projectId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
-  if (!await canReadProjectInDivisionScope(supabase, resolvedOrgId, userId, projectId)) return []
-  const { data, error } = await supabase.from("warranty_requests").select(WARRANTY_SELECT).eq("org_id", resolvedOrgId).eq("project_id", projectId).order("created_at", { ascending: false })
-  if (error) throw new Error(`Failed to load warranty requests: ${error.message}`)
-  return (data ?? []).map((row) => mapWarranty(row as unknown as Record<string, unknown>))
+  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, projectId, "warranty.read")
+  const rows = await readWarrantyHistory((cursor) => {
+    let query = supabase.from("warranty_requests").select(WARRANTY_SELECT).eq("org_id", resolvedOrgId).eq("project_id", projectId).order("id").limit(100)
+    if (cursor) query = query.gt("id", cursor)
+    return query
+  }, "Failed to load warranty requests")
+  return rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)) || String(a.id).localeCompare(String(b.id))).map(mapWarranty)
 }
 
 export async function createWarrantyRequest({ input, orgId }: { input: WarrantyRequestInput; orgId?: string }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.write", { supabase, orgId: resolvedOrgId, userId })
-  return createRequestWithClient(input, { supabase, orgId: resolvedOrgId, userId, source: "office" })
+  const parsed = warrantyRequestInputSchema.parse(input)
+  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, parsed.project_id, "warranty.write")
+  return createRequestWithClient(parsed, { supabase, orgId: resolvedOrgId, userId, source: "office" })
 }
 
 export async function createWarrantyRequestFromPortal({ orgId, projectId, contactId, input }: { orgId: string; projectId: string; contactId?: string | null; input: WarrantyRequestInput }) {
@@ -518,6 +581,8 @@ export async function updateWarrantyRequest({ requestId, input, orgId }: { reque
   const { data: existing, error: existingError } = await supabase.from("warranty_requests").select(WARRANTY_SELECT).eq("org_id", resolvedOrgId).eq("id", requestId).maybeSingle()
   if (existingError || !existing) throw new Error("Warranty request not found")
   const current = mapWarranty(existing as unknown as Record<string, unknown>)
+  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, current.project_id, "warranty.write")
+  if (!current.updated_at) throw new Error("Warranty request revision is unavailable; refresh before making changes")
   const updates: Record<string, unknown> = {}
   for (const key of ["title","description","priority","category","cost_code_id","coverage_term_key","assigned_company_id","assigned_user_id","scheduled_date","resolution_note","structural_claim","structural_claim_number","structural_claim_submitted_at"] as const) {
     if (parsed[key] !== undefined) updates[key] = parsed[key]
@@ -542,7 +607,7 @@ export async function updateWarrantyRequest({ requestId, input, orgId }: { reque
     updates.status = parsed.status
     updates.closed_at = ["resolved","closed"].includes(parsed.status) ? now : null
   }
-  const { data, error } = await supabase.from("warranty_requests").update(updates).eq("org_id", resolvedOrgId).eq("id", requestId).select(WARRANTY_SELECT).single()
+  const { data, error } = await supabase.from("warranty_requests").update(updates).eq("org_id", resolvedOrgId).eq("id", requestId).eq("project_id", current.project_id).eq("updated_at", current.updated_at).select(WARRANTY_SELECT).single()
   if (error || !data) throw new Error(`Failed to update warranty request: ${error?.message}`)
   const updatedRow = data as unknown as Record<string, unknown>
   await recordEvent({ orgId: resolvedOrgId, eventType: "warranty_request_updated", entityType: "warranty_request", entityId: requestId, payload: { project_id: current.project_id, status: updatedRow.status } })
@@ -564,7 +629,9 @@ export async function acknowledgeWarrantyRequest(input: unknown, orgId?: string)
   const { data: existing, error: existingError } = await supabase.from("warranty_requests").select(WARRANTY_SELECT).eq("org_id", resolvedOrgId).eq("id", parsed.request_id).maybeSingle()
   if (existingError || !existing) throw new Error("Warranty request not found")
   const current = mapWarranty(existing as unknown as Record<string, unknown>)
+  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, current.project_id, "warranty.write")
   if (current.first_responded_at) return current
+  if (!current.updated_at) throw new Error("Warranty request revision is unavailable; refresh before making changes")
   const now = new Date().toISOString()
   const { data, error } = await supabase.from("warranty_requests").update({
     first_responded_at: now,
@@ -574,9 +641,9 @@ export async function acknowledgeWarrantyRequest(input: unknown, orgId?: string)
       first_response_by: userId,
       first_response_breached_at: undefined,
     }),
-  }).eq("org_id", resolvedOrgId).eq("id", parsed.request_id).is("first_responded_at", null).select(WARRANTY_SELECT).maybeSingle()
+  }).eq("org_id", resolvedOrgId).eq("id", parsed.request_id).eq("project_id", current.project_id).eq("updated_at", current.updated_at).is("first_responded_at", null).select(WARRANTY_SELECT).maybeSingle()
   if (error) throw new Error(`Failed to record first response: ${error.message}`)
-  if (!data) return current
+  if (!data) throw new Error("Warranty request changed concurrently; refresh before recording the first response")
   const updated = mapWarranty(data as unknown as Record<string, unknown>)
   await recordEvent({ orgId: resolvedOrgId, eventType: "warranty_first_response_recorded", entityType: "warranty_request", entityId: parsed.request_id, payload: { project_id: current.project_id, channel: parsed.channel, on_time: !current.first_response_due_at || now <= current.first_response_due_at } })
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "warranty_request", entityId: parsed.request_id, before: existing as unknown as Record<string, unknown>, after: data as unknown as Record<string, unknown> })
@@ -593,21 +660,23 @@ export type WarrantySlaFilter =
 export async function listWarrantyRequestsForOrg(params: { orgId?: string; status?: string[]; severity?: string[]; communityId?: string; divisionId?: string; assignedUserId?: string; companyId?: string; coverageStatus?: string[]; slaState?: WarrantySlaFilter; search?: string; page?: number; pageSize?: number } = {}) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(params.orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
-  const authorizedProjectIds = await getDivisionScopedProjectIds({ orgId: resolvedOrgId, userId, supabase })
-  const divisionProjectIds = params.divisionId ? await projectIdsForDivision(supabase, resolvedOrgId, params.divisionId) : null
-  const scopedProjectIds = intersectProjectReadScopes(authorizedProjectIds, divisionProjectIds)
-  if (scopedProjectIds?.length === 0) return { rows: [], total: 0 }
-  const page = Math.max(1, params.page ?? 1), pageSize = Math.min(200, Math.max(1, params.pageSize ?? 50))
+  const scope = await warrantyDeskReadScope(resolvedOrgId, userId, params.divisionId)
+  if (scope.divisionIds?.length === 0) return { rows: [], total: 0 }
+  const paging = warrantyDeskPage(params.page, params.pageSize)
+  const search = warrantyDeskSearchPattern(params.search)
   const lotRelation = params.communityId
-    ? "lot:lots!lots_project_id_fkey!inner(community_id,community:communities(name))"
+    ? "lot:lots!lots_project_id_fkey!inner(community_id,community:communities!inner(name))"
     : "lot:lots!lots_project_id_fkey(community_id,community:communities(name))"
-  let query = supabase.from("warranty_requests").select(`${WARRANTY_SELECT},project:projects!inner(name),${lotRelation}`, { count: "exact" }).eq("org_id", resolvedOrgId)
+  const searchRelations = search ? ",search_home:projects(),search_community:projects(lot:lots!lots_project_id_fkey!inner(community:communities!inner()))" : ""
+  let query = supabase.from("warranty_requests").select(`${WARRANTY_SELECT},${warrantyDeskProjectSelect(`name,${lotRelation}`, scope.projectMembershipRequired)}${searchRelations}`, { count: "exact" }).eq("org_id", resolvedOrgId)
   if (params.status?.length) query = query.in("status", params.status)
   if (params.severity?.length) query = query.in("severity", params.severity)
   if (params.assignedUserId) query = query.eq("assigned_user_id", params.assignedUserId)
   if (params.companyId) query = query.eq("assigned_company_id", params.companyId)
-  if (params.communityId) query = query.eq("lot.community_id", params.communityId)
-  if (scopedProjectIds) query = query.in("project_id", scopedProjectIds)
+  if (params.communityId) query = query.eq("project.lot.community_id", params.communityId).eq("project.lot.org_id", resolvedOrgId).eq("project.lot.community.org_id", resolvedOrgId)
+  query = query.eq("project.org_id", resolvedOrgId)
+  if (scope.divisionIds) query = query.in("project.division_id", scope.divisionIds)
+  if (scope.projectMembershipRequired) query = query.eq("project.access.org_id", resolvedOrgId).eq("project.access.user_id", userId).eq("project.access.status", "active")
   if (params.coverageStatus?.length) query = query.in("coverage_status", params.coverageStatus)
   const nowIso = new Date().toISOString()
   const openStatuses = ["open", "in_progress"]
@@ -618,12 +687,17 @@ export async function listWarrantyRequestsForOrg(params: { orgId?: string; statu
   if (params.slaState === "first_response_breached") query = query.is("first_responded_at", null).lt("first_response_due_at", nowIso).in("status", openStatuses)
   if (params.slaState === "first_response_due_soon") query = query.is("first_responded_at", null).gte("first_response_due_at", nowIso).lte("first_response_due_at", new Date(Date.now() + 12 * 3_600_000).toISOString()).in("status", openStatuses)
   if (params.slaState === "awaiting_first_response") query = query.is("first_responded_at", null).in("status", openStatuses)
-  if (params.search?.trim()) query = query.or(`title.ilike.%${params.search.trim()}%,description.ilike.%${params.search.trim()}%`)
+  if (search) {
+    // Filter-only aliases keep display relationships intact when another field matches.
+    query = query.filter("search_home.name", "imatch", search)
+      .filter("search_community.lot.community.name", "imatch", search)
+      .or(`title.imatch.${quoteWarrantySearchPattern(search)},description.imatch.${quoteWarrantySearchPattern(search)},search_home.not.is.null,search_community.not.is.null`)
+  }
   const orderColumn = params.slaState?.startsWith("first_response") || params.slaState === "awaiting_first_response" ? "first_response_due_at" : "resolution_due_at"
-  const { data, error, count } = await query.order(orderColumn, { ascending: true, nullsFirst: false }).range((page - 1) * pageSize, page * pageSize - 1)
+  const { data, error, count } = await query.order(orderColumn, { ascending: true, nullsFirst: false }).order("id").range(paging.from, paging.to)
   if (error) throw new Error(`Failed to load warranty desk: ${error.message}`)
   const rows = (data ?? []).map((row) => {
-    const mapped = mapWarranty(row as unknown as Record<string, unknown>), project = relationOne((row as unknown as Record<string, unknown>).project), lot = relationOne((row as unknown as Record<string, unknown>).lot), community = relationOne(lot?.community)
+    const mapped = mapWarranty(row as unknown as Record<string, unknown>), project = relationOne((row as unknown as Record<string, unknown>).project), lot = relationOne(project?.lot), community = relationOne(lot?.community)
     return { ...mapped, project_name: typeof project?.name === "string" ? project.name : null, community_id: typeof lot?.community_id === "string" ? lot.community_id : null, community_name: typeof community?.name === "string" ? community.name : null }
   })
   return { rows, total: count ?? 0 }
@@ -658,7 +732,9 @@ async function sendWarrantyResolvedEmail(orgId: string, request: WarrantyRequest
 async function loadVisit(supabase: SupabaseClient, orgId: string, visitId: string) {
   const { data, error } = await supabase.from("warranty_service_visits").select(VISIT_SELECT).eq("org_id", orgId).eq("id", visitId).maybeSingle()
   if (error || !data) throw new Error("Warranty visit not found")
-  return mapVisit(data as unknown as Record<string, unknown>)
+  const revision = warrantyRecordRevisionSchema.safeParse(data)
+  if (!revision.success) throw new Error("Warranty visit revision is unavailable; refresh before making changes")
+  return { ...mapVisit(data as unknown as Record<string, unknown>), updated_at: revision.data.updated_at }
 }
 
 async function sendVisitAppointmentEmail(orgId: string, request: WarrantyRequest, visit: WarrantyServiceVisitDTO) {
@@ -694,24 +770,33 @@ async function sendWarrantyVisitDispatchEmail(input: { orgId: string; request: W
 export async function listWarrantyVisitsForProject(projectId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
-  if (!await canReadProjectInDivisionScope(supabase, resolvedOrgId, userId, projectId)) return []
-  const { data, error } = await supabase.from("warranty_service_visits").select(VISIT_SELECT).eq("org_id", resolvedOrgId).eq("project_id", projectId).order("window_start", { ascending: false })
-  if (error) throw new Error(`Failed to load warranty visits: ${error.message}`)
-  return (data ?? []).map((row) => mapVisit(row as unknown as Record<string, unknown>))
+  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, projectId, "warranty.read")
+  const rows = await readWarrantyHistory((cursor) => {
+    let query = supabase.from("warranty_service_visits").select(VISIT_SELECT).eq("org_id", resolvedOrgId).eq("project_id", projectId).order("id").limit(100)
+    if (cursor) query = query.gt("id", cursor)
+    return query
+  }, "Failed to load warranty visits")
+  return rows.sort((a, b) => String(b.window_start).localeCompare(String(a.window_start)) || String(a.id).localeCompare(String(b.id))).map(mapVisit)
 }
 
-export async function listWarrantyVisitsForDispatch(params: { from: string; to: string; divisionId?: string; orgId?: string }) {
+export async function listWarrantyVisitsForDispatch(params: { from: string; to: string; divisionId?: string; communityId?: string; orgId?: string; page?: number; pageSize?: number }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(params.orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
-  const authorizedProjectIds = await getDivisionScopedProjectIds({ orgId: resolvedOrgId, userId, supabase })
-  const divisionProjectIds = params.divisionId ? await projectIdsForDivision(supabase, resolvedOrgId, params.divisionId) : null
-  const scopedProjectIds = intersectProjectReadScopes(authorizedProjectIds, divisionProjectIds)
-  if (scopedProjectIds?.length === 0) return []
-  let query = supabase.from("warranty_service_visits").select(`${VISIT_SELECT},request:warranty_requests(title,severity),project:projects(name,location)`).eq("org_id", resolvedOrgId).gte("window_start", params.from).lt("window_start", params.to).neq("status", "canceled")
-  if (scopedProjectIds) query = query.in("project_id", scopedProjectIds)
-  const { data, error } = await query.order("window_start")
+  const paging = warrantyDeskPage(params.page, params.pageSize)
+  const scope = await warrantyDeskReadScope(resolvedOrgId, userId, params.divisionId)
+  if (scope.divisionIds?.length === 0) return { rows: [], total: 0 }
+  let query = supabase.from("warranty_service_visits").select(`${VISIT_SELECT},request:warranty_requests(title,severity,org_id,project_id),${warrantyDeskProjectSelect("name,location", scope.projectMembershipRequired, params.communityId)}`, { count: "exact" }).eq("org_id", resolvedOrgId).gte("window_start", params.from).lt("window_start", params.to).neq("status", "canceled")
+  query = query.eq("project.org_id", resolvedOrgId)
+  if (params.communityId) query = query.eq("project.lot.community_id", params.communityId).eq("project.lot.org_id", resolvedOrgId).eq("project.lot.community.org_id", resolvedOrgId)
+  if (scope.divisionIds) query = query.in("project.division_id", scope.divisionIds)
+  if (scope.projectMembershipRequired) query = query.eq("project.access.org_id", resolvedOrgId).eq("project.access.user_id", userId).eq("project.access.status", "active")
+  const { data, error, count } = await query.order("window_start").order("id").range(paging.from, paging.to)
   if (error) throw new Error(`Failed to load dispatch board: ${error.message}`)
-  return (data ?? []).map((row) => ({ ...mapVisit(row as unknown as Record<string, unknown>), request: relationOne((row as unknown as Record<string, unknown>).request), project: relationOne((row as unknown as Record<string, unknown>).project) }))
+  const rows = (data ?? []).map((value) => {
+    const row = value as unknown as Record<string, unknown>, request = relationOne(row.request)
+    return { ...mapVisit(row), request: request?.org_id === resolvedOrgId && request.project_id === row.project_id ? { title: request.title, severity: request.severity } : null, project: relationOne(row.project) }
+  })
+  return { rows, total: count ?? 0 }
 }
 
 export interface WarrantyVisitConflict {
@@ -728,26 +813,33 @@ async function loadAssigneeVisitWindows(
   orgId: string,
   assignee: { kind: "tech" | "trade"; id: string },
   window: { start: string; end: string },
+  options: { firstOnly?: boolean; excludeVisitId?: string } = {},
 ): Promise<Array<WarrantyVisitWindow & WarrantyVisitConflict>> {
-  // A conflicting visit must start before this one ends and end after it starts;
-  // the day-wide prefilter keeps the scan off the whole calendar.
-  const dayBefore = new Date(new Date(window.start).getTime() - 86_400_000).toISOString()
   const column = assignee.kind === "tech" ? "assigned_user_id" : "assigned_company_id"
-  const { data, error } = await supabase
-    .from("warranty_service_visits")
-    .select("id,request_id,project_id,visit_number,window_start,window_end")
-    .eq("org_id", orgId)
-    .eq(column, assignee.id)
-    .not("status", "in", '("canceled","completed")')
-    .gte("window_start", dayBefore)
-    .lt("window_start", window.end)
-    .limit(200)
-  if (error) throw new Error(`Failed to check technician availability: ${error.message}`)
-  return (data ?? []).map((row) => ({
-    id: String(row.id), visit_id: String(row.id), request_id: String(row.request_id),
-    project_id: String(row.project_id), visit_number: Number(row.visit_number),
-    window_start: String(row.window_start), window_end: String(row.window_end),
-  }))
+  const rows: Array<WarrantyVisitWindow & WarrantyVisitConflict> = []
+  let cursor: string | null = null
+  const pageSize = options.firstOnly ? 1 : 100
+  for (;;) {
+    let query = supabase.from("warranty_service_visits")
+      .select("id,request_id,project_id,visit_number,window_start,window_end")
+      .eq("org_id", orgId).eq(column, assignee.id)
+      .not("status", "in", '("canceled","completed")')
+      .lt("window_start", window.end).gt("window_end", window.start)
+      .order("id").limit(pageSize)
+    if (options.excludeVisitId) query = query.neq("id", options.excludeVisitId)
+    if (cursor) query = query.gt("id", cursor)
+    const { data, error } = await query
+    if (error || !data) throw new Error(`Failed to check assignee availability: ${error?.message ?? "Availability page unavailable"}`)
+    if (!data.length) return rows
+    if (rows.length + data.length > 10000) throw new Error("Availability contains more than 10,000 overlapping visits; reconcile the assignee schedule before booking")
+    for (const row of data) {
+      if (!row.id || (cursor && row.id <= cursor)) throw new Error("Availability cursor did not advance; refresh before booking")
+      rows.push({ id: row.id, visit_id: row.id, request_id: row.request_id, project_id: row.project_id,
+        visit_number: Number(row.visit_number), window_start: row.window_start, window_end: row.window_end })
+      cursor = row.id
+    }
+    if (options.firstOnly || data.length < pageSize) return rows
+  }
 }
 
 /**
@@ -760,10 +852,17 @@ export async function findWarrantyVisitConflicts(
 ): Promise<WarrantyVisitConflict[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
-  const assigneeId = input.assignee_kind === "tech" ? input.assigned_user_id : input.assigned_company_id
+  const parsed = warrantyVisitConflictInputSchema.parse(input)
+  const assigneeId = parsed.assignee_kind === "tech" ? parsed.assigned_user_id : parsed.assigned_company_id
   if (!assigneeId) return []
-  const candidates = await loadAssigneeVisitWindows(supabase, resolvedOrgId, { kind: input.assignee_kind, id: assigneeId }, { start: input.window_start, end: input.window_end })
-  return findOverlappingVisits(candidates, { window_start: input.window_start, window_end: input.window_end, exclude_visit_id: input.exclude_visit_id })
+  const candidates = await loadAssigneeVisitWindows(supabase, resolvedOrgId, { kind: parsed.assignee_kind, id: assigneeId }, { start: parsed.window_start, end: parsed.window_end })
+  const conflicts = findOverlappingVisits(candidates, parsed)
+  const projectIds = [...new Set(conflicts.map((visit) => visit.project_id))]
+  if (projectIds.length) {
+    const access = await authorizeMany({ permission: "warranty.read", userId, orgId: resolvedOrgId, projectIds })
+    if (projectIds.some((id) => access.get(id) !== true)) throw new Error("The assignee has overlapping work outside your home access; contact the dispatch coordinator")
+  }
+  return conflicts
 }
 
 export async function scheduleWarrantyVisit(input: WarrantyVisitScheduleInput & { allow_conflict?: boolean }, orgId?: string) {
@@ -771,15 +870,17 @@ export async function scheduleWarrantyVisit(input: WarrantyVisitScheduleInput & 
   const { allow_conflict: allowConflict } = warrantyScheduleOverrideSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.write", { supabase, orgId: resolvedOrgId, userId })
-  const { data: requestRow } = await supabase.from("warranty_requests").select(WARRANTY_SELECT).eq("org_id", resolvedOrgId).eq("id", parsed.request_id).maybeSingle()
+  const { data: requestRow, error: requestError } = await supabase.from("warranty_requests").select(WARRANTY_SELECT).eq("org_id", resolvedOrgId).eq("id", parsed.request_id).maybeSingle()
+  if (requestError) throw new Error(`Unable to read warranty request: ${requestError.message}`)
   if (!requestRow) throw new Error("Warranty request not found")
   const request = mapWarranty(requestRow as unknown as Record<string, unknown>)
+  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, request.project_id, "warranty.write")
   const assigneeId = parsed.assignee_kind === "tech" ? parsed.assigned_user_id : parsed.assigned_company_id
   if (!allowConflict && assigneeId) {
-    const candidates = await loadAssigneeVisitWindows(supabase, resolvedOrgId, { kind: parsed.assignee_kind, id: assigneeId }, { start: parsed.window_start, end: parsed.window_end })
+    const candidates = await loadAssigneeVisitWindows(supabase, resolvedOrgId, { kind: parsed.assignee_kind, id: assigneeId }, { start: parsed.window_start, end: parsed.window_end }, { firstOnly: true })
     const [conflict] = findOverlappingVisits(candidates, { window_start: parsed.window_start, window_end: parsed.window_end })
     if (conflict) {
-      throw new Error(`This assignee is already booked for visit ${conflict.visit_number} from ${new Date(conflict.window_start).toLocaleString("en-US")} to ${new Date(conflict.window_end).toLocaleTimeString("en-US")}`)
+      throw new Error("This assignee is already booked for the requested window")
     }
   }
   const { data: last } = await supabase.from("warranty_service_visits").select("visit_number").eq("org_id", resolvedOrgId).eq("request_id", parsed.request_id).order("visit_number", { ascending: false }).limit(1).maybeSingle()
@@ -797,11 +898,12 @@ export async function scheduleWarrantyVisit(input: WarrantyVisitScheduleInput & 
   // not erase who owned visit 1, so the request keeps the most recent assignee
   // of each kind rather than nulling the kind that was not chosen. Dispatching
   // is also not a first response — that is an explicit call to the homeowner.
-  await supabase.from("warranty_requests").update({
+  const requestUpdate = await supabase.from("warranty_requests").update({
     status: "in_progress",
     ...(parsed.assignee_kind === "tech" ? { assigned_user_id: parsed.assigned_user_id } : { assigned_company_id: parsed.assigned_company_id, dispatched_at: now }),
     scheduled_date: parsed.window_start.slice(0, 10),
-  }).eq("org_id", resolvedOrgId).eq("id", parsed.request_id)
+  }).eq("org_id", resolvedOrgId).eq("id", parsed.request_id).eq("project_id", request.project_id).select("id").single()
+  if (requestUpdate.error || !requestUpdate.data) throw new Error(`Warranty visit was created but request dispatch could not be saved: ${requestUpdate.error?.message ?? "Request changed"}`)
   const visit = mapVisit(data as unknown as Record<string, unknown>)
   await recordEvent({ orgId: resolvedOrgId, eventType: "warranty_visit_scheduled", entityType: "warranty_service_visit", entityId: visit.id, payload: { request_id: request.id, project_id: request.project_id, assignee_kind: visit.assignee_kind } })
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "insert", entityType: "warranty_service_visit", entityId: visit.id, after: data as unknown as Record<string, unknown> })
@@ -819,9 +921,16 @@ export async function rescheduleWarrantyVisit(input: unknown, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.write", { supabase, orgId: resolvedOrgId, userId })
   const existing = await loadVisit(supabase, resolvedOrgId, parsed.visit_id)
+  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, existing.project_id, "warranty.write")
+  await assertWarrantyRequestHome(supabase, resolvedOrgId, existing.request_id, existing.project_id)
   if (["completed","canceled"].includes(existing.status)) throw new Error("Completed or canceled visits cannot be rescheduled")
-  const { data, error } = await supabase.from("warranty_service_visits").update({ window_start: parsed.window_start, window_end: parsed.window_end, status: "scheduled", confirmed_at: null, metadata: mergeMetadata(existing.metadata, { reschedule_note: parsed.note ?? null }) }).eq("org_id", resolvedOrgId).eq("id", parsed.visit_id).select(VISIT_SELECT).single()
-  if (error || !data) throw new Error(`Failed to reschedule warranty visit: ${error?.message}`)
+  const assigneeId = existing.assignee_kind === "tech" ? existing.assigned_user_id : existing.assigned_company_id
+  if (!assigneeId) throw new Error("Warranty visit assignee is unavailable; reassign before rescheduling")
+  const candidates = await loadAssigneeVisitWindows(supabase, resolvedOrgId, { kind: existing.assignee_kind, id: assigneeId }, { start: parsed.window_start, end: parsed.window_end }, { firstOnly: true, excludeVisitId: existing.id })
+  if (findOverlappingVisits(candidates, { ...parsed, exclude_visit_id: existing.id }).length) throw new Error("This assignee has an overlapping visit; choose another window before rescheduling")
+
+  const { data, error } = await supabase.from("warranty_service_visits").update({ window_start: parsed.window_start, window_end: parsed.window_end, status: "scheduled", confirmed_at: null, metadata: mergeMetadata(existing.metadata, { reschedule_note: parsed.note ?? null }) }).eq("org_id", resolvedOrgId).eq("id", parsed.visit_id).eq("project_id", existing.project_id).eq("request_id", existing.request_id).eq("updated_at", existing.updated_at).eq("status", existing.status).select(VISIT_SELECT).single()
+  if (error || !data) throw new Error(`Warranty visit changed concurrently or could not be rescheduled: ${error?.message ?? "Refresh before retrying"}`)
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "warranty_service_visit", entityId: parsed.visit_id, before: existing as unknown as Record<string, unknown>, after: data as unknown as Record<string, unknown> })
   return mapVisit(data as unknown as Record<string, unknown>)
 }
@@ -830,24 +939,43 @@ export async function cancelWarrantyVisit(visitId: string, note?: string, orgId?
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.write", { supabase, orgId: resolvedOrgId, userId })
   const existing = await loadVisit(supabase, resolvedOrgId, visitId)
+  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, existing.project_id, "warranty.write")
+  await assertWarrantyRequestHome(supabase, resolvedOrgId, existing.request_id, existing.project_id)
   if (existing.status === "completed") throw new Error("Completed visits cannot be canceled")
-  const { data, error } = await supabase.from("warranty_service_visits").update({ status: "canceled", metadata: mergeMetadata(existing.metadata, { cancel_note: note ?? null }) }).eq("org_id", resolvedOrgId).eq("id", visitId).select(VISIT_SELECT).single()
-  if (error || !data) throw new Error(`Failed to cancel warranty visit: ${error?.message}`)
+  const { data, error } = await supabase.from("warranty_service_visits").update({ status: "canceled", metadata: mergeMetadata(existing.metadata, { cancel_note: note ?? null }) }).eq("org_id", resolvedOrgId).eq("id", visitId).eq("project_id", existing.project_id).eq("request_id", existing.request_id).eq("updated_at", existing.updated_at).eq("status", existing.status).select(VISIT_SELECT).single()
+  if (error || !data) throw new Error(`Warranty visit changed concurrently or could not be canceled: ${error?.message ?? "Refresh before retrying"}`)
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "warranty_service_visit", entityId: visitId, before: existing as unknown as Record<string, unknown>, after: data as unknown as Record<string, unknown> })
   return mapVisit(data as unknown as Record<string, unknown>)
 }
 
-async function loadRequestMetadata(supabase: SupabaseClient, orgId: string, requestId: string) {
-  const { data, error } = await supabase.from("warranty_requests").select("metadata").eq("org_id", orgId).eq("id", requestId).maybeSingle()
+async function loadWarrantyRequestState(supabase: SupabaseClient, orgId: string, requestId: string, projectId: string) {
+  const { data, error } = await supabase.from("warranty_requests").select("id,project_id,status,metadata,updated_at").eq("org_id", orgId).eq("id", requestId).eq("project_id", projectId).maybeSingle()
   if (error) throw new Error(`Failed to load warranty request: ${error.message}`)
-  return data?.metadata ?? {}
+  if (!data || typeof data.updated_at !== "string" || !data.updated_at) throw new Error("Warranty request revision is unavailable; refresh before making changes")
+  return { status: String(data.status), metadata: mergeMetadata(data.metadata, {}), updated_at: data.updated_at }
 }
 
-async function completeVisitWithClient(input: WarrantyVisitCompleteWithCostInput, context: { supabase: SupabaseClient; orgId: string; userId: string | null; portalCompanyId?: string; portalTokenId?: string }) {
+async function completeVisitWithClient(input: WarrantyVisitCompleteWithCostInput, context: { supabase: SupabaseClient; orgId: string; userId: string | null; portalCompanyId?: string; portalTokenId?: string; requireTransaction?: boolean; expectedVisitAt?: string }) {
   const parsed = warrantyVisitCompleteWithCostSchema.parse(input)
   const existing = await loadVisit(context.supabase, context.orgId, parsed.visit_id)
+  if (context.userId) await authorizeWarrantyHome({ ...context, userId: context.userId }, existing.project_id, "warranty.write")
+  await assertWarrantyRequestHome(context.supabase, context.orgId, existing.request_id, existing.project_id)
   if (context.portalCompanyId && (existing.assignee_kind !== "trade" || existing.assigned_company_id !== context.portalCompanyId)) throw new Error("Warranty visit not found")
+  if (context.userId && !context.portalCompanyId) {
+    const transactionClient = createServiceSupabaseClient()
+    if (await warrantyCompletionTransactionsEnabled(transactionClient, context.orgId)) {
+      const requestState = await loadWarrantyRequestState(context.supabase, context.orgId, existing.request_id, existing.project_id)
+      await commitOfficeWarrantyCompletion({ supabase: transactionClient, orgId: context.orgId, actorId: context.userId,
+        visitId: existing.id, requestId: existing.request_id, expectedVisitAt: context.expectedVisitAt ?? existing.updated_at,
+        expectedRequestAt: requestState.updated_at, completion: parsed })
+      return loadVisit(context.supabase, context.orgId, existing.id)
+    }
+  }
+  if (context.requireTransaction) throw new Error("Transactional warranty completion is unavailable; retry after its approved rollout is restored")
   if (["completed","canceled"].includes(existing.status)) throw new Error(`This visit is already ${existing.status}`)
+  const requestState = await loadWarrantyRequestState(context.supabase, context.orgId, existing.request_id, existing.project_id)
+  if (["resolved", "closed"].includes(requestState.status)) throw new Error("Resolved or closed warranty requests cannot receive a visit completion; reopen the request first")
+  await assertWarrantyFiles(context.supabase, context.orgId, existing.project_id, [...(parsed.photo_file_ids ?? []), ...(parsed.buyer_signature_file_id ? [parsed.buyer_signature_file_id] : [])])
   const cost = computeVisitInternalCost({ labor_hours: parsed.labor_hours, labor_rate_cents: parsed.labor_rate_cents, material_cents: parsed.material_cents })
   const now = new Date().toISOString(), pendingVerification = Boolean(context.portalCompanyId)
   const { data, error } = await context.supabase.from("warranty_service_visits").update({
@@ -857,28 +985,29 @@ async function completeVisitWithClient(input: WarrantyVisitCompleteWithCostInput
     labor_hours: cost.labor_hours, labor_rate_cents: cost.labor_rate_cents,
     internal_labor_cents: cost.internal_labor_cents, internal_material_cents: cost.internal_material_cents,
     metadata: mergeMetadata(existing.metadata, { portal_token_id: context.portalTokenId ?? null }),
-  }).eq("org_id", context.orgId).eq("id", parsed.visit_id).select(VISIT_SELECT).single()
-  if (error || !data) throw new Error(`Failed to complete warranty visit: ${error?.message}`)
+  }).eq("org_id", context.orgId).eq("id", parsed.visit_id).eq("project_id", existing.project_id).eq("request_id", existing.request_id).eq("updated_at", existing.updated_at).eq("status", existing.status).select(VISIT_SELECT).single()
+  if (error || !data) throw new Error(`Warranty visit changed concurrently or could not be completed: ${error?.message ?? "Refresh before retrying"}`)
   if (parsed.photo_file_ids?.length) {
-    const { error: photoError } = await context.supabase.from("warranty_visit_photos").upsert(parsed.photo_file_ids.map((fileId) => ({ org_id: context.orgId, visit_id: parsed.visit_id, file_id: fileId, created_by: context.userId })), { onConflict: "visit_id,file_id" })
+    const { error: photoError } = await context.supabase.from("warranty_visit_photos").upsert([...new Set(parsed.photo_file_ids)].map((fileId) => ({ org_id: context.orgId, visit_id: parsed.visit_id, file_id: fileId, created_by: context.userId })), { onConflict: "visit_id,file_id" })
     if (photoError) throw new Error(`Failed to attach visit photos: ${photoError.message}`)
   }
-  const requestMetadata = await loadRequestMetadata(context.supabase, context.orgId, existing.request_id)
+  const requestMetadata = requestState.metadata
   const requestUpdate = pendingVerification
     ? { status: "in_progress", metadata: mergeMetadata(requestMetadata, { pending_verification: true, completed_visit_id: parsed.visit_id }) }
     : parsed.outcome === "resolved"
       ? { status: "resolved", closed_at: now, metadata: mergeMetadata(requestMetadata, { pending_verification: false, completed_visit_id: parsed.visit_id }) }
       : { status: "in_progress", metadata: mergeMetadata(requestMetadata, { completed_visit_id: parsed.visit_id }) }
-  await context.supabase.from("warranty_requests").update(requestUpdate).eq("org_id", context.orgId).eq("id", existing.request_id)
+  const requestResult = await context.supabase.from("warranty_requests").update(requestUpdate).eq("org_id", context.orgId).eq("id", existing.request_id).eq("project_id", existing.project_id).eq("updated_at", requestState.updated_at).eq("status", requestState.status).select("id").single()
+  if (requestResult.error || !requestResult.data) throw new Error(`Warranty visit was completed but request status could not be saved: ${requestResult.error?.message ?? "Request changed"}`)
   await recordEvent({ orgId: context.orgId, eventType: "warranty_visit_completed", entityType: "warranty_service_visit", entityId: parsed.visit_id, payload: { request_id: existing.request_id, outcome: parsed.outcome, pending_verification: pendingVerification, internal_cost_cents: cost.internal_total_cents } })
   await recordAudit({ orgId: context.orgId, actorId: context.userId ?? undefined, action: "update", entityType: "warranty_service_visit", entityId: parsed.visit_id, before: existing as unknown as Record<string, unknown>, after: data as unknown as Record<string, unknown> })
   return mapVisit(data as unknown as Record<string, unknown>)
 }
 
-export async function completeWarrantyVisit(input: WarrantyVisitCompleteWithCostInput, orgId?: string) {
+export async function completeWarrantyVisit(input: WarrantyVisitCompleteWithCostInput, orgId?: string, options: { requireTransaction?: boolean; expectedVisitAt?: string } = {}) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.write", { supabase, orgId: resolvedOrgId, userId })
-  return completeVisitWithClient(input, { supabase, orgId: resolvedOrgId, userId })
+  return completeVisitWithClient(input, { supabase, orgId: resolvedOrgId, userId, requireTransaction: options.requireTransaction, expectedVisitAt: options.expectedVisitAt })
 }
 
 /**
@@ -886,46 +1015,57 @@ export async function completeWarrantyVisit(input: WarrantyVisitCompleteWithCost
  * requests still holding `pending_verification` — the office queue that closes
  * the loop on a portal completion.
  */
-export async function listWarrantyVisitsPendingVerification(params: { divisionId?: string; limit?: number; orgId?: string } = {}) {
+export async function listWarrantyVisitsPendingVerification(params: { divisionId?: string; communityId?: string; limit?: number; page?: number; pageSize?: number; orgId?: string } = {}) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(params.orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
-  const authorizedProjectIds = await getDivisionScopedProjectIds({ orgId: resolvedOrgId, userId, supabase })
-  const divisionProjectIds = params.divisionId ? await projectIdsForDivision(supabase, resolvedOrgId, params.divisionId) : null
-  const scopedProjectIds = intersectProjectReadScopes(authorizedProjectIds, divisionProjectIds)
-  if (scopedProjectIds?.length === 0) return []
-  const limit = Math.min(200, Math.max(1, params.limit ?? 50))
-  let requestQuery = supabase.from("warranty_requests").select("id,project_id,request_number,title,severity,metadata,project:projects(name)").eq("org_id", resolvedOrgId).eq("metadata->>pending_verification", "true").in("status", ["open", "in_progress"])
-  if (scopedProjectIds) requestQuery = requestQuery.in("project_id", scopedProjectIds)
-  const { data: requests, error: requestError } = await requestQuery.order("updated_at", { ascending: true }).limit(limit)
+  const paging = warrantyDeskPage(params.page, params.pageSize ?? params.limit)
+  const scope = await warrantyDeskReadScope(resolvedOrgId, userId, params.divisionId)
+  if (scope.divisionIds?.length === 0) return { rows: [], total: 0 }
+  let requestQuery = supabase.from("warranty_requests").select(`id,project_id,request_number,title,severity,metadata,${warrantyDeskProjectSelect("name", scope.projectMembershipRequired, params.communityId)}`, { count: "exact" }).eq("org_id", resolvedOrgId).eq("metadata->>pending_verification", "true").in("status", ["open", "in_progress"])
+  requestQuery = requestQuery.eq("project.org_id", resolvedOrgId)
+  if (params.communityId) requestQuery = requestQuery.eq("project.lot.community_id", params.communityId).eq("project.lot.org_id", resolvedOrgId).eq("project.lot.community.org_id", resolvedOrgId)
+  if (scope.divisionIds) requestQuery = requestQuery.in("project.division_id", scope.divisionIds)
+  if (scope.projectMembershipRequired) requestQuery = requestQuery.eq("project.access.org_id", resolvedOrgId).eq("project.access.user_id", userId).eq("project.access.status", "active")
+  const { data: requests, error: requestError, count } = await requestQuery.order("updated_at", { ascending: true }).order("id").range(paging.from, paging.to)
   if (requestError) throw new Error(`Failed to load visits awaiting verification: ${requestError.message}`)
   const byVisitId = new Map<string, Record<string, unknown>>()
-  for (const request of requests ?? []) {
+  for (const request of (requests ?? []) as unknown as Record<string, unknown>[]) {
     const metadata = request.metadata && typeof request.metadata === "object" ? request.metadata as Record<string, unknown> : {}
     if (typeof metadata.completed_visit_id === "string") byVisitId.set(metadata.completed_visit_id, request as unknown as Record<string, unknown>)
   }
-  if (byVisitId.size === 0) return []
+  if (byVisitId.size === 0) return { rows: [], total: count ?? 0 }
   const { data: visits, error: visitError } = await supabase.from("warranty_service_visits").select(VISIT_SELECT).eq("org_id", resolvedOrgId).eq("status", "completed").in("id", Array.from(byVisitId.keys())).order("completed_at", { ascending: true })
   if (visitError) throw new Error(`Failed to load visits awaiting verification: ${visitError.message}`)
-  return (visits ?? []).map((row) => {
+  const rows = ((visits ?? []) as unknown as Record<string, unknown>[]).filter((row) => {
+    const request = byVisitId.get(String(row.id))
+    return request && request.id === row.request_id && request.project_id === row.project_id
+  }).map((row) => {
     const visit = mapVisit(row as unknown as Record<string, unknown>)
     const request = byVisitId.get(visit.id)
     return { ...visit, request: request ?? null, project: relationOne(request?.project) }
   })
+  const order = new Map([...byVisitId.keys()].map((id, index) => [id, index]))
+  rows.sort((a, b) => order.get(a.id)! - order.get(b.id)!)
+  return { rows, total: count ?? 0 }
 }
 
 export async function verifyWarrantyVisit(visitId: string, resolutionNote?: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.write", { supabase, orgId: resolvedOrgId, userId })
   const visit = await loadVisit(supabase, resolvedOrgId, visitId)
+  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, visit.project_id, "warranty.write")
+  await assertWarrantyRequestHome(supabase, resolvedOrgId, visit.request_id, visit.project_id)
   if (visit.status !== "completed") throw new Error("Only completed visits can be verified")
   const now = new Date().toISOString(), resolved = visit.outcome === "resolved"
-  const requestMetadata = await loadRequestMetadata(supabase, resolvedOrgId, visit.request_id)
+  const requestState = await loadWarrantyRequestState(supabase, resolvedOrgId, visit.request_id, visit.project_id)
+  const requestMetadata = requestState.metadata
+  if (["resolved", "closed"].includes(requestState.status) || requestMetadata.pending_verification !== true || requestMetadata.completed_visit_id !== visitId) throw new Error("This visit is no longer awaiting verification for the request; refresh before making changes")
   const { data: updatedRequest, error } = await supabase.from("warranty_requests").update({
     status: resolved ? "resolved" : "in_progress",
     closed_at: resolved ? now : null,
     ...(resolutionNote?.trim() ? { resolution_note: resolutionNote.trim() } : {}),
     metadata: mergeMetadata(requestMetadata, { pending_verification: false, verified_visit_id: visitId, verified_by: userId, verified_at: now }),
-  }).eq("org_id", resolvedOrgId).eq("id", visit.request_id).select(WARRANTY_SELECT).single()
+  }).eq("org_id", resolvedOrgId).eq("id", visit.request_id).eq("project_id", visit.project_id).eq("updated_at", requestState.updated_at).eq("status", requestState.status).select(WARRANTY_SELECT).single()
   if (error || !updatedRequest) throw new Error(`Failed to verify warranty visit: ${error?.message}`)
   await recordEvent({ orgId: resolvedOrgId, eventType: "warranty_visit_verified", entityType: "warranty_service_visit", entityId: visitId, payload: { request_id: visit.request_id, resolved } })
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "warranty_request", entityId: visit.request_id, after: { pending_verification: false, visit_id: visitId, resolved } })
@@ -956,8 +1096,8 @@ export async function confirmWarrantyVisitFromPortal({ orgId, companyId, visitId
   if (existing.assigned_company_id !== companyId || existing.assignee_kind !== "trade") throw new Error("Warranty visit not found")
   if (existing.status !== "scheduled") throw new Error("Only scheduled visits can be confirmed")
   const now = new Date().toISOString()
-  const { data, error } = await supabase.from("warranty_service_visits").update({ status: "confirmed", confirmed_at: now }).eq("org_id", orgId).eq("id", visitId).select(VISIT_SELECT).single()
-  if (error || !data) throw new Error(`Failed to confirm warranty visit: ${error?.message}`)
+  const { data, error } = await supabase.from("warranty_service_visits").update({ status: "confirmed", confirmed_at: now }).eq("org_id", orgId).eq("id", visitId).eq("project_id", existing.project_id).eq("request_id", existing.request_id).eq("updated_at", existing.updated_at).eq("status", existing.status).select(VISIT_SELECT).single()
+  if (error || !data) throw new Error(`Warranty visit changed concurrently or could not be confirmed: ${error?.message ?? "Refresh before retrying"}`)
   await recordEvent({ orgId, eventType: "warranty_visit_confirmed", entityType: "warranty_service_visit", entityId: visitId, payload: { company_id: companyId } })
   return mapVisit(data as unknown as Record<string, unknown>)
 }
@@ -1006,19 +1146,20 @@ async function loadBackcharge(supabase: SupabaseClient, orgId: string, backcharg
   return { dto: mapBackcharge(data as unknown as Record<string, unknown>), row: data as unknown as Record<string, unknown> }
 }
 
-export async function listWarrantyBackcharges(params: { status?: string[]; projectId?: string; divisionId?: string; page?: number; pageSize?: number; orgId?: string } = {}) {
+export async function listWarrantyBackcharges(params: { status?: string[]; projectId?: string; divisionId?: string; communityId?: string; page?: number; pageSize?: number; orgId?: string } = {}) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(params.orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
-  const authorizedProjectIds = await getDivisionScopedProjectIds({ orgId: resolvedOrgId, userId, supabase })
-  const divisionProjectIds = params.divisionId ? await projectIdsForDivision(supabase, resolvedOrgId, params.divisionId) : null
-  const scopedProjectIds = intersectProjectReadScopes(authorizedProjectIds, divisionProjectIds)
-  if (scopedProjectIds?.length === 0) return { rows: [], total: 0 }
-  const page = Math.max(1, params.page ?? 1), pageSize = Math.min(200, Math.max(1, params.pageSize ?? 50))
-  let query = supabase.from("warranty_backcharges").select(BACKCHARGE_SELECT, { count: "exact" }).eq("org_id", resolvedOrgId)
+  const scope = await warrantyDeskReadScope(resolvedOrgId, userId, params.divisionId)
+  if (scope.divisionIds?.length === 0) return { rows: [], total: 0 }
+  const paging = warrantyDeskPage(params.page, params.pageSize)
+  let query = supabase.from("warranty_backcharges").select(BACKCHARGE_SELECT.replace("project:projects(name)", warrantyDeskProjectSelect("name", scope.projectMembershipRequired, params.communityId)), { count: "exact" }).eq("org_id", resolvedOrgId)
   if (params.status?.length) query = query.in("status", params.status)
   if (params.projectId) query = query.eq("project_id", params.projectId)
-  if (scopedProjectIds) query = query.in("project_id", scopedProjectIds)
-  const { data, error, count } = await query.order("created_at", { ascending: false }).range((page - 1) * pageSize, page * pageSize - 1)
+  query = query.eq("project.org_id", resolvedOrgId)
+  if (params.communityId) query = query.eq("project.lot.community_id", params.communityId).eq("project.lot.org_id", resolvedOrgId).eq("project.lot.community.org_id", resolvedOrgId)
+  if (scope.divisionIds) query = query.in("project.division_id", scope.divisionIds)
+  if (scope.projectMembershipRequired) query = query.eq("project.access.org_id", resolvedOrgId).eq("project.access.user_id", userId).eq("project.access.status", "active")
+  const { data, error, count } = await query.order("created_at", { ascending: false }).order("id").range(paging.from, paging.to)
   if (error) throw new Error(`Failed to load warranty backcharges: ${error.message}`)
   return { rows: (data ?? []).map((row) => mapBackcharge(row as unknown as Record<string, unknown>)), total: count ?? 0 }
 }
@@ -1028,14 +1169,19 @@ export async function createWarrantyBackcharge(input: WarrantyBackchargeInput, o
   validateWarrantyCostBasis(parsed.amount_cents, parsed.cost_basis)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.backcharge", { supabase, orgId: resolvedOrgId, userId })
-  const [{ data: request }, { data: company }, { data: commitment }] = await Promise.all([
+  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, parsed.project_id, "warranty.backcharge")
+  const [requestResult, companyResult, commitmentResult] = await Promise.all([
     supabase.from("warranty_requests").select("id,project_id").eq("org_id", resolvedOrgId).eq("id", parsed.warranty_request_id).maybeSingle(),
     supabase.from("companies").select("id").eq("org_id", resolvedOrgId).eq("id", parsed.company_id).maybeSingle(),
-    parsed.commitment_id ? supabase.from("commitments").select("id,project_id,company_id").eq("org_id", resolvedOrgId).eq("id", parsed.commitment_id).maybeSingle() : Promise.resolve({ data: null }),
+    parsed.commitment_id ? supabase.from("commitments").select("id,project_id,company_id").eq("org_id", resolvedOrgId).eq("id", parsed.commitment_id).maybeSingle() : Promise.resolve({ data: null, error: null }),
   ])
+  for (const result of [requestResult, companyResult, commitmentResult]) {
+    if (result.error) throw new Error(`Unable to verify warranty backcharge references: ${result.error.message}`)
+  }
+  const request = requestResult.data, company = companyResult.data, commitment = commitmentResult.data
   if (!request || request.project_id !== parsed.project_id) throw new Error("Warranty request not found")
   if (!company) throw new Error("Trade company not found")
-  if (parsed.commitment_id && (!commitment || commitment.project_id !== parsed.project_id)) throw new Error("Originating commitment not found")
+  if (parsed.commitment_id && (!commitment || commitment.project_id !== parsed.project_id || commitment.company_id !== parsed.company_id)) throw new Error("Originating commitment not found")
   let attempt = 0, created: Record<string, unknown> | null = null
   while (attempt < 5 && !created) {
     const { data: next } = await supabase.rpc("next_warranty_backcharge_number", { p_org_id: resolvedOrgId })
@@ -1075,6 +1221,9 @@ export async function issueWarrantyBackcharge({ backchargeId }: { backchargeId: 
     requirePermission("bill.write", { supabase, orgId: resolvedOrgId, userId }),
   ])
   const { dto: existing, row } = await loadBackcharge(supabase, resolvedOrgId, backchargeId)
+  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, existing.project_id, "warranty.backcharge")
+  await assertWarrantyRequestHome(supabase, resolvedOrgId, existing.warranty_request_id, existing.project_id)
+  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, existing.project_id, "bill.write")
   assertBackchargeTransition(existing.status, "issued")
   const { count: payableCount } = await supabase.from("vendor_bills").select("id", { count: "exact", head: true }).eq("org_id", resolvedOrgId).eq("company_id", existing.company_id)
   if ((payableCount ?? 0) === 0 && (row.metadata as unknown as Record<string, unknown> | null)?.no_ap_history_confirmed !== true) {
@@ -1087,7 +1236,7 @@ export async function issueWarrantyBackcharge({ backchargeId }: { backchargeId: 
     metadata: { origin: "warranty_backcharge", warranty_backcharge_id: existing.id, warranty_request_id: existing.warranty_request_id, commitment_id: existing.commitment_id },
   }, resolvedOrgId)
   const now = new Date().toISOString()
-  const { data, error } = await supabase.from("warranty_backcharges").update({ status: "issued", vendor_credit_bill_id: credit.id, issued_at: now, issued_by: userId }).eq("org_id", resolvedOrgId).eq("id", backchargeId).select(BACKCHARGE_SELECT).single()
+  const { data, error } = await supabase.from("warranty_backcharges").update({ status: "issued", vendor_credit_bill_id: credit.id, issued_at: now, issued_by: userId }).eq("org_id", resolvedOrgId).eq("id", backchargeId).eq("project_id", existing.project_id).eq("warranty_request_id", existing.warranty_request_id).select(BACKCHARGE_SELECT).single()
   if (error || !data) throw new Error(`Failed to issue warranty backcharge: ${error?.message}`)
   const issued = mapBackcharge(data as unknown as Record<string, unknown>)
   await recordEvent({ orgId: resolvedOrgId, eventType: "warranty_backcharge_issued", entityType: "warranty_backcharge", entityId: backchargeId, payload: { vendor_credit_bill_id: credit.id, amount_cents: issued.amount_cents } })
@@ -1100,8 +1249,10 @@ export async function disputeWarrantyBackcharge({ backchargeId, note }: { backch
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.backcharge", { supabase, orgId: resolvedOrgId, userId })
   const { dto: existing, row } = await loadBackcharge(supabase, resolvedOrgId, backchargeId)
+  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, existing.project_id, "warranty.backcharge")
+  await assertWarrantyRequestHome(supabase, resolvedOrgId, existing.warranty_request_id, existing.project_id)
   assertBackchargeTransition(existing.status, "disputed")
-  const { data, error } = await supabase.from("warranty_backcharges").update({ status: "disputed", disputed_at: new Date().toISOString(), dispute_note: note.trim() }).eq("org_id", resolvedOrgId).eq("id", backchargeId).select(BACKCHARGE_SELECT).single()
+  const { data, error } = await supabase.from("warranty_backcharges").update({ status: "disputed", disputed_at: new Date().toISOString(), dispute_note: note.trim() }).eq("org_id", resolvedOrgId).eq("id", backchargeId).eq("project_id", existing.project_id).eq("warranty_request_id", existing.warranty_request_id).select(BACKCHARGE_SELECT).single()
   if (error || !data) throw new Error(`Failed to dispute warranty backcharge: ${error?.message}`)
   await recordEvent({ orgId: resolvedOrgId, eventType: "warranty_backcharge_disputed", entityType: "warranty_backcharge", entityId: backchargeId, payload: { note: note.trim() } })
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "warranty_backcharge", entityId: backchargeId, before: row, after: data })
@@ -1112,6 +1263,8 @@ export async function resolveWarrantyBackcharge({ backchargeId, resolution, reco
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.backcharge", { supabase, orgId: resolvedOrgId, userId })
   const { dto: existing, row } = await loadBackcharge(supabase, resolvedOrgId, backchargeId)
+  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, existing.project_id, "warranty.backcharge")
+  await assertWarrantyRequestHome(supabase, resolvedOrgId, existing.warranty_request_id, existing.project_id)
   assertBackchargeTransition(existing.status, resolution)
   if (resolution !== "recovered" && !note?.trim()) throw new Error("A resolution note is required")
   const recovered = recoveredCents ?? (resolution === "recovered" ? existing.amount_cents : existing.recovered_cents)
@@ -1124,6 +1277,7 @@ export async function resolveWarrantyBackcharge({ backchargeId, resolution, reco
   // auditable one, and the original credit stays linked.
   let reversalBillId = typeof metadata.reversal_bill_id === "string" ? metadata.reversal_bill_id : null
   if (resolution !== "recovered" && existing.vendor_credit_bill_id && !reversalBillId) {
+    await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, existing.project_id, "bill.write")
     const reversal = await createProjectVendorBill({
       projectId: existing.project_id,
       input: {
@@ -1144,7 +1298,7 @@ export async function resolveWarrantyBackcharge({ backchargeId, resolution, reco
     notes: note?.trim() ?? existing.notes,
     vendor_credit_bill_id: existing.vendor_credit_bill_id,
     metadata: mergeMetadata(metadata, { reversal_bill_id: reversalBillId }),
-  }).eq("org_id", resolvedOrgId).eq("id", backchargeId).select(BACKCHARGE_SELECT).single()
+  }).eq("org_id", resolvedOrgId).eq("id", backchargeId).eq("project_id", existing.project_id).eq("warranty_request_id", existing.warranty_request_id).select(BACKCHARGE_SELECT).single()
   if (error || !data) throw new Error(`Failed to resolve warranty backcharge: ${error?.message}`)
   await recordEvent({ orgId: resolvedOrgId, eventType: "warranty_backcharge_resolved", entityType: "warranty_backcharge", entityId: backchargeId, payload: { resolution, recovered_cents: recovered, reversal_bill_id: reversalBillId } })
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "warranty_backcharge", entityId: backchargeId, before: row, after: data })
@@ -1159,14 +1313,17 @@ export async function resolveWarrantyBackcharge({ backchargeId, resolution, reco
 export async function findOriginatingCommitments({ projectId, costCodeId, companyId }: { projectId: string; costCodeId?: string | null; companyId?: string | null }, orgId?: string): Promise<RankedOriginatingCommitment[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
-  if (!await canReadProjectInDivisionScope(supabase, resolvedOrgId, userId, projectId)) return []
-  const { data, error } = await supabase.from("commitments").select("id,title,contract_number,company_id,total_cents,status,company:companies(name),lines:commitment_lines(cost_code_id)").eq("org_id", resolvedOrgId).eq("project_id", projectId).order("created_at", { ascending: false }).limit(200)
-  if (error) throw new Error(`Failed to load originating commitments: ${error.message}`)
+  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, projectId, "warranty.read")
+  const data = await readWarrantyHistory((cursor) => {
+    let query = supabase.from("commitments").select("id,title,contract_number,company_id,total_cents,status,company:companies(name),lines:commitment_lines(cost_code_id)").eq("org_id", resolvedOrgId).eq("project_id", projectId).order("id").limit(100)
+    if (cursor) query = query.gt("id", cursor)
+    return query
+  }, "Failed to load originating commitments")
   const candidates: OriginatingCommitmentCandidate[] = (data ?? []).map((row) => {
-    const lines = Array.isArray(row.lines) ? row.lines : []
+    const lines = Array.isArray(row.lines) ? row.lines as Record<string, unknown>[] : []
     const company = relationOne(row.company)
     return {
-      id: String(row.id), title: String(row.title), contract_number: row.contract_number ?? null,
+      id: String(row.id), title: String(row.title), contract_number: typeof row.contract_number === "string" ? row.contract_number : null,
       company_id: typeof row.company_id === "string" ? row.company_id : null,
       company_name: typeof company?.name === "string" ? company.name : null,
       total_cents: Number(row.total_cents ?? 0), status: String(row.status),
@@ -1183,9 +1340,19 @@ export async function findOriginatingCommitments({ projectId, costCodeId, compan
 export async function getWarrantyRequestCostBasis(requestId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
-  const { data, error } = await supabase.from("warranty_service_visits").select("id,visit_number,books_approved_cost_cents").eq("org_id", resolvedOrgId).eq("request_id", requestId).not("books_cost_approved_at", "is", null).order("visit_number")
-  if (error) throw new Error(`Failed to load approved warranty costs: ${error.message}`)
-  return (data ?? []).filter(row => Number(row.books_approved_cost_cents) > 0).map(row => ({ label: `Approved posted costs — Visit ${row.visit_number}`, amount_cents: Number(row.books_approved_cost_cents), ref_type: "warranty_service_visit", ref_id: row.id }))
+  const { data: request, error: requestError } = await supabase.from("warranty_requests").select("id,project_id").eq("org_id", resolvedOrgId).eq("id", requestId).maybeSingle()
+  if (requestError || !request?.project_id) throw new Error(`Unable to verify warranty cost request: ${requestError?.message ?? "Request unavailable"}`)
+  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, request.project_id, "warranty.read")
+  const rows = await readWarrantyHistory((cursor) => {
+    let query = supabase.from("warranty_service_visits").select("id,visit_number,books_approved_cost_cents").eq("org_id", resolvedOrgId).eq("project_id", request.project_id).eq("request_id", requestId).not("books_cost_approved_at", "is", null).order("id").limit(100)
+    if (cursor) query = query.gt("id", cursor)
+    return query
+  }, "Failed to load approved warranty costs")
+  return rows.filter((row) => {
+    const cost = row.books_approved_cost_cents
+    if ((typeof cost !== "number" && (typeof cost !== "string" || !/^\d+$/.test(cost))) || !Number.isSafeInteger(Number(cost)) || Number(cost) < 0) throw new Error("Invalid approved warranty cost evidence")
+    return Number(row.books_approved_cost_cents) > 0
+  }).sort((a, b) => Number(a.visit_number) - Number(b.visit_number) || String(a.id).localeCompare(String(b.id))).map(row => ({ label: `Approved posted costs — Visit ${row.visit_number}`, amount_cents: Number(row.books_approved_cost_cents), ref_type: "warranty_service_visit", ref_id: String(row.id) }))
 }
 
 export interface WarrantyDefectAnalysisRow {
@@ -1225,23 +1392,24 @@ function mapDefectAnalysisRow(row: Record<string, unknown>): WarrantyDefectAnaly
   }
 }
 
-export async function getWarrantyDefectAnalysis(params: { orgId?: string; divisionId?: string; groupBy: "plan" | "plan_version" | "company" | "cost_code" | "community"; from?: string; to?: string }): Promise<WarrantyDefectAnalysisRow[]> {
+export async function isWarrantyAnalyticsAvailable(params: { orgId?: string; divisionId?: string; communityId?: string } = {}) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(params.orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
-  const authorizedProjectIds = await getDivisionScopedProjectIds({
-    orgId: resolvedOrgId,
-    userId,
-    supabase,
-  })
-  const divisionProjectIds = params.divisionId
-    ? await projectIdsForDivision(supabase, resolvedOrgId, params.divisionId)
-    : null
-  const scopedProjectIds = intersectProjectReadScopes(authorizedProjectIds, divisionProjectIds)
-  if (scopedProjectIds?.length === 0) return []
+  if (await warrantyActorAnalyticsEnabled(supabase, resolvedOrgId)) return true
+  const scope = await warrantyDeskReadScope(resolvedOrgId, userId)
+  return !scope.projectMembershipRequired && scope.divisionIds === null && !params.divisionId && !params.communityId
+}
+
+export async function getWarrantyDefectAnalysis(params: { orgId?: string; divisionId?: string; communityId?: string; groupBy: "plan" | "plan_version" | "company" | "cost_code" | "community"; from?: string; to?: string }): Promise<WarrantyDefectAnalysisRow[]> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(params.orgId)
+  await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
+  if (await warrantyActorAnalyticsEnabled(supabase, resolvedOrgId)) return await readActorWarrantyAnalytics({ supabase, orgId: resolvedOrgId, actorId: userId, kind: "defect", divisionId: params.divisionId, communityId: params.communityId, groupBy: params.groupBy, from: params.from, to: params.to }) as WarrantyDefectAnalysisRow[]
+  const scope = await warrantyDeskReadScope(resolvedOrgId, userId)
+  if (scope.projectMembershipRequired || scope.divisionIds !== null || params.divisionId || params.communityId) throw new Error("Scoped warranty analytics requires its approved database rollout; broader legacy totals cannot be shown")
   const { data, error } = await supabase.rpc("warranty_defect_analysis_scoped", {
     p_org_id: resolvedOrgId,
     p_group_by: params.groupBy,
-    p_project_ids: scopedProjectIds,
+    p_project_ids: null,
     p_from: params.from ?? null,
     p_to: params.to ?? null,
   })
@@ -1252,62 +1420,53 @@ export async function getWarrantyDefectAnalysis(params: { orgId?: string; divisi
 export async function getWarrantyCostSummary(params: { orgId?: string; communityId?: string; divisionId?: string } = {}): Promise<WarrantyCostSummaryRow[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(params.orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
+  if (await warrantyActorAnalyticsEnabled(supabase, resolvedOrgId)) return await readActorWarrantyAnalytics({ supabase, orgId: resolvedOrgId, actorId: userId, kind: "cost", divisionId: params.divisionId, communityId: params.communityId }) as WarrantyCostSummaryRow[]
+  const scope = await warrantyDeskReadScope(resolvedOrgId, userId)
+  if (scope.projectMembershipRequired || scope.divisionIds !== null || params.divisionId || params.communityId) throw new Error("Scoped warranty analytics requires its approved database rollout; broader legacy totals cannot be shown")
   const { data, error } = await supabase.rpc("warranty_cost_summary", { p_org_id: resolvedOrgId, p_community_id: params.communityId ?? null })
   if (error) throw new Error(`Failed to load warranty cost summary: ${error.message}`)
-  const communityIds = await allowedWarrantyCommunityIds(supabase, resolvedOrgId, userId, params.divisionId)
   const rows = ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
     community_id: String(row.community_id), community_name: typeof row.community_name === "string" ? row.community_name : null,
     warranty_cost_cents: Number(row.warranty_cost_cents ?? 0), recovered_cents: Number(row.recovered_cents ?? 0),
     net_cost_cents: Number(row.net_cost_cents ?? 0), closed_revenue_cents: Number(row.closed_revenue_cents ?? 0),
     cost_percent: row.cost_percent === null || row.cost_percent === undefined ? null : Number(row.cost_percent),
   }))
-  return communityIds === null ? rows : rows.filter((row) => communityIds.includes(row.community_id))
-}
-
-async function projectIdsForDivision(supabase: SupabaseClient, orgId: string, divisionId: string) {
-  const { data, error } = await supabase.from("projects").select("id").eq("org_id", orgId).eq("phase", "delivery").eq("division_id", divisionId).limit(1000)
-  if (error) throw new Error(`Failed to scope warranty projects: ${error.message}`)
-  return (data ?? []).map((row) => row.id as string)
-}
-
-async function allowedWarrantyCommunityIds(
-  supabase: SupabaseClient,
-  orgId: string,
-  userId: string,
-  divisionId?: string,
-): Promise<string[] | null> {
-  const access = await getDivisionAccessForUser({ orgId, userId })
-  if (!divisionId && !access.assignedOnly) return null
-  let divisionIds = divisionId ? [divisionId] : access.divisionIds
-  if (access.assignedOnly) divisionIds = divisionIds.filter((id) => access.divisionIds.includes(id))
-  if (!divisionIds.length) return []
-  const { data, error } = await supabase.from("communities").select("id").eq("org_id", orgId).in("division_id", divisionIds)
-  if (error) throw new Error(`Failed to scope warranty analytics: ${error.message}`)
-  return (data ?? []).map((row) => row.id as string)
+  return rows
 }
 
 export async function getCompanyWarrantySignal(companyId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
-  const authorizedProjectIds = await getDivisionScopedProjectIds({
-    orgId: resolvedOrgId,
-    userId,
-    supabase,
-  })
-  if (authorizedProjectIds?.length === 0) {
-    return { request_count: 0, backcharge_cents: 0, recovered_cents: 0, open_backcharges: 0 }
+  if (await warrantyActorAnalyticsEnabled(supabase, resolvedOrgId)) return await readActorWarrantyAnalytics({ supabase, orgId: resolvedOrgId, actorId: userId, kind: "company", companyId }) as { request_count: number; backcharge_cents: number; recovered_cents: number; open_backcharges: number }
+  const scope = await warrantyDeskReadScope(resolvedOrgId, userId)
+  if (scope.divisionIds?.length === 0) return { request_count: 0, backcharge_cents: 0, recovered_cents: 0, open_backcharges: 0 }
+  const project = warrantyDeskProjectSelect("id", scope.projectMembershipRequired)
+  let requestsQuery = supabase.from("warranty_requests").select(`id,${project}`, { count: "exact", head: true }).eq("org_id", resolvedOrgId).eq("assigned_company_id", companyId).eq("project.org_id", resolvedOrgId)
+  if (scope.divisionIds) requestsQuery = requestsQuery.in("project.division_id", scope.divisionIds)
+  if (scope.projectMembershipRequired) requestsQuery = requestsQuery.eq("project.access.org_id", resolvedOrgId).eq("project.access.user_id", userId).eq("project.access.status", "active")
+  let amount = BigInt(0), recovered = BigInt(0), open = 0
+  const cents = (value: unknown) => {
+    if ((typeof value !== "number" && (typeof value !== "string" || !/^\d+$/.test(value))) || !Number.isSafeInteger(Number(value)) || Number(value) < 0) throw new Error("Invalid warranty company monetary evidence")
+    return BigInt(Number(value))
   }
-  let requestsQuery = supabase.from("warranty_requests").select("id", { count: "exact", head: true }).eq("org_id", resolvedOrgId).eq("assigned_company_id", companyId)
-  let chargesQuery = supabase.from("warranty_backcharges").select("amount_cents,recovered_cents,status").eq("org_id", resolvedOrgId).eq("company_id", companyId)
-  if (authorizedProjectIds) {
-    requestsQuery = requestsQuery.in("project_id", authorizedProjectIds)
-    chargesQuery = chargesQuery.in("project_id", authorizedProjectIds)
-  }
-  const [{ count: requestCount }, { data: charges }] = await Promise.all([
+  const [requestResult] = await Promise.all([
     requestsQuery,
-    chargesQuery,
+    readWarrantyHistory((cursor) => {
+      let query = supabase.from("warranty_backcharges").select(`id,amount_cents,recovered_cents,status,${project}`).eq("org_id", resolvedOrgId).eq("company_id", companyId).eq("project.org_id", resolvedOrgId).order("id").limit(100)
+      if (scope.divisionIds) query = query.in("project.division_id", scope.divisionIds)
+      if (scope.projectMembershipRequired) query = query.eq("project.access.org_id", resolvedOrgId).eq("project.access.user_id", userId).eq("project.access.status", "active")
+      if (cursor) query = query.gt("id", cursor)
+      return query
+    }, "Failed to load complete company warranty signal", (row) => {
+      const cost = cents(row.amount_cents), recovery = cents(row.recovered_cents)
+      if (recovery > cost) throw new Error("Warranty company recovery exceeds its backcharge")
+      amount += cost; recovered += recovery
+      if (row.status === "issued" || row.status === "disputed") open++
+    }, 1_000_000),
   ])
-  return { request_count: requestCount ?? 0, backcharge_cents: (charges ?? []).reduce((sum, charge) => sum + Number(charge.amount_cents ?? 0), 0), recovered_cents: (charges ?? []).reduce((sum, charge) => sum + Number(charge.recovered_cents ?? 0), 0), open_backcharges: (charges ?? []).filter((charge) => ["issued","disputed"].includes(charge.status)).length }
+  if (requestResult.error || !Number.isSafeInteger(requestResult.count) || requestResult.count! < 0) throw new Error(`Failed to count company warranty requests: ${requestResult.error?.message ?? "Count unavailable"}`)
+  if (amount > BigInt(Number.MAX_SAFE_INTEGER) || recovered > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Warranty company totals exceed safe integer cents")
+  return { request_count: requestResult.count!, backcharge_cents: Number(amount), recovered_cents: Number(recovered), open_backcharges: open }
 }
 
 const SLA_SWEEP_PAGE_SIZE = 200
@@ -1397,7 +1556,8 @@ const COURTESY_MILESTONE_SEVERITY: Record<CourtesyMilestoneKey, WarrantySeverity
   month_11: "routine_60",
 }
 
-async function createCourtesyInspectionsForOrg(supabase: SupabaseClient, orgId: string, asOf: Date) {
+async function createCourtesyInspectionsForOrg(supabase: SupabaseClient, orgId: string, asOf: Date, canCreate?: (projectId: string) => Promise<boolean>, actorId?: string) {
+  if (await courtesyReservationsEnabled(supabase, orgId)) return generateReservedCourtesyInspections({ supabase, orgId, asOf, canCreate, actorId })
   const { data: coverage, error } = await supabase
     .from("project_warranty_coverage")
     .select("project_id,effective_date")
@@ -1421,7 +1581,7 @@ async function createCourtesyInspectionsForOrg(supabase: SupabaseClient, orgId: 
   }))
   let created = 0
   for (const item of due) {
-    if (alreadyCreated.has(`${item.projectId}:${item.milestone.key}`)) continue
+    if (alreadyCreated.has(`${item.projectId}:${item.milestone.key}`) || (canCreate && !await canCreate(item.projectId))) continue
     const severity = COURTESY_MILESTONE_SEVERITY[item.milestone.key]
     const { data: target } = await supabase.from("warranty_sla_targets").select("first_response_hours,resolution_days").eq("org_id", orgId).eq("severity", severity).maybeSingle()
     const result = await insertWithProjectNumberRetry<Record<string, unknown>>({
@@ -1451,46 +1611,67 @@ async function createCourtesyInspectionsForOrg(supabase: SupabaseClient, orgId: 
  */
 export async function sweepWarrantyCourtesyInspections() {
   const supabase = createServiceSupabaseClient(), asOf = new Date()
-  const { data: orgs, error } = await supabase.from("orgs").select("id").limit(2000)
-  if (error) throw new Error(`Failed to load organizations: ${error.message}`)
-  let created = 0
-  for (const org of orgs ?? []) created += await createCourtesyInspectionsForOrg(supabase, String(org.id), asOf)
+  let created = 0, cursor: string | null = null
+  for (;;) {
+    let query = supabase.from("orgs").select("id").order("id").limit(100)
+    if (cursor) query = query.gt("id", cursor)
+    const { data: orgs, error } = await query
+    if (error || !orgs) throw new Error(`Failed to load organizations: ${error?.message ?? "Page unavailable"}`)
+    if (!orgs.length) break
+    for (const org of orgs) created += await createCourtesyInspectionsForOrg(supabase, String(org.id), asOf)
+    const next = String(orgs[orgs.length - 1].id)
+    if (cursor && next <= cursor) throw new Error("Courtesy organization cursor did not advance")
+    cursor = next
+    if (orgs.length < 100) break
+  }
   return { created }
 }
 
 export async function generateWarrantyCourtesyInspections(orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.manage", { supabase, orgId: resolvedOrgId, userId })
-  const created = await createCourtesyInspectionsForOrg(supabase, resolvedOrgId, new Date())
+  const created = await createCourtesyInspectionsForOrg(supabase, resolvedOrgId, new Date(), projectId => authorizeCourtesyHome({ orgId: resolvedOrgId, userId, projectId, supabase }), userId)
   if (created > 0) await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "insert", entityType: "warranty_request", entityId: resolvedOrgId, after: { courtesy_inspections_created: created } })
   return { created }
 }
 
-export async function listWarrantyTechVisits(params: { date: string; userId?: string }, orgId?: string) {
+export async function listWarrantyTechVisits(params: { date: string; userId?: string; cursor?: string; pageSize?: number }, orgId?: string) {
+  const parsed = warrantyTechQueueSchema.parse(params)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
-  const authorizedProjectIds = await getDivisionScopedProjectIds({
-    orgId: resolvedOrgId,
-    userId,
-    supabase,
+  const targetUserId = parsed.userId ?? userId
+  const cursorScope = { orgId: resolvedOrgId, actorId: userId, userId: targetUserId, date: parsed.date }
+  const cursor = decodeWarrantyTechCursor(parsed.cursor, cursorScope)
+  const scope = await warrantyDeskReadScope(resolvedOrgId, userId)
+  if (scope.divisionIds?.length === 0) return { rows: [], nextCursor: null }
+  const start = `${parsed.date}T00:00:00.000Z`, end = new Date(new Date(start).getTime() + 86_400_000).toISOString()
+  let query = supabase.from("warranty_service_visits").select(`${VISIT_SELECT},request:warranty_requests(title,description,severity,org_id,project_id,requested_by,requested_by_contact:contacts(full_name,email,phone)),${warrantyDeskProjectSelect("name,location", scope.projectMembershipRequired)}`, { count: "exact" }).eq("org_id", resolvedOrgId).eq("assigned_user_id", targetUserId).gte("window_start", start).lt("window_start", end).neq("status", "canceled")
+  query = query.eq("project.org_id", resolvedOrgId)
+  if (scope.divisionIds) query = query.in("project.division_id", scope.divisionIds)
+  if (scope.projectMembershipRequired) query = query.eq("project.access.org_id", resolvedOrgId).eq("project.access.user_id", userId).eq("project.access.status", "active")
+  if (cursor) query = query.or(`window_start.gt."${cursor.window_start}",and(window_start.eq."${cursor.window_start}",id.gt.${cursor.id})`)
+  const { data, error, count } = await query.order("window_start").order("id").limit(parsed.pageSize)
+  if (error || !Array.isArray(data) || data.length > parsed.pageSize || !Number.isSafeInteger(count) || count! < data.length || (count! > 0 && !data.length)) throw new Error(`Failed to load complete technician queue page: ${error?.message ?? "Page or count unavailable"}`)
+  const rows = data.map((value) => {
+    const row = value as unknown as Record<string, unknown>, request = relationOne(row.request)
+    return { ...mapVisit(row), request: request?.org_id === resolvedOrgId && request.project_id === row.project_id ? request : null, project: relationOne(row.project) }
   })
-  if (authorizedProjectIds?.length === 0) return []
-  const targetUserId = params.userId ?? userId, start = `${params.date}T00:00:00.000Z`, end = new Date(new Date(start).getTime() + 86_400_000).toISOString()
-  let query = supabase.from("warranty_service_visits").select(`${VISIT_SELECT},request:warranty_requests(title,description,severity,requested_by,requested_by_contact:contacts(full_name,email,phone)),project:projects(name,location)`).eq("org_id", resolvedOrgId).eq("assigned_user_id", targetUserId).gte("window_start", start).lt("window_start", end).neq("status", "canceled")
-  if (authorizedProjectIds) query = query.in("project_id", authorizedProjectIds)
-  const { data, error } = await query.order("window_start")
-  if (error) throw new Error(`Failed to load technician visits: ${error.message}`)
-  return (data ?? []).map((row) => ({ ...mapVisit(row as unknown as Record<string, unknown>), request: relationOne((row as unknown as Record<string, unknown>).request), project: relationOne((row as unknown as Record<string, unknown>).project) }))
+  const last = rows.at(-1)
+  return { rows, nextCursor: count! > rows.length && last ? encodeWarrantyTechCursor(cursorScope, { id: last.id, window_start: last.window_start }) : null }
 }
 
 export async function getWarrantyVisitDetail(visitId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
-  const { data, error } = await supabase.from("warranty_service_visits").select(`${VISIT_SELECT},request:warranty_requests(title,description,severity,requested_by,requested_by_contact:contacts(full_name,email,phone),photos:warranty_request_photos(id,file_id,caption)),project:projects(name,location)`).eq("org_id", resolvedOrgId).eq("id", visitId).maybeSingle()
-  if (error || !data) throw new Error("Warranty visit not found")
+  const identity = await supabase.from("warranty_service_visits").select("id,project_id,request_id,updated_at").eq("org_id", resolvedOrgId).eq("id", visitId).maybeSingle()
+  if (identity.error || !identity.data?.project_id || !identity.data?.request_id) throw new Error("Warranty visit not found")
+  const revision = warrantyRecordRevisionSchema.safeParse(identity.data)
+  if (!revision.success) throw new Error("Warranty visit revision is unavailable; refresh before retrying")
+  const existing = { ...identity.data, updated_at: revision.data.updated_at }
+  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, existing.project_id, "warranty.read")
+  await assertWarrantyRequestHome(supabase, resolvedOrgId, existing.request_id, existing.project_id)
+  const { data, error } = await supabase.from("warranty_service_visits").select(`${VISIT_SELECT},request:warranty_requests!inner(title,description,severity,requested_by,requested_by_contact:contacts(full_name,email,phone),photos:warranty_request_photos(id,file_id,caption)),project:projects(name,location)`).eq("org_id", resolvedOrgId).eq("id", visitId).eq("project_id", existing.project_id).eq("request_id", existing.request_id).eq("updated_at", existing.updated_at).eq("request.org_id", resolvedOrgId).eq("request.project_id", existing.project_id).maybeSingle()
+  if (error || !data) throw new Error("Warranty visit changed or could not be loaded; refresh before retrying")
   const visitRow = data as unknown as Record<string, unknown>
-  if (!await canReadProjectInDivisionScope(supabase, resolvedOrgId, userId, String(visitRow.project_id))) {
-    throw new Error("Warranty visit not found")
-  }
-  return { ...mapVisit(visitRow), request: relationOne(visitRow.request), project: relationOne(visitRow.project) }
+  return { ...mapVisit(visitRow), updated_at: existing.updated_at, request: relationOne(visitRow.request), project: relationOne(visitRow.project) }
 }

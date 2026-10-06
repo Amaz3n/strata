@@ -1,5 +1,8 @@
 "use client"
 
+import { InspectionLifecycleControls, InspectionObligationsPanel } from "@/components/inspections/inspection-lifecycle-controls"
+import { inspectionItemNeedsCorrection } from "@/lib/inspections/lifecycle"
+import type { InspectionObligation } from "@/lib/inspections/lifecycle"
 import { useMemo, useRef, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
@@ -33,7 +36,7 @@ import {
   updateInspectionAction,
   updateInspectionItemAction,
 } from "./actions"
-import { uploadFileAction } from "@/app/(app)/documents/actions"
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
 import { InspectionForm } from "@/components/inspections/inspection-form"
 import type { ProjectLocation } from "@/lib/services/locations"
 import { Plus, Search, ClipboardCheck, Upload, X, Eye, Loader2 } from "@/components/icons"
@@ -79,6 +82,11 @@ export function InspectionsClient({
   companies,
   locations,
   canManageLocations,
+  canWrite,
+  lifecycleEnabled,
+  canReview,
+  obligationPage,
+  selectedObligation,
   scheduleLink,
 }: {
   projectId: string
@@ -88,12 +96,17 @@ export function InspectionsClient({
   companies: Array<{ id: string; name: string }>
   locations: ProjectLocation[]
   canManageLocations: boolean
+  canWrite: boolean
+  lifecycleEnabled: boolean
+  canReview: boolean
+  obligationPage: { rows: InspectionObligation[]; nextCursor: string | null }
+  selectedObligation: InspectionObligation | null
   scheduleLink?: { id: string; title: string } | null
 }) {
   const router = useRouter()
   const isMobile = useIsMobile()
   const [isCreating, setIsCreating] = useState(false)
-  const [sheetOpen, setSheetOpen] = useState(Boolean(scheduleLink))
+  const [sheetOpen, setSheetOpen] = useState(canWrite && Boolean(scheduleLink))
   const [search, setSearch] = useState("")
   const [kindFilter, setKindFilter] = useState<"all" | "safety" | "quality">("all")
   const [statusFilter, setStatusFilter] = useState<"all" | "open" | "completed">("all")
@@ -117,6 +130,7 @@ export function InspectionsClient({
   const closeInspection = () => router.push(`/projects/${projectId}/inspections`)
 
   const handleCreate = async (payload: CreateInspectionInput) => {
+    if (!canWrite) return
     setIsCreating(true)
     try {
       const inspection = unwrapAction(await createInspectionAction(payload))
@@ -133,7 +147,7 @@ export function InspectionsClient({
 
   return (
     <>
-      <InspectionForm
+      {canWrite ? <InspectionForm
         open={sheetOpen}
         onOpenChange={setSheetOpen}
         projectId={projectId}
@@ -143,13 +157,17 @@ export function InspectionsClient({
         scheduleLink={scheduleLink}
         isSubmitting={isCreating}
         onSubmit={handleCreate}
-      />
+      /> : null}
 
       {selected ? (
         <InspectionDetailSheet
           key={selected.id}
           projectId={projectId}
           inspection={selected}
+          canWrite={canWrite}
+          lifecycleEnabled={lifecycleEnabled}
+          canReview={canReview}
+          obligation={selectedObligation}
           companies={companies}
           open
           onOpenChange={(open) => { if (!open) closeInspection() }}
@@ -157,11 +175,12 @@ export function InspectionsClient({
       ) : null}
 
       <div className="-mx-4 -mb-4 -mt-6 flex h-[calc(100svh-3.5rem)] min-h-0 flex-col overflow-hidden bg-background">
+        {lifecycleEnabled ? <InspectionObligationsPanel projectId={projectId} page={obligationPage} /> : null}
         {isMobile ? (
           <div className="sticky top-0 z-20 shrink-0 border-b bg-background/95 backdrop-blur-sm">
             <div className="flex items-center gap-2 px-3 pt-3">
               <Input placeholder="Search inspections..." className="h-10 text-sm" value={search} onChange={(event) => setSearch(event.target.value)} inputMode="search" />
-              <Button size="icon" className="h-10 w-10 shrink-0" onClick={() => setSheetOpen(true)} aria-label="New inspection"><Plus className="h-4 w-4" /></Button>
+              {canWrite ? <Button size="icon" className="h-10 w-10 shrink-0" onClick={() => setSheetOpen(true)} aria-label="New inspection"><Plus className="h-4 w-4" /></Button> : null}
             </div>
             <div className="flex gap-1.5 overflow-x-auto px-3 py-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               {(["all", "safety", "quality"] as const).map((key) => {
@@ -217,10 +236,10 @@ export function InspectionsClient({
               <Button variant="outline" asChild className="w-full sm:w-auto">
                 <Link href="/settings/templates?section=checklists">Checklist library</Link>
               </Button>
-              <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
+              {canWrite ? <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
                 <Plus className="mr-2 h-4 w-4" />
                 New inspection
-              </Button>
+              </Button> : null}
             </div>
           </div>
         )}
@@ -236,7 +255,7 @@ export function InspectionsClient({
                   <p className="font-medium">{inspections.length ? "Nothing matches" : "No inspections yet"}</p>
                   <p className="mt-0.5 text-sm text-muted-foreground">{inspections.length ? "Try a different filter." : "Start your first inspection."}</p>
                 </div>
-                {inspections.length ? null : <Button className="mt-1" onClick={() => setSheetOpen(true)}><Plus className="mr-2 h-4 w-4" />New inspection</Button>}
+                {inspections.length || !canWrite ? null : <Button className="mt-1" onClick={() => setSheetOpen(true)}><Plus className="mr-2 h-4 w-4" />New inspection</Button>}
               </div>
             ) : (
               <ul className="divide-y">
@@ -307,7 +326,7 @@ export function InspectionsClient({
                     {inspections.length ? "Try a different search, type, status, or location." : "Run a safety or quality checklist to start documenting inspections."}
                   </p>
                 </div>
-                {inspections.length ? null : (
+                {inspections.length || !canWrite ? null : (
                   <Button size="sm" className="mt-1" onClick={() => setSheetOpen(true)}><Plus className="mr-2 h-4 w-4" />New inspection</Button>
                 )}
               </div>
@@ -322,12 +341,20 @@ export function InspectionsClient({
 function InspectionDetailSheet({
   projectId,
   inspection,
+  canWrite,
+  lifecycleEnabled,
+  canReview,
+  obligation,
   companies,
   open,
   onOpenChange,
 }: {
   projectId: string
   inspection: InspectionDetail
+  canWrite: boolean
+  lifecycleEnabled?: boolean
+  canReview?: boolean
+  obligation?: InspectionObligation | null
   companies: Array<{ id: string; name: string }>
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -336,11 +363,25 @@ function InspectionDetailSheet({
   const [pending, startTransition] = useTransition()
   const [items, setItems] = useState<InspectionItem[]>(inspection.items)
   const [notes, setNotes] = useState(inspection.notes ?? "")
-  const readOnly = inspection.status === "completed"
+  const [itemSource, setItemSource] = useState(inspection.items)
+  const [noteSource, setNoteSource] = useState(inspection.notes ?? "")
+  if (itemSource !== inspection.items) {
+    setItemSource(inspection.items)
+    setItems(inspection.items)
+  }
+  if (noteSource !== (inspection.notes ?? "")) {
+    setNoteSource(inspection.notes ?? "")
+    setNotes(inspection.notes ?? "")
+  }
+  const readOnly = !canWrite || inspection.status === "completed"
 
   const submit = (work: () => Promise<void>) =>
-    startTransition(() => {
-      void work().catch((error) => toast.error(error instanceof Error ? error.message : "Something went wrong"))
+    startTransition(async () => {
+      try {
+        await work()
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Something went wrong")
+      }
     })
 
   const patchItem = (itemId: string, patch: Record<string, unknown>) => {
@@ -358,7 +399,7 @@ function InspectionDetailSheet({
     sections.set(key, list)
   }
 
-  const deficientCount = items.filter((item) => item.is_deficient).length
+  const deficientCount = items.filter(inspectionItemNeedsCorrection).length
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -399,6 +440,7 @@ function InspectionDetailSheet({
                     item={item}
                     companies={companies}
                     readOnly={readOnly}
+                    canCreateCorrective={canWrite}
                     pending={pending}
                     onPatch={patchItem}
                     submit={submit}
@@ -427,6 +469,7 @@ function InspectionDetailSheet({
               }}
             />
           </div>
+          {lifecycleEnabled ? <InspectionLifecycleControls inspection={inspection} obligation={obligation ?? null} canWrite={canWrite} canReview={canReview ?? false} /> : null}
         </div>
 
         <div className="flex shrink-0 items-center gap-2 border-t bg-muted/30 p-4">
@@ -434,9 +477,16 @@ function InspectionDetailSheet({
             {deficientCount > 0 ? `${deficientCount} deficient item${deficientCount === 1 ? "" : "s"}` : "No deficiencies"}
           </span>
           <div className="flex-1" />
+          {canWrite && !obligation && inspection.status === "completed" && inspection.result === "pass" && inspection.schedule_item_id ? (
+            <Button variant="outline" disabled={pending} onClick={() => submit(async () => {
+              unwrapAction(await completeInspectionAction(projectId, inspection.id))
+              toast.success("Scheduled work completed")
+              router.refresh()
+            })}>Complete linked scheduled work</Button>
+          ) : null}
           {readOnly ? (
             <Badge variant="outline" className={cn("uppercase", inspection.result ? resultStyles[inspection.result] : undefined)}>
-              {inspection.result ?? "completed"}
+              {inspection.result ?? STATUS_LABELS[inspection.status] ?? inspection.status}
             </Badge>
           ) : (
             <Button
@@ -446,9 +496,13 @@ function InspectionDetailSheet({
                   if (notes !== (inspection.notes ?? "")) {
                     unwrapAction(await updateInspectionAction(projectId, inspection.id, { notes: notes || null }))
                   }
-                  const completed = unwrapAction(await completeInspectionAction(projectId, inspection.id))
-                  toast.success(`Inspection completed — ${completed.result?.toUpperCase()}`)
-                  router.refresh()
+                  try {
+                    const completed = unwrapAction(await completeInspectionAction(projectId, inspection.id))
+                    toast.success(`Inspection completed — ${completed.result?.toUpperCase()}`)
+                  } finally {
+                    // Completion may have recorded the attempt before its linked slot failed.
+                    router.refresh()
+                  }
                 })
               }
             >
@@ -466,6 +520,7 @@ function InspectionItemRow({
   item,
   companies,
   readOnly,
+  canCreateCorrective,
   pending,
   onPatch,
   submit,
@@ -475,12 +530,18 @@ function InspectionItemRow({
   item: InspectionItem
   companies: Array<{ id: string; name: string }>
   readOnly: boolean
+  canCreateCorrective: boolean
   pending: boolean
   onPatch: (itemId: string, patch: Record<string, unknown>) => void
   submit: (work: () => Promise<void>) => void
   onItemUpdated: (item: InspectionItem) => void
 }) {
   const [note, setNote] = useState(item.note ?? "")
+  const [noteSource, setNoteSource] = useState(item.note ?? "")
+  if (noteSource !== (item.note ?? "")) {
+    setNoteSource(item.note ?? "")
+    setNote(item.note ?? "")
+  }
   const [actionCompany, setActionCompany] = useState<string>("__none__")
 
   const responseButtons: Array<{ value: string; label: string; activeClass: string }> =
@@ -499,15 +560,16 @@ function InspectionItemRow({
   const isFreeform = item.response_type === "text" || item.response_type === "number"
 
   return (
-    <div className={cn("px-6 py-3", item.is_deficient && "bg-destructive/[0.04]")}>
+    <div className={cn("px-6 py-3", inspectionItemNeedsCorrection(item) && "bg-destructive/[0.04]")}>
       <div className="flex flex-wrap items-center gap-3">
         <p className="min-w-0 flex-1 text-sm">{item.prompt}</p>
         {isFreeform ? (
           <Input
+            key={item.response ?? ""}
             className="h-9 w-44"
             type={item.response_type === "number" ? "number" : "text"}
             defaultValue={item.response ?? ""}
-            disabled={readOnly}
+            disabled={readOnly || pending}
             onBlur={(event) => {
               const value = event.target.value.trim()
               if (value === (item.response ?? "")) return
@@ -534,14 +596,14 @@ function InspectionItemRow({
         )}
       </div>
 
-      {item.is_deficient ? (
+      {inspectionItemNeedsCorrection(item) ? (
         <div className="mt-2 space-y-2">
           <div className="flex flex-wrap items-center gap-2">
             <Input
               className="h-8 w-full max-w-md text-xs"
               value={note}
               placeholder="Deficiency note..."
-              disabled={readOnly}
+              disabled={readOnly || pending}
               onChange={(event) => setNote(event.target.value)}
               onBlur={() => {
                 if (note === (item.note ?? "")) return
@@ -549,12 +611,12 @@ function InspectionItemRow({
               }}
             />
             {item.punch_item_id ? (
-              <Badge variant="outline" className="text-[10px]">Punch item created</Badge>
+              <Link href={`/projects/${projectId}/punch`} className="text-xs underline underline-offset-4">Open corrective punch work</Link>
             ) : null}
             {item.observation_id ? (
               <Badge variant="outline" className="text-[10px]">Observation created</Badge>
             ) : null}
-            {!item.punch_item_id || !item.observation_id ? (
+            {canCreateCorrective && (!item.punch_item_id || !item.observation_id) ? (
               <div className="flex items-center gap-1.5">
                 <Select value={actionCompany} onValueChange={setActionCompany}>
                   <SelectTrigger className="h-8 w-44 text-xs"><SelectValue /></SelectTrigger>

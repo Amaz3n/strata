@@ -55,6 +55,25 @@ interface FileListProps {
   isLoading?: boolean
 }
 
+function SortIcon({
+  field,
+  sortField,
+  sortOrder,
+}: {
+  field: SortField
+  sortField: SortField
+  sortOrder: SortOrder
+}) {
+  if (sortField !== field) {
+    return <ArrowUpDown className="ml-1 h-3 w-3 opacity-40" />
+  }
+  return sortOrder === "asc" ? (
+    <ArrowUp className="ml-1 h-3 w-3" />
+  ) : (
+    <ArrowDown className="ml-1 h-3 w-3" />
+  )
+}
+
 export function FileList({
   files,
   selectedIds,
@@ -115,17 +134,6 @@ export function FileList({
     }
   })
 
-  const SortIcon = ({ field }: { field: SortField }) => {
-    if (sortField !== field) {
-      return <ArrowUpDown className="ml-1 h-3 w-3 opacity-40" />
-    }
-    return sortOrder === "asc" ? (
-      <ArrowUp className="ml-1 h-3 w-3" />
-    ) : (
-      <ArrowDown className="ml-1 h-3 w-3" />
-    )
-  }
-
   if (files.length === 0 && !isLoading) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -152,16 +160,16 @@ export function FileList({
           />
         </div>
         <button className="flex items-center hover:text-foreground transition-colors text-left" onClick={() => handleSort("name")}>
-          Name <SortIcon field="name" />
+          Name <SortIcon sortField={sortField} sortOrder={sortOrder} field="name" />
         </button>
         <button className="hidden md:flex items-center hover:text-foreground transition-colors" onClick={() => handleSort("category")}>
-          Category <SortIcon field="category" />
+          Category <SortIcon sortField={sortField} sortOrder={sortOrder} field="category" />
         </button>
         <button className="hidden sm:flex items-center hover:text-foreground transition-colors" onClick={() => handleSort("size")}>
-          Size <SortIcon field="size" />
+          Size <SortIcon sortField={sortField} sortOrder={sortOrder} field="size" />
         </button>
         <button className="flex items-center hover:text-foreground transition-colors" onClick={() => handleSort("date")}>
-          Date <SortIcon field="date" />
+          Date <SortIcon sortField={sortField} sortOrder={sortOrder} field="date" />
         </button>
         <div />
       </div>

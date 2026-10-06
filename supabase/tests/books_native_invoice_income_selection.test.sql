@@ -1,0 +1,16 @@
+begin;
+select plan(12);
+select ok(not has_table_privilege('authenticated','public.books_native_invoice_income_selections','select'),'browser cannot inspect native coding receipts directly');
+select ok(not has_table_privilege('anon','public.books_native_invoice_income_selections','insert'),'anonymous cannot code native invoices');
+select ok(has_table_privilege('service_role','public.books_native_invoice_income_selections','select,insert'),'server may append exact coding receipts');
+select ok(not has_table_privilege('service_role','public.books_native_invoice_income_selections','update,delete'),'native coding history cannot be rewritten');
+select ok(not has_function_privilege('authenticated','public.select_books_native_invoice_income(uuid,uuid,uuid,uuid,jsonb)','execute'),'browser cannot invoke private coding RPC');
+select ok(has_function_privilege('service_role','public.select_books_native_invoice_income(uuid,uuid,uuid,uuid,jsonb)','execute'),'authorized server may invoke native coding RPC');
+select ok(not (select prosecdef from pg_proc where oid='public.select_books_native_invoice_income(uuid,uuid,uuid,uuid,jsonb)'::regprocedure),'coding retains invoker authority');
+select ok(exists(select 1 from pg_trigger where tgrelid='public.books_native_invoice_income_selections'::regclass and tgname='books_native_invoice_income_selection_guard'),'direct receipt insert enforces source/chart and atomic coding');
+select ok(exists(select 1 from pg_constraint where conrelid='public.books_native_invoice_postings'::regclass and confrelid='public.books_native_invoice_income_selections'::regclass and contype='f' and cardinality(conkey)=3),'journal selection origin retains organization and entity foreign key');
+select ok(exists(select 1 from pg_constraint where conrelid='public.books_native_invoice_income_selections'::regclass and contype='u' and cardinality(conkey)=4),'income revision ordinal is unique within its scoped invoice');
+select ok(exists(select 1 from pg_attribute where attrelid='public.books_native_invoice_postings'::regclass and attname='income_selection_id' and not attisdropped),'journal preserves income selection identity');
+select ok(not has_function_privilege('authenticated','public.capture_books_export_snapshot(uuid)','execute') and has_function_privilege('service_role','public.capture_books_export_snapshot(uuid)','execute') and not (select prosecdef from pg_proc where oid='public.capture_books_export_snapshot(uuid)'::regprocedure),'schema28 capture remains private and invoker');
+select * from finish();
+rollback;

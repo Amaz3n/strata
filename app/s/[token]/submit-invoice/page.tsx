@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import Link from "next/link"
 import { notFound } from "next/navigation"
 import { ShieldAlert } from "lucide-react"
@@ -21,6 +22,7 @@ export default async function SubmitInvoicePage({
   params,
   searchParams,
 }: SubmitInvoicePageProps) {
+  await connection()
   const { token } = await params
   const { commitment: preselectedCommitmentId } = await searchParams
 

@@ -2,9 +2,11 @@
 
 import { useEffect, useMemo, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
+import Link from "next/link"
 import { toast } from "sonner"
+import { format } from "date-fns"
 
-import type { BidPackage } from "@/lib/services/bids"
+import type { BidPackage, BidPricingDecision } from "@/lib/services/bids"
 import { getBidPackageStage } from "@/lib/bids/stage"
 import type { CostCode } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -26,13 +28,14 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
-import { CalendarDays, Plus } from "@/components/icons"
+import { CalendarDays, Plus, Search, ArrowRight, Briefcase } from "@/components/icons"
 import { createBidPackageAction } from "@/app/(app)/bids/actions"
 import { CostCodeSelectItems } from "@/components/cost-codes/cost-code-select-items"
 import { unwrapAction } from "@/lib/action-result"
 import {
   STAGE_LABELS,
   US_TIMEZONES,
+  zonedDueAt,
   formatDueDate,
   isDuePast,
   money,
@@ -48,6 +51,8 @@ interface BudgetLineOption {
 }
 
 interface BidPackagesClientProps {
+  workspaceBasePath?: string
+  pricingDecisions?: BidPricingDecision[]
   projectId?: string
   packages: BidPackage[]
   tradeOptions: string[]
@@ -86,23 +91,14 @@ const STAGE_TONE: Record<BidPackageStage, string> = {
   cancelled: "text-muted-foreground",
 }
 
-function combineDateAndTime(date: Date, time: string): Date {
-  const [hoursRaw, minutesRaw] = time.split(":")
-  const hours = Number.parseInt(hoursRaw ?? "", 10)
-  const minutes = Number.parseInt(minutesRaw ?? "", 10)
-  const next = new Date(date)
-  next.setHours(Number.isFinite(hours) ? hours : 17, Number.isFinite(minutes) ? minutes : 0, 0, 0)
-  return next
-}
-
 function CoverageBar({ responses, invited }: { responses: number; invited: number }) {
   const ratio = invited > 0 ? Math.min(1, responses / invited) : 0
   const incomplete = invited > 0 && responses < invited
   return (
     <div className="flex items-center justify-end gap-2">
-      <div className="h-1.5 w-16 overflow-hidden rounded-full bg-muted" aria-hidden>
+      <div className="h-1.5 w-16 overflow-hidden rounded-none bg-muted" aria-hidden>
         <div
-          className={cn("h-full rounded-full", incomplete ? "bg-warning" : "bg-success")}
+          className={cn("h-full rounded-none", incomplete ? "bg-warning" : "bg-success")}
           style={{ width: `${Math.round(ratio * 100)}%` }}
         />
       </div>
@@ -114,6 +110,8 @@ function CoverageBar({ responses, invited }: { responses: number; invited: numbe
 }
 
 export function BidPackagesClient({
+  workspaceBasePath,
+  pricingDecisions = [],
   projectId,
   packages,
   tradeOptions,
@@ -259,7 +257,7 @@ export function BidPackagesClient({
           bond_required: mode === "tender" ? bondRequired : false,
           scope: scope.trim() || null,
           instructions: instructions.trim() || null,
-          due_at: dueDate ? combineDateAndTime(dueDate, dueTime).toISOString() : null,
+          due_at: dueDate ? zonedDueAt(format(dueDate, "yyyy-MM-dd"), dueTime, dueTz) : null,
           due_tz: dueDate ? dueTz : null,
         }
         const created = unwrapAction(await createBidPackageAction({ projectId }, payload))
@@ -275,11 +273,27 @@ export function BidPackagesClient({
     })
   }
 
-  const basePath = projectId ? `/projects/${projectId}/bids` : ""
-  const columnCount = projectId ? 7 : 6
+  const basePath = workspaceBasePath ? `${workspaceBasePath}/bids` : projectId ? `/projects/${projectId}/bids` : ""
+  const columnCount = projectId ? 7 : 5
+  const isPrecon = Boolean(workspaceBasePath)
+  const pricingByPackage = new Map(pricingDecisions.map((decision) => [decision.bid_package_id, decision]))
 
   return (
-    <div className="space-y-4">
+    <div className={isPrecon ? "space-y-7" : "space-y-4"}>
+      {isPrecon && (
+        <header className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-semibold tracking-tight">Trade pricing</h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Request quotes, compare scope, and choose the pricing basis.
+            </p>
+          </div>
+          <Button className="h-10 rounded-none px-4" onClick={() => setCreateOpen(true)}>
+            <Plus className="size-4" />
+            New package
+          </Button>
+        </header>
+      )}
       <Sheet
         open={createOpen}
         onOpenChange={(open) => {
@@ -287,7 +301,14 @@ export function BidPackagesClient({
           if (!open) resetForm()
         }}
       >
-        <SheetContent side="right" className="flex w-full flex-col p-0 sm:max-w-lg">
+        <SheetContent
+          side="right"
+          className={cn(
+            "flex w-full flex-col p-0 sm:max-w-lg",
+            isPrecon &&
+              "[&_[data-slot=input]]:rounded-none [&_[data-slot=select-trigger]]:rounded-none [&_[data-slot=textarea]]:rounded-none [&_[data-slot=button]]:rounded-none",
+          )}
+        >
           <SheetHeader className="border-b px-6 py-4">
             <SheetTitle>New bid package</SheetTitle>
             <SheetDescription>Create an invite-to-bid package for this project.</SheetDescription>
@@ -367,7 +388,9 @@ export function BidPackagesClient({
                       className={cn("w-full justify-start text-left font-normal", !dueDate && "text-muted-foreground")}
                     >
                       <CalendarDays className="mr-2 h-4 w-4" />
-                      {dueDate ? formatDueDate(combineDateAndTime(dueDate, dueTime).toISOString(), dueTz) : "Pick a date"}
+                      {dueDate
+                        ? formatDueDate(zonedDueAt(format(dueDate, "yyyy-MM-dd"), dueTime, dueTz), dueTz)
+                        : "Pick a date"}
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent className="w-auto p-0" align="start">
@@ -432,156 +455,323 @@ export function BidPackagesClient({
         </SheetContent>
       </Sheet>
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="grid flex-1 gap-2 sm:grid-cols-[minmax(220px,1fr)_160px_180px]">
-          <Input
-            placeholder="Search packages…"
-            className="w-full"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-          />
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-full">
-              <SelectValue placeholder="Status" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_STATUSES}>All statuses</SelectItem>
-              {["draft", "sent", "open", "closed", "awarded", "cancelled"].map((option) => (
-                <SelectItem key={option} value={option}>
-                  {option[0].toUpperCase() + option.slice(1)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={sortBy} onValueChange={(value) => setSortBy(value as SortOption)}>
-            <SelectTrigger className="w-full">
-              <SelectValue placeholder="Sort" />
-            </SelectTrigger>
-            <SelectContent>
-              {sortOptions.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="mr-2 h-4 w-4" />
-          New package
-        </Button>
-      </div>
-
-      <div className="overflow-hidden rounded-lg border">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="px-4 py-2.5">Trade / Package</TableHead>
-              {projectId ? <TableHead className="px-4 py-2.5 text-right">Budget</TableHead> : null}
-              <TableHead className="px-4 py-2.5 text-right">Coverage</TableHead>
-              <TableHead className="px-4 py-2.5 text-right">Low bid</TableHead>
-              {projectId ? <TableHead className="px-4 py-2.5 text-right">Δ Budget</TableHead> : null}
-              <TableHead className="px-4 py-2.5">Stage</TableHead>
-              <TableHead className="px-4 py-2.5">Due</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {filtered.length === 0 && uncoveredBudgetLines.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={columnCount} className="py-12 text-center text-sm text-muted-foreground">
-                  {search || statusFilter !== ALL_STATUSES
-                    ? "No packages match your filters."
-                    : "No bid packages yet. Create one to invite vendors."}
-                </TableCell>
-              </TableRow>
-            ) : (
-              <>
+      {isPrecon ? (
+        <section className="overflow-hidden rounded-none border border-border/80 bg-card">
+          <div className="flex flex-wrap items-center gap-3 border-b border-border/70 p-4 sm:p-5">
+            <div className="relative min-w-48 flex-1">
+              <Search
+                aria-hidden="true"
+                className="pointer-events-none absolute left-3 top-3 size-4 text-muted-foreground"
+              />
+              <Input
+                aria-label="Search trade packages"
+                placeholder="Search packages…"
+                className="h-10 rounded-none border-transparent bg-muted/50 pl-9"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            </div>
+            <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <SelectTrigger aria-label="Package status" className="h-10 w-36 rounded-none">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL_STATUSES}>All statuses</SelectItem>
+                {["draft", "sent", "open", "closed", "awarded", "cancelled"].map((option) => (
+                  <SelectItem key={option} value={option}>
+                    {option[0].toUpperCase() + option.slice(1)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={sortBy} onValueChange={(value) => setSortBy(value as SortOption)}>
+              <SelectTrigger aria-label="Sort packages" className="h-10 w-44 rounded-none">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {sortOptions.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {filtered.length ? (
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-muted/20 hover:bg-muted/20">
+                  <TableHead className="pl-5 text-xs">Package</TableHead>
+                  <TableHead className="text-right text-xs">Responses</TableHead>
+                  <TableHead className="text-right text-xs">Vendor quote</TableHead>
+                  <TableHead className="text-right text-xs">Complete scope</TableHead>
+                  <TableHead className="pr-5 text-right text-xs">Due</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {filtered.map((pkg) => {
-                  const href = `${basePath}/${pkg.id}`
-                  const invited = pkg.invite_count ?? 0
-                  const responses = pkg.response_count ?? 0
+                  const pricing = pricingByPackage.get(pkg.id)
                   const stage = getBidPackageStage(pkg)
-                  const variance =
-                    pkg.budget_cents != null && pkg.lowest_bid_cents != null
-                      ? pkg.lowest_bid_cents - pkg.budget_cents
-                      : null
-                  const overdue = isDuePast(pkg.due_at) && stage === "bidding"
                   return (
-                    <TableRow
-                      key={pkg.id}
-                      className="cursor-pointer hover:bg-muted/40"
-                      onClick={() => router.push(href)}
-                    >
-                      <TableCell className="px-4 py-2.5">
-                        <div className="font-medium">{pkg.title}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {pkg.trade ?? "No trade"}
-                          {pkg.cost_code_code ? ` · ${pkg.cost_code_code}` : ""}
+                    <TableRow key={pkg.id} className="group hover:bg-muted/30">
+                      <TableCell className="min-w-52 py-5 pl-5">
+                        <Link
+                          href={`${basePath}/${pkg.id}`}
+                          className="inline-flex items-center gap-2 rounded-none font-medium outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          {pkg.title}
+                          <ArrowRight className="size-3.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100" />
+                        </Link>
+                        <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                          <span>{pkg.trade ?? "Trade not set"}</span>
+                          <span aria-hidden="true">·</span>
+                          <span className={STAGE_TONE[stage]}>{STAGE_LABELS[stage]}</span>
                         </div>
                       </TableCell>
-                      {projectId ? (
-                        <TableCell className="px-4 py-2.5 text-right tabular-nums text-sm">
-                          {money(pkg.budget_cents)}
-                        </TableCell>
-                      ) : null}
-                      <TableCell className="px-4 py-2.5">
-                        <CoverageBar responses={responses} invited={invited} />
+                      <TableCell className="tabular-nums">
+                        <CoverageBar responses={pkg.response_count ?? 0} invited={pkg.invite_count ?? 0} />
                       </TableCell>
-                      <TableCell className="px-4 py-2.5 text-right tabular-nums text-sm">
-                        {money(pkg.lowest_bid_cents)}
+                      <TableCell className="text-right tabular-nums">
+                        <span className="font-medium">
+                          {money(pricing?.vendor_total_cents ?? pkg.lowest_bid_cents)}
+                        </span>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {pricing
+                            ? "Selected quote"
+                            : pkg.lowest_bid_cents != null
+                              ? "Lowest quote"
+                              : "Awaiting quotes"}
+                        </p>
                       </TableCell>
-                      {projectId ? (
-                        <TableCell
+                      <TableCell className="text-right tabular-nums">
+                        <span className="font-medium">{money(pricing?.normalized_total_cents)}</span>
+                        <p
                           className={cn(
-                            "px-4 py-2.5 text-right tabular-nums text-sm",
-                            variance == null && "text-muted-foreground",
-                            variance != null && variance > 0 && "text-destructive",
-                            variance != null && variance <= 0 && "text-success",
+                            "mt-1 max-w-48 text-xs",
+                            pricing?.eligibility_reason ? "text-warning" : "text-muted-foreground",
                           )}
                         >
-                          {variance == null ? "—" : signedMoney(variance)}
-                        </TableCell>
-                      ) : null}
-                      <TableCell className={cn("px-4 py-2.5 text-sm", STAGE_TONE[stage])}>
-                        {STAGE_LABELS[stage]}
+                          {pricing?.eligibility_reason
+                            ? `Review: ${pricing.eligibility_reason}`
+                            : pricing
+                              ? "Pricing basis selected"
+                              : "Not selected"}
+                        </p>
                       </TableCell>
                       <TableCell
-                        className={cn("px-4 py-2.5 text-sm", overdue ? "text-destructive" : "text-muted-foreground")}
+                        className={cn(
+                          "whitespace-nowrap pr-5 text-right text-xs",
+                          isDuePast(pkg.due_at) && stage === "bidding" ? "text-warning" : "text-muted-foreground",
+                        )}
                       >
-                        <div>{formatDueDate(pkg.due_at, pkg.due_tz)}</div>
-                        {relativeDueDate(pkg.due_at) ? (
-                          <div className="text-xs text-muted-foreground">{relativeDueDate(pkg.due_at)}</div>
-                        ) : null}
+                        {formatDueDate(pkg.due_at, pkg.due_tz)}
                       </TableCell>
                     </TableRow>
                   )
                 })}
-                {uncoveredBudgetLines.map((line) => (
-                  <TableRow key={`budget-${line.id}`} className="bg-muted/20">
-                    <TableCell className="px-4 py-2.5">
-                      <div className="font-medium text-muted-foreground">{line.description ?? "Budget line"}</div>
-                      <div className="text-xs text-muted-foreground">Not out to bid</div>
-                    </TableCell>
-                    <TableCell className="px-4 py-2.5 text-right tabular-nums text-sm text-muted-foreground">
-                      {money(line.amount_cents)}
-                    </TableCell>
-                    <TableCell className="px-4 py-2.5 text-right text-xs text-muted-foreground">—</TableCell>
-                    <TableCell className="px-4 py-2.5 text-right text-sm text-muted-foreground">—</TableCell>
-                    <TableCell className="px-4 py-2.5 text-right text-sm text-muted-foreground">—</TableCell>
-                    <TableCell className="px-4 py-2.5 text-sm text-muted-foreground">—</TableCell>
-                    <TableCell className="px-4 py-2.5">
-                      <Button variant="outline" size="sm" className="h-7" onClick={() => openCreateForBudgetLine(line)}>
-                        <Plus className="mr-1 h-3.5 w-3.5" />
-                        Start package
-                      </Button>
+              </TableBody>
+            </Table>
+          ) : (
+            <div className="flex min-h-80 flex-col items-center justify-center px-6 py-14 text-center">
+              <div className="mb-4 flex size-12 items-center justify-center rounded-none bg-muted/60">
+                <Briefcase className="size-5 text-muted-foreground" />
+              </div>
+              <h3 className="text-base font-medium">
+                {search || statusFilter !== ALL_STATUSES ? "No matching packages" : "Start with a trade package"}
+              </h3>
+              <p className="mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
+                {search || statusFilter !== ALL_STATUSES
+                  ? "Try another search or clear your filters."
+                  : "Define the scope, invite vendors, and compare their quotes in one place."}
+              </p>
+              {search || statusFilter !== ALL_STATUSES ? (
+                <Button
+                  variant="ghost"
+                  className="mt-5 rounded-none"
+                  onClick={() => {
+                    setSearch("")
+                    setStatusFilter(ALL_STATUSES)
+                  }}
+                >
+                  Clear filters
+                </Button>
+              ) : (
+                <Button variant="outline" className="mt-5 rounded-none" onClick={() => setCreateOpen(true)}>
+                  <Plus className="size-4" />
+                  Create package
+                </Button>
+              )}
+            </div>
+          )}
+          {items.length > 0 && (
+            <div className="border-t border-border/70 px-5 py-3 text-xs text-muted-foreground">
+              {filtered.length} of {items.length} packages · Complete scope includes the selected quote and documented
+              scope adjustments.
+            </div>
+          )}
+        </section>
+      ) : (
+        <>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="grid flex-1 gap-2 sm:grid-cols-[minmax(220px,1fr)_160px_180px]">
+              <Input
+                placeholder="Search packages…"
+                className="w-full"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_STATUSES}>All statuses</SelectItem>
+                  {["draft", "sent", "open", "closed", "awarded", "cancelled"].map((option) => (
+                    <SelectItem key={option} value={option}>
+                      {option[0].toUpperCase() + option.slice(1)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={sortBy} onValueChange={(value) => setSortBy(value as SortOption)}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Sort" />
+                </SelectTrigger>
+                <SelectContent>
+                  {sortOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <Button onClick={() => setCreateOpen(true)}>
+              <Plus className="mr-2 h-4 w-4" />
+              New package
+            </Button>
+          </div>
+
+          <div className="overflow-hidden rounded-none border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="px-4 py-2.5">Trade / Package</TableHead>
+                  {projectId ? <TableHead className="px-4 py-2.5 text-right">Budget</TableHead> : null}
+                  <TableHead className="px-4 py-2.5 text-right">Coverage</TableHead>
+                  <TableHead className="px-4 py-2.5 text-right">Low bid</TableHead>
+                  {projectId ? <TableHead className="px-4 py-2.5 text-right">Δ Budget</TableHead> : null}
+                  <TableHead className="px-4 py-2.5">Stage</TableHead>
+                  <TableHead className="px-4 py-2.5">Due</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filtered.length === 0 && uncoveredBudgetLines.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={columnCount} className="py-12 text-center text-sm text-muted-foreground">
+                      {search || statusFilter !== ALL_STATUSES
+                        ? "No packages match your filters."
+                        : "No bid packages yet. Create one to invite vendors."}
                     </TableCell>
                   </TableRow>
-                ))}
-              </>
-            )}
-          </TableBody>
-        </Table>
-      </div>
+                ) : (
+                  <>
+                    {filtered.map((pkg) => {
+                      const href = `${basePath}/${pkg.id}`
+                      const invited = pkg.invite_count ?? 0
+                      const responses = pkg.response_count ?? 0
+                      const stage = getBidPackageStage(pkg)
+                      const variance =
+                        pkg.budget_cents != null && pkg.lowest_bid_cents != null
+                          ? pkg.lowest_bid_cents - pkg.budget_cents
+                          : null
+                      const overdue = isDuePast(pkg.due_at) && stage === "bidding"
+                      return (
+                        <TableRow
+                          key={pkg.id}
+                          className="cursor-pointer hover:bg-muted/40"
+                          onClick={() => router.push(href)}
+                        >
+                          <TableCell className="px-4 py-2.5">
+                            <div className="font-medium">{pkg.title}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {pkg.trade ?? "No trade"}
+                              {pkg.cost_code_code ? ` · ${pkg.cost_code_code}` : ""}
+                            </div>
+                          </TableCell>
+                          {projectId ? (
+                            <TableCell className="px-4 py-2.5 text-right tabular-nums text-sm">
+                              {money(pkg.budget_cents)}
+                            </TableCell>
+                          ) : null}
+                          <TableCell className="px-4 py-2.5">
+                            <CoverageBar responses={responses} invited={invited} />
+                          </TableCell>
+                          <TableCell className="px-4 py-2.5 text-right tabular-nums text-sm">
+                            {money(pkg.lowest_bid_cents)}
+                          </TableCell>
+                          {projectId ? (
+                            <TableCell
+                              className={cn(
+                                "px-4 py-2.5 text-right tabular-nums text-sm",
+                                variance == null && "text-muted-foreground",
+                                variance != null && variance > 0 && "text-destructive",
+                                variance != null && variance <= 0 && "text-success",
+                              )}
+                            >
+                              {variance == null ? "—" : signedMoney(variance)}
+                            </TableCell>
+                          ) : null}
+                          <TableCell className={cn("px-4 py-2.5 text-sm", STAGE_TONE[stage])}>
+                            {STAGE_LABELS[stage]}
+                          </TableCell>
+                          <TableCell
+                            className={cn(
+                              "px-4 py-2.5 text-sm",
+                              overdue ? "text-destructive" : "text-muted-foreground",
+                            )}
+                          >
+                            <div>{formatDueDate(pkg.due_at, pkg.due_tz)}</div>
+                            {relativeDueDate(pkg.due_at) ? (
+                              <div className="text-xs text-muted-foreground">{relativeDueDate(pkg.due_at)}</div>
+                            ) : null}
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
+                    {uncoveredBudgetLines.map((line) => (
+                      <TableRow key={`budget-${line.id}`} className="bg-muted/20">
+                        <TableCell className="px-4 py-2.5">
+                          <div className="font-medium text-muted-foreground">{line.description ?? "Budget line"}</div>
+                          <div className="text-xs text-muted-foreground">Not out to bid</div>
+                        </TableCell>
+                        <TableCell className="px-4 py-2.5 text-right tabular-nums text-sm text-muted-foreground">
+                          {money(line.amount_cents)}
+                        </TableCell>
+                        <TableCell className="px-4 py-2.5 text-right text-xs text-muted-foreground">—</TableCell>
+                        <TableCell className="px-4 py-2.5 text-right text-sm text-muted-foreground">—</TableCell>
+                        <TableCell className="px-4 py-2.5 text-right text-sm text-muted-foreground">—</TableCell>
+                        <TableCell className="px-4 py-2.5 text-sm text-muted-foreground">—</TableCell>
+                        <TableCell className="px-4 py-2.5">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7"
+                            onClick={() => openCreateForBudgetLine(line)}
+                          >
+                            <Plus className="mr-1 h-3.5 w-3.5" />
+                            Start package
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </>
+      )}
     </div>
   )
 }

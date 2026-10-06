@@ -1,6 +1,8 @@
 "use client"
 
 import Link from "next/link"
+import { warrantyQueueFilterHref } from "@/lib/warranty/desk-query"
+import { useRouter, useSearchParams } from "next/navigation"
 import { useCallback, useMemo, useState, useTransition } from "react"
 import { AlertTriangle, CalendarClock, PhoneCall, Plus, Trash2 } from "lucide-react"
 import { toast } from "sonner"
@@ -56,6 +58,8 @@ const QUEUE_FILTERS = [
   { value: "awaiting_first_response", label: "Awaiting first contact" },
   { value: "first_response_breached", label: "First response overdue" },
   { value: "breached", label: "Resolution overdue" },
+  { value: "due_soon", label: "Resolution due soon" },
+  { value: "first_response_due_soon", label: "First response due soon" },
 ] as const
 
 const RESOLUTIONS = [
@@ -80,9 +84,16 @@ function draftTotalCents(rows: CostBasisDraft[]) {
 }
 
 export function WarrantyDeskClient({
+  initialTab = "queue", analyticsAvailable = true, dispatchWeekStart, initialSearch = "", initialSla = "all",
   requests: initialRequests, total, visits, pendingVerification: initialPendingVerification,
-  backcharges, defects, costs, technicians, companies,
+  backcharges, defects, costs, technicians, companies, canReviewAccounting = false,
 }: {
+  dispatchWeekStart: string
+  initialSearch?: string
+  initialSla?: string
+  analyticsAvailable?: boolean
+  initialTab?: string
+  canReviewAccounting?: boolean
   requests: DeskRequest[]
   total: number
   visits: DispatchVisit[]
@@ -93,6 +104,8 @@ export function WarrantyDeskClient({
   technicians: Array<{ id: string; name: string }>
   companies: Array<{ id: string; name: string }>
 }) {
+  const router = useRouter()
+  const searchParams = useSearchParams()
   const [requests, setRequests] = useState(initialRequests)
   const [scheduledVisits, setScheduledVisits] = useState(visits)
   const [awaitingVerification, setAwaitingVerification] = useState(initialPendingVerification)
@@ -100,8 +113,8 @@ export function WarrantyDeskClient({
   const [selected, setSelected] = useState<DeskRequest | null>(null)
   const [pending, startTransition] = useTransition()
 
-  const [filter, setFilter] = useState("")
-  const [slaFilter, setSlaFilter] = useState<string>("all")
+  const [filter, setFilter] = useState(initialSearch)
+  const [slaFilter, setSlaFilter] = useState<string>(initialSla)
 
   const [acknowledgeChannel, setAcknowledgeChannel] = useState("phone")
   const [acknowledgeNote, setAcknowledgeNote] = useState("")
@@ -126,17 +139,11 @@ export function WarrantyDeskClient({
 
   const now = useMemo(() => new Date(), [])
 
-  const visible = useMemo(() => {
-    const term = filter.trim().toLowerCase()
-    return requests.filter((request) => {
-      if (term && !`${request.title} ${request.project_name ?? ""} ${request.community_name ?? ""}`.toLowerCase().includes(term)) return false
-      if (slaFilter === "all") return true
-      const firstResponse = warrantyFirstResponseState(request, now)
-      if (slaFilter === "awaiting_first_response") return firstResponse !== "met"
-      if (slaFilter === "first_response_breached") return firstResponse === "breached"
-      return warrantyResolutionState(request, now) === "breached"
-    })
-  }, [requests, filter, slaFilter, now])
+  const visible = requests
+  const applyQueueFilters = (search: string, sla: string) => {
+    const href = warrantyQueueFilterHref(searchParams.toString(), search, sla)
+    startTransition(() => router.push(href, { scroll: false }))
+  }
 
   const openSheet = useCallback((request: DeskRequest) => {
     setSelected(request)
@@ -184,14 +191,19 @@ export function WarrantyDeskClient({
 
   return (
     <div className="desk-rise space-y-4">
-      <Tabs defaultValue="queue" className="space-y-4">
+      <Tabs value={initialTab} onValueChange={(tab) => {
+        const params = new URLSearchParams(searchParams.toString())
+        params.set("tab", tab)
+        params.delete("page")
+        startTransition(() => router.push(`/warranty?${params}`, { scroll: false }))
+      }} className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <TabsList>
-            <TabsTrigger value="queue">Queue</TabsTrigger>
-            <TabsTrigger value="dispatch">Dispatch</TabsTrigger>
-            <TabsTrigger value="verify">Verify{awaitingVerification.length ? ` (${awaitingVerification.length})` : ""}</TabsTrigger>
-            <TabsTrigger value="backcharges">Backcharges</TabsTrigger>
-            <TabsTrigger value="analytics">Analytics</TabsTrigger>
+            <TabsTrigger disabled={pending} value="queue">Queue</TabsTrigger>
+            <TabsTrigger disabled={pending} value="dispatch">Dispatch</TabsTrigger>
+            <TabsTrigger disabled={pending} value="verify">Verify{awaitingVerification.length ? ` (${awaitingVerification.length})` : ""}</TabsTrigger>
+            <TabsTrigger disabled={pending} value="backcharges">Backcharges</TabsTrigger>
+            <TabsTrigger disabled={pending} value="analytics">Analytics</TabsTrigger>
           </TabsList>
           <Button
             size="sm"
@@ -209,15 +221,17 @@ export function WarrantyDeskClient({
 
         <TabsContent value="queue" className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <Input className="w-72" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search home, community, or request" />
-              <Select value={slaFilter} onValueChange={setSlaFilter}>
+            <form className="flex flex-wrap items-center gap-2" onSubmit={(event) => { event.preventDefault(); applyQueueFilters(filter, slaFilter) }}>
+              <Input aria-label="Search warranty requests" maxLength={200} className="w-72" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search home, community, or request" />
+              <Select disabled={pending} value={slaFilter} onValueChange={(value) => { setSlaFilter(value); applyQueueFilters(filter, value) }}>
                 <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
                 <SelectContent>{QUEUE_FILTERS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
               </Select>
-            </div>
+              <Button type="submit" size="sm" variant="outline" disabled={pending}>Search</Button>
+              {(initialSearch || initialSla !== "all") && <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => { setFilter(""); setSlaFilter("all"); applyQueueFilters("", "all") }}>Clear</Button>}
+            </form>
             <p className="text-xs text-muted-foreground tabular-nums">
-              {visible.length} of {requests.length} shown{total > requests.length ? ` · ${total} open in total (first ${requests.length} loaded)` : ""}
+              {visible.length} shown on this page · {total} matching requests
             </p>
           </div>
           <div className="overflow-x-auto border border-border">
@@ -278,25 +292,26 @@ export function WarrantyDeskClient({
         <TabsContent value="dispatch">
           <div className="grid gap-3 border border-border p-3 md:grid-cols-7">
             {Array.from({ length: 7 }, (_, day) => {
-              const date = new Date()
-              date.setDate(date.getDate() - date.getDay() + day)
-              const dayVisits = scheduledVisits.filter((visit) => new Date(visit.window_start).toDateString() === date.toDateString())
+              const date = new Date(dispatchWeekStart)
+              date.setUTCDate(date.getUTCDate() + day)
+              const dayVisits = scheduledVisits.filter((visit) => new Date(visit.window_start).toISOString().slice(0, 10) === date.toISOString().slice(0, 10))
               return (
                 <div key={day} className="min-h-40 border border-border">
                   <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1 text-xs font-medium">
-                    <span>{date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}</span>
+                    <span>{date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" })}</span>
                     <span className="tabular-nums text-muted-foreground">{dayVisits.length || ""}</span>
                   </div>
                   <div className="space-y-1 p-1">
                     {dayVisits.map((visit) => (
                       <div key={visit.id} className="border border-border p-2 text-xs">
                         <p className="font-medium">{String(visit.request?.title ?? "Service visit")}</p>
+                        <Link href={`/projects/${visit.project_id}/warranty`} className="underline underline-offset-2">{String(visit.project?.name ?? "Home")} · Visit {visit.visit_number}</Link>
                         <p className="text-muted-foreground">
-                          {new Date(visit.window_start).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · {visit.assigned_user_name ?? visit.assigned_company_name}
+                          {new Date(visit.window_start).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZone: "UTC" })} · {visit.assigned_user_name ?? visit.assigned_company_name}
                         </p>
                       </div>
                     ))}
-                    {dayVisits.length === 0 ? <p className="px-1 py-2 text-xs text-muted-foreground">No visits</p> : null}
+                    {dayVisits.length === 0 ? <p className="px-1 py-2 text-xs text-muted-foreground">No visits on this page</p> : null}
                   </div>
                 </div>
               )
@@ -324,7 +339,7 @@ export function WarrantyDeskClient({
                       <p className="font-medium">{String(visit.request?.title ?? `Visit ${visit.visit_number}`)}</p>
                       <p className="text-xs text-muted-foreground">{visit.outcome_note ?? "No note provided"}</p>
                     </td>
-                    <td className="px-3 py-2">{String(visit.project?.name ?? "Home")}</td>
+                    <td className="px-3 py-2"><Link href={`/projects/${visit.project_id}/warranty`} className="underline underline-offset-2">{String(visit.project?.name ?? "Home")}</Link></td>
                     <td className="px-3 py-2">{visit.assigned_company_name ?? visit.assigned_user_name ?? "—"}</td>
                     <td className="px-3 py-2">
                       <Badge variant={visit.outcome === "resolved" ? "outline" : "secondary"}>{visit.outcome?.replaceAll("_", " ") ?? "—"}</Badge>
@@ -346,6 +361,7 @@ export function WarrantyDeskClient({
                           setAwaitingVerification((rows) => rows.filter((row) => row.id !== visit.id))
                           setRequests((rows) => rows.filter((row) => row.id !== visit.request_id || visit.outcome !== "resolved"))
                           toast.success(visit.outcome === "resolved" ? "Verified and resolved" : "Verified — request stays open")
+                          router.refresh()
                         })}
                       >
                         Verify
@@ -354,7 +370,7 @@ export function WarrantyDeskClient({
                   </tr>
                 ))}
                 {awaitingVerification.length === 0 ? (
-                  <tr><td colSpan={6} className="px-3 py-10 text-center text-muted-foreground">Nothing is waiting on verification.</td></tr>
+                  <tr><td colSpan={6} className="px-3 py-10 text-center text-muted-foreground">No visits awaiting verification on this page.</td></tr>
                 ) : null}
               </tbody>
             </table>
@@ -439,6 +455,7 @@ export function WarrantyDeskClient({
         </TabsContent>
 
         <TabsContent value="analytics" className="space-y-5">
+          {!analyticsAvailable ? <p role="status" className="border border-border p-4 text-sm text-muted-foreground">Analytics is unavailable for this scope. You can continue using the warranty queue, dispatch and verification views.</p> : <>
           <section>
             <h2 className="mb-2 text-sm font-semibold">Recurring defects by community</h2>
             <div className="overflow-x-auto border border-border">
@@ -475,7 +492,7 @@ export function WarrantyDeskClient({
           </section>
           <section>
             <h2 className="mb-2 text-sm font-semibold">Warranty cost benchmark</h2>
-            <Button asChild variant="outline" size="sm"><Link href="/books#warranty-accounting">Review warranty cost accounting</Link></Button>
+            {canReviewAccounting ? <Button asChild variant="outline" size="sm"><Link href="/warranty/accounting">Review warranty cost accounting</Link></Button> : null}
             <p className="mb-2 text-xs text-muted-foreground">Approved costs linked to posted expenses, bills and labor, less recoveries. Submitted visit estimates are excluded.</p>
             <div className="overflow-x-auto border border-border">
               <table className="w-full text-sm">
@@ -509,10 +526,11 @@ export function WarrantyDeskClient({
               </table>
             </div>
           </section>
+                  </>}
         </TabsContent>
       </Tabs>
 
-      <Sheet open={Boolean(selected)} onOpenChange={(open) => !open && setSelected(null)}>
+      <Sheet open={Boolean(selected)} onOpenChange={(open) => { if (!open) { setSelected(null); router.refresh() } }}>
         <SheetContent className="w-full overflow-y-auto sm:max-w-xl">
           <SheetHeader>
             <SheetTitle>{selected ? `WR-${selected.request_number} · ${selected.title}` : "Warranty request"}</SheetTitle>

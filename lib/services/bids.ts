@@ -1,11 +1,15 @@
+import { assertProductionBidAccess } from "@/lib/services/production-bid-access"
+import { readAllRows } from "@/lib/land/paging"
+import { bidEligibilityReason, calculatePricingBasis, type BidPricingGap } from "@/lib/bids/pricing"
 import { randomBytes } from "crypto"
 import { hashBidToken } from "@/lib/services/portal-credentials"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
-import { assignPartyRoleWithClient } from "@/lib/services/party-roles"
+import { assignPartyRoleWithClient, ensureVendorRoleWithClient } from "@/lib/services/party-roles"
 import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 import {
+  selectBidForPricingInputSchema,
   createBidPackageInputSchema,
   updateBidPackageInputSchema,
   createBidInviteInputSchema,
@@ -29,10 +33,45 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { listRfiResponses } from "@/lib/services/rfis"
 import type { Rfi, RfiResponse } from "@/lib/types"
 import { getBidInvitePrequalificationWarnings } from "@/lib/services/prequalification"
-import { getBidInviteComplianceWarnings } from "@/lib/services/compliance-documents"
+import { getCompaniesComplianceStatus } from "@/lib/services/compliance-documents"
 import { getDivisionAccessForUser, getDivisionScopedProjectIds } from "@/lib/services/authorization"
 
+async function getBidInviteComplianceWarnings(companyIds: string[], orgId: string): Promise<Map<string,string>> {
+  const ids = Array.from(new Set(companyIds.filter(Boolean)))
+  if (!ids.length) return new Map()
+  try {
+    const statuses = await getCompaniesComplianceStatus(ids,orgId)
+    return new Map<string,string>(ids.flatMap((id): [string,string][] => {
+      const status = statuses[id]
+      if (!status) return [[id,"Vendor compliance could not be verified"]]
+      if (status.enrollment === "unenrolled") return [[id,"Compliance is not being tracked for this vendor"]]
+      if (!status.is_compliant) return [[id,"Vendor compliance is not current; review missing or expired requirements"]]
+      return []
+    }))
+  } catch {
+    return new Map(ids.map(id => [id,"Vendor compliance could not be verified"]))
+  }
+}
+
+function pricingSchemaMissing(error: { code?: string } | null) {
+  return !!error && ["42703", "42P01", "PGRST204", "PGRST205"].includes(error.code ?? "")
+}
+async function assertBidProjectVisibility(projectId: string | null | undefined, orgId: string, userId: string, supabase: any,
+  productionScope?: { community_id?: string | null; house_plan_id?: string | null }) {
+  if (productionScope) {
+    await assertProductionBidAccess(productionScope, { supabase, orgId, userId })
+    // Community/plan packages have no project; their parents define visibility.
+    if (!projectId && (productionScope.community_id || productionScope.house_plan_id)) return
+  }
+  const ids = await getDivisionScopedProjectIds({ orgId, userId, supabase })
+  if (ids && (!projectId || !ids.includes(projectId))) throw new Error("This bid package is outside your project access.")
+}
+
 export interface BidPackage {
+  scope_revision?: number
+  pricing_available?: boolean
+  project_phase?: string | null
+  can_award?: boolean
   id: string
   org_id: string
   project_id?: string | null
@@ -137,6 +176,8 @@ export interface BidAddendum {
 }
 
 export interface BidSubmission {
+  pricing_decision?: BidPricingDecision | null
+  scope_revision?: number
   id: string
   org_id: string
   bid_invite_id: string
@@ -213,6 +254,7 @@ function mapBidPackage(row: any): BidPackage {
     prospect_id: row.prospect_id ?? null,
     community_id: row.community_id ?? null,
     house_plan_id: row.house_plan_id ?? null,
+    scope_revision: row.scope_revision ?? 1,
     award_target: row.award_target === "price_agreement" ? "price_agreement" : "commitment",
     title: row.title,
     cost_code_id: row.cost_code_id ?? null,
@@ -299,6 +341,7 @@ function mapBidSubmission(row: any): BidSubmission {
     status: row.status,
     version: row.version,
     is_current: row.is_current,
+    scope_revision: row.scope_revision ?? 1,
     is_awarded: row.is_awarded ?? false,
     total_cents: row.total_cents ?? null,
     currency: row.currency ?? null,
@@ -432,6 +475,8 @@ async function createBidInviteLink({
     throw new Error("Bid invite not found")
   }
 
+  await ensureBidPackageInOrg(invite.bid_package_id, orgId, supabase)
+
   if (revokeExisting) {
     const { error: revokeError } = await supabase
       .from("bid_access_tokens")
@@ -468,6 +513,47 @@ async function createBidInviteLink({
 
   const appUrl = getAppUrl()
   return { url: `${appUrl}/b/${token}`, token }
+}
+
+type BidEmailOrg = { name?: string | null; logo_url?: string | null; slug?: string | null } | null
+
+/** The "you're invited to bid" email — one payload for first send and resend. */
+async function enqueueBidInviteEmail({
+  orgId,
+  to,
+  invite,
+  bidPackage,
+  jobName,
+  org,
+  bidLink,
+  resentBy,
+}: {
+  orgId: string
+  to: string
+  invite: BidInvite
+  bidPackage: { id: string; title: string; trade?: string | null; due_at?: string | null }
+  jobName: string | undefined
+  org: BidEmailOrg
+  bidLink: string
+  resentBy?: string
+}) {
+  return enqueueBidEmail(orgId, {
+    kind: "invite",
+    to,
+    companyName: invite.company?.name,
+    contactName: invite.contact?.full_name,
+    projectName: jobName,
+    bidPackageTitle: bidPackage.title,
+    trade: bidPackage.trade ?? null,
+    dueDate: bidPackage.due_at ?? null,
+    orgName: org?.name,
+    orgLogoUrl: org?.logo_url,
+    bidLink,
+    orgSlug: org?.slug,
+    bidPackageId: bidPackage.id,
+    inviteId: invite.id,
+    ...(resentBy ? { resentBy } : {}),
+  })
 }
 
 function getBidEmailRecipient(invite: BidInvite) {
@@ -867,6 +953,39 @@ async function ensureProjectBiddingStatus(projectId: string, orgId: string, supa
   }
 }
 
+/** Side effects of a package status move: a project starts bidding once a
+ * package goes out, and every real move is an event. */
+async function recordBidPackageStatusChange({
+  supabase,
+  orgId,
+  userId,
+  bidPackageId,
+  projectId,
+  from,
+  to,
+}: {
+  supabase: any
+  orgId: string
+  userId: string
+  bidPackageId: string
+  projectId: string | null | undefined
+  from: BidPackageStatus
+  to: BidPackageStatus
+}) {
+  if ((to === "sent" || to === "open") && projectId) {
+    await ensureProjectBiddingStatus(projectId, orgId, supabase)
+  }
+  if (from === to) return
+  await recordEvent({
+    orgId,
+    actorId: userId,
+    eventType: "bid_package_status_changed",
+    entityType: "bid_package",
+    entityId: bidPackageId,
+    payload: { from, to },
+  })
+}
+
 async function ensureProjectInOrg(projectId: string, orgId: string, supabase: any) {
   const { data: project, error } = await supabase
     .from("projects")
@@ -896,14 +1015,32 @@ async function ensureProspectInOrg(prospectId: string, orgId: string, supabase: 
 async function ensureBidPackageInOrg(bidPackageId: string, orgId: string, supabase: any) {
   const { data: bidPackage, error } = await supabase
     .from("bid_packages")
-    .select("id, project_id, prospect_id, cost_code_id, budget_line_id")
+    .select("id, project_id, prospect_id, community_id, house_plan_id, cost_code_id, budget_line_id")
     .eq("org_id", orgId)
     .eq("id", bidPackageId)
     .maybeSingle()
   if (error || !bidPackage) {
     throw new Error("Bid package not found in this organization")
   }
+  const { userId } = await requireOrgContext(orgId)
+  await assertBidProjectVisibility(bidPackage.project_id, orgId, userId, supabase, bidPackage)
   return bidPackage
+}
+
+async function ensureBidInviteAccess(inviteId: string, orgId: string, supabase: any) {
+  const { data, error } = await supabase.from("bid_invites").select("id,bid_package_id")
+    .eq("org_id", orgId).eq("id", inviteId).maybeSingle()
+  if (error || !data) throw new Error("Bid invite not found")
+  await ensureBidPackageInOrg(data.bid_package_id, orgId, supabase)
+  return data
+}
+
+async function ensureBidSubmissionAccess(submissionId: string, orgId: string, supabase: any) {
+  const { data, error } = await supabase.from("bid_submissions").select("id,bid_invite_id")
+    .eq("org_id", orgId).eq("id", submissionId).maybeSingle()
+  if (error || !data) throw new Error("Bid submission not found")
+  await ensureBidInviteAccess(data.bid_invite_id, orgId, supabase)
+  return data
 }
 
 async function ensureCostCodeInOrg(costCodeId: string, orgId: string, supabase: any) {
@@ -1111,69 +1248,110 @@ export interface ProspectBidQuote {
   trade: string | null
   company_name: string | null
   total_cents: number
+  normalized_total_cents: number
+  pricing_decision_id: string | null
+  submission_version: number
+  selected_for_pricing: boolean
+  valid_until: string | null
+  scope_revision: number
+  accepted_alternate_ids: string[]
+  gaps: BidPricingGap[]
 }
-
-/**
- * Current, priced sub bids across a prospect's bid packages — offered in the
- * estimate builder so a line's cost basis can come straight from a real quote.
- */
+export interface BidPricingDecision {
+  id: string; bid_package_id: string; bid_submission_id: string; submission_version: number; scope_revision: number
+  vendor_total_cents: number; normalized_total_cents: number; accepted_alternate_ids: string[]; gaps: BidPricingGap[]
+  rationale: string; selected_at: string; snapshot: Record<string, unknown>; eligibility_reason?: string | null
+}
+async function prospectBidPackageFilter(supabase: any, orgId: string, prospectId: string) {
+  const { data: project, error } = await supabase.from("projects").select("id")
+    .eq("org_id", orgId).eq("prospect_id", prospectId).maybeSingle()
+  if (error) throw new Error(`Unable to find the linked project: ${error.message}`)
+  return project ? `prospect_id.eq.${prospectId},project_id.eq.${project.id}` : `prospect_id.eq.${prospectId}`
+}
+/** Include both pre-project requests and requests on the linked precon project. */
+export async function listProspectBidPackages(prospectId: string, orgId?: string): Promise<BidPackage[]> {
+  const { supabase, orgId: id, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: id, userId })
+  await ensureProspectInOrg(prospectId, id, supabase)
+  const filter = await prospectBidPackageFilter(supabase, id, prospectId)
+  const { data, error } = await supabase.from("bid_packages").select(`${BID_PACKAGE_COLUMNS}, cost_code:cost_codes(code, name)`)
+    .eq("org_id", id).or(filter).order("created_at", { ascending: false })
+  if (error) throw new Error(`Unable to load quote requests: ${error.message}`)
+  for (const projectId of new Set((data ?? []).map(row => row.project_id).filter(Boolean))) {
+    await assertBidProjectVisibility(projectId, id, userId, supabase)
+  }
+  return decorateBidPackageSummaries(supabase, id, (data ?? []).map(mapBidPackage))
+}
+export async function listProspectPricingDecisions(prospectId: string, orgId?: string): Promise<BidPricingDecision[]> {
+  const { supabase, orgId: id, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: id, userId })
+  await ensureProspectInOrg(prospectId, id, supabase)
+  const parentFilter = await prospectBidPackageFilter(supabase, id, prospectId)
+  const { data: packages, error } = await supabase.from("bid_packages").select("id,project_id").eq("org_id", id).or(parentFilter)
+  if (error) throw new Error(error.message)
+  if (!packages?.length) return []
+  const allowedProjects = await getDivisionScopedProjectIds({orgId:id,userId,supabase})
+  const visiblePackages = packages.filter(pkg => !allowedProjects || (pkg.project_id && allowedProjects.includes(pkg.project_id)))
+  if (!visiblePackages.length) return []
+  const result = await createServiceSupabaseClient().from("bid_pricing_decisions").select("*").eq("org_id", id).in("bid_package_id", visiblePackages.map(p => p.id)).is("superseded_at", null)
+  if (result.error && pricingSchemaMissing(result.error)) return []
+  if (result.error) throw new Error(result.error.message)
+  const decisions = result.data as BidPricingDecision[]
+  if (!decisions.length) return []
+  const { data: offers, error: offerError } = await supabase.from("bid_submissions").select("id,is_current,status,total_cents,valid_until,scope_revision").eq("org_id",id).in("id",decisions.map(d=>d.bid_submission_id))
+  if(offerError) throw new Error(offerError.message)
+  return decisions.map(decision=>{const offer=offers?.find(row=>row.id===decision.bid_submission_id);return {...decision,eligibility_reason:offer?bidEligibilityReason(offer,decision.scope_revision):"Quote unavailable"}})
+}
 export async function listProspectBidQuotes(prospectId: string, orgId?: string): Promise<ProspectBidQuote[]> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
-  await ensureProspectInOrg(prospectId, resolvedOrgId, supabase)
-
-  const { data: packages, error: packagesError } = await supabase
-    .from("bid_packages")
-    .select("id, title, trade")
-    .eq("org_id", resolvedOrgId)
-    .eq("prospect_id", prospectId)
-
-  if (packagesError) {
-    throw new Error(`Failed to load prospect bid packages: ${packagesError.message}`)
-  }
-  if (!packages || packages.length === 0) return []
-
-  const packageById = new Map(packages.map((row: any) => [row.id as string, row]))
-
-  const { data: submissions, error: submissionsError } = await supabase
-    .from("bid_submissions")
-    .select(
-      `id, total_cents, is_current, status,
-       invite:bid_invites!inner(bid_package_id, company:companies(name))`,
-    )
-    .eq("org_id", resolvedOrgId)
-    .eq("is_current", true)
-    .not("total_cents", "is", null)
-    .in(
-      "bid_invites.bid_package_id",
-      packages.map((row: any) => row.id as string),
-    )
-
-  if (submissionsError) {
-    throw new Error(`Failed to load prospect bid quotes: ${submissionsError.message}`)
-  }
-
-  return (submissions ?? [])
-    .map((row: any) => {
-      const invite = Array.isArray(row.invite) ? row.invite[0] : row.invite
-      const pkg = invite ? packageById.get(invite.bid_package_id as string) : null
-      if (!pkg) return null
-      const company = invite?.company
-        ? Array.isArray(invite.company)
-          ? invite.company[0]
-          : invite.company
-        : null
-      return {
-        submission_id: row.id as string,
-        bid_package_id: pkg.id as string,
-        package_title: pkg.title as string,
-        trade: (pkg.trade as string | null) ?? null,
-        company_name: (company?.name as string | undefined) ?? null,
-        total_cents: row.total_cents as number,
-      }
+  const { supabase, orgId: id, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: id, userId })
+  await ensureProspectInOrg(prospectId, id, supabase)
+  const parentFilter = await prospectBidPackageFilter(supabase, id, prospectId)
+  const { data: packages, error } = await supabase.from("bid_packages").select("id,title,trade,scope_revision").eq("org_id", id).or(parentFilter).neq("status", "cancelled")
+  if (error && pricingSchemaMissing(error)) return []
+  if (error) throw new Error(error.message)
+  const decisions = await listProspectPricingDecisions(prospectId, id)
+  const rows = await Promise.all((packages ?? []).map(async pkg => {
+    const [bids, scope] = await Promise.all([listBidSubmissions(pkg.id, id), listBidScopeItems(pkg.id, id)])
+    return bids.filter(bid => !bidEligibilityReason(bid, pkg.scope_revision)).map(bid => {
+      const decision = decisions.find(d => d.bid_submission_id === bid.id && d.scope_revision === pkg.scope_revision)
+      const plugs = (bid.items ?? []).filter(i => i.response !== "priced" && scope.find(s => s.id === i.bid_scope_item_id)?.item_type !== "alternate").reduce((sum, i) => sum + (i.gc_plug_cents ?? 0), 0)
+      return { submission_id: bid.id, bid_package_id: pkg.id, package_title: pkg.title, trade: pkg.trade, company_name: bid.invite?.company?.name ?? null,
+        total_cents: bid.total_cents!, normalized_total_cents: decision?.normalized_total_cents ?? bid.total_cents! + plugs + (bid.leveled_adjustment_cents ?? 0),
+        pricing_decision_id: decision?.id ?? null, submission_version: bid.version, selected_for_pricing: !!decision,
+        valid_until: bid.valid_until ?? null, scope_revision: pkg.scope_revision, accepted_alternate_ids: decision?.accepted_alternate_ids ?? [], gaps: decision?.gaps ?? [] }
     })
-    .filter((row): row is ProspectBidQuote => row !== null)
-    .sort((a, b) => a.package_title.localeCompare(b.package_title) || a.total_cents - b.total_cents)
+  }))
+  return rows.flat().filter(row => row.selected_for_pricing).sort((a,b) => Number(b.selected_for_pricing)-Number(a.selected_for_pricing) || a.package_title.localeCompare(b.package_title))
+}
+export async function selectBidForPricing({ input, orgId }: { input: unknown; orgId?: string }) {
+  const parsed = selectBidForPricingInputSchema.parse(input)
+  const { supabase, orgId: id, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: id, userId })
+  const { data: row, error } = await supabase.from("bid_submissions").select("bid_invite_id").eq("org_id",id).eq("id",parsed.bid_submission_id).single()
+  if (error) throw new Error(error.message)
+  const { data: invite, error: inviteError } = await supabase.from("bid_invites").select("bid_package_id").eq("org_id",id).eq("id",row.bid_invite_id).single()
+  if (inviteError) throw new Error(inviteError.message)
+  const [pkg,bids,scope] = await Promise.all([getBidPackage(invite.bid_package_id,id),listBidSubmissions(invite.bid_package_id,id),listBidScopeItems(invite.bid_package_id,id)])
+  const bid = bids.find(b => b.id === parsed.bid_submission_id)
+  if (!bid) throw new Error("Quote not found")
+  if (pkg.status === "draft") throw new Error("Issue the package before selecting a pricing basis.")
+  const reason = bidEligibilityReason(bid,pkg.scope_revision)
+  if (reason) throw new Error(reason)
+  if (bid.exclusions?.trim() && !parsed.gaps.some(gap => gap.scope_item_id === "quote-exclusions")) throw new Error("Resolve the vendor's written exclusions before selecting the quote.")
+  const totals = calculatePricingBasis(bid,scope,parsed.accepted_alternate_ids,parsed.gaps)
+  const result = await createServiceSupabaseClient().rpc("save_bid_pricing_decision", { p_org_id:id,p_submission_id:bid.id,p_user_id:userId,p_data:{ ...parsed,...totals,snapshot:{ submission:bid,scope,package:pkg } } })
+  if (result.error) throw new Error(pricingSchemaMissing(result.error) || result.error.code === "PGRST202" ? "Pricing decisions require the pending preconstruction database migration." : result.error.message)
+  return { id: result.data as string, ...totals }
+}
+export async function beginBidScopeRevision({ bidPackageId, reason, orgId }: { bidPackageId: string; reason: string; orgId?: string }) {
+  const { supabase, orgId: id, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: id, userId })
+  const pkg = await ensureBidPackageInOrg(bidPackageId,id,supabase)
+  await assertBidProjectVisibility(pkg.project_id,id,userId,supabase,pkg)
+  const result = await createServiceSupabaseClient().rpc("begin_bid_scope_revision", {p_org_id:id,p_package_id:bidPackageId,p_reason:reason})
+  if(result.error) throw new Error(pricingSchemaMissing(result.error) || result.error.code === "PGRST202" ? "Scope revisions require the pending preconstruction database migration." : result.error.message)
+  return result.data as number
 }
 
 export async function getBidPackage(bidPackageId: string, orgId?: string): Promise<BidPackage> {
@@ -1195,6 +1373,20 @@ export async function getBidPackage(bidPackageId: string, orgId?: string): Promi
   }
 
   const mapped = mapBidPackage(data)
+  await assertBidProjectVisibility(mapped.project_id, resolvedOrgId, userId, supabase, mapped)
+  const revisionResult = await supabase.from("bid_packages").select("scope_revision").eq("org_id",resolvedOrgId).eq("id",bidPackageId).maybeSingle()
+  if (revisionResult.error && !pricingSchemaMissing(revisionResult.error)) throw new Error(revisionResult.error.message)
+  mapped.scope_revision = revisionResult.data?.scope_revision ?? 1
+  mapped.pricing_available = !revisionResult.error
+  if (mapped.project_id) {
+    const { data: project } = await supabase.from("projects").select("phase").eq("org_id", resolvedOrgId).eq("id", mapped.project_id).maybeSingle()
+    mapped.project_phase = project?.phase ?? null
+    mapped.can_award = project?.phase !== "precon"
+    if (project?.phase === "precon") {
+      const { data: handoff } = await supabase.from("project_precon_handoffs").select("id,contract:contracts!inner(status)").eq("contract.status","active").eq("org_id", resolvedOrgId).eq("project_id",mapped.project_id).in("status",["awarded","baseline_approved","accepted","released"]).maybeSingle()
+      mapped.can_award = !!handoff
+    }
+  }
   mapped.budget_cents = await resolveLatestBudgetForBidPackage({
     supabase,
     orgId: resolvedOrgId,
@@ -1230,39 +1422,41 @@ export async function listOrgBidPackages(orgId?: string, divisionId?: string): P
     : divisionAccess.assignedOnly
       ? divisionAccess.divisionIds
       : null
-  const { data: scopedCommunities } = divisionIds
+  const { data: scopedCommunities, error: communitiesError } = divisionIds
     ? await supabase.from("communities").select("id").eq("org_id", resolvedOrgId).in("division_id", divisionIds.length ? divisionIds : ["00000000-0000-0000-0000-000000000000"])
-    : { data: null }
-  const { data: scopedProjects } = divisionIds
+    : { data: null, error: null }
+  const { data: scopedProjects, error: projectsError } = divisionIds
     ? await supabase.from("projects").select("id").eq("org_id", resolvedOrgId).in("division_id", divisionIds.length ? divisionIds : ["00000000-0000-0000-0000-000000000000"])
-    : { data: null }
+    : { data: null, error: null }
+  if (communitiesError || projectsError) throw new Error("Failed to load bid scope")
   const allowedCommunities = scopedCommunities ? new Set(scopedCommunities.map((row) => row.id)) : null
   const lensProjectIds = scopedProjects ? new Set(scopedProjects.map((row) => row.id)) : null
   const allowedProjects = authorizedProjectIds
     ? new Set(authorizedProjectIds.filter((id) => !lensProjectIds || lensProjectIds.has(id)))
     : lensProjectIds
 
-  const { data, error } = await supabase
-    .from("bid_packages")
-    .select(`
+  const result = await readAllRows<any>((from, to) => {
+    let query = supabase.from("bid_packages").select(`
       ${BID_PACKAGE_COLUMNS},
       cost_code:cost_codes(code, name),
       bid_invites!bid_invites_org_package_fk(count)
-    `)
-    .eq("org_id", resolvedOrgId)
-    .neq("status", "cancelled")
-    .order("due_at", { ascending: true, nullsFirst: false })
-    .limit(500)
-
-  if (error) {
-    throw new Error(`Failed to list bid packages: ${error.message}`)
-  }
-
-  const scopedPackages = (data ?? []).map(mapBidPackage).filter((pkg) => {
-    if (pkg.project_id && allowedProjects && !allowedProjects.has(pkg.project_id)) return false
-    if (pkg.community_id && allowedCommunities && !allowedCommunities.has(pkg.community_id)) return false
-    return true
-  })
+    `).eq("org_id", resolvedOrgId).neq("status", "cancelled")
+    // Scope the source before paging. Null-scoped packages remain visible,
+    // matching the existing organization/prospect package rules.
+    if (allowedProjects) {
+      query = allowedProjects.size
+        ? query.or(`project_id.is.null,project_id.in.(${[...allowedProjects].join(",")})`)
+        : query.is("project_id", null)
+    }
+    if (allowedCommunities) {
+      query = allowedCommunities.size
+        ? query.or(`community_id.is.null,community_id.in.(${[...allowedCommunities].join(",")})`)
+        : query.is("community_id", null)
+    }
+    return query.order("due_at", { ascending: true, nullsFirst: false }).order("id").range(from, to)
+  }, { cap: 10_000, label: "Failed to list bid packages" })
+  if (result.truncated) throw new Error("Too many bid packages. Select a division to narrow the list.")
+  const scopedPackages = result.rows.map(mapBidPackage)
   const packages = await decorateBidPackageSummaries(supabase, resolvedOrgId, scopedPackages)
 
   const projectIds = [...new Set(packages.map((pkg) => pkg.project_id).filter((id): id is string => Boolean(id)))]
@@ -1355,8 +1549,8 @@ export async function saveBidScopeItems({
     .eq("org_id", resolvedOrgId)
     .eq("id", parsed.bid_package_id)
     .maybeSingle()
-  if (pkgStatusRow?.status === "awarded") {
-    throw new Error("Scope cannot change after award — rescind the award first")
+  if (pkgStatusRow?.status !== "draft") {
+    throw new Error("Issued scope is locked. Start a scope revision before editing.")
   }
 
   const { data: existingRows, error: existingError } = await supabase
@@ -1443,6 +1637,7 @@ export async function createBidPackage({
   if (parsed.prospect_id) {
     await ensureProspectInOrg(parsed.prospect_id, resolvedOrgId, supabase)
   }
+  await assertProductionBidAccess(parsed, { supabase, orgId: resolvedOrgId, userId })
   if (parsed.community_id) {
     const { data } = await supabase.from("communities").select("id").eq("org_id", resolvedOrgId).eq("id", parsed.community_id).maybeSingle()
     if (!data) throw new Error("Community not found")
@@ -1454,29 +1649,17 @@ export async function createBidPackage({
   if (parsed.cost_code_id) {
     await ensureCostCodeInOrg(parsed.cost_code_id, resolvedOrgId, supabase)
   }
-  // Precon packages are created on the prospect's precon-phase project; the
-  // prospect link is kept in both directions so the estimate builder's
-  // "Use bid" picker (which queries by prospect) keeps seeing them.
+  // A package has one parent. Resolve prospect work to its linked project;
+  // quote lookups follow projects.prospect_id instead of duplicating ownership.
   let resolvedProjectId = parsed.project_id ?? null
   let resolvedProspectId = parsed.prospect_id ?? null
   if (!resolvedProjectId && resolvedProspectId) {
-    const { data: preconProject } = await supabase
-      .from("projects")
-      .select("id")
-      .eq("org_id", resolvedOrgId)
-      .eq("prospect_id", resolvedProspectId)
-      .eq("phase", "precon")
-      .maybeSingle()
-    resolvedProjectId = preconProject?.id ?? null
-  } else if (resolvedProjectId && !resolvedProspectId) {
-    const { data: project } = await supabase
-      .from("projects")
-      .select("prospect_id")
-      .eq("org_id", resolvedOrgId)
-      .eq("id", resolvedProjectId)
-      .maybeSingle()
-    resolvedProspectId = (project?.prospect_id as string | null) ?? null
+    const { data: project, error } = await supabase.from("projects").select("id")
+      .eq("org_id", resolvedOrgId).eq("prospect_id", resolvedProspectId).maybeSingle()
+    if (error) throw new Error(`Unable to find the linked project: ${error.message}`)
+    resolvedProjectId = project?.id ?? null
   }
+  if (resolvedProjectId) resolvedProspectId = null
 
   let resolvedCostCodeId = parsed.cost_code_id ?? null
   if (parsed.budget_line_id) {
@@ -1566,6 +1749,12 @@ export async function updateBidPackage({
     throw new Error("Bid package not found")
   }
 
+  await assertProductionBidAccess(existing, { supabase, orgId: resolvedOrgId, userId })
+  await assertProductionBidAccess({ community_id: parsed.community_id === undefined ? existing.community_id : parsed.community_id, house_plan_id: parsed.house_plan_id === undefined ? existing.house_plan_id : parsed.house_plan_id }, { supabase, orgId: resolvedOrgId, userId })
+
+  if (existing.status !== "draft" && (parsed.scope !== undefined || parsed.instructions !== undefined || parsed.mode !== undefined)) {
+    throw new Error("Start a scope revision before changing an issued package's scope or instructions.")
+  }
   const isDueDateUpdated = parsed.due_at !== undefined && parsed.due_at !== existing.due_at
 
   if (parsed.cost_code_id) {
@@ -1620,18 +1809,15 @@ export async function updateBidPackage({
     throw new Error(`Failed to update bid package: ${error?.message}`)
   }
 
-  if (parsed.status && ["sent", "open"].includes(parsed.status) && existing.project_id) {
-    await ensureProjectBiddingStatus(existing.project_id, resolvedOrgId, supabase)
-  }
-
-  if (parsed.status && parsed.status !== existing.status) {
-    await recordEvent({
+  if (parsed.status) {
+    await recordBidPackageStatusChange({
+      supabase,
       orgId: resolvedOrgId,
-      actorId: userId,
-      eventType: "bid_package_status_changed",
-      entityType: "bid_package",
-      entityId: data.id as string,
-      payload: { from: existing.status, to: parsed.status },
+      userId,
+      bidPackageId: data.id as string,
+      projectId: existing.project_id,
+      from: existing.status as BidPackageStatus,
+      to: parsed.status,
     })
   }
 
@@ -1682,6 +1868,7 @@ export async function updateBidPackage({
               userId,
               inviteId: invite.id,
               markSent: false,
+              revokeExisting: false,
             })
 
             await enqueueBidEmail(resolvedOrgId, {
@@ -1716,6 +1903,8 @@ export async function updateBidPackage({
 export async function listBidInvites(bidPackageId: string, orgId?: string): Promise<BidInvite[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
+
+  await ensureBidPackageInOrg(bidPackageId, resolvedOrgId, supabase)
 
   const { data, error } = await supabase
     .from("bid_invites")
@@ -1871,6 +2060,8 @@ async function updateBidInviteAccessState({
     throw new Error("Bid invite not found")
   }
 
+  await ensureBidPackageInOrg(invite.bid_package_id, resolvedOrgId, supabase)
+
   if (state === "pause") {
     const { error } = await supabase
       .from("bid_access_tokens")
@@ -1941,6 +2132,8 @@ export async function setBidInviteRequireAccount({
 }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+
+  await ensureBidInviteAccess(inviteId, resolvedOrgId, supabase)
 
   const { error } = await supabase
     .from("bid_access_tokens")
@@ -2042,6 +2235,8 @@ export async function bulkCreateBidInvites({
   const parsed = bulkCreateBidInvitesInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+
+  await ensureBidPackageInOrg(parsed.bid_package_id, resolvedOrgId, supabase)
 
   // Fetch bid package details for email
   const { data: bidPackage, error: bidPackageError } = await supabase
@@ -2197,62 +2392,60 @@ export async function bulkCreateBidInvites({
 
       const invite = mapBidInvite(data)
 
-      let bidLink: string | null = null
-      try {
-        const link = await createBidInviteLink({
-          supabase,
-          orgId: resolvedOrgId,
-          userId,
-          inviteId: invite.id,
-          markSent: true,
-          revokeExisting: false,
-        })
-        bidLink = link.url
-      } catch (tokenError) {
-        await supabase
-          .from("bid_invites")
-          .delete()
-          .eq("org_id", resolvedOrgId)
-          .eq("id", invite.id)
-        failed.push({
-          identifier,
-          error: (tokenError as Error)?.message ?? "Failed to create invite access token",
-        })
-        continue
-      }
+      // A draft package lines trades up: no link, no email. The bid portal
+      // refuses draft packages, so a link minted now would be dead on arrival;
+      // sendBidPackage() mints and emails every lined-up trade at once.
+      if (bidPackage.status !== "draft") {
+        let bidLink: string
+        try {
+          const link = await createBidInviteLink({
+            supabase,
+            orgId: resolvedOrgId,
+            userId,
+            inviteId: invite.id,
+            markSent: true,
+            revokeExisting: false,
+          })
+          bidLink = link.url
+        } catch (tokenError) {
+          await supabase
+            .from("bid_invites")
+            .delete()
+            .eq("org_id", resolvedOrgId)
+            .eq("id", invite.id)
+          failed.push({
+            identifier,
+            error: (tokenError as Error)?.message ?? "Failed to create invite access token",
+          })
+          continue
+        }
 
-      invite.status = "sent"
-      invite.sent_at = new Date().toISOString()
+        invite.status = "sent"
+        invite.sent_at = new Date().toISOString()
 
-      // Queue email if enabled and we have an email address
-      if (parsed.send_emails) {
-        const emailTo =
-          inviteItem.invite_email ||
-          invite.contact?.email ||
-          invite.company?.email
+        // Queue email if enabled and we have an email address
+        if (parsed.send_emails) {
+          const emailTo =
+            inviteItem.invite_email ||
+            invite.contact?.email ||
+            invite.company?.email
 
-        if (emailTo) {
-          try {
-            await enqueueBidEmail(resolvedOrgId, {
-              kind: "invite",
-              to: emailTo,
-              companyName: invite.company?.name,
-              contactName: invite.contact?.full_name,
-              projectName: jobName,
-              bidPackageTitle: bidPackage.title,
-              trade: bidPackage.trade,
-              dueDate: bidPackage.due_at,
-              orgName: org?.name,
-              orgLogoUrl: org?.logo_url,
-              bidLink,
-              orgSlug: org?.slug,
-              bidPackageId: parsed.bid_package_id,
-              inviteId: invite.id,
-            })
-            emailsSent++
-          } catch (emailError) {
-            console.error("Failed to queue bid invite email:", emailError)
-            // Don't fail the invite creation if email fails
+          if (emailTo) {
+            try {
+              await enqueueBidInviteEmail({
+                orgId: resolvedOrgId,
+                to: emailTo,
+                invite,
+                bidPackage: { id: parsed.bid_package_id, title: bidPackage.title, trade: bidPackage.trade, due_at: bidPackage.due_at },
+                jobName,
+                org,
+                bidLink,
+              })
+              emailsSent++
+            } catch (emailError) {
+              console.error("Failed to queue bid invite email:", emailError)
+              // Don't fail the invite creation if email fails
+            }
           }
         }
       }
@@ -2348,6 +2541,8 @@ export async function resendBidInvite({
     throw new Error("Bid invite not found")
   }
 
+  await ensureBidPackageInOrg(inviteRow.bid_package_id, resolvedOrgId, supabase)
+
   const invite = mapBidInvite(inviteRow)
   const bidPackage = Array.isArray((inviteRow as any).bid_package)
     ? (inviteRow as any).bid_package[0]
@@ -2373,21 +2568,19 @@ export async function resendBidInvite({
 
   const jobName = await resolveBidPackageJobName(supabase, resolvedOrgId, bidPackage ?? {})
 
-  await enqueueBidEmail(resolvedOrgId, {
-    kind: "invite",
+  await enqueueBidInviteEmail({
+    orgId: resolvedOrgId,
     to: emailTo,
-    companyName: invite.company?.name,
-    contactName: invite.contact?.full_name,
-    projectName: jobName,
-    bidPackageTitle: bidPackage?.title ?? "Bid package",
-    trade: bidPackage?.trade ?? null,
-    dueDate: bidPackage?.due_at ?? null,
-    orgName: org?.name,
-    orgLogoUrl: org?.logo_url,
+    invite,
+    bidPackage: {
+      id: bidPackage?.id ?? invite.bid_package_id,
+      title: bidPackage?.title ?? "Bid package",
+      trade: bidPackage?.trade ?? null,
+      due_at: bidPackage?.due_at ?? null,
+    },
+    jobName,
+    org,
     bidLink: bidLink.url,
-    orgSlug: org?.slug,
-    bidPackageId: bidPackage?.id ?? invite.bid_package_id,
-    inviteId,
     resentBy: userId,
   })
 
@@ -2403,9 +2596,236 @@ export async function resendBidInvite({
   return { success: true }
 }
 
+const BID_INVITE_WITH_PARTIES_COLUMNS = `
+  id, org_id, bid_package_id, company_id, contact_id, invite_email, status, sent_at, last_viewed_at, submitted_at,
+  declined_at, created_by, created_at, updated_at,
+  company:companies!bid_invites_org_company_fk(id, name, phone, email),
+  contact:contacts!bid_invites_org_contact_fk(id, full_name, email, phone)
+`
+
+export interface SendBidPackageResult {
+  sent: number
+  failed: Array<{ inviteId: string; companyName: string | null; error: string }>
+}
+
+/**
+ * Sends a draft package: validates it is ready to go out, opens it, then mints
+ * a link for and emails every lined-up (draft) trade. Per-trade failures are
+ * collected, never thrown, so one bad invite does not strand the rest.
+ */
+export async function sendBidPackage({
+  bidPackageId,
+  orgId,
+}: {
+  bidPackageId: string
+  orgId?: string
+}): Promise<SendBidPackageResult> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await ensureBidPackageInOrg(bidPackageId, resolvedOrgId, supabase)
+
+  const [packageResult, scopeResult, invitesResult] = await Promise.all([
+    supabase
+      .from("bid_packages")
+      .select(BID_PACKAGE_COLUMNS)
+      .eq("org_id", resolvedOrgId)
+      .eq("id", bidPackageId)
+      .maybeSingle(),
+    supabase
+      .from("bid_scope_items")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", resolvedOrgId)
+      .eq("bid_package_id", bidPackageId),
+    supabase
+      .from("bid_invites")
+      .select(BID_INVITE_WITH_PARTIES_COLUMNS)
+      .eq("org_id", resolvedOrgId)
+      .eq("bid_package_id", bidPackageId)
+      .eq("status", "draft"),
+  ])
+
+  const existing = packageResult.data
+  if (packageResult.error || !existing) {
+    throw new Error("Bid package not found")
+  }
+  if (scopeResult.error) {
+    throw new Error(`Failed to check scope lines: ${scopeResult.error.message}`)
+  }
+  if (invitesResult.error) {
+    throw new Error(`Failed to load trades: ${invitesResult.error.message}`)
+  }
+
+  if (existing.status !== "draft") {
+    throw new Error("Only a draft bid package can be sent. This one has already gone out.")
+  }
+  if (!existing.due_at || new Date(existing.due_at).getTime() <= Date.now()) {
+    throw new Error("Set a due date in the future before sending")
+  }
+  if (existing.mode === "tender" && (scopeResult.count ?? 0) === 0) {
+    throw new Error("Add at least one scope line before sending a tender")
+  }
+  const invites = (invitesResult.data ?? []).map(mapBidInvite)
+  if (invites.length === 0) {
+    throw new Error("Add at least one trade before sending")
+  }
+
+  const from = existing.status as BidPackageStatus
+  const to: BidPackageStatus = "open"
+  assertBidPackageTransition(from, to)
+
+  // Guarded on draft so two concurrent sends cannot both open and email.
+  const { data: opened, error: openError } = await supabase
+    .from("bid_packages")
+    .update({ status: to, updated_at: new Date().toISOString() })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", bidPackageId)
+    .eq("status", "draft")
+    .select(BID_PACKAGE_COLUMNS)
+    .maybeSingle()
+
+  if (openError) {
+    throw new Error(`Failed to send bid package: ${openError.message}`)
+  }
+  if (!opened) {
+    throw new Error("Only a draft bid package can be sent. This one has already gone out.")
+  }
+
+  await recordBidPackageStatusChange({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    bidPackageId,
+    projectId: existing.project_id,
+    from,
+    to,
+  })
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "bid_package",
+    entityId: bidPackageId,
+    before: existing,
+    after: opened,
+  })
+
+  const [jobName, orgResult] = await Promise.all([
+    resolveBidPackageJobName(supabase, resolvedOrgId, existing),
+    supabase.from("orgs").select("id, name, logo_url, slug").eq("id", resolvedOrgId).maybeSingle(),
+  ])
+  const org = orgResult.data
+
+  let sent = 0
+  const failed: SendBidPackageResult["failed"] = []
+
+  for (const invite of invites) {
+    const companyName = invite.company?.name ?? null
+    try {
+      const link = await createBidInviteLink({
+        supabase,
+        orgId: resolvedOrgId,
+        userId,
+        inviteId: invite.id,
+        markSent: true,
+        revokeExisting: false,
+      })
+
+      await recordEvent({
+        orgId: resolvedOrgId,
+        actorId: userId,
+        eventType: "bid_invite_sent",
+        entityType: "bid_invite",
+        entityId: invite.id,
+        payload: { bid_package_id: bidPackageId, company_id: invite.company_id },
+      })
+
+      const emailTo = getBidEmailRecipient(invite)
+      if (!emailTo) {
+        failed.push({ inviteId: invite.id, companyName, error: "No email on file — copy their link instead" })
+        continue
+      }
+
+      await enqueueBidInviteEmail({
+        orgId: resolvedOrgId,
+        to: emailTo,
+        invite,
+        bidPackage: { id: bidPackageId, title: existing.title, trade: existing.trade, due_at: existing.due_at },
+        jobName,
+        org,
+        bidLink: link.url,
+      })
+      sent++
+    } catch (error) {
+      failed.push({
+        inviteId: invite.id,
+        companyName,
+        error: error instanceof Error ? error.message : "Failed to send to this trade",
+      })
+    }
+  }
+
+  return { sent, failed }
+}
+
+/** Takes a lined-up trade off a package. Once a trade has been sent the
+ * package, the record stays and access is revoked instead. */
+export async function removeBidInvite({ inviteId, orgId }: { inviteId: string; orgId?: string }) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+
+  const { data: invite, error: inviteError } = await supabase
+    .from("bid_invites")
+    .select("id, org_id, bid_package_id, company_id, contact_id, invite_email, status, sent_at, created_by, created_at, updated_at")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", inviteId)
+    .maybeSingle()
+
+  if (inviteError || !invite) {
+    throw new Error("Bid invite not found")
+  }
+
+  await ensureBidPackageInOrg(invite.bid_package_id, resolvedOrgId, supabase)
+
+  if (invite.status !== "draft") {
+    throw new Error("Only trades that haven't been sent the package can be removed. Revoke their access instead.")
+  }
+
+  const { error } = await supabase
+    .from("bid_invites")
+    .delete()
+    .eq("org_id", resolvedOrgId)
+    .eq("id", inviteId)
+    .eq("status", "draft")
+
+  if (error) {
+    throw new Error(`Failed to remove trade: ${error.message}`)
+  }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    eventType: "bid_invite_removed",
+    entityType: "bid_invite",
+    entityId: inviteId,
+    payload: { bid_package_id: invite.bid_package_id, company_id: invite.company_id },
+  })
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "delete",
+    entityType: "bid_invite",
+    entityId: inviteId,
+    before: invite,
+  })
+}
+
 export async function listBidAddenda(bidPackageId: string, orgId?: string): Promise<BidAddendum[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
+
+  await ensureBidPackageInOrg(bidPackageId, resolvedOrgId, supabase)
 
   const { data, error } = await supabase
     .from("bid_addenda")
@@ -2427,7 +2847,7 @@ export async function createBidAddendum({
 }: {
   input: unknown
   orgId?: string
-}): Promise<BidAddendum> {
+}): Promise<BidAddendum & { notifications: BidNotificationOutcome }> {
   const parsed = createBidAddendumInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
@@ -2477,87 +2897,71 @@ export async function createBidAddendum({
     after: data,
   })
 
-  // Fetch bid package details for email
+  const notifications = await retryBidAddendumNotifications({ addendumId: data.id, orgId: resolvedOrgId }).catch((): BidNotificationOutcome => ({
+    addendumId: data.id, queued: [], alreadyQueued: [], failed: [{ recipient: "Bidders", error: "The notice was saved, but notifications could not be queued. Retry delivery." }],
+  }));
+  return { ...mapBidAddendum(data), notifications };
+}
+
+export type BidNotificationOutcome = {
+  addendumId: string;
+  queued: string[];
+  alreadyQueued: string[];
+  failed: Array<{ inviteId?: string; recipient: string; error: string }>;
+};
+
+/** Retry the same notice; never manufacture a second addendum or invalidate existing links. */
+export async function retryBidAddendumNotifications({ addendumId, orgId }: { addendumId: string; orgId?: string }): Promise<BidNotificationOutcome> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId);
+  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId });
+  const { data: notice, error } = await supabase.from("bid_addenda").select("*").eq("org_id", resolvedOrgId).eq("id", addendumId).single();
+  if (error || !notice) throw new Error("Bid notice not found.");
+  const pkg = await getBidPackage(notice.bid_package_id, resolvedOrgId);
+  const result: BidNotificationOutcome = { addendumId, queued: [], alreadyQueued: [], failed: [] };
   try {
-    const { data: bidPackage } = await supabase
-      .from("bid_packages")
-      .select("id, project_id, prospect_id, title, trade")
-      .eq("org_id", resolvedOrgId)
-      .eq("id", parsed.bid_package_id)
-      .maybeSingle()
-
-    if (bidPackage) {
-      const jobName = await resolveBidPackageJobName(supabase, resolvedOrgId, bidPackage)
-
-      // Fetch org details for email
-      const { data: org } = await supabase
-        .from("orgs")
-        .select("id, name, logo_url, slug")
-        .eq("id", resolvedOrgId)
-        .maybeSingle()
-
-      // Fetch active subcontractor invites on the bid package to notify them
-      const { data: invites } = await supabase
-        .from("bid_invites")
-        .select(`
-          id, org_id, bid_package_id, company_id, contact_id, invite_email, status,
-          company:companies!bid_invites_org_company_fk(id, name, email),
-          contact:contacts!bid_invites_org_contact_fk(id, full_name, email)
-        `)
-        .eq("org_id", resolvedOrgId)
-        .eq("bid_package_id", parsed.bid_package_id)
-        .in("status", ["sent", "viewed", "submitted"])
-
-      if (invites && invites.length > 0) {
-        for (const inviteRow of invites) {
-          const invite = mapBidInvite(inviteRow)
-          const emailTo = invite.invite_email || invite.contact?.email || invite.company?.email
-          if (!emailTo) continue
-
-          try {
-            const { url: bidLink } = await createBidInviteLink({
-              supabase,
-              orgId: resolvedOrgId,
-              userId,
-              inviteId: invite.id,
-              markSent: false,
-            })
-
-            await enqueueBidEmail(resolvedOrgId, {
-              kind: "addendum",
-              to: emailTo,
-              companyName: invite.company?.name,
-              contactName: invite.contact?.full_name,
-              projectName: jobName,
-              bidPackageTitle: bidPackage.title,
-              addendumNumber: nextNumber,
-              addendumTitle: parsed.title,
-              addendumMessage: parsed.message,
-              orgName: org?.name,
-              orgLogoUrl: org?.logo_url,
-              bidLink,
-              orgSlug: org?.slug,
-              bidPackageId: parsed.bid_package_id,
-              inviteId: invite.id,
-              addendumId: data.id,
-            })
-          } catch (emailError) {
-            console.error(`Failed to queue bid addendum email to ${emailTo}:`, emailError)
-          }
-        }
+    const inviteRows = await supabase.from("bid_invites").select("id,org_id,bid_package_id,company_id,contact_id,invite_email,status,company:companies!bid_invites_org_company_fk(id,name,email),contact:contacts!bid_invites_org_contact_fk(id,full_name,email)").eq("org_id", resolvedOrgId).eq("bid_package_id", pkg.id).in("status", ["sent", "viewed", "submitted"]);
+    if (inviteRows.error) throw new Error("Unable to load bidder recipients.");
+    const invites = (inviteRows.data ?? []).map(mapBidInvite);
+    const jobName = await resolveBidPackageJobName(supabase, resolvedOrgId, pkg);
+    const { data: org, error: orgError } = await supabase.from("orgs").select("id,name,logo_url,slug").eq("id", resolvedOrgId).single();
+    if (orgError) throw new Error("Unable to load sender details.");
+    const service = createServiceSupabaseClient();
+    for (const invite of invites) {
+      const recipient = getBidEmailRecipient(invite);
+      if (!recipient) {
+        result.failed.push({ inviteId: invite.id, recipient: invite.company?.name ?? "Bidder", error: "No email address is available." });
+        continue;
+      }
+      try {
+        const existing = await service.from("outbox").select("id").eq("org_id", resolvedOrgId).eq("job_type", "send_bid_email").contains("payload", { kind: "addendum", addendumId, inviteId: invite.id }).in("status", ["pending", "processing", "completed"]).limit(1);
+        if (existing.error) throw new Error("Unable to check notification delivery.");
+        if (existing.data?.length) { result.alreadyQueued.push(recipient); continue; }
+        const { url: bidLink } = await createBidInviteLink({ supabase, orgId: resolvedOrgId, userId, inviteId: invite.id, markSent: false, revokeExisting: false });
+        const queued = await enqueueBidEmail(resolvedOrgId, {
+          kind: "addendum", to: recipient, companyName: invite.company?.name, contactName: invite.contact?.full_name,
+          projectName: jobName, bidPackageTitle: pkg.title, addendumNumber: notice.number,
+          addendumTitle: notice.title, addendumMessage: notice.message, orgName: org?.name, orgLogoUrl: org?.logo_url,
+          bidLink, orgSlug: org?.slug, bidPackageId: pkg.id, inviteId: invite.id, addendumId,
+        }, ["kind", "addendumId", "inviteId"]);
+        if (!queued.enqueued && queued.reason !== "duplicate") throw new Error("Notification could not be queued. Retry delivery.");
+        if (queued.enqueued) result.queued.push(recipient);
+        else result.alreadyQueued.push(recipient);
+      } catch (cause) {
+        result.failed.push({ inviteId: invite.id, recipient, error: cause instanceof Error ? cause.message : "Unable to queue notification." });
       }
     }
-  } catch (emailBlockError) {
-    console.error("Failed to queue bid addendum email notifications:", emailBlockError)
+  } catch (cause) {
+    result.failed.push({ recipient: "Bidders", error: cause instanceof Error ? cause.message : "Unable to load recipients." });
   }
-
-  return mapBidAddendum(data)
+  return result;
 }
 
 export async function listBidSubmissions(bidPackageId: string, orgId?: string): Promise<BidSubmission[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
 
+  const accessPackage = await ensureBidPackageInOrg(bidPackageId,resolvedOrgId,supabase)
+  await assertBidProjectVisibility(accessPackage.project_id,resolvedOrgId,userId,supabase,accessPackage)
   const { data: inviteRows, error: inviteError } = await supabase
     .from("bid_invites")
     .select(
@@ -2618,10 +3022,21 @@ export async function listBidSubmissions(bidPackageId: string, orgId?: string): 
     throw new Error(`Failed to resolve awarded submission: ${awardError.message}`)
   }
 
+  const companyIds = Array.from(inviteById.values()).map(invite => invite.company_id)
+  const [prequal, compliance] = await Promise.all([getBidInvitePrequalificationWarnings(companyIds, resolvedOrgId), getBidInviteComplianceWarnings(companyIds, resolvedOrgId)])
+  for (const invite of inviteById.values()) {
+    invite.prequalification_warning = prequal.get(invite.company_id)
+    invite.compliance_warning = compliance.get(invite.company_id)
+  }
+  const revisionResult = await supabase.from("bid_submissions").select("id,scope_revision").eq("org_id",resolvedOrgId).in("id",(data ?? []).map(row=>row.id))
+  if(revisionResult.error && !pricingSchemaMissing(revisionResult.error)) throw new Error(revisionResult.error.message)
+  const { data: pricingDecision, error: decisionError } = await createServiceSupabaseClient().from("bid_pricing_decisions").select("*").eq("org_id", resolvedOrgId).eq("bid_package_id", bidPackageId).is("superseded_at", null).maybeSingle()
+  if (decisionError && !pricingSchemaMissing(decisionError)) throw new Error(`Failed to load pricing decision: ${decisionError.message}`)
   const awardedSubmissionId = (award as any)?.awarded_submission_id as string | undefined
   const rows = (data ?? []).map((row) => ({
-    ...mapBidSubmission({ ...row, is_awarded: awardedSubmissionId === row.id }),
+    ...mapBidSubmission({ ...row, scope_revision: revisionResult.data?.find(entry=>entry.id===row.id)?.scope_revision ?? 1, is_awarded: awardedSubmissionId === row.id }),
     invite: inviteById.get(row.bid_invite_id as string),
+    pricing_decision: pricingDecision?.bid_submission_id === row.id ? pricingDecision as BidPricingDecision : null,
   }))
 
   return rows
@@ -2822,6 +3237,8 @@ export async function updateBidSubmissionLeveling({
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
 
+  await ensureBidSubmissionAccess(parsed.bid_submission_id, resolvedOrgId, supabase)
+
   const updates: Record<string, any> = {
     leveled_adjustment_cents: parsed.leveled_adjustment_cents,
     leveling_notes: parsed.leveling_notes ?? null,
@@ -2888,6 +3305,11 @@ export async function updateBidSubmissionItemLeveling({
   const parsed = updateBidSubmissionItemLevelingInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+
+  const { data: item, error: itemError } = await supabase.from("bid_submission_items").select("id,bid_submission_id")
+    .eq("org_id", resolvedOrgId).eq("id", parsed.bid_submission_item_id).maybeSingle()
+  if (itemError || !item) throw new Error("Bid submission item not found")
+  await ensureBidSubmissionAccess(item.bid_submission_id, resolvedOrgId, supabase)
 
   const { data, error } = await supabase
     .from("bid_submission_items")
@@ -3036,14 +3458,16 @@ export async function listBidPackageRfiResponses({
   await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
   const { data: rfi, error } = await supabase
     .from("rfis")
-    .select("id")
+    .select("id,bid_package_id")
     .eq("org_id", resolvedOrgId)
     .eq("id", rfiId)
     .maybeSingle()
 
-  if (error || !rfi) {
+  if (error || !rfi?.bid_package_id) {
     throw new Error("RFI not found")
   }
+
+  await ensureBidPackageInOrg(rfi.bid_package_id, resolvedOrgId, supabase)
 
   return listRfiResponses({ orgId: resolvedOrgId, rfiId })
 }
@@ -3158,6 +3582,125 @@ export async function listBidPackageActivity(bidPackageId: string, orgId?: strin
     }))
 }
 
+export interface BidPackageAward {
+  id: string
+  awarded_at: string
+  awarded_by_name: string | null
+  awarded_submission_id: string
+  accepted_alternate_ids: string[]
+  notes: string | null
+  commitment: {
+    id: string
+    project_id: string
+    title: string
+    status: string
+    total_cents: number
+    contract_number: string | null
+    retainage_percent: number | null
+    executed_at: string | null
+    company_id: string | null
+    company_name: string | null
+  } | null
+  envelope: { id: string; status: string; sent_at: string | null; executed_at: string | null; document_id: string | null } | null
+}
+
+/** The package's current (unrescinded) award with the subcontract it cut and
+ * that subcontract's live signing envelope. Null when nothing is awarded. */
+export async function getBidPackageAward(bidPackageId: string, orgId?: string): Promise<BidPackageAward | null> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
+  await ensureBidPackageInOrg(bidPackageId, resolvedOrgId, supabase)
+
+  const { data: award, error: awardError } = await supabase
+    .from("bid_awards")
+    .select("id, awarded_submission_id, awarded_commitment_id, awarded_by, awarded_at, notes, accepted_alternate_ids")
+    .eq("org_id", resolvedOrgId)
+    .eq("bid_package_id", bidPackageId)
+    .is("rescinded_at", null)
+    .order("awarded_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (awardError) {
+    throw new Error(`Failed to load bid award: ${awardError.message}`)
+  }
+  if (!award) return null
+
+  const commitmentId = (award.awarded_commitment_id as string | null) ?? null
+  const awardedBy = (award.awarded_by as string | null) ?? null
+
+  const [commitmentResult, envelopeResult, awardedByResult] = await Promise.all([
+    commitmentId
+      ? supabase
+          .from("commitments")
+          .select("id, project_id, title, status, total_cents, contract_number, retainage_percent, executed_at, company_id, company:companies(name)")
+          .eq("org_id", resolvedOrgId)
+          .eq("id", commitmentId)
+          .maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+    commitmentId
+      ? supabase
+          .from("envelopes")
+          .select("id, status, sent_at, executed_at, document_id, created_at")
+          .eq("org_id", resolvedOrgId)
+          .eq("source_entity_type", "subcontract")
+          .eq("source_entity_id", commitmentId)
+          .neq("status", "voided")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+    awardedBy
+      ? supabase.from("app_users").select("full_name").eq("id", awardedBy).maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+  ])
+
+  if (commitmentResult.error) {
+    throw new Error(`Failed to load awarded commitment: ${commitmentResult.error.message}`)
+  }
+  if (envelopeResult.error) {
+    throw new Error(`Failed to load subcontract envelope: ${envelopeResult.error.message}`)
+  }
+
+  const commitmentRow = commitmentResult.data
+  const companyJoin = commitmentRow
+    ? (Array.isArray(commitmentRow.company) ? commitmentRow.company[0] : commitmentRow.company) as { name?: string | null } | null
+    : null
+  const envelopeRow = envelopeResult.data
+
+  return {
+    id: award.id as string,
+    awarded_at: award.awarded_at as string,
+    awarded_by_name: (awardedByResult.data?.full_name as string | null | undefined) ?? null,
+    awarded_submission_id: award.awarded_submission_id as string,
+    accepted_alternate_ids: (award.accepted_alternate_ids as string[] | null) ?? [],
+    notes: (award.notes as string | null) ?? null,
+    commitment: commitmentRow
+      ? {
+          id: commitmentRow.id as string,
+          project_id: commitmentRow.project_id as string,
+          title: commitmentRow.title as string,
+          status: commitmentRow.status as string,
+          total_cents: Number(commitmentRow.total_cents ?? 0),
+          contract_number: (commitmentRow.contract_number as string | null) ?? null,
+          retainage_percent: commitmentRow.retainage_percent != null ? Number(commitmentRow.retainage_percent) : null,
+          executed_at: (commitmentRow.executed_at as string | null) ?? null,
+          company_id: (commitmentRow.company_id as string | null) ?? null,
+          company_name: companyJoin?.name ?? null,
+        }
+      : null,
+    envelope: envelopeRow
+      ? {
+          id: envelopeRow.id as string,
+          status: envelopeRow.status as string,
+          sent_at: (envelopeRow.sent_at as string | null) ?? null,
+          executed_at: (envelopeRow.executed_at as string | null) ?? null,
+          document_id: (envelopeRow.document_id as string | null) ?? null,
+        }
+      : null,
+  }
+}
+
 export async function awardBidSubmission({
   input,
   orgId,
@@ -3171,7 +3714,7 @@ export async function awardBidSubmission({
 
   const { data: submission, error: submissionError } = await supabase
     .from("bid_submissions")
-    .select("id, org_id, bid_invite_id, total_cents, currency, status, is_current")
+    .select("id, org_id, bid_invite_id, total_cents, currency, status, is_current, valid_until, scope_revision")
     .eq("org_id", resolvedOrgId)
     .eq("id", parsed.bid_submission_id)
     .maybeSingle()
@@ -3180,6 +3723,8 @@ export async function awardBidSubmission({
     throw new Error("Bid submission not found")
   }
 
+  const eligibility = bidEligibilityReason(submission)
+  if (eligibility) throw new Error(eligibility)
   if (!submission.is_current) {
     throw new Error("Only the current submission can be awarded")
   }
@@ -3201,7 +3746,7 @@ export async function awardBidSubmission({
 
   const { data: bidPackage, error: bidPackageError } = await supabase
     .from("bid_packages")
-    .select("id, project_id, prospect_id, community_id, house_plan_id, award_target, title, status, cost_code_id, budget_line_id")
+    .select("id, project_id, prospect_id, community_id, house_plan_id, award_target, title, status, cost_code_id, budget_line_id, bond_required, scope_revision")
     .eq("org_id", resolvedOrgId)
     .eq("id", invite.bid_package_id)
     .maybeSingle()
@@ -3214,16 +3759,31 @@ export async function awardBidSubmission({
     throw new Error("Cannot award a cancelled bid package")
   }
 
+  const revisionReason = bidEligibilityReason(submission, bidPackage.scope_revision)
+  if (revisionReason) throw new Error(revisionReason)
+  const [prequal, compliance, readiness] = await Promise.all([
+    getBidInvitePrequalificationWarnings([invite.company_id], resolvedOrgId),
+    getBidInviteComplianceWarnings([invite.company_id], resolvedOrgId),
+    getCompaniesComplianceStatus([invite.company_id], resolvedOrgId),
+  ])
+  const warnings = [prequal.get(invite.company_id), compliance.get(invite.company_id)].filter(Boolean)
+  if (!readiness[invite.company_id]) warnings.push("Vendor compliance could not be verified")
+  if (bidPackage.bond_required && !parsed.bond_verified) warnings.push("Required bond has not been reviewed")
+  if (warnings.length && !parsed.readiness_exception?.trim()) throw new Error("Resolve pre-award warnings or record an authorized exception reason.")
+
   if (bidPackage.award_target === "price_agreement") {
+    await assertProductionBidAccess(bidPackage, { supabase, orgId: resolvedOrgId, userId })
     const service = createServiceSupabaseClient()
     const { data: result, error: awardError } = await service.rpc("run_bid_award_price_agreements", {
       p_org_id: resolvedOrgId,
       p_bid_submission_id: submission.id,
       p_awarded_by: userId,
-      p_notes: parsed.notes ?? null,
+      p_notes: [parsed.notes, `Reviewed scope: ${parsed.reviewed_scope}`, `Commercial terms: ${parsed.reviewed_terms}`, parsed.readiness_exception ? `Readiness exception: ${parsed.readiness_exception}` : null].filter(Boolean).join("\n\n"),
       p_accepted_alternate_ids: parsed.accepted_alternate_ids ?? [],
     })
     if (awardError || !result?.award_id) throw new Error(`Failed to award bid to the price book: ${awardError?.message}`)
+    // Money creates roles: an awarded price agreement makes the winner a vendor.
+    await ensureVendorRoleWithClient(supabase, resolvedOrgId, invite.company_id, userId)
     const agreementIds = Array.isArray(result.agreement_ids)
       ? result.agreement_ids.filter((id: unknown): id is string => typeof id === "string")
       : []
@@ -3260,6 +3820,8 @@ export async function awardBidSubmission({
     awardProjectId = linkedProject.id as string
   }
 
+  await assertBidProjectVisibility(awardProjectId,resolvedOrgId,userId,supabase)
+
   // Awards create commitments — real money that must not land on an invisible
   // pricing workspace. Leveling and collecting bids is precon work; cutting
   // the subcontract waits for the job to be won.
@@ -3271,9 +3833,9 @@ export async function awardBidSubmission({
       .eq("id", awardProjectId)
       .maybeSingle()
     if (awardProject?.phase === "precon") {
-      throw new Error(
-        "This job is still in pricing. Convert the prospect to activate the project, then award the bid to cut the subcontract.",
-      )
+      const { data: handoff, error: handoffError } = await supabase.from("project_precon_handoffs").select("id,contract:contracts!inner(status)").eq("contract.status","active").eq("org_id",resolvedOrgId).eq("project_id",awardProjectId).in("status",["awarded","baseline_approved","accepted","released"]).maybeSingle()
+      if(handoffError) throw new Error(`Unable to verify owner award: ${handoffError.message}`)
+      if(!handoff) throw new Error("Record the signed owner contract and commercial award before committing subcontract costs.")
     }
   }
 
@@ -3323,7 +3885,13 @@ export async function awardBidSubmission({
     awardedBy: userId,
     notes: parsed.notes ?? null,
     acceptedAlternateIds: parsed.accepted_alternate_ids ?? [],
+    reviewedScope: parsed.reviewed_scope,
+    reviewedTerms: parsed.reviewed_terms,
+    readinessException: parsed.readiness_exception,
   })
+
+  // Money creates roles: the subcontract this award cut makes the winner a vendor.
+  await ensureVendorRoleWithClient(supabase, resolvedOrgId, invite.company_id, userId)
 
   try {
     const { data: org } = await supabase

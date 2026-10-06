@@ -1,5 +1,8 @@
 'use client'
 
+import { useRouter } from "next/navigation"
+import { getNotificationHref } from "@/lib/notifications/destinations"
+
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useUser } from '@/lib/auth/client'
@@ -10,6 +13,7 @@ import type { NotificationRecord, NotificationType } from '@/lib/types/notificat
 import { unwrapAction } from "@/lib/action-result"
 
 export function useNotifications() {
+  const router = useRouter()
   const [notifications, setNotifications] = useState<NotificationRecord[]>([])
   const [unreadCount, setUnreadCount] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
@@ -80,7 +84,7 @@ export function useNotifications() {
           setUnreadCount(prev => prev + 1)
 
           // Show toast for new notifications
-          showNotificationToast(newNotification)
+          showNotificationToast(newNotification, (href) => router.push(href))
         }
       )
       .subscribe()
@@ -88,7 +92,7 @@ export function useNotifications() {
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [user, loadNotifications, supabase, mapNotification])
+  }, [user, loadNotifications, supabase, mapNotification, router])
 
   const markAsRead = async (notificationId: string) => {
     try {
@@ -130,17 +134,13 @@ export function useNotifications() {
   }
 }
 
-function showNotificationToast(notification: NotificationRecord) {
+function showNotificationToast(notification: NotificationRecord, navigate: (href: string) => void) {
   const payload = notification.payload as any
   const href = getNotificationHref(payload)
   const viewAction = href
     ? {
         label: "View",
-        onClick: () => {
-          if (typeof window !== "undefined") {
-            window.location.assign(href)
-          }
-        },
+        onClick: () => navigate(href),
       }
     : undefined
 
@@ -173,37 +173,5 @@ function showNotificationToast(notification: NotificationRecord) {
         description: notification.message,
         action: viewAction,
       })
-  }
-}
-
-function getNotificationHref(payload: any): string | null {
-  const projectId = typeof payload?.project_id === "string" ? payload.project_id : null
-  const entityType = typeof payload?.entity_type === "string" ? payload.entity_type : null
-  const entityId = typeof payload?.entity_id === "string" ? payload.entity_id : null
-  const logId = typeof payload?.daily_log_id === "string" ? payload.daily_log_id : null
-
-  if (!projectId) return null
-
-  switch (entityType) {
-    case "rfi":
-      return `/projects/${projectId}/rfis`
-    case "submittal":
-      return `/projects/${projectId}/submittals`
-    case "invoice":
-      return `/projects/${projectId}/invoices`
-    case "change_order":
-      return `/projects/${projectId}/change-orders`
-    case "file":
-      return entityId ? `/projects/${projectId}/files?fileId=${entityId}` : `/projects/${projectId}/files`
-    case "drawing_set":
-    case "drawing_sheet":
-    case "drawing_revision":
-      return `/projects/${projectId}/drawings`
-    case "task":
-      return `/projects/${projectId}?tab=tasks`
-    case "daily_log":
-      return logId ? `/projects/${projectId}/daily-logs?logId=${logId}` : `/projects/${projectId}/daily-logs`
-    default:
-      return `/projects/${projectId}`
   }
 }

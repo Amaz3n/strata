@@ -1,6 +1,8 @@
 import { requireOrgContext } from "@/lib/services/context";
 import { requirePermission } from "@/lib/services/permissions";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
+import { collectBooksRows } from "@/lib/services/books/paging";
+import { isReportableVendorPayment, reportableVendorReversal, SETTLED_VENDOR_PAYMENT_STATUSES } from "@/lib/services/reports/vendor-tax-payment-rules";
 
 export type Vendor1099Row = {
   company_id: string;
@@ -64,175 +66,89 @@ export async function getVendor1099Report({
     );
   const thresholdCents = Number(policy.threshold_cents);
 
-  const [
-    companiesResult,
-    allocationsResult,
-    billsResult,
-    expensesResult,
-    identitiesResult,
-  ] = await Promise.all([
-    supabase
-      .from("companies")
-      .select(
-        "id, name, tax_id_last4, tax_entity_type, is_1099_eligible, w9_file_id, w9_received_at, tin_verification_status, backup_withholding, tax_exempt",
-      )
-      .eq("org_id", resolvedOrgId)
-      .eq("is_1099_eligible", true),
-    supabase
-      .from("payment_allocations")
-      .select(
-        "amount_cents, bill_id, payment:payments!inner(received_at, status, method), bill:vendor_bills!inner(company_id)",
-      )
-      .eq("org_id", resolvedOrgId)
-      .not("bill_id", "is", null)
-      .gte("payment.received_at", start)
-      .lt("payment.received_at", end)
-      .in("payment.status", ["succeeded", "completed", "paid"]),
-    supabase
-      .from("vendor_bills")
-      .select("id, company_id, paid_cents, paid_at, status")
-      .eq("org_id", resolvedOrgId)
-      .not("company_id", "is", null)
-      .gte("paid_at", start)
-      .lt("paid_at", end),
-    supabase
-      .from("project_expenses")
-      .select(
-        "vendor_company_id, amount_cents, tax_cents, expense_date, status, payment_method, accounting_coding",
-      )
-      .eq("org_id", resolvedOrgId)
-      .not("vendor_company_id", "is", null)
-      .gte("expense_date", `${taxYear}-01-01`)
-      .lte("expense_date", `${taxYear}-12-31`)
-      .in("status", ["approved", "locked"]),
-    service
-      .from("tax_identity_refs")
-      .select("company_id,tin_last4,verification_status")
-      .eq("org_id", resolvedOrgId)
-      .eq("vault_provider", "supabase_vault"),
+  const [companies, allocations, payments, legacyBills, expenses, identities, reversals] = await Promise.all([
+    collectBooksRows((from, to) => supabase.from("companies")
+      .select("id,name,tax_id_last4,tax_entity_type,is_1099_eligible,w9_file_id,w9_received_at,tin_verification_status,backup_withholding,tax_exempt")
+      .eq("org_id", resolvedOrgId).eq("is_1099_eligible", true).order("id").range(from, to)),
+    collectBooksRows((from, to) => supabase.from("payment_allocations")
+      .select("id,payment_id,amount_cents,bill_id,payment:payments!inner(received_at,status,method),bill:vendor_bills!inner(company_id)")
+      .eq("org_id", resolvedOrgId).not("bill_id", "is", null)
+      .gte("payment.received_at", start).lt("payment.received_at", end)
+      .in("payment.status", [...SETTLED_VENDOR_PAYMENT_STATUSES]).order("id").range(from, to)),
+    collectBooksRows((from, to) => supabase.from("payments")
+      .select("id,bill_id,amount_cents,method,status,received_at,bill:vendor_bills!bill_id!inner(company_id)")
+      .eq("org_id", resolvedOrgId).not("bill_id", "is", null)
+      .gte("received_at", start).lt("received_at", end)
+      .in("status", [...SETTLED_VENDOR_PAYMENT_STATUSES]).order("id").range(from, to)),
+    collectBooksRows((from, to) => supabase.from("vendor_bills")
+      .select("id,company_id,paid_cents,paid_at")
+      .eq("org_id", resolvedOrgId).not("company_id", "is", null).gt("paid_cents", 0)
+      .gte("paid_at", start).lt("paid_at", end).order("id").range(from, to)),
+    collectBooksRows((from, to) => supabase.from("project_expenses")
+      .select("id,vendor_company_id,amount_cents,tax_cents,expense_date,status,payment_method,accounting_coding")
+      .eq("org_id", resolvedOrgId).not("vendor_company_id", "is", null)
+      .gte("expense_date", `${taxYear}-01-01`).lte("expense_date", `${taxYear}-12-31`)
+      .in("status", ["approved", "locked"]).order("id").range(from, to)),
+    collectBooksRows((from, to) => service.from("tax_identity_refs")
+      .select("id,company_id,tin_last4,verification_status")
+      .eq("org_id", resolvedOrgId).eq("vault_provider", "supabase_vault").order("id").range(from, to)),
+    collectBooksRows((from, to) => supabase.from("payment_reversals")
+      .select("id,amount_cents,bill_id,status,occurred_at,payment:payments!payment_id!inner(method),bill:vendor_bills!bill_id!inner(company_id)")
+      .eq("org_id", resolvedOrgId).not("bill_id", "is", null).eq("status", "succeeded")
+      .gte("occurred_at", start).lt("occurred_at", end).order("id").range(from, to)),
   ]);
-  const firstError =
-    companiesResult.error ||
-    allocationsResult.error ||
-    billsResult.error ||
-    expensesResult.error ||
-    identitiesResult.error;
-  if (firstError)
-    throw new Error(`Failed to build 1099 report: ${firstError.message}`);
-  const identityByCompany = new Map(
-    (identitiesResult.data ?? []).map((identity) => [
-      String(identity.company_id),
-      identity,
-    ]),
-  );
-
-  const candidateBillIds = (billsResult.data ?? []).map((bill) => bill.id);
-  const { data: anyYearAllocations, error: allocationLookupError } =
-    candidateBillIds.length > 0
-      ? await supabase
-          .from("payment_allocations")
-          .select("bill_id")
-          .eq("org_id", resolvedOrgId)
-          .in("bill_id", candidateBillIds)
-      : { data: [], error: null };
-  if (allocationLookupError)
-    throw new Error(
-      `Failed to build 1099 report: ${allocationLookupError.message}`,
-    );
-
+  const identityByCompany = new Map(identities.map(identity => [String(identity.company_id), identity]));
   const paidByCompany = new Map<string, number>();
-  const allocatedBillIds = new Set<string>();
-  for (const allocation of allocationsResult.data ?? []) {
-    const bill = Array.isArray(allocation.bill)
-      ? allocation.bill[0]
-      : allocation.bill;
-    const payment = Array.isArray(allocation.payment)
-      ? allocation.payment[0]
-      : allocation.payment;
-    if (!bill?.company_id) continue;
-    if (
-      payment?.method &&
-      new Set(["credit_card", "company_card", "card"]).has(payment.method)
-    )
-      continue;
-    allocatedBillIds.add(allocation.bill_id as string);
-    paidByCompany.set(
-      bill.company_id,
-      (paidByCompany.get(bill.company_id) ?? 0) +
-        Number(allocation.amount_cents ?? 0),
-    );
-  }
-  for (const allocation of anyYearAllocations ?? [])
-    if (allocation.bill_id) allocatedBillIds.add(allocation.bill_id);
-  for (const bill of billsResult.data ?? []) {
-    if (!bill.company_id || allocatedBillIds.has(bill.id)) continue;
-    paidByCompany.set(
-      bill.company_id,
-      (paidByCompany.get(bill.company_id) ?? 0) + Number(bill.paid_cents ?? 0),
-    );
-  }
-  for (const expense of expensesResult.data ?? []) {
-    if (!expense.vendor_company_id) continue;
-    // Direct-paid expenses are cash-basis. AP/bill transactions belong in the
-    // payment-allocation stream and must not leak into 1099 totals on approval.
-    if (!expense.payment_method || expense.accounting_coding?.transaction_type === "bill")
-      continue;
-    if (
-      new Set(["credit_card", "company_card", "card"]).has(
-        expense.payment_method,
-      )
-    )
-      continue;
-    paidByCompany.set(
-      expense.vendor_company_id,
-      (paidByCompany.get(expense.vendor_company_id) ?? 0) +
-        Number(expense.amount_cents ?? 0) +
-        Number(expense.tax_cents ?? 0),
-    );
-  }
-
-  // A returned payment was not income to the vendor, and reporting it overstates
-  // what they received on a form the IRS also receives. `payment_reversals`
-  // carries the bill directly, so the vendor is resolved the same way the
-  // payment was.
-  const { data: reversals, error: reversalError } = await supabase
-    .from("payment_reversals")
-    .select("amount_cents, bill_id, created_at, status")
-    .eq("org_id", resolvedOrgId)
-    .not("bill_id", "is", null)
-    .in("status", ["pending", "succeeded"])
-    .gte("created_at", start)
-    .lt("created_at", end);
-  if (reversalError)
-    throw new Error(`Failed to build 1099 report: ${reversalError.message}`);
-
-  const reversedBillIds = [
-    ...new Set((reversals ?? []).map((row) => row.bill_id as string)),
-  ];
-  const companyByBill = new Map<string, string>();
-  for (let index = 0; index < reversedBillIds.length; index += 500) {
-    const { data } = await supabase
-      .from("vendor_bills")
-      .select("id, company_id")
-      .eq("org_id", resolvedOrgId)
-      .in("id", reversedBillIds.slice(index, index + 500));
-    for (const bill of data ?? [])
-      if (bill.company_id) companyByBill.set(bill.id, bill.company_id);
-  }
   const reversedByCompany = new Map<string, number>();
-  for (const reversal of reversals ?? []) {
-    const companyId = reversal.bill_id
-      ? companyByBill.get(reversal.bill_id as string)
-      : null;
-    if (!companyId) continue;
-    reversedByCompany.set(
-      companyId,
-      (reversedByCompany.get(companyId) ?? 0) +
-        Number(reversal.amount_cents ?? 0),
-    );
+  const evidenceIssues = new Map<string, Set<string>>();
+  const issue = (companyId: string, reason: string) => {
+    const reasons = evidenceIssues.get(companyId) ?? new Set<string>();
+    reasons.add(reason); evidenceIssues.set(companyId, reasons);
+  };
+  const addPayment = (companyId: string, method: string | null, cents: number) => {
+    if (!method) { issue(companyId, "A payment has no method; confirm whether it is reportable"); return; }
+    if (!isReportableVendorPayment(method)) return;
+    if (!Number.isSafeInteger(cents)) throw new Error("Vendor payment requires integer cents");
+    paidByCompany.set(companyId, (paidByCompany.get(companyId) ?? 0) + cents);
+  };
+  const allocatedPayments = new Set<string>();
+  const evidencedBills = new Set<string>();
+  for (const allocation of allocations) {
+    const bill = Array.isArray(allocation.bill) ? allocation.bill[0] : allocation.bill;
+    const payment = Array.isArray(allocation.payment) ? allocation.payment[0] : allocation.payment;
+    if (!bill?.company_id || !payment) throw new Error("A vendor allocation is missing its payment or vendor");
+    allocatedPayments.add(`${allocation.payment_id}:${allocation.bill_id}`);
+    evidencedBills.add(allocation.bill_id);
+    addPayment(bill.company_id, payment.method, Number(allocation.amount_cents));
+  }
+  for (const payment of payments) {
+    const bill = Array.isArray(payment.bill) ? payment.bill[0] : payment.bill;
+    if (!bill?.company_id) throw new Error("A vendor payment is missing its vendor");
+    evidencedBills.add(payment.bill_id);
+    if (allocatedPayments.has(`${payment.id}:${payment.bill_id}`)) continue;
+    addPayment(bill.company_id, payment.method, Number(payment.amount_cents));
+  }
+  // A lifetime paid balance and last-paid date cannot prove this year's cash.
+  // Keep these vendors visible and block filing until dated payment evidence is restored.
+  for (const bill of legacyBills) {
+    if (bill.company_id && !evidencedBills.has(bill.id)) {
+      issue(bill.company_id, "A paid bill has no dated payment evidence for this year");
+    }
+  }
+  for (const expense of expenses) {
+    if (!expense.vendor_company_id || expense.accounting_coding?.transaction_type === "bill") continue;
+    addPayment(expense.vendor_company_id, expense.payment_method, Number(expense.amount_cents ?? 0) + Number(expense.tax_cents ?? 0));
+  }
+  for (const reversal of reversals) {
+    const bill = Array.isArray(reversal.bill) ? reversal.bill[0] : reversal.bill;
+    const payment = Array.isArray(reversal.payment) ? reversal.payment[0] : reversal.payment;
+    if (!bill?.company_id || !payment) throw new Error("A vendor reversal is missing its payment or vendor");
+    if (!payment.method) issue(bill.company_id, "A reversed payment has no method; confirm whether it is reportable");
+    const cents = reportableVendorReversal({ status: reversal.status, occurredAt: reversal.occurred_at, paymentMethod: payment.method, amountCents: Number(reversal.amount_cents) }, taxYear);
+    reversedByCompany.set(bill.company_id, (reversedByCompany.get(bill.company_id) ?? 0) + cents);
   }
 
-  const rows = (companiesResult.data ?? [])
+  const rows = companies
     .filter((company) => company.tax_exempt !== true)
     .map((company) => {
       const identity = identityByCompany.get(String(company.id));
@@ -243,7 +159,7 @@ export async function getVendor1099Report({
       );
       const meetsThreshold = totalPaidCents >= thresholdCents;
 
-      const blockingReasons: string[] = [];
+      const blockingReasons: string[] = [...(evidenceIssues.get(company.id) ?? [])];
       if (meetsThreshold) {
         if (!company.w9_file_id && !company.w9_received_at)
           blockingReasons.push("No W-9 on file");

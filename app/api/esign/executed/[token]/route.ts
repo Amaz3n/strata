@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { NextResponse } from "next/server"
 
 import { parseExecutedFileAccessToken } from "@/lib/services/esign-executed-links"
@@ -9,7 +10,7 @@ function buildInlineDisposition(filename?: string | null) {
   return `inline; filename="${safe}"`
 }
 
-export async function GET(_: Request, { params }: { params: Promise<{ token: string }> }) {
+export async function GET(request: Request, { params }: { params: Promise<{ token: string }> }) {
   try {
     const { token } = await params
     const parsed = parseExecutedFileAccessToken(token)
@@ -20,7 +21,7 @@ export async function GET(_: Request, { params }: { params: Promise<{ token: str
     const supabase = createServiceSupabaseClient()
     const { data: file, error } = await supabase
       .from("files")
-      .select("id, org_id, storage_path, file_name, mime_type")
+      .select("id, org_id, storage_path, file_name, mime_type, metadata")
       .eq("id", parsed.fileId)
       .maybeSingle()
 
@@ -34,6 +35,19 @@ export async function GET(_: Request, { params }: { params: Promise<{ token: str
       path: file.storage_path,
     })
 
+    const digest = createHash("sha256").update(bytes).digest("hex")
+    if (file.metadata?.executed_sha256 && digest !== file.metadata.executed_sha256) {
+      return NextResponse.json({ error: "Document integrity verification failed" }, { status: 409 })
+    }
+    if (new URL(request.url).searchParams.get("evidence") === "1") {
+      return NextResponse.json({
+        document_sha256:digest, integrity_verified:!!file.metadata?.executed_sha256,
+        signature_status:file.metadata?.evidence_manifest ? "signed_manifest" : "not_configured",
+        manifest:file.metadata?.evidence_manifest ?? null,
+        source_sha256:file.metadata?.source_sha256 ?? null,
+        verification:"Verify the manifest using an independently trusted Arc public key, then compare its executed_sha256 to the PDF SHA-256. This is an application signature, not a qualified PDF seal or trusted timestamp.",
+      }, { headers:{"Cache-Control":"no-store","Content-Disposition":'attachment; filename="signature-evidence.json"'} })
+    }
     const headers = new Headers()
     headers.set("Content-Type", file.mime_type ?? "application/pdf")
     headers.set("Content-Disposition", buildInlineDisposition(file.file_name))

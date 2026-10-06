@@ -151,7 +151,7 @@ export function SidebarProjectSwitcher({ projectId, projects }: SidebarProjectSw
   return (
     <SidebarMenu className="w-full">
       <SidebarMenuItem className="w-full">
-        <DropdownMenu onOpenChange={(open) => { if (!open) setQuery("") }}>
+        <DropdownMenu key={pathname} onOpenChange={(open) => { if (!open) setQuery("") }}>
           <DropdownMenuTrigger asChild>
             <SidebarMenuButton
               className="project-avatar-host h-10 min-w-0 data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground group-data-[collapsible=icon]:justify-center"
@@ -199,6 +199,15 @@ export function SidebarProjectSwitcher({ projectId, projects }: SidebarProjectSw
                     asChild
                     onPointerEnter={() => handleIntent(project.id)}
                     onFocus={() => handleIntent(project.id)}
+                    // Keep the native Link mounted until Next commits its
+                    // navigation, so the selected link retains its prefetch
+                    // strategy. The pathname key closes the menu on commit.
+                    onSelect={(event) => {
+                      if (!isCurrent) {
+                        event.preventDefault()
+                        setQuery("")
+                      }
+                    }}
                   >
                     <OptimisticLink
                       href={hrefFor(project.id)}

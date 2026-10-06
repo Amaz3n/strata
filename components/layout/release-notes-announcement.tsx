@@ -46,10 +46,12 @@ export function ReleaseNotesAnnouncement({
     }
 
     setOpen(true)
-    startTransition(() => {
-      markReleaseNoteAnnouncedAction(announcement.id).catch((error) => {
+    startTransition(async () => {
+      try {
+        await markReleaseNoteAnnouncedAction(announcement.id)
+      } catch (error) {
         console.error("Unable to mark release note announced", error)
-      })
+      }
     })
   }, [announcement, storageKey])
 
@@ -60,10 +62,12 @@ export function ReleaseNotesAnnouncement({
     setOpen(false)
     if (!dismiss) return
 
-    startTransition(() => {
-      dismissReleaseNoteAnnouncementAction(currentAnnouncement.id).catch((error) => {
+    startTransition(async () => {
+      try {
+        await dismissReleaseNoteAnnouncementAction(currentAnnouncement.id)
+      } catch (error) {
         console.error("Unable to dismiss release note announcement", error)
-      })
+      }
     })
   }
 

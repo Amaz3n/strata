@@ -34,6 +34,8 @@ jobs:
         with:
           bun-version: 1.3.5
       - run: pnpm install --frozen-lockfile
+      - run: pnpm test:precon
+      - run: pnpm test:documents
       - run: pnpm verify
 
   database-contracts:
@@ -44,7 +46,55 @@ jobs:
         with:
           version: 2.117.0
       - run: supabase db start
+      - name: Require drawing lifecycle SQL contract
+        run: |
+          test -s supabase/tests/drawing_lifecycle.test.sql
+          set -o pipefail
+          supabase test db supabase/tests/drawing_lifecycle.test.sql --local | tee /tmp/drawing-lifecycle-tap.log
+          grep -q 'Tests=6' /tmp/drawing-lifecycle-tap.log
       - run: supabase test db --local
+
+  drawing-lifecycle-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Real components and upload hook, deterministic fixtures, no live credentials.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:drawings-ui
+      - run: pnpm test:documents-ui
+
+  books-payroll-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Actual review component/actions/services with disposable SQL and provider bytes.
+    # Authentication and transport are explicit fixtures; no live credentials.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:books:payroll-ui
 
   instant-navigation:
     needs: verify
@@ -60,6 +110,7 @@ jobs:
       E2E_USER_EMAIL: ${{ secrets.E2E_USER_EMAIL }}
       E2E_USER_PASSWORD: ${{ secrets.E2E_USER_PASSWORD }}
       NEXT_EXHAUSTIVE_INSTANT_VALIDATION: "true"
+      NEXT_INSTANT_NAVIGATION_TESTING: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -72,3 +123,16 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm verify:e2e
+      - run: pnpm test:navigation:browser
+
+  native-field-recovery:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    # Compile production Swift state/persistence code with isolated storage and I/O.
+    # No app session, live credentials, real Keychain writes or customer network calls.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test tests/ios-service-visits.test.js tests/ios-service-completion-journal.test.js

@@ -55,11 +55,11 @@ test("pilot gate requires all fifteen audited surfaces and an Arc-native start",
   assert.match(onboarding, /status", "released"/)
 })
 
-test("sample community is idempotent, notification-silent, and reset-guarded", () => {
+test("sample community is notification-silent and unsafe reset is fenced", () => {
   const seed = read("lib/services/demo-community-seed.ts")
   assert.match(seed, /contains\("metadata", \{ is_sample: true \}\)\.maybeSingle/)
-  assert.match(seed, /Only a marked sample community can be removed/)
+  assert.match(seed, /Sample reset is unavailable until original ownership can be verified/)
   assert.doesNotMatch(seed, /sendEmail|notification/i)
-  assert.match(seed, /sample-buyer-%@example\.invalid/)
+  assert.doesNotMatch(seed.slice(seed.indexOf("export async function deleteSampleCommunity")), /\.delete\(/)
   assert.match(seed, /release_house_plan_version/)
 })

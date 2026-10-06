@@ -21,7 +21,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid upload path." }, { status: 400 })
     }
 
-    const denied = await requireDrawingUploadForPath({ supabase, orgId, userId, storagePath: normalizedStoragePath })
+    const denied = await requireDrawingUploadForPath({ supabase, orgId, userId, storagePath: normalizedStoragePath, uploadId, transferId: body.transferId })
     if (denied) return denied
 
     await abortDrawingPdfMultipartUpload({

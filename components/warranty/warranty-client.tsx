@@ -8,10 +8,10 @@ import type { Company, WarrantyRequest } from "@/lib/types"
 import { unwrapAction } from "@/lib/action-result"
 import { downloadCsv } from "@/lib/csv"
 import { createWarrantyRequestAction, updateWarrantyRequestAction } from "@/app/(app)/warranty/actions"
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
 import {
   listAttachmentsAction,
   detachFileLinkAction,
-  uploadFileAction,
   attachFileAction,
 } from "@/app/(app)/documents/actions"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
@@ -98,8 +98,25 @@ export function WarrantyClient({
   requests: WarrantyRequest[]
   companies: Company[]
 }) {
+  return <WarrantyClientContent key={projectId} projectId={projectId} requests={requests} companies={companies} />
+}
+
+function WarrantyClientContent({
+  projectId,
+  requests,
+  companies,
+}: {
+  projectId: string
+  requests: WarrantyRequest[]
+  companies: Company[]
+}) {
   const isMobile = useIsMobile()
   const [items, setItems] = useState<WarrantyRequest[]>(requests)
+  const [requestSource, setRequestSource] = useState(requests)
+  if (requestSource !== requests) {
+    setRequestSource(requests)
+    setItems(requests)
+  }
   const [sheetOpen, setSheetOpen] = useState(false)
   const [editing, setEditing] = useState<WarrantyRequest | null>(null)
   const [search, setSearch] = useState("")

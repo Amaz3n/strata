@@ -12,7 +12,7 @@
  *    change-order conversation, and the band says so with a number.
  */
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 import { ArrowRight, Check, Loader2, TriangleAlert } from "lucide-react"
 
@@ -34,6 +34,8 @@ export interface TakeoffRevisionBandProps {
   refreshToken: number
   canWrite: boolean
   onResolved: () => void
+  /** Walk the queue on the sheet, one measurement at a time. */
+  onReview: (items: ReanchorReviewItem[]) => void
 }
 
 export function TakeoffRevisionBand({
@@ -41,30 +43,50 @@ export function TakeoffRevisionBand({
   refreshToken,
   canWrite,
   onResolved,
+  onReview,
 }: TakeoffRevisionBandProps) {
   const [review, setReview] = useState<ReanchorReviewItem[]>([])
   const [alerts, setAlerts] = useState<StaleEstimateAlert[]>([])
   const [confirming, setConfirming] = useState(false)
 
+  const [alertError, setAlertError] = useState<string | null>(null)
+  const [queueError, setQueueError] = useState<string | null>(null)
+  const [loadingQueue, setLoadingQueue] = useState(true)
+  const [queueProject, setQueueProject] = useState<string | null>(null)
+  const loadGeneration = useRef(0)
+
   const load = useCallback(async () => {
-    const [queue, stale] = await Promise.all([
-      listReanchorReviewQueueAction(projectId).catch(() => []),
-      listStaleEstimateAlertsAction(projectId).catch(() => []),
+    const generation = ++loadGeneration.current
+    setLoadingQueue(true)
+    setQueueProject(null)
+    setQueueError(null)
+    setReview([])
+    setAlerts([])
+    setAlertError(null)
+    const [queue, stale] = await Promise.allSettled([
+      listReanchorReviewQueueAction(projectId).then(unwrapAction),
+      listStaleEstimateAlertsAction(projectId).then(unwrapAction),
     ])
-    setReview(queue)
-    setAlerts(stale)
+    if (generation !== loadGeneration.current) return
+    setQueueProject(projectId)
+    if (queue.status === "fulfilled") setReview(queue.value)
+    else setQueueError(queue.reason instanceof Error ? queue.reason.message : "Failed to load measurements awaiting review")
+    if (stale.status === "fulfilled") setAlerts(stale.value)
+    else setAlertError(stale.reason instanceof Error ? stale.reason.message : "Failed to load signed-estimate changes")
+    setLoadingQueue(false)
   }, [projectId])
 
   useEffect(() => {
     void load()
+    return () => { loadGeneration.current += 1 }
   }, [load, refreshToken])
 
-  const handleConfirmAll = useCallback(async () => {
-    if (review.length === 0) return
+  const handleConfirmAll = useCallback(async (unchangedOnly = false) => {
+    if (!canWrite || queueProject !== projectId || loadingQueue || queueError || review.length === 0) return
     setConfirming(true)
     try {
       const count = unwrapAction(
-        await confirmReanchoredMarkupsAction(review.map((item) => item.markup_id)),
+        await confirmReanchoredMarkupsAction(review.filter((item) => !unchangedOnly || item.evidence_comparison === "unchanged").map((item) => item.markup_id)),
       )
       toast.success(`${count} measurement${count === 1 ? "" : "s"} confirmed`)
       onResolved()
@@ -74,18 +96,29 @@ export function TakeoffRevisionBand({
     } finally {
       setConfirming(false)
     }
-  }, [review, onResolved, load])
+  }, [canWrite, queueProject, projectId, loadingQueue, queueError, review, onResolved, load])
 
-  if (review.length === 0 && alerts.length === 0) return null
+  if (queueProject !== projectId || loadingQueue) return (
+    <div className="px-4 pt-1">
+      <div role="status" className="flex items-center justify-between gap-2 border border-warning/50 px-3 py-2 text-xs">
+        <span>Loading revision review and signed-estimate changes…</span>
+      </div>
+    </div>
+  )
+  if (!queueError && !alertError && review.length === 0 && alerts.length === 0) return null
 
   // Sheets, not markups: "3 measurements" means nothing to an estimator, but
   // "A-101, A-102" tells them exactly where to look.
   const sheetNumbers = Array.from(new Set(review.map((item) => item.sheet_number))).sort()
 
   return (
-    <div className="border-b">
+    <div className="space-y-2 px-4 pt-1">
+      {(queueError || alertError) && <div role="alert" className="flex items-center justify-between gap-2 border border-warning/50 px-3 py-2 text-xs">
+        <div>{queueError && <p>Revision review: {queueError}</p>}{alertError && <p>Signed-estimate changes: {alertError}</p>}</div>
+        <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => void load()}>Retry</Button>
+      </div>}
       {review.length > 0 && (
-        <div className="space-y-2 border-l-2 border-l-warning px-3 py-2.5">
+        <div className="space-y-2 border border-warning/50 bg-warning/10 px-3 py-2.5">
           <div className="flex items-start gap-2">
             <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
             <div className="min-w-0 text-xs">
@@ -96,11 +129,17 @@ export function TakeoffRevisionBand({
                 On {sheetNumbers.slice(0, 4).join(", ")}
                 {sheetNumbers.length > 4 ? ` +${sheetNumbers.length - 4} more` : ""}. They
                 don&apos;t count toward totals until you check them against the new drawing.
+                {" "}{review.filter((i) => i.evidence_comparison === "unchanged").length} have unchanged local vector evidence;
+                {" "}{review.filter((i) => i.evidence_comparison === "changed").length} have changed evidence. Others need manual comparison.
               </p>
             </div>
           </div>
           {canWrite && (
-            <div className="flex gap-2 pl-5.5">
+            <div className="flex flex-wrap gap-2 pl-5.5">
+              <Button size="sm" className="h-7 text-xs" disabled={confirming} onClick={() => onReview(review)}>
+                Review {review.length}
+              </Button>
+              {review.some((i) => i.evidence_comparison === "unchanged") && <Button size="sm" variant="outline" className="h-7 text-xs" disabled={confirming} onClick={() => void handleConfirmAll(true)}>Confirm unchanged</Button>}
               <Button
                 size="sm"
                 variant="outline"
@@ -121,7 +160,7 @@ export function TakeoffRevisionBand({
       )}
 
       {alerts.map((alert) => (
-        <div key={alert.condition_id} className="border-l-2 border-l-warning px-3 py-2.5">
+        <div key={`${alert.condition_id}:${alert.estimate_id}:${alert.estimate_line_id}`} className="border border-warning/50 px-3 py-2.5">
           <div className="flex items-start gap-2">
             <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
             <div className="min-w-0 text-xs">

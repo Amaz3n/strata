@@ -1,0 +1,19 @@
+1..18
+ok 1 - disbursements tracks submission attempts
+ok 2 - disbursements stores the last submission error
+ok 3 - disbursements schedules submission recovery
+ok 4 - disbursements stores durable transfer claim time
+ok 5 - disbursements stores the transfer claim token
+ok 6 - disbursements stores the provider transfer idempotency key
+ok 7 - Function public.claim_matured_vendor_transfers(integer) should exist
+ok 8 - Function public.list_payment_submission_recovery_candidates(integer) should exist
+ok 9 - Function public.release_failed_payment_run_item_atomic(uuid, uuid, text, timestamp with time zone) should exist
+ok 10 - Function public.complete_post_transfer_return_recovery_atomic(uuid, uuid, text, timestamp with time zone) should exist
+ok 11 - the database state machine includes both Phase B states
+ok 12 - the transfer claim writes durable state rather than returning a transaction-scoped lock
+ok 13 - abandoned transfer claims become reclaimable after fifteen minutes
+ok 14 - submission recovery is selected by a due timestamp and a hard attempt ceiling
+ok 15 - definitive failure reverses the submission ledger inside the release RPC
+ok 16 - browser roles cannot claim vendor transfers
+ok 17 - browser roles cannot release failed payment items
+ok 18 - a payout that wins the return race can still record the AP payment

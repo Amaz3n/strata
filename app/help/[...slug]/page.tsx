@@ -21,7 +21,10 @@ type HelpRoutePageProps = {
 // The root Instant Navigation sample uses a scalar `slug` for report routes;
 // this catch-all route needs its own array-shaped sample.
 export const instant = {
-  unstable_samples: [{ params: { slug: ["getting-started"] } }],
+  unstable_samples: [{
+    params: { slug: ["getting-started"] },
+    headers: [["sentry-trace", null], ["baggage", null]] as Array<[string, string | null]>,
+  }],
 }
 
 export const metadata = {

@@ -1,0 +1,5 @@
+1..4
+ok 1 - review API remains server-only
+ok 2 - review guard retains INVOKER authority
+ok 3 - review evidence is private with RLS
+ok 4 - review history is append-only

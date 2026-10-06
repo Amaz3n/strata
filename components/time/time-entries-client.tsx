@@ -86,7 +86,11 @@ function formatDate(value: string | null | undefined) {
   }
 }
 
-export function TimeEntriesClient({
+export function TimeEntriesClient(props: TimeEntriesClientProps) {
+  return <TimeEntriesContent key={props.projectId} {...props} />
+}
+
+function TimeEntriesContent({
   projectId,
   initialEntries,
   costCodes,
@@ -96,6 +100,11 @@ export function TimeEntriesClient({
 }: TimeEntriesClientProps) {
   const isMobile = useIsMobile()
   const [items, setItems] = useState<TimeEntry[]>(initialEntries)
+  const [entrySource, setEntrySource] = useState(initialEntries)
+  if (entrySource !== initialEntries) {
+    setEntrySource(initialEntries)
+    setItems(initialEntries)
+  }
   const [search, setSearch] = useState("")
   const [statusFilter, setStatusFilter] = useState<"all" | StatusKey>("all")
   const [sheetOpen, setSheetOpen] = useState(false)

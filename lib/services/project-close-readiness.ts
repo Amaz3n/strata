@@ -1,3 +1,4 @@
+import { requireAuthorization } from "@/lib/services/authorization"
 import { getAccountingSyncStates } from "@/lib/services/accounting-sync-state"
 import { invoiceHref } from "@/lib/financials/invoice-destinations"
 import { isBefore, parseISO, startOfToday } from "date-fns"
@@ -105,6 +106,8 @@ export async function getProjectCloseReadiness(projectId: string, orgId?: string
     orgId: resolvedOrgId,
     userId,
   })
+  await requireAuthorization({ supabase, orgId: resolvedOrgId, userId,
+    permission: "closeout.read", projectId, resourceType: "project", resourceId: projectId })
 
   const [
     invoicesResult,

@@ -13,7 +13,7 @@ import {
   updateFeatureFlag,
 } from "@/lib/services/admin"
 import { requireAuth } from "@/lib/auth/context"
-import { requireAnyPermission } from "@/lib/services/permissions"
+import { requireAnyPlatformPermission } from "@/lib/services/platform-access"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 
@@ -35,7 +35,7 @@ const featureFlagSchema = z.object({
 
 async function requireFeaturePermission() {
   const { user } = await requireAuth()
-  await requireAnyPermission(["features.manage", "platform.feature_flags.manage"], { userId: user.id })
+  await requireAnyPlatformPermission(["platform.feature_flags.manage"])
   return user
 }
 

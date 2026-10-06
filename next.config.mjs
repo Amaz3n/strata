@@ -47,7 +47,18 @@ const securityHeaders = [
   },
 ]
 
+// Local OCR must ship its child entry, worker scripts, WASM and English data.
+const rasterOcrAssets = [
+  "./lib/services/ocr/*.cjs",
+  "./node_modules/tesseract.js/src/**",
+  "./node_modules/tesseract.js-core/**",
+  "./node_modules/@tesseract.js-data/eng/**",
+]
+
 const nextConfig = {
+  // Optimize eligible components and hooks through Next's React Compiler
+  // integration while preserving existing manual memoization semantics.
+  reactCompiler: true,
   // Cache Components turns every route into a static shell with dynamic work
   // streamed through Suspense. Partial prefetching makes those shells the unit
   // the client router fetches, so visible destinations are ready on click.
@@ -94,32 +105,42 @@ const nextConfig = {
   // surfaces as an unhandledRejection. Route handlers happened to survive this;
   // server actions did not. Externalizing makes Node require it from
   // node_modules, where the .wasm sits next to its loader.
-  serverExternalPackages: ["@napi-rs/canvas", "mupdf"],
+  serverExternalPackages: ["@napi-rs/canvas", "mupdf", "tesseract.js", "tesseract.js-core", "@tesseract.js-data/eng"],
   // Ensure bundled PDF fonts ship with the report export function on Vercel.
   outputFileTracingIncludes: {
+    // OCR runs in a bounded local child; bundle its entry and local model/WASM.
+    "/api/jobs/process-outbox": ["./node_modules/mupdf/dist/*.wasm", "./lib/pdfs/fonts/**", ...rasterOcrAssets],
+    "/plans": rasterOcrAssets,
+    "/plans/\\[id\\]": ["./node_modules/mupdf/dist/*.wasm", ...rasterOcrAssets],
     "/api/projects/[id]/reports/profitability": ["./lib/pdfs/fonts/**"],
+    // Signing preflight and durable execution embed these fonts at runtime.
+    "/d/*": ["./lib/pdfs/fonts/**"],
+    "/signatures": ["./lib/pdfs/fonts/**"],
     // mupdf is externalized (see serverExternalPackages), so its 10MB .wasm is
     // loaded from node_modules at runtime rather than bundled. Trace it
     // explicitly onto the functions that open PDFs — an untraced .wasm fails
     // only in production, and only when someone uploads a drawing.
     "/api/jobs/drawings-pipeline": ["./node_modules/mupdf/dist/*.wasm"],
-    "/api/jobs/process-outbox": ["./node_modules/mupdf/dist/*.wasm"],
     "/api/portal/drawings/[token]/[sheetId]": ["./node_modules/mupdf/dist/*.wasm"],
     // Scale detection runs from the drawings surfaces' server actions.
-    "/projects/[id]/drawings": ["./node_modules/mupdf/dist/*.wasm"],
-    "/drawings": ["./node_modules/mupdf/dist/*.wasm"],
+    "/projects/\\[id\\]/drawings": ["./node_modules/mupdf/dist/*.wasm", ...rasterOcrAssets],
+    "/drawings": ["./node_modules/mupdf/dist/*.wasm", ...rasterOcrAssets],
+    "/drawings/sets/\\[setId\\]": ["./node_modules/mupdf/dist/*.wasm", ...rasterOcrAssets],
+    "/projects/\\[id\\]/drawings/sets/\\[setId\\]": ["./node_modules/mupdf/dist/*.wasm", ...rasterOcrAssets],
+    "/projects/\\[id\\]/drawings/model": ["./node_modules/mupdf/dist/*.wasm", ...rasterOcrAssets],
   },
   // Server Actions configuration
   experimental: {
+    // Allow verification on machines with little free disk without persisting
+    // the disposable production compiler cache. Normal builds retain it.
+    turbopackFileSystemCacheForBuild: process.env.NEXT_DISABLE_BUILD_CACHE !== "true",
     cachedNavigations: true,
     instantInsights: {
       validationLevel: instantValidationLevel,
     },
-    // `instant()` in the Playwright suite drives the same testing API the
-    // Navigation Inspector uses. `next dev` exposes it automatically; `next start`
-    // does not without this, and playwright.config.ts runs against a production
-    // build — so every instant() assertion was scoping to nothing.
-    exposeTestingApiInProductionBuild: true,
+    // Enable the instant-navigation lock only in controlled browser test builds.
+    // Playwright supplies this flag; ordinary deploy builds keep it disabled.
+    exposeTestingApiInProductionBuild: process.env.NEXT_INSTANT_NAVIGATION_TESTING === "true",
     proxyClientMaxBodySize: '250mb',
     serverActions: {
       bodySizeLimit: '100mb',

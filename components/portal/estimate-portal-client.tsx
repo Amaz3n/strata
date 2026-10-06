@@ -1,5 +1,7 @@
 "use client"
 
+import { proposalDocumentLabel } from "@/lib/precon/proposal-documents";
+import { normalizeEstimateCommercial } from "@/lib/financials/estimate-commercial";
 import { useMemo, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
@@ -18,7 +20,7 @@ import { QuotePortalShell, type PortalStatusTone } from "@/components/portal/quo
 import { QuoteDocumentView, type QuoteViewLine } from "@/components/portal/quote-document-view"
 import { EstimatePhotoGallery } from "@/components/portal/estimate-photo-gallery"
 import { TakeoffEvidenceDialog } from "@/components/portal/takeoff-evidence-dialog"
-import { submitEstimateDecisionAction, type EstimatePortalPayload } from "@/app/e/[token]/actions"
+import { answerEstimateQuestionAction, submitEstimateDecisionAction, type EstimatePortalPayload } from "@/app/e/[token]/actions"
 
 const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })
 const money = (cents?: number | null) => currency.format((cents ?? 0) / 100)
@@ -58,6 +60,7 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
   const [signatureImage, setSignatureImage] = useState<string | null>(null)
   const [captureOpen, setCaptureOpen] = useState(false)
 
+  const isBudget = estimate.precon?.purpose === "budget"
   const statusMeta = STATUS_META[estimate.status] ?? STATUS_META.sent
   const isApproved = estimate.status === "approved" || estimate.status === "client_signed" || estimate.status === "executed" || estimate.status === "converted_to_project"
   const isClientSigned = estimate.status === "client_signed"
@@ -133,7 +136,7 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
           note,
           selected_optional_ids: decision === "approved" ? selectedOptionalIds : undefined,
           signature:
-            decision === "approved"
+            decision === "approved" && !isBudget
               ? {
                   signer_name: signerName.trim(),
                   signer_email: signerEmail.trim() || null,
@@ -145,9 +148,9 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
         })
         toast.success(
           decision === "approved"
-            ? "Estimate signed — thank you!"
+            ? (isBudget ? "Proposal approved for scope and budget — thank you!" : "Agreement signed — thank you!")
             : decision === "rejected"
-              ? "Estimate declined."
+              ? "Document declined."
               : "Change requests sent to your builder.",
         )
         setChangesOpen(false)
@@ -190,7 +193,7 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
     <QuotePortalShell
       orgName={estimate.org_name}
       orgLogoUrl={estimate.org_logo_url}
-      documentLabel="Estimate"
+      documentLabel={proposalDocumentLabel(normalizeEstimateCommercial({ precon: estimate.precon }))}
       statusLabel={statusMeta.label}
       statusTone={statusMeta.tone}
       pdfUrl={pdfUrl}
@@ -199,7 +202,7 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
           orgName={estimate.org_name}
           orgLogoUrl={estimate.org_logo_url}
           orgAddress={estimate.org_address}
-          documentLabel="Estimate"
+          documentLabel={proposalDocumentLabel(normalizeEstimateCommercial({ precon: estimate.precon }))}
           title={estimate.title}
           number={`v${estimate.version}`}
           recipientName={estimate.recipient_name}
@@ -214,6 +217,14 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
           exclusions={estimate.exclusions}
           lines={viewLines}
           totalCents={displayTotal}
+          totalRange={estimate.price_range}
+          questions={estimate.questions}
+          renderAnswer={
+            canDecide && estimate.status === "sent"
+              ? (questionId) => <QuestionAnswer token={token} questionId={questionId} />
+              : undefined
+          }
+          taxCents={(estimate.tax_cents ?? 0) + Math.round((selectedOptionalSubtotal * (estimate.tax_rate ?? 0)) / 100)}
           contingencyCents={
             (estimate.total_cents ?? 0) - (estimate.subtotal_cents ?? 0) - (estimate.tax_cents ?? 0)
           }
@@ -266,7 +277,7 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
               <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-success" />
               <div className="text-sm">
                 <p className="font-semibold text-success">
-                  {isExecuted ? "Executed" : isClientSigned ? "Signed" : "Approved"}
+                  {isBudget ? "Proposal approved for scope and budget" : isExecuted ? "Executed" : isClientSigned ? "Signed" : "Approved"}
                 </p>
                 <p className="text-muted-foreground">
                   {estimate.client_signed_at ? formatTime(estimate.client_signed_at) : estimate.responded_at ? formatTime(estimate.responded_at) : ""}
@@ -284,7 +295,7 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
           ) : expired ? (
             <div className="flex items-start gap-2.5 border border-warning/30 bg-warning/5 p-3 text-sm">
               <Clock className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
-              <p className="text-muted-foreground">This estimate has expired. Please contact your builder for an updated copy.</p>
+              <p className="text-muted-foreground">This document has expired. Please contact your builder for an updated copy.</p>
             </div>
           ) : estimate.status === "changes_requested" ? (
             <div className="flex items-start gap-2.5 border border-warning/30 bg-warning/5 p-3 text-sm">
@@ -296,6 +307,7 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
           {canDecide ? (
             <>
               <Separator />
+              {isBudget && <p className="text-xs text-muted-foreground">Approving confirms the proposed scope, budget, and selected options. It does not execute a construction agreement or authorize work.</p>}
               {signatureOpen ? (
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
@@ -309,7 +321,7 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
                     </button>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Your typed signature records your approval of this estimate and its terms.
+                    Your typed signature records your approval of this agreement and its terms.
                   </p>
                   <div className="space-y-3">
                     <div className="space-y-1.5">
@@ -447,11 +459,11 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
                   <button
                     type="button"
                     disabled={pending}
-                    onClick={() => setSignatureOpen(true)}
+                    onClick={() => isBudget ? runDecision("approved") : setSignatureOpen(true)}
                     className="flex flex-col items-center justify-center gap-1.5 border border-success/40 bg-success/15 p-4 text-xs font-semibold text-success transition-colors hover:bg-success/25 disabled:opacity-50"
                   >
                     <CheckCircle2 className="h-5 w-5" />
-                    Sign
+                    {isBudget ? "Approve proposal" : "Sign"}
                   </button>
                   <button
                     type="button"
@@ -487,7 +499,7 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
             </DialogDescription>
           </DialogHeader>
           <SignatureCapture
-            fieldLabel="Estimate client signature"
+            fieldLabel="Agreement client signature"
             onApply={(signatureDataUrl) => {
               setSignatureImage(signatureDataUrl)
               setSignatureText(signerName || "Signed Electronically")
@@ -497,5 +509,41 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
         </DialogContent>
       </Dialog>
     </QuotePortalShell>
+  )
+}
+
+/** One question, answered in place. The builder sees the answer on the deal right away. */
+function QuestionAnswer({ token, questionId }: { token: string; questionId: string }) {
+  const router = useRouter()
+  const [answer, setAnswer] = useState("")
+  const [pending, startTransition] = useTransition()
+  return (
+    <form
+      className="mt-1.5 flex gap-2"
+      onSubmit={(event) => {
+        event.preventDefault()
+        startTransition(async () => {
+          const result = await answerEstimateQuestionAction({ token, questionId, answer })
+          if (!result.success) {
+            toast.error(result.error ?? "Your answer was not saved. Try again.")
+            return
+          }
+          toast.success("Answer sent to your builder")
+          router.refresh()
+        })
+      }}
+    >
+      <Input
+        aria-label="Your answer"
+        placeholder="Your answer"
+        className="h-8 text-[12.5px]"
+        value={answer}
+        disabled={pending}
+        onChange={(event) => setAnswer(event.target.value)}
+      />
+      <Button type="submit" size="sm" className="h-8" disabled={pending || answer.trim().length < 3}>
+        {pending ? "Sending…" : "Answer"}
+      </Button>
+    </form>
   )
 }

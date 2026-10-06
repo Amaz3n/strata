@@ -1753,8 +1753,13 @@ test("AR and AP have one status definition, and it is the one the GL posts from"
     path.join(__dirname, "../lib/services/reports/ap-aging.ts"),
     "utf8",
   );
-  assert.match(arAging, /BILLED_INVOICE_STATUSES\.includes\(row\.status\)/);
-  assert.match(arAging, /voidedAt >= cutoff/);
+  assert.match(arAging, /isInvoiceReceivableAsOf\(row, asOfDate\)/);
+  const { isInvoiceReceivableAsOf } = require("../lib/services/books/subledger-settlements");
+  for (const status of BILLED_INVOICE_STATUSES) assert.equal(isInvoiceReceivableAsOf({ status }, "2026-09-30"), true);
+  for (const status of ["draft", "saved"]) assert.equal(isInvoiceReceivableAsOf({ status }, "2026-09-30"), false);
+  assert.equal(isInvoiceReceivableAsOf({ status: "void", metadata: { voided_at: "2026-10-01T00:00:00Z" } }, "2026-09-30"), true);
+  assert.equal(isInvoiceReceivableAsOf({ status: "void", metadata: { voided_at: "2026-09-30T00:00:00Z" } }, "2026-09-30"), false);
+  assert.equal(isInvoiceReceivableAsOf({ status: "sent", metadata: { invoice_kind: "earnest_deposit" } }, "2026-09-30"), false);
   assert.match(
     apAging,
     /\.in\("status", \[\.\.\.PAYABLE_VENDOR_BILL_STATUSES\]\)/,
@@ -1770,11 +1775,11 @@ test("AR and AP have one status definition, and it is the one the GL posts from"
   // PostgREST rejects the embed outright and the tie-out throws.
   assert.match(
     verifier,
-    /invoice:invoices!invoice_id!inner\(status, issue_date\)/,
+    /invoice:invoices!invoice_id!inner\(status,issue_date,metadata\)/,
   );
   assert.match(
     verifier,
-    /\.in\("invoice\.status", \[\.\.\.BILLED_INVOICE_STATUSES\]\)/,
+    /receivableRetainageAsOf\(holds, asOf\)/,
   );
   assert.doesNotMatch(verifier, /not\("status", "in", "\(draft,void\)"\)/);
 });
@@ -2190,11 +2195,13 @@ test("bank rules pick the most specific match and reuse B1's confidence curve", 
     direction: null,
     bankAccountId: null,
     glAccountId: "gl-generic",
+    vendorId: null,
     projectId: null,
     costCodeId: null,
     confidence: 1,
     hitCount: 5,
     active: true,
+    source: "learned_pattern",
     ...overrides,
   });
   const txn = {
@@ -2221,6 +2228,37 @@ test("bank rules pick the most specific match and reuse B1's confidence curve", 
       ],
     }).ruleId,
     "exact",
+  );
+
+  // Explicit rules are authored intent: they win over learned specificity but
+  // remain suggestions rather than silently posting a transaction.
+  const manual = selectBankRule({
+    transaction: txn,
+    rules: [
+      rule({ id: "learned", matchKind: "merchant_exact", source: "learned_pattern" }),
+      rule({ id: "manual", source: "manual_rule" }),
+    ],
+  });
+  assert.equal(manual.ruleId, "manual");
+  assert.equal(manual.source, "manual_rule");
+  assert.equal(manual.autoApplies, false);
+
+  // Description means the bank description for manual rules. Merchant-only
+  // fallback remains limited to legacy learned patterns.
+  assert.equal(
+    selectBankRule({
+      transaction: { ...txn, description: "card purchase 4821" },
+      rules: [rule({ source: "manual_rule" })],
+    }),
+    null,
+  );
+
+  assert.equal(
+    selectBankRule({
+      transaction: txn,
+      rules: [rule({ vendorId: "vendor-home-depot" })],
+    }).vendorId,
+    "vendor-home-depot",
   );
 
   // A rule bound to this account beats one that applies everywhere.
@@ -2331,6 +2369,18 @@ test("bank rules pick the most specific match and reuse B1's confidence curve", 
     }),
     true,
   );
+});
+
+test("manual bank rule writes validate organization-owned targets and stay separate from learned patterns", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "../lib/services/books/bank-manual-rules.ts"),
+    "utf8",
+  );
+  assert.match(source, /from\("gl_accounts"\).*eq\("org_id", orgId\).*eq\("active", true\).*neq\("account_type", "cogs"\)/s);
+  assert.match(source, /from\("bank_accounts"\).*eq\("org_id", orgId\)/s);
+  assert.match(source, /from\("companies"\).*eq\("org_id", orgId\)/s);
+  assert.match(source, /permission: "books\.reconcile"/);
+  assert.doesNotMatch(source, /from\("bank_rules"\)/);
 });
 
 test("a pasted trial balance parses without inventing amounts", () => {
@@ -2524,20 +2574,41 @@ test("Books exposes focused accounting workspaces instead of one tab-only page",
     path.join(__dirname, "../app/(app)/books/transactions/page.tsx"),
     "utf8",
   );
-  for (const route of [
-    "/books/banking",
-    "/books/overhead",
-    "/books/chart",
-    "/books/ledger",
-    "/books/close",
-    "/books/opening-balances",
-    "/books/accountant",
-    "/books/cutover",
-  ])
-    assert.match(client, new RegExp(route.replaceAll("/", "\\/")));
+  const navigation = fs.readFileSync(path.join(__dirname, "../components/layout/books-nav-items.ts"), "utf8");
+  const landing = fs.readFileSync(path.join(__dirname, "../app/(app)/books/page.tsx"), "utf8");
+  assert.match(landing, /redirect\(\s*settings\?\.ledger_authority === "arc"/);
+  assert.doesNotMatch(client, /section === "overview"|The books behind the build/);
+  for (const route of ["/books/banking", "/books/overhead", "/books/assets"])
+    assert.ok(navigation.includes(route));
+  const chartRedirect = fs.readFileSync(
+    path.join(__dirname, "../app/(app)/books/chart/page.tsx"),
+    "utf8",
+  );
+  assert.match(chartRedirect, /redirect\("\/settings\/accounting\/chart-of-accounts"\)/);
+  assert.doesNotMatch(client, /key: "chart", label: "Chart"/);
+  for (const [legacy, destination] of [["opening-balances", "opening-balances"], ["cutover", "setup"]]) {
+    const redirectPage = fs.readFileSync(path.join(__dirname, `../app/(app)/books/${legacy}/page.tsx`), "utf8");
+    assert.ok(redirectPage.includes(`redirect("/settings/accounting/${destination}")`));
+    assert.doesNotMatch(client, new RegExp(`key: "${legacy}"`));
+  }
+  assert.doesNotMatch(client, /key: "ledger", label: "Ledger"/);
+  const sidebar = fs.readFileSync(path.join(__dirname, "../components/layout/app-sidebar.tsx"), "utf8");
+  assert.match(sidebar, /items: buildBooksNavItems\(pathname\)/);
+  assert.match(navigation, /title: "General ledger",\s*url: "\/books\/ledger"/);
+  const sectionPage = fs.readFileSync(path.join(__dirname, "../app/(app)/books/_components/books-section-page.tsx"), "utf8");
+  assert.match(sectionPage, /section === "ledger"/);
+  assert.match(sectionPage, /<BooksJournals/);
+  assert.doesNotMatch(client, /createAccountingPeriodAction/);
+  const close = fs.readFileSync(path.join(__dirname, "../components/books/close-workspace.tsx"), "utf8");
+  assert.match(close, /settings\/accounting\/calendar/);
+  assert.match(navigation, /title: "Close",\s*url: "\/books\/close"/);
+  assert.match(sectionPage, /<CloseWorkspace/);
+  assert.doesNotMatch(client, /key: "close"/);
+
   assert.match(transactionsRedirect, /redirect\("\/books\/banking"\)/);
-  assert.match(client, /\/books\/banking\/\$\{account\.id\}\/reconcile/);
-  assert.match(client, /\/books\/close\/\$\{period\.id\}/);
+  const banking = fs.readFileSync(path.join(__dirname, "../components/books/banking-workspace.tsx"), "utf8");
+  assert.match(banking, /reconciliationAccountId/);
+  assert.match(close, /\/books\/close\/\$\{period\.id\}/);
 });
 
 test("the cutover quarter gate measures calendar covered, not runs approved", () => {
@@ -2882,11 +2953,10 @@ test("org-level notifications can deep-link even with no project", () => {
 
   // ...and the resolver returned null without a project id, so an org-level
   // notification could not have linked anywhere regardless of its case.
-  assert.match(
-    item,
-    /const explicit = typeof payload\?\.href === "string" \? payload\.href : null/,
-  );
-  assert.match(item, /if \(explicit\?\.startsWith\("\/"\)\) return explicit/);
+  assert.match(item, /getNotificationHref\(payload\)/);
+  const { getNotificationHref } = require("../lib/notifications/destinations");
+  assert.equal(getNotificationHref({ href: "/books/close" }), "/books/close");
+  assert.equal(getNotificationHref({ href: "https://external.invalid/" }), null);
 
   // The email path had its own router that only knew entity types, so the same
   // notification arrived in-app with a link and by email without a button.
@@ -3654,17 +3724,15 @@ test("revenue recognition is as-of, and names the projects it could not answer f
   // Closing June in August must not book June revenue out of August's costs.
   assert.match(
     recognition,
-    /const historical = periodEnd < todayIsoDateOnly\(\)/,
+    /requireRecognitionDate\(periodEnd, todayIsoDateOnly\(\)\)/,
   );
   assert.match(
     recognition,
     /loadPocPositionsAsOf\(\{ orgId, projectIds: pocProjects\.map\(\(row\) => row\.projectId\), asOf: periodEnd \}\)/,
   );
-  // Live computation survives only for a period end that is not yet in the past.
-  assert.match(
-    recognition,
-    /\} else \{\s*const poc = await computeProjectPocForProject/,
-  );
+  // Posting uses period-end evidence even when the period ends today.
+  assert.doesNotMatch(recognition, /computeProjectPocForProject/);
+  assert.match(recognition, /exactPeriodPosition\(snapshots.get\(project.projectId\), periodEnd\)/);
   // A project with no snapshot is named, not given today's position.
   assert.match(
     recognition,
@@ -4089,7 +4157,6 @@ test("a truncated scan can never report a clean bill of health", () => {
   for (const table of [
     "bank_transactions",
     "vendor_bills",
-    "poc_snapshots",
     "bank_accounts",
     "companies",
     "bank_reconciliations",
@@ -4123,6 +4190,10 @@ test("a truncated scan can never report a clean bill of health", () => {
     source,
     /if \(args\.issueCount > 0 \|\| args\.scanCapped\) return args\.failedStatus/,
   );
+  assert.match(source, /loadPocPositionsAsOf\(\{ orgId: context.orgId, asOf: period.period_end \}\)/);
+  const snapshotLoader = fs.readFileSync(path.join(__dirname, "../lib/services/poc.ts"), "utf8");
+  assert.match(snapshotLoader, /\.range\(from, from \+ POC_SNAPSHOT_PAGE_SIZE - 1\)/);
+
 });
 
 test("the tie-outs compare real balances, including credit ones", () => {
@@ -4235,6 +4306,14 @@ test("a projection failure a retry cannot cure is surfaced as its own finding", 
     "projection_blocked_by_closed_period",
   );
   assert.equal(
+    classifyProjectionFailure("Failed to post journal: Accounting period is closed and cannot accept postings"),
+    "projection_blocked_by_closed_period",
+  );
+  assert.equal(
+    classifyProjectionFailure("Accounting period is reviewing and cannot accept operational postings"),
+    "projection_failed",
+  );
+  assert.equal(
     classifyProjectionFailure(
       "Failed to record accounting fact: duplicate key value violates unique constraint",
     ),
@@ -4255,7 +4334,7 @@ test("a projection failure a retry cannot cure is surfaced as its own finding", 
     /ok: failures === 0[\s\S]*status: failures === 0 \? 200 : 207/;
   assert.match(projection, convention);
   assert.match(maintenance, convention);
-  assert.match(maintenance, /recordProjectionFailures\(repair\.results\)/);
+  assert.match(maintenance, /recordProjectionFailures\(repair\.results, \{ full: true \}\)/);
   assert.doesNotMatch(maintenance, /\{ ok: true,/);
 });
 
@@ -4284,7 +4363,7 @@ test("a refused close leaves no journal entries behind, and posts under resolved
   // than recognizing against a substituted one.
   assert.match(
     close,
-    /recognizeRevenueForPeriod\(\s*context\.orgId,\s*period\.period_end,?\s*\)/,
+    /recognizeRevenueForPeriod\(\s*context\.orgId,\s*period\.period_end,\s*checklist\.pocProjectIds,\s*checklist\.pocSnapshotEvidence,?\s*\)/,
   );
   assert.match(close, /checklist\.pocProjectIds\.includes\(row\.projectId\)/);
 

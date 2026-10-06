@@ -12,10 +12,10 @@ import { overrideGroupCutoffAction, revertGroupCutoffAction } from "@/app/(app)/
 import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard"
 import { SelectionForm } from "@/components/selections/selection-form"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
 import {
   listAttachmentsAction,
   detachFileLinkAction,
-  uploadFileAction,
   attachFileAction,
 } from "@/app/(app)/documents/actions"
 import { Badge } from "@/components/ui/badge"

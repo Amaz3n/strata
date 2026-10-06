@@ -15,12 +15,14 @@ function database(seed = {}, failure) {
       let filters = [],
         operation = "select",
         values,
+        upsertOptions,
         single = false,
         range
       const q = {
         select() {
           return q
         },
+        abortSignal() { return q },
         eq(key, value) {
           filters.push((row) => row[key] === value)
           return q
@@ -53,9 +55,10 @@ function database(seed = {}, failure) {
           values = value
           return q
         },
-        upsert(value) {
+        upsert(value, options) {
           operation = "upsert"
           values = value
+          upsertOptions = options
           return q
         },
         then(resolve, reject) {
@@ -72,9 +75,12 @@ function database(seed = {}, failure) {
                     ? row.entity_id === values.entity_id && row.connection_id === values.connection_id
                     : row.event_id === values.event_id,
                 )
-                if (existing) Object.assign(existing, values)
-                else (rows[table] ??= []).push(structuredClone(values))
-                selected = [values]
+                if (existing && upsertOptions?.ignoreDuplicates) selected = []
+                else {
+                  if (existing) Object.assign(existing, values)
+                  else (rows[table] ??= []).push(structuredClone(values))
+                  selected = [values]
+                }
               }
               if (range) selected = selected.slice(range[0], range[1] + 1)
               return { data: single ? (selected[0] ?? null) : selected, error: null }
@@ -86,6 +92,25 @@ function database(seed = {}, failure) {
     },
     async rpc(name, args) {
       calls.push({ rpc: name, args })
+      if (name === "intake_qbo_webhook_events") {
+        const error = failure?.("qbo_webhook_events", "receipt")
+        if (error) return { data: null, error: { message: error } }
+        const inserted = []
+        for (const event of args.p_events) {
+          let row = (rows.qbo_webhook_events ??= []).find((row) => row.event_id === event.event_id)
+          if (!row) {
+            row = { ...event, payload_hash: args.p_payload_hash, process_status: "pending", provider_event_ids: [] }
+            delete row.provider_event_id
+            rows.qbo_webhook_events.push(row)
+            inserted.push(event.event_id)
+          }
+          row.provider_event_ids = [...new Set([
+            ...(row.provider_event_ids ?? []),
+            ...(event.provider_event_id ? [event.provider_event_id] : []),
+          ])].sort()
+        }
+        return { data: inserted, error: null }
+      }
       if (name === "replace_invoice_lines_atomic") {
         Object.assign(
           rows.invoices.find((row) => row.id === args.p_invoice_id),
@@ -111,7 +136,14 @@ function load(relativePath, db, overrides = {}) {
     return result.data ?? []
   }
   const stubs = {
-    "@/lib/services/accounting-delivery": { withAccountingDeliveryGroup: async (_identities, _deadline, work) => work() },
+    "@/lib/supabase/worker-request-context": { workerPersistenceDeadline: () => Date.now() + 5_000, withWorkerDatabasePersistence: (_deadline, work) => work() },
+    "@/lib/services/accounting-delivery": {
+      withAccountingDeliveryGroup: async (_identities, _deadline, work) => work(),
+      accountingDeliveryDeadline: () => undefined,
+      withAccountingDeadline: (_deadline, work) => work(),
+      AccountingDeliveryError: class AccountingDeliveryError extends Error {},
+    },
+    "@/lib/integrations/accounting/qbo/transport": { QBOTransportError: class QBOTransportError extends Error {} },
     "@/lib/supabase/server": { createServiceSupabaseClient: () => db },
     "@/lib/services/accounting-logger": { logQBO() {} },
     "@/lib/services/events": { recordEvent: async () => {} },
@@ -148,7 +180,12 @@ function load(relativePath, db, overrides = {}) {
   const mod = new Module(filename, module)
   mod.filename = filename
   mod.paths = module.paths
-  mod.require = (name) => (name in stubs ? stubs[name] : require(name))
+  mod.require = (name) => {
+    if (name in stubs) return stubs[name]
+    if (name === "@/lib/integrations/accounting/qbo/cdc-recovery") return require("./fixtures/qbo-cdc-runtime").load("lib/integrations/accounting/qbo/cdc-recovery.ts", stubs)
+    if (name === "@/lib/services/authorization") return { getProjectReadScopeForUser: async () => ({ projectMembershipRequired: false, divisionIds: null }) }
+    return require(name)
+  }
   mod._compile(
     ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText,
     filename,
@@ -314,22 +351,22 @@ test("delayed token refresh failure cannot expire credentials written by reconne
   assert.equal(db.rows.accounting_connections[0].refresh_failure_count, 0)
 })
 
-test("missing CDC timestamps are durably queued without a RangeError and permit cursor persistence", async () => {
-  const db = database({
-    accounting_connections: [{ id: "connection", org_id: "org", external_account_id: "realm", status: "active", settings: {} }],
-  })
-  const api = load("lib/integrations/accounting/qbo/reconcile.ts", db, {
-    "@/lib/integrations/accounting/qbo/client": {
-      QBOClient: {
-        forConnection: async () => ({
-          changeDataCapture: async () => ({ CDCResponse: [{ QueryResponse: [{ Invoice: [{ Id: "42" }] }] }] }),
-        }),
-      },
-    },
-  })
-  assert.deepEqual(await api.ingestQboCdcChanges({ connectionId: "connection" }), { scanned: 1, inserted: 1 })
-  assert.equal(db.rows.qbo_webhook_events[0].last_updated, null)
-  assert.ok(db.calls.some((call) => call.rpc === "update_qbo_cdc_cursor"))
+test("missing CDC timestamps are durably investigated without RangeError and cannot checkpoint", async (t) => {
+  const { cdcDatabase } = require("./fixtures/qbo-cdc-database")
+  const { runtime } = require("./fixtures/qbo-cdc-runtime")
+  const f = await cdcDatabase(t)
+  await f.install()
+  const api = runtime(f, {
+    changeDataCapture: async (entities) => ({ CDCResponse: [{ QueryResponse: [entities.includes("Invoice") ? { Invoice: [{ Id: "42" }] } : {}] }] }),
+  }).api
+  const result = await api.ingestQboCdcChanges({ connectionId: f.connection })
+  assert.equal(result.inserted, 1)
+  assert.equal(result.recoveryRequired, true)
+  const [stored] = await f.queue()
+  assert.equal(stored.last_updated, null)
+  assert.equal(stored.process_status, "investigation")
+  assert.match(stored.event_id, /unknown-time:[a-f0-9]{64}$/)
+  assert.equal((await f.settings()).qbo_cdc_last_synced_at, undefined)
 })
 
 test("split purchase compares every allocation before accepting a metadata-only remote revision", async () => {
@@ -497,4 +534,31 @@ test("OAuth attempts bind provider, user, connection, company and expiry indepen
     if (before === undefined) delete process.env.TOKEN_ENCRYPTION_KEY
     else process.env.TOKEN_ENCRYPTION_KEY = before
   }
+})
+
+test("signed CloudEvents and actual CDC intake dedupe equivalent changes without resetting terminal rows", async (t) => {
+  const { cdcDatabase } = require("./fixtures/qbo-cdc-database")
+  const { runtime } = require("./fixtures/qbo-cdc-runtime")
+  require("../scripts/register-ts-node-test")
+  const webhook = require("../lib/integrations/accounting/qbo/webhook")
+  const f = await cdcDatabase(t)
+  await f.install()
+  const time = new Date(Date.now() - 5000).toISOString()
+  const api = runtime(f, { changeDataCapture: async () => ({ CDCResponse: [{ QueryResponse: [{ Invoice: [{ Id: "42", MetaData: { LastUpdatedTime: time } }] }] }] }) }).api
+  const result = await api.ingestQboCdcChanges({ connectionId: f.connection })
+  assert.equal(result.scanned, 1)
+  assert.equal(result.inserted, 1)
+  await f.db.exec("update qbo_webhook_events set process_status='reconciled',processed_at=now(),attempts=2")
+  const [completed] = await f.queue()
+  const body = JSON.stringify([{ specversion: "1.0", id: "provider-delivery-id", type: "qbo.invoice.updated.v1", intuitaccountid: "realm", intuitentityid: "42", time }])
+  const token = "isolated-cdc-webhook-fixture-token"
+  const previous = process.env.QBO_WEBHOOK_VERIFIER_TOKEN
+  process.env.QBO_WEBHOOK_VERIFIER_TOKEN = token
+  try {
+    assert.deepEqual(await api.receiveQboWebhook({ rawBody: body, headers: { "intuit-signature": webhook.computeIntuitWebhookSignature(body, token) } }), { received: 1, inserted: 0 })
+  } finally {
+    if (previous === undefined) delete process.env.QBO_WEBHOOK_VERIFIER_TOKEN
+    else process.env.QBO_WEBHOOK_VERIFIER_TOKEN = previous
+  }
+  assert.deepEqual(await f.queue(), [{ ...completed, provider_event_ids: ["provider-delivery-id"] }])
 })

@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { Suspense } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
 import { notFound } from "next/navigation"
@@ -11,9 +12,7 @@ interface ProjectSchedulePageProps {
   params: Promise<{ id: string }>
 }
 
-export default async function ProjectSchedulePage({ params }: ProjectSchedulePageProps) {
-  const { id } = await params
-
+export default function ProjectSchedulePage({ params }: ProjectSchedulePageProps) {
   return (
     <>
       <PageLayout
@@ -24,10 +23,17 @@ export default async function ProjectSchedulePage({ params }: ProjectSchedulePag
         ]}
       />
       <Suspense fallback={<ProjectScheduleFallback />}>
-        <ProjectScheduleData id={id} />
+        <ProjectSchedulePageRoute params={params} />
       </Suspense>
     </>
   )
+}
+
+async function ProjectSchedulePageRoute({ params }: ProjectSchedulePageProps) {
+  await connection()
+  const { id } = await params
+
+  return <ProjectScheduleData id={id} />
 }
 
 function ProjectScheduleFallback() {

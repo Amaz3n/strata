@@ -2537,6 +2537,7 @@ export async function createProjectVendorBill({
       file_id: parsed.file_id ?? null,
       submitted_by_contact_id: null,
       metadata: {
+        ...(projectId && parsed.work_through_date ? { billing_period_end: parsed.work_through_date } : {}),
         description: parsed.description,
         submitted_by_user_id: userId,
         vendor_name: vendorName ?? undefined,

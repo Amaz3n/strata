@@ -1,55 +1,45 @@
-"use client"
-
-import { useEffect, useState, Suspense } from "react"
+import { Suspense } from "react"
+import { connection } from "next/server"
 import Link from "next/link"
-import { useSearchParams } from "next/navigation"
+import { unstable_rethrow } from "next/navigation"
 
 import { AcceptInviteForm } from "@/components/auth/accept-invite-form"
 import { Building2, Loader2, AlertCircle } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import { getInviteDetailsAction } from "./actions"
 
-function AcceptInviteContent() {
-  const searchParams = useSearchParams()
-  const token = searchParams.get("token")
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [inviteDetails, setInviteDetails] = useState<{ orgName: string; email: string } | null>(null)
+interface AcceptInvitePageProps {
+  searchParams: Promise<{ token?: string | string[] }>
+}
 
-  useEffect(() => {
-    if (!token) {
-      setError("Invalid invitation link. Please check the link in your email.")
-      setLoading(false)
-      return
-    }
+function InvitationLoading() {
+  return (
+    <div className="flex flex-col items-center gap-3 py-8" role="status">
+      <Loader2 className="size-5 animate-spin text-muted-foreground" />
+      <p className="text-sm text-muted-foreground">Verifying your invitation...</p>
+    </div>
+  )
+}
 
-    const fetchDetails = async () => {
-      try {
-        const details = await getInviteDetailsAction(token)
-        if (!details) {
-          setError("This invitation link has expired or is no longer valid. Please ask your admin to resend the invite.")
-          setLoading(false)
-          return
-        }
+async function AcceptInviteContent({ searchParams }: AcceptInvitePageProps) {
+  await connection()
+  const { token: tokenParam } = await searchParams
+  const token = Array.isArray(tokenParam) ? tokenParam[0] : tokenParam
+  let error: string | null = null
+  let inviteDetails: Awaited<ReturnType<typeof getInviteDetailsAction>> = null
 
-        setInviteDetails(details)
-        setLoading(false)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Unable to verify your invitation.")
-        setLoading(false)
+  if (!token) {
+    error = "Invalid invitation link. Please check the link in your email."
+  } else {
+    try {
+      inviteDetails = await getInviteDetailsAction(token)
+      if (!inviteDetails) {
+        error = "This invitation link has expired or is no longer valid. Please ask your admin to resend the invite."
       }
+    } catch (err) {
+      unstable_rethrow(err)
+      error = err instanceof Error ? err.message : "Unable to verify your invitation."
     }
-
-    fetchDetails()
-  }, [token])
-
-  if (loading) {
-    return (
-      <div className="flex flex-col items-center gap-3 py-8">
-        <Loader2 className="size-5 animate-spin text-muted-foreground" />
-        <p className="text-sm text-muted-foreground">Verifying your invitation...</p>
-      </div>
-    )
   }
 
   if (error) {
@@ -100,17 +90,10 @@ function AcceptInviteContent() {
   )
 }
 
-export default function AcceptInvitePage() {
+export default function AcceptInvitePage({ searchParams }: AcceptInvitePageProps) {
   return (
-    <Suspense
-      fallback={
-        <div className="flex flex-col items-center gap-3 py-8">
-          <Loader2 className="size-5 animate-spin text-muted-foreground" />
-          <p className="text-sm text-muted-foreground">Loading...</p>
-        </div>
-      }
-    >
-      <AcceptInviteContent />
+    <Suspense fallback={<InvitationLoading />}>
+      <AcceptInviteContent searchParams={searchParams} />
     </Suspense>
   )
 }

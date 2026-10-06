@@ -232,7 +232,7 @@ export interface TextBox {
 }
 
 /** `24'-6"`, `12'`, `8"` — the shapes a printed dimension takes. */
-const DIMENSION_PATTERN = /\d+(?:\.\d+)?\s*['’′](?:\s*-?\s*\d+(?:\.\d+)?\s*["”″]?)?/g
+const DIMENSION_PATTERN = /\d+(?:\.\d+)?\s*['’′](?:\s*-?\s*(?:\d+\s+\d+\/\d+|\d+\/\d+|\d+(?:\.\d+)?[¼½¾⅛⅜⅝⅞]?)\s*["”″]?(?![\d/]|\s*['’′]))?/g
 
 /**
  * Pull dimension strings out of one extracted text line.

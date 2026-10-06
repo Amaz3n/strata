@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { notFound } from "next/navigation"
 
 import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
@@ -7,6 +8,7 @@ import { PurchaseOrdersClient } from "./purchase-orders-client"
 
 
 export default async function PortalPurchaseOrdersPage({ params }: { params: Promise<{ token: string }> }) {
+  await connection()
   const { token } = await params
   let access
   try {

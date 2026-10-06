@@ -60,12 +60,24 @@ export async function upsertSubscriptionFromStripe(subscription: Stripe.Subscrip
     return
   }
 
+  // Basil webhooks put billing periods on items; older API responses keep
+  // them on the subscription. Use the same primary item as plan resolution.
+  const primaryItem = subscription.items.data[0] as (Stripe.SubscriptionItem & {
+    current_period_start?: number
+    current_period_end?: number
+  }) | undefined
+  const periodStart = toIso(subscription.current_period_start ?? primaryItem?.current_period_start)
+  const periodEnd = toIso(subscription.current_period_end ?? primaryItem?.current_period_end)
+  if (!periodStart || !periodEnd || periodStart >= periodEnd) {
+    throw new Error(`Stripe subscription ${subscription.id} has no valid billing period`)
+  }
+
   const payload = {
     org_id: orgId,
     plan_code: planCode,
     status: mapStripeStatus(subscription.status),
-    current_period_start: toIso(subscription.current_period_start),
-    current_period_end: toIso(subscription.current_period_end),
+    current_period_start: periodStart,
+    current_period_end: periodEnd,
     trial_ends_at: toIso(subscription.trial_end),
     cancel_at: toIso(subscription.cancel_at),
     external_customer_id: customerId,
@@ -96,8 +108,7 @@ export async function upsertSubscriptionFromStripe(subscription: Stripe.Subscrip
     : await supabase.from("subscriptions").upsert(payload, { onConflict: "external_subscription_id" })
 
   if (error) {
-    console.error("Failed to upsert subscription", error)
-    return
+    throw new Error(`Failed to upsert subscription: ${error.message}`)
   }
 
   await syncOrgEntitlementsFromPlan(orgId, planCode)

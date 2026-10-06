@@ -1,6 +1,7 @@
 "use client"
 
 import Link from "next/link"
+import { OptimisticLink } from "@/lib/navigation/optimistic-pathname"
 import { useRouter } from "next/navigation"
 import { useMemo, useState, useTransition } from "react"
 import { toast } from "sonner"
@@ -157,9 +158,9 @@ function Lane({
             >
               <ChevronDown className={cn("size-3.5 transition-transform", !expanded && "-rotate-90")} />
             </button>
-            <Link href={`/communities/${lane.id}`} className="truncate text-sm font-medium hover:underline">
+            <OptimisticLink href={`/communities/${lane.id}`} prefetchOnIntent className="truncate text-sm font-medium hover:underline">
               {lane.name}
-            </Link>
+            </OptimisticLink>
             {lane.code ? <span className="shrink-0 text-[10px] tracking-wide text-muted-foreground">{lane.code}</span> : null}
             <CommunityStatusBadge status={lane.status} />
           </div>
@@ -322,7 +323,7 @@ function LaneDetail({ lane, canWrite }: { lane: CommunityLane; canWrite: boolean
           {lane.monthsOfSupply != null ? `${lane.monthsOfSupply.toFixed(1)} months of supply` : "no start rate to measure against"}
         </p>
         <Button asChild size="sm" variant="outline" className="mt-2.5 w-full rounded-none">
-          <Link href={`/communities/${lane.id}`}>Open the plat</Link>
+          <OptimisticLink href={`/communities/${lane.id}`} prefetchOnIntent>Open the plat</OptimisticLink>
         </Button>
       </div>
     </div>

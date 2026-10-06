@@ -1,3 +1,5 @@
+import { accountingCutoff, loadSubledgerSettlements } from "@/lib/services/books/subledger-settlements"
+import { collectBooksRows } from "@/lib/services/books/paging"
 import { PAYABLE_VENDOR_BILL_STATUSES } from "@/lib/financials/ledger-status"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
@@ -42,18 +44,21 @@ export async function getApAgingReport({
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("report.read", { supabase, orgId: resolvedOrgId, userId })
   const asOfDate = asOf ?? todayIsoDateOnly()
+  accountingCutoff(asOfDate)
 
   let query = supabase
     .from("vendor_bills")
     .select(
-      "id, org_id, project_id, bill_number, status, bill_date, due_date, total_cents, paid_cents, currency, metadata, project:projects(name), commitment:commitments(id, title)",
+      "id, org_id, project_id, bill_number, status, bill_date, due_date, total_cents, retainage_cents, paid_cents, currency, metadata, project:projects(name), commitment:commitments(id, title)",
     )
     .eq("org_id", resolvedOrgId)
     // Previously unfiltered, so `rejected` bills — which will never be paid — and
     // unapproved `pending` ones were aged as though they were money owed.
     .in("status", [...PAYABLE_VENDOR_BILL_STATUSES])
+    .lte("bill_date", asOfDate)
     .order("due_date", { ascending: true, nullsFirst: true })
     .order("created_at", { ascending: false })
+    .order("id")
 
   if (projectId) {
     query = query.eq("project_id", projectId)
@@ -62,10 +67,8 @@ export async function getApAgingReport({
     query = applyReportingExclusion(query, excludedProjectIds)
   }
 
-  const { data, error } = await query
-  if (error) {
-    throw new Error(`Failed to load vendor bills for AP aging: ${error.message}`)
-  }
+  const data = await collectBooksRows((from, to) => query.range(from, to))
+  const settlements = await loadSubledgerSettlements(supabase, resolvedOrgId, "payable", data.map(row => row.id), asOfDate)
 
   const totals: APAgingTotals = {
     current: 0,
@@ -81,9 +84,9 @@ export async function getApAgingReport({
 
   const rows: APAgingRow[] = (data ?? []).map((row: any) => {
     const totalCents = typeof row.total_cents === "number" ? row.total_cents : 0
-    const paidCents = Number(row.paid_cents ?? 0)
-    const isPaid = paidCents >= totalCents && totalCents > 0
-    const openBalanceCents = Math.max(0, totalCents - paidCents)
+    const paidCents = settlements.get(String(row.id)) ?? 0
+    const openBalanceCents = totalCents - Number(row.retainage_cents ?? 0) - paidCents
+    const isPaid = openBalanceCents === 0
     const { bucket, daysPastDue } = getAgingBucket({ dueDate: row.due_date, asOf: asOfDate, isPaid })
 
     totals.total_billed_cents += totalCents

@@ -7,6 +7,7 @@ import type {
   MobileDrawingSheetDetailDTO,
   MobileDrawingSheetVersionDTO,
 } from "@/lib/mobile/contracts"
+import { authorize } from "@/lib/services/authorization"
 import { listProjects } from "@/lib/services/projects"
 import { buildDrawingsImageUrl } from "@/lib/storage/drawings-urls"
 import { DISCIPLINE_LABELS } from "@/lib/validation/drawings"
@@ -14,6 +15,8 @@ import { DISCIPLINE_LABELS } from "@/lib/validation/drawings"
 async function requireProject(context: MobileOrgContext, projectId: string) {
   const project = (await listProjects(context.orgId, context.serviceContext)).find((item) => item.id === projectId)
   if (!project) throw new MobileAPIError(404, "project_not_found", "Project not found.")
+  const decision = await authorize({ permission: "drawing.read", userId: context.user.id, orgId: context.orgId, supabase: context.serviceSupabase, projectId, resourceType: "project", resourceId: projectId })
+  if (!decision.allowed) throw new MobileAPIError(403, "drawings_forbidden", "You do not have permission to view project drawings.")
   return project
 }
 
@@ -85,16 +88,18 @@ async function loadCurrentVersionImages(
   const versionCounts = new Map<string, number>()
   if (!sheetIds.length) return { images, versionCounts }
 
-  const { data, error } = await context.serviceSupabase
-    .from("drawing_sheet_versions")
-    .select(
-      "drawing_sheet_id, drawing_revision_id, thumb_path, medium_path, full_path, thumbnail_url, medium_url, full_url, image_width, image_height, created_at",
-    )
-    .eq("org_id", context.orgId)
-    .in("drawing_sheet_id", sheetIds)
-    .order("created_at", { ascending: false })
-
-  if (error) throw new MobileAPIError(500, "drawing_sheets_unavailable", "Drawing sheet images could not be loaded.")
+  const data: any[] = []
+  for (let start = 0; start < sheetIds.length; start += 100) {
+    for (let from = 0; ; from += 1000) {
+      const { data: page, error } = await context.serviceSupabase.from("drawing_sheet_versions")
+        .select("id, drawing_sheet_id, drawing_revision_id, thumb_path, medium_path, full_path, thumbnail_url, medium_url, full_url, image_width, image_height, created_at")
+        .eq("org_id", context.orgId).in("drawing_sheet_id", sheetIds.slice(start, start + 100))
+        .order("created_at", { ascending: false }).order("id").range(from, from + 999)
+      if (error) throw new MobileAPIError(500, "drawing_sheets_unavailable", "Drawing sheet images could not be loaded.")
+      data.push(...(page ?? []))
+      if ((page?.length ?? 0) < 1000) break
+    }
+  }
 
   const currentRevisionBySheet = new Map(sheetRows.map((row) => [row.id, row.current_revision_id]))
 
@@ -114,19 +119,8 @@ async function loadCurrentVersionImages(
     })
   }
 
-  // Backfill sheets whose current-revision version wasn't found (e.g. the
-  // current_revision_id points at a row we filtered): use the newest version.
-  for (const row of data ?? []) {
-    if (images.has(row.drawing_sheet_id)) continue
-    images.set(row.drawing_sheet_id, {
-      thumbnail_url: imageUrlFromVersion(row, "thumb") ?? imageUrlFromVersion(row, "medium"),
-      image_url:
-        imageUrlFromVersion(row, "full") ?? imageUrlFromVersion(row, "medium") ?? imageUrlFromVersion(row, "thumb"),
-      image_width: row.image_width ?? null,
-      image_height: row.image_height ?? null,
-    })
-  }
-
+  // Never substitute an older image for a declared current revision. Missing
+  // current images stay unavailable so field downloads cannot mislabel a sheet.
   return { images, versionCounts }
 }
 
@@ -137,18 +131,20 @@ async function loadPinCounts(
 ): Promise<Map<string, { open: number; total: number }>> {
   const counts = new Map<string, { open: number; total: number }>()
   if (!sheetIds.length) return counts
-  const { data, error } = await context.serviceSupabase
-    .from("drawing_pins")
-    .select("drawing_sheet_id, status")
-    .eq("org_id", context.orgId)
-    .eq("project_id", projectId)
-    .in("drawing_sheet_id", sheetIds)
-  if (error) return counts
-  for (const row of data ?? []) {
-    const current = counts.get(row.drawing_sheet_id) ?? { open: 0, total: 0 }
-    current.total += 1
-    if (row.status === "open" || row.status === "pending" || row.status === "in_progress") current.open += 1
-    counts.set(row.drawing_sheet_id, current)
+  for (let start = 0; start < sheetIds.length; start += 100) {
+    for (let offset = 0; ; offset += 1000) {
+      const { data, error } = await context.serviceSupabase.from("drawing_pins")
+        .select("drawing_sheet_id,status").eq("org_id", context.orgId).eq("project_id", projectId)
+        .in("drawing_sheet_id", sheetIds.slice(start, start + 100)).order("id").range(offset, offset + 999)
+      if (error) throw new MobileAPIError(500, "drawing_pins_unavailable", "Drawing issue counts could not be loaded.")
+      for (const row of data ?? []) {
+        const current = counts.get(row.drawing_sheet_id) ?? { open: 0, total: 0 }
+        current.total += 1
+        if (["open", "pending", "in_progress"].includes(row.status)) current.open += 1
+        counts.set(row.drawing_sheet_id, current)
+      }
+      if ((data?.length ?? 0) < 1000) break
+    }
   }
   return counts
 }
@@ -159,22 +155,16 @@ export async function listMobileDrawingSheets(
 ): Promise<MobileDrawingSheetDTO[]> {
   await requireProject(context, projectId)
 
-  const { data, error } = await context.serviceSupabase
-    .from("drawing_sheets")
-    .select(
-      "id, drawing_set_id, sheet_number, sheet_title, discipline, current_revision_id, sort_order, updated_at, " +
-        "drawing_sets(title), drawing_revisions!drawing_sheets_current_revision_id_fkey(revision_label)",
-    )
-    .eq("org_id", context.orgId)
-    .eq("project_id", projectId)
-    .not("current_revision_id", "is", null)
-    .order("sort_order", { ascending: true })
-    .order("sheet_number", { ascending: true })
-    .limit(1000)
-
-  if (error) throw new MobileAPIError(500, "drawing_sheets_unavailable", "Drawing sheets could not be loaded.")
-
-  const rows = data ?? []
+  const rows: any[] = []
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await context.serviceSupabase.from("drawing_sheets")
+      .select("id, drawing_set_id, sheet_number, sheet_title, discipline, current_revision_id, sort_order, updated_at, drawing_sets(title), drawing_revisions!drawing_sheets_current_revision_id_fkey(revision_label)")
+      .eq("org_id", context.orgId).eq("project_id", projectId).not("current_revision_id", "is", null)
+      .order("sort_order").order("sheet_number").order("id").range(from, from + 999)
+    if (error) throw new MobileAPIError(500, "drawing_sheets_unavailable", "Drawing sheets could not be loaded.")
+    rows.push(...(data ?? []))
+    if ((data?.length ?? 0) < 1000) break
+  }
   const sheetRows = rows.map((row: any) => ({ id: row.id, current_revision_id: row.current_revision_id }))
   const [{ images, versionCounts }, pinCounts] = await Promise.all([
     loadCurrentVersionImages(context, sheetRows),

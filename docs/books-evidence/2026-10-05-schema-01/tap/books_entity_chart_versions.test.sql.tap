@@ -1,0 +1,6 @@
+1..5
+ok 1 - entity chart preparation RPC is private
+ok 2 - chart review preserves invoker authority
+ok 3 - browser cannot invent canonical entity accounts
+ok 4 - chart completeness is enforced at commit
+ok 5 - entity chart details require gated service authority

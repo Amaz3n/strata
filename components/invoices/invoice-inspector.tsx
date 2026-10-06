@@ -1,4 +1,6 @@
 "use client"
+import { SourcePostingStatus } from "@/components/books/source-posting-status"
+import { NativeInvoiceAccounting } from "@/components/books/native-invoice-accounting"
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
@@ -28,13 +30,14 @@ import {
   updateInvoiceNotesAction,
   voidReceivableAdjustmentAction,
 } from "@/app/(app)/invoices/actions"
+import { RecordCustomerRefund } from "@/components/payments/record-customer-refund"
 import { recordPaymentAction } from "@/app/(app)/payments/actions"
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
 import {
   attachFileAction,
   detachFileLinkAction,
   listAttachmentsAction,
-  uploadFileAction,
-} from "@/app/(app)/documents/actions"
+  } from "@/app/(app)/documents/actions"
 import { unwrapAction } from "@/lib/action-result"
 import { copyText } from "@/lib/clipboard"
 import { projectBillingHref, resumeInvoiceHref } from "@/lib/financials/invoice-destinations"
@@ -383,7 +386,7 @@ function InvoiceInspectorBody({
   const [busy, setBusy] = useState<string | null>(null)
   const [paymentOpen, setPaymentOpen] = useState(false)
   const [adjusting, setAdjusting] = useState(false)
-  const [notesDraft, setNotesDraft] = useState(invoice.notes ?? "")
+  const [notesDraft, setNotesDraft] = useState(typeof invoice.metadata?.memo === "string" ? invoice.metadata.memo : "")
   const [attachments, setAttachments] = useState<AttachedFile[]>(() => mapAttachmentLinks(detail.attachments ?? []))
   const [voidingAdjustmentId, setVoidingAdjustmentId] = useState<string | null>(null)
 
@@ -637,6 +640,7 @@ function InvoiceInspectorBody({
   // One primary action per invoice, chosen by what the invoice actually needs.
   const primary = (() => {
     if (status === "void") return null
+    if (status === "draft" && invoice.metadata?.waiver_packet?.enabled && invoice.metadata.waiver_packet.delivery_mode === "after_physical_execution") return null
     if (status === "draft" && scheduledSendAt) {
       return { label: "Cancel scheduled send", onClick: handleCancelSchedule, key: "schedule" }
     }
@@ -892,7 +896,7 @@ function InvoiceInspectorBody({
                   size="sm"
                   variant="outline"
                   onClick={() => void handleSaveNotes()}
-                  disabled={busy === "notes" || notesDraft === (invoice.notes ?? "")}
+                  disabled={busy === "notes" || notesDraft === (invoice.metadata?.memo ?? "")}
                 >
                   {busy === "notes" ? "Saving…" : "Save notes"}
                 </Button>
@@ -925,6 +929,7 @@ function InvoiceInspectorBody({
                           <span className="block font-mono font-medium tabular-nums text-success">
                             {formatMoneyFromCents(Math.max(0, payment.amount_cents - reversed))}
                           </span>
+                          {payment.provider === "manual" && !payment.metadata?.customer_deposit_application && invoice.metadata?.invoice_kind !== "earnest_deposit" && payment.amount_cents > reversed ? <RecordCustomerRefund paymentId={payment.id} availableCents={payment.amount_cents - reversed} externalProvider={accounting?.external?.label} onRecorded={onChanged} /> : null}
                           {reversed > 0 ? (
                             <span className="block text-[10px] text-destructive">
                               Reversed {formatMoneyFromCents(reversed)}
@@ -1048,6 +1053,8 @@ function InvoiceInspectorBody({
         {section === "accounting" ? (
           <div className="space-y-6 p-4">
             <p className="text-xs text-muted-foreground">{labels.description}</p>
+            <SourcePostingStatus key={`${invoice.id}:${invoice.updated_at}`} sourceType="invoice" sourceId={invoice.id} revision={invoice.updated_at} />
+            <NativeInvoiceAccounting key={`native:${invoice.id}`} invoiceId={invoice.id} revision={invoice.updated_at} />
             {labels.showExternalSync ? (
             <section className="space-y-2">
               <SectionHeading>{accounting?.external?.label ?? DEFAULT_ACCOUNTING_PROVIDER_LABEL} sync</SectionHeading>

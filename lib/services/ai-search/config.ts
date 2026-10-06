@@ -221,7 +221,7 @@ export const ENTITY_HREF_FALLBACKS: Record<SearchEntityType, string> = {
   portal_access: "/portal-access/{id}",
   payable: "/projects/{project_id}/financials/payables?bill={id}",
   expense: "/projects/{project_id}/expenses?expense={id}",
-  prospect: "/pipeline?prospectId={id}",
+  prospect: "/pipeline/{id}",
   inspection: "/projects/{project_id}/inspections?inspection={id}",
   safety_incident: "/projects/{project_id}/safety",
   observation: "/projects/{project_id}/safety?tab=observations",

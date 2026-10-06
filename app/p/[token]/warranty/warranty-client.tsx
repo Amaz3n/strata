@@ -35,7 +35,11 @@ function statusBadge(status?: string) {
   return <Badge variant="outline">Open</Badge>
 }
 
-export function WarrantyPortalClient({
+export function WarrantyPortalClient(props: Parameters<typeof WarrantyPortalWorkspace>[0]) {
+  return <WarrantyPortalWorkspace key={props.token} {...props} />
+}
+
+function WarrantyPortalWorkspace({
   token,
   requests: initialRequests,
   coverage,
@@ -59,6 +63,17 @@ export function WarrantyPortalClient({
     coverageTermKey: coverage?.terms[0]?.key ?? "",
   })
   const [photo, setPhoto] = useState<File | null>(null)
+  const [requestSource, setRequestSource] = useState(initialRequests)
+  const [visitSource, setVisitSource] = useState(initialVisits)
+  if (requestSource !== initialRequests) {
+    setRequestSource(initialRequests)
+    setRequests(initialRequests)
+  }
+  if (visitSource !== initialVisits) {
+    setVisitSource(initialVisits)
+    setVisits(initialVisits)
+  }
+
 
   const handleSubmit = () => {
     if (!form.title.trim()) {

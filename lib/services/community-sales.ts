@@ -1,6 +1,14 @@
+import { reservationConversionEnabled, assertReservationConversionScope, callReservationConversion, prepareReservationConversionBundle } from "@/lib/services/reservation-conversion"
+import { reservationConversionRegistrationSchema, reservationConversionIdentitySchema, reservationConversionScopeSchema, savedReservationConversionInputSchema, type ReservationConversionExpected } from "@/lib/validation/reservation-conversion"
+import { readAgreementCatalogRevision } from "@/lib/services/agreement-catalog-revision"
+import { logger } from "@/lib/logging/logger"
+import { saveAgreementCreation, agreementCreationExpected, type AgreementCreationReceipt } from "@/lib/services/agreement-creation"
+import { agreementQuoteFingerprint, AgreementQuoteChangedError } from "@/lib/sales/agreement-quote"
+import { readAllRowsById } from "@/lib/land/paging"
+import { assertSalesConfiguration } from "@/lib/services/configuration-rules"
 import { composePurchaseAgreementPricing, describeIncentiveIneligibility, evaluateIncentiveEligibility, type PurchaseAgreementPricedItem, type PurchaseAgreementPricing } from "@/lib/financials/purchase-agreement-pricing"
 import { recordAudit } from "@/lib/services/audit"
-import { getDivisionAccessForUser } from "@/lib/services/authorization"
+import { getDivisionAccessForUser, requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
 import { createInvoice } from "@/lib/services/invoices"
 import { listCatalog, resolveOptionPricing } from "@/lib/services/option-catalog"
@@ -38,9 +46,10 @@ import { createFileRecord } from "@/lib/services/files"
 import { getOrgBranding } from "@/lib/services/estimate-portal"
 import { renderProposalPdf } from "@/lib/pdfs/proposal"
 import { buildOrgScopedPath, getFilesStorageProvider, uploadFilesObject } from "@/lib/storage/files-storage"
+import { createRecoverableSigningToken } from "@/lib/esign/signing-tokens"
 import { buildUnifiedSigningUrl } from "@/lib/esign/unified-contracts"
-import { getOrgSenderEmail, renderEmailTemplate, sendEmail } from "@/lib/services/mailer"
-import { SignatureEmail } from "@/lib/emails/signature-email"
+import { sendSignerRequestEmail } from "@/lib/services/signature-delivery"
+import { publishOwnedAgreementDocument, reserveAgreementSigningDocument } from "@/lib/services/agreement-signing-ownership"
 import {
   agreementConfigurationSchema,
   communityBulkRepriceSchema,
@@ -48,6 +57,7 @@ import {
   createLotHoldSchema,
   createPurchaseAgreementSchema,
   convertReservationSchema,
+  reservationConversionSourceSchema,
   incentiveSchema,
   releaseReservationSchema,
   voidPurchaseAgreementSchema,
@@ -411,19 +421,67 @@ export async function createLotHold(input: unknown, orgId?: string) {
   return reservationDto(data)
 }
 
+async function readReservationConversionSource(parsed: z.infer<typeof convertReservationSchema>, context: OrgServiceContext) {
+  const source = await context.supabase.from("lot_reservations")
+    .select("id, org_id, community_id, lot_id, buyer_contact_id, co_buyer_contact_id, prospect_id, status, expires_at, updated_at, deposit_invoice_id, contract_id, lot:lots(id, org_id, community_id, division_id, lot_number, status, project_id, updated_at)")
+    .eq("org_id", context.orgId).eq("id", parsed.reservationId).maybeSingle()
+  if (source.error) throw new Error(`Failed to verify the lot hold: ${source.error.message}`)
+  const reservation = reservationConversionSourceSchema.parse(source.data)
+  if (reservation.id !== parsed.reservationId || reservation.org_id !== context.orgId || reservation.lot.id !== reservation.lot_id || reservation.lot.org_id !== context.orgId || reservation.lot.community_id !== reservation.community_id) throw new Error("The hold or lot ownership changed. Review the buyer file before reserving.")
+  if (reservation.expires_at && Date.parse(reservation.expires_at) <= Date.now()) throw new Error("This lot hold has expired. Review available inventory before reserving.")
+  if (reservation.deposit_invoice_id || reservation.contract_id) throw new Error("This hold already has a deposit or agreement. Review its saved records before reserving.")
+  const [community, buyers, deposits] = await Promise.all([
+    context.supabase.from("communities").select("id, name, division_id, updated_at").eq("org_id", context.orgId).eq("id", reservation.community_id).maybeSingle(),
+    context.supabase.from("contacts").select("id, full_name, email, updated_at").eq("org_id", context.orgId).in("id", [reservation.buyer_contact_id, ...(reservation.co_buyer_contact_id ? [reservation.co_buyer_contact_id] : [])]),
+    context.supabase.from("invoices").select("id").eq("org_id", context.orgId).eq("metadata->>invoice_kind", "earnest_deposit").eq("metadata->>source_reservation_id", reservation.id).limit(1),
+  ])
+  if (community.error || buyers.error || deposits.error) throw new Error("The community, buyer or previous deposit could not be verified. No conversion was started.")
+  if (!community.data || (reservation.lot.division_id && reservation.lot.division_id !== community.data.division_id)) throw new Error("The lot community or division changed. Review the buyer file before reserving.")
+  const access = await getSalesDivisionAccess(context)
+  if (access.assignedOnly && (!community.data.division_id || !access.divisionIds.includes(community.data.division_id))) throw new Error("This community is outside your sales division access.")
+  if (!buyers.data?.some(buyer => buyer.id === reservation.buyer_contact_id) || (reservation.co_buyer_contact_id && (reservation.co_buyer_contact_id === reservation.buyer_contact_id || !buyers.data.some(buyer => buyer.id === reservation.co_buyer_contact_id)))) throw new Error("The reservation buyer or co-buyer is unavailable in this organization.")
+  if (!deposits.data || deposits.data.length) throw new Error("A previous deposit may already exist for this hold. Inspect its invoice before retrying the reservation.")
+  let home: ReservationConversionExpected["home"] = null
+  let homeSource: { client_id: string | null; updated_at: string } | null = null
+  if (reservation.lot.project_id) {
+    await requireAuthorization({ ...context, projectId: reservation.lot.project_id, permission: "sales.manage" })
+    const [homeResult, agreements] = await Promise.all([
+      context.supabase.from("projects").select("id, name, property_type, division_id, client_id, updated_at").eq("org_id", context.orgId).eq("id", reservation.lot.project_id).maybeSingle(),
+      context.supabase.from("contracts").select("id").eq("org_id", context.orgId).eq("project_id", reservation.lot.project_id).eq("contract_type", "purchase_agreement").in("status", ["draft", "active"]).limit(1),
+    ])
+    if (homeResult.error || agreements.error || !homeResult.data || !agreements.data) throw new Error("The held home or existing agreement could not be verified.")
+    if (homeResult.data.property_type !== "production" || (homeResult.data.client_id && homeResult.data.client_id !== reservation.buyer_contact_id) || agreements.data.length) throw new Error("This home already belongs to another sale or cannot be reserved.")
+    home = homeResult.data
+    homeSource = { client_id: homeResult.data.client_id, updated_at: homeResult.data.updated_at }
+  }
+  return { reservation, community: community.data, buyers: buyers.data, home, homeSource }
+}
+
 export async function convertHoldToReservation(input: unknown, orgId?: string) {
+  if (reservationConversionEnabled()) {
+    const identity = reservationConversionIdentitySchema.extend({ input: savedReservationConversionInputSchema }).parse(input)
+    const body = identity.input
+    const context = await requireOrgContext(orgId)
+    await requirePermission("sales.manage", context)
+    if (body.reservationId !== identity.scope.reservationId) throw new Error("Original reservation identity required")
+    return callReservationConversion({ context, scope: identity.scope, action: "commit", requestKey: identity.requestKey, input: body })
+  }
   const parsed = convertReservationSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.manage", context)
-  const { data: reservation } = await context.supabase.from("lot_reservations").select("*, lot:lots(*)").eq("org_id", context.orgId).eq("id", parsed.reservationId).maybeSingle()
-  if (!reservation || reservation.status !== "hold") throw new Error("Active lot hold not found")
-  let projectId = reservation.lot.project_id as string | null
+  const { reservation, homeSource } = await readReservationConversionSource(parsed, context)
+  let projectId = reservation.lot.project_id
   if (!projectId) {
     const project = await createProject({ input: { name: parsed.projectName ?? `Lot ${reservation.lot.lot_number}`, property_type: "production", status: "planning", client_id: reservation.buyer_contact_id, prospect_id: reservation.prospect_id ?? null }, orgId: context.orgId, context, authorizationPermission: "sales.manage" })
     projectId = project.id
-    await context.supabase.from("lots").update({ project_id: projectId, status: "assigned" }).eq("org_id", context.orgId).eq("id", reservation.lot_id)
+    const linked = await context.supabase.from("lots").update({ project_id: projectId, status: "assigned" }).eq("org_id", context.orgId).eq("id", reservation.lot_id).is("project_id", null).eq("updated_at", reservation.lot.updated_at).select("id").maybeSingle()
+    if (linked.error || !linked.data) throw new Error("The home was created, but its lot link could not be confirmed. Review the home and lot before retrying.")
   } else {
-    await context.supabase.from("projects").update({ client_id: reservation.buyer_contact_id }).eq("org_id", context.orgId).eq("id", projectId)
+    if (!homeSource) throw new Error("The held home source is unavailable.")
+    let link = context.supabase.from("projects").update({ client_id: reservation.buyer_contact_id }).eq("org_id", context.orgId).eq("id", projectId).eq("updated_at", homeSource.updated_at)
+    link = homeSource.client_id ? link.eq("client_id", homeSource.client_id) : link.is("client_id", null)
+    const linked = await link.select("id").maybeSingle()
+    if (linked.error || !linked.data) throw new Error("The held home changed or could not be assigned. No new deposit was created.")
   }
   let invoiceId: string | null = null
   if (parsed.depositCents > 0) {
@@ -435,10 +493,53 @@ export async function convertHoldToReservation(input: unknown, orgId?: string) {
     }, orgId: context.orgId, context, authorizationPermission: "sales.manage", sendAuthorizationPermission: "sales.manage" })
     invoiceId = invoice.id
   }
-  const { data, error } = await context.supabase.from("lot_reservations").update({ status: "reserved", deposit_required_cents: parsed.depositCents, deposit_invoice_id: invoiceId }).eq("org_id", context.orgId).eq("id", reservation.id).select("*, lot:lots(lot_number, project_id), buyer:contacts!lot_reservations_buyer_contact_id_fkey(full_name)").single()
-  if (error || !data) throw new Error(`Failed to reserve lot: ${error?.message}`)
+  const { data, error } = await context.supabase.from("lot_reservations").update({ status: "reserved", deposit_required_cents: parsed.depositCents, deposit_invoice_id: invoiceId }).eq("org_id", context.orgId).eq("id", reservation.id).eq("status", "hold").eq("updated_at", reservation.updated_at).or(liveReservationOrFilter()).is("deposit_invoice_id", null).is("contract_id", null).select("*, lot:lots(lot_number, project_id), buyer:contacts!lot_reservations_buyer_contact_id_fkey(full_name)").maybeSingle()
+  if (error || !data) throw new Error(`Reservation completion could not be confirmed. Inspect the home and deposit invoice before retrying: ${error?.message ?? "The hold changed"}`)
   await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "lot_reserved", entityType: "lot_reservation", entityId: data.id, payload: { project_id: projectId, deposit_invoice_id: invoiceId } })
   return reservationDto(data)
+}
+
+/** Persist a review without creating a home, assigning its lot or issuing money. */
+export async function registerReservationConversion(input: unknown, orgId?: string) {
+  if (!reservationConversionEnabled()) throw new Error("Reservation review is not enabled")
+  const parsed = reservationConversionRegistrationSchema.parse(input)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("sales.manage", context)
+  assertReservationConversionScope(parsed.scope, context)
+  // Probe the original key first. A lost registration reply must not regenerate
+  // its planned home, invoice token, recipient evidence or source versions.
+  const saved = await callReservationConversion({ context, scope: parsed.scope, action: "inspect", requestKey: parsed.requestKey })
+  const body = savedReservationConversionInputSchema.parse({ ...parsed.input, projectName: parsed.input.projectName ?? null })
+  if (saved) {
+    if (saved.input.depositCents !== body.depositCents || saved.input.projectName !== body.projectName) throw new Error("Changed inputs cannot reuse the saved reservation review")
+    return saved
+  }
+  const source = await readReservationConversionSource(parsed.input, context)
+  const [organization, accounting] = await Promise.all([
+    context.supabase.from("orgs").select("name, email, phone, address").eq("id", context.orgId).maybeSingle(),
+    source.home ? Promise.resolve({ data: null, error: null }) : context.supabase.from("accounting_entity_map").select("*").eq("org_id", context.orgId).is("project_id", null).is("community_id", null).is("division_id", null).maybeSingle(),
+  ])
+  if (organization.error || !organization.data || accounting.error) throw new Error("The original billing defaults could not be verified. No reservation review was saved.")
+  const { lot, ...reservation } = source.reservation
+  const bundle = prepareReservationConversionBundle({ context, requestKey: parsed.requestKey, input: body, expected: {
+    reservation, lot, community: source.community, home: source.home, buyers: source.buyers,
+    organization: organization.data, accountingDefault: accounting.data,
+  } })
+  return callReservationConversion({ context, scope: parsed.scope, action: "register", requestKey: parsed.requestKey, input: body, bundle })
+}
+
+export async function inspectReservationConversion(input: unknown, orgId?: string) {
+  const parsed = z.object({ scope: reservationConversionScopeSchema, requestKey: z.string().uuid().optional() }).strict().parse(input)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("sales.manage", context)
+  return callReservationConversion({ context, scope: parsed.scope, action: "inspect", requestKey: parsed.requestKey })
+}
+
+export async function cancelReservationConversion(input: unknown, orgId?: string) {
+  const parsed = reservationConversionIdentitySchema.extend({ input: savedReservationConversionInputSchema }).parse(input)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("sales.manage", context)
+  return callReservationConversion({ context, scope: parsed.scope, requestKey: parsed.requestKey, input: parsed.input, action: "cancel" })
 }
 
 /**
@@ -812,17 +913,18 @@ export async function listIncentives(opts: { communityId?: string; status?: stri
   await requirePermission("sales.read", context)
   if (opts.communityId) await assertCommunityInSalesScope(context, opts.communityId)
   const allowedCommunityIds = opts.communityId ? null : await getSalesCommunityIds(context)
-  let query = context.supabase.from("incentives").select("*").eq("org_id", context.orgId)
-  if (opts.communityId) query = query.or(`community_id.is.null,community_id.eq.${opts.communityId}`)
-  else if (allowedCommunityIds) {
-    query = allowedCommunityIds.length > 0
-      ? query.or(`community_id.is.null,community_id.in.(${allowedCommunityIds.join(",")})`)
-      : query.is("community_id", null)
-  }
-  if (opts.status) query = query.eq("status", opts.status)
-  const { data, error } = await query.order("created_at", { ascending: false })
-  if (error) throw new Error(`Failed to load incentives: ${error.message}`)
-  const rows = data ?? []
+  const rows = await readAllRowsById((afterId, take) => {
+    let query = context.supabase.from("incentives").select("*").eq("org_id", context.orgId).order("id").limit(take)
+    if (opts.communityId) query = query.or(`community_id.is.null,community_id.eq.${opts.communityId}`)
+    else if (allowedCommunityIds) {
+      query = allowedCommunityIds.length > 0
+        ? query.or(`community_id.is.null,community_id.in.(${allowedCommunityIds.join(",")})`)
+        : query.is("community_id", null)
+    }
+    if (opts.status) query = query.eq("status", opts.status)
+    return afterId ? query.gt("id", afterId) : query
+  }, { cap: 2000, label: "Sales incentives", pageSize: 500 })
+  rows.sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? "") || a.id.localeCompare(b.id))
   // Only metered incentives need a usage count, and counting scans agreements —
   // so do not pay for it on the common unmetered ones.
   const meteredIds = rows.filter((row) => typeof row.max_uses === "number" && row.max_uses > 0).map((row) => row.id)
@@ -851,23 +953,36 @@ export async function upsertIncentive(input: IncentiveInput, orgId?: string) {
   return result.data
 }
 
-/**
- * Counts executed agreements already carrying each incentive, so `max_uses`
- * means something. Usage lives in the agreement's pricing snapshot rather than
- * a counter column, which keeps the count honest if an agreement is voided.
- */
+/** Draft and active capacity is authoritative on the atomic creation path. */
 async function countIncentiveUses(context: OrgServiceContext, incentiveIds: string[]) {
   const counts = new Map<string, number>()
+  if (incentiveIds.length === 0) return counts
+  if (process.env.ARC_AGREEMENT_ATOMIC_CREATION_ENABLED === "true") {
+    const ids = [...new Set(incentiveIds)]
+    const pages = await Promise.all(Array.from({ length: Math.ceil(ids.length / 500) }, async (_, index) => {
+      const pageIds = ids.slice(index * 500, (index + 1) * 500)
+      const { data, error } = await context.supabase.from("agreement_incentive_capacity")
+        .select("incentive_id,used_count").eq("org_id", context.orgId).in("incentive_id", pageIds).limit(pageIds.length)
+      if (error || !data || data.length !== pageIds.length) throw new Error("Incentive capacity could not be verified")
+      return data
+    }))
+    for (const row of pages.flat()) {
+      const count = typeof row.used_count === "string" && /^[0-9]+$/.test(row.used_count) ? Number(row.used_count) : row.used_count
+      if (!ids.includes(row.incentive_id) || counts.has(row.incentive_id) || !Number.isSafeInteger(count) || count < 0) throw new Error("Incentive capacity evidence is invalid")
+      counts.set(row.incentive_id, count)
+    }
+    return counts
+  }
   await Promise.all(incentiveIds.map(async (incentiveId) => {
     const { count, error } = await context.supabase
       .from("contracts")
       .select("id", { count: "exact", head: true })
       .eq("org_id", context.orgId)
       .eq("contract_type", "purchase_agreement")
-      .eq("status", "active")
+      .in("status", ["draft", "active"])
       .contains("snapshot", { purchase_agreement: { pricing: { incentives: [{ incentiveId }] } } })
-    if (error) throw new Error(`Failed to count incentive usage: ${error.message}`)
-    counts.set(incentiveId, count ?? 0)
+    if (error || count === null || count === undefined) throw new Error(`Failed to count incentive usage: ${error?.message ?? "Exact usage count unavailable"}`)
+    counts.set(incentiveId, count)
   }))
   return counts
 }
@@ -905,26 +1020,55 @@ export async function priceAgreementDraft(input: AgreementConfigurationInput, or
   await requirePermission("sales.read", context)
   const { data: lot, error } = await context.supabase.from("lots").select("id, community_id, project_id, premium_cents, house_plan_id, house_plan_version_id, house_plan_elevation_id, swing, plan:house_plans(name), elevation:house_plan_elevations(name, code)").eq("org_id", context.orgId).eq("id", parsed.lotId).maybeSingle()
   if (error || !lot) throw new Error("Lot not found")
+  await assertCommunityInSalesScope(context, lot.community_id)
+  if (lot.project_id) await requireAuthorization({ permission: "sales.read", userId: context.userId, orgId: context.orgId,
+    projectId: lot.project_id, supabase: context.supabase })
+  const catalogRevision = process.env.ARC_AGREEMENT_ATOMIC_CREATION_ENABLED === "true" ? await readAgreementCatalogRevision(context) : null
   const versionId = parsed.housePlanVersionId ?? lot.house_plan_version_id
   if (!versionId) throw new Error("Choose a released plan version")
   if (lot.project_id && lot.house_plan_version_id && parsed.housePlanVersionId && parsed.housePlanVersionId !== lot.house_plan_version_id) throw new Error("A spec home's pinned plan version cannot be changed")
   if (parsed.swing && lot.swing !== "either" && parsed.swing !== lot.swing) throw new Error(`This lot only supports a ${lot.swing}-swing plan`)
-  const { data: version } = await context.supabase.from("house_plan_versions").select("id, house_plan_id, status, label, plan:house_plans(name)").eq("org_id", context.orgId).eq("id", versionId).maybeSingle()
-  if (!version || version.status !== "released") throw new Error("The selected plan version is not released")
-  const elevationId = parsed.elevationId ?? lot.house_plan_elevation_id ?? null
+  const { data: version, error: versionError } = await context.supabase.from("house_plan_versions").select("id, house_plan_id, status, label, plan:house_plans!inner(name,org_id)").eq("org_id", context.orgId).eq("id", versionId).eq("plan.org_id", context.orgId).maybeSingle()
+  if (versionError || !version || version.status !== "released") throw new Error("The selected plan version is not released or could not be verified")
+  if (lot.project_id && lot.house_plan_id && version.house_plan_id !== lot.house_plan_id) throw new Error("A pinned home's plan ancestry is inconsistent; reconcile it before writing an agreement")
+  const elevationId = parsed.elevationId === undefined ? lot.house_plan_elevation_id ?? null : parsed.elevationId
+  if (lot.project_id && lot.house_plan_elevation_id && elevationId !== lot.house_plan_elevation_id) throw new Error("A spec home's pinned elevation cannot be changed")
+  let selectedElevation: { name: string | null; code: string } | null = null
+  if (elevationId) {
+    const elevation = await context.supabase.from("house_plan_elevations").select("id,name,code")
+      .eq("org_id", context.orgId).eq("id", elevationId).eq("house_plan_id", version.house_plan_id).eq("is_active", true).maybeSingle()
+    if (elevation.error || !elevation.data) throw new Error("The selected elevation is inactive or does not belong to this plan")
+    selectedElevation = elevation.data
+  }
+  const swing = parsed.swing ?? (lot.swing === "left" || lot.swing === "right" ? lot.swing : null)
+  if (!swing) throw new Error("Choose a left or right swing before pricing the agreement")
+  const offerDate = new Date().toISOString().slice(0, 10)
   let availabilityQuery = context.supabase.from("community_plan_availability").select("base_price_cents").eq("org_id", context.orgId).eq("community_id", lot.community_id).eq("house_plan_id", version.house_plan_id).eq("is_available", true)
   availabilityQuery = elevationId ? availabilityQuery.eq("elevation_id", elevationId) : availabilityQuery.is("elevation_id", null)
-  const { data: availability } = await availabilityQuery.maybeSingle()
-  if (!availability) throw new Error("This plan and elevation are not available in the community")
+  availabilityQuery = availabilityQuery.or(`and(effective_start.is.null,effective_end.is.null),and(effective_start.is.null,effective_end.gte.${offerDate}),and(effective_start.lte.${offerDate},effective_end.is.null),and(effective_start.lte.${offerDate},effective_end.gte.${offerDate})`)
+  const { data: availability, error: availabilityError } = await availabilityQuery.maybeSingle()
+  if (availabilityError) throw new Error(`Unable to verify effective community pricing: ${availabilityError.message}`)
+  if (!availability) throw new Error("This plan and elevation are not available in the community on the quote date")
   const resolved = await resolveOptionPricing({ orgId: context.orgId, items: parsed.optionItems, housePlanVersionId: versionId, communityId: lot.community_id })
-  if (resolved.some((item) => !item.available)) throw new Error("One or more configured options are unavailable")
+  if (resolved.length !== parsed.optionItems.length || resolved.some((item) => !item.available)) throw new Error("One or more configured options are unavailable or could not be fully priced")
+  await assertSalesConfiguration(context.orgId, resolved, { communityId: lot.community_id, housePlanVersionId: versionId })
   const optionIds = resolved.map((item) => item.optionId).filter(Boolean) as string[]
   const packageIds = resolved.map((item) => item.packageId).filter(Boolean) as string[]
-  const [{ data: options }, { data: packages }, { data: incentiveRows }] = await Promise.all([
+  const [optionsResult, packagesResult, incentivesResult] = await Promise.all([
     optionIds.length ? context.supabase.from("selection_options").select("id, name, option_scope, category:selection_categories(name)").eq("org_id", context.orgId).in("id", optionIds) : Promise.resolve({ data: [] }),
     packageIds.length ? context.supabase.from("selection_packages").select("id, name").eq("org_id", context.orgId).in("id", packageIds) : Promise.resolve({ data: [] }),
     parsed.incentiveIds.length ? context.supabase.from("incentives").select("*").eq("org_id", context.orgId).in("id", parsed.incentiveIds) : Promise.resolve({ data: [] }),
   ])
+  const options = optionsResult.data
+  const packages = packagesResult.data
+  const incentiveRows = incentivesResult.data
+  if (("error" in optionsResult && optionsResult.error) || ("error" in packagesResult && packagesResult.error)
+    || optionIds.some(id => !options?.some(row => row.id === id)) || packageIds.some(id => !packages?.some(row => row.id === id))
+    || options?.some(row => typeof row.name !== "string" || !row.name.trim() || !["structural", "design_studio"].includes(row.option_scope))
+    || packages?.some(row => typeof row.name !== "string" || !row.name.trim())) {
+    throw new Error("Configured option names and categories could not be fully verified")
+  }
+  if ("error" in incentivesResult && incentivesResult.error) throw new Error("Configured incentives could not be verified")
   const requestedIncentives = incentiveRows ?? []
   if (requestedIncentives.length !== parsed.incentiveIds.length) throw new Error("One or more incentives could not be found")
   const incentiveUses = await countIncentiveUses(context, parsed.incentiveIds)
@@ -944,7 +1088,15 @@ export async function priceAgreementDraft(input: AgreementConfigurationInput, or
     return { optionId: item.optionId, packageId: item.packageId, label: option?.name ?? selectionPackage?.name ?? "Option", category: category?.name ?? null, priceCents: item.priceCents, source: item.source, scope: option?.option_scope } as PurchaseAgreementPricedItem & { scope?: string }
   })
   const pricing = composePurchaseAgreementPricing({ basePriceCents: Number(availability.base_price_cents), lotPremiumCents: Number(lot.premium_cents ?? 0), structuralOptions: priced.filter((item: any) => item.scope === "structural"), designSelections: priced.filter((item: any) => item.scope !== "structural"), incentives: requestedIncentives.map((row: any) => ({ incentiveId: row.id, name: row.name, incentiveType: row.incentive_type, appliesTo: row.applies_to, amountCents: row.amount_cents, percent: row.percent })) })
-  return { ...pricing, lotId: lot.id, communityId: lot.community_id, housePlanId: version.house_plan_id, housePlanVersionId: version.id, elevationId, swing: parsed.swing ?? lot.swing, planLabel: (version as any).plan?.name ?? version.label ?? "Plan", elevationLabel: (lot as any).elevation?.name ?? (lot as any).elevation?.code ?? null, optionItems: parsed.optionItems }
+  const choicePrices = parsed.optionItems.map((choice, index) => {
+    const item = resolved[index]
+    if (!item) throw new Error("Configured choices could not be fully priced")
+    return { ...choice, priceCents: item.priceCents }
+  })
+  const quote = { ...pricing, choicePrices, lotId: lot.id, communityId: lot.community_id, housePlanId: version.house_plan_id, housePlanVersionId: version.id, elevationId, swing, planLabel: (Array.isArray(version.plan) ? version.plan[0] : version.plan)?.name ?? version.label ?? "Plan", elevationLabel: selectedElevation?.name ?? selectedElevation?.code ?? null, optionItems: parsed.optionItems }
+  if (catalogRevision !== null && await readAgreementCatalogRevision(context) !== catalogRevision) throw new AgreementQuoteChangedError()
+  const reviewedQuote = catalogRevision === null ? quote : { ...quote, catalogRevision }
+  return { ...reviewedQuote, quoteHash: agreementQuoteFingerprint(reviewedQuote), catalogRevision }
 }
 
 /** What a priced-but-unwritten configuration looks like. */
@@ -975,6 +1127,7 @@ export type AgreementDraftContext = {
   swing: "left" | "right" | "either" | null
   /** Set when the lot pins a version (a spec home) and it cannot be changed. */
   pinnedVersionId: string | null
+  pinnedElevationId: string | null
   versions: { id: string; label: string; isPinned: boolean }[]
   elevations: { id: string; label: string }[]
   structuralOptions: AgreementCatalogItem[]
@@ -1016,7 +1169,7 @@ export async function getAgreementDraftContext(
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.manage", context)
 
-  const { data: reservation } = await context.supabase
+  const { data: reservation, error: reservationError } = await context.supabase
     .from("lot_reservations")
     .select(
       "id, status, lot_id, community_id, buyer_contact_id, buyer:contacts!lot_reservations_buyer_contact_id_fkey(full_name, email), lot:lots(id, community_id, project_id, house_plan_id, house_plan_version_id, house_plan_elevation_id, swing, block, lot_number, plan:house_plans(name), elevation:house_plan_elevations(name, code))",
@@ -1024,7 +1177,7 @@ export async function getAgreementDraftContext(
     .eq("org_id", context.orgId)
     .eq("id", reservationId)
     .maybeSingle()
-  if (!reservation) throw new Error("Reservation not found")
+  if (reservationError || !reservation) throw new Error("Reservation not found or could not be verified")
   if (reservation.status !== "reserved") {
     throw new Error("Take the reservation first — an agreement needs a reserved lot")
   }
@@ -1032,28 +1185,33 @@ export async function getAgreementDraftContext(
   if (!lot) throw new Error("Reservation is not attached to a lot")
   if (!lot.house_plan_id) throw new Error("Assign a plan to the lot before writing the agreement")
   await assertCommunityInSalesScope(context, lot.community_id)
+  if (lot.project_id) await requireAuthorization({ permission: "sales.manage", userId: context.userId, orgId: context.orgId,
+    projectId: lot.project_id, supabase: context.supabase })
 
   const buyer = Array.isArray(reservation.buyer) ? reservation.buyer[0] : reservation.buyer
   const plan = Array.isArray(lot.plan) ? lot.plan[0] : lot.plan
   const elevation = Array.isArray(lot.elevation) ? lot.elevation[0] : lot.elevation
 
-  const [{ data: versions }, { data: elevations }, catalog, incentiveRows] = await Promise.all([
-    context.supabase
-      .from("house_plan_versions")
-      .select("id, label, released_at")
-      .eq("org_id", context.orgId)
-      .eq("house_plan_id", lot.house_plan_id)
-      .eq("status", "released")
-      .order("released_at", { ascending: false }),
-    context.supabase
-      .from("house_plan_elevations")
-      .select("id, name, code")
-      .eq("org_id", context.orgId)
-      .eq("house_plan_id", lot.house_plan_id)
-      .order("name"),
-    listCatalog({ communityId: lot.community_id }),
+  const [versions, elevations, catalog, incentiveRows] = await Promise.all([
+    readAllRowsById((afterId, take) => {
+      const query = context.supabase.from("house_plan_versions").select("id, label, released_at")
+        .eq("org_id", context.orgId).eq("house_plan_id", lot.house_plan_id).eq("status", "released")
+        .order("id").limit(take)
+      return afterId ? query.gt("id", afterId) : query
+    }, { cap: 2000, label: "Agreement plan versions", pageSize: 500 }),
+    readAllRowsById((afterId, take) => {
+      const query = context.supabase.from("house_plan_elevations").select("id, name, code")
+        .eq("org_id", context.orgId).eq("house_plan_id", lot.house_plan_id).eq("is_active", true)
+        .order("id").limit(take)
+      return afterId ? query.gt("id", afterId) : query
+    }, { cap: 2000, label: "Agreement elevations", pageSize: 500 }),
+    listCatalog({ communityId: lot.community_id }, context.orgId),
     listIncentives({ communityId: lot.community_id, status: "active", eligibleOnly: true }, context.orgId),
   ])
+  versions.sort((a, b) => (b.released_at ?? "").localeCompare(a.released_at ?? "") || a.id.localeCompare(b.id))
+  elevations.sort((a, b) => (a.name ?? a.code ?? "").localeCompare(b.name ?? b.code ?? "") || a.id.localeCompare(b.id))
+  if (lot.project_id && lot.house_plan_version_id && !versions.some(row => row.id === lot.house_plan_version_id)) throw new Error("The home's pinned plan version is no longer released; reconcile it before preparing an agreement")
+  if (lot.project_id && lot.house_plan_elevation_id && !elevations.some(row => row.id === lot.house_plan_elevation_id)) throw new Error("The home's pinned elevation is no longer active; reconcile it before preparing an agreement")
 
   const toItem = (option: { id: string; name: string; price_cents: number | null }, category: string | null) => ({
     optionId: option.id,
@@ -1078,6 +1236,7 @@ export async function getAgreementDraftContext(
     elevationLabel: elevation?.name ?? elevation?.code ?? null,
     swing: (lot.swing ?? null) as AgreementDraftContext["swing"],
     pinnedVersionId: lot.project_id && lot.house_plan_version_id ? lot.house_plan_version_id : null,
+    pinnedElevationId: lot.project_id ? lot.house_plan_elevation_id ?? null : null,
     versions: (versions ?? []).map((version) => ({
       id: version.id as string,
       label: (version.label as string | null) ?? "Released version",
@@ -1120,10 +1279,20 @@ export async function createPurchaseAgreement(input: unknown, orgId?: string) {
   const parsed = createPurchaseAgreementSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.manage", context)
-  const { data: reservation } = await context.supabase.from("lot_reservations").select("*, lot:lots(project_id, lot_number)").eq("org_id", context.orgId).eq("id", parsed.reservationId).maybeSingle()
-  if (!reservation || reservation.status !== "reserved" || !reservation.lot?.project_id) throw new Error("Reserved lot with a project is required")
+  if (process.env.ARC_AGREEMENT_ATOMIC_CREATION_ENABLED === "true") return createPurchaseAgreementAtomically(parsed, context)
+  const { data: reservation, error: reservationError } = await context.supabase.from("lot_reservations").select("*, lot:lots(project_id, lot_number)").eq("org_id", context.orgId).eq("id", parsed.reservationId).maybeSingle()
+  if (reservationError || !reservation || reservation.status !== "reserved" || !reservation.lot?.project_id) throw new Error("Reserved lot with a project is required and must be verified")
   if (reservation.lot_id !== parsed.lotId) throw new Error("Reservation and lot do not match")
+  await requireAuthorization({ permission: "sales.manage", userId: context.userId, orgId: context.orgId,
+    projectId: reservation.lot.project_id, supabase: context.supabase })
+  if (reservation.contract_id) throw new Error("This reservation already has a purchase agreement. Reconcile the existing agreement before creating another")
+  const { count: openAgreementCount, error: openAgreementError } = await context.supabase.from("contracts")
+    .select("id", { count: "exact", head: true }).eq("org_id", context.orgId)
+    .eq("project_id", reservation.lot.project_id).eq("contract_type", "purchase_agreement").in("status", ["draft", "active"])
+  if (openAgreementError || openAgreementCount === null || openAgreementCount === undefined) throw new Error("Existing purchase agreements could not be verified; no new agreement was created")
+  if (openAgreementCount > 0) throw new Error("This home already has an open purchase agreement. Resume or reconcile the existing agreement before creating another")
   const pricing = await priceAgreementDraft(parsed, context.orgId)
+  if (pricing.quoteHash !== parsed.expectedQuoteHash) throw new AgreementQuoteChangedError()
   const now = new Date()
   const number = `PA-${now.getUTCFullYear()}-${now.getTime().toString().slice(-7)}`
   const snapshot = { purchase_agreement: { version: 1, configuration: { lot_id: parsed.lotId, house_plan_id: pricing.housePlanId, house_plan_version_id: pricing.housePlanVersionId, elevation_id: pricing.elevationId, swing: pricing.swing, option_items: pricing.optionItems }, pricing, deposits: reservation.deposit_invoice_id ? [{ invoice_id: reservation.deposit_invoice_id, kind: "earnest_deposit" }] : [], incentive_ids: parsed.incentiveIds } }
@@ -1134,9 +1303,12 @@ export async function createPurchaseAgreement(input: unknown, orgId?: string) {
     // necessarily who signed this agreement.
     buyer_contact_id: reservation.buyer_contact_id ?? null,
     co_buyer_contact_id: reservation.co_buyer_contact_id ?? null }).select("*").single()
+  if (error?.code === "23505" && error.message.includes("contracts_open_purchase_agreement_home_unique")) throw new Error("Another purchase agreement already owns this home. Reconcile the existing agreement instead of retrying creation")
   if (error || !contract) throw new Error(`Failed to create purchase agreement: ${error?.message}`)
-  await context.supabase.from("lot_reservations").update({ contract_id: contract.id }).eq("org_id", context.orgId).eq("id", reservation.id)
-  await context.supabase.from("lots").update({ house_plan_id: pricing.housePlanId, house_plan_version_id: pricing.housePlanVersionId, house_plan_elevation_id: pricing.elevationId }).eq("org_id", context.orgId).eq("id", parsed.lotId)
+  const linked = await context.supabase.from("lot_reservations").update({ contract_id: contract.id }).eq("org_id", context.orgId).eq("id", reservation.id).eq("status", "reserved").is("contract_id", null).select("id").single()
+  if (linked.error || !linked.data) throw new Error("The agreement was saved but reservation ownership could not be recorded. Reconcile the existing agreement before retrying")
+  const configured = await context.supabase.from("lots").update({ house_plan_id: pricing.housePlanId, house_plan_version_id: pricing.housePlanVersionId, house_plan_elevation_id: pricing.elevationId, swing: pricing.swing }).eq("org_id", context.orgId).eq("id", parsed.lotId).eq("project_id", contract.project_id).select("id").single()
+  if (configured.error || !configured.data) throw new Error("The agreement was saved but its home configuration could not be recorded. Reconcile the existing agreement before sending")
   await Promise.all([
     recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "purchase_agreement_created", entityType: "contract", entityId: contract.id, payload: { project_id: contract.project_id, total_cents: contract.total_cents } }),
     recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "contract", entityId: contract.id, after: contract }),
@@ -1145,18 +1317,114 @@ export async function createPurchaseAgreement(input: unknown, orgId?: string) {
   return { ...contract, pricing, signing }
 }
 
-export async function generatePurchaseAgreementSigningDocument(contractId: string, orgId?: string) {
-  if (getFilesStorageProvider() !== "r2") return { documentId: null, envelopeId: null, reason: "Document signing storage is not configured" }
+/** Save once, then report signing preparation separately from the committed sale. */
+async function createPurchaseAgreementAtomically(parsed: z.infer<typeof createPurchaseAgreementSchema>, context: OrgServiceContext) {
+  if (process.env.ARC_AGREEMENT_DURABLE_SIGNING_ENABLED !== "true") throw new Error("Atomic agreement creation requires durable signing recovery to be enabled")
+  const request = { ...parsed, terms: parsed.terms ?? null }
+  const base = { orgId: context.orgId, actorId: context.userId, reservationId: parsed.reservationId, request }
+  let receipt = await saveAgreementCreation(base)
+  if (!receipt) {
+    const { data: reservation, error } = await context.supabase.from("lot_reservations").select("*, lot:lots(*)")
+      .eq("org_id", context.orgId).eq("id", parsed.reservationId).maybeSingle()
+    if (error || !reservation || reservation.status !== "reserved" || reservation.contract_id || reservation.lot_id !== parsed.lotId || !reservation.lot?.project_id) throw new Error("Unowned reserved lot with an actual home is required")
+    await requireAuthorization({ permission: "sales.manage", userId: context.userId, orgId: context.orgId,
+      projectId: reservation.lot.project_id, supabase: context.supabase })
+    const expectedFacts = agreementCreationExpected(reservation, reservation.lot)
+    const pricing = await priceAgreementDraft(parsed, context.orgId)
+    if (pricing.quoteHash !== parsed.expectedQuoteHash) throw new AgreementQuoteChangedError()
+    if (!pricing.catalogRevision) throw new Error("Atomic agreement creation requires a verified catalog revision")
+    const expected = { ...expectedFacts, catalog_revision: pricing.catalogRevision }
+    const snapshot = { purchase_agreement: { version: 1, configuration: {
+      lot_id: parsed.lotId, house_plan_id: pricing.housePlanId, house_plan_version_id: pricing.housePlanVersionId,
+      elevation_id: pricing.elevationId, swing: pricing.swing, option_items: pricing.optionItems,
+    }, pricing, deposits: reservation.deposit_invoice_id ? [{ invoice_id: reservation.deposit_invoice_id, kind: "earnest_deposit" }] : [], incentive_ids: parsed.incentiveIds } }
+    receipt = await saveAgreementCreation({ ...base, expected, snapshot })
+    if (!receipt) throw new Error("Agreement creation receipt was not returned; reconcile the sale before retrying")
+  }
+  return finishReceiptedPurchaseAgreement(receipt, context)
+}
+
+async function finishReceiptedPurchaseAgreement(receipt: AgreementCreationReceipt, context: OrgServiceContext) {
+  const contract = receipt.contract
+  await requireAuthorization({ permission: "sales.manage", userId: context.userId, orgId: context.orgId, projectId: contract.project_id, supabase: context.supabase })
+  let signing: { documentId: string | null; envelopeId: string | null; reason: string | null }
+  if (contract.status !== "draft") {
+    signing = { documentId: null, envelopeId: null, reason: "The existing agreement was recovered. Review its current status before preparing signatures." }
+  } else {
+    try {
+      signing = await generatePurchaseAgreementSigningDocument(contract.id, context.orgId, { expectedProjectId: contract.project_id })
+    } catch (error) {
+      try {
+        logger.warn("agreement_signing_preparation_unconfirmed", { domain: "sales", orgId: context.orgId, projectId: contract.project_id,
+          contractId: contract.id, receiptId: receipt.receipt_id, errorType: error instanceof Error ? error.name : "Unknown" })
+      } catch { /* Telemetry failure must not obscure the committed sale. */ }
+      signing = { documentId: null, envelopeId: null, reason: "The agreement was saved. Signing preparation could not be confirmed; review its signing status and resume the saved packet." }
+    }
+  }
+  return { ...contract, pricing: contract.snapshot.purchase_agreement.pricing as AgreementDraftPricing, signing,
+    creationReceiptId: receipt.receipt_id, recovered: !receipt.created }
+}
+
+/** Resume only after proving the saved sale owns its reservation and home configuration. */
+export async function resumePurchaseAgreementSigning(input: unknown, orgId?: string) {
+  const parsed = z.object({ contractId: z.string().uuid(), projectId: z.string().uuid() }).parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.manage", context)
-  const { data: contract, error } = await context.supabase.from("contracts").select("*, project:projects(name, client_id, client:contacts(id, full_name, email))").eq("org_id", context.orgId).eq("id", contractId).eq("contract_type", "purchase_agreement").maybeSingle()
+  const { data: contract, error } = await context.supabase.from("contracts").select("id,project_id,status,snapshot")
+    .eq("org_id", context.orgId).eq("id", parsed.contractId).eq("contract_type", "purchase_agreement").maybeSingle()
+  if (error || !contract || contract.project_id !== parsed.projectId || contract.status !== "draft") throw new Error("The draft agreement or home changed. Reload before resuming signatures.")
+  await requireAuthorization({permission:"sales.manage",orgId:context.orgId,userId:context.userId,projectId:contract.project_id,supabase:context.supabase})
+  if (process.env.ARC_AGREEMENT_DURABLE_SIGNING_ENABLED !== "true") throw new Error("Agreement signing recovery is not enabled yet")
+  const snapshot = z.object({ purchase_agreement: z.object({ configuration: z.object({
+    lot_id: z.string().uuid(), house_plan_id: z.string().uuid().nullable(), house_plan_version_id: z.string().uuid().nullable(),
+    elevation_id: z.string().uuid().nullable(), swing: z.enum(["left","right"]),
+  }) }) }).safeParse(contract.snapshot)
+  if (!snapshot.success) throw new Error("The saved agreement configuration needs reconciliation before signing")
+  const configuration = snapshot.data.purchase_agreement.configuration
+  const [lot,reservations] = await Promise.all([
+    context.supabase.from("lots").select("project_id,status,house_plan_id,house_plan_version_id,house_plan_elevation_id,swing")
+      .eq("org_id",context.orgId).eq("id",configuration.lot_id).maybeSingle(),
+    context.supabase.from("lot_reservations").select("id,lot_id,status").eq("org_id",context.orgId)
+      .eq("contract_id",contract.id).limit(2),
+  ])
+  if (lot.error || !lot.data || reservations.error || reservations.data?.length !== 1 || reservations.data[0].lot_id !== configuration.lot_id || reservations.data[0].status !== "reserved" || lot.data.project_id !== contract.project_id
+    || !SELLABLE_LOT_STATUSES.includes(lot.data.status) || lot.data.house_plan_id !== configuration.house_plan_id || lot.data.house_plan_version_id !== configuration.house_plan_version_id
+    || lot.data.house_plan_elevation_id !== configuration.elevation_id || lot.data.swing !== configuration.swing) throw new Error("The saved agreement, reservation and home configuration need reconciliation before signing")
+  return generatePurchaseAgreementSigningDocument(contract.id,context.orgId,{expectedProjectId:parsed.projectId})
+}
+
+export async function generatePurchaseAgreementSigningDocument(contractId: string, orgId?: string, options: { expectedProjectId?: string } = {}) {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("sales.manage", context)
+  const { data: contract, error } = await context.supabase.from("contracts").select("*, project:projects(name)").eq("org_id", context.orgId).eq("id", contractId).eq("contract_type", "purchase_agreement").maybeSingle()
   if (error || !contract) throw new Error("Purchase agreement not found")
+  if (options.expectedProjectId && contract.project_id !== options.expectedProjectId) throw new Error("The agreement home changed. Reload before resuming signatures.")
+  await requireAuthorization({ permission: "sales.manage", userId: context.userId, orgId: context.orgId,
+    projectId: contract.project_id, supabase: context.supabase })
+  if (contract.status !== "draft") throw new Error("Only a draft purchase agreement can be prepared for signature")
+  if (getFilesStorageProvider() !== "r2") return { documentId: null, envelopeId: null, reason: "Document signing storage is not configured" }
+  const signingSecret = process.env.DOCUMENT_SIGNING_SECRET
+  if (!signingSecret) throw new Error("Missing DOCUMENT_SIGNING_SECRET environment variable")
+  if (!contract.buyer_contact_id) throw new Error("The agreement needs a buyer of record before signing")
+  if (contract.co_buyer_contact_id === contract.buyer_contact_id) throw new Error("Buyer and co-buyer must be different contacts")
+  const durableSigning = process.env.ARC_AGREEMENT_DURABLE_SIGNING_ENABLED === "true"
+  if (durableSigning) {
+    const owned = await reserveAgreementSigningDocument({ orgId: context.orgId, actorId: context.userId, contract })
+    if (owned) return publishOwnedAgreementDocument({ orgId: context.orgId, actorId: context.userId, document: owned })
+  }
   const project = Array.isArray(contract.project) ? contract.project[0] : contract.project
-  const buyer = Array.isArray(project?.client) ? project.client[0] : project?.client
-  const { data: reservation } = await context.supabase.from("lot_reservations").select("co_buyer_contact_id, co_buyer:contacts!lot_reservations_co_buyer_contact_id_fkey(id, full_name, email)").eq("org_id", context.orgId).eq("contract_id", contractId).maybeSingle()
-  const coBuyer = Array.isArray(reservation?.co_buyer) ? reservation.co_buyer[0] : reservation?.co_buyer
-  const { data: builder } = await context.supabase.from("app_users").select("id, full_name, email").eq("id", context.userId).maybeSingle()
+  const contactIds = [contract.buyer_contact_id, ...(contract.co_buyer_contact_id ? [contract.co_buyer_contact_id] : [])]
+  const [contactsResult, builderResult] = await Promise.all([
+    context.supabase.from("contacts").select("id, full_name, email").eq("org_id", context.orgId).in("id", contactIds),
+    context.supabase.from("app_users").select("id, full_name, email").eq("id", context.userId).maybeSingle(),
+  ])
+  if (contactsResult.error || contactsResult.data?.length !== contactIds.length) throw new Error("Agreement signer contacts could not be verified in this organization")
+  if (builderResult.error) throw new Error("The builder signer could not be verified")
+  const buyer = contactsResult.data.find((contact) => contact.id === contract.buyer_contact_id)
+  const coBuyer = contract.co_buyer_contact_id ? contactsResult.data.find((contact) => contact.id === contract.co_buyer_contact_id) : null
+  const builder = builderResult.data
   if (!buyer?.email) throw new Error("Buyer email is required before creating a signing envelope")
+  if (contract.co_buyer_contact_id && !coBuyer?.email) throw new Error("Co-buyer email is required before creating a signing envelope")
   if (!builder?.email) throw new Error("The builder signer needs an email address")
   const pricing = (contract.snapshot as any)?.purchase_agreement?.pricing as PurchaseAgreementPricing
   const lines = [
@@ -1169,34 +1437,55 @@ export async function generatePurchaseAgreementSigningDocument(contractId: strin
   const branding = await getOrgBranding(context.orgId, context.supabase)
   const pdf = await renderProposalPdf({ orgName: branding.name, orgLogoUrl: branding.logoUrl, orgAddress: branding.address, proposalTitle: contract.title, proposalNumber: contract.number, recipientName: buyer.full_name, recipientEmail: buyer.email, projectName: project?.name ?? null, summary: "New home purchase agreement", terms: contract.terms ?? null, subtotalCents: pricing.totalCents, taxCents: 0, totalCents: pricing.totalCents, validUntil: null, signers: [{ role: "Buyer", name: buyer.full_name }, ...(coBuyer ? [{ role: "Co-buyer", name: coBuyer.full_name }] : []), { role: branding.name ?? "Builder", name: builder.full_name }], lines })
   const fileName = `purchase-agreement-${contract.number ?? contract.id}.pdf`.replace(/[^a-zA-Z0-9.-]/g, "_")
-  const storagePath = buildOrgScopedPath(context.orgId, "projects", contract.project_id, "esign", "source", `${Date.now()}_${fileName}`)
+  const storagePath = buildOrgScopedPath(context.orgId, "projects", contract.project_id, "esign", "source", `${randomUUID()}_${fileName}`)
   await uploadFilesObject({ supabase: context.supabase, orgId: context.orgId, path: storagePath, bytes: pdf, contentType: "application/pdf", upsert: false })
-  const file = await createFileRecord({ project_id: contract.project_id, file_name: fileName, storage_path: storagePath, mime_type: "application/pdf", size_bytes: pdf.length, visibility: "private", category: "contracts", folder_path: "/contracts", source: "generated" }, context.orgId, { authorizationPermission: "sales.manage" })
-  const document = await createDocument({ project_id: contract.project_id, document_type: "contract", title: contract.title, source_file_id: file.id, source_entity_type: "contract", source_entity_id: contract.id, metadata: { contract_id: contract.id, purchase_agreement: true } }, context.orgId, { authorizationPermission: "sales.manage" })
-  const envelope = await ensureDraftEnvelopeForDocument({ document_id: document.id, source_entity_type: "contract", source_entity_id: contract.id, subject: contract.title, metadata: { contract_id: contract.id } }, context.orgId, "sales.manage")
+  const file = await createFileRecord({ project_id: contract.project_id, file_name: fileName, storage_path: storagePath, mime_type: "application/pdf", size_bytes: pdf.length, checksum: createHash("sha256").update(pdf).digest("hex"), visibility: "private", category: "contracts", folder_path: "/contracts", source: "generated" }, context.orgId, { authorizationPermission: "sales.manage" })
   const recipients = [
     { recipient_type: "contact" as const, contact_id: buyer.id, name: buyer.full_name, email: buyer.email, role: "signer" as const, signer_role: "buyer", sequence: 1, required: true },
     ...(coBuyer?.email ? [{ recipient_type: "contact" as const, contact_id: coBuyer.id, name: coBuyer.full_name, email: coBuyer.email, role: "signer" as const, signer_role: "co_buyer", sequence: 1, required: true }] : []),
     { recipient_type: "internal_user" as const, user_id: builder.id, name: builder.full_name, email: builder.email, role: "signer" as const, signer_role: "builder", sequence: 2, required: true },
   ]
+  // Probe and reservation share contract ownership; a concurrent winner is
+  // resumed instead of replacing its file, builder signer or invitation IDs.
+  // Never fall back after an uncertain reservation/publication reply.
+  if (durableSigning) {
+    const owned = await reserveAgreementSigningDocument({ orgId: context.orgId, actorId: context.userId, contract, fileId: file.id,
+      recipients: recipients.map(recipient => ({ type: recipient.recipient_type, name: recipient.name, email: recipient.email, role: recipient.role,
+        signer_role: recipient.signer_role, sequence: recipient.sequence, required: recipient.required,
+        contact_id: "contact_id" in recipient ? recipient.contact_id : null, user_id: "user_id" in recipient ? recipient.user_id : null })) })
+    if (!owned) throw new Error("Agreement signing document reservation is missing. Reconcile before retrying.")
+    return publishOwnedAgreementDocument({ orgId: context.orgId, actorId: context.userId, document: owned })
+  }
+  const document = await createDocument({ project_id: contract.project_id, document_type: "contract", title: contract.title, source_file_id: file.id, source_entity_type: "contract", source_entity_id: contract.id, metadata: { contract_id: contract.id, purchase_agreement: true } }, context.orgId, { authorizationPermission: "sales.manage" })
+  const envelope = await ensureDraftEnvelopeForDocument({ document_id: document.id, source_entity_type: "contract", source_entity_id: contract.id, subject: contract.title, metadata: { contract_id: contract.id } }, context.orgId, "sales.manage")
   await replaceEnvelopeRecipients({ envelope_id: envelope.id, recipients }, context.orgId, "sales.manage")
   const signingRequests = await createEnvelopeSigningRequests({ envelope_id: envelope.id }, context.orgId, "sales.manage")
-  const signingSecret = process.env.DOCUMENT_SIGNING_SECRET
-  if (!signingSecret) throw new Error("Missing DOCUMENT_SIGNING_SECRET environment variable")
-  const firstBatch = (signingRequests.requests ?? []).filter((request: any) => Number(request.sequence ?? 1) === 1 && request.sent_to_email)
+  const requests = signingRequests.requests ?? []
+  if (requests.length !== recipients.length || recipients.some((recipient) => {
+    const matches = requests.filter((request) => request.signer_role === recipient.signer_role)
+    return matches.length !== 1 || matches[0].sent_to_email !== recipient.email || Number(matches[0].sequence) !== recipient.sequence
+      || matches[0].required !== true || matches[0].org_id !== context.orgId || matches[0].envelope_id !== envelope.id
+      || matches[0].document_id !== document.id || !matches[0].token_hash
+      || matches[0].recipient_contact_id !== ("contact_id" in recipient ? recipient.contact_id : null)
+  })) throw new Error("Signing requests do not match the agreement's required recipients")
+  const firstBatch = requests.filter((request) => Number(request.sequence) === 1)
   await Promise.all(firstBatch.map(async (request: any) => {
-    const token = randomBytes(32).toString("hex")
-    const tokenHash = createHmac("sha256", signingSecret).update(token).digest("hex")
-    await context.supabase.from("document_signing_requests").update({ token_hash: tokenHash, status: "sent", sent_at: new Date().toISOString() }).eq("org_id", context.orgId).eq("id", request.id)
+    const signingUrl = buildUnifiedSigningUrl(createRecoverableSigningToken(request))
+    const { data: prepared, error: requestError } = await context.supabase.from("document_signing_requests").update({ status: "sent", sent_at: new Date().toISOString() }).eq("org_id", context.orgId).eq("id", request.id).eq("token_hash", request.token_hash).eq("status", "draft").select("id").single()
+    if (requestError || !prepared) throw new Error(`Failed to prepare signing delivery: ${requestError?.message ?? "Signing request changed or disappeared"}`)
     const recipient = recipients.find((row) => row.signer_role === request.signer_role)
-    const html = await renderEmailTemplate(SignatureEmail({ documentTitle: contract.title, signingLink: buildUnifiedSigningUrl(token), recipientName: recipient?.name ?? undefined, orgName: branding.name, orgLogoUrl: branding.logoUrl, eventLabel: "Purchase Agreement", headline: "Your purchase agreement is ready", bodyText: "Review and sign your new home purchase agreement.", detailLabel: "Agreement", detailText: "Review the price, selections, incentives, and terms before signing.", buttonText: "Review and Sign" }))
-    await sendEmail({ to: [request.sent_to_email], subject: `Signature requested: ${contract.title}`, html, from: getOrgSenderEmail(undefined, branding.name) })
+    await sendSignerRequestEmail({ orgId: context.orgId, toEmail: request.sent_to_email,
+      requestId: request.id, expectedTokenHash: request.token_hash, documentId: document.id,
+      documentTitle: contract.title, signingUrl, recipientName: recipient?.name ?? undefined,
+      subject: `Signature requested: ${contract.title}`, message: "Review and sign your new home purchase agreement.",
+      idempotencyKey: `esign-invitation:${request.id}:${createHash("sha256").update(request.token_hash).digest("hex").slice(0, 24)}` })
   }))
   const sentAt = new Date().toISOString()
-  await Promise.all([
+  const sentResults = await Promise.all([
     context.supabase.from("documents").update({ status: "sent", updated_at: sentAt }).eq("org_id", context.orgId).eq("id", document.id),
     context.supabase.from("envelopes").update({ status: "sent", sent_at: sentAt, updated_at: sentAt }).eq("org_id", context.orgId).eq("id", envelope.id),
   ])
+  if (sentResults.some((result) => result.error)) throw new Error("Signing delivery completed but document status could not be recorded; reconciliation is required")
   return { documentId: document.id, envelopeId: envelope.id, reason: null }
 }
 
@@ -1209,34 +1498,37 @@ export async function hasExecutedPurchaseAgreement(projectId: string, orgId?: st
 
 export async function executePurchaseAgreementFromEnvelopeExecution(input: { orgId: string; contractId: string; envelopeId: string; executedFileId?: string | null }) {
   const supabase = createServiceSupabaseClient()
-  const { data: contract } = await supabase.from("contracts").select("*, project:projects(end_date)").eq("org_id", input.orgId).eq("id", input.contractId).eq("contract_type", "purchase_agreement").maybeSingle()
+  const checked = <T extends { error: any }>(result: T): T => {
+    if (result.error) throw new Error(`Purchase agreement execution failed: ${result.error.message}`)
+    return result
+  }
+  const { data: contract } = checked(await supabase.from("contracts").select("*, project:projects(end_date)").eq("org_id", input.orgId).eq("id", input.contractId).eq("contract_type", "purchase_agreement").maybeSingle())
   if (!contract) throw new Error("Purchase agreement not found")
-  if (contract.status === "active") return
-  const now = new Date().toISOString()
-  await supabase.from("contracts").update({ status: "active", signed_at: now, signature_data: { envelope_id: input.envelopeId, executed_file_id: input.executedFileId ?? null } }).eq("org_id", input.orgId).eq("id", contract.id)
-  const { data: projectLot } = await supabase.from("lots").select("id, community_id, status").eq("org_id", input.orgId).eq("project_id", contract.project_id).maybeSingle()
-  let convertedProspectId: string | null = null
+  if (contract.status === "void") throw new Error("Purchase agreement was voided")
+  if (contract.status === "active" && contract.signature_data?.execution_effects_completed === true) return
+  const now = contract.signed_at ?? new Date().toISOString()
+  const signatureData = { ...(contract.signature_data ?? {}), envelope_id: input.envelopeId, executed_file_id: input.executedFileId ?? null }
+  checked(await supabase.from("contracts").update({ status: "active", signed_at: now, signature_data: signatureData }).eq("org_id", input.orgId).eq("id", contract.id))
+  const { data: projectLot } = checked(await supabase.from("lots").select("id, community_id, status").eq("org_id", input.orgId).eq("project_id", contract.project_id).maybeSingle())
   if (projectLot) {
-    const { data: convertedReservations } = await supabase.from("lot_reservations").update({ status: "converted", converted_at: now, contract_id: contract.id }).eq("org_id", input.orgId).eq("lot_id", projectLot.id).eq("status", "reserved").select("prospect_id")
-    convertedProspectId = (convertedReservations ?? []).find((row) => row.prospect_id)?.prospect_id ?? null
+    checked(await supabase.from("lot_reservations").update({ status: "converted", converted_at: now, contract_id: contract.id }).eq("org_id", input.orgId).eq("lot_id", projectLot.id).eq("status", "reserved"))
+    // Recovery must also find the reservation converted by an earlier attempt.
+    const { data: reservations } = checked(await supabase.from("lot_reservations").select("prospect_id").eq("org_id", input.orgId).eq("contract_id", contract.id).eq("status", "converted"))
+    for (const reservation of reservations ?? []) {
+      if (reservation.prospect_id) checked(await supabase.from("prospects").update({ status: "won", won_at: now, lost_at: null, lost_reason: null, updated_at: now }).eq("org_id", input.orgId).eq("id", reservation.prospect_id).neq("status", "won"))
+    }
   }
-  // Close the lead-pipeline loop: an executed agreement IS the win.
-  if (convertedProspectId) {
-    await supabase.from("prospects").update({ status: "won", won_at: now, lost_at: null, lost_reason: null, updated_at: now }).eq("org_id", input.orgId).eq("id", convertedProspectId).neq("status", "won")
-  }
-  // Stand the buyer's selection groups up at execution, not at release. The
-  // start gate asks "are structural selections locked?", and a gate whose
-  // evidence is only created during the release it guards can never block one.
   await instantiateSelectionGroupsForProject(contract.project_id, input.orgId)
-  await supabase.from("project_selections").update({ locked_at: now }).eq("org_id", input.orgId).eq("project_id", contract.project_id).is("locked_at", null)
+  checked(await supabase.from("project_selections").update({ locked_at: now }).eq("org_id", input.orgId).eq("project_id", contract.project_id).is("locked_at", null))
   if (projectLot) {
-    const { data: existingClosing } = await supabase.from("closings").select("id").eq("org_id", input.orgId).eq("project_id", contract.project_id).neq("status", "cancelled").maybeSingle()
-    if (!existingClosing) await supabase.from("closings").insert({ org_id: input.orgId, project_id: contract.project_id, lot_id: projectLot.id, community_id: projectLot.community_id, status: "projected", scheduled_date: contract.project?.end_date ?? null, buyer_contact_id: contract.buyer_contact_id ?? null })
+    const { data: existingClosing } = checked(await supabase.from("closings").select("id").eq("org_id", input.orgId).eq("project_id", contract.project_id).neq("status", "cancelled").maybeSingle())
+    if (!existingClosing) checked(await supabase.from("closings").insert({ org_id: input.orgId, project_id: contract.project_id, lot_id: projectLot.id, community_id: projectLot.community_id, status: "projected", scheduled_date: contract.project?.end_date ?? null, buyer_contact_id: contract.buyer_contact_id ?? null }))
   }
   await Promise.all([
     recordEvent({ orgId: input.orgId, eventType: "purchase_agreement_executed", entityType: "contract", entityId: contract.id, payload: { project_id: contract.project_id, envelope_id: input.envelopeId } }),
     recordAudit({ orgId: input.orgId, action: "update", entityType: "contract", entityId: contract.id, after: { status: "active", signed_at: now } }),
   ])
+  checked(await supabase.from("contracts").update({ signature_data: { ...signatureData, execution_effects_completed: true } }).eq("org_id", input.orgId).eq("id", contract.id))
 }
 
 export async function voidPurchaseAgreement(input: unknown, orgId?: string) {
@@ -1260,4 +1552,4 @@ export async function voidPurchaseAgreement(input: unknown, orgId?: string) {
   ])
   await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "purchase_agreement_voided", entityType: "contract", entityId: contract.id, payload: { reason: parsed.reason } })
 }
-import { createHmac, randomBytes } from "crypto"
+import { createHash, randomUUID } from "crypto"

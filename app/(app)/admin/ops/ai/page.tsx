@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 
@@ -26,7 +27,8 @@ async function AiOpsPageContent({
 }: {
   searchParams: Promise<{ window?: string | string[] }>
 }) {
-  await requireAnyPermissionGuard(["billing.manage", "platform.support.read"])
+  await connection()
+  await requireAnyPermissionGuard(["platform.support.read"])
   const windowDays = parseWindow((await searchParams).window)
 
   return (
@@ -75,7 +77,14 @@ function AiConsoleSkeleton() {
 
 export default function AiOpsPage(props: Parameters<typeof AiOpsPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={
+      <PageLayout
+      title="AI"
+      breadcrumbs={[{ label: "Platform", href: "/platform" }, { label: "AI" }]}
+    >
+        <PageLoadingSkeleton />
+      </PageLayout>
+    }>
       <AiOpsPageContent {...props} />
     </Suspense>
   )

@@ -13,7 +13,7 @@ type RecordESignEventInput = {
 }
 
 export async function recordESignEvent(input: RecordESignEventInput) {
-  const client = input.supabase ?? createServiceSupabaseClient()
+  const client = createServiceSupabaseClient()
   const payload: Record<string, unknown> = {
     ...(input.payload ?? {}),
     ...(input.actorId ? { actor_id: input.actorId } : {}),

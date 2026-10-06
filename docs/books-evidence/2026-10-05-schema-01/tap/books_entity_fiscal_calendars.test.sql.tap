@@ -1,0 +1,5 @@
+1..4
+ok 1 - entity calendar preparation RPC is private
+ok 2 - calendar review preserves invoker authority
+ok 3 - browser cannot invent entity fiscal periods
+ok 4 - calendar completeness is enforced at commit

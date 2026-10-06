@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import Link from "next/link"
@@ -5,13 +6,9 @@ import Link from "next/link"
 import { PageLayout } from "@/components/layout/page-layout"
 import { SettingsGroup } from "@/components/settings/settings-section"
 import { ChevronRight } from "@/components/icons"
-import { getProjectPosture } from "@/lib/product-tier"
-import { getOrgProductTier } from "@/lib/services/context"
 import { IMPORTER_DEFINITIONS, IMPORTER_KEYS } from "@/lib/services/import-definitions"
 import { listImportBatches, type ImportBatchSummary } from "@/lib/services/imports"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
-import { orgHasPriceAgreements } from "@/lib/services/price-book"
-import { orgHasProductionProjects } from "@/lib/services/production-desk-scope"
 
 
 const CONTAINER = "mx-auto w-full max-w-3xl space-y-8 px-5 py-6 lg:px-8 lg:py-8"
@@ -24,35 +21,26 @@ const STATUS_LABELS: Record<string, string> = {
   failed: "Failed",
 }
 
-function batchSummary(batches: ImportBatchSummary[]) {
+function batchSummary(batches: ImportBatchSummary[], historyTruncated: boolean) {
   const latest = batches[0]
-  if (!latest) return "Never run"
+  if (!latest) return historyTruncated ? "No batch in recent history" : "Never run"
   const status = STATUS_LABELS[latest.status] ?? latest.status
-  return batches.length === 1 ? status : `${status} · ${batches.length} batches`
+  return batches.length === 1 ? status : `${status} · ${batches.length} recent batches`
 }
 
 async function ImportsPageContent() {
-  const [result, access, productTier, hasProductionProjects, hasPriceAgreements] = await Promise.all([
+  await connection()
+  const [result, access] = await Promise.all([
     listImportBatches({ limit: 50 }),
     getCurrentUserPermissions(),
-    getOrgProductTier(),
-    orgHasProductionProjects().catch(() => false),
-    orgHasPriceAgreements().catch(() => false),
   ])
 
-  const posture = getProjectPosture(null, productTier)
   const permissions = new Set(access.permissions)
   const hasAny = (...keys: string[]) => permissions.has("*") || keys.some((key) => permissions.has(key))
-  // Mirrors the sidebar: an org running price agreements keeps Purchasing even
-  // off the production tier, so its importer follows the same rule.
-  const showsPurchasing = posture === "production" || hasProductionProjects || hasPriceAgreements
-
   const available = IMPORTER_KEYS.filter((key) => {
-    const definition = IMPORTER_DEFINITIONS[key]
     // Open WIP cutover is run by us, not by the customer.
     if (key === "open_wip") return false
-    if (key === "price_book") return showsPurchasing && hasAny("price_book.write", "commitment.write")
-    if (definition.postures && !definition.postures.includes(posture)) return false
+    if (key === "price_book") return hasAny("price_book.write", "commitment.write")
     if (key === "plan_library") return hasAny("plan.write")
     if (key === "option_catalog") return hasAny("selections.catalog.manage")
     if (key === "communities_lots") return hasAny("community.write", "lot.write")
@@ -96,7 +84,7 @@ async function ImportsPageContent() {
                   </div>
                   <div className="flex items-center justify-between gap-3">
                     <span className="min-w-0 truncate text-sm leading-6 text-muted-foreground">
-                      {batchSummary(batches)}
+                      {batchSummary(batches, result.total > result.batches.length)}
                     </span>
                     <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
                   </div>
@@ -104,6 +92,7 @@ async function ImportsPageContent() {
               )
             })
           )}
+          {result.total > result.batches.length ? <p className="py-3 text-xs text-muted-foreground">Showing the latest {result.batches.length} organization batches. Open an importer to browse its full history.</p> : null}
         </SettingsGroup>
       </div>
     </PageLayout>
@@ -112,7 +101,11 @@ async function ImportsPageContent() {
 
 export default function ImportsPage() {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLayout
+      fullBleed
+      title="Data imports"
+      breadcrumbs={[{ label: "Settings", href: "/settings" }, { label: "Data imports" }]}
+    ><PageLoadingSkeleton /></PageLayout>}>
       <ImportsPageContent />
     </Suspense>
   )

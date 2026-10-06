@@ -160,6 +160,9 @@ export function useMeasureTools({
   }, [commit])
 
   const cancel = useCallback(() => {
+    // A mode change can cancel and switch tools in the same event. Clear the
+    // ref synchronously so switching cannot commit a just-cancelled count.
+    draftRef.current = null
     setDraft(null)
   }, [])
 

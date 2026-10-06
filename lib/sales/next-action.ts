@@ -124,7 +124,7 @@ export function nextActionFor(deal: SalesDeal, now: Date = new Date()): NextActi
 
     case "contract": {
       if (deal.contractStatus === "draft") {
-        return { label: "Out for signature", detail: "Purchase agreement sent to buyer", dueAt: null, tone: "soon" }
+        return { label: "Review agreement signing", detail: "Verify preparation, delivery and signature status", dueAt: null, tone: "soon" }
       }
       if (!deal.contractId) {
         return { label: "Send purchase agreement", detail: "Lot is reserved", dueAt: null, tone: "soon" }
@@ -201,7 +201,7 @@ export const DEAL_FILTER_LABELS: Record<DealFilter, string> = {
   all: "All my deals",
   followup_due: "Follow-ups due",
   hold_expiring: "Holds expiring",
-  out_for_signature: "Out for signature",
+  out_for_signature: "Draft agreements",
   closing_soon: "Closing this week",
   new_inquiries: "New inquiries",
 }

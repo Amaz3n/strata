@@ -1,0 +1,2 @@
+1..1
+ok 1 - immutable Books history cannot be deleted or truncated by the server role

@@ -2,12 +2,13 @@
 
 import * as React from "react"
 import Link, { type LinkProps } from "next/link"
-import { usePathname, useRouter } from "next/navigation"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 
 type Ctx = {
   optimisticPath: string
   isPending: boolean
   navigate: (href: string, options?: { replace?: boolean }) => void
+  anticipate: (href: string) => void
 }
 
 const OptimisticPathContext = React.createContext<Ctx | null>(null)
@@ -34,6 +35,11 @@ export function OptimisticPathProvider({ children }: { children: React.ReactNode
   const router = useRouter()
   const [isPending, startTransition] = React.useTransition()
   const [optimisticPath, setOptimisticPath] = React.useOptimistic(pathname)
+  const anticipate = React.useCallback((href: string) => {
+    // Next starts its own navigation transition in this same event. React
+    // entangles it with this optimistic update until the destination commits.
+    startTransition(() => setOptimisticPath(normalizeHref(href)))
+  }, [setOptimisticPath])
   const navigate = React.useCallback(
     (href: string, options?: { replace?: boolean }) => {
       startTransition(() => {
@@ -49,8 +55,8 @@ export function OptimisticPathProvider({ children }: { children: React.ReactNode
   )
 
   const value = React.useMemo<Ctx>(
-    () => ({ optimisticPath, isPending, navigate }),
-    [optimisticPath, isPending, navigate],
+    () => ({ optimisticPath, isPending, navigate, anticipate }),
+    [optimisticPath, isPending, navigate, anticipate],
   )
   return <OptimisticPathContext.Provider value={value}>{children}</OptimisticPathContext.Provider>
 }
@@ -58,7 +64,15 @@ export function OptimisticPathProvider({ children }: { children: React.ReactNode
 export function useOptimisticPathname(): string {
   const ctx = React.useContext(OptimisticPathContext)
   const realPath = usePathname()
-  return ctx?.optimisticPath ?? realPath
+  return ctx ? ctx.optimisticPath.split("?", 1)[0] : realPath
+}
+
+/** Path and query together, including the destination during a transition. */
+export function useOptimisticHref(): string {
+  const ctx = React.useContext(OptimisticPathContext)
+  const pathname = usePathname()
+  const search = useSearchParams().toString()
+  return ctx?.isPending ? ctx.optimisticPath : (search ? `${pathname}?${search}` : pathname)
 }
 
 export function useOptimisticNavigate() {
@@ -102,22 +116,12 @@ type OptimisticLinkProps = Omit<React.AnchorHTMLAttributes<HTMLAnchorElement>, "
     prefetchOnIntent?: boolean
   }
 
-function isPlainLeftClick(e: React.MouseEvent<HTMLAnchorElement>) {
-  return (
-    !e.defaultPrevented &&
-    e.button === 0 &&
-    !e.metaKey &&
-    !e.ctrlKey &&
-    !e.shiftKey &&
-    !e.altKey
-  )
-}
-
 export const OptimisticLink = React.forwardRef<HTMLAnchorElement, OptimisticLinkProps>(
   function OptimisticLink(
     {
       href,
       onClick,
+      onNavigate,
       onPointerEnter,
       onFocus,
       onTouchStart,
@@ -130,6 +134,11 @@ export const OptimisticLink = React.forwardRef<HTMLAnchorElement, OptimisticLink
     ref,
   ) {
     const ctx = React.useContext(OptimisticPathContext)
+    // Slot-based controls compose a new forwarded ref when they rerender.
+    // Keep Next's own anchor ref stable: detaching it clears the Link instance
+    // (and its prefetch strategy) during an in-flight navigation.
+    const anchorRef = React.useRef<HTMLAnchorElement>(null)
+    React.useImperativeHandle(ref, () => anchorRef.current!, [])
     const [intent, setIntent] = React.useState(false)
     // `<Link>` attaches its prefetch through a callback ref keyed on the
     // resolved fetch strategy, so flipping this value re-registers the link and
@@ -140,11 +149,12 @@ export const OptimisticLink = React.forwardRef<HTMLAnchorElement, OptimisticLink
 
     return (
       <Link
-        ref={ref}
+        ref={anchorRef}
         href={href}
         target={target}
         replace={replace}
         prefetch={resolvedPrefetch}
+        onClick={onClick}
         onPointerEnter={(e) => {
           onPointerEnter?.(e)
           markIntent?.()
@@ -157,11 +167,13 @@ export const OptimisticLink = React.forwardRef<HTMLAnchorElement, OptimisticLink
           onTouchStart?.(e)
           markIntent?.()
         }}
-        onClick={(e) => {
-          onClick?.(e)
-          if (!ctx || target === "_blank" || !isPlainLeftClick(e)) return
-          e.preventDefault()
-          ctx.navigate(href, { replace: Boolean(replace) })
+        onNavigate={(event) => {
+          let cancelled = false
+          onNavigate?.({ preventDefault() {
+            cancelled = true
+            event.preventDefault()
+          } })
+          if (!cancelled) ctx?.anticipate(href)
         }}
         {...rest}
       />

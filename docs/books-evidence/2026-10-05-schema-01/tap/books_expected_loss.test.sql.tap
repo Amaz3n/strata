@@ -1,0 +1,11 @@
+1..7
+{"note": "Reviewed estimate and expected loss", "snapshots": [{"asOf": "2026-09-30", "projectId": "54000000-0000-0000-0000-000000000001", "inputsHash": "16e25b674bb997ead30e32896043bac12b591ee3203cead48123163872e4c9a2", "snapshotId": "1d6f2dc9-8d75-4e68-9b3e-822def298b50", "earnedRevenueCents": 50000}], "reviewedAt": "2026-10-06T01:30:09.247268+00:00", "reviewerId": "14000000-0000-0000-0000-000000000001"}
+ok 1 - provision belongs to close
+62460d2e-a8b8-483d-9d48-38d4cf9affa6
+open
+ok 2 - reserve excludes loss already incurred
+ok 3 - retry posts no duplicate
+ok 4 - reserve has accepted liability subtype
+ok 5 - provision has accepted expense subtype
+ok 6 - reserve is in the ledger
+ok 7 - browser role cannot post provisions

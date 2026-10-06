@@ -132,7 +132,6 @@ export function AuditLogClient({
 
     startTransition(() => {
       router.push(`/admin/audit?${params.toString()}`)
-      router.refresh()
     })
   }
 

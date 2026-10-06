@@ -1,7 +1,7 @@
 "use client"
 
 import { type CSSProperties, useEffect, useState } from "react"
-import { useForm } from "react-hook-form"
+import { useForm, useWatch } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
 
@@ -83,7 +83,7 @@ export function InspectionForm({
     setLocationPath(null)
   }, [open, scheduleLink, form])
 
-  const templateId = form.watch("template_id")
+  const templateId = useWatch({ control: form.control, name: "template_id" })
   const selectedTemplate = templates.find((template) => template.id === templateId)
 
   const submit = form.handleSubmit(async (values) => {

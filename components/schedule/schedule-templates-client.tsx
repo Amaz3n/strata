@@ -1,7 +1,7 @@
 "use client";
 
 import { PresetTemplateWorkspace } from "@/components/settings/preset-template-workspace";
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 
 import {
@@ -54,7 +54,21 @@ export function ScheduleTemplatesClient({
 }: {
   initialTemplates: ScheduleTemplate[];
 }) {
-  const [templates, setTemplates] = useState(initialTemplates);
+  const [library, setLibrary] = useState({
+    source: initialTemplates,
+    templates: initialTemplates,
+  });
+  if (library.source !== initialTemplates) {
+    setLibrary({ source: initialTemplates, templates: initialTemplates });
+  }
+  const templates = library.source === initialTemplates
+    ? library.templates
+    : initialTemplates;
+  const requestScope = useRef({ active: false, writing: false });
+  useEffect(() => {
+    requestScope.current.active = true;
+    return () => { requestScope.current.active = false; };
+  }, []);
   const [editingId, setEditingId] = useState<string | "new" | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -79,6 +93,7 @@ export function ScheduleTemplatesClient({
     );
 
   const save = () => {
+    if (!requestScope.current.active || requestScope.current.writing) return;
     if (!name.trim()) return toast.error("Template name is required");
     const populated = items.filter((item) => item.name.trim());
     if (populated.length === 0)
@@ -104,6 +119,7 @@ export function ScheduleTemplatesClient({
       })),
       is_public: false,
     };
+    requestScope.current.writing = true;
     startTransition(async () => {
       try {
         const saved =
@@ -115,44 +131,57 @@ export function ScheduleTemplatesClient({
                   payload,
                 ),
               );
-        setTemplates((current) =>
-          [
-            ...current.filter((template) => template.id !== saved.id),
+        if (!requestScope.current.active) return;
+        setLibrary((current) => current.source === initialTemplates ? {
+          ...current,
+          templates: [
+            ...current.templates.filter((template) => template.id !== saved.id),
             saved,
           ].sort((a, b) => a.name.localeCompare(b.name)),
-        );
+        } : current);
         setEditingId(null);
         toast.success("Schedule template saved");
       } catch (error) {
+        if (!requestScope.current.active) return;
         toast.error(
           error instanceof Error
             ? error.message
             : "Could not save schedule template",
         );
+      } finally {
+        requestScope.current.writing = false;
       }
     });
   };
 
   const removeTemplate = (template: ScheduleTemplate) => {
+    if (!requestScope.current.active || requestScope.current.writing) return;
     if (
       !window.confirm(
         `Delete “${template.name}”? Released plan snapshots are unchanged.`,
       )
     )
       return;
+    requestScope.current.writing = true;
     startTransition(async () => {
       try {
         unwrapAction(await deleteScheduleTemplateAction(template.id));
-        setTemplates((current) =>
-          current.filter((item) => item.id !== template.id),
-        );
+        if (!requestScope.current.active) return;
+        setLibrary((current) => current.source === initialTemplates ? {
+          ...current,
+          templates: current.templates.filter((item) => item.id !== template.id),
+        } : current);
+        setEditingId((current) => current === template.id ? null : current);
         toast.success("Schedule template deleted");
       } catch (error) {
+        if (!requestScope.current.active) return;
         toast.error(
           error instanceof Error
             ? error.message
             : "Could not delete schedule template",
         );
+      } finally {
+        requestScope.current.writing = false;
       }
     });
   };
@@ -346,6 +375,7 @@ export function ScheduleTemplatesClient({
                     <Button
                       variant="ghost"
                       size="sm"
+                      disabled={pending}
                       onClick={() => edit(template)}
                     >
                       <Edit className="h-4 w-4" />
@@ -354,6 +384,7 @@ export function ScheduleTemplatesClient({
                     <Button
                       variant="ghost"
                       size="icon"
+                      aria-label={`Delete ${template.name}`}
                       onClick={() => removeTemplate(template)}
                       disabled={pending}
                     >

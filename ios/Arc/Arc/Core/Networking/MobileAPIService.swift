@@ -12,6 +12,113 @@ final class MobileAPIService {
 
     var userID: String? { session.userID }
 
+    func downloadEstimatePDF(estimateID: String, projectID: String, organizationID: String) async throws -> URL {
+        let token = try await session.validAccessToken()
+        let request = try client.request(path: "workspace/estimates/\(estimateID)/pdf", accessToken: token, organizationID: organizationID,
+                                         queryItems: [URLQueryItem(name: "project_id", value: projectID)])
+        return try await client.downloadPDF(request)
+    }
+
+    func createInvoiceDraft(_ input: NativeInvoiceInput, organizationID: String) async throws {
+        let token = try await session.validAccessToken()
+        var request = try client.request(path: "workspace/billing/drafts", method: "POST", accessToken: token, organizationID: organizationID)
+        request.httpBody = try JSONEncoder.arc.encode(input)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        try await client.send(request)
+    }
+
+    func loadInvoiceDraft(invoiceID: String, projectID: String, organizationID: String) async throws -> NativeInvoiceDraftSnapshot {
+        let token = try await session.validAccessToken()
+        let request = try client.request(path: "workspace/billing/\(invoiceID)/draft", accessToken: token, organizationID: organizationID,
+                                         queryItems: [URLQueryItem(name: "project_id", value: projectID)])
+        let envelope: APIEnvelope<NativeInvoiceDraftSnapshot> = try await client.send(request)
+        return envelope.data
+    }
+
+    func updateInvoiceDraft(_ input: NativeInvoiceInput, invoiceID: String, revision: String, organizationID: String) async throws {
+        struct Update: Encodable { let revision: String; let input: NativeInvoiceInput }
+        let token = try await session.validAccessToken()
+        var request = try client.request(path: "workspace/billing/\(invoiceID)/draft", method: "PATCH", accessToken: token, organizationID: organizationID)
+        request.httpBody = try JSONEncoder.arc.encode(Update(revision: revision, input: input))
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        try await client.send(request)
+    }
+
+    func loadWorkspaceModules(projectID: String?, organizationID: String) async throws -> [MobileWorkspaceModule] {
+        let token = try await session.validAccessToken()
+        let request = try client.request(path: "workspace", accessToken: token, organizationID: organizationID,
+                                         queryItems: projectID.map { [URLQueryItem(name: "project_id", value: $0)] } ?? [])
+        let envelope: APIEnvelope<[MobileWorkspaceModule]> = try await client.send(request)
+        return envelope.data
+    }
+
+    func loadWorkspaceRecords(moduleID: String, projectID: String?, organizationID: String) async throws -> [MobileWorkspaceRecord] {
+        let token = try await session.validAccessToken()
+        let request = try client.request(path: "workspace/\(moduleID)", accessToken: token, organizationID: organizationID,
+                                         queryItems: projectID.map { [URLQueryItem(name: "project_id", value: $0)] } ?? [])
+        let envelope: APIEnvelope<MobileWorkspaceRecords> = try await client.send(request)
+        return envelope.data.records
+    }
+
+    func createWorkspaceRecord(moduleID: String, projectID: String, values: [String: String], organizationID: String) async throws {
+        struct Input: Encodable { let projectId: String?; let values: [String: String] }
+        let token = try await session.validAccessToken()
+        var request = try client.request(path: "workspace/\(moduleID)", method: "POST", accessToken: token, organizationID: organizationID)
+        request.httpBody = try JSONEncoder.arc.encode(Input(projectId: projectID.isEmpty ? nil : projectID, values: values))
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        try await client.send(request)
+    }
+
+    func loadWorkspaceDetail(moduleID: String, recordID: String, projectID: String?, organizationID: String, filters: [String: String] = [:]) async throws -> MobileWorkspaceDetail {
+        let token = try await session.validAccessToken()
+        var query = projectID.map { [URLQueryItem(name: "project_id", value: $0)] } ?? []
+        if !filters.isEmpty { query.append(URLQueryItem(name: "filters", value: String(decoding: try JSONEncoder().encode(filters), as: UTF8.self))) }
+        let request = try client.request(path: "workspace/\(moduleID)/\(recordID)", accessToken: token, organizationID: organizationID,
+                                         queryItems: query)
+        let envelope: APIEnvelope<MobileWorkspaceDetail> = try await client.send(request)
+        return envelope.data
+    }
+
+    func performWorkspaceAction(moduleID: String, recordID: String, projectID: String, actionID: String, expectedRevision: String?, values: [String: String], organizationID: String) async throws {
+        struct Input: Encodable { let projectId: String?; let actionId: String; let expectedRevision: String?; let values: [String: String] }
+        let token = try await session.validAccessToken()
+        var request = try client.request(path: "workspace/\(moduleID)/\(recordID)", method: "POST", accessToken: token, organizationID: organizationID)
+        request.httpBody = try JSONEncoder.arc.encode(Input(projectId: projectID.isEmpty ? nil : projectID, actionId: actionID, expectedRevision: expectedRevision, values: values))
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        try await client.send(request)
+    }
+
+    func editWorkspaceRecord(moduleID: String, recordID: String, projectID: String, values: [String: String], organizationID: String) async throws {
+        struct Input: Encodable { let projectId: String?; let values: [String: String] }
+        let token = try await session.validAccessToken()
+        var request = try client.request(path: "workspace/\(moduleID)/\(recordID)", method: "PATCH", accessToken: token, organizationID: organizationID)
+        request.httpBody = try JSONEncoder.arc.encode(Input(projectId: projectID.isEmpty ? nil : projectID, values: values))
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        try await client.send(request)
+    }
+
+    func loadProjectPhotos(projectID: String, organizationID: String, cursor: String?, albumID: String, search: String) async throws -> MobilePhotoPage {
+        let token = try await session.validAccessToken()
+        var query = [URLQueryItem(name: "limit", value: "30")]
+        if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+        if !albumID.isEmpty { query.append(URLQueryItem(name: "albumId", value: albumID)) }
+        if search.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 { query.append(URLQueryItem(name: "q", value: String(search.prefix(120)))) }
+        let request = try client.request(path: "projects/\(projectID)/photos", accessToken: token, organizationID: organizationID, queryItems: query)
+        let envelope: APIEnvelope<MobilePhotoPage> = try await client.send(request)
+        return envelope.data
+    }
+
+    func ensurePhotoLog(projectID: String, organizationID: String) async throws -> String {
+        struct Input: Encodable { let localDate: String }
+        struct Result: Decodable, Sendable { let id: String }
+        let token = try await session.validAccessToken()
+        var request = try client.request(path: "projects/\(projectID)/photos", method: "POST", accessToken: token, organizationID: organizationID)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder.arc.encode(Input(localDate: MobileDateParser.todayKey))
+        let envelope: APIEnvelope<Result> = try await client.send(request)
+        return envelope.data.id
+    }
+
     func loadSession(preferredOrganizationID: String?) async throws -> MobileSession {
         let token = try await session.validAccessToken()
         let request = try client.request(
@@ -21,6 +128,38 @@ final class MobileAPIService {
         )
         let envelope: APIEnvelope<MobileSession> = try await client.send(request)
         return envelope.data
+    }
+
+    func loadServiceVisit(visitID: String, organizationID: String) async throws -> MobileServiceVisit {
+        let token = try await session.validAccessToken()
+        let request = try client.request(path: "service/visits/\(visitID)", accessToken: token, organizationID: organizationID)
+        let envelope: APIEnvelope<MobileServiceVisit> = try await client.send(request)
+        guard envelope.data.id == visitID else { throw APIError.invalidResponse }
+        return envelope.data
+    }
+
+    func completeServiceVisit(visitID: String, organizationID: String, actorID: String, input: MobileServiceVisitCompletion) async throws -> MobileServiceVisit {
+        guard session.userID == actorID else { throw CancellationError() }
+        let token = try await session.validAccessToken()
+        guard session.userID == actorID else { throw CancellationError() }
+        var request = try client.request(path: "service/visits/\(visitID)/complete", method: "POST",
+                                         accessToken: token, organizationID: organizationID)
+        request.httpBody = try JSONEncoder.arc.encode(input)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let envelope: APIEnvelope<MobileServiceVisit> = try await client.send(request)
+        guard envelope.data.id == visitID else { throw APIError.invalidResponse }
+        return envelope.data
+    }
+
+    func loadServiceVisits(organizationID: String, date: String, cursor: String?) async throws -> MobileServiceVisitPage {
+        let token = try await session.validAccessToken()
+        var query = [URLQueryItem(name: "date", value: date), URLQueryItem(name: "limit", value: "100")]
+        if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+        // No user override: this surface is always the signed-in technician's queue.
+        let request = try client.request(path: "service/visits", accessToken: token,
+                                         organizationID: organizationID, queryItems: query)
+        let envelope: APIEnvelope<[MobileServiceVisit]> = try await client.send(request)
+        return MobileServiceVisitPage(rows: envelope.data, nextCursor: envelope.meta.nextCursor)
     }
 
     func loadProjects(organizationID: String) async throws -> [MobileProject] {
@@ -279,6 +418,17 @@ final class MobileAPIService {
         return envelope.data
     }
 
+    func loadPurchaseOrders(projectID: String, organizationID: String) async throws -> [MobileVarianceCommitment] {
+        let token = try await session.validAccessToken()
+        let request = try client.request(
+            path: "projects/\(projectID)/purchase-orders",
+            accessToken: token,
+            organizationID: organizationID
+        )
+        let envelope: APIEnvelope<[MobileVarianceCommitment]> = try await client.send(request)
+        return envelope.data
+    }
+
     func loadVarianceOrders(projectID: String, organizationID: String) async throws -> [MobileVarianceOrder] {
         let token = try await session.validAccessToken()
         let request = try client.request(
@@ -466,13 +616,13 @@ final class MobileAPIService {
 
     // MARK: - Documents
 
-    func loadFiles(projectID: String, folder: String, organizationID: String) async throws -> MobileFiles {
+    func loadFiles(projectID: String, folder: String, organizationID: String, recursive: Bool = false) async throws -> MobileFiles {
         let token = try await session.validAccessToken()
         let request = try client.request(
             path: "projects/\(projectID)/files",
             accessToken: token,
             organizationID: organizationID,
-            queryItems: [URLQueryItem(name: "folder", value: folder)]
+            queryItems: [URLQueryItem(name: "folder", value: folder), URLQueryItem(name: "recursive", value: recursive ? "true" : "false")]
         )
         let envelope: APIEnvelope<MobileFiles> = try await client.send(request)
         return envelope.data
@@ -491,9 +641,12 @@ final class MobileAPIService {
         category: String?,
         projectID: String,
         organizationID: String,
-        downscalesImages: Bool = false
+        downscalesImages: Bool = false,
+        expectedUserID: String? = nil
     ) async throws -> MobileFile {
+        if let expectedUserID, session.userID != expectedUserID { throw CancellationError() }
         let token = try await session.validAccessToken()
+        if let expectedUserID, session.userID != expectedUserID { throw CancellationError() }
         let boundary = "ArcBoundary\(UUID().uuidString)"
         var request = try client.request(
             path: "projects/\(projectID)/files",

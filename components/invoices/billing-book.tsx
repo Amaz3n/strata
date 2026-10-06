@@ -35,7 +35,7 @@ import {
 import { generateInvoiceFromDrawAction } from "@/app/(app)/projects/[id]/actions"
 import { unwrapAction } from "@/lib/action-result"
 import { copyText } from "@/lib/clipboard"
-import { newInvoiceHref, type NewInvoiceKind } from "@/lib/financials/invoice-destinations"
+import { resumeInvoiceHref, newInvoiceHref, type NewInvoiceKind } from "@/lib/financials/invoice-destinations"
 import { cn } from "@/lib/utils"
 import { AccountingSyncBadge } from "@/components/accounting/accounting-sync-badge"
 import { AccountingSyncSheet } from "@/components/integrations/accounting-sync-sheet"
@@ -133,6 +133,7 @@ export interface BillingBookProps {
   costCodesEnabled?: boolean
   ownerBillingPackages?: OwnerBillingPackageSummary[]
   builderInfo?: { name?: string | null; email?: string | null; address?: string | null }
+  canManageDeposits?: boolean
   loadErrors?: string[]
 }
 
@@ -153,6 +154,7 @@ export function BillingBook({
   ownerBillingPackages = [],
   builderInfo,
   loadErrors = [],
+  canManageDeposits = false,
 }: BillingBookProps) {
   const projectId = scope.kind === "project" ? scope.projectId : undefined
   const router = useRouter()
@@ -888,6 +890,7 @@ export function BillingBook({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-60">
+                {canManageDeposits ? <DropdownMenuItem asChild><Link href="/billing/deposits">Customer deposits</Link></DropdownMenuItem> : null}
                 {projectId && profile.manageSurfaces.length > 0 ? (
                   <>
                     <DropdownMenuLabel className="microlabel">Billing tools</DropdownMenuLabel>
@@ -1139,11 +1142,10 @@ export function BillingBook({
                 onRetry={() => void refreshDetail()}
                 onDuplicate={(invoice) => {
                   const target = invoice.project_id ?? effectiveProjectId
-                  if (!target) return
                   if (projectId) openCompose({ duplicateOf: invoice.id })
                   else router.push(newInvoiceHref(target, { duplicateOf: invoice.id }))
                 }}
-                onEdit={projectId ? (invoice) => openCompose({ draftId: invoice.id }) : undefined}
+                onEdit={(invoice) => projectId ? openCompose({ draftId: invoice.id }) : router.push(resumeInvoiceHref(invoice.project_id, invoice.id))}
                 onRevise={(invoice) => setRevisingInvoice(invoice)}
                 onVoid={(invoice) => setVoidingInvoice(invoice)}
                 onMakeRecurring={(invoice) => setRecurringInvoice(invoice)}
@@ -1209,9 +1211,10 @@ export function BillingBook({
         </AlertDialogContent>
       </AlertDialog>
 
-      {projectId && composeTarget ? (
+      {composeTarget ? (
         <InvoiceComposer
-          project={projects[0]}
+          key={`${projectId ?? "general"}:${composeTarget.compose}:${composeTarget.customerId ?? ""}:${composeTarget.duplicateOf ?? ""}:${composeTarget.kind ?? ""}`}
+          project={projectId ? projects.find((project) => project.id === projectId) ?? null : null}
           profile={profile}
           target={composeTarget}
           onClose={(invoiceId) => {
@@ -1296,7 +1299,7 @@ export function BillingBook({
         open={newInvoiceProjectOpen}
         onOpenChange={setNewInvoiceProjectOpen}
         projects={projects}
-        onChoose={(id) => router.push(newInvoiceHref(id))}
+        onChoose={(id) => id ? router.push(newInvoiceHref(id)) : openCompose({})}
       />
       <MoveInvoiceDialog
         invoice={movingInvoice}
@@ -1384,8 +1387,8 @@ export function BillingBook({
     const backup = packageByInvoice.get(invoice.id)
     const primaryShortcut: MenuShortcut | null = (() => {
       if (scope.kind !== "org") return null
-      if (action.key === "resume" && invoice.project_id) {
-        return { label: "Resume", href: newInvoiceHref(invoice.project_id).replace("compose=new", `compose=${invoice.id}`) }
+      if (action.key === "resume") {
+        return { label: "Resume", href: resumeInvoiceHref(invoice.project_id, invoice.id) }
       }
       if (action.key === "issue") return { label: "Send", onSelect: () => void handleIssue(invoice) }
       if (action.key === "remind" || action.key === "resend") {
@@ -1458,7 +1461,7 @@ export function BillingBook({
               <span className="mt-0.5 line-clamp-1 text-[11px] text-muted-foreground">
                 {projectById.get(invoice.project_id)?.name ?? "Unknown project"}
               </span>
-            ) : null}
+            ) : <span className="mt-0.5 block text-[11px] text-muted-foreground">General billing</span>}
           </TableCell>
         ) : null}
         {showMemo ? (
@@ -1551,14 +1554,9 @@ export function BillingBook({
   }
 }
 
-/** The invoice's own words for what it is: its title, else the first line of its notes. */
+/** Internal memo only; customer-facing payment details are a separate field. */
 function invoiceMemo(invoice: Invoice): string {
-  const memo = typeof invoice.metadata?.memo === "string" ? invoice.metadata.memo.trim() : ""
-  if (memo) return memo
-  const title = (invoice.title ?? "").trim()
-  if (title && title !== invoice.invoice_number) return title
-  const note = (invoice.notes ?? "").split(/\r?\n/).map((line) => line.trim()).find(Boolean)
-  return note ?? "—"
+  return typeof invoice.metadata?.memo === "string" ? invoice.metadata.memo.trim() : ""
 }
 
 function isManageSurface(value: string | null): value is BillingManageSurface {
@@ -1831,14 +1829,14 @@ function RowPrimaryAction({
   const action = nextActionFor(invoice)
   const busy = (key: string) => busyKey === `${invoice.id}:${key}`
 
-  if (action.key === "resume" && isEditableInvoice(invoice) && projectId) {
+  if (action.key === "resume" && isEditableInvoice(invoice)) {
     return onResume ? (
       <Button variant="outline" size="sm" className="h-8 text-xs" onClick={onResume}>
         Resume
       </Button>
     ) : (
       <Button variant="outline" size="sm" className="h-8 text-xs" asChild>
-        <Link href={newInvoiceHref(projectId).replace("compose=new", `compose=${invoice.id}`)}>Resume</Link>
+        <Link href={resumeInvoiceHref(projectId, invoice.id)}>Resume</Link>
       </Button>
     )
   }
@@ -1936,11 +1934,11 @@ function RowOverflowMenu({
         <DropdownMenuSeparator />
         {onDuplicate ? (
           <DropdownMenuItem onSelect={onDuplicate}>Duplicate</DropdownMenuItem>
-        ) : projectId ? (
+        ) : (
           <DropdownMenuItem asChild>
             <Link href={newInvoiceHref(projectId, { duplicateOf: invoice.id })}>Duplicate</Link>
           </DropdownMenuItem>
-        ) : null}
+        )}
         {status !== "void" ? <DropdownMenuItem onSelect={onMakeRecurring}>Make recurring…</DropdownMenuItem> : null}
         {canRevise ? <DropdownMenuItem onSelect={onRevise}>Revise and reissue</DropdownMenuItem> : null}
         {editable ? <DropdownMenuItem onSelect={onMove}>Move to project…</DropdownMenuItem> : null}
@@ -1984,7 +1982,7 @@ function ChooseProjectDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
   projects: Project[]
-  onChoose: (projectId: string) => void
+  onChoose: (projectId: string | null) => void
 }) {
   const [search, setSearch] = useState("")
   const visible = projects.filter(
@@ -1996,9 +1994,12 @@ function ChooseProjectDialog({
         <DialogHeader>
           <DialogTitle>Which job are you billing?</DialogTitle>
           <DialogDescription>
-            The project decides the billing workflow — a draw schedule, a pay application, or a closing statement.
+            Choose a project for job billing, or use general billing for work outside a project.
           </DialogDescription>
         </DialogHeader>
+        <Button variant="outline" className="h-auto justify-start px-3 py-3" onClick={() => { onOpenChange(false); onChoose(null) }}>
+          No project — general billing
+        </Button>
         <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search projects" className="h-9" />
         <div className="max-h-64 space-y-1 overflow-y-auto border p-1">
           {visible.map((project) => (

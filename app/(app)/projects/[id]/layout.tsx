@@ -1,11 +1,11 @@
 import type React from "react"
-import { notFound } from "next/navigation"
+import { notFound, unstable_rethrow } from "next/navigation"
+import { cacheLife } from "next/cache"
 import { Suspense } from "react"
 
 import { ProjectContextSetter } from "@/components/layout/project-context-setter"
 import { getProjectIdentity } from "@/lib/services/projects"
 
-import { unwrapAction } from "@/lib/action-result"
 import { requireOrgContext } from "@/lib/services/context"
 import { getProjectPosture } from "@/lib/product-tier"
 import { getProjectLotContext } from "@/lib/services/lots"
@@ -21,28 +21,40 @@ export const instant = {
   unstable_disableBuildValidation: true,
 }
 
-async function ProjectContext({ params }: Pick<ProjectLayoutProps, "params">) {
-  const { id } = await params
+async function loadProjectContext(id: string) {
+  "use cache: private"
+  cacheLife("session")
+
   const [project, { productTier }] = await Promise.all([
     getProjectIdentity(id),
     requireOrgContext(),
   ])
-  if (!project) notFound()
+  if (!project) return null
   const posture = getProjectPosture(project.property_type, productTier)
-  const lotContext = posture === "production" ? await getProjectLotContext(project.id).catch(() => null) : null
+  const lotContext = posture === "production"
+    ? await getProjectLotContext(project.id).catch((error) => {
+        unstable_rethrow(error)
+        return null
+      })
+    : null
   const lotLabel = lotContext
     ? `${lotContext.communityName} · Lot ${lotContext.block ? `${lotContext.block}-` : ""}${lotContext.lotNumber}`
     : undefined
 
-  return (
-    <ProjectContextSetter
-      id={project.id}
-      name={project.name}
-      posture={posture}
-      contextLabel={lotLabel}
-      contextHref={lotContext ? `/communities/${lotContext.communityId}` : undefined}
-    />
-  )
+  return {
+    id: project.id,
+    name: project.name,
+    posture,
+    contextLabel: lotLabel,
+    contextHref: lotContext ? `/communities/${lotContext.communityId}` : undefined,
+  }
+}
+
+async function ProjectContext({ params }: Pick<ProjectLayoutProps, "params">) {
+  const { id } = await params
+  const context = await loadProjectContext(id)
+  if (!context) notFound()
+  return <ProjectContextSetter {...context} />
 }
 
 export default function ProjectLayout({ children, params }: ProjectLayoutProps) {

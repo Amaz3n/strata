@@ -1,0 +1,12 @@
+1..11
+ok 1 - workspace read has one stable invoker snapshot
+ok 2 - private service can read project payroll
+ok 3 - anonymous callers cannot read salaries
+ok 4 - browser callers cannot bypass whole-org Books authorization
+ok 5 - empty project has no invented payroll sources
+ok 6 - empty project has no phantom continuation
+ok 7 - empty review does not transfer organization ledger history
+ok 8 - foreign project cannot enter the private read
+ok 9 - unowned source cannot enter the private read
+ok 10 - source page cap is enforced in SQL
+ok 11 - half cursor cannot silently skip or repeat history

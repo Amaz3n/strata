@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { notFound } from "next/navigation"
 
 import { CommunityRunwayPanel } from "@/components/communities/community-runway-panel"
@@ -17,6 +18,7 @@ const RUNWAY_HORIZON_MONTHS = 24
  * which filed a multi-million-dollar land tranche as a preference.
  */
 export default async function CommunityLandPage({ params }: { params: Promise<{ id: string }> }) {
+  await connection()
   const { id } = await params
 
   /** Optional panel, logged failure. A blank runway with no trace is not a state. */

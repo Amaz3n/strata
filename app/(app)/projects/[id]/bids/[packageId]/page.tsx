@@ -1,8 +1,12 @@
+import { connection } from "next/server"
+import { Suspense } from "react"
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { notFound } from "next/navigation"
 import { PageLayout } from "@/components/layout/page-layout"
 import { getProjectAction, getOrgCompaniesAction } from "../../actions"
 import {
   getBidPackageAction,
+  getBidPackageAwardAction,
   getPackageIntelligenceAction,
   listBidAddendaAction,
   listBidInvitesAction,
@@ -12,26 +16,27 @@ import {
   listBidSubmissionsAction,
 } from "@/app/(app)/bids/actions"
 import { BidPackageWorkbench } from "@/components/bids/bid-package-workbench"
-import { tradeOptionsFromCompanies } from "@/components/bids/trade-options"
 
 interface BidPackageDetailPageProps {
   params: Promise<{ id: string; packageId: string }>
 }
 
-export default async function BidPackageDetailPage({ params }: BidPackageDetailPageProps) {
+async function BidPackageDetailPageContent({ params }: BidPackageDetailPageProps) {
+  await connection()
   const { id, packageId } = await params
 
   const [project, bidPackage] = await Promise.all([getProjectAction(id), getBidPackageAction(packageId)])
+  if (!project || !bidPackage) notFound()
 
   const packageBelongsToProject =
     bidPackage.project_id === project?.id ||
     (!!project?.prospect_id && bidPackage.project_id == null && bidPackage.prospect_id === project.prospect_id)
 
-  if (!project || !bidPackage || !packageBelongsToProject) {
+  if (!packageBelongsToProject) {
     notFound()
   }
 
-  const [invites, addenda, submissions, scopeItems, companies, rfis, activity, intelligence] = await Promise.all([
+  const [invites, addenda, submissions, scopeItems, companies, rfis, activity, intelligence, award] = await Promise.all([
     listBidInvitesAction(bidPackage.id),
     listBidAddendaAction(bidPackage.id),
     listBidSubmissionsAction(bidPackage.id),
@@ -40,6 +45,7 @@ export default async function BidPackageDetailPage({ params }: BidPackageDetailP
     listBidPackageRfisAction(bidPackage.id),
     listBidPackageActivityAction(bidPackage.id),
     getPackageIntelligenceAction(bidPackage.id).catch(() => null),
+    getBidPackageAwardAction(bidPackage.id),
   ])
 
   return (
@@ -62,8 +68,22 @@ export default async function BidPackageDetailPage({ params }: BidPackageDetailP
         activity={activity}
         intelligence={intelligence}
         companies={companies}
-        tradeOptions={tradeOptionsFromCompanies(companies)}
+        award={award}
       />
     </PageLayout>
+  )
+}
+
+export default function BidPackageDetailPage(props: Parameters<typeof BidPackageDetailPageContent>[0]) {
+  return (
+    <Suspense
+      fallback={
+        <PageLayout title="Bid package">
+          <PageLoadingSkeleton />
+        </PageLayout>
+      }
+    >
+      <BidPackageDetailPageContent {...props} />
+    </Suspense>
   )
 }

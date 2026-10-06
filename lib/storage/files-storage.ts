@@ -1,14 +1,20 @@
 import "server-only"
+import { isPrivatePayrollPath, readPrivatePayrollRegisterObject } from "./payroll-private-storage"
+import { isPayrollDocumentPrivate, assertPayrollDocumentStorageRead } from "@/lib/services/books/payroll-document-access"
+import { resolveDrawingPdfSourceKey } from "./drawing-pdf-source"
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { Readable } from "node:stream"
 import {
   AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
+  CopyObjectCommand,
   CreateMultipartUploadCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   ListObjectsV2Command,
+  ListPartsCommand,
   PutObjectCommand,
   S3Client,
   UploadPartCommand,
@@ -103,7 +109,7 @@ function joinPath(parts: string[]): string {
   return joined
 }
 
-function buildContentDisposition(filename: string): string {
+function buildContentDisposition(filename: string, disposition: "inline" | "attachment" = "inline"): string {
   const asciiFallback = filename
     .replace(/[\r\n"]/g, "_")
     .replace(/[^\x20-\x7E]/g, "_")
@@ -111,7 +117,7 @@ function buildContentDisposition(filename: string): string {
   const encoded = encodeURIComponent(filename)
     .replace(/['()]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)
     .replace(/\*/g, "%2A")
-  return `inline; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`
+  return `${disposition}; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`
 }
 
 export function buildOrgScopedPath(orgId: string, ...parts: string[]): string {
@@ -126,6 +132,18 @@ export function ensureOrgScopedPath(orgId: string, path: string): string {
   const prefix = `${orgId}/`
   if (normalized === orgId || normalized.startsWith(prefix)) return normalized
   return joinPath([orgId, normalized])
+}
+
+async function resolveReadKey(path: string): Promise<string> {
+  return resolveDrawingPdfSourceKey(path, async (Key) => {
+    try {
+      await getR2Client().send(new HeadObjectCommand({ Bucket: R2_BUCKET, Key }));
+      return true;
+    } catch (error: any) {
+      if (error?.$metadata?.httpStatusCode === 404 || error?.name === "NotFound" || error?.name === "NoSuchKey") return false;
+      throw error;
+    }
+  });
 }
 
 async function streamToBuffer(stream: any): Promise<Buffer> {
@@ -146,7 +164,7 @@ async function streamToBuffer(stream: any): Promise<Buffer> {
 }
 
 export function buildFilesPublicUrl(path?: string | null): string | null {
-  if (!path) return null
+  if (!path || isPrivatePayrollPath(normalizePath(path))) return null
   const baseUrl = requireFilesBaseUrl()
   const normalized = normalizePath(path)
   return `${baseUrl}/${encodeURI(normalized)}`
@@ -165,6 +183,7 @@ export async function uploadFilesObject(params: {
   const cacheControl = params.cacheControl
   const provider = getFilesStorageProvider()
   const storagePath = ensureOrgScopedPath(orgId, params.path)
+  if (await isPayrollDocumentPrivate(orgId, storagePath)) throw new Error("Use the private payroll document workflow")
 
   if (provider !== "r2") {
     throw new Error("R2 uploads are required. Set FILES_STORAGE=r2.")
@@ -185,6 +204,8 @@ export async function uploadFilesObject(params: {
 }
 
 export async function createFilesUploadUrl(params: {
+  preventOverwrite?: boolean
+  metadata?: Record<string, string>
   supabase: SupabaseClient
   orgId: string
   path: string
@@ -195,6 +216,7 @@ export async function createFilesUploadUrl(params: {
   const { supabase: _supabase, orgId, contentType } = params
   const provider = getFilesStorageProvider()
   const storagePath = ensureOrgScopedPath(orgId, params.path)
+  if (await isPayrollDocumentPrivate(orgId, storagePath)) throw new Error("Use the private payroll document workflow")
 
   if (provider !== "r2") {
     throw new Error("R2 uploads are required. Set FILES_STORAGE=r2.")
@@ -202,6 +224,8 @@ export async function createFilesUploadUrl(params: {
 
   const client = getR2Client()
   const command = new PutObjectCommand({
+    IfNoneMatch: params.preventOverwrite ? "*" : undefined,
+    Metadata: params.metadata,
     Bucket: R2_BUCKET,
     Key: normalizeKey(storagePath),
     ContentType: contentType,
@@ -219,6 +243,7 @@ export async function createFilesDownloadUrl(params: {
   orgId: string
   path: string
   fileName?: string
+  disposition?: "inline" | "attachment"
   expiresIn?: number
   /**
    * Overrides the content type R2 reports. Worth setting when the caller knows
@@ -238,16 +263,18 @@ export async function createFilesDownloadUrl(params: {
   const { supabase: _supabase, orgId } = params
   const provider = getFilesStorageProvider()
   const storagePath = ensureOrgScopedPath(orgId, params.path)
+  if (await isPayrollDocumentPrivate(orgId, storagePath)) throw new Error("Use the private payroll document workflow")
 
   if (provider !== "r2") {
     throw new Error("R2 downloads are required. Set FILES_STORAGE=r2.")
   }
 
+  await assertPayrollDocumentStorageRead(orgId, storagePath)
   const client = getR2Client()
   const command = new GetObjectCommand({
     Bucket: R2_BUCKET,
-    Key: normalizeKey(storagePath),
-    ResponseContentDisposition: params.fileName ? buildContentDisposition(params.fileName) : undefined,
+    Key: await resolveReadKey(storagePath),
+    ResponseContentDisposition: params.fileName ? buildContentDisposition(params.fileName, params.disposition) : undefined,
     ResponseContentType: params.contentType,
     ResponseCacheControl: params.cacheControl,
   })
@@ -259,6 +286,7 @@ export async function createFilesDownloadUrl(params: {
 }
 
 export async function createFilesMultipartUpload(params: {
+  metadata?: Record<string, string>
   supabase: SupabaseClient
   orgId: string
   path: string
@@ -268,10 +296,12 @@ export async function createFilesMultipartUpload(params: {
   const { supabase: _supabase, orgId, contentType } = params
   const provider = getFilesStorageProvider()
   const storagePath = ensureOrgScopedPath(orgId, params.path)
+  if (await isPayrollDocumentPrivate(orgId, storagePath)) throw new Error("Use the private payroll document workflow")
 
   const client = getR2Client()
   const result = await client.send(
     new CreateMultipartUploadCommand({
+      Metadata: params.metadata,
       Bucket: R2_BUCKET,
       Key: normalizeKey(storagePath),
       ContentType: contentType,
@@ -296,6 +326,7 @@ export async function createFilesMultipartPartUrl(params: {
 }): Promise<{ uploadUrl: string }> {
   const { supabase: _supabase, orgId } = params
   const storagePath = ensureOrgScopedPath(orgId, params.path)
+  if (await isPayrollDocumentPrivate(orgId, storagePath)) throw new Error("Use the private payroll document workflow")
   const client = getR2Client()
   const command = new UploadPartCommand({
     Bucket: R2_BUCKET,
@@ -318,6 +349,7 @@ export async function completeFilesMultipartUpload(params: {
 }): Promise<{ storagePath: string }> {
   const { supabase: _supabase, orgId } = params
   const storagePath = ensureOrgScopedPath(orgId, params.path)
+  if (await isPayrollDocumentPrivate(orgId, storagePath)) throw new Error("Use the private payroll document workflow")
   const client = getR2Client()
   await client.send(
     new CompleteMultipartUploadCommand({
@@ -346,6 +378,7 @@ export async function abortFilesMultipartUpload(params: {
 }): Promise<void> {
   const { supabase: _supabase, orgId } = params
   const storagePath = ensureOrgScopedPath(orgId, params.path)
+  if (await isPayrollDocumentPrivate(orgId, storagePath)) throw new Error("Use the private payroll document workflow")
   const client = getR2Client()
   await client.send(
     new AbortMultipartUploadCommand({
@@ -363,14 +396,16 @@ export async function deleteFilesObjects(params: {
 }): Promise<void> {
   const { supabase: _supabase, orgId } = params
   const keys = params.paths.map((path) => ensureOrgScopedPath(orgId, path))
+  for (const key of keys) if (await isPayrollDocumentPrivate(orgId, key)) throw new Error("Use the private payroll document workflow")
 
   const client = getR2Client()
-  await client.send(
+  const result = await client.send(
     new DeleteObjectsCommand({
       Bucket: R2_BUCKET,
       Delete: { Objects: keys.map((Key) => ({ Key: normalizeKey(Key) })), Quiet: true },
     })
   )
+  if (result.Errors?.length) throw new Error(`Failed to delete ${result.Errors.length} storage objects`)
 }
 
 export async function listFilesObjects(params: {
@@ -409,11 +444,16 @@ export async function downloadFilesObject(params: {
   const { supabase: _supabase, orgId } = params
   const key = ensureOrgScopedPath(orgId, params.path)
 
+  if (isPrivatePayrollPath(key)) {
+    const object = await readPrivatePayrollRegisterObject(orgId, key)
+    return Buffer.from(await new Response(object.body).arrayBuffer())
+  }
+  await assertPayrollDocumentStorageRead(orgId, key)
   const client = getR2Client()
   const result = await client.send(
     new GetObjectCommand({
       Bucket: R2_BUCKET,
-      Key: normalizeKey(key),
+      Key: await resolveReadKey(key),
     })
   )
   if (!result.Body) {
@@ -428,7 +468,7 @@ export async function getFilesObjectStream(params: {
   path: string
   range?: string
 }): Promise<{
-  body: ReadableStream<Uint8Array> | Readable
+  body: ReadableStream<Uint8Array>
   contentLength?: number
   contentRange?: string
   contentType?: string
@@ -438,11 +478,13 @@ export async function getFilesObjectStream(params: {
   const { supabase: _supabase, orgId } = params
   const key = ensureOrgScopedPath(orgId, params.path)
 
+  if (isPrivatePayrollPath(key)) return readPrivatePayrollRegisterObject(orgId, key, params.range)
+  await assertPayrollDocumentStorageRead(orgId, key)
   const client = getR2Client()
   const result = await client.send(
     new GetObjectCommand({
       Bucket: R2_BUCKET,
-      Key: normalizeKey(key),
+      Key: await resolveReadKey(key),
       Range: params.range,
     })
   )
@@ -467,4 +509,142 @@ export async function getFilesObjectStream(params: {
     etag: result.ETag,
     lastModified: result.LastModified,
   }
+}
+
+/** Resolve the same native/library source that copy uses, without reading bytes. */
+export async function headFilesCopySource(params: { orgId: string; path: string }) {
+  getFilesStorageProvider()
+  const path = normalizePath(params.path)
+  assertSafePath(path)
+  if (!params.orgId || !path.startsWith(`${params.orgId}/`)) throw new Error("Copy source must belong to the organization")
+  if (await isPayrollDocumentPrivate(params.orgId, path)) throw new Error("Private payroll documents cannot be copied through project workflows")
+  const result = await getR2Client().send(new HeadObjectCommand({ Bucket: R2_BUCKET, Key: await resolveReadKey(path) }))
+  if (result.ContentLength === undefined || !Number.isSafeInteger(result.ContentLength) || result.ContentLength <= 0 || result.ContentLength > 5 * 1024 * 1024 * 1024)
+    throw new Error("Storage source length is invalid for a single-object copy")
+  if (!result.ETag) throw new Error("Storage omitted source version evidence")
+  return { size: result.ContentLength, sourceEtag: result.ETag }
+}
+
+/** Copy inside R2 without buffering the object in the application worker. */
+export async function copyFilesObject(params: {
+  orgId: string; sourcePath: string; destinationPath: string; contentType: string; expectedSize?: number; expectedSourceEtag?: string
+}): Promise<{ storagePath: string; size: number; sourceEtag: string; etag: string }> {
+  getFilesStorageProvider()
+  const sourcePath = normalizePath(params.sourcePath)
+  const destinationPath = normalizePath(params.destinationPath)
+  for (const path of [sourcePath, destinationPath]) {
+    assertSafePath(path)
+    if (!params.orgId || !path.startsWith(`${params.orgId}/`)) throw new Error("Copy paths must belong to the organization")
+  }
+  if (sourcePath === destinationPath) throw new Error("Source and destination must differ")
+  for (const path of [sourcePath, destinationPath]) if (await isPayrollDocumentPrivate(params.orgId, path)) throw new Error("Private payroll documents cannot be copied through project workflows")
+  const client = getR2Client()
+  const sourceKey = await resolveReadKey(sourcePath)
+  const source = await client.send(new HeadObjectCommand({ Bucket: R2_BUCKET, Key: sourceKey }))
+  if (!Number.isSafeInteger(source.ContentLength) || source.ContentLength === undefined || source.ContentLength <= 0)
+    throw new Error("Storage omitted a valid source length")
+  if (source.ContentLength > 5 * 1024 * 1024 * 1024) throw new Error("Storage copy exceeds the 5 GiB single-object limit")
+  if (params.expectedSize !== undefined && source.ContentLength !== params.expectedSize)
+    throw new Error("Stored source length no longer matches the file record")
+  if (!source.ETag) throw new Error("Storage omitted source version evidence")
+  if (params.expectedSourceEtag !== undefined && source.ETag !== params.expectedSourceEtag)
+    throw new Error("Stored source version no longer matches the reserved copy")
+  const copied = await client.send(new CopyObjectCommand({
+    Bucket: R2_BUCKET, Key: normalizeKey(destinationPath),
+    CopySource: `${R2_BUCKET}/${sourceKey}`.split("/").map(encodeURIComponent).join("/"),
+    CopySourceIfMatch: source.ETag,
+    MetadataDirective: "REPLACE", Metadata: source.Metadata,
+    ContentType: params.contentType, CacheControl: "private, max-age=3600",
+  }))
+  if (!copied.CopyObjectResult?.ETag) throw new Error("Storage omitted copy completion evidence")
+  return { storagePath: destinationPath, size: source.ContentLength, sourceEtag: source.ETag, etag: copied.CopyObjectResult.ETag }
+}
+
+/** Exact object metadata; unlike preview reads, never resolves a drawing-source fallback. */
+export async function headFilesObject(params: { orgId: string; path: string }) {
+  if (await isPayrollDocumentPrivate(params.orgId, params.path)) throw new Error("Use the private payroll document workflow")
+  const result = await getR2Client().send(new HeadObjectCommand({
+    Bucket: R2_BUCKET,
+    Key: normalizeKey(ensureOrgScopedPath(params.orgId, params.path)),
+  }))
+  if (typeof result.ContentLength !== "number") throw new Error("Storage omitted object length")
+  return { size: result.ContentLength, contentType: result.ContentType, metadata: result.Metadata }
+}
+
+export function isMissingFilesObject(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false
+  return ("name" in error && (error.name === "NotFound" || error.name === "NoSuchKey")) ||
+    ("$metadata" in error && typeof error.$metadata === "object" && error.$metadata !== null &&
+      "httpStatusCode" in error.$metadata && error.$metadata.httpStatusCode === 404)
+}
+
+export async function listFilesMultipartParts(params: { orgId: string; path: string; uploadId: string }) {
+  if (await isPayrollDocumentPrivate(params.orgId, params.path)) throw new Error("Use the private payroll document workflow")
+  const parts: Array<{ partNumber: number; etag: string; size: number }> = []
+  let marker: string | undefined
+  do {
+    const result = await getR2Client().send(new ListPartsCommand({
+      Bucket: R2_BUCKET,
+      Key: normalizeKey(ensureOrgScopedPath(params.orgId, params.path)),
+      UploadId: params.uploadId,
+      PartNumberMarker: marker,
+      MaxParts: 1000,
+    }))
+    for (const part of result.Parts ?? []) {
+      if (!part.PartNumber || !part.ETag || typeof part.Size !== "number") throw new Error("Invalid part inventory")
+      parts.push({ partNumber: part.PartNumber, etag: part.ETag, size: part.Size })
+    }
+    if (!result.IsTruncated) break
+    if (!result.NextPartNumberMarker || result.NextPartNumberMarker === marker || parts.length > 10000) {
+      throw new Error("Invalid multipart pagination")
+    }
+    marker = result.NextPartNumberMarker
+  } while (true)
+  return parts
+}
+
+/** Server-side streaming archive upload, bounded to one 8 MiB part. */
+export async function uploadFilesStream(params: {
+  orgId: string; path: string; stream: ReadableStream<Uint8Array>; contentType: string
+}): Promise<void> {
+  const path = ensureOrgScopedPath(params.orgId, params.path)
+  if (await isPayrollDocumentPrivate(params.orgId, path)) throw new Error("Use the private payroll document workflow")
+  const key = normalizeKey(path)
+  const client = getR2Client()
+  const created = await client.send(new CreateMultipartUploadCommand({ Bucket: R2_BUCKET, Key: key, ContentType: params.contentType }))
+  if (!created.UploadId) throw new Error("Storage omitted upload ID")
+  const uploadId = created.UploadId
+  const reader = params.stream.getReader()
+  const parts: Array<{ PartNumber: number; ETag: string }> = []
+  const partSize = 8 * 1024 * 1024
+  let buffer = new Uint8Array(partSize)
+  let used = 0
+  let completing = false
+  async function flush() {
+    const part = await client.send(new UploadPartCommand({ Bucket: R2_BUCKET, Key: key, UploadId: uploadId,
+      PartNumber: parts.length + 1, Body: buffer.subarray(0, used) }))
+    if (!part.ETag) throw new Error("Storage omitted part ETag")
+    parts.push({ PartNumber: parts.length + 1, ETag: part.ETag })
+    buffer = new Uint8Array(partSize)
+    used = 0
+  }
+  try {
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      for (let offset = 0; offset < value.length;) {
+        const take = Math.min(partSize - used, value.length - offset)
+        buffer.set(value.subarray(offset, offset + take), used)
+        used += take; offset += take
+        if (used === partSize) await flush()
+      }
+    }
+    if (used) await flush()
+    completing = true
+    await client.send(new CompleteMultipartUploadCommand({ Bucket: R2_BUCKET, Key: key, UploadId: uploadId, MultipartUpload: { Parts: parts } }))
+  } catch (error) {
+    // Completion can have succeeded remotely; do not abort that uncertain result.
+    if (!completing) await client.send(new AbortMultipartUploadCommand({ Bucket: R2_BUCKET, Key: key, UploadId: uploadId })).catch(() => undefined)
+    throw error
+  } finally { await reader.cancel().catch(() => undefined); reader.releaseLock() }
 }

@@ -140,6 +140,7 @@ money source of truth; readers must never infer it from a `paid` status label.
 - **`drawing_revisions`** - Drawing revision tracking
 - **`drawing_sheets`** - Individual drawing sheets
 - **`drawing_sheet_versions`** - Sheet version history
+- **`sheet_building_records`** - What the recognition engine found on one sheet version (rooms, walls, openings), shared by area takeoff and the 3D model (pending migration `20261004121500`)
 - **`drawing_markups`** - Vector annotations on drawings
 - **`drawing_pins`** - Entity location markers on drawings
 

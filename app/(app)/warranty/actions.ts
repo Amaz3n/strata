@@ -40,6 +40,7 @@ import {
   warrantyRequestInputSchema,
   warrantyRequestUpdateSchema,
   warrantySlaTargetsSchema,
+  warrantyVisitConflictInputSchema,
   warrantyVisitRescheduleSchema,
   warrantyVisitScheduleSchema,
 } from "@/lib/validation/warranty"
@@ -116,7 +117,7 @@ export async function scheduleWarrantyVisitAction(input: unknown, allowConflict 
 
 export async function findWarrantyVisitConflictsAction(input: unknown): Promise<ActionResult<WarrantyVisitConflict[]>> {
   try {
-    const parsed = warrantyVisitScheduleSchema.parse(input)
+    const parsed = warrantyVisitConflictInputSchema.parse(input)
     return { success: true, data: await findWarrantyVisitConflicts(parsed) }
   } catch (error) { return actionError(error) }
 }

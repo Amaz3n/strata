@@ -1,0 +1,4 @@
+1..3
+ok 1 - independent journal review RPC is private
+ok 2 - journal review respects invoker privileges
+ok 3 - proposal money receipts enforce organization ownership

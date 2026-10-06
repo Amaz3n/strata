@@ -1,5 +1,7 @@
 "use client"
 
+import { folderParent } from "../view-state"
+
 import { useCallback, useState } from "react"
 import { toast } from "sonner"
 import {
@@ -24,7 +26,7 @@ interface FolderDeleteDialogProps {
 }
 
 export function FolderDeleteDialog({ open, onOpenChange, path }: FolderDeleteDialogProps) {
-  const { projectId, refreshFiles } = useDocuments()
+  const { projectId, refreshFiles, loadFolderChildren, currentPath, setCurrentPath } = useDocuments()
   const [isDeleting, setIsDeleting] = useState(false)
 
   const handleConfirm = useCallback(async () => {
@@ -34,13 +36,15 @@ export function FolderDeleteDialog({ open, onOpenChange, path }: FolderDeleteDia
       unwrapAction(await deleteFolderAction(projectId, path))
       onOpenChange(false)
       await refreshFiles({ invalidateCache: true })
+      await loadFolderChildren(folderParent(path))
+      if (currentPath === path || currentPath.startsWith(`${path}/`)) setCurrentPath(folderParent(path))
       toast.success("Folder deleted")
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to delete folder")
     } finally {
       setIsDeleting(false)
     }
-  }, [path, projectId, onOpenChange, refreshFiles])
+  }, [path, projectId, onOpenChange, refreshFiles, loadFolderChildren, currentPath, setCurrentPath])
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>

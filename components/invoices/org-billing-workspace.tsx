@@ -1,6 +1,8 @@
+import { connection } from "next/server"
+import { unstable_rethrow } from "next/navigation"
+import { getBooksUiAccess } from "@/lib/services/books/ui-access"
 import { BillingBook } from "@/components/invoices/billing-book"
 import { PageLayout } from "@/components/layout/page-layout"
-import { NoProjectSelected } from "@/components/projects/no-project-selected"
 import { getProjectFinancialFeatureConfig } from "@/lib/financials/billing-model"
 import { resolveBillingProfile, resolveOrgBillingProfile } from "@/lib/financials/billing-profile"
 import { getProjectPosture } from "@/lib/product-tier"
@@ -19,6 +21,7 @@ import { listOrgOwnerBillingPackageSummaries } from "@/lib/services/owner-billin
 import { listBillingDeskProjects } from "@/lib/services/projects"
 
 function messageForError(error: unknown) {
+  unstable_rethrow(error)
   return error instanceof Error ? error.message : String(error ?? "Unknown error")
 }
 
@@ -35,9 +38,23 @@ const EMPTY_SUMMARY: ProjectBillingSummary = {
 
 /** The one org-wide receivables experience used by current and legacy URLs. */
 export async function OrgBillingWorkspace() {
+  await connection()
   const context = await requireOrgContext()
-  const projects = await listBillingDeskProjects(context.orgId, context)
-  const [pageResult, summaryResult, opportunitiesResult, packagesResult, orgResult, accounting] = await Promise.all([
+  const projectsPromise = listBillingDeskProjects(context.orgId, context)
+  const opportunitiesPromise = projectsPromise.then((projects) =>
+    loadOrgBillingDeskData(projects.map((project) => project.id)).then(
+      (desk) => ({ desk, error: null as string | null }),
+      (error: unknown) => ({ desk: null, error: messageForError(error) }),
+    ),
+  )
+  const projectAccountingPromise = projectsPromise.then((projects) =>
+    getFinancialAccountingModesForProjects(context.orgId, projects.map((project) => project.id)).catch((error: unknown) => {
+      unstable_rethrow(error)
+      return {}
+    }),
+  )
+  const [projects, pageResult, summaryResult, opportunitiesResult, packagesResult, orgResult, accounting, booksAccess, accountingByProject] = await Promise.all([
+    projectsPromise,
     listInvoicePage({ orgId: context.orgId, queue: "active", limit: 300, sort: "activity", sortDirection: "desc" }).then(
       (page) => ({ page, error: null as string | null }),
       (error: unknown) => ({ page: null, error: messageForError(error) }),
@@ -46,29 +63,27 @@ export async function OrgBillingWorkspace() {
       (summary) => ({ summary, error: null as string | null }),
       (error: unknown) => ({ summary: EMPTY_SUMMARY, error: messageForError(error) }),
     ),
-    loadOrgBillingDeskData(projects.map((project) => project.id)).then(
-      (desk) => ({ desk, error: null as string | null }),
-      (error: unknown) => ({ desk: null, error: messageForError(error) }),
-    ),
+    opportunitiesPromise,
     listOrgOwnerBillingPackageSummaries(context.orgId).then(
       (packages) => ({ packages, error: null as string | null }),
       (error: unknown) => ({ packages: [], error: messageForError(error) }),
     ),
     context.supabase.from("orgs").select("name,email,address").eq("id", context.orgId).maybeSingle(),
-    getReceivablesAccountingMode().catch(() => ({ ledger: "unavailable" as const, external: null })),
+    getReceivablesAccountingMode().catch((error: unknown) => {
+      unstable_rethrow(error)
+      return { ledger: "unavailable" as const, external: null }
+    }),
+    getBooksUiAccess(),
+    projectAccountingPromise,
   ])
   const policy = getOrgReceivablesPolicy(context.productTier)
   const profile = resolveOrgBillingProfile(policy)
 
-  if (projects.length === 0) {
-    return <PageLayout title={policy.workspaceLabel}><NoProjectSelected /></PageLayout>
-  }
 
   const projectProfiles = Object.fromEntries(projects.map((project) => {
     const projectPolicy = getReceivablesPosturePolicy(getProjectPosture(project.property_type, context.productTier))
     return [project.id, resolveBillingProfile({ featureConfig: getProjectFinancialFeatureConfig(project, project.billing_contract), policy: projectPolicy })]
   }))
-  const accountingByProject = await getFinancialAccountingModesForProjects(context.orgId, projects.map((project) => project.id)).catch(() => ({}))
   const upNext: ProjectBillingUpNext = {
     rows: (opportunitiesResult.desk?.readyToBill ?? []).map((entry) => ({
       key: `portfolio:${entry.projectId}`,
@@ -99,6 +114,7 @@ export async function OrgBillingWorkspace() {
         projects={projects}
         profile={profile}
         accounting={accounting}
+        canManageDeposits={booksAccess.adjust}
         projectProfiles={projectProfiles}
         accountingByProject={accountingByProject}
         initialRows={pageResult.page?.invoices ?? []}

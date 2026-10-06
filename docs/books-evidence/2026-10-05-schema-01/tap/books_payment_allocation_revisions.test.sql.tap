@@ -1,0 +1,11 @@
+1..10
+ok 1 - payment headers advance after transaction-time update triggers
+ok 2 - allocation changes invalidate parent source revisions
+ok 3 - browser cannot directly invoke the parent-touch function
+ok 4 - source invalidation uses a fixed privileged search path
+ok 5 - insert advances the parent beyond a future revision
+ok 6 - allocation edit advances its parent within the same transaction
+ok 7 - reassignment advances the old parent
+ok 8 - reassignment advances the new parent
+ok 9 - deletion advances the last parent
+ok 10 - direct header edit also advances the source revision

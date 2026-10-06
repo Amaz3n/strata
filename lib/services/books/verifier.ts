@@ -1,8 +1,9 @@
+import { receivableRetainageAsOf, payableRetainageAsOf } from "@/lib/services/books/retainage-history";
+import { isInvoiceReceivableAsOf, loadSubledgerSettlements } from "@/lib/services/books/subledger-settlements";
 import "server-only";
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import {
-  BILLED_INVOICE_STATUSES,
   PAYABLE_VENDOR_BILL_STATUSES,
 } from "@/lib/financials/ledger-status";
 import { SYSTEM_ACCOUNT_CODES } from "@/lib/services/books/chart-of-accounts";
@@ -10,11 +11,6 @@ import {
   buildBalanceSheet,
   buildTrialBalance,
 } from "@/lib/services/books/statements";
-import {
-  sumApRetainageCents,
-  sumApSubledgerCents,
-  sumArSubledgerCents,
-} from "@/lib/services/books/tie-out-rules";
 
 /**
  * The ledger tie-outs.
@@ -86,6 +82,7 @@ async function loadGlJobCostCents(orgId: string, asOf: string) {
         .lte("entry.entry_date", asOf)
         .or("account_type.eq.cogs,code.in.(1160,1170)", { referencedTable: "account" })
         .not("project_id", "is", null)
+        .neq("account.code", SYSTEM_ACCOUNT_CODES.expectedLossExpense)
         .range(from, to),
     "GL job cost lines",
   );
@@ -114,36 +111,23 @@ async function loadSubledgerJobCostCents(orgId: string, asOf: string) {
 
 async function loadArApSubledgerCents(orgId: string, asOf: string) {
   const service = createServiceSupabaseClient();
-  const [invoices, bills] = await Promise.all([
-    collectPages(
-      // The status set is the projector's, not a wider one: a control tie-out has
-      // to sum exactly the records that produced the account. Excluding only
-      // `draft` and `void` counted `saved` invoices, which never post to 1100.
-      (from, to) =>
-        service
-          .from("invoices")
-          .select("balance_due_cents")
-          .eq("org_id", orgId)
-          .lte("issue_date", asOf)
-          .in("status", [...BILLED_INVOICE_STATUSES])
-          .range(from, to),
-      "AR subledger",
-    ),
-    collectPages(
-      (from, to) =>
-        service
-          .from("vendor_bills")
-          .select("total_cents, paid_cents, retainage_cents")
-          .eq("org_id", orgId)
-          .lte("bill_date", asOf)
-          .in("status", [...PAYABLE_VENDOR_BILL_STATUSES])
-          .range(from, to),
-      "AP subledger",
-    ),
+  const [invoiceRows, bills] = await Promise.all([
+    collectPages((from, to) => service.from("invoices")
+      .select("id,total_cents,status,metadata").eq("org_id", orgId)
+      .lte("issue_date", asOf).order("id").range(from, to), "AR subledger"),
+    collectPages((from, to) => service.from("vendor_bills")
+      .select("id,total_cents,retainage_cents").eq("org_id", orgId)
+      .lte("bill_date", asOf).in("status", [...PAYABLE_VENDOR_BILL_STATUSES])
+      .order("id").range(from, to), "AP subledger"),
+  ]);
+  const invoices = invoiceRows.filter(row => isInvoiceReceivableAsOf(row, asOf));
+  const [arSettlements, apSettlements] = await Promise.all([
+    loadSubledgerSettlements(service, orgId, "receivable", invoices.map(row => row.id), asOf),
+    loadSubledgerSettlements(service, orgId, "payable", bills.map(row => row.id), asOf),
   ]);
   return {
-    arCents: sumArSubledgerCents(invoices),
-    apCents: sumApSubledgerCents(bills),
+    arCents: invoices.reduce((sum, row) => sum + Number(row.total_cents) - (arSettlements.get(row.id) ?? 0), 0),
+    apCents: bills.reduce((sum, row) => sum + Number(row.total_cents) - Number(row.retainage_cents ?? 0) - (apSettlements.get(row.id) ?? 0), 0),
   };
 }
 
@@ -157,49 +141,21 @@ async function loadArApSubledgerCents(orgId: string, asOf: string) {
  */
 async function loadRetainageSubledgerCents(orgId: string, asOf: string) {
   const service = createServiceSupabaseClient();
-  const [held, bills] = await Promise.all([
-    collectPages(
-      // Joined to the invoice rather than filtered on `held_at`, for two reasons.
-      // Retainage only reaches 1110 through `postCustomerInvoice`, so a hold whose
-      // invoice is still `saved` — or which has no invoice at all — was never
-      // posted and must not be summed here. And the GL dates that debit by the
-      // invoice's `issue_date`, so the cutoff has to be the invoice's date, not
-      // the date somebody recorded the hold.
-      //
-      // The `!invoice_id` hint is required, not decorative: `retainage` has two
-      // foreign keys to `invoices` (`invoice_id` and `release_invoice_id`), and
-      // without it PostgREST refuses the embed as ambiguous.
-      (from, to) =>
-        service
-          .from("retainage")
-          .select(
-            "amount_cents, invoice:invoices!invoice_id!inner(status, issue_date)",
-          )
-          .eq("org_id", orgId)
-          .eq("status", "held")
-          .in("invoice.status", [...BILLED_INVOICE_STATUSES])
-          .lte("invoice.issue_date", asOf)
-          .range(from, to),
-      "AR retainage subledger",
-    ),
-    collectPages(
-      (from, to) =>
-        service
-          .from("vendor_bills")
-          .select("retainage_cents, retainage_released_cents")
-          .eq("org_id", orgId)
-          .lte("bill_date", asOf)
-          .in("status", [...PAYABLE_VENDOR_BILL_STATUSES])
-          .range(from, to),
-      "AP retainage subledger",
-    ),
+  const [holds, bills] = await Promise.all([
+    collectPages((from, to) => service.from("retainage")
+      // Disambiguate both invoice FKs. Release state is evaluated at its accounting
+      // date, never from today's hold status or lifetime released amount.
+      .select("id,amount_cents,invoice:invoices!invoice_id!inner(status,issue_date,metadata),release:invoices!release_invoice_id(status,issue_date,metadata)")
+      .eq("org_id", orgId).lte("invoice.issue_date", asOf)
+      .order("id").range(from, to), "AR retainage history"),
+    collectPages((from, to) => service.from("vendor_bills")
+      .select("id,status,bill_date,total_cents,retainage_cents,metadata")
+      .eq("org_id", orgId).lte("bill_date", asOf)
+      .in("status", [...PAYABLE_VENDOR_BILL_STATUSES]).order("id").range(from, to), "AP retainage history"),
   ]);
   return {
-    receivableCents: held.reduce(
-      (sum, row) => sum + Number(row.amount_cents ?? 0),
-      0,
-    ),
-    payableCents: sumApRetainageCents(bills),
+    receivableCents: receivableRetainageAsOf(holds, asOf),
+    payableCents: payableRetainageAsOf(bills, asOf),
   };
 }
 

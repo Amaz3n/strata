@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { Suspense } from "react"
 import { notFound } from "next/navigation"
 import { format } from "date-fns"
@@ -9,31 +10,32 @@ import { loadDailyLogDayAction, resolveDailyLogDateAction } from "./actions"
 import { requireOrgContext } from "@/lib/services/context"
 import { unwrapAction } from "@/lib/action-result"
 
-export default async function ProjectDailyLogsPage({
+export default function ProjectDailyLogsPage({
   params,
   searchParams,
 }: {
   params: Promise<{ id: string }>
   searchParams: Promise<{ date?: string; logId?: string }>
 }) {
-  const { id } = await params
   return (
     <>
       <PageLayout title="Daily Logs" breadcrumbs={[{ label: "Project" }, { label: "Daily Logs" }]} fullBleed />
       <Suspense fallback={<DailyLogsSkeleton />}>
-        <ProjectDailyLogsData id={id} searchParams={searchParams} />
+        <ProjectDailyLogsData params={params} searchParams={searchParams} />
       </Suspense>
     </>
   )
 }
 
 async function ProjectDailyLogsData({
-  id,
+  params,
   searchParams,
 }: {
-  id: string
+  params: Promise<{ id: string }>
   searchParams: Promise<{ date?: string; logId?: string }>
 }) {
+  await connection()
+  const { id } = await params
   const [project, search, { userId }] = await Promise.all([getProjectAction(id), searchParams, requireOrgContext()])
   if (!project) notFound()
   const date = search.logId

@@ -20,6 +20,7 @@ export interface DealElsewhereLink {
 }
 
 interface DealOverviewMetaProps {
+  canEditProspect: boolean
   deal: SalesDeal
   reservation: SalesDealReservation | null
   pricing: PurchaseAgreementPricing | null
@@ -63,6 +64,7 @@ export function DealOverviewMeta({
   contacts,
   attention,
   links,
+  canEditProspect,
 }: DealOverviewMetaProps) {
   const now = new Date()
   const holdExpiresAt = reservation?.expiresAt ?? deal.holdExpiresAt
@@ -87,6 +89,7 @@ export function DealOverviewMeta({
   return (
     <section className={cn(BAND_X, "space-y-9 py-10")}>
       <DealAttentionBlock
+        canEditProspect={canEditProspect}
         items={attention}
         prospectId={prospect?.id ?? null}
         followUpAt={deal.nextFollowUpAt}

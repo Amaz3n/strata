@@ -1,0 +1,9 @@
+1..8
+ok 1 - browser cannot inspect cancellation history directly
+ok 2 - anonymous cannot cancel source requests
+ok 3 - authorized server may append scoped cancellations
+ok 4 - cancellations cannot be rewritten
+ok 5 - browser cannot invoke private resolution RPC
+ok 6 - server may invoke scoped resolver
+ok 7 - resolver retains invoker authority
+ok 8 - direct native receipt insert is fenced against cancellation

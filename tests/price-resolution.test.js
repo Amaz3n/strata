@@ -1,7 +1,7 @@
 require("../scripts/register-ts-node-test")
 const assert = require("node:assert/strict")
 const test = require("node:test")
-const { resolvePriceForLinePure, resolvedPriceTotal } = require("../lib/financials/price-resolution")
+const { resolvePriceForLinePure, resolveSelectedAgreement, resolvedPriceTotal } = require("../lib/financials/price-resolution")
 
 const input = (overrides = {}) => ({
   costCodeId: "cc", costType: "material", uom: "sf", quantity: 12,
@@ -41,4 +41,27 @@ test("date and uom failures are actionable and pricing math rounds", () => {
   assert.equal(resolvePriceForLinePure(input(), []).exception.reason, "no_agreement")
   assert.equal(resolvedPriceTotal(input({ quantity: 2.5 }), { agreementId: "a", companyId: "v", pricingKind: "unit", unitCostCents: 101 }), 253)
   assert.equal(resolvedPriceTotal(input(), { agreementId: "a", companyId: "v", pricingKind: "lump_sum", lumpSumCents: 500 }), 500)
+})
+
+
+test("explicit agreement choice resolves a tie while preserving eligibility", () => {
+  const a = agreement()
+  const b = agreement({ id: "b", company_id: "vendor-b" })
+  assert.equal(resolvePriceForLinePure(input(), [a, b]).exception.reason, "ambiguous_agreement")
+  assert.equal(resolveSelectedAgreement(input(), [a, b], "b").resolved.companyId, "vendor-b")
+})
+
+test("explicit agreement choice cannot bypass scope, effective date, status or units", () => {
+  for (const overrides of [
+    { division_id: "other-division" }, { community_id: "other-community" },
+    { house_plan_id: "other-plan" }, { house_plan_version_id: "old-edition" },
+    { cost_code_id: "other-code" }, { cost_type: "labor" }, { uom: "lf" },
+    { effective_from: "2027-01-01" }, { effective_to: "2026-01-01" }, { status: "void" },
+  ]) {
+    assert.throws(() => resolveSelectedAgreement(input(), [agreement(overrides)], "a"), /cannot price this line/)
+  }
+})
+
+test("a missing explicit choice never silently substitutes another vendor", () => {
+  assert.throws(() => resolveSelectedAgreement(input(), [agreement()], "deleted"), /no longer available/)
 })

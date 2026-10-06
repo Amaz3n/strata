@@ -46,7 +46,7 @@ export async function listBankRules(orgId?: string) {
   const { data, error } = await service
     .from("bank_rules")
     .select(
-      "id, match_kind, match_value, direction, bank_account_id, gl_account_id, project_id, cost_code_id, confidence, hit_count, correction_count, active, " +
+      "id, match_kind, match_value, direction, bank_account_id, gl_account_id, vendor_id, project_id, cost_code_id, confidence, hit_count, correction_count, active, " +
         "account:gl_accounts(code, name), bank_account:bank_accounts(name)",
     )
     .eq("org_id", context.orgId)

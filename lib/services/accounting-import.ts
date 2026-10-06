@@ -1,3 +1,5 @@
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { getProjectReadScopeForUser } from "@/lib/services/authorization"
 import { z } from "zod"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
@@ -149,4 +151,47 @@ export async function linkAccountingImportRecord(input: {
   if (error) throw new Error(error.message)
   if (!data) throw new Error("Existing import target is outside this organization")
   return ctx.provider.linkExistingImportRecord({ ...parsed, orgId: ctx.orgId })
+}
+
+/** Company-wide recovery candidates require the existing broad-project read scope. */
+export async function listAccountingRecoveryCandidates(input: { connectionId: string; afterId?: string; limit?: number }) {
+  const parsed = z
+    .object({ connectionId: connectionSchema, afterId: z.string().uuid().optional(), limit: z.number().int().min(1).max(200).default(100) })
+    .strict()
+    .parse(input)
+  const ctx = await importContext(parsed.connectionId)
+  if (ctx.connection.provider !== "qbo") throw new Error("This provider does not expose CDC recovery candidates")
+  const scope = await getProjectReadScopeForUser({ orgId: ctx.orgId, userId: ctx.userId })
+  if (scope.projectMembershipRequired || scope.divisionIds !== null)
+    throw new Error("Company-wide import candidates require organization-wide project access")
+  let query = createServiceSupabaseClient()
+    .from("qbo_cdc_candidates")
+    .select("id, run_id, entity_name, external_id, revision, import_types, document_number, transaction_date, last_updated, review_status")
+    .eq("org_id", ctx.orgId)
+    .eq("connection_id", ctx.connection.id)
+    .eq("realm_id", ctx.connection.external_account_id)
+    .eq("review_status", "pending")
+    .order("id")
+    .limit(parsed.limit + 1)
+  if (parsed.afterId) query = query.gt("id", parsed.afterId)
+  const { data, error } = await query
+  if (error) throw new Error(`Unable to load recovery candidates: ${error.message}`)
+  const rows = z
+    .array(
+      z.object({
+        id: z.string().uuid(),
+        run_id: z.string().uuid(),
+        entity_name: z.enum(["Invoice", "Payment", "Purchase", "Bill", "BillPayment", "VendorCredit", "JournalEntry"]),
+        external_id: referenceSchema,
+        revision: z.string().regex(/^[a-f0-9]{64}$/),
+        import_types: z.array(entitySchema).min(1).max(2),
+        document_number: z.string().max(255).nullable(),
+        transaction_date: z.string().max(10).nullable(),
+        last_updated: z.string().max(80).nullable(),
+        review_status: z.literal("pending"),
+      }),
+    )
+    .parse(data ?? [])
+  const page = rows.slice(0, parsed.limit)
+  return { candidates: page, nextAfterId: rows.length > parsed.limit ? (page.at(-1)?.id ?? null) : null }
 }

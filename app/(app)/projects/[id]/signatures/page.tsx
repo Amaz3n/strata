@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { Suspense } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
 import { notFound } from "next/navigation"
@@ -13,7 +14,18 @@ interface ProjectDocumentsPageProps {
   params: Promise<{ id: string }>
 }
 
-export default async function ProjectDocumentsPage({ params }: ProjectDocumentsPageProps) {
+export default function ProjectDocumentsPage({ params }: ProjectDocumentsPageProps) {
+  return (
+    <PageLayout title="Project Signatures">
+      <Suspense fallback={<ProjectSignaturesFallback />}>
+        <ProjectSignaturesRoute params={params} />
+      </Suspense>
+    </PageLayout>
+  )
+}
+
+async function ProjectSignaturesRoute({ params }: ProjectDocumentsPageProps) {
+  await connection()
   const { id } = await params
   const project = await getProjectAction(id)
 
@@ -29,9 +41,7 @@ export default async function ProjectDocumentsPage({ params }: ProjectDocumentsP
         { label: "Signatures" },
       ]}
     >
-      <Suspense fallback={<ProjectSignaturesFallback />}>
-        <ProjectSignaturesData project={project} />
-      </Suspense>
+      <ProjectSignaturesData project={project} />
     </PageLayout>
   )
 }
@@ -49,7 +59,9 @@ function ProjectSignaturesFallback() {
   )
 }
 
-async function ProjectSignaturesData({ project }: { project: any }) {
+async function ProjectSignaturesData({ project }: {
+  project: NonNullable<Awaited<ReturnType<typeof getProjectAction>>>
+}) {
   const data = await listSignaturesHubAction({ projectId: project.id })
 
   return (

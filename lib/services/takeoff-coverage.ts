@@ -19,13 +19,8 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
-import { recordAudit } from "@/lib/services/audit"
 import { MEASURING_MARKUP_TYPES } from "@/lib/drawings/measure"
-import {
-  setTakeoffSheetStatusSchema,
-  type SetTakeoffSheetStatusInput,
-  type TakeoffSheetStatusValue,
-} from "@/lib/validation/takeoff"
+import type { TakeoffSheetStatusValue } from "@/lib/validation/takeoff"
 
 /** Sheets scanned for coverage in one pass. A 400-sheet set is the design case. */
 const SHEET_CAP = 1000
@@ -238,59 +233,4 @@ async function loadDeclarations(
     })
   }
   return map
-}
-
-/**
- * Declare (or clear) a sheet's takeoff status.
- *
- * Clearing is a delete rather than a third status value, so "not started" stays
- * the absence of a claim rather than a claim of its own.
- */
-export async function setTakeoffSheetStatus(
-  input: SetTakeoffSheetStatusInput,
-  orgId?: string,
-): Promise<void> {
-  const parsed = setTakeoffSheetStatusSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("takeoff.write", { supabase, orgId: resolvedOrgId, userId })
-
-  const scopeColumn = parsed.project_id ? "project_id" : "house_plan_version_id"
-  const scopeId = parsed.project_id ?? (parsed.house_plan_version_id as string)
-
-  if (parsed.status === null) {
-    const { error } = await supabase
-      .from("takeoff_sheet_status")
-      .delete()
-      .eq("org_id", resolvedOrgId)
-      .eq(scopeColumn, scopeId)
-      .eq("drawing_sheet_id", parsed.drawing_sheet_id)
-    if (error) throw new Error(`Failed to clear sheet status: ${error.message}`)
-  } else {
-    const { error } = await supabase.from("takeoff_sheet_status").upsert(
-      {
-        org_id: resolvedOrgId,
-        project_id: parsed.project_id ?? null,
-        house_plan_version_id: parsed.house_plan_version_id ?? null,
-        drawing_sheet_id: parsed.drawing_sheet_id,
-        status: parsed.status,
-        note: parsed.note ?? null,
-        updated_by: userId,
-      },
-      {
-        onConflict: parsed.project_id
-          ? "org_id,project_id,drawing_sheet_id"
-          : "org_id,house_plan_version_id,drawing_sheet_id",
-      },
-    )
-    if (error) throw new Error(`Failed to set sheet status: ${error.message}`)
-  }
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: parsed.status === null ? "delete" : "update",
-    entityType: "takeoff_sheet_status",
-    entityId: parsed.drawing_sheet_id,
-    after: { scope: scopeId, status: parsed.status, note: parsed.note ?? null },
-  })
 }

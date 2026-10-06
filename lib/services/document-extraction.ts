@@ -702,7 +702,7 @@ export async function suggestPayableCodingFromInvoice(input: {
     `${label}:\n${rows.slice(0, 200).map((row) => `${row.id} | ${row.label}`).join("\n") || "none"}`
 
   const result = await runAiObject({
-    feature: "document_extraction",
+    feature: "text_assistance",
     schema: codingSchema,
     system:
       "You choose construction accounts-payable coding. Every ID you return must appear verbatim in the " +
@@ -767,7 +767,7 @@ export async function arbitrateInvoiceLineMatches(input: {
   )
 
   const result = await runAiObject({
-    feature: "document_extraction",
+    feature: "text_assistance",
     schema: lineMatchSchema,
     system:
       "You match construction invoice lines to the commitment (purchase order or subcontract) line they bill " +

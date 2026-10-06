@@ -71,7 +71,7 @@ export async function suggestImportColumnMapping(input: { importer: ImporterKey;
   try {
     const columns = IMPORTER_DEFINITIONS[input.importer].columns.map((column) => ({ key: column.key, label: column.label, type: column.type, required: column.required ?? false, example: column.example ?? null }))
     const result = await runAiObject({
-      feature: "document_extraction",
+      feature: "text_assistance",
       schema: modelMappingSchema,
       system:
         "You map legacy construction ERP CSV columns to Arc import columns. Suggestions only: never " +

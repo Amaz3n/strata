@@ -1,0 +1,20 @@
+1..19
+ok 1 - private payroll registers deny browser reads
+ok 2 - anonymous preparation denied
+ok 3 - browser review RPC denied
+ok 4 - prepare exact immutable evidence
+ok 5 - matching retry returns original draft
+ok 6 - preparer cannot self review
+ok 7 - provider control mismatch is rejected
+ok 8 - preparation evidence is immutable
+ok 9 - independent review succeeds
+ok 10 - reviewed state is retained without posting GL
+ok 11 - worker period cannot be imported twice
+ok 12 - original version cannot be deleted
+ok 13 - same original path cannot change checksum
+ok 14 - reviewed unposted run can be withdrawn
+ok 15 - withdrawal retains independent reviewer
+ok 16 - withdrawal keeps immutable payroll history
+ok 17 - withdrawn run retains original source protection
+ok 18 - new worker time invalidates payroll evidence
+ok 19 - native payroll context carries its statement revision

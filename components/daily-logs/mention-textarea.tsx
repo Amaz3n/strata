@@ -24,6 +24,8 @@ interface MentionTextareaProps {
   rows?: number
   multiline?: boolean
   onSubmit?: () => void
+  sharpCorners?: boolean
+  ariaLabel?: string
 }
 
 export function getTrailingMentionQuery(value: string) {
@@ -88,6 +90,8 @@ export function MentionTextarea({
   rows = 1,
   multiline = true,
   onSubmit,
+  sharpCorners = false,
+  ariaLabel,
 }: MentionTextareaProps) {
   const mentionQuery = getTrailingMentionQuery(value)
   const allSelected = mentionedUserIds.length > 0 && mentionedUserIds.length === mentionableUsers.length
@@ -151,6 +155,7 @@ export function MentionTextarea({
       </div>
       {multiline ? (
         <textarea
+          aria-label={ariaLabel}
           value={value}
           onChange={(event) => onChange(event.target.value)}
           placeholder={placeholder}
@@ -164,6 +169,7 @@ export function MentionTextarea({
         />
       ) : (
         <input
+          aria-label={ariaLabel}
           value={value}
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => {
@@ -185,7 +191,7 @@ export function MentionTextarea({
         <button
           type="button"
           onClick={removeAllMention}
-          className="absolute right-2 top-2 z-20 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-1 text-[11px] font-medium text-primary hover:bg-primary/15"
+          className={cn("absolute right-2 top-2 z-20 inline-flex items-center gap-1 bg-primary/10 px-2 py-1 text-[11px] font-medium text-primary hover:bg-primary/15", sharpCorners ? "rounded-none" : "rounded-full")}
         >
           All
           <X className="h-3 w-3" />
@@ -193,7 +199,7 @@ export function MentionTextarea({
       )}
 
       {mentionSuggestions.length > 0 && (
-        <div className="absolute left-2 right-2 top-full z-30 mt-1 overflow-hidden rounded-lg border bg-popover shadow-md">
+        <div className={cn("absolute left-2 right-2 top-full z-30 mt-1 overflow-hidden border bg-popover shadow-md", sharpCorners ? "rounded-none" : "rounded-lg")}>
           {mentionSuggestions.map((user) => (
             <button
               key={user.id}

@@ -515,7 +515,7 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     titleField: 'name',
     subtitleFields: ['status', 'project_type'],
     searchableFields: ['name', 'status', 'project_type', 'notes'],
-    hrefTemplate: '/pipeline?prospectId={id}',
+    hrefTemplate: '/pipeline/{id}',
   },
 }
 

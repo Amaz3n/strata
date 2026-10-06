@@ -11,13 +11,13 @@ import { parseMoneyToCents } from "@/lib/financials/money-input"
 type Visit = Awaited<ReturnType<typeof import("@/lib/services/books/warranty-accounting").getWarrantyAccountingWorkspace>>[number]
 type CostSource = Awaited<ReturnType<typeof import("@/lib/services/books/warranty-accounting").getWarrantyCostSources>>[number]
 const money = (cents: number) => (cents/100).toLocaleString("en-US", { style: "currency", currency: "USD" })
-export function WarrantyAccounting() {
+export function WarrantyAccounting({ projectId }: { projectId?: string }) {
   const [visits,setVisits] = useState<Visit[] | null>(null)
   const [visit,setVisit] = useState<Visit | null>(null)
   const [sources,setSources] = useState<CostSource[]>([])
   const [amounts,setAmounts] = useState<Record<string,string>>({})
   const [pending,startTransition] = useTransition()
-  const load = async () => { const result = await loadWarrantyAccountingAction(); if (!result.success) { toast.error(result.error); return } setVisits(result.data) }
+  const load = async () => { const result = await loadWarrantyAccountingAction(projectId); if (!result.success) { toast.error(result.error); return } setVisits(result.data) }
   return <section id="warranty-accounting" className="space-y-3 border p-5"><div className="flex items-center justify-between gap-3"><div><h3 className="font-medium">Warranty cost accounting</h3><p className="text-sm text-muted-foreground">Visit submissions are estimates. Link posted expenses, bills, or labor to approve actual cost and consume the available reserve.</p></div><Button variant="outline" disabled={pending} onClick={() => startTransition(load)}>Review completed visits</Button></div>
     {visits?.length === 0 && <p className="text-sm text-muted-foreground">No completed visits to review.</p>}
     {visits?.map(row => <div key={row.id} className="flex flex-wrap items-center justify-between gap-2 border-t py-3 text-sm"><div>{row.label}<p className="text-xs text-muted-foreground">Submitted {money(row.submittedCents)} · Approved {money(row.approvedCents)} · Reserve used {money(row.reserveCents)}</p></div><Button size="sm" variant="outline" disabled={pending} onClick={() => startTransition(async () => {

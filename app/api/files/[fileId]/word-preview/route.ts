@@ -1,3 +1,4 @@
+import { isPayrollDocumentPrivate } from "@/lib/services/books/payroll-document-access"
 import { NextResponse } from "next/server"
 
 import { requireOrgMembership } from "@/lib/auth/context"
@@ -34,6 +35,10 @@ export async function GET(_req: Request, { params }: { params: Promise<{ fileId:
       .maybeSingle()
 
     if (error || !file) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 })
+    }
+
+    if (await isPayrollDocumentPrivate(file.org_id, file.storage_path)) {
       return NextResponse.json({ error: "Not found" }, { status: 404 })
     }
 

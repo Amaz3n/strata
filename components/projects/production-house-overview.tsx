@@ -15,7 +15,7 @@ export function ProductionHouseOverview({ data }: { data: ProductionHouseOvervie
   const i = data.identity
   const m = data.money
   return (
-    <div>
+    <div data-instant-shell="project-overview">
       <header className="border-b px-5 py-5 sm:px-8">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>

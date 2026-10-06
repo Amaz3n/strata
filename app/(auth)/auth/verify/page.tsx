@@ -1,4 +1,5 @@
 import { Suspense } from "react"
+import { connection } from "next/server"
 import Link from "next/link"
 
 import { Button } from "@/components/ui/button"
@@ -26,6 +27,7 @@ export default function ExternalVerifyPage({ searchParams }: VerifyPageProps) {
 }
 
 async function ExternalVerifyContent({ searchParams }: VerifyPageProps) {
+  await connection()
   const { token } = await searchParams
   const confirmed = token ? await confirmExternalIdentityVerification(token) : false
 

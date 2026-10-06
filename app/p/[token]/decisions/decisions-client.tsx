@@ -25,7 +25,11 @@ function statusBadge(status: string) {
   return <Badge variant="outline">Awaiting your decision</Badge>
 }
 
-export function DecisionsPortalClient({
+export function DecisionsPortalClient(props: Parameters<typeof DecisionsPortalWorkspace>[0]) {
+  return <DecisionsPortalWorkspace key={props.token} {...props} />
+}
+
+function DecisionsPortalWorkspace({
   token,
   decisions: initialDecisions,
 }: {
@@ -38,6 +42,17 @@ export function DecisionsPortalClient({
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null)
   const [note, setNote] = useState("")
   const [isPending, startTransition] = useTransition()
+  const [decisionSource, setDecisionSource] = useState(initialDecisions)
+  if (decisionSource !== initialDecisions) {
+    setDecisionSource(initialDecisions)
+    setDecisions(initialDecisions)
+    if (active) {
+      const current = initialDecisions.find(decision => decision.id === active.id && decision.status === "pending") ?? null
+      setActive(current)
+      if (!current || !current.options.some(option => option.id === selectedOptionId)) setSelectedOptionId(null)
+    }
+  }
+
 
   const openDecision = (decision: Decision) => {
     setActive(decision)
@@ -165,6 +180,7 @@ export function DecisionsPortalClient({
                   <button
                     key={option.id}
                     type="button"
+                    aria-pressed={selectedOptionId === option.id}
                     onClick={() => setSelectedOptionId(option.id)}
                     className={cn(
                       "w-full border p-3 text-left transition-colors",

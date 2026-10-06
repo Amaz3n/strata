@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
 import { FileText, Save, Upload } from "@/components/icons"
-import { uploadFileAction } from "@/app/(app)/documents/actions"
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
 import { updatePlanVersionAction } from "@/app/(app)/plans/actions"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"

@@ -1,5 +1,7 @@
-import { BooksSectionPage } from "../_components/books-section-page"
+import { redirect } from "next/navigation"
+
+export const instant = false
 
 export default function BooksCutoverPage() {
-  return <BooksSectionPage section="cutover" />
+  redirect("/settings/accounting/setup")
 }

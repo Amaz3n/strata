@@ -1,0 +1,14 @@
+1..13
+ok 1 - native source receipts remain private
+ok 2 - anonymous cannot create native money
+ok 3 - server can inspect and append authorized receipts
+ok 4 - server cannot edit native receipt history
+ok 5 - native source receipts retain RLS
+ok 6 - browser cannot invoke native monetary writer
+ok 7 - anonymous cannot inspect native monetary receipts
+ok 8 - authorized server can invoke explicitly scoped writer
+ok 9 - financial writer retains invoker authority
+ok 10 - private source coordinator cannot be called directly
+ok 11 - one shared native journal requires an exclusive source or adjustment origin
+ok 12 - source receipt requires complete journal at commit
+ok 13 - operational journal requires complete original source receipt at commit

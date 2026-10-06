@@ -46,13 +46,14 @@ export async function listSyncTargets(
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("takeoff.read", { supabase, orgId: resolvedOrgId, userId })
 
-  const { data: project } = await supabase
+  const { data: project, error: projectError } = await supabase
     .from("projects")
-    .select("id, property_type, module_overrides")
+    .select("id, property_type, phase, prospect_id, project_module_overrides(module_key, enabled)")
     .eq("org_id", resolvedOrgId)
     .eq("id", projectId)
     .maybeSingle()
 
+  if (projectError) throw new Error(`Unable to load takeoff workspace: ${projectError.message}`)
   if (!project) throw new Error("Project not found")
 
   const orgTier = await getOrgProductTier(resolvedOrgId)
@@ -62,45 +63,49 @@ export async function listSyncTargets(
   const bidsEnabled = isProjectModuleEnabled({
     moduleKey: "bids",
     posture,
-    overrides: (project.module_overrides ?? undefined) as Record<string, boolean> | undefined,
+    overrides: Object.fromEntries((project.project_module_overrides ?? []).map((override: { module_key: string; enabled: boolean }) => [override.module_key, override.enabled])),
     postures:
       bidsModule && "postures" in bidsModule ? [...(bidsModule.postures as ProjectPosture[])] : undefined,
   })
 
   const [estimates, bidPackages] = await Promise.all([
-    loadEstimateTargets(supabase, resolvedOrgId, projectId),
-    bidsEnabled ? loadBidPackageTargets(supabase, resolvedOrgId, projectId) : Promise.resolve([]),
+    loadEstimateTargets(supabase, resolvedOrgId, projectId, project.phase === "precon" ? project.prospect_id : null),
+    bidsEnabled && project.phase !== "precon" ? loadBidPackageTargets(supabase, resolvedOrgId, projectId) : Promise.resolve([]),
   ])
 
-  return [...estimates, ...bidPackages]
+  const worksheet: TakeoffSyncTarget[] = project.phase === "precon" && project.prospect_id ? [{
+    destination: "pricing_worksheet", id: project.prospect_id, label: "Pricing worksheet",
+    detail: "Working scope & costs", writable: true,
+  }] : []
+  return [...worksheet, ...estimates, ...bidPackages, ...(project.phase !== "precon" ? await loadChangeOrderTargets(supabase, resolvedOrgId, projectId) : [])]
 }
 
 async function loadEstimateTargets(
   supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"],
   orgId: string,
   projectId: string,
+  prospectId?: string | null,
 ): Promise<TakeoffSyncTarget[]> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("estimates")
-    .select("id, title, status, version, total_cents, updated_at")
+    .select("id, title, status, version, total_cents, updated_at, is_current_version, metadata")
     .eq("org_id", orgId)
-    .eq("project_id", projectId)
+    .eq(prospectId ? "prospect_id" : "project_id", prospectId ?? projectId)
     .order("updated_at", { ascending: false })
     .limit(TARGET_CAP)
 
-  return (data ?? []).map((row) => {
+  if (error) throw new Error(`Unable to load estimates: ${error.message}`)
+  return (data ?? []).filter((row) => !prospectId || row.metadata?.precon?.purpose !== "preconstruction_agreement").map((row) => {
     // A signed estimate is a legal document; quantities move through a change
     // order from there, never through a silent re-sync.
-    const locked = ["client_signed", "executed", "converted_to_project"].includes(
-      String(row.status),
-    )
+    const locked = row.status !== "draft" || row.is_current_version === false || !!row.metadata?.pricing_worksheet
     return {
       destination: "estimate" as const,
       id: row.id as string,
       label: `${row.title}${row.version && row.version > 1 ? ` (v${row.version})` : ""}`,
       detail: String(row.status).replace(/_/g, " "),
       writable: !locked,
-      ...(locked ? { blocked_reason: "Signed — changes go through a change order" } : {}),
+      ...(locked ? { blocked_reason: row.metadata?.pricing_worksheet ? "Update the working pricing worksheet, then prepare a new proposal." : "Create a new draft version in Pricing before updating quantities" } : {}),
     }
   })
 }
@@ -279,4 +284,14 @@ export async function listPlanDrawingSources(
     }))
     .filter((source) => source.sheet_count > 0)
     .sort((a, b) => b.sheet_count - a.sheet_count)
+}
+
+async function loadChangeOrderTargets(supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"], orgId: string, projectId: string): Promise<TakeoffSyncTarget[]> {
+  const { data, error } = await supabase.from("change_orders").select("id,title,status,lifecycle,client_visible").eq("org_id", orgId).eq("project_id", projectId).order("created_at", { ascending: false }).limit(TARGET_CAP)
+  if (error) throw new Error("Unable to load change orders for these plans.")
+  return (data ?? []).map(row => {
+    const writable = ["draft", "pricing"].includes(row.lifecycle ?? "draft") && row.status === "draft" && !row.client_visible
+    return { destination: "change_order", id: row.id, label: row.title, detail: row.lifecycle ?? row.status, writable,
+      ...(writable ? {} : { blocked_reason: "Issued changes are preserved. Create a draft change order for revised quantities." }) }
+  })
 }

@@ -21,7 +21,7 @@ export const CRON_JOBS: CronJobDefinition[] = [
   // be told a payable needs them. An hour behind the in-app badge made email
   // the slower channel for the one queue people work from email.
   { name: "process-outbox", path: "/api/jobs/process-outbox", schedule: "*/10 * * * *", scheduleLabel: "Every 10 min", expectedIntervalMinutes: 10 },
-  { name: "drawings-pipeline", path: "/api/jobs/drawings-pipeline", schedule: "*/5 * * * *", scheduleLabel: "Every 5 min", expectedIntervalMinutes: 5 },
+  { name: "drawings-pipeline", path: "/api/jobs/drawings-pipeline", schedule: "* * * * *", scheduleLabel: "Every minute", expectedIntervalMinutes: 1 },
   { name: "specs-pipeline", path: "/api/jobs/specs-pipeline", schedule: "*/5 * * * *", scheduleLabel: "Every 5 min", expectedIntervalMinutes: 5 },
   { name: "meeting-transcription", path: "/api/jobs/meeting-transcription", schedule: "*/5 * * * *", scheduleLabel: "Every 5 min", expectedIntervalMinutes: 5 },
   { name: "meeting-audio-cleanup", path: "/api/jobs/meeting-audio-cleanup", schedule: "10 3 * * *", scheduleLabel: "Daily 3:10 UTC", expectedIntervalMinutes: 1440 },
@@ -83,7 +83,7 @@ async function recordRun(run: {
   try {
     const supabase = createServiceSupabaseClient()
     const finishedAt = new Date()
-    await supabase.from("job_runs").insert({
+    const { error: recordError } = await supabase.from("job_runs").insert({
       job_name: run.jobName,
       status: run.status,
       started_at: run.startedAt.toISOString(),
@@ -92,10 +92,12 @@ async function recordRun(run: {
       http_status: run.httpStatus,
       error: run.error,
     })
-    await supabase
+    if (recordError) throw new Error(`Unable to persist cron result: ${recordError.message}`)
+    const { error: pruneError } = await supabase
       .from("job_runs")
       .delete()
       .lt("started_at", new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString())
+    if (pruneError) throw new Error(`Unable to prune cron history: ${pruneError.message}`)
   } catch (error) {
     // Heartbeat bookkeeping must never break the job itself.
     console.error(`Failed to record job run for ${run.jobName}`, error)

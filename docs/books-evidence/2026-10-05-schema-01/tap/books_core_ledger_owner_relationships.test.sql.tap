@@ -1,0 +1,4 @@
+1..3
+ok 1 - all core owner references are validated foreign keys
+ok 2 - core parents expose organization-scoped identities
+ok 3 - every core ownership relationship includes organization on both sides

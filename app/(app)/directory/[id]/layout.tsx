@@ -1,5 +1,5 @@
 import { Suspense, type ReactNode } from "react";
-import { notFound } from "next/navigation";
+import { notFound, unstable_rethrow } from "next/navigation";
 import { connection } from "next/server";
 import { z } from "zod";
 
@@ -45,8 +45,14 @@ async function loadVendorHeaderSignals(
   await connection();
   const [ledger, complianceStatus, intelligence, paymentReadiness, prequalification] =
     await Promise.all([
-      loadVendorLedger(id).catch(() => null),
-      programs.showCompliance ? loadComplianceStatus(id).catch(() => null) : Promise.resolve(null),
+      loadVendorLedger(id).catch((error) => {
+        unstable_rethrow(error);
+        return null;
+      }),
+      programs.showCompliance ? loadComplianceStatus(id).catch((error) => {
+        unstable_rethrow(error);
+        return null;
+      }) : Promise.resolve(null),
       loadVendorIntelligence(id),
       loadPaymentReadiness(id),
       programs.showPrequalification ? loadPrequalificationGlance(id) : Promise.resolve(null),
@@ -163,7 +169,10 @@ async function PartyAccountHeaderData({ params }: Pick<PartyAccountLayoutProps, 
   // vocabulary behind them.
   const rolesData: Promise<PartyRolesData | null> = Promise.all([
     fullParty,
-    listRelationshipTypes().catch(() => []),
+    listRelationshipTypes().catch((error) => {
+      unstable_rethrow(error);
+      return [];
+    }),
   ]).then(([resolved, relationshipTypes]) =>
     resolved ? { roles: resolved.roles, relationshipTypes } : null,
   );

@@ -79,6 +79,32 @@ export function factorRuleViolation(value: FactorShape): string | null {
   return null
 }
 
+// PostgreSQL numeric columns may arrive as decimal strings. Validate stored
+// factors before measurement math; malformed values must not become null/zero.
+function storedMeasurementNumber(value: unknown): unknown {
+  return typeof value === "string" && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value.trim())
+    ? Number(value)
+    : value
+}
+
+export const storedMeasurementQuantitySchema = z.preprocess(storedMeasurementNumber, z.number().finite().nullable())
+
+const storedFactorSchema = z.preprocess(
+  storedMeasurementNumber,
+  z.number().finite().positive().nullable(),
+)
+
+export const storedConditionMeasurementSchema = z.object({
+  uom: conditionUomSchema,
+  depth_in: storedFactorSchema,
+  height_ft: storedFactorSchema,
+  pitch_rise: storedFactorSchema,
+  tons_per_cy: storedFactorSchema,
+}).superRefine((value, ctx) => {
+  const violation = factorRuleViolation(value)
+  if (violation) ctx.addIssue({ code: z.ZodIssueCode.custom, message: violation })
+})
+
 function withFactorRules<T extends z.ZodTypeAny>(schema: T) {
   return schema.superRefine((value: FactorShape, ctx: z.RefinementCtx) => {
     const violation = factorRuleViolation(value)
@@ -140,6 +166,11 @@ export const updateTakeoffConditionSchema = z.object({
 
 export type UpdateTakeoffConditionInput = z.infer<typeof updateTakeoffConditionSchema>
 
+export const takeoffConditionMutationTargetSchema = z.object({
+  conditionId: z.string().uuid(),
+  seenUpdatedAt: z.string().datetime({ offset: true }).optional().nullable(),
+})
+
 // `uom` is deliberately NOT updatable: changing it would orphan every member
 // measurement. Users delete and re-create instead, which forces the reassign.
 //
@@ -165,6 +196,8 @@ export type AssignMarkupsToConditionInput = z.infer<typeof assignMarkupsToCondit
  * project posture at the call site — the engine itself never branches on it.
  */
 export const takeoffDestinationSchema = z.enum([
+  "pricing_worksheet",
+  "change_order",
   "estimate",
   "bid_scope",
   "plan_takeoff",
@@ -182,6 +215,10 @@ export const syncConditionsSchema = z.object({
   /** Estimate id, bid package id, or house plan version id, per destination. */
   target_id: z.string().uuid(),
   condition_ids: z.array(z.string().uuid()).min(1).max(200),
+  /** Explicitly attach measured items to existing scope rows. */
+  reviewed_line_quantities: z.record(z.string().uuid(), z.number().finite().nullable()).optional(),
+  reviewed_quantities: z.record(z.string().uuid(), z.number().finite().nonnegative()).optional(),
+  line_mappings: z.record(z.string().uuid(), z.string().uuid()).optional(),
   /**
    * Per-condition instruction for lines whose quantity drifted from the last
    * sync. Absent = skip, because silently overwriting a hand-edit is the one
@@ -240,6 +277,11 @@ export const updateConditionTemplateSchema = z.object({
 
 export type UpdateConditionTemplateInput = z.infer<typeof updateConditionTemplateSchema>
 
+export const conditionTemplateMutationTargetSchema = z.object({
+  templateId: z.string().uuid(),
+  seenUpdatedAt: z.string().datetime({ offset: true }).optional().nullable(),
+})
+
 /** How many templates one org may hold, so the picker is never unbounded. */
 export const TEMPLATE_LIST_CAP = 500
 
@@ -247,7 +289,8 @@ export const applyConditionTemplatesSchema = z
   .object({
     project_id: z.string().uuid().optional().nullable(),
     house_plan_version_id: z.string().uuid().optional().nullable(),
-    template_ids: z.array(z.string().uuid()).min(1).max(200),
+    template_ids: z.array(z.string().uuid()).min(1).max(200)
+      .refine((ids) => new Set(ids).size === ids.length, "Select each template only once"),
   })
   .refine(
     (value) => Boolean(value.project_id) !== Boolean(value.house_plan_version_id),
@@ -257,7 +300,8 @@ export const applyConditionTemplatesSchema = z
 export type ApplyConditionTemplatesInput = z.infer<typeof applyConditionTemplatesSchema>
 
 export const saveConditionsAsTemplatesSchema = z.object({
-  condition_ids: z.array(z.string().uuid()).min(1).max(200),
+  condition_ids: z.array(z.string().uuid()).min(1).max(200)
+    .refine((ids) => new Set(ids).size === ids.length, "Select each condition only once"),
   group_name: groupNameSchema,
 })
 
@@ -276,21 +320,6 @@ export const takeoffSheetStatusSchema = z.enum(["complete", "not_applicable"])
 
 export type TakeoffSheetStatusValue = z.infer<typeof takeoffSheetStatusSchema>
 
-export const setTakeoffSheetStatusSchema = z
-  .object({
-    project_id: z.string().uuid().optional().nullable(),
-    house_plan_version_id: z.string().uuid().optional().nullable(),
-    drawing_sheet_id: z.string().uuid(),
-    /** Null clears the declaration and returns the sheet to "not started". */
-    status: takeoffSheetStatusSchema.nullable(),
-    note: z.string().max(500).optional().nullable(),
-  })
-  .refine(
-    (value) => Boolean(value.project_id) !== Boolean(value.house_plan_version_id),
-    { message: "A sheet status belongs to either a project or a house plan version, not both" },
-  )
-
-export type SetTakeoffSheetStatusInput = z.infer<typeof setTakeoffSheetStatusSchema>
 
 // ============================================================================
 // COUNT BY EXAMPLE — symbol matching

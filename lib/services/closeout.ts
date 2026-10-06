@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import {
@@ -72,44 +73,52 @@ function mapItem(row: any): CloseoutItem {
   }
 }
 
-async function ensurePackage(projectId: string, orgId: string) {
-  const { supabase } = await requireOrgContext(orgId)
+// Stable IDs make preparation retries preserve existing checklist evidence. Legacy
+// packages retain their IDs and requirements; opening a page never prepares them.
+function preparationId(...parts: string[]) {
+  const hex = createHash("sha256").update(JSON.stringify(["arc-closeout-preparation", ...parts])).digest("hex")
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`
+}
 
-  const { data: existing } = await supabase
-    .from("closeout_packages")
+export async function prepareCloseoutPackage(projectId: string, orgId?: string): Promise<CloseoutPackage> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
+  await requireAuthorization({ supabase, orgId: resolvedOrgId, userId,
+    permission: "closeout.write", projectId, resourceType: "project", resourceId: projectId })
+  const readPackage = () => supabase.from("closeout_packages")
     .select("id, org_id, project_id, status, created_at, updated_at")
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
-    .maybeSingle()
-
-  if (existing) return mapPackage(existing)
-
-  const { data: created, error } = await supabase
-    .from("closeout_packages")
-    .insert({ org_id: orgId, project_id: projectId, status: "in_progress" })
-    .select("id, org_id, project_id, status, created_at, updated_at")
-    .single()
-
-  if (error || !created) {
-    throw new Error(`Failed to create closeout package: ${error?.message}`)
+    .eq("org_id", resolvedOrgId).eq("project_id", projectId).maybeSingle()
+  const existing = await readPackage()
+  let pkg = existing.data
+  const lookupError = existing.error
+  if (lookupError) throw new Error(`Failed to load closeout package: ${lookupError.message}`)
+  const id = preparationId(resolvedOrgId, projectId)
+  if (!pkg) {
+    const { error } = await supabase.from("closeout_packages")
+      .upsert({ id, org_id: resolvedOrgId, project_id: projectId, status: "in_progress" },
+        { onConflict: "id", ignoreDuplicates: true })
+    if (error) throw new Error(`Failed to prepare closeout package: ${error.message}`)
+    const loaded = await readPackage()
+    pkg = loaded.data
+    if (loaded.error || !pkg) throw new Error(`Failed to confirm closeout package: ${loaded.error?.message ?? "Package unavailable"}`)
   }
-
-  const itemRows = defaultItems.map((title) => ({
-    org_id: orgId,
-    project_id: projectId,
-    closeout_package_id: created.id,
-    title,
-    status: "missing",
-  }))
-  await supabase.from("closeout_items").insert(itemRows)
-
-  return mapPackage(created)
+  if (pkg.id === id) {
+    const { error } = await supabase.from("closeout_items").upsert(defaultItems.map(title => ({
+      id: preparationId(pkg.id, title), org_id: resolvedOrgId, project_id: projectId,
+      closeout_package_id: pkg.id, title, status: "missing",
+    })), { onConflict: "id", ignoreDuplicates: true })
+    if (error) throw new Error(`Closeout checklist preparation failed. Retry preparation: ${error.message}`)
+  }
+  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update",
+    entityType: "closeout_package", entityId: pkg.id, source: "closeout_preparation",
+    after: { project_id: projectId, status: pkg.status, standard_requirements_prepared: pkg.id === id } })
+  return mapPackage(pkg)
 }
 
 export async function getCloseoutPackage(
   projectId: string,
   orgId?: string,
-): Promise<{ package: CloseoutPackage; items: CloseoutItem[] }> {
+): Promise<{ package: CloseoutPackage | null; items: CloseoutItem[]; preparationRequired: boolean }> {
   const {
     supabase,
     orgId: resolvedOrgId,
@@ -130,7 +139,13 @@ export async function getCloseoutPackage(
     resourceType: "project",
     resourceId: projectId,
   })
-  const pkg = await ensurePackage(projectId, resolvedOrgId)
+  const { data: packageRow, error: packageError } = await supabase
+    .from("closeout_packages")
+    .select("id, org_id, project_id, status, created_at, updated_at")
+    .eq("org_id", resolvedOrgId).eq("project_id", projectId).maybeSingle()
+  if (packageError) throw new Error(`Failed to load closeout package: ${packageError.message}`)
+  if (!packageRow) return { package: null, items: [], preparationRequired: true }
+  const pkg = mapPackage(packageRow)
 
   const loadItems = async (selectClause: string) =>
     supabase
@@ -138,6 +153,7 @@ export async function getCloseoutPackage(
       .select(selectClause)
       .eq("org_id", resolvedOrgId)
       .eq("closeout_package_id", pkg.id)
+      .eq("project_id", projectId)
       .order("created_at", { ascending: true })
 
   let { data, error } = await loadItems(extendedCloseoutItemSelect)
@@ -191,6 +207,8 @@ export async function getCloseoutPackage(
         : `Outstanding: ${readiness.missing.join(", ")}. Review in Payables → Waivers.`
     }
   return {
+    preparationRequired: pkg.id === preparationId(resolvedOrgId, projectId) &&
+      defaultItems.some(title => !itemIds.includes(preparationId(pkg.id, title))),
     package: {
       ...pkg,
       status:
@@ -227,9 +245,14 @@ export async function createCloseoutItem({
     userId,
   })
 
-  const pkg = parsed.closeout_package_id
-    ? { id: parsed.closeout_package_id }
-    : await ensurePackage(parsed.project_id, resolvedOrgId)
+  await requireAuthorization({ supabase, orgId: resolvedOrgId, userId,
+    permission: "closeout.write", projectId: parsed.project_id,
+    resourceType: "project", resourceId: parsed.project_id })
+  const { data: pkg, error: packageError } = await supabase.from("closeout_packages")
+    .select("id").eq("org_id", resolvedOrgId).eq("project_id", parsed.project_id)
+    .eq("id", parsed.closeout_package_id ?? (await prepareCloseoutPackage(parsed.project_id, resolvedOrgId)).id)
+    .maybeSingle()
+  if (packageError || !pkg) throw new Error("Closeout package does not belong to this project or is unavailable")
 
   let { data, error } = await supabase
     .from("closeout_items")

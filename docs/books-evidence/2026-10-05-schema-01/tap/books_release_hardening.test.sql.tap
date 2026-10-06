@@ -1,0 +1,12 @@
+1..11
+ok 1 - atomic projector RPC exists
+ok 2 - initial fact and journal post together
+ok 3 - one initial fact
+ok 4 - one initial posted journal
+ok 5 - revision reverses and replaces in one transaction
+ok 6 - revision creates the next immutable fact
+ok 7 - revision creates one reversal
+ok 8 - prior journal is marked reversed
+ok 9 - replacement and reversal are posted
+ok 10 - posted journals reject inserted lines
+ok 11 - failed line mutation leaves journal count unchanged

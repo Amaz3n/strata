@@ -1,6 +1,7 @@
 "use client"
 
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { useEffect, useMemo, useRef, useState, useTransition } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
@@ -68,8 +69,19 @@ export function SpecsRegisterClient({
   initialSectionId,
   canWrite,
 }: SpecsRegisterClientProps) {
+  const router = useRouter()
   const [sections, setSections] = useState(initialSections)
   const [uploads, setUploads] = useState(initialUploads)
+  const [sectionSource, setSectionSource] = useState(initialSections)
+  const [uploadSource, setUploadSource] = useState(initialUploads)
+  if (sectionSource !== initialSections) {
+    setSectionSource(initialSections)
+    setSections(initialSections)
+  }
+  if (uploadSource !== initialUploads) {
+    setUploadSource(initialUploads)
+    setUploads(initialUploads)
+  }
   const [query, setQuery] = useState("")
   const [uploadOpen, setUploadOpen] = useState(false)
   const [manualOpen, setManualOpen] = useState(false)
@@ -102,15 +114,29 @@ export function SpecsRegisterClient({
 
   useEffect(() => {
     if (!hasActiveUploads) return
+    const activeIds = new Set(uploads.filter((upload) => upload.status === "pending" || upload.status === "processing").map((upload) => upload.id))
+    let cancelled = false
+    let polling = false
     const timer = window.setInterval(async () => {
-      const result = await listSpecUploadsAction(projectId)
-      if (result.success) {
-        setUploads(result.data)
-        if (result.data.some((upload) => upload.status === "complete")) window.location.reload()
+      if (polling) return
+      polling = true
+      try {
+        const result = await listSpecUploadsAction(projectId)
+        if (!cancelled && result.success) {
+          setUploads(result.data)
+          if (result.data.some((upload) => upload.status === "complete" && activeIds.has(upload.id))) router.refresh()
+        }
+      } catch (error) {
+        if (!cancelled) console.warn("Could not refresh specification uploads", error)
+      } finally {
+        polling = false
       }
     }, 5000)
-    return () => window.clearInterval(timer)
-  }, [hasActiveUploads, projectId])
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [hasActiveUploads, uploads, projectId, router])
 
   useEffect(() => {
     if (!initialSectionId) return

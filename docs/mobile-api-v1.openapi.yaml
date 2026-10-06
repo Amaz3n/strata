@@ -7,6 +7,257 @@ servers:
 security:
   - bearerAuth: []
 paths:
+  /workspace:
+    get:
+      summary: List native workspace modules allowed for the current user and project posture
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - name: project_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Module definitions with id, title, group, SF Symbol name and permission-filtered create_fields and edit_fields. Fields may use kind rows with nested field definitions; their submitted value is a JSON array of string dictionaries (at most 100 rows and 10000 characters).
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Project not available to this user }
+        "422": { description: Invalid project identifier }
+  /workspace/{module}:
+    parameters:
+      - $ref: "#/components/parameters/OrganizationHeader"
+      - name: module
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Read allowed native workspace records
+      description: Returns explicitly projected scalar fields; this is a bounded list, not an export or a complete financial report.
+      parameters:
+        - name: project_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: Envelope containing records with id, title, status and labeled fields }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { description: Invalid project identifier }
+    post:
+      summary: Create a record using the permission-filtered native module composer
+      description: Permissions and project visibility are rechecked. Only module-defined input fields are accepted. Do not automatically retry a submission with an uncertain outcome.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [values]
+              properties:
+                project_id: { type: string, format: uuid }
+                values:
+                  type: object
+                  additionalProperties: { type: string, maxLength: 10000 }
+      responses:
+        "201": { description: Record saved }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "405": { description: Module does not support creation }
+        "422": { description: Invalid input with a user-facing validation message }
+  /workspace/billing/drafts:
+    post:
+      summary: Create a manual project invoice draft with native line items
+      description: Rechecks project visibility and invoice.write. Forces draft intent; issuance, source links, accounting mappings, and arbitrary metadata cannot be supplied. Uses Arc invoice validation and calculation services.
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project_id, invoice_number, title, issue_date, due_date, lines]
+              properties:
+                project_id: { type: string, format: uuid }
+                invoice_number: { type: string, minLength: 1, maxLength: 80 }
+                title: { type: string, minLength: 3, maxLength: 200 }
+                issue_date: { type: string, format: date }
+                due_date: { type: string, format: date }
+                tax_rate: { type: number, minimum: 0, maximum: 20 }
+                notes: { type: string, maxLength: 2000 }
+                lines:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    type: object
+                    required: [description, quantity, unit_cost]
+                    properties:
+                      description: { type: string, minLength: 1, maxLength: 1000 }
+                      quantity: { type: number, minimum: 0.01, maximum: 1000000 }
+                      unit: { type: string, maxLength: 20 }
+                      unit_cost: { type: number, minimum: 0, maximum: 100000000, description: Price in currency units, not cents }
+                      taxable: { type: boolean }
+      responses:
+        "201": { description: Envelope containing the created invoice id }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { description: Invalid invoice fields, lines, or dates }
+  /workspace/estimates/{recordId}/pdf:
+    get:
+      summary: Download a proposal or agreement PDF for native preview
+      description: Requires the project estimate module permission and exact organization/project membership. Executed documents use their stored signed PDF without falling back to live rendering. Drafts use the canonical web PDF renderer. Response is private and not cached.
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - name: recordId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: PDF document
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Estimate or stored executed PDF unavailable }
+        "422": { description: Invalid identifier }
+  /workspace/billing/{recordId}/draft:
+    parameters:
+      - $ref: "#/components/parameters/OrganizationHeader"
+      - name: recordId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      summary: Load an editable manual invoice draft with its revision
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: Envelope containing revision and input. Input has the creation fields and optional existing line IDs. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Invoice not in this project }
+        "409": { description: Issued, externally synchronized or source-derived invoice cannot be edited as a manual draft }
+    patch:
+      summary: Revise a manual draft while preserving server accounting links
+      description: Existing line IDs must belong to this invoice and cannot repeat. Client-supplied accounting/source links are ignored. Checks revision and canonical transactional concurrency controls. Does not issue or send the invoice.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision, input]
+              properties:
+                revision: { type: string }
+                input:
+                  type: object
+                  description: Same fields as invoice draft creation, with optional existing line IDs.
+      responses:
+        "200": { description: Draft saved }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Invoice not in this project }
+        "409": { description: Draft changed or is no longer editable }
+        "422": { description: Invalid invoice or line identity }
+  /workspace/{module}/{recordId}:
+    parameters:
+      - $ref: "#/components/parameters/OrganizationHeader"
+      - name: module
+        in: path
+        required: true
+        schema: { type: string }
+      - name: recordId
+        in: path
+        required: true
+        description: Record UUID; report slugs and signature draft identifiers are accepted for GET.
+        schema: { type: string }
+    get:
+      summary: Read a native record, related sections, signed documents, and permitted actions
+      parameters:
+        - name: project_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: filters
+          in: query
+          description: JSON object of string values for report-defined filter keys only.
+          schema: { type: string }
+      responses:
+        "200": { description: Envelope containing record, sections, actions and documents. Actions carry fields and an optional revision. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Record not visible in the selected workspace }
+        "422": { description: Invalid identifier or filters }
+    patch:
+      summary: Edit the explicitly supported fields of a native record
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [values]
+              properties:
+                project_id: { type: string, format: uuid }
+                values: { type: object, additionalProperties: { type: string, maxLength: 10000 } }
+      responses:
+        "200": { description: Record saved }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Record not visible in the selected workspace }
+        "422": { description: Invalid input }
+    post:
+      summary: Perform an available native record action
+      description: Rechecks visibility, permissions, child-record membership, current action availability and supplied revision. Do not automatically retry uncertain mutation outcomes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action_id, values]
+              properties:
+                project_id: { type: string, format: uuid }
+                action_id: { type: string, maxLength: 100 }
+                expected_revision: { type: string, maxLength: 100 }
+                values: { type: object, additionalProperties: { type: string, maxLength: 10000 } }
+      responses:
+        "200": { description: Action completed }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: Record changed since review }
+        "422": { description: Invalid action input }
+  /projects/{projectId}/photos:
+    parameters:
+      - $ref: "#/components/parameters/OrganizationHeader"
+      - name: projectId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      summary: Browse project photos and albums with expiring native media URLs
+      parameters:
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 48, default: 30 } }
+        - { name: albumId, in: query, schema: { type: string, format: uuid } }
+        - { name: q, in: query, schema: { type: string } }
+      responses:
+        "200": { description: Envelope containing photos, albums, next_cursor and can_upload. Photos include signed download_url and thumbnail_url. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      summary: Create or reuse a daily log for photo capture
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [local_date]
+              properties:
+                local_date: { type: string, format: date }
+      responses:
+        "200": { description: Envelope containing the daily log id for the existing daily-log photo upload endpoint }
+        "403": { $ref: "#/components/responses/Forbidden" }
   /session:
     get:
       summary: Resolve the current user, organizations, and preferred organization
@@ -413,6 +664,7 @@ paths:
         - $ref: "#/components/parameters/OrganizationHeader"
         - $ref: "#/components/parameters/ProjectId"
         - { name: folder, in: query, required: false, schema: { type: string, default: "/" } }
+        - { name: recursive, in: query, required: false, schema: { type: boolean, default: false }, description: Include all unarchived project documents for a download/search manifest. Excludes daily-log photo files. }
       responses:
         "200": { description: Folders and files }
         "401": { $ref: "#/components/responses/Unauthorized" }

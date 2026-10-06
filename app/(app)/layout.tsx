@@ -1,5 +1,7 @@
 import React, { Suspense } from "react"
+import { DocumentTransferProvider } from "@/components/documents/transfer-provider"
 import { connection } from "next/server"
+import { unstable_rethrow } from "next/navigation"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 
 import type { User } from "@/lib/types"
@@ -45,14 +47,20 @@ async function loadNavigationBadges(): Promise<NavigationBadgeValues> {
   await connection()
 
   const [releaseNotesSummary, navigationBadgeCounts] = await Promise.all([
-    getReleaseNotesSummary().catch(() => ({ unreadCount: 0, announcement: null })),
-    getNavigationBadgeCounts().catch(() => ({
-      pipelineBadgeCount: 0,
-      myWorkBadgeCount: 0,
-      readyToBillBadgeCount: 0,
-      projectReviewBadgeCounts: {} as Record<string, number>,
-      projectCorrespondenceBadgeCounts: {} as Record<string, number>,
-    })),
+    getReleaseNotesSummary().catch((error) => {
+      unstable_rethrow(error)
+      return { unreadCount: 0, announcement: null }
+    }),
+    getNavigationBadgeCounts().catch((error) => {
+      unstable_rethrow(error)
+      return {
+        pipelineBadgeCount: 0,
+        myWorkBadgeCount: 0,
+        readyToBillBadgeCount: 0,
+        projectReviewBadgeCounts: {} as Record<string, number>,
+        projectCorrespondenceBadgeCounts: {} as Record<string, number>,
+      }
+    }),
   ])
 
   return {
@@ -66,10 +74,10 @@ async function loadNavigationBadges(): Promise<NavigationBadgeValues> {
 }
 
 async function ReleaseNotesAnnouncementSlot() {
-  const summary = await getReleaseNotesSummary().catch(() => ({
-    unreadCount: 0,
-    announcement: null,
-  }))
+  const summary = await getReleaseNotesSummary().catch((error) => {
+    unstable_rethrow(error)
+    return { unreadCount: 0, announcement: null }
+  })
   return <ReleaseNotesAnnouncement announcement={summary.announcement} />
 }
 
@@ -86,11 +94,13 @@ async function AuthenticatedAppChrome({
   // every authenticated route was an empty sidebar rectangle.
   const {
     user: currentUser,
+    orgId,
     permissions,
     access,
     platformAccess,
     platformSessionState,
     productTier,
+    businessProfile,
     ambientContext,
     projects,
     hasProductionProjects,
@@ -126,18 +136,20 @@ async function AuthenticatedAppChrome({
       }
     >
       <SidebarProvider className="h-svh max-h-svh overflow-hidden">
-        <SettingsDraftProvider key={currentUser?.id}><OptimisticPathProvider>
+        <SettingsDraftProvider key={currentUser?.id}><DocumentTransferProvider key={`${currentUser?.id}:${orgId}`} scope={`${currentUser?.id}:${orgId}`}><OptimisticPathProvider>
           <NavigationBadgeProvider valuesPromise={navigationBadgesPromise}>
             <DemoUsageTracker />
             <Suspense fallback={null}>
               <ReleaseNotesAnnouncementSlot />
             </Suspense>
+            <PageTitleProvider productTier={productTier} businessProfile={businessProfile}>
             <AppSidebar
               user={currentUser}
               projects={projects}
               canAccessPlatform={platformAccess.canAccessPlatform}
               permissions={permissions}
               productTier={productTier}
+              businessProfile={businessProfile}
               showProductionNavigation={showProductionNavigation}
               showPurchasingNavigation={showPurchasingNavigation}
               showPipelineNavigation={productTier !== "production"}
@@ -145,7 +157,6 @@ async function AuthenticatedAppChrome({
             />
             <MobileActionProvider>
               <SidebarInset className="h-svh max-h-svh min-w-0 min-h-0 overflow-hidden">
-                <PageTitleProvider productTier={productTier}>
                   <AppHeader
                     divisions={ambientContext.divisions}
                     divisionId={ambientContext.divisionId}
@@ -157,7 +168,6 @@ async function AuthenticatedAppChrome({
                   />
                   <TrialStatusBanner access={access} />
                   <AppPageContent>{children}</AppPageContent>
-                </PageTitleProvider>
               </SidebarInset>
               <MobileBottomNav
                 user={currentUser}
@@ -165,14 +175,16 @@ async function AuthenticatedAppChrome({
                 canAccessPlatform={platformAccess.canAccessPlatform}
                 permissions={permissions}
                 productTier={productTier}
+              businessProfile={businessProfile}
                 showProductionNavigation={showProductionNavigation}
                 showPipelineNavigation={productTier !== "production"}
                 showPurchasingNavigation={showPurchasingNavigation}
                 booksEnabled={booksEnabled}
               />
             </MobileActionProvider>
+            </PageTitleProvider>
           </NavigationBadgeProvider>
-        </OptimisticPathProvider></SettingsDraftProvider>
+        </OptimisticPathProvider></DocumentTransferProvider></SettingsDraftProvider>
       </SidebarProvider>
     </div>
   )

@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache"
 import { z } from "zod"
 
 import { requireAuth } from "@/lib/auth/context"
-import { requireAnyPermission } from "@/lib/services/permissions"
+import { requireAnyPlatformPermission } from "@/lib/services/platform-access"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
@@ -85,11 +85,8 @@ export async function extendCustomerTrialAction(formData: FormData) {
         throw new Error(parsed.error.errors.at(0)?.message ?? "Invalid trial extension request.")
       }
 
-      const { user, orgId } = await requireAuth()
-      await requireAnyPermission(["billing.manage", "platform.billing.manage"], {
-        orgId: orgId ?? undefined,
-        userId: user.id,
-      })
+      const { user } = await requireAuth()
+      await requireAnyPlatformPermission(["platform.billing.manage"])
 
       const supabase = createServiceSupabaseClient()
       const now = new Date()
@@ -169,11 +166,8 @@ export async function activateCustomerBillingAction(formData: FormData) {
         return { error: parsed.error.errors.at(0)?.message ?? "Invalid billing activation request." }
       }
 
-      const { user, orgId } = await requireAuth()
-      await requireAnyPermission(["billing.manage", "platform.billing.manage"], {
-        orgId: orgId ?? undefined,
-        userId: user.id,
-      })
+      const { user } = await requireAuth()
+      await requireAnyPlatformPermission(["platform.billing.manage"])
 
       try {
         const result = await activateOrgBilling({
@@ -212,11 +206,8 @@ export async function updateCustomerDetailsAction(formData: FormData) {
         throw new Error(parsed.error.errors.at(0)?.message ?? "Invalid organization update request.")
       }
 
-      const { user, orgId } = await requireAuth()
-      await requireAnyPermission(["billing.manage", "platform.billing.manage"], {
-        orgId: orgId ?? undefined,
-        userId: user.id,
-      })
+      const { user } = await requireAuth()
+      await requireAnyPlatformPermission(["platform.billing.manage"])
 
       const supabase = createServiceSupabaseClient()
 
@@ -307,11 +298,8 @@ export async function updateCustomerSubscriptionAction(formData: FormData) {
         throw new Error(parsed.error.errors.at(0)?.message ?? "Invalid subscription update request.")
       }
 
-      const { user, orgId } = await requireAuth()
-      await requireAnyPermission(["billing.manage", "platform.billing.manage"], {
-        orgId: orgId ?? undefined,
-        userId: user.id,
-      })
+      const { user } = await requireAuth()
+      await requireAnyPlatformPermission(["platform.billing.manage"])
 
       const supabase = createServiceSupabaseClient()
       const planCode = emptyToNull(parsed.data.planCode)
@@ -425,10 +413,7 @@ export async function deleteOrganizationAction(orgId: string) {
         return { error: "Invalid organization ID" }
       }
 
-      const { user } = await requireAuth()
-      await requireAnyPermission(["billing.manage", "platform.billing.manage"], {
-        userId: user.id,
-      })
+      await requireAnyPlatformPermission(["platform.billing.manage"])
 
       const supabase = createServiceSupabaseClient()
 

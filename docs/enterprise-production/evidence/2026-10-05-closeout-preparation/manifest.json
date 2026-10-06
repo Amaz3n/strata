@@ -1,0 +1,227 @@
+{
+  "date": "2026-10-05",
+  "recordedAt": "2026-10-05T04:18:58.432464+00:00",
+  "taskIds": [
+    "F02",
+    "F01",
+    "E09-03",
+    "E02-02"
+  ],
+  "classification": "progress_local_implementation_not_acceptance",
+  "previousGoalTurnClassification": "no_progress_status_report",
+  "head": "9f1549af84a6998eb2d851415ec6f119ab89a96f",
+  "sourceSnapshots": [
+    {
+      "path": "lib/services/closeout.ts",
+      "sha256": "d68a01da7268d972052a6db69da7b0684d0675f5b5eef57ff37be93ec9971d44",
+      "basis": "post-implementation snapshot; not a claimed before/after invariant across every earlier regression run"
+    },
+    {
+      "path": "lib/services/project-close-readiness.ts",
+      "sha256": "fd25c01a882fd17f7368f2cf5065371026f4cd4183a6961fd1696784a31c9cb1",
+      "basis": "post-implementation snapshot; not a claimed before/after invariant across every earlier regression run"
+    },
+    {
+      "path": "lib/validation/closeout.ts",
+      "sha256": "459834189a8fafa22a6b8ef194a8dee9615dbbb56aa94dcc632f7c4559022817",
+      "basis": "post-implementation snapshot; not a claimed before/after invariant across every earlier regression run"
+    },
+    {
+      "path": "app/(app)/closeout/actions.ts",
+      "sha256": "1de72d8498392817370eb7f065f4ed801003d7e45fc80a72bbf129eda4740cd7",
+      "basis": "post-implementation snapshot; not a claimed before/after invariant across every earlier regression run"
+    },
+    {
+      "path": "app/(app)/projects/[id]/closeout/page.tsx",
+      "sha256": "836a0c7d126ac346ca28403aa226834488b7aea0a0f1bbe6f4f8c1f9707091af",
+      "basis": "post-implementation snapshot; not a claimed before/after invariant across every earlier regression run"
+    },
+    {
+      "path": "components/closeout/closeout-client.tsx",
+      "sha256": "8d75d17b1cd529aef1ee73dc3a1aea316f206744b9ccce248ac394150c73e9b9",
+      "basis": "post-implementation snapshot; not a claimed before/after invariant across every earlier regression run"
+    },
+    {
+      "path": "tests/closeout-preparation.test.js",
+      "sha256": "70600e37cef03e001a74dcac252a86b8f9326f6462ac409ed7e5d8ac0a535d67",
+      "basis": "post-implementation snapshot; not a claimed before/after invariant across every earlier regression run"
+    },
+    {
+      "path": "tests/fixtures/field-client-refresh/ui.jsx",
+      "sha256": "9f3fc604f9b2d67bc7848a96971b337a863644d14f85733cdedd6d7f116f1291",
+      "basis": "post-implementation snapshot; not a claimed before/after invariant across every earlier regression run"
+    },
+    {
+      "path": "scripts/test-field-client-refresh.mjs",
+      "sha256": "b1b7540d4bc26e7394ad98a2a5a560d6b3784fc0ec6b1171d0831a8147d8ece1",
+      "basis": "post-implementation snapshot; not a claimed before/after invariant across every earlier regression run"
+    },
+    {
+      "path": "package.json",
+      "sha256": "4bfd20ab8c1f69dd0f5afb41224f3a716b16bc73dae7761fc6d6de5bc67b6c5a",
+      "basis": "post-implementation snapshot; not a claimed before/after invariant across every earlier regression run"
+    }
+  ],
+  "checks": [
+    {
+      "name": "focused",
+      "command": "node --test tests/closeout-preparation.test.js",
+      "exitCode": 0,
+      "log": "focused.log",
+      "sha256": "8000d3c483d0267679f6f9e4242dfc8561f595919aa4c915f85a52a2121f30d7",
+      "tests": 15,
+      "pass": 15,
+      "fail": 0,
+      "skipped": 0
+    },
+    {
+      "name": "auth",
+      "command": "pnpm test:auth",
+      "exitCode": 0,
+      "log": "auth.log",
+      "sha256": "a0e500937951d1b6f807ae6920c910fbc6aa0edd278c194e5ec4a60066b5bf55",
+      "tests": 1639,
+      "pass": 1639,
+      "fail": 0,
+      "skipped": 0
+    },
+    {
+      "name": "financials",
+      "command": "pnpm test:financials",
+      "exitCode": 0,
+      "log": "financials.log",
+      "sha256": "7de1dceaf8dba874708bd2fdc4bf3dd46e02e4d85b9128e578612824c7d94e99",
+      "tests": 3386,
+      "pass": 3386,
+      "fail": 0,
+      "skipped": 0
+    },
+    {
+      "name": "browser",
+      "command": "pnpm test:field:browser",
+      "exitCode": 0,
+      "log": "browser.log",
+      "sha256": "451a6fc6c5382e282d18787e8a78e4b3f685be384b5a5e31a0b49170ef764c7e"
+    },
+    {
+      "name": "typecheck",
+      "command": "pnpm typecheck",
+      "exitCode": 0,
+      "log": "typecheck.log",
+      "sha256": "3129e0dd6fffe6e39cca0949fc31cbaf641f8d72bc70baa672ede1b949b7603b"
+    },
+    {
+      "name": "lint",
+      "command": "pnpm lint",
+      "exitCode": 0,
+      "log": "lint.log",
+      "sha256": "8ecf36ad9a01a38ba89fc8054307d3aa095367bbeb12f35a74dfa741fb135a2d"
+    },
+    {
+      "name": "diff-check",
+      "command": "git diff --check",
+      "exitCode": 0,
+      "log": "diff-check.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "initial-lint-failure",
+      "command": null,
+      "exitCode": 1,
+      "log": "initial-lint-failure.log",
+      "sha256": "27363aec8c2321c247861e55cca450571591b53ee200bf657e570c8ca7f9b577"
+    },
+    {
+      "name": "initial-browser-import-failure",
+      "command": null,
+      "exitCode": 1,
+      "log": "initial-browser-import-failure.log",
+      "sha256": "17c5ae5511f0539110883e9581c7e871dc230ecacbb9d1e7b264a2ee51dbb912"
+    },
+    {
+      "name": "browser-sandbox-listen-failure",
+      "command": null,
+      "exitCode": 1,
+      "log": "browser-sandbox-listen-failure.log",
+      "sha256": "8a030ab9768089c7fe91f0764c717144b8eead4ffce659159c6c4f75e8e7bee3"
+    },
+    {
+      "name": "browser-writer-fixture-failure",
+      "command": null,
+      "exitCode": 1,
+      "log": "browser-writer-fixture-failure.log",
+      "sha256": "cc26a690d6acee136bc557341d8ffcf10e033ace83506b4d411303416c31ef69"
+    },
+    {
+      "name": "inventory-refresh-final",
+      "exitCode": 0,
+      "log": "inventory-refresh-final.log",
+      "sha256": "05302eb4810b7222e7fd05f85b3034fccdafda8686443e241d806f47c608c8cb",
+      "acceptance": false
+    },
+    {
+      "name": "inventory-check",
+      "exitCode": 1,
+      "log": "inventory-check.log",
+      "sha256": "dcf6f4990094748420f9fc609aad4a0fc9bbfda9c5fa9a7f2f3908d3483ace90",
+      "acceptance": false
+    }
+  ],
+  "dataset": "Synthetic home/org/user IDs; fake Supabase stores, actual SDK with isolated fetch, compiled actual React in loopback browser fixture with off-origin requests blocked. No production data or environment credentials loaded by these tests.",
+  "actors": [
+    "closeout reader",
+    "home-authorized writer",
+    "denied home/org actor"
+  ],
+  "engineObservation": {
+    "existingSession": 20780,
+    "existingSessionState": "confirmed live via write_stdin, no output; not restarted",
+    "processObservation": "read-only process inspection found docker info waiting with docker-ai CLI metadata child",
+    "directVersionProbe": {
+      "command": "node scripts/books-acceptance/engine-probe.cjs unix:///Users/agustinzenuto/.docker/run/docker.sock",
+      "exitCode": 1,
+      "error": "Docker version endpoint returned empty or invalid JSON"
+    },
+    "independentHTTPObservation": {
+      "status": 200,
+      "bodyBytes": 0
+    },
+    "conclusion": "Readiness is unproven; no container restart, schema replay, migration application or database test writes performed. An empty response is not proof of engine termination."
+  },
+  "implementationAcceptance": false,
+  "releaseAcceptance": false,
+  "remaining": [
+    "No full-schema/current JWT/RLS, independent PostgreSQL sessions or authenticated customer/persona QA; no release acceptance.",
+    "Package/default inserts and best-effort audit remain separate requests. Transaction-bound current permission/ancestry, original immutable receipt/event/audit co-commit and legacy writer cutover remain open.",
+    "Stable primary-key conflict-ignore retries do not establish database uniqueness across legacy writers using random package IDs; duplicate existing packages surface as errors.",
+    "Legacy packages retain their original requirements; historical incomplete defaults require governed reconciliation, not title-based completion or silent read repair.",
+    "Closeout item/readiness/attachment collections still need complete bounded discovery and accurate whole-scope exports/counts.",
+    "Required inspection acceptance is not yet enforced across every generic closeout completion writer/export; file upload/link recovery remains separate.",
+    "Production/home hierarchy, search, mobile, reports, provider fanout, accessibility/dark/device QA and customer-specific close policies remain open."
+  ],
+  "inventoryCheck": {
+    "mode": "--check",
+    "surfaces": 727,
+    "sourceModules": 2908,
+    "nativeFiles": 70,
+    "drift": 0,
+    "dependencyDrift": 0,
+    "dependencyRemoved": 0,
+    "unresolvedLocalImports": 0,
+    "nativeDrift": 0,
+    "nativeMissing": 0,
+    "nativeUnmapped": 70,
+    "nativeUnaccepted": 70,
+    "missing": 0,
+    "unmapped": 571,
+    "unaccepted": 727,
+    "invalidTaskMappings": 0,
+    "unresolvedRemoved": 0,
+    "unresolvedNativeRemoved": 0,
+    "limit": "Static register consistency is not runtime/JWT/RLS, persona, concurrency or release acceptance."
+  },
+  "revisionNote": "Final UI retains existing checklist evidence during partial preparation. Added focused rendered regression and final authorization/browser/typecheck/lint verification. Financial regression result predates this display-only refinement and contains the initial 12 focused cases; final focused 15 cover the additional cases.",
+  "history": [
+    "manifest-before-partial-display-check.json"
+  ]
+}

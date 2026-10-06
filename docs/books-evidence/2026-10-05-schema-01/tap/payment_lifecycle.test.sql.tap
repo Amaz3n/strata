@@ -1,0 +1,52 @@
+1..51
+ok 1 - Function public.create_payment_run_atomic(uuid, uuid, uuid, text, text, smallint, bigint, bigint, bigint, bigint, jsonb, text, jsonb) should exist
+ok 2 - Function public.record_ap_payment_atomic(uuid, uuid, text, text, text, text, text, timestamp with time zone) should exist
+ok 3 - Function public.record_ap_payment_reversal_atomic(uuid, uuid, bigint, text, text, text, jsonb) should exist
+ok 4 - Function public.record_manual_ap_payment_atomic(uuid, uuid, uuid, bigint, text, text, text, text, timestamp with time zone, jsonb, text) should exist
+ok 5 - Function public.apply_vendor_credit_atomic(uuid, uuid, uuid, uuid, bigint, text, jsonb) should exist
+ok 6 - Function public.reverse_manual_ap_payment_atomic(uuid, uuid, uuid, bigint, text, text) should exist
+ok 7 - vendor profiles do not retain a stale password hash
+ok 8 - vendor profiles do not retain a stale authentication timestamp
+ok 9 - payment runs do not carry an always-empty speculative allocation snapshot
+ok 10 - create_payment_run_atomic accepts a constraint-valid run
+ok 11 - run is persisted once
+ok 12 - run item is persisted
+ok 13 - run payee is persisted
+ok 14 - electronic payment runs cannot advertise an unimplemented external-check payee
+ok 15 - each payable has exactly one electronic destination
+ok 16 - run creation is idempotent for the same request
+ok 17 - an active run makes its live payable obligation immutable
+ok 18 - invoice duplicate protection canonicalizes punctuation and spacing
+ok 19 - the database refuses to arm a rail with unbounded production risk
+ok 20 - provider event attempt allocation succeeds
+ok 21 - provider event retries allocate another attempt atomically
+ok 22 - provider event attempt numbers remain contiguous
+ok 23 - manual payments cannot change the approved obligation currency
+ok 24 - record_ap_payment_atomic settles the complete AP hierarchy
+ok 25 - electronic payment updates paid cents
+ok 26 - electronic payment closes the bill
+ok 27 - electronic payment closes the run
+ok 28 - electronic settlement is idempotent
+ok 29 - record_ap_payment_reversal_atomic reopens settled AP
+ok 30 - reversal removes paid cents
+ok 31 - reversal reopens the bill
+ok 32 - returned-only run rolls up to failed
+ok 33 - manual payment atomically respects retained balance
+ok 34 - total less retainage closes the manual bill
+ok 35 - manual payment replay returns the committed result
+ok 36 - manual replay cannot duplicate the payment row
+ok 37 - vendor credit is applied through the atomic payment writer
+ok 38 - full vendor credit closes the approved bill
+ok 39 - database trigger rejects draft approval regardless of caller
+ok 40 - a manual payment is recorded so it can be reversed
+ok 41 - the seeded manual payment closes the payable
+ok 42 - a reversal must say why
+ok 43 - a reversal cannot exceed what was paid
+ok 44 - a rail payment cannot be reversed by hand
+ok 45 - a manual payment can be reversed in full
+ok 46 - reversal returns the payable balance
+ok 47 - a fully reversed payable is payable again
+ok 48 - a reversed payable is no longer stamped paid
+ok 49 - the reversed payment is marked refunded
+ok 50 - reversal replay returns the committed result
+ok 51 - reversal replay cannot double-reverse

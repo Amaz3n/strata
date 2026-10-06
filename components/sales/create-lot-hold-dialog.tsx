@@ -1,6 +1,6 @@
 "use client"
 
-import type { PipelineCommunityOption } from "@/components/prospects/prospect-presentation"
+import type { SalesCommunityOption } from "@/components/sales/community-option"
 import { LotHoldForm, type HoldBuyer } from "@/components/sales/lot-hold-form"
 import {
   Dialog,
@@ -12,7 +12,7 @@ import {
 
 interface CreateLotHoldDialogProps {
   buyer: HoldBuyer | null
-  communities: PipelineCommunityOption[]
+  communities: SalesCommunityOption[]
   open: boolean
   onOpenChange: (open: boolean) => void
 }

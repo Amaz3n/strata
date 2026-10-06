@@ -1,4 +1,5 @@
 import "server-only";
+import { sendInvoiceAfterWaiverSignature } from "./invoice-waiver-auto-send";
 import { invoiceWaiverContentHash } from "@/lib/lien-waivers/invoice-content";
 import { createHash } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -47,8 +48,10 @@ export async function completeInvoiceWaiverFromSigning({
   const workflow = readWaiverWorkflow(waiver);
   if (!workflow || workflow.signing_document_id !== documentId)
     throw new Error("Signing document does not match this waiver");
-  if (workflow.lifecycle === "signed" && workflow.file_id === executedFileId)
+  if (workflow.lifecycle === "signed" && workflow.file_id === executedFileId) {
+    await sendInvoiceAfterWaiverSignature(supabase, orgId, waiver.invoice_id, id);
     return;
+  }
   const [file, invoice, payments, allocations, reversals, envelope] =
     await Promise.all([
       supabase
@@ -136,6 +139,7 @@ export async function completeInvoiceWaiverFromSigning({
     signed_at: signedAt,
     envelope_id: envelopeId,
     shared: Boolean(workflow.sharing_requested && !needsReview &&
+      invoice.data.metadata?.waiver_packet?.delivery_mode !== "separate_signature" &&
       (!invoice.data.metadata?.waiver_packet || (invoice.data.metadata.waiver_packet.enabled &&
         (!invoice.data.metadata.waiver_packet.waiver_id || invoice.data.metadata.waiver_packet.waiver_id === id)))),
     needs_review: needsReview,
@@ -155,16 +159,18 @@ export async function completeInvoiceWaiverFromSigning({
       released_at: ids.length && paymentValid && !needsReview ? signedAt : null,
       released_by_payment_id:
         ids.length && paymentValid && !needsReview ? ids[0] : null,
-      updated_at: signedAt,
+      updated_at: new Date().toISOString(),
     })
     .eq("org_id", orgId)
     .eq("id", id)
     .eq("status", waiver.status)
-    .eq("metadata", JSON.stringify(waiver.metadata))
+    .eq("updated_at", waiver.updated_at)
     .select("id")
     .maybeSingle();
-  if (updateError || !updated)
+  if (updateError) throw new Error("Could not complete the waiver signature. Retry required.", { cause: updateError });
+  if (!updated)
     throw new Error(
       "Waiver changed during signature completion. Retry required.",
     );
+  await sendInvoiceAfterWaiverSignature(supabase, orgId, waiver.invoice_id, id);
 }

@@ -59,7 +59,7 @@ export const packageStatusStyles: Record<string, string> = {
   cancelled: "bg-destructive/10 text-destructive border-destructive/30",
 }
 
-export const disallowedBidStatuses = ["closed", "awarded", "cancelled"]
+export const disallowedBidStatuses = ["draft", "closed", "awarded", "cancelled"]
 
 /** Absolute deadline rendered in the package's declared timezone, with an
  * explicit short zone abbreviation so subs never misread a due time. Falls back

@@ -37,13 +37,14 @@ const inflight = new Map<string, Promise<string | null>>()
  */
 let directReadsUnavailable = false
 
-export async function resolveFileViewUrl(fileId: string): Promise<string | null> {
+export async function resolveFileViewUrl(fileId: string, revision = ""): Promise<string | null> {
+  const key = `${fileId}:${revision}`
   if (directReadsUnavailable) return null
 
-  const cached = cache.get(fileId)
+  const cached = cache.get(key)
   if (cached && cached.expiresAt > Date.now()) return cached.url
 
-  const existing = inflight.get(fileId)
+  const existing = inflight.get(key)
   if (existing) return existing
 
   const request = (async (): Promise<string | null> => {
@@ -60,7 +61,7 @@ export async function resolveFileViewUrl(fileId: string): Promise<string | null>
       if (typeof url !== "string" || url.length === 0) return null
 
       const ttlMs = typeof expiresIn === "number" && expiresIn > 0 ? expiresIn * 1000 : 0
-      cache.set(fileId, {
+      cache.set(key, {
         url,
         expiresAt: Date.now() + Math.max(0, ttlMs - EXPIRY_MARGIN_MS),
       })
@@ -70,11 +71,11 @@ export async function resolveFileViewUrl(fileId: string): Promise<string | null>
       // URL still works, so this is not an error worth surfacing.
       return null
     } finally {
-      inflight.delete(fileId)
+      inflight.delete(key)
     }
   })()
 
-  inflight.set(fileId, request)
+  inflight.set(key, request)
   return request
 }
 
@@ -88,6 +89,6 @@ export async function resolveFileViewUrl(fileId: string): Promise<string | null>
  * load on every document.
  */
 export function reportFileViewUrlFailure(fileId: string): void {
-  cache.delete(fileId)
+  for (const key of cache.keys()) if (key.startsWith(`${fileId}:`)) cache.delete(key)
   directReadsUnavailable = true
 }

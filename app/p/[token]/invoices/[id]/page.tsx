@@ -1,5 +1,6 @@
+import { connection } from "next/server"
 import { InvoiceWaiverLinks } from "@/components/portal/invoice-waiver-links"
-import { notFound } from "next/navigation"
+import { notFound, unstable_rethrow } from "next/navigation"
 
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { getInvoiceForPortal } from "@/lib/services/invoices"
@@ -16,63 +17,73 @@ interface Params {
 
 
 export default async function InvoicePortalPage({ params }: Params) {
+  await connection()
   const { token, id } = await params
-  let access
+  let access: Awaited<ReturnType<typeof assertPortalActionAccess>>
   try {
     access = await assertPortalActionAccess(token, {
       portalType: "client",
       requireProject: true,
       permission: "can_view_invoices",
     })
-  } catch {
+  } catch (error) {
+    unstable_rethrow(error)
     notFound()
   }
 
-  const invoice = await getInvoiceForPortal(id, access.org_id, access.project_id)
+  const projectId = access.project_id
+  if (!projectId) notFound()
+  const invoice = await getInvoiceForPortal(id, access.org_id, projectId)
   if (!invoice) {
     notFound()
   }
 
+  const portalInvoice = invoice
   const publishableKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
 
-  let paymentProps:
-    | {
-        publishableKey: string
-        portalToken: string
-        feeQuotes: ReturnType<typeof calculatePaymentFeeQuotes>
-      }
-    | null = null
+  async function loadPaymentProps() {
+    if (!publishableKey || !access.permissions.can_pay_invoices) return null
+    const balanceDue = portalInvoice.totals?.balance_due_cents ?? portalInvoice.balance_due_cents ?? portalInvoice.total_cents ?? 0
+    if (balanceDue <= 0 || !portalInvoice.token) return null
 
-  if (publishableKey && access.permissions.can_pay_invoices) {
     try {
-      const balanceDue = invoice.totals?.balance_due_cents ?? invoice.balance_due_cents ?? invoice.total_cents ?? 0
-      if (balanceDue > 0 && invoice.token) {
-        const policy = await loadPaymentFeePolicy(createServiceSupabaseClient(), access.org_id)
-        paymentProps = {
-          publishableKey,
-          portalToken: token,
-          feeQuotes: calculatePaymentFeeQuotes(balanceDue, restrictPaymentFeePolicyToInvoice(policy, invoice.metadata)),
-        }
+      const policy = await loadPaymentFeePolicy(createServiceSupabaseClient(), access.org_id)
+      return {
+        publishableKey,
+        portalToken: token,
+        feeQuotes: calculatePaymentFeeQuotes(balanceDue, restrictPaymentFeePolicyToInvoice(policy, portalInvoice.metadata)),
       }
     } catch (err) {
-      // Gracefully degrade: show the invoice and offline payment instructions if payment settings cannot load.
+      unstable_rethrow(err)
+      // Show the invoice and offline instructions if payment settings cannot load.
       console.warn("Payment options not created for portal invoice:", err)
+      return null
     }
   }
 
-  const [receiptsResult, costDetailsResult, backupPackagesResult] = await Promise.allSettled([
+  const paymentPromise = loadPaymentProps()
+  const proofPromise = Promise.allSettled([
     listReceiptsForInvoice({ orgId: access.org_id, invoiceId: invoice.id }),
     listOpenBookCostDetailsForInvoice({
       invoiceId: invoice.id,
       orgId: access.org_id,
-      projectId: access.project_id,
+      projectId,
     }),
     listSharedInvoiceBackupPackagesForPortal({
       orgId: access.org_id,
-      projectId: access.project_id,
+      projectId,
       invoiceId: invoice.id,
     }),
   ])
+
+  const [paymentProps, [receiptsResult, costDetailsResult, backupPackagesResult]] = await Promise.all([
+    paymentPromise,
+    proofPromise,
+  ])
+
+  for (const result of [receiptsResult, costDetailsResult, backupPackagesResult]) {
+    if (result.status === "rejected") unstable_rethrow(result.reason)
+  }
 
   const proofErrors = [
     receiptsResult.status === "rejected" ? `Receipts: ${receiptsResult.reason?.message ?? String(receiptsResult.reason)}` : null,

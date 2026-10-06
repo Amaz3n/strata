@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache"
 import { z } from "zod"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
-import { markClearedToClose, removeClosingAdjustment, scheduleClosing, settleClosing, updateClosingChecklistItem, upsertClosingAdjustment } from "@/lib/services/closings"
+import { recoverClosingCompletion, markClearedToClose, removeClosingAdjustment, scheduleClosing, settleClosing, updateClosingChecklistItem, upsertClosingAdjustment } from "@/lib/services/closings"
 import { generateSettlementStatementPdf } from "@/lib/services/reports/settlement-statement"
 
 async function run<T>(projectId: string, operation: () => Promise<T>): Promise<ActionResult<T>> {
@@ -32,3 +32,5 @@ export async function downloadSettlementStatementAction(projectId: string) {
     return { fileName, pdfBase64: pdf.toString("base64") }
   })
 }
+
+export async function recoverClosingCompletionAction(projectId: string, closingId: string) { return run(projectId, () => recoverClosingCompletion(z.string().uuid().parse(projectId), z.string().uuid().parse(closingId))) }

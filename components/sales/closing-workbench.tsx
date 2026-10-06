@@ -4,6 +4,7 @@ import { Fragment, useMemo, useState, useTransition } from "react"
 import { toast } from "sonner"
 
 import {
+  recoverClosingCompletionAction,
   downloadSettlementStatementAction,
   markClearedToCloseAction,
   removeClosingAdjustmentAction,
@@ -63,12 +64,14 @@ export function ClosingWorkbench({ projectId, detail }: { projectId: string; det
         toast.error(error instanceof Error ? error.message : "Action failed")
       }
     })
+  const canManage = detail.canManageClosing && !["closed", "cancelled"].includes(detail.closing.status)
   const settlement = detail.settlementPreview
   const posting = (detail.closing.metadata ?? {}) as Record<string, unknown>
 
   return (
     <div className="space-y-5 p-4">
       {posting.books_posting_status ? <div className="border p-4 text-sm"><p>Books posting: {String(posting.books_posting_status).replaceAll("_", " ")}</p>{posting.books_posting_error ? <p className="mt-2 text-destructive">{String(posting.books_posting_error)}. Resolve the accounting issue, then retry settlement using the same date and payment reference.</p> : null}</div> : null}
+      {detail.closing.status === "closed" && detail.canRecoverCompletion ? <div className="flex flex-wrap items-center justify-between gap-3 border p-4 text-sm"><p>Retry lot handoff, warranty enrollment and statement filing after a completion failure.</p><Button size="sm" variant="outline" disabled={pending} onClick={() => act(() => recoverClosingCompletionAction(projectId, detail.closing.id), "Closing completion verified")}>Retry completion</Button></div> : null}
       <SettlementStatement projectId={projectId} closing={detail.closing} settlement={settlement} />
 
       <section className="border bg-background">
@@ -82,8 +85,9 @@ export function ClosingWorkbench({ projectId, detail }: { projectId: string; det
               {detail.closing.community?.name} · Lot {detail.closing.lot?.lot_number}
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <Input className="w-40" type="date" value={scheduledDate} onChange={(event) => setScheduledDate(event.target.value)} />
+          {canManage ? <div className="flex items-center gap-2">
+            <label htmlFor="closing-scheduled-date" className="sr-only">Scheduled closing date</label>
+            <Input id="closing-scheduled-date" className="w-40" type="date" value={scheduledDate} onChange={(event) => setScheduledDate(event.target.value)} />
             <Button
               size="sm"
               variant="outline"
@@ -99,9 +103,10 @@ export function ClosingWorkbench({ projectId, detail }: { projectId: string; det
             >
               Clear to close
             </Button>
-          </div>
+          </div> : <p className="text-sm text-muted-foreground">Scheduled: {formatDate(detail.closing.scheduled_date)}</p>}
         </div>
         <div className="divide-y">
+          {detail.checklist.length === 0 && <p className="px-4 py-3 text-sm text-muted-foreground">{canManage ? "Schedule this closing to prepare its checklist." : "The closing checklist has not been prepared."}</p>}
           {detail.checklist.map((item) => (
             <div key={item.id} className="flex items-center justify-between gap-3 px-4 py-3">
               <div>
@@ -113,7 +118,7 @@ export function ClosingWorkbench({ projectId, detail }: { projectId: string; det
               </div>
               <div className="flex gap-2">
                 <Badge variant={item.status === "complete" ? "secondary" : "outline"}>{item.status}</Badge>
-                {item.status !== "complete" && (
+                {canManage && item.status !== "complete" && (
                   <Button
                     size="sm"
                     variant="outline"
@@ -129,9 +134,9 @@ export function ClosingWorkbench({ projectId, detail }: { projectId: string; det
         </div>
       </section>
 
-      <SettlementAdjustments projectId={projectId} closing={detail.closing} settlement={settlement} pending={pending} act={act} />
+      <SettlementAdjustments projectId={projectId} closing={detail.closing} settlement={settlement} canManage={canManage} pending={pending} act={act} />
 
-      {detail.closing.status === "cleared_to_close" && (
+      {detail.closing.status === "cleared_to_close" && detail.canSettleClosing && (
         <section className="border border-primary/30 bg-primary/5 p-4">
           <h2 className="text-sm font-semibold">Settle closing</h2>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -327,12 +332,14 @@ function SettlementAdjustments({
   projectId,
   closing,
   settlement,
+  canManage,
   pending,
   act,
 }: {
   projectId: string
   closing: ClosingDetail["closing"]
   settlement: SettlementPreview
+  canManage: boolean
   pending: boolean
   act: <T,>(operation: () => Promise<ActionResult<T>>, message: string) => void
 }) {
@@ -346,8 +353,10 @@ function SettlementAdjustments({
   const submit = () => {
     act(async () => {
       const result = await upsertClosingAdjustmentAction(projectId, { closingId: closing.id, label: label.trim(), kind, amountCents: Math.round(parsedAmount * 100) })
-      setLabel("")
-      setAmount("")
+      if (result.success) {
+        setLabel("")
+        setAmount("")
+      }
       return result
     }, "Settlement adjustment saved")
   }
@@ -375,7 +384,7 @@ function SettlementAdjustments({
                 <span className={`text-sm font-semibold tabular-nums ${adjustment.amountCents < 0 ? "text-success" : ""}`}>
                   {money.format(adjustment.amountCents / 100)}
                 </span>
-                {!settled && (
+                {canManage && !settled && (
                   <Button size="sm" variant="ghost" disabled={pending} onClick={() => act(() => removeClosingAdjustmentAction(projectId, closing.id, adjustment.id), "Adjustment removed")}>
                     Remove
                   </Button>
@@ -385,7 +394,7 @@ function SettlementAdjustments({
           ))}
         </div>
       )}
-      {!settled && (
+      {canManage && !settled && (
         <div className="grid gap-3 border-t p-4 sm:grid-cols-[1fr_10rem_9rem_auto] sm:items-end">
           <div className="space-y-1">
             <Label htmlFor="adjustment-label" className="text-xs">Description</Label>

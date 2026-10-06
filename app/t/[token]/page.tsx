@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { AlertTriangle, CheckCircle2, FileSignature } from "lucide-react"
@@ -25,6 +26,7 @@ interface PageProps {
 }
 
 async function TmTicketSigningPageContent({ params, searchParams }: PageProps) {
+  await connection()
   const { token } = await params
   const { signed } = await searchParams
 
@@ -197,7 +199,7 @@ function formatCurrency(value?: number | null) {
 
 export default function TmTicketSigningPage(props: Parameters<typeof TmTicketSigningPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLoadingSkeleton title="Time and materials ticket" />}>
       <TmTicketSigningPageContent {...props} />
     </Suspense>
   )

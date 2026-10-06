@@ -1,3 +1,6 @@
+import { connection } from "next/server"
+import { Suspense } from "react"
+import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { notFound } from "next/navigation"
 
 import { loadSelectionsBuilderAction } from "@/app/(app)/selections/actions"
@@ -9,7 +12,8 @@ interface PageProps {
   params: Promise<{ id: string }>
 }
 
-export default async function ProjectSelectionsPage({ params }: PageProps) {
+async function ProjectSelectionsPageContent({ params }: PageProps) {
+  await connection()
   const { id } = await params
   const project = await getProjectAction(id)
   if (!project) notFound()
@@ -23,5 +27,19 @@ export default async function ProjectSelectionsPage({ params }: PageProps) {
     >
       <SelectionsBuilderClient data={data} projects={[project]} />
     </PageLayout>
+  )
+}
+
+export default function ProjectSelectionsPage(props: Parameters<typeof ProjectSelectionsPageContent>[0]) {
+  return (
+    <Suspense
+      fallback={
+        <PageLayout title="Selections" fullBleed>
+          <PageLoadingSkeleton />
+        </PageLayout>
+      }
+    >
+      <ProjectSelectionsPageContent {...props} />
+    </Suspense>
   )
 }

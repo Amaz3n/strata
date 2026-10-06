@@ -175,9 +175,10 @@ export async function listPriceAgreements(filters: Partial<PriceAgreementFilters
   const { supabase, orgId, userId } = await authorize("price_book.read")
   const from = (parsed.page - 1) * parsed.pageSize
   let query = supabase.from("vendor_price_agreements").select(SELECT, { count: "exact" })
-    .eq("org_id", orgId).order("effective_from", { ascending: false })
+    .eq("org_id", orgId).order("effective_from", { ascending: false }).order("id", { ascending: false })
   const accessFilter = await agreementAccessFilter(supabase, orgId, userId)
   if (accessFilter) query = query.or(accessFilter)
+  if (parsed.agreementIds) query = query.in("id", parsed.agreementIds)
   if (parsed.divisionId) query = query.or(await agreementDivisionFilter(supabase, orgId, parsed.divisionId))
   if (parsed.companyId) query = query.eq("company_id", parsed.companyId)
   if (parsed.costCodeId) query = query.eq("cost_code_id", parsed.costCodeId)

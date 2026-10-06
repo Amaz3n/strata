@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { Suspense } from "react"
 
 import { PageLayout } from "@/components/layout/page-layout"
@@ -12,20 +13,24 @@ import { getAmbientDeskContext } from "@/lib/services/desk-context"
 
 
 async function PlanLibraryData() {
-  const ambient = await getAmbientDeskContext()
-  const [ladder, divisions, communities, permissions] = await Promise.all([
-    getPlanLadder({ divisionId: ambient.divisionId, communityId: ambient.communityId }),
+  await connection()
+  const ambientPromise = getAmbientDeskContext()
+  const ladderPromise = ambientPromise.then((ambient) => getPlanLadder({ divisionId: ambient.divisionId, communityId: ambient.communityId }))
+  const communitiesPromise = ambientPromise.then((ambient) => listCommunities(ambient.divisionId ? { divisionId: ambient.divisionId } : {}).catch(() => []))
+  const modelsPromise = ladderPromise.then((ladder) => listFloorplanModelStatuses(
+    ladder.rungs.map((rung) => rung.released_version_id).filter((id): id is string => Boolean(id)),
+  ).catch(() => new Map()))
+  const [ladder, divisions, communities, permissions, floorplanModels] = await Promise.all([
+    ladderPromise,
     listDivisions().catch(() => []),
-    listCommunities(ambient.divisionId ? { divisionId: ambient.divisionId } : {}).catch(() => []),
+    communitiesPromise,
     getCurrentUserPermissions(),
+    modelsPromise,
   ])
   const canWrite =
     permissions.permissions.includes("*") ||
     permissions.permissions.includes("org.admin") ||
     permissions.permissions.includes("plan.write")
-  const floorplanModels = await listFloorplanModelStatuses(
-    ladder.rungs.map((rung) => rung.released_version_id).filter((id): id is string => Boolean(id)),
-  ).catch(() => new Map())
   return (
     <PlanLibraryClient
       rungs={ladder.rungs}

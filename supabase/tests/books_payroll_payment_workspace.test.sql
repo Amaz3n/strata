@@ -1,0 +1,14 @@
+begin;
+select plan(10);
+select ok(not prosecdef,'Attribution history uses invoker privileges') from pg_proc where oid='public.read_books_payroll_payment_workspace(uuid,uuid,uuid,timestamptz,uuid,integer)'::regprocedure;
+select is(provolatile::text,'s','Retained attribution read is stable') from pg_proc where oid='public.read_books_payroll_payment_workspace(uuid,uuid,uuid,timestamptz,uuid,integer)'::regprocedure;
+select ok(not has_function_privilege('anon','public.read_books_payroll_payment_workspace(uuid,uuid,uuid,timestamptz,uuid,integer)','execute'),'Anonymous callers cannot list private attribution');
+select ok(not has_function_privilege('authenticated','public.read_books_payroll_payment_workspace(uuid,uuid,uuid,timestamptz,uuid,integer)','execute'),'Ordinary authenticated callers cannot list private attribution');
+select ok(has_function_privilege('service_role','public.read_books_payroll_payment_workspace(uuid,uuid,uuid,timestamptz,uuid,integer)','execute'),'Private service can read retained attribution');
+select throws_ok($$select read_books_payroll_payment_workspace(null,'99400000-0000-4000-8000-000000000006')$$,'P0001','Invalid payroll attribution scope or pagination','Null organization rejected');
+select throws_ok($$select read_books_payroll_payment_workspace('99400000-0000-4000-8000-000000000001',null)$$,'P0001','Invalid payroll attribution scope or pagination','Null import rejected');
+select throws_ok($$select read_books_payroll_payment_workspace('99400000-0000-4000-8000-000000000001','99400000-0000-4000-8000-000000000006',null,null,null,51)$$,'P0001','Invalid payroll attribution scope or pagination','Oversized page rejected');
+select throws_ok($$select read_books_payroll_payment_workspace('99400000-0000-4000-8000-000000000001','99400000-0000-4000-8000-000000000006',null,now(),null,50)$$,'P0001','Invalid payroll attribution scope or pagination','Partial cursor rejected');
+select ok(to_regclass('public.books_payroll_payment_workspace_page_idx') is not null,'Organization/import history pagination index exists');
+select * from finish();
+rollback;

@@ -1,6 +1,14 @@
-import { BooksSectionPage } from "./_components/books-section-page"
+import { redirect } from "next/navigation";
+import { getBooksModuleSettings } from "@/lib/services/books/module";
 
+// This entry only redirects to the configured ledger workspace.
+export const instant = false;
 
 export default async function BooksPage() {
-  return <BooksSectionPage section="overview" />
+  const { settings } = await getBooksModuleSettings();
+  redirect(
+    settings?.ledger_authority === "arc"
+      ? "/books/banking"
+      : "/settings/accounting/setup",
+  );
 }

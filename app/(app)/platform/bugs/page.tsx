@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { redirect } from "next/navigation"
@@ -16,20 +17,28 @@ import {
 
 
 async function PlatformBugsPageContent() {
+  await connection()
   try {
     await requirePlatformBugOwner()
   } catch {
     redirect("/unauthorized")
   }
 
-  const [bugs, owners, contextOptions] = await Promise.all([
-    listPlatformBugs(),
+  const bugsPromise = listPlatformBugs()
+  const historyPromise = bugsPromise.then((bugs) => {
+    const bugIds = bugs.map((bug) => bug.id)
+    return Promise.all([
+      listPlatformBugEvents(bugIds),
+      listPlatformBugAiReviews(bugIds),
+      listPlatformBugAiFixes(bugIds),
+    ] as const)
+  })
+  const [bugs, owners, contextOptions, [events, aiReviews, aiFixes]] = await Promise.all([
+    bugsPromise,
     listPlatformBugOwners(),
     listPlatformBugContextOptions(),
+    historyPromise,
   ])
-  const events = await listPlatformBugEvents(bugs.map((bug) => bug.id))
-  const aiReviews = await listPlatformBugAiReviews(bugs.map((bug) => bug.id))
-  const aiFixes = await listPlatformBugAiFixes(bugs.map((bug) => bug.id))
 
   return (
     <PageLayout title="Platform Issues">
@@ -49,7 +58,13 @@ async function PlatformBugsPageContent() {
 
 export default function PlatformBugsPage() {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense
+      fallback={
+        <PageLayout title="Platform Issues">
+          <PageLoadingSkeleton />
+        </PageLayout>
+      }
+    >
       <PlatformBugsPageContent />
     </Suspense>
   )

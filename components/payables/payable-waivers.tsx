@@ -1,17 +1,15 @@
 "use client"
-import { useEffect, useState } from "react"
+import { WaiverAdditionalSigners, WaiverCustomFields } from "@/components/invoices/waiver-custom-fields"
+import { chooseCompanyWaiver } from "@/lib/templates/waiver-engine"
+import { useContext, useEffect, useRef, useState } from "react"
+import { createPortal } from "react-dom"
+import { PayablePreviewContext } from "./workspace/payable-preview-context"
 import dynamic from "next/dynamic"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
 import { Skeleton } from "@/components/ui/skeleton"
 import { unwrapAction } from "@/lib/action-result"
 import {
@@ -51,10 +49,13 @@ const money = (n: number) =>
 export function PayableWaivers({
   billId,
   allocations,
+  onBusyChange,
 }: {
   billId: string
+  onBusyChange?: (busy: boolean) => void
   allocations?: PayableWaiverInput["allocations"]
 }) {
+  const previewTarget = useContext(PayablePreviewContext)
   const router = useRouter(),
     [data, setData] = useState<Data | null>(null),
     [error, setError] = useState(""),
@@ -64,6 +65,15 @@ export function PayableWaivers({
     [file, setFile] = useState<File>(),
     [busy, setBusy] = useState(false),
     [documentId, setDocumentId] = useState<string | null>(null)
+  const [signingBusy, setSigningBusy] = useState(false)
+  const preparationRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    onBusyChange?.(busy || signingBusy)
+    return () => onBusyChange?.(false)
+  }, [busy, signingBusy, onBusyChange])
+  useEffect(() => {
+    if (open || documentId) preparationRef.current?.focus()
+  }, [open, documentId])
   const [amountDrafts, setAmountDrafts] = useState<string[]>([])
   const [fileUrl, setFileUrl] = useState<string | null>(null)
   useEffect(() => {
@@ -101,7 +111,7 @@ export function PayableWaivers({
       data.coverage.outstandingCents > 0
         ? "conditional_progress"
         : "unconditional_progress"
-    const template = data.templates.find((t) => t.waiverType === kind)
+    const template = chooseCompanyWaiver(data.templates, kind)
     setAmountDrafts(
       (
         allocations ?? [
@@ -139,9 +149,9 @@ export function PayableWaivers({
           ? data.project.location
           : (data.project.location?.address ?? ""),
       jurisdiction: data.jurisdiction,
-      signer_name: "",
+      signer_name: template?.defaults?.signerName ?? "",
       signer_email: data.company.email ?? "",
-      signer_title: "Authorized representative",
+      signer_title: template?.defaults?.signerTitle || "Authorized representative",
       exceptions: "",
       final_confirmed: false,
       received_confirmed: false,
@@ -154,6 +164,9 @@ export function PayableWaivers({
     if (!input) return
     setBusy(true)
     try {
+      if (!data?.coverage.through) {
+        unwrapAction(await setPayableWorkThroughAction(billId, input.through_date))
+      }
       const form = new FormData()
       form.set("input", JSON.stringify(input))
       if (file) form.set("file", file)
@@ -193,8 +206,53 @@ export function PayableWaivers({
     }
   }
   const template = data?.templates.find((t) => t.id === input?.template_id)
+  const waiverPreview = open && input ? (
+              <div className="flex min-h-96 flex-1 flex-col bg-muted/20 @[900px]:sticky @[900px]:top-0 @[900px]:border-l">
+                {template && input.source === "template" ? (
+                  <Preview
+                    draft={template}
+                    sourceFileId={template.sourceFileId}
+                    customValues={input.custom_values}
+                    sample={false}
+                    values={editableWaiverValues({
+                      ...input,
+                      amount_cents: input.allocations.reduce(
+                        (sum, a) => sum + a.amount_cents,
+                        0,
+                      ),
+                    })}
+                    invoiceNumber={data?.bill.bill_number ?? ""}
+                  />
+                ) : fileUrl ? (
+                  <iframe
+                    title="Original signed waiver"
+                    src={fileUrl}
+                    className="h-[70dvh] w-full"
+                  />
+                ) : (
+                  <p className="p-6 text-sm text-muted-foreground">
+                    The original signed PDF will be preserved. Recording a
+                    document does not accept it or clear a payment hold.
+                  </p>
+                )}
+              </div>
+  ) : null
+  // Wait for the effective requirement (including project policy) before
+  // showing waiver controls. Preserve existing evidence and explicit combined
+  // preparation opened from the waiver register.
+  if (!data && !error) return <Skeleton className="my-5 h-8 w-full" />
+  if (
+    data?.coverage.status === "Not required" &&
+    data.waivers.length === 0 &&
+    !allocations?.length &&
+    !open &&
+    !documentId &&
+    !reviewId
+  ) return null
+
   return (
-    <section className="space-y-3 border-t py-5">
+    <section className="@container space-y-5 py-5">
+      {previewTarget && waiverPreview ? createPortal(waiverPreview, previewTarget) : null}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
           Waivers
@@ -203,14 +261,14 @@ export function PayableWaivers({
           <Button
             size="sm"
             variant="outline"
-            disabled={!data?.canWrite}
+            disabled={!data?.canWrite || busy || open || Boolean(documentId) || Boolean(reviewId)}
             onClick={() => start("upload")}
           >
             Record signed PDF
           </Button>
           <Button
             size="sm"
-            disabled={!data?.canWrite}
+            disabled={!data?.canWrite || busy || open || Boolean(documentId) || Boolean(reviewId)}
             onClick={() => start("template")}
           >
             Request waiver
@@ -236,8 +294,14 @@ export function PayableWaivers({
                 : "text-sm text-muted-foreground"
             }
           >
-            {data.coverage.status} · {money(data.coverage.heldCents)} blocked
+            {data.coverage.status}{data.coverage.heldCents > 0 ? ` · ${money(data.coverage.heldCents)} held for waiver coverage` : ""}
           </p>
+          <ol className="grid gap-3 rounded-lg border bg-muted/20 p-4 text-xs @[700px]:grid-cols-3">
+            <li><p className="font-medium">1 · Before payment</p><p className="mt-1 text-muted-foreground">Prepare a conditional waiver. Review signed coverage for the payment amount and work period.</p></li>
+            <li><p className="font-medium">2 · Pay the vendor</p><p className="mt-1 text-muted-foreground">Complete approval and other holds, then pay through Arc or record your payment.</p></li>
+            <li><p className="font-medium">3 · After receipt</p><p className="mt-1 text-muted-foreground">Collect unconditional coverage after funds are received. Use final releases only when closing the scope.</p></li>
+          </ol>
+          {data.coverage.postPaymentOutstanding && <p className="text-sm text-warning">Unconditional coverage is outstanding for paid funds. This is a follow-up after payment.</p>}
           {data.bill.metadata?.waiver_chase && (
             <p className="text-xs text-muted-foreground">
               Latest follow-up:{" "}
@@ -255,14 +319,15 @@ export function PayableWaivers({
           <label className="flex items-center gap-3 text-xs text-muted-foreground">
             Payable work through
             <Input
-              disabled={!data.canWrite}
+              disabled={!data.canWrite || busy || open || Boolean(documentId) || Boolean(reviewId)}
               aria-label="Payable work through"
               className="w-40"
               type="date"
               defaultValue={data.coverage.through ?? ""}
               onBlur={(e) => {
                 const value = e.target.value
-                if (value && value !== data.coverage.through)
+                if (value && value !== data.coverage.through) {
+                  setBusy(true)
                   void setPayableWorkThroughAction(billId, value)
                     .then(unwrapAction)
                     .then(() => {
@@ -270,6 +335,8 @@ export function PayableWaivers({
                       router.refresh()
                     })
                     .catch((e) => toast.error(e.message))
+                    .finally(() => setBusy(false))
+                }
               }}
             />
           </label>
@@ -320,6 +387,7 @@ export function PayableWaivers({
                       <Button
                         size="sm"
                         variant="outline"
+                        disabled={busy || open || Boolean(documentId)}
                         onClick={() => {
                           setReviewId(w.id)
                           setNote("")
@@ -344,6 +412,7 @@ export function PayableWaivers({
                         <Button
                           size="sm"
                           variant="outline"
+                          disabled={busy || open || Boolean(reviewId) || Boolean(documentId)}
                           onClick={() => setDocumentId(w.metadata.document_id)}
                         >
                           Signing
@@ -362,23 +431,15 @@ export function PayableWaivers({
           </a>
         </>
       )}
-      <Dialog
-        open={open}
-        onOpenChange={(v) => {
-          if (!busy) setOpen(v)
-        }}
-      >
-        <DialogContent className="flex max-h-[90dvh] flex-col overflow-y-auto sm:max-w-6xl">
-          <DialogHeader>
-            <DialogTitle>
-              {input?.source === "upload"
-                ? "Record signed waiver"
-                : "Prepare trade waiver"}
-            </DialogTitle>
-          </DialogHeader>
+      {open && <div ref={preparationRef} tabIndex={-1} className="rounded-lg border bg-background outline-none">
+          <div className="flex items-center justify-between gap-4 border-b px-5 py-4">
+            <div><h3 className="text-base font-semibold">{input?.source === "upload" ? "Record signed waiver" : "Prepare vendor waiver"}</h3><p className="mt-1 text-xs text-muted-foreground">Review the coverage and document before continuing.</p></div>
+            <Button variant="ghost" disabled={busy} onClick={() => setOpen(false)}>Back to waivers</Button>
+          </div>
           {input && (
-            <div className="grid gap-6 lg:grid-cols-2">
-              <form onSubmit={prepare} className="space-y-4">
+            <div className={previewTarget ? "grid" : "grid items-start @[900px]:grid-cols-2"}>
+              <form onSubmit={prepare} className="space-y-4 p-5 sm:p-6">
+                <fieldset disabled={busy} className="space-y-4">
                 {input.source === "template" ? (
                   <label className="block space-y-1 text-xs">
                     Published template
@@ -394,6 +455,10 @@ export function PayableWaivers({
                           ...input,
                           template_id: t?.id,
                           waiver_type: t?.waiverType ?? input.waiver_type,
+                          final_confirmed: false,
+                          received_confirmed: false,
+                          custom_values: {},
+                          additional_signers: [],
                         })
                       }}
                     >
@@ -404,6 +469,7 @@ export function PayableWaivers({
                         </option>
                       ))}
                     </select>
+                    {!data?.templates.length && <p className="text-xs text-muted-foreground">No published incoming template matches this project. Publish a company template or return to upload a signed waiver.</p>}
                     <a
                       href="/settings/templates"
                       target="_blank"
@@ -530,7 +596,7 @@ export function PayableWaivers({
                   </label>
                 ))}
                 <label className="block text-xs">
-                  Work through
+                  {data?.coverage.through ? "Waiver work through" : "Bill and waiver work through"}
                   <Input
                     required
                     type="date"
@@ -574,6 +640,7 @@ export function PayableWaivers({
                     }
                   />
                 </label>
+<WaiverAdditionalSigners template={template} values={input.additional_signers} onChange={v=>setInput({...input,additional_signers:v})}/><WaiverCustomFields template={template} values={input.custom_values} onChange={v=>setInput({...input,custom_values:v})}/>
                 {input.waiver_type.endsWith("final") && (
                   <label className="flex gap-2 text-xs">
                     <input
@@ -607,7 +674,8 @@ export function PayableWaivers({
                     The covered funds were received by the trade.
                   </label>
                 )}
-                <Button disabled={busy} type="submit">
+                </fieldset>
+                <Button disabled={busy || (input.source === "template" && !template)} type="submit">
                   {busy
                     ? "Preparing…"
                     : input.source === "upload"
@@ -615,47 +683,14 @@ export function PayableWaivers({
                       : "Review and send for signature"}
                 </Button>
               </form>
-              <div className="min-h-96 border bg-muted/20">
-                {template && input.source === "template" ? (
-                  <Preview
-                    draft={template}
-                    sample={false}
-                    values={editableWaiverValues({
-                      ...input,
-                      amount_cents: input.allocations.reduce(
-                        (sum, a) => sum + a.amount_cents,
-                        0,
-                      ),
-                    })}
-                    invoiceNumber={data?.bill.bill_number ?? ""}
-                  />
-                ) : fileUrl ? (
-                  <iframe
-                    title="Original signed waiver"
-                    src={fileUrl}
-                    className="h-[70dvh] w-full"
-                  />
-                ) : (
-                  <p className="p-6 text-sm text-muted-foreground">
-                    The original signed PDF will be preserved. Recording a
-                    document does not accept it or clear a payment hold.
-                  </p>
-                )}
-              </div>
+              {!previewTarget && waiverPreview}
+
             </div>
           )}
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={Boolean(reviewId)}
-        onOpenChange={(v) => {
-          if (!v && !busy) setReviewId(null)
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Review signed waiver</DialogTitle>
-          </DialogHeader>
+      </div>}
+      {reviewId && <div className="rounded-lg border p-5 space-y-4">
+          <div className="flex items-center justify-between"><h3 className="font-semibold">Review signed waiver</h3><Button variant="ghost" disabled={busy} onClick={() => setReviewId(null)}>Cancel review</Button></div>
+          {data?.waivers.find(w => w.id === reviewId)?.documentHref && <iframe title="Signed waiver for review" src={data.waivers.find(w => w.id === reviewId)!.documentHref!} className="h-[60dvh] w-full border" />}
           <p className="text-sm text-muted-foreground">
             Check the claimant, signature, property, amount, dates, and
             exceptions against the payable.
@@ -681,24 +716,13 @@ export function PayableWaivers({
               Mark needs correction
             </Button>
           </div>
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={Boolean(documentId)}
-        onOpenChange={(v) => {
-          if (!v) {
-            setDocumentId(null)
-            setRevision((v) => v + 1)
-          }
-        }}
-      >
-        <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-6xl">
-          <DialogHeader>
-            <DialogTitle>Trade signature request</DialogTitle>
-          </DialogHeader>
+      </div>}
+      {documentId && <div ref={preparationRef} tabIndex={-1} className="flex min-h-[70dvh] flex-col overflow-hidden rounded-lg border outline-none">
+          <div className="flex items-center justify-between border-b p-4"><h3 className="font-semibold">Vendor signature request</h3><Button variant="ghost" disabled={signingBusy} onClick={() => { setDocumentId(null); setRevision(v => v + 1) }}>Back to waivers</Button></div>
           {documentId && (
             <EnvelopeWizard
               embedded
+              onBusyChange={setSigningBusy}
               open
               sourceEntity={null}
               resumeDocumentId={documentId}
@@ -715,8 +739,7 @@ export function PayableWaivers({
               }}
             />
           )}
-        </DialogContent>
-      </Dialog>
+      </div>}
     </section>
   )
 }

@@ -40,6 +40,8 @@ const baseTaskSchema = z.object({
   reminder_at: z.string().optional(),
   assignee_id: z.string().uuid().optional(),
   assignee_kind: z.enum(["user", "contact", "company"]).optional(),
+  clear_assignee: z.boolean().optional(),
+  mentioned_user_ids: z.array(z.string().uuid()).max(100).optional(),
   // Construction-specific
   location: z.string().optional(),
   trade: taskTradeSchema.optional(),
@@ -48,7 +50,9 @@ const baseTaskSchema = z.object({
   checklist: z.array(taskChecklistItemSchema).optional(),
 })
 
-const assigneeRefinement = (data: { assignee_id?: string; assignee_kind?: string }) => {
+const assigneeRefinement = (data: { assignee_id?: string; assignee_kind?: string; clear_assignee?: boolean }) => {
+  if (data.clear_assignee && (data.assignee_id || data.assignee_kind)) return false
+  if (data.assignee_id && !data.assignee_kind) return false
   if (data.assignee_kind) {
     return !!data.assignee_id
   }

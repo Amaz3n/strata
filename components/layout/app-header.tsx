@@ -169,6 +169,8 @@ export function AppHeader({
       ? [{ label: title }]
       : [{ label: fallbackLabel }]
 
+  const isReportPage = pathname === "/reports" || pathname.startsWith("/reports/") || /^\/projects\/[^/]+\/reports(?:\/|$)/.test(pathname)
+
   // Get current page title for mobile display
   const currentPage = breadcrumbItems.length > 0 ? breadcrumbItems[breadcrumbItems.length - 1] : null
 
@@ -183,15 +185,16 @@ export function AppHeader({
   // Inside a single project or community the URL already fixes the scope, so the
   // lens gives way to a link back up to the record that owns the page.
   const isRecordScoped =
-    /^\/projects\/[^/]+/.test(pathname) || /^\/communities\/[^/]+/.test(pathname)
+    /^\/pipeline\/[^/]+/.test(pathname) || /^\/projects\/[^/]+/.test(pathname) || /^\/communities\/[^/]+/.test(pathname)
   const showScope =
     !isRecordScoped && (divisions.length > 0 || (showCommunityScope && communities.length > 1))
   const recordContext =
     isRecordScoped && projectContext?.contextLabel && projectContext.contextHref
+      && !breadcrumbItems.some((item) => item.href === projectContext.contextHref)
       ? { label: projectContext.contextLabel, href: projectContext.contextHref }
       : null
 
-  if (pathname.startsWith("/settings")) return null
+  if (pathname === "/settings") return null
 
   const scopeSlot = showScope ? (
     <ScopeSwitcher
@@ -293,7 +296,24 @@ export function AppHeader({
               />
             </div>
           )}
-          {currentPage && (
+          {isReportPage ? (
+            <Breadcrumb>
+              <BreadcrumbList className="flex-nowrap gap-1.5 text-sm">
+                {breadcrumbItems.map((item, index) => (
+                  <React.Fragment key={`${item.label}-${index}`}>
+                    {index > 0 && <BreadcrumbSeparator><PathSeparator /></BreadcrumbSeparator>}
+                    <BreadcrumbItem className="min-w-0">
+                      {index < breadcrumbItems.length - 1 && item.onClick ? (
+                        <BreadcrumbLink href={item.href ?? "#"} onClick={(event) => { event.preventDefault(); item.onClick?.(); }} className="truncate">{item.label}</BreadcrumbLink>
+                      ) : index < breadcrumbItems.length - 1 && item.href ? (
+                        <BreadcrumbLink asChild><Link href={item.href} className="truncate">{item.label}</Link></BreadcrumbLink>
+                      ) : <BreadcrumbPage className="truncate font-medium">{item.label}</BreadcrumbPage>}
+                    </BreadcrumbItem>
+                  </React.Fragment>
+                ))}
+              </BreadcrumbList>
+            </Breadcrumb>
+          ) : currentPage && (
             <h1 className="truncate text-xl leading-tight font-semibold">{currentPage.label}</h1>
           )}
         </div>

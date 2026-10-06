@@ -382,6 +382,7 @@ export interface Task {
   estimated_hours?: number
   actual_hours?: number
   checklist?: TaskChecklistItem[]
+  mentioned_user_ids?: string[]
   tags?: string[]
   // Linked entities
   linked_schedule_item_id?: string
@@ -1044,6 +1045,7 @@ export interface Photo {
 }
 
 export interface ChangeOrderLine {
+  metadata?: Record<string, any>
   id?: string
   cost_code_id?: string | null
   budget_line_id?: string | null

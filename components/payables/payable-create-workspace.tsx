@@ -1,6 +1,8 @@
 "use client"
 
 import Link from "next/link"
+import dynamic from "next/dynamic"
+import { Switch } from "@/components/ui/switch"
 
 import {
   type DragEvent,
@@ -26,7 +28,7 @@ import {
 import { toast } from "sonner"
 
 import { listVendorCompaniesAction } from "@/app/(app)/companies/actions"
-import { uploadFileAction } from "@/app/(app)/documents/actions"
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
 import {
   getPayableBatchSetupAction,
   getPayableVendorProfileAction,
@@ -69,6 +71,8 @@ import { PayableVendorCard } from "./workspace/payable-vendor-card"
 import { PayableVendorProfileDialog } from "./workspace/payable-vendor-profile-dialog"
 import { parseDollarsToCents, type SplitLine } from "./workspace/payable-form"
 import { PayableDocumentPane } from "./payable-document-pane"
+
+const PayableWaivers = dynamic(() => import("./payable-waivers").then((m) => m.PayableWaivers))
 
 const NO_COMMITMENT = "__no_commitment__"
 const NO_PROJECT = ""
@@ -194,6 +198,9 @@ export function PayableCreateWorkspace({
   const [dueDate, setDueDate] = useState("")
   const [description, setDescription] = useState("")
   const [retainage, setRetainage] = useState("")
+  const [createdBillId, setCreatedBillId] = useState<string | null>(null)
+  const [waiverBusy, setWaiverBusy] = useState(false)
+  const [workThrough, setWorkThrough] = useState("")
   const [lienWaiver, setLienWaiver] = useState("not_required")
   // Who moves the money. Arc's rail prices a fee and routes for approval; paying
   // it yourself does neither, so the choice has to be made here rather than
@@ -259,6 +266,10 @@ export function PayableCreateWorkspace({
   useEffect(() => () => { scanGeneration.current += 1 }, [])
   const amountCents = parseDollarsToCents(amountDollars) ?? 0
   const splitTotalCents = lines.reduce((sum, line) => sum + (parseDollarsToCents(line.amountDollars) ?? 0), 0)
+  const nativeAccounting = context?.accounting.provider === "arc_books"
+  const categoryIds = new Set(lines.map((line) => line.qboExpenseAccountId))
+  const billCategoryId = categoryIds.size === 1 ? lines[0]?.qboExpenseAccountId ?? "" : ""
+  const mixedCategories = categoryIds.size > 1
   const balanced = lines.length > 0 && splitTotalCents === amountCents
   const coreValid = Boolean(billNumber.trim() && amountCents > 0 && billDate && companyId)
   const readyValid = coreValid && balanced && (
@@ -266,7 +277,7 @@ export function PayableCreateWorkspace({
   ) && (
     paymentChannel === "external" || !approvalRouting?.rosterConfigured || preferredApproverIds.length >= requiredPaymentApprovals
   )
-  const busy = isPending || isUploading || isScanning
+  const busy = isPending || isUploading || isScanning || waiverBusy
   const paymentAmountCents = Math.max(0, amountCents - Math.round(amountCents * (Number(retainage) || 0) / 100))
   const paymentQuote = apFeePolicy && paymentAmountCents > 0
     ? quoteApDisbursementFee({ vendorAmountCents: paymentAmountCents, policy: apFeePolicy })
@@ -754,6 +765,9 @@ export function PayableCreateWorkspace({
     setDescription("")
     setRetainage("")
     setLienWaiver("not_required")
+    setCreatedBillId(null)
+    setWorkThrough("")
+    setWaiverBusy(false)
     setPaymentChannel("external")
     setPaymentChannelTouched(false)
     setExternalMethod("check")
@@ -775,11 +789,12 @@ export function PayableCreateWorkspace({
   function close() {
     if (busy) return
     onOpenChange(false)
+    if (createdBillId) onSuccess?.()
     resetForm()
   }
 
   function submit(creationState: "draft" | "ready") {
-    if (!coreValid || (creationState === "ready" && !readyValid) || !context) return
+    if (createdBillId || !coreValid || (creationState === "ready" && !readyValid) || !context) return
     startTransition(async () => {
       try {
         let fileId: string | null = scannedFileProject.current === selectedProjectId ? scannedFileId : null
@@ -825,6 +840,7 @@ export function PayableCreateWorkspace({
           })),
           retainage_percent: selectedProjectId && retainage ? Number(retainage) : undefined,
           lien_waiver_status: selectedProjectId ? lienWaiver : "not_required",
+          work_through_date: selectedProjectId && lienWaiver === "requested" && workThrough ? workThrough : undefined,
           payment_channel: paymentChannel,
           preferred_payment_method: paymentChannel === "arc" ? "ach" : externalMethod,
           payment_memo: paymentChannel === "arc" ? paymentMemo.trim() || null : null,
@@ -854,6 +870,10 @@ export function PayableCreateWorkspace({
         }
 
         toast.success(creationState === "draft" ? "Payable saved as draft" : "Payable created and ready for review")
+        if (selectedProjectId && lienWaiver === "requested" && creationState === "ready" && result.data) {
+          setCreatedBillId(result.data.id)
+          return
+        }
         onOpenChange(false)
         resetForm()
         onSuccess?.()
@@ -893,17 +913,21 @@ export function PayableCreateWorkspace({
             </Button>
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <h1 className="truncate text-base font-semibold tracking-tight">New payable</h1>
-                <Badge variant="outline" className="hidden font-normal text-muted-foreground sm:inline-flex">Draft until created</Badge>
+                <h1 className="truncate text-base font-semibold tracking-tight">{createdBillId ? `Payable ${billNumber} · Waivers` : "New payable"}</h1>
+                <Badge variant="outline" className="hidden font-normal text-muted-foreground sm:inline-flex">{createdBillId ? "Bill saved" : "Draft until created"}</Badge>
               </div>
               <p className="truncate text-xs text-muted-foreground">
-                {selectedProject?.name ?? "Choose a project"}{selectedCompany ? ` · ${selectedCompany.name}` : ""}
+                {selectedProject?.name ?? (selectedProjectId ? "Project payable" : "Office / overhead")}{selectedCompany ? ` · ${selectedCompany.name}` : ""}
               </p>
             </div>
           </div>
         </header>
 
-        <div className="grid h-full min-h-0 grid-cols-1 overflow-hidden lg:grid-cols-2">
+        {createdBillId ? (
+          <div className="min-h-0 overflow-y-auto px-4 py-6 sm:px-8">
+            <PayableWaivers billId={createdBillId} onBusyChange={setWaiverBusy} />
+          </div>
+        ) : <div className="grid h-full min-h-0 grid-cols-1 overflow-hidden lg:grid-cols-2">
           <section className="relative hidden min-h-0 flex-col border-r bg-muted/20 lg:flex">
             <div
               className={cn("relative min-h-0 flex-1", isDraggingFile && "bg-primary/5")}
@@ -1119,6 +1143,37 @@ export function PayableCreateWorkspace({
                   </div>
 
                   <div className="space-y-6 border-t pt-8">
+                    {nativeAccounting && !loadingContext && context && (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <Label htmlFor="payable-accounting-category" className="text-[13px]">Accounting category</Label>
+                          <span className="text-xs text-muted-foreground">Arc Books</span>
+                        </div>
+                        <Select
+                          value={billCategoryId}
+                          disabled={context.accounting.expenseAccounts.length === 0 || lines.length === 0 || busy}
+                          onValueChange={(accountId) => {
+                            // A deliberate category choice takes precedence over an in-flight suggestion.
+                            codingGeneration.current += 1
+                            setIsSuggestingCoding(false)
+                            setCodingSuggestion(null)
+                            setLines((current) => current.map((line) => ({ ...line, qboExpenseAccountId: accountId })))
+                          }}
+                        >
+                          <SelectTrigger id="payable-accounting-category" aria-describedby="payable-accounting-category-help" className="h-10 w-full">
+                            <SelectValue placeholder={mixedCategories ? "Multiple categories · see line items" : "Choose an accounting category"} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {context.accounting.expenseAccounts.map((account) => <SelectItem key={account.id} value={account.id}>{account.name}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                        <p id="payable-accounting-category-help" className="text-xs leading-relaxed text-muted-foreground">
+                          {context.accounting.expenseAccounts.length === 0
+                            ? "No active expense or cost accounts are available in Arc Books."
+                            : "Choose where this bill is recorded in Arc Books. This applies to all line items; you can choose a different category on each line below."}
+                        </p>
+                      </div>
+                    )}
                     {isSuggestingCoding ? (
                       <div className="flex items-center gap-3 border bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground">
                         <Loader2 className="size-4 animate-spin text-primary" /> Coding this invoice…
@@ -1289,17 +1344,15 @@ export function PayableCreateWorkspace({
                               <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground">%</span>
                             </div>
                           </div>
-                          <div className="min-w-0">
-                            <FieldLabel>Lien waiver</FieldLabel>
-                            <Select value={lienWaiver} onValueChange={setLienWaiver}>
-                              <SelectTrigger className="h-10 w-full min-w-0 overflow-hidden [&>span]:min-w-0 [&>span]:truncate"><SelectValue /></SelectTrigger>
-                              <SelectContent className="w-[var(--radix-select-trigger-width)] max-w-[var(--radix-select-trigger-width)]">
-                                <SelectItem value="not_required">Not required</SelectItem>
-                                <SelectItem value="requested">Request from vendor</SelectItem>
-                                <SelectItem value="received">Received</SelectItem>
-                              </SelectContent>
-                            </Select>
-                            {lienWaiver === "requested" ? <p className="mt-1.5 text-xs text-muted-foreground">Arc will send the vendor a secure waiver-signing request when this payable is created.</p> : null}
+                          <div className="space-y-4 sm:col-span-2 rounded-lg border p-4">
+                            <div className="flex items-start justify-between gap-4">
+                              <div><Label htmlFor="include-payable-waiver">Include lien waivers</Label><p id="payable-waiver-help" className="mt-1 text-xs leading-relaxed text-muted-foreground">For project work and materials. Leave off for bills that do not need a waiver. Project compliance requirements still apply.</p></div>
+                              <Switch id="include-payable-waiver" aria-describedby="payable-waiver-help" checked={lienWaiver === "requested"} onCheckedChange={(checked) => setLienWaiver(checked ? "requested" : "not_required")} />
+                            </div>
+                            {lienWaiver === "requested" && <div className="space-y-3 border-t pt-4">
+                              <div><Label htmlFor="payable-work-through">Work through</Label><Input id="payable-work-through" className="mt-1.5 max-w-56" type="date" value={workThrough} onChange={(event) => setWorkThrough(event.target.value)} /><p className="mt-1 text-xs text-muted-foreground">Last day of work covered by this bill, separate from its due date.</p></div>
+                              <p className="text-xs leading-relaxed text-muted-foreground">Next, prepare a conditional waiver or upload a signed PDF here. Accepted coverage releases the waiver hold; after payment, collect the unconditional waiver.</p>
+                            </div>}
                           </div>
                         </>
                       ) : (
@@ -1355,10 +1408,10 @@ export function PayableCreateWorkspace({
               </div>
             </div>
           </section>
-        </div>
+        </div>}
 
         <footer className="flex h-16 shrink-0 items-center justify-end border-t bg-background px-4 sm:px-6">
-          <div className="flex items-center gap-2">
+          {createdBillId ? <div className="flex w-full items-center justify-between gap-4"><p className="text-xs text-muted-foreground">Your bill is saved. You can return to its waivers at any time.</p><Button onClick={close} disabled={busy}>Done</Button></div> : <div className="flex items-center gap-2">
             <Button type="button" variant="ghost" onClick={close} disabled={busy}>Cancel</Button>
             <Button type="button" variant="outline" onClick={() => submit("draft")} disabled={!coreValid || busy || !context}>
               {busy ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
@@ -1366,9 +1419,9 @@ export function PayableCreateWorkspace({
             </Button>
             <Button type="button" onClick={() => submit("ready")} disabled={!readyValid || busy || !context}>
               {busy ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
-              Create payable
+              {selectedProjectId && lienWaiver === "requested" ? "Create & prepare waiver" : "Create payable"}
             </Button>
-          </div>
+          </div>}
         </footer>
 
         <input

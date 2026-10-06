@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { InvoiceWaiverLinks } from "@/components/portal/invoice-waiver-links"
 import Link from "next/link"
 
@@ -23,6 +24,7 @@ interface Props {
 }
 
 export default async function ClientPortalPayApplicationPage({ params }: Props) {
+  await connection()
   const { token, id } = await params
   const { detail, access } = await loadClientPortalPayApplicationPage(token, id)
   const { application, lines } = detail

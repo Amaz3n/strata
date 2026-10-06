@@ -1,0 +1,10 @@
+begin;
+select plan(6);
+select lives_ok($$select public.capture_books_export_snapshot('99000000-0000-4000-8000-000000000099')$$,'export snapshot reads all real tables and organization columns');
+select is((select sum(jsonb_array_length(value))::bigint from jsonb_each(public.capture_books_export_snapshot('99000000-0000-4000-8000-000000000099')->'tables')),0::bigint,'an absent organization cannot export other organizations');
+select is((select provolatile::text from pg_proc where oid='public.capture_books_export_snapshot(uuid)'::regprocedure),'s','all internal reads share statement visibility');
+select ok(not has_function_privilege('authenticated','public.capture_books_export_snapshot(uuid)','execute') and not has_function_privilege('anon','public.capture_books_export_snapshot(uuid)','execute'),'only server service role can invoke snapshot capture');
+select ok((public.capture_books_export_snapshot('99000000-0000-4000-8000-000000000099')->'tables') ? 'payment_run_fee_charges','separately collected Arc Pay fees are included in the real snapshot');
+select ok((public.capture_books_export_snapshot('99000000-0000-4000-8000-000000000099')->'tables') ? 'books_tax_adjustment_workpapers','reviewed tax workpapers included in real recovery snapshot');
+select * from finish();
+rollback;

@@ -1,38 +1,41 @@
-import { Suspense } from "react"
-import { Skeleton } from "@/components/ui/skeleton"
-import { notFound } from "next/navigation"
+import { ProjectBooksOwnership } from "@/components/books/project-owner-server";
+import { connection } from "next/server";
+import { Suspense } from "react";
+import { Skeleton } from "@/components/ui/skeleton";
+import { notFound } from "next/navigation";
 
-import { getProjectAction } from "@/app/(app)/projects/[id]/actions"
-import { listProjectExpensesPageAction } from "@/app/(app)/projects/[id]/expenses/actions"
-import { PageLayout } from "@/components/layout/page-layout"
-import { ExpensesClient } from "@/components/expenses/expenses-client"
+import { getProjectAction } from "@/app/(app)/projects/[id]/actions";
+import { listProjectExpensesPageAction } from "@/app/(app)/projects/[id]/expenses/actions";
+import { PageLayout } from "@/components/layout/page-layout";
+import { ExpensesClient } from "@/components/expenses/expenses-client";
 
-import { unwrapAction } from "@/lib/action-result"
-import { getOrgProductTier } from "@/lib/services/context"
-import { getProjectPosture } from "@/lib/product-tier"
+import { unwrapAction } from "@/lib/action-result";
+import { getOrgProductTier } from "@/lib/services/context";
+import { getProjectPosture } from "@/lib/product-tier";
 
 interface Props {
-  params: Promise<{ id: string }>
+  params: Promise<{ id: string }>;
 }
 
-
-export default async function ProjectExpensesPage({ params }: Props) {
-  const { id } = await params
-
+export default function ProjectExpensesPage({ params }: Props) {
   return (
     <>
       <PageLayout
         title="Expenses"
-        breadcrumbs={[
-          { label: "Project" },
-          { label: "Expenses" },
-        ]}
+        breadcrumbs={[{ label: "Project" }, { label: "Expenses" }]}
       />
       <Suspense fallback={<ProjectExpensesFallback />}>
-        <ProjectExpensesData id={id} />
+        <ProjectExpensesPageRoute params={params} />
       </Suspense>
     </>
-  )
+  );
+}
+
+async function ProjectExpensesPageRoute({ params }: Props) {
+  await connection();
+  const { id } = await params;
+
+  return <ProjectExpensesData id={id} />;
 }
 
 function ProjectExpensesFallback() {
@@ -45,17 +48,17 @@ function ProjectExpensesFallback() {
         ))}
       </div>
     </div>
-  )
+  );
 }
 
 async function ProjectExpensesData({ id }: { id: string }) {
-  const project = await getProjectAction(id)
-  if (!project) notFound()
+  const project = await getProjectAction(id);
+  if (!project) notFound();
 
   const [data, tier] = await Promise.all([
-    listProjectExpensesPageAction(id).catch(() => ({ items: [] as any[], page: 1, pageSize: 50, total: 0, pageCount: 1 })),
+    listProjectExpensesPageAction(id),
     getOrgProductTier(),
-  ])
+  ]);
 
   return (
     <PageLayout
@@ -65,7 +68,16 @@ async function ProjectExpensesData({ id }: { id: string }) {
         { label: "Expenses" },
       ]}
     >
-      <ExpensesClient projectId={project.id} initialPage={data} allowCreate={getProjectPosture(project.property_type, tier) !== "production"} />
+      <Suspense fallback={null}>
+        <ProjectBooksOwnership projectId={project.id} />
+      </Suspense>
+      <ExpensesClient
+        projectId={project.id}
+        initialPage={data}
+        allowCreate={
+          getProjectPosture(project.property_type, tier) !== "production"
+        }
+      />
     </PageLayout>
-  )
+  );
 }

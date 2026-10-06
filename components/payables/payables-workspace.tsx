@@ -1,4 +1,5 @@
 "use client";
+import { SourcePostingStatus } from "@/components/books/source-posting-status";
 import { getPayableNativeFundingAccountsAction } from "@/app/(app)/payables/actions";
 
 import { invoiceFileError } from "@/lib/payables/intake";
@@ -87,12 +88,12 @@ import {
 } from "@/app/(app)/payables/actions";
 import type { EvenFlowPriceAssessment } from "@/lib/financials/even-flow-price-anomaly";
 import type { BillScheduleAssessment } from "@/lib/financials/bill-schedule-crosscheck";
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
 import {
   attachFileAction,
   detachFileLinkAction,
   listAttachmentsAction,
-  uploadFileAction,
-} from "@/app/(app)/documents/actions";
+  } from "@/app/(app)/documents/actions";
 import {
   ensureProjectVendorCompanyForPayableAction,
   reassignProjectPayableAction,
@@ -507,7 +508,7 @@ export function PayablesWorkspace({
       )
         return;
       // No triage shortcuts mid-payment — the pay pane owns the keyboard.
-      if (payViewOpenRef.current || editing || isPending) return;
+      if (payViewOpen || editing || isPending) return;
       if (event.key === "j" || event.key === "k") {
         const index = filtered.findIndex((bill) => bill.id === selectedBill.id);
         const next =
@@ -529,12 +530,10 @@ export function PayablesWorkspace({
     requestSelectBill,
     selectedBill,
     selectedIsVendorCredit,
+    payViewOpen,
     editing,
     isPending,
   ]);
-
-  const payViewOpenRef = useRef(payViewOpen);
-  payViewOpenRef.current = payViewOpen;
 
   const loadedBillId = useRef<string | null>(null);
   useEffect(() => {
@@ -1321,6 +1320,7 @@ export function PayablesWorkspace({
                   <p className="mt-1 text-xs text-muted-foreground">{selectedBill.invoice_intake.error || selectedBill.invoice_intake.duplicate_reason || (scanRunning ? "You can keep working. Editing this draft will stop automatic autofill." : "Check the vendor, amounts, and coding before submitting for approval.")}</p>
                 </div>
               ) : null}
+              <SourcePostingStatus key={`${selectedBill.id}:${selectedBill.updated_at}:${currentStatus}`} sourceType="vendor_bill" sourceId={selectedBill.id} revision={selectedBill.updated_at ?? currentStatus} />
               {/* ————— Identity: who is owed, and where it stands ————— */}
               <PayableIdentity
                 bill={selectedBill}

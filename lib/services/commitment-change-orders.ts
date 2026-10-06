@@ -1,8 +1,10 @@
+import { z } from "zod"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
-import { getDivisionScopedProjectIds, requireAuthorization } from "@/lib/services/authorization"
+import { purchasingQueueFiltersSchema, purchasingQueueProjectSelect, resolvePurchasingQueueReadScope, type PurchasingQueueFilters } from "@/lib/services/purchasing-queue-scope"
+import { requireAuthorization } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { createPrimeCoFromCommitmentCos, fetchChangeOrder, recomputeChangeOrderCost } from "@/lib/services/change-orders"
@@ -389,56 +391,41 @@ export async function listCommitmentChangeOrders({
   return hydrate(data ?? [], supabase, resolvedOrgId)
 }
 
-export async function listVarianceOrders({
-  status,
-  reasonCodeId,
-  origin,
-  projectId,
-  communityId,
-  page = 1,
-  pageSize = 50,
-  orgId,
-}: {
+export async function listVarianceOrders(filters: PurchasingQueueFilters & {
   status?: CommitmentChangeOrderStatus | "pending"
   reasonCodeId?: string
   origin?: CommitmentChangeOrderSummary["origin"]
-  projectId?: string
-  communityId?: string
-  page?: number
-  pageSize?: number
   orgId?: string
 } = {}) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const parsed = purchasingQueueFiltersSchema.extend({
+    status: z.enum(["draft", "sent", "approved", "rejected", "voided", "pending"]).optional(),
+    reasonCodeId: z.string().uuid().optional(),
+    origin: z.enum(["field_mobile", "office", "design_studio_co", "trade_portal"]).nullish(),
+  }).parse(filters)
+  const context = await requireOrgContext(filters.orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = context
   await requireAuthorization({ permission: "price_book.read", userId, orgId: resolvedOrgId, supabase, logDecision: true })
-  const authorizedProjectIds = await getDivisionScopedProjectIds({ orgId: resolvedOrgId, userId, supabase })
-  if (authorizedProjectIds?.length === 0) return { items: [], count: 0, page, pageSize }
-  const from = Math.max(page - 1, 0) * Math.min(Math.max(pageSize, 1), 100)
-  let projectIds: string[] | null = null
-  if (communityId) {
-    const { data: lots, error: lotError } = await supabase.from("lots").select("project_id")
-      .eq("org_id", resolvedOrgId).eq("community_id", communityId).not("project_id", "is", null)
-    if (lotError) throw new Error(`Failed to resolve community projects: ${lotError.message}`)
-    projectIds = (lots ?? []).flatMap((lot) => typeof lot.project_id === "string" ? [lot.project_id] : [])
-    if (projectIds.length === 0) return { items: [], count: 0, page, pageSize }
-  }
-
+  const scope = await resolvePurchasingQueueReadScope(context, parsed.divisionId)
+  if (scope.divisionIds?.length === 0) return { items: [], count: 0, page: parsed.page, pageSize: parsed.pageSize }
+  const from = (parsed.page - 1) * parsed.pageSize
   let query = supabase.from("commitment_change_orders").select(`
     id, org_id, project_id, commitment_id, company_id, title, description, status, total_cents, currency,
     approved_at, approved_by, source_document_id, executed_file_id, signature_envelope_id,
     prime_change_order_id, reason_code_id, origin, requested_by, photo_file_ids, metadata, created_at, updated_at,
-    commitment:commitments(id, title), company:companies(id, name), reason:variance_reason_codes(code, label)
-  `, { count: "exact" }).eq("org_id", resolvedOrgId).not("reason_code_id", "is", null)
-    .order("created_at", { ascending: false })
-  if (status === "pending") query = query.in("status", ["draft", "sent"])
-  else if (status) query = query.eq("status", status)
-  if (reasonCodeId) query = query.eq("reason_code_id", reasonCodeId)
-  if (origin) query = query.eq("origin", origin)
-  if (projectId) query = query.eq("project_id", projectId)
-  if (projectIds) query = query.in("project_id", projectIds)
-  if (authorizedProjectIds) query = query.in("project_id", authorizedProjectIds)
-  const { data, error, count } = await query.range(from, from + Math.min(Math.max(pageSize, 1), 100) - 1)
+    ${purchasingQueueProjectSelect("", scope, parsed.communityId)}, commitment:commitments(id, title), company:companies(id, name), reason:variance_reason_codes(code, label)
+  `, { count: "exact" }).eq("org_id", resolvedOrgId).eq("project.org_id", resolvedOrgId).not("reason_code_id", "is", null)
+    .order("created_at", { ascending: false }).order("id", { ascending: false })
+  if (parsed.status === "pending") query = query.in("status", ["draft", "sent"])
+  else if (parsed.status) query = query.eq("status", parsed.status)
+  if (parsed.reasonCodeId) query = query.eq("reason_code_id", parsed.reasonCodeId)
+  if (parsed.origin) query = query.eq("origin", parsed.origin)
+  if (parsed.projectId) query = query.eq("project_id", parsed.projectId)
+  if (scope.divisionIds) query = query.in("project.division_id", scope.divisionIds)
+  if (parsed.communityId) query = query.eq("project.lot.community_id", parsed.communityId).eq("project.lot.org_id", resolvedOrgId).eq("project.lot.community.org_id", resolvedOrgId)
+  if (scope.projectMembershipRequired) query = query.eq("project.access.org_id", resolvedOrgId).eq("project.access.user_id", userId).eq("project.access.status", "active")
+  const { data, error, count } = await query.range(from, from + parsed.pageSize - 1)
   if (error) throw new Error(`Failed to list variance orders: ${error.message}`)
-  return { items: await hydrate(data ?? [], supabase, resolvedOrgId), count: count ?? 0, page, pageSize }
+  return { items: await hydrate(data ?? [], supabase, resolvedOrgId), count: count ?? 0, page: parsed.page, pageSize: parsed.pageSize }
 }
 
 export async function rejectVarianceOrder({

@@ -1,5 +1,7 @@
 import { createAccountingOAuthState, verifyAccountingOAuthState } from "@/lib/integrations/accounting/oauth-state"
 import { createCipheriv, createDecipheriv, randomBytes } from "crypto"
+import { logQBO } from "@/lib/services/accounting-logger"
+import { QBOTransportError, qboOAuthError, withQboResponse } from "@/lib/integrations/accounting/qbo/transport"
 import { qboApiBaseUrl } from "@/lib/integrations/accounting/qbo/config"
 
 const QBO_CLIENT_ID = process.env.QBO_CLIENT_ID
@@ -74,7 +76,7 @@ export async function exchangeCodeForTokens(code: string, realmId: string): Prom
     `${requireEnv(QBO_CLIENT_ID, "QBO_CLIENT_ID")}:${requireEnv(QBO_CLIENT_SECRET, "QBO_CLIENT_SECRET")}`,
   ).toString("base64")
 
-  const response = await fetch("https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer", {
+  return withQboResponse("token exchange", "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer", {
     method: "POST",
     headers: {
       Accept: "application/json",
@@ -86,15 +88,11 @@ export async function exchangeCodeForTokens(code: string, realmId: string): Prom
       code,
       redirect_uri: QBO_REDIRECT_URI,
     }),
+  }, async (response) => {
+    if (!response.ok) return qboOAuthError(response, "token exchange")
+    const tokens = (await response.json()) as QBOTokens
+    return { ...tokens, realm_id: realmId }
   })
-
-  if (!response.ok) {
-    const error = await response.text()
-    throw new Error(`QBO token exchange failed: ${error}`)
-  }
-
-  const tokens = (await response.json()) as QBOTokens
-  return { ...tokens, realm_id: realmId }
 }
 
 export async function refreshAccessToken(refreshToken: string): Promise<QBOTokens> {
@@ -102,7 +100,7 @@ export async function refreshAccessToken(refreshToken: string): Promise<QBOToken
     `${requireEnv(QBO_CLIENT_ID, "QBO_CLIENT_ID")}:${requireEnv(QBO_CLIENT_SECRET, "QBO_CLIENT_SECRET")}`,
   ).toString("base64")
 
-  const response = await fetch("https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer", {
+  return withQboResponse("token refresh", "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer", {
     method: "POST",
     headers: {
       Accept: "application/json",
@@ -113,14 +111,10 @@ export async function refreshAccessToken(refreshToken: string): Promise<QBOToken
       grant_type: "refresh_token",
       refresh_token: refreshToken,
     }),
+  }, async (response) => {
+    if (!response.ok) return qboOAuthError(response, "token refresh")
+    return (await response.json()) as QBOTokens
   })
-
-  if (!response.ok) {
-    const error = await response.text().catch(() => "unknown")
-    throw new Error(`QBO token refresh failed: ${error}`)
-  }
-
-  return (await response.json()) as QBOTokens
 }
 
 export async function revokeQBOToken(token: string): Promise<void> {
@@ -128,7 +122,7 @@ export async function revokeQBOToken(token: string): Promise<void> {
     `${requireEnv(QBO_CLIENT_ID, "QBO_CLIENT_ID")}:${requireEnv(QBO_CLIENT_SECRET, "QBO_CLIENT_SECRET")}`,
   ).toString("base64")
 
-  const response = await fetch("https://developer.api.intuit.com/v2/oauth2/tokens/revoke", {
+  return withQboResponse("token revoke", "https://developer.api.intuit.com/v2/oauth2/tokens/revoke", {
     method: "POST",
     headers: {
       Accept: "application/json",
@@ -136,12 +130,10 @@ export async function revokeQBOToken(token: string): Promise<void> {
       Authorization: `Basic ${credentials}`,
     },
     body: JSON.stringify({ token }),
+  }, async (response) => {
+    if (!response.ok) return qboOAuthError(response, "token revoke")
+    await response.text()
   })
-
-  if (!response.ok) {
-    const error = await response.text().catch(() => "unknown")
-    throw new Error(`QBO token revoke failed: ${error}`)
-  }
 }
 
 export function encryptToken(token: string): string {
@@ -166,83 +158,84 @@ export function decryptToken(encrypted: string): string {
 }
 
 export async function fetchQBOCompanyInfo(accessToken: string, realmId: string) {
-  const response = await fetch(`${qboApiBaseUrl}/v3/company/${realmId}/companyinfo/${realmId}`, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: "application/json",
-    },
-  })
-
-  if (!response.ok) return null
-  const data = await response.json().catch(() => null)
-  return (data as any)?.CompanyInfo ?? null
+  try {
+    return await withQboResponse("company info", `${qboApiBaseUrl}/v3/company/${realmId}/companyinfo/${realmId}`, {
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    }, async (response) => {
+      if (!response.ok) {
+        await response.text()
+        logQBO("warn", "company_info_unavailable", { status: response.status, intuitTid: response.headers.get("intuit_tid") ?? response.headers.get("intuit-tid") })
+        return null
+      }
+      const data = await response.json()
+      return data?.CompanyInfo ?? null
+    })
+  } catch (error) {
+    if (!(error instanceof QBOTransportError)) throw error
+    // Company name is optional metadata; valid exchanged credentials must still persist.
+    logQBO("warn", "company_info_unavailable", { operation: error.operation, reason: error.reason, status: error.status, intuitTid: error.intuitTid })
+    return null
+  }
 }
 
 export async function detectInvoiceNumberPattern(accessToken: string, realmId: string) {
   // Scan a window of recent invoices and take the numeric max — the most recently
   // *created* invoice is not necessarily the highest-numbered one.
   const query = `SELECT DocNumber FROM Invoice ORDERBY MetaData.CreateTime DESC MAXRESULTS 50`
-  const response = await fetch(`${qboApiBaseUrl}/v3/company/${realmId}/query?query=${encodeURIComponent(query)}`, {
+  return withQboResponse("invoice number pattern", `${qboApiBaseUrl}/v3/company/${realmId}/query?query=${encodeURIComponent(query)}`, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Accept: "application/json",
     },
+  }, async (response) => {
+    if (!response.ok) return qboOAuthError(response, "invoice number pattern")
+    const payload = await response.json()
+    const rows = (payload?.QueryResponse?.Invoice ?? []) as Array<{ DocNumber?: string }>
+    const docNumber =
+      rows
+        .map((row) => (typeof row.DocNumber === "string" ? row.DocNumber.trim() : ""))
+        .filter(Boolean)
+        .sort((a, b) => b.localeCompare(a, undefined, { numeric: true, sensitivity: "base" }))[0] ?? undefined
+
+    if (!docNumber) {
+      return {
+        invoice_number_pattern: "numeric" as const,
+        invoice_number_prefix: null as string | null,
+        last_known_invoice_number: null as string | null,
+      }
+    }
+
+    // Basic pattern detection for numeric/prefix/year-based formats
+    if (/^\d+$/.test(docNumber)) {
+      return {
+        invoice_number_pattern: "numeric" as const,
+        invoice_number_prefix: null as string | null,
+        last_known_invoice_number: docNumber,
+      }
+    }
+
+    const prefixMatch = docNumber.match(/^([A-Za-z-]+)(\d+)$/)
+    if (prefixMatch) {
+      return {
+        invoice_number_pattern: "prefix" as const,
+        invoice_number_prefix: prefixMatch[1],
+        last_known_invoice_number: docNumber,
+      }
+    }
+
+    const yearMatch = docNumber.match(/^(\d{4}-)(\d+)$/)
+    if (yearMatch) {
+      return {
+        invoice_number_pattern: "prefix" as const,
+        invoice_number_prefix: yearMatch[1],
+        last_known_invoice_number: docNumber,
+      }
+    }
+
+    return {
+      invoice_number_pattern: "custom" as const,
+      invoice_number_prefix: null as string | null,
+      last_known_invoice_number: docNumber,
+    }
   })
-
-  if (!response.ok) {
-    return {
-      invoice_number_pattern: "numeric" as const,
-      invoice_number_prefix: null as string | null,
-      last_known_invoice_number: null as string | null,
-    }
-  }
-
-  const payload = (await response.json().catch(() => ({}))) as any
-  const rows = (payload?.QueryResponse?.Invoice ?? []) as Array<{ DocNumber?: string }>
-  const docNumber =
-    rows
-      .map((row) => (typeof row.DocNumber === "string" ? row.DocNumber.trim() : ""))
-      .filter(Boolean)
-      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true, sensitivity: "base" }))[0] ?? undefined
-
-  if (!docNumber) {
-    return {
-      invoice_number_pattern: "numeric" as const,
-      invoice_number_prefix: null as string | null,
-      last_known_invoice_number: null as string | null,
-    }
-  }
-
-  // Basic pattern detection for numeric/prefix/year-based formats
-  if (/^\d+$/.test(docNumber)) {
-    return {
-      invoice_number_pattern: "numeric" as const,
-      invoice_number_prefix: null as string | null,
-      last_known_invoice_number: docNumber,
-    }
-  }
-
-  const prefixMatch = docNumber.match(/^([A-Za-z-]+)(\d+)$/)
-  if (prefixMatch) {
-    return {
-      invoice_number_pattern: "prefix" as const,
-      invoice_number_prefix: prefixMatch[1],
-      last_known_invoice_number: docNumber,
-    }
-  }
-
-  const yearMatch = docNumber.match(/^(\d{4}-)(\d+)$/)
-  if (yearMatch) {
-    return {
-      invoice_number_pattern: "prefix" as const,
-      invoice_number_prefix: yearMatch[1],
-      last_known_invoice_number: docNumber,
-    }
-  }
-
-  return {
-    invoice_number_pattern: "custom" as const,
-    invoice_number_prefix: null as string | null,
-    last_known_invoice_number: docNumber,
-  }
 }

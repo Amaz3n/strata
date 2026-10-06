@@ -1,0 +1,160 @@
+{
+  "date": "2026-10-04",
+  "taskId": "E05-04.READ-WORKBENCH",
+  "status": "local_closing_read_ui_behavior_verified_financial_archive_regressions_and_runtime_acceptance_open",
+  "baselineHead": "9f1549af84a6998eb2d851415ec6f119ab89a96f",
+  "sourceFingerprints": {
+    "lib/services/closings.ts": "9992dbf607a128d8f69bb3023d53a353b6ac962d51d1535d2ba587c78ab37ad1",
+    "components/sales/closing-workbench.tsx": "6e6e458b36d00d07bcf390ee111caca3e8c95c2547ffedc5a09ab09fe711d18a",
+    "app/(app)/projects/[id]/closing/page.tsx": "a22f617e72fa5d2b748d2544880955be4bedc88d66abc8af9695ff0790d8bbf9",
+    "tests/closing-read-workbench.test.js": "4bbb14d7f5a4a969bdf9dfe24d721a71dd664bb5172afd6b6b49ebeb0ae03832",
+    "tests/fixtures/books-export-snapshot-database.js": "15dc96308df091f497fba9166b717e3cbe8f7c3728580f6b7b94721973375fdb",
+    "lib/services/reports/settlement-statement.ts": "5b91847b6fef7f3af322354e2519bf3916073ae841cbbe519584bc4b9dd4070e",
+    "package.json": "a4cfb32db7c35334362b1c692f2f5d3c5cbe1e5d9c80a0ca4e672b6f105542f7"
+  },
+  "checks": [
+    {
+      "name": "focused-initial",
+      "path": "docs/enterprise-production/evidence/2026-10-04-closing-read/focused-initial.log",
+      "exitCode": 0,
+      "sha256": "358574d5a7aa952a15b4bc075af139913e1b0b8e8e9dac16009322926544fe26",
+      "tests": {
+        "tests": 28,
+        "pass": 28,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "focused",
+      "path": "docs/enterprise-production/evidence/2026-10-04-closing-read/focused.log",
+      "exitCode": 0,
+      "sha256": "61a2f3b3fd3efd24582a4465ede4e24a62557ac91053d5998e37bb9563333df9",
+      "tests": {
+        "tests": 42,
+        "pass": 42,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "types",
+      "path": "docs/enterprise-production/evidence/2026-10-04-closing-read/types.log",
+      "exitCode": 0,
+      "sha256": "3129e0dd6fffe6e39cca0949fc31cbaf641f8d72bc70baa672ede1b949b7603b",
+      "tests": {}
+    },
+    {
+      "name": "lint",
+      "path": "docs/enterprise-production/evidence/2026-10-04-closing-read/lint.log",
+      "exitCode": 0,
+      "sha256": "8ecf36ad9a01a38ba89fc8054307d3aa095367bbeb12f35a74dfa741fb135a2d",
+      "tests": {}
+    },
+    {
+      "name": "auth",
+      "path": "docs/enterprise-production/evidence/2026-10-04-closing-read/auth.log",
+      "exitCode": 0,
+      "sha256": "860a911d9aec7b88b8fdcc3a5093c25aef8737e8121907ea5939b3a39053d825",
+      "tests": {
+        "tests": 1583,
+        "pass": 1583,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "financials-initial",
+      "path": "docs/enterprise-production/evidence/2026-10-04-closing-read/financials-initial.log",
+      "exitCode": 1,
+      "sha256": "eebd763f6252689e5572b4e358a36b5c047e413b690a810f00a3924b4ddf8e87",
+      "tests": {
+        "tests": 3333,
+        "pass": 3131,
+        "fail": 202,
+        "cancelled": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "snapshot-fixture",
+      "path": "docs/enterprise-production/evidence/2026-10-04-closing-read/snapshot-fixture.log",
+      "exitCode": 1,
+      "sha256": "17b6983d1c66a92f48d3f180b7281fd94e2102f98ffea3126109310b9142db1f",
+      "tests": {
+        "tests": 2,
+        "pass": 0,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "financials-final",
+      "path": "docs/enterprise-production/evidence/2026-10-04-closing-read/financials-final.log",
+      "exitCode": 1,
+      "sha256": "16f3a3dc3ec25a8e26555de28e7adcdb6806d6312f5ab4c15cc360ead625234c",
+      "tests": {
+        "tests": 3333,
+        "pass": 3327,
+        "fail": 6,
+        "cancelled": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "inventory-refresh",
+      "path": "docs/enterprise-production/evidence/2026-10-04-closing-read/inventory-refresh.log",
+      "exitCode": 0,
+      "sha256": "28079691f43e7fa55e82056ea9a2dcc35b1575a7d275aecb98bd303ab0368793",
+      "tests": {}
+    },
+    {
+      "name": "inventory-check",
+      "path": "docs/enterprise-production/evidence/2026-10-04-closing-read/inventory-check.log",
+      "exitCode": 1,
+      "sha256": "8aba96422166dea1560e6b7f7303fc4b849c2dad5a6ece80948e708d93b6bcd4",
+      "tests": {}
+    }
+  ],
+  "dataset": "Synthetic same-organization actual-home UUID records, purchase agreement109000-cent adjusted settlement, empty/existing checklist, management/payment role matrix, denied/missing/closed home, failed source reads and failed/uncertain adjustment save. No live data.",
+  "actorMatrix": [
+    "sales reader",
+    "closing manager without payment release",
+    "payment releaser without closing management",
+    "closing manager with payment release",
+    "denied actual-home reader",
+    "closed-home authorized completion recovery"
+  ],
+  "changes": [
+    "Actual-home sales.read precedes root buyer/financial query. Open/closed inspection and statement reports do not seed checklists or save settlement previews.",
+    "Existing Schedule action prepares the existing checklist after closing management and editable-home checks. Existing financial settlement owner persists actual settlement.",
+    "Actual-home management/payment capabilities govern Schedule/Clear/Complete/adjustment/settlement controls; closed evidence remains readable.",
+    "Home/closing key remounts workbench; unsuccessful and uncertain adjustment saves retain entered draft.",
+    "Existing Books snapshot fixture now includes candidate native-invoice table identity to reveal snapshot/manifest/restore mismatch; no assertions weakened."
+  ],
+  "failedHistory": [
+    "Initial financials3333 cases:3131passed/202failed, all missing books_native_invoice_postings in partial export fixture.",
+    "After fixture addition, targeted snapshot tests0/2passed, exposing new table absent from EXPORT_TABLES and ownership/restore inventory.",
+    "Finalfinancials3333cases:3327passed/6failed. Failures remain truthful candidate native-invoice archive integration defects. No green global financial claim."
+  ],
+  "remaining": [
+    "E09-03 required inspection/permit obligation, repair evidence, accepted reinspection and transaction-bound closing checks.",
+    "E12-03 candidate native-invoice receipt/body/source verification, export version/manifest and restore dependency integration.",
+    "Full-schema/currentJWT, independent races and actual authenticated closing coordinator/finance QA.",
+    "Checklist preparation concurrency/atomic event/audit and complete original-body settlement ownership remain parent task requirements.",
+    "Draft recovery is local failure preservation, not reload-persistent or complete original-request recovery.",
+    "Source permission calls/mocks do not prove mid-operation revocation or generic SQL grants."
+  ],
+  "limits": [
+    "Synthetic service adapter and actual React static/hook rendering prove local behavior; no SQL/RLS/browser/provider/device acceptance claimed.",
+    "Snapshot fixture uses empty identity tables and does not exercise complete candidate ledger schema.",
+    "Shared dirty tree includes pre-existing/concurrent work; fingerprints do not imply exclusive ownership of full diffs.",
+    "No production writes, migration application, activation/deployment or external messages."
+  ],
+  "implementationAcceptance": false,
+  "releaseAcceptance": false
+}

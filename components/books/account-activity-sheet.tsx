@@ -32,6 +32,8 @@ type ActivityResult = {
 }
 
 export type ActivityTarget = {
+  operatingOnly?: boolean
+  unassignedOnly?: boolean
   accountId: string
   code: string
   name: string
@@ -61,6 +63,8 @@ export function AccountActivitySheet({
     setError(null)
     setData(null)
     loadAccountActivityAction({
+      operatingOnly: target.operatingOnly,
+      unassignedOnly: target.unassignedOnly,
       accountId: target.accountId,
       startDate,
       endDate,
@@ -93,7 +97,7 @@ export function AccountActivitySheet({
         <header className="flex items-start justify-between gap-4 border-b px-5 py-4">
           <div className="min-w-0">
             <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              Account register
+              {target?.operatingOnly ? "Statement activity" : "Account register"}
             </p>
             <h2 className="truncate text-sm font-semibold">
               <span className="font-mono text-muted-foreground">{target?.code}</span>{" "}

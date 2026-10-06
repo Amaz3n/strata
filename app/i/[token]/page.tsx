@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { notFound } from "next/navigation"
@@ -23,6 +24,7 @@ export const metadata = {
 }
 
 async function InvoicePublicPageContent({ params }: Params) {
+  await connection()
   const { token } = await params
   const invoice = await getInvoiceByToken(token)
 
@@ -111,7 +113,7 @@ async function InvoicePublicPageContent({ params }: Params) {
 
 export default function InvoicePublicPage(props: Parameters<typeof InvoicePublicPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLoadingSkeleton title="Invoice" />}>
       <InvoicePublicPageContent {...props} />
     </Suspense>
   )

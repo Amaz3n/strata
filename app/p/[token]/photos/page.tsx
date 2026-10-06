@@ -1,8 +1,8 @@
-import { notFound } from "next/navigation"
+import { connection } from "next/server"
 
 import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { PortalTimelineTab } from "@/components/portal/tabs/portal-timeline-tab"
-import { loadClientPortalPage } from "../load-portal"
+import { loadClientPortalPhotosPage } from "../load-portal"
 
 interface Props {
   params: Promise<{ token: string }>
@@ -10,12 +10,9 @@ interface Props {
 
 
 export default async function ClientPortalPhotosPage({ params }: Props) {
+  await connection()
   const { token } = await params
-  const { access, data } = await loadClientPortalPage(token)
-
-  if (access.permissions.can_view_photos === false) {
-    notFound()
-  }
+  const { data } = await loadClientPortalPhotosPage(token)
 
   return (
     <>

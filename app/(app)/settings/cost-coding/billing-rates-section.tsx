@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { BillingRatesRoster } from "@/components/cost-codes/billing-rates-roster"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 
@@ -8,6 +9,7 @@ import {
 } from "./billing-rates-actions"
 
 export async function BillingRatesSection() {
+  await connection()
   const [schedules, overrides, options, permissionResult] = await Promise.all([
     listBillingRateSchedulesAction(),
     listBillingRateOverridesAction(),

@@ -11,10 +11,11 @@ import {
   voidBillPaymentInAccounting,
   type AccountingPushEntityType,
 } from "@/lib/services/accounting-sync"
-import { AccountingDeliveryError, withAccountingDeadline } from "@/lib/services/accounting-delivery"
+import { accountingDeliveryDeadline, AccountingDeliveryError, withAccountingDeadline } from "@/lib/services/accounting-delivery"
 import { keepAliveAccountingConnections } from "@/lib/services/accounting-connections"
 import { logAccounting } from "@/lib/services/accounting-logger"
-import { withCronRun } from "@/lib/services/job-runs"
+import { workerPersistenceDeadline, withWorkerDatabasePersistence } from "@/lib/supabase/worker-request-context"
+import { withAccountingWorkerCron } from "@/lib/services/accounting-worker"
 
 const MAX_RETRIES = 3
 const BATCH_SIZE = 2
@@ -32,8 +33,14 @@ type ClaimedJob = {
   run_at?: string | null
 }
 
-async function requirePersisted(query: PromiseLike<{ error: { message: string } | null }>) {
-  const { error } = await query
+function databaseSignal(deadline: number) {
+  const remaining = deadline - Date.now()
+  if (remaining <= 0) throw new AccountingDeliveryError("Accounting worker deadline reached", true, "deadline")
+  return AbortSignal.timeout(Math.min(10_000, remaining))
+}
+
+async function requirePersisted(query: PromiseLike<{ error: { message: string } | null }> & { abortSignal(signal: AbortSignal): PromiseLike<{ error: { message: string } | null }> }, deadline: number) {
+  const { error } = await withWorkerDatabasePersistence(deadline, () => query.abortSignal(databaseSignal(deadline)))
   if (error) throw new Error(`Unable to persist accounting job state: ${error.message}`)
 }
 
@@ -42,9 +49,19 @@ async function processAccountingOutbox(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  const deadline = Date.now() + 85_000
-  const keepalive = await withAccountingDeadline(deadline, () => keepAliveAccountingConnections(TOKEN_KEEPALIVE_BATCH_SIZE))
-  const supabase = createServiceSupabaseClient()
+  const deadline = Math.min(Date.now() + 85_000, accountingDeliveryDeadline() ?? Infinity)
+  let keepalive: Awaited<ReturnType<typeof keepAliveAccountingConnections>>
+  try {
+    keepalive = await withAccountingDeadline(Math.min(deadline, Date.now() + 20_000), () => keepAliveAccountingConnections(TOKEN_KEEPALIVE_BATCH_SIZE))
+  } catch (error) {
+    keepalive = { scanned: 0, refreshed: 0, failed: 1, attempted: 0, deferred: 0, budgetExhausted: Date.now() >= deadline, error: error instanceof Error ? error.message : "Connection maintenance failed" }
+  }
+  const maintenanceFailed = keepalive.failed > 0 || keepalive.budgetExhausted || Boolean(keepalive.error)
+  let supabase: ReturnType<typeof createServiceSupabaseClient>
+  try { supabase = createServiceSupabaseClient() }
+  catch { return NextResponse.json({ error: "Unable to initialize accounting worker", keepalive }, { status: 500 }) }
+
+  if (Date.now() >= deadline) return NextResponse.json({ ok: false, processed: 0, failed: 0, deferred: 0, budgetExhausted: true, keepalive, recoveredStale: 0 }, { status: 207 })
 
   // Return leases abandoned by a worker that timed out mid-batch, using the
   // same atomic reaper as the generic outbox worker.
@@ -52,11 +69,11 @@ async function processAccountingOutbox(request: NextRequest) {
     p_lease_seconds: PROCESSING_TIMEOUT_MINUTES * 60,
     p_max_attempts: MAX_RETRIES,
     p_job_types: ACCOUNTING_OUTBOX_JOB_TYPES,
-  })
+  }).abortSignal(databaseSignal(deadline))
   if (reapError) {
     return NextResponse.json({ error: `reap_stale_outbox_jobs failed: ${reapError.message}` }, { status: 500 })
   }
-  const { error: reconcileError } = await supabase.rpc("reconcile_accounting_exhausted_jobs")
+  const { error: reconcileError } = await supabase.rpc("reconcile_accounting_exhausted_jobs").abortSignal(databaseSignal(deadline))
   if (reconcileError) return NextResponse.json({ error: `Unable to reconcile exhausted accounting jobs: ${reconcileError.message}` }, { status: 500 })
   const reapRow = (Array.isArray(reaped) ? reaped[0] : reaped) as { requeued?: number; exhausted?: number } | null
   const recoveredStale = Number(reapRow?.requeued ?? 0)
@@ -67,10 +84,11 @@ async function processAccountingOutbox(request: NextRequest) {
   // Claims atomically (FOR UPDATE SKIP LOCKED). There is deliberately no
   // select-then-update fallback: that two-statement path is the double-claim
   // race the RPC exists to eliminate, so a missing RPC fails loudly instead.
+  if (Date.now() >= deadline) return NextResponse.json({ ok: false, processed: 0, failed: 0, deferred: 0, budgetExhausted: true, keepalive, recoveredStale }, { status: 207 })
   const { data: claimedJobs, error } = await supabase.rpc("claim_jobs", {
     job_types: ACCOUNTING_OUTBOX_JOB_TYPES,
     limit_value: BATCH_SIZE,
-  })
+  }).abortSignal(databaseSignal(deadline))
 
   if (error) {
     return NextResponse.json({ error: `claim_jobs failed: ${error.message}` }, { status: 500 })
@@ -79,19 +97,23 @@ async function processAccountingOutbox(request: NextRequest) {
   const jobs = (claimedJobs ?? []) as ClaimedJob[]
 
   if (!jobs.length) {
-    return NextResponse.json({ processed: 0, failed: 0, keepalive, recoveredStale })
+    return NextResponse.json({ ok: !maintenanceFailed, processed: 0, failed: 0, deferred: 0, keepalive, recoveredStale }, { status: maintenanceFailed ? 207 : 200 })
   }
   logAccounting("info", "process_outbox_claimed", { jobs: jobs.length })
 
   let processed = 0
   let failed = 0
+  let deferred = 0
 
   for (const job of jobs) {
     const jobId = job.job_id ?? job.id
     const payload = job.payload ?? {}
+    let persistenceDeadline: number | undefined
+    const ownedDeadline = () => persistenceDeadline ??= workerPersistenceDeadline()
     if (Date.now() >= deadline) {
-        const { error } = await supabase.from("outbox").update({ status: "pending", run_at: new Date().toISOString() }).eq("id", jobId)
+        const { error } = await withWorkerDatabasePersistence(ownedDeadline(), () => supabase.from("outbox").update({ status: "pending", run_at: new Date().toISOString() }).eq("id", jobId).abortSignal(databaseSignal(ownedDeadline())))
         if (error) throw new Error(`Unable to release unstarted accounting job: ${error.message}`)
+        deferred += 1
         continue
     }
     try {
@@ -103,7 +125,7 @@ async function processAccountingOutbox(request: NextRequest) {
         if (typeof reason !== "string") throw new Error("Missing return reason")
         const reversal = await voidBillPaymentInAccounting({ orgId: job.org_id, paymentId, reason, connectionId: typeof payload.connection_id === "string" ? payload.connection_id : undefined, deadline })
         if (!reversal.voided && !["books_authoritative", "never_posted"].includes(reversal.reason)) throw new AccountingDeliveryError(`Accounting reversal blocked: ${reversal.reason}`, reversal.reason === "deferred", reversal.reason)
-        await requirePersisted(supabase.from("outbox").update({ status: "completed" }).eq("id", jobId))
+        await requirePersisted(supabase.from("outbox").update({ status: "completed" }).eq("id", jobId), ownedDeadline())
         processed++
         continue
       }
@@ -115,10 +137,10 @@ async function processAccountingOutbox(request: NextRequest) {
       const result = await processAccountingPush({ orgId: job.org_id, entityType, entityId, connectionId: typeof payload.connection_id === "string" ? payload.connection_id : undefined, deadline })
       if (result.deferred) {
         // Contention is not a delivery attempt and never spends its retry budget.
-        await requirePersisted(supabase.from("outbox").update({ status: "pending", retry_count: job.retry_count ?? 0, last_error: "Accounting delivery is owned by another worker", run_at: new Date(Date.now() + 60_000).toISOString() }).eq("id", jobId))
+        await requirePersisted(supabase.from("outbox").update({ status: "pending", retry_count: job.retry_count ?? 0, last_error: "Accounting delivery is owned by another worker", run_at: new Date(Date.now() + 60_000).toISOString() }).eq("id", jobId), ownedDeadline())
         continue
       }
-      await requirePersisted(supabase.from("outbox").update({ status: "completed" }).eq("id", jobId))
+      await requirePersisted(supabase.from("outbox").update({ status: "completed" }).eq("id", jobId), ownedDeadline())
       processed++
     } catch (err: any) {
       const newRetry = (job.retry_count ?? 0) + 1
@@ -138,7 +160,7 @@ async function processAccountingOutbox(request: NextRequest) {
             ? new Date(Date.now() + Math.pow(3, newRetry) * 5 * 60 * 1000).toISOString()
             : job.run_at ?? new Date().toISOString(),
         })
-        .eq("id", jobId))
+        .eq("id", jobId), ownedDeadline())
 
       // Giving up is the moment a human inherits the problem, so it is the
       // moment the transaction has to start saying so.
@@ -150,14 +172,15 @@ async function processAccountingOutbox(request: NextRequest) {
         const payloadKey = entityType === "invoice" ? "invoice_id" : entityType === "project_expense" ? "expense_id" : entityType === "vendor_bill" ? "bill_id" : "payment_id"
         const entityId = payload[payloadKey]
         if (typeof entityId === "string") {
-          const mark = permanent
-            ? markAccountingPushPermanentlyFailed({ orgId: job.org_id, entityType, entityId, message: permanent.message })
+          const orgId = job.org_id
+          const mark = withWorkerDatabasePersistence(ownedDeadline(), () => permanent
+            ? markAccountingPushPermanentlyFailed({ orgId, entityType, entityId, message: permanent.message })
             : markAccountingPushExhausted({
-                orgId: job.org_id,
+                orgId,
                 entityType,
                 entityId,
                 message: err?.message ?? "Sync failed",
-              })
+              }))
           await mark.catch((markError) => logAccounting("error", "process_outbox_mark_exhausted_failed", { error: String(markError) }))
         }
       }
@@ -167,10 +190,10 @@ async function processAccountingOutbox(request: NextRequest) {
   }
 
   return NextResponse.json(
-    { ok: failed === 0, processed, failed, keepalive, recoveredStale },
-    { status: failed === 0 ? 200 : 207 },
+    { ok: failed === 0 && !maintenanceFailed && deferred === 0 && Date.now() < deadline, processed, failed, deferred, budgetExhausted: deferred > 0 || Date.now() >= deadline, keepalive, recoveredStale },
+    { status: failed === 0 && !maintenanceFailed && deferred === 0 && Date.now() < deadline ? 200 : 207 },
   )
 }
 
-export const GET = withCronRun("accounting-process-outbox", processAccountingOutbox)
+export const GET = withAccountingWorkerCron("accounting-process-outbox", processAccountingOutbox)
 export const POST = GET

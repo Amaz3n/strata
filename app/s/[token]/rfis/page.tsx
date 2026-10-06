@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { notFound } from "next/navigation"
 import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
@@ -11,6 +12,7 @@ interface Params {
 
 
 export default async function RfisPortalPage({ params }: Params) {
+  await connection()
   const { token } = await params
   let access
   try {

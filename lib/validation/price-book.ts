@@ -46,6 +46,7 @@ export const repriceAgreementSchema = z.object({
 })
 
 export const priceAgreementFiltersSchema = z.object({
+  agreementIds: z.array(z.string().uuid()).min(1).max(100).optional(),
   companyId: optionalUuid,
   costCodeId: optionalUuid,
   communityId: optionalUuid,

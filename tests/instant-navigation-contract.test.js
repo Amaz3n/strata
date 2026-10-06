@@ -46,7 +46,8 @@ test("instant() assertions can run against the production server they target", (
 
   // `next start` only exposes the testing API instant() drives when this is set.
   assert.match(playwright, /pnpm build && pnpm start/)
-  assert.match(config, /exposeTestingApiInProductionBuild:\s*true/)
+  assert.match(config, /exposeTestingApiInProductionBuild:\s*process\.env\.NEXT_INSTANT_NAVIGATION_TESTING === "true"/)
+  assert.match(playwright, /env:\s*\{ NEXT_INSTANT_NAVIGATION_TESTING: "true" \}/)
 })
 
 test("the Next.js typecheck excludes the independently built drawings worker", () => {
@@ -120,7 +121,7 @@ test("Supabase session recovery is isolated in a shell-eligible private cache", 
   assert.match(source("next.config.mjs"), /cacheLife:\s*\{[\s\S]*session:\s*\{/)
 })
 
-test("the request boundary stays outside shared cached auth code", () => {
+test("shared auth and chrome stay reachable during private prefetching", () => {
   const auth = source("lib/auth/context.ts")
   const contextStart = auth.indexOf("export const getAuthContext")
   const contextEnd = auth.indexOf("export async function requireAuth")
@@ -138,7 +139,8 @@ test("the request boundary stays outside shared cached auth code", () => {
   const entryStart = chrome.indexOf("export async function getAppChromeContext")
   const entryEnd = chrome.indexOf("const SIGNED_OUT_CHROME")
   const entry = chrome.slice(entryStart, entryEnd)
-  assert.ok(entry.indexOf("await connection()") < entry.indexOf("await getAuthContext()"))
+  assert.doesNotMatch(entry, /await connection\(\)/)
+  assert.match(entry, /return loadAppChromeContext\(\)/)
 })
 
 test("shell decoration reads the clock only after entering request time", () => {
@@ -175,7 +177,8 @@ test("the documents journey exposes a destination-owned instant shell", () => {
   const page = source("app/(app)/projects/[id]/documents/page.tsx")
   const journey = source("e2e/instant-navigation.spec.ts")
 
-  assert.match(page, /data-instant-shell="project-documents"/)
+  assert.match(page, /<ProjectDocumentsPage/)
+  assert.match(source("components/documents/project-documents-page.tsx"), /data-instant-shell="project-documents"/)
   assert.match(journey, /instant\(page/)
   assert.match(journey, /data-instant-shell="project-documents"/)
 })
@@ -304,7 +307,17 @@ test("authenticated pages inherit loading coverage and specialized boundaries us
   // override it with a useful skeleton, without fetching or running effects.
   assert.ok(boundaries.includes("app/(app)/loading.tsx"))
   for (const boundary of boundaries.filter(file => file !== "app/(app)/loading.tsx")) {
-    const content = source(boundary)
+    let file = boundary
+    let content = source(file)
+    const visited = new Set([file])
+    // A nested route can reuse the workspace's existing skeleton. Inspect the
+    // implementation rather than rejecting a valid default re-export.
+    for (let reexport; (reexport = content.match(/export\s*\{\s*default\s*\}\s*from\s*["'](\.[^"']+)["']/));) {
+      file = path.normalize(path.join(path.dirname(file), `${reexport[1]}.tsx`))
+      assert.ok(!visited.has(file), `Circular loading boundary: ${boundary}`)
+      visited.add(file)
+      content = source(file)
+    }
     assert.match(content, /Skeleton|skeleton/, boundary)
     assert.doesNotMatch(content, /Loader2|animate-spin|useEffect|fetch\(/, boundary)
   }

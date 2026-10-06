@@ -1,0 +1,2043 @@
+{
+  "goalStatus": "active",
+  "sourceCommit": "9f1549af84a6998eb2d851415ec6f119ab89a96f",
+  "plan": "014-qbo-integration-completion.md",
+  "packages": [
+    {
+      "id": "Q01",
+      "title": "Baseline and failure fixtures",
+      "status": "IN PROGRESS",
+      "codeDoDVerified": false,
+      "evidence": [
+        {
+          "command": "node --test tests/accounting-*.test.js tests/qbo-*.test.js",
+          "cwd": "/private/tmp/arc-qbo-goal-01a109ed",
+          "result": {
+            "tests": 130,
+            "pass": 130,
+            "fail": 0,
+            "skip": 0
+          },
+          "log": "/private/tmp/arc-qbo-goal-baseline.log"
+        },
+        {
+          "command": "COREPACK_ENABLE_AUTO_PIN=0 pnpm typecheck",
+          "actualCommand": "pnpm typecheck",
+          "cwd": "/private/tmp/arc-qbo-goal-01a109ed",
+          "result": {
+            "exitCode": 0
+          },
+          "log": "/private/tmp/arc-qbo-goal-typecheck-baseline.log",
+          "note": "Corepack generated packageManager pin in isolated package.json was restored; unrelated metadata edit is excluded."
+        },
+        {
+          "check": "negative baseline CloudEvents parser behavior against d8b97bc^ using in-memory TypeScript module",
+          "result": "old implementation returns0 and fails required1 assertion; new returns1; no network"
+        }
+      ],
+      "remaining": [
+        "Add and verify failure fixtures as their implementation packages land; baseline alone is not program acceptance."
+      ],
+      "codeDefinitionsOfDone": [
+        {
+          "id": "Q01-01",
+          "criterion": "baseline command above passes or has precisely documented pre-existing failures; no network/provider/customer writes; fixtures can reproduce signed CloudEvents, malformed/saturated CDC, same-total allocation edits, expired reconnect, failed queue reads and partial imports",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q01-02",
+          "criterion": "Tests fail against the old behavior where applicable",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q01-03",
+          "criterion": "Timing tests use controllable clocks rather than long sleeps.",
+          "verified": false,
+          "evidence": []
+        }
+      ]
+    },
+    {
+      "id": "Q02",
+      "title": "Database authorization and credential isolation",
+      "status": "IN PROGRESS",
+      "codeDoDVerified": false,
+      "evidence": [
+        {
+          "check": "real isolated PGlite execution of original accounting_connections DDL, grants and RLS with authenticated org-member role",
+          "result": "credential column reads and lifecycle/settings update succeeded; cross-org metadata read returned zero rows",
+          "scope": "synthetic rows and membership predicate; exact original connection grants/policies; no live DB",
+          "note": "negative baseline only; new security implementation not yet executed"
+        },
+        {
+          "command": "node --test tests/accounting-*.test.js tests/qbo-*.test.js",
+          "cwd": "/private/tmp/arc-qbo-goal-01a109ed",
+          "result": {
+            "tests": 252,
+            "pass": 252,
+            "fail": 0,
+            "skip": 0,
+            "cancelled": 0
+          },
+          "log": "/private/tmp/q02-parent-scoped-tests.log",
+          "reviewerVerified": true,
+          "note": "Before formal round-1 revisions; final reviewed artifact must be reverified."
+        },
+        {
+          "command": "COREPACK_ENABLE_AUTO_PIN=0 pnpm typecheck",
+          "result": {
+            "exitCode": 0
+          },
+          "log": "/private/tmp/q02-parent-typecheck.log",
+          "reviewerVerified": true
+        },
+        {
+          "command": "COREPACK_ENABLE_AUTO_PIN=0 pnpm exec eslint <six changed TS/JS files>",
+          "result": {
+            "exitCode": 0
+          },
+          "log": "/private/tmp/q02-parent-eslint.log",
+          "reviewerVerified": true
+        },
+        {
+          "check": "actual Supabase SDK fake-fetch comparison of original and new private division ownership-count helper; native fetch fail-closed",
+          "result": {
+            "baselineRequests": 6,
+            "baselineCount": 0,
+            "newRequests": 1,
+            "newCount": 1
+          },
+          "scope": "Synthetic capped response with remote identity beyond old ceiling; RPC response is stubbed here and SQL calculation independently covered by the 1105-project/1105-invoice real PGlite fixture. Authentication and other route calls excluded.",
+          "reviewerVerified": true
+        },
+        {
+          "command": "node --test tests/accounting-*.test.js tests/qbo-*.test.js",
+          "cwd": "/private/tmp/arc-qbo-goal-01a109ed",
+          "result": {
+            "tests": 253,
+            "pass": 253,
+            "fail": 0,
+            "skip": 0,
+            "cancelled": 0
+          },
+          "log": "/private/tmp/q02-parent-final-scoped-tests.log",
+          "reviewerVerified": true
+        },
+        {
+          "command": "COREPACK_ENABLE_AUTO_PIN=0 pnpm typecheck",
+          "result": {
+            "exitCode": 0
+          },
+          "log": "/private/tmp/q02-parent-final-typecheck.log",
+          "reviewerVerified": true
+        },
+        {
+          "command": "COREPACK_ENABLE_AUTO_PIN=0 pnpm exec eslint <six changed TS/JS files>",
+          "result": {
+            "exitCode": 0
+          },
+          "log": "/private/tmp/q02-parent-final-eslint.log",
+          "reviewerVerified": true
+        },
+        {
+          "check": "all seven shared destinations match a2ed029; four new destinations absent",
+          "result": "no source drift",
+          "reviewerVerified": true
+        },
+        {
+          "check": "parent inspected exact additive migration and real pre/post-D2 privileges, RPC calls, fresh function creation/replay and high-volume SQL calculation",
+          "result": "denials, metadata/service access and complete count assertions passed; original financial snapshots unchanged",
+          "reviewerVerified": true
+        },
+        {
+          "check": "parent independently compared all seven shared bytes against b76eb3a and reran shared scoped Node suite",
+          "result": {
+            "filesMatched": 7,
+            "tests": 253,
+            "pass": 253,
+            "fail": 0,
+            "skip": 0,
+            "cancelled": 0
+          },
+          "log": "/private/tmp/q02-parent-shared-tests.log",
+          "hashReport": "/private/tmp/q02-integration-hashes.json",
+          "reviewerVerified": true
+        },
+        {
+          "check": "parent actual linkSyncRecord/markEventsResolved module exports through real authenticated role SQL adapter after Q02/Q03",
+          "result": [
+            "metadata lookup succeeds",
+            "sync mapping mutation permission denied",
+            "webhook completion mutation permission denied"
+          ],
+          "note": "targeted helper/role negative, not full financial import; Q02-06 reopened; six other original criteria remain verified",
+          "reviewerVerified": true
+        },
+        {
+          "check": "Formal revision1 approved and hash-guard integrated",
+          "commit": "75e9810dad944ffefacbfd515edbcb182b00956a",
+          "files": 27,
+          "reviewerVerified": true,
+          "results": {
+            "isolatedNode": 365,
+            "sharedNode": 365,
+            "bun": 55,
+            "noGitFocused": 28,
+            "fail": 0,
+            "skip": 0,
+            "cancelled": 0,
+            "typecheckExit": 0,
+            "lintExit": 0,
+            "diffExit": 0
+          },
+          "logs": [
+            "/private/tmp/q04-parent-revision1-node.log",
+            "/private/tmp/q04-shared-integration-node.log",
+            "/private/tmp/q04-parent-revision1-bun.log",
+            "/private/tmp/q04-parent-portable.log",
+            "/private/tmp/q04-parent-revision1-types.log",
+            "/private/tmp/q04-parent-revision1-lint.log"
+          ],
+          "hashReport": "/private/tmp/q04-revision1-source-hashes.json",
+          "scope": "Exact SQL authorization/fences/replay/rollback use serialized PGlite. Actual import callers and owned row/child/identity SQL execute; posting/opening-payment collaborators are explicit inert seams. Real concurrent PostgreSQL and full financial/E2E remain Q17."
+        }
+      ],
+      "remaining": [
+        "Production migration/deployment remains unapplied; full program financial/E2E/rollout acceptance is Q17.",
+        "Q02-06 reopened again: existing imported-invoice outbound ownership adoption must be repaired atomically under014n without restoring grants. Preserve all six verified security clauses."
+      ],
+      "codeDefinitionsOfDone": [
+        {
+          "id": "Q02-01",
+          "criterion": "anonymous and ordinary organization-member roles cannot read credential columns or insert/update/delete connection, routing or sync identities directly",
+          "verified": true,
+          "evidence": [
+            "Parent reviewed actual code and exact SQL privilege/RLS/RPC fixtures, pre/post-D2, forward replay and high-volume count; final isolated and shared253 Node tests pass; lint/typecheck pass; SQL remains unapplied to production."
+          ]
+        },
+        {
+          "id": "Q02-02",
+          "criterion": "Permitted metadata reads expose an explicit column list",
+          "verified": true,
+          "evidence": [
+            "Parent reviewed actual code and exact SQL privilege/RLS/RPC fixtures, pre/post-D2, forward replay and high-volume count; final isolated and shared253 Node tests pass; lint/typecheck pass; SQL remains unapplied to production."
+          ]
+        },
+        {
+          "id": "Q02-03",
+          "criterion": "Authorized admin/routing actions work through scoped server/RPC paths; cross-org and division-scope attempts fail",
+          "verified": true,
+          "evidence": [
+            "Parent reviewed actual code and exact SQL privilege/RLS/RPC fixtures, pre/post-D2, forward replay and high-volume count; final isolated and shared253 Node tests pass; lint/typecheck pass; SQL remains unapplied to production."
+          ]
+        },
+        {
+          "id": "Q02-04",
+          "criterion": "Internal delivery/import RPCs remain service-only",
+          "verified": true,
+          "evidence": [
+            "Parent reviewed actual code and exact SQL privilege/RLS/RPC fixtures, pre/post-D2, forward replay and high-volume count; final isolated and shared253 Node tests pass; lint/typecheck pass; SQL remains unapplied to production."
+          ]
+        },
+        {
+          "id": "Q02-05",
+          "criterion": "Denial tests execute real database privileges/policies, including direct access, not just action mocks",
+          "verified": true,
+          "evidence": [
+            "Parent reviewed actual code and exact SQL privilege/RLS/RPC fixtures, pre/post-D2, forward replay and high-volume count; final isolated and shared253 Node tests pass; lint/typecheck pass; SQL remains unapplied to production."
+          ]
+        },
+        {
+          "id": "Q02-06",
+          "criterion": "Existing mapping identity, reconnect and outbox flows remain functional",
+          "verified": false,
+          "evidence": [
+            "Parent reviewed actual code and exact SQL privilege/RLS/RPC fixtures, pre/post-D2, forward replay and high-volume count; final isolated and shared253 Node tests pass; lint/typecheck pass; SQL remains unapplied to production.",
+            "Reopened by actual importer completion helper calls through real authenticated-role SQL after exact Q02/Q03 migrations: metadata read succeeds, sync/event writes permission-denied; full authorized import completion must pass before re-verification.",
+            {
+              "commit": "75e9810dad944ffefacbfd515edbcb182b00956a",
+              "check": "Existing neutral/provider imports, all9classifications, routing, cash/document adoption, replay and permission denial pass without restoring grants; existing reconnect/outbox suites remain green."
+            },
+            {
+              "check": "Acceptance reopened by actual outbound invoice adoption action and real role SQL",
+              "result": "invoice metadata changes through service writer, then authenticated sync update is denied; ownership markers split",
+              "evidenceFile": "/private/tmp/q13-parent-adoption-authorization-evidence.json",
+              "scope": "Actual action/helper and Q02/Q03/Q04 privilege fixture; synthetic permission context/minimal financial schema; atomic closure pending."
+            }
+          ]
+        },
+        {
+          "id": "Q02-07",
+          "criterion": "Migration is written and rehearsed locally; never applied to production by this package.",
+          "verified": true,
+          "evidence": [
+            "Parent reviewed actual code and exact SQL privilege/RLS/RPC fixtures, pre/post-D2, forward replay and high-volume count; final isolated and shared253 Node tests pass; lint/typecheck pass; SQL remains unapplied to production."
+          ]
+        }
+      ],
+      "implementationPlan": "014b-qbo-authorization.md",
+      "executor": "qbo_webhook_executor",
+      "reviewNotes": [
+        "Draft migration: 20261005033613_accounting_application_authorization.sql, isolated and unapplied; parent reviewed table/column revocation, explicit metadata grant, conditional legacy lockdown and service-only RPC list. Formal review pending completed fixtures.",
+        "Parent identified project assignment as distinct from division scope; executor confirmed adding existing lightweight broad-project gate for non-project routes.",
+        "Parent requested actual source RPC privilege declarations in disposable fixture rather than universal manual setup hardening, plus real role calls.",
+        "Parent requested fail-closed scope/identity query error handling in reassignment count; no financial changes authorized.",
+        "Parent approved read-only service-only accounting_count_synced_scope RPC and private helper replacement to eliminate unpaginated ownership-count arrays; real SQL high-volume/scoping/role tests required, no arbitrary cap or financial writes.",
+        "Missed authorized import caller discovered by Q04 actual apply tracing; narrow qbo/import completion/routing-preflight and separate owned service RPC repair approved under014b final section, no restoration of application grants."
+      ],
+      "reviewVerdict": "APPROVE after round1; parent verified complete scoped implementation and real role tests",
+      "implementationCommit": "b76eb3ad826402bddd32444a2b1dffe3106b59ac",
+      "implementationCommits": [
+        "bec3a5330f7ce2427b2dda456155af6f321276e1",
+        "b76eb3ad826402bddd32444a2b1dffe3106b59ac"
+      ],
+      "integrationStatus": "INTEGRATED exact seven approved files; parent compared shared bytes with b76eb3a and independently reran253 scoped tests",
+      "migrationStatus": "Written and rehearsed in disposable PGlite only; production SQL unapplied"
+    },
+    {
+      "id": "Q03",
+      "title": "Webhook compatibility",
+      "status": "IN PROGRESS",
+      "codeDoDVerified": true,
+      "evidence": [
+        {
+          "command": "node --test tests/accounting-*.test.js tests/qbo-*.test.js",
+          "cwd": "/private/tmp/arc-qbo-goal-01a109ed",
+          "result": {
+            "tests": 169,
+            "pass": 169,
+            "fail": 0,
+            "skip": 0
+          },
+          "log": "/private/tmp/arc-qbo-q03-parent-tests.log",
+          "reviewerVerified": true
+        },
+        {
+          "command": "bun test --preload ./scripts/bun-test-setup.js lib/integrations/accounting/qbo/webhook.test.ts",
+          "result": {
+            "pass": 13,
+            "fail": 0
+          },
+          "reviewerVerified": true
+        },
+        {
+          "command": "COREPACK_ENABLE_AUTO_PIN=0 pnpm exec eslint <six changed files>",
+          "result": {
+            "exitCode": 0
+          },
+          "reviewerVerified": true
+        },
+        {
+          "command": "COREPACK_ENABLE_AUTO_PIN=0 pnpm typecheck",
+          "result": {
+            "exitCode": 0
+          },
+          "log": "/private/tmp/arc-qbo-q03-parent-typecheck.log",
+          "reviewerVerified": true
+        },
+        {
+          "check": "six destination source hashes match original isolated snapshot; new Node test destination absent",
+          "result": "all unchanged",
+          "reviewerVerified": true
+        },
+        {
+          "check": "parent byte-for-byte comparison of all six shared files with approved d8b97bc commit",
+          "result": "all exact"
+        },
+        {
+          "command": "node --test tests/accounting-*.test.js tests/qbo-*.test.js",
+          "cwd": "/Users/agustinzenuto/Desktop/Projects/arc",
+          "result": {
+            "pass": 169,
+            "fail": 0,
+            "skip": 0
+          },
+          "log": "/private/tmp/q03-shared-scoped-tests.log",
+          "note": "executor run after copying, infrastructure stubs only"
+        },
+        {
+          "command": "node --test tests/accounting-*.test.js tests/qbo-*.test.js",
+          "cwd": "/private/tmp/arc-qbo-goal-01a109ed",
+          "result": {
+            "tests": 264,
+            "pass": 264,
+            "fail": 0,
+            "skip": 0,
+            "cancelled": 0
+          },
+          "log": "/private/tmp/q03-receipt-parent-final-node.log",
+          "reviewerVerified": true
+        },
+        {
+          "command": "bun test --preload ./scripts/bun-test-setup.js <all five QBO test files>",
+          "result": {
+            "pass": 55,
+            "fail": 0,
+            "files": 5
+          },
+          "log": "/private/tmp/q03-receipt-parent-final-bun.log",
+          "reviewerVerified": true
+        },
+        {
+          "command": "COREPACK_ENABLE_AUTO_PIN=0 pnpm typecheck",
+          "result": {
+            "exitCode": 0
+          },
+          "log": "/private/tmp/q03-receipt-parent-final-types.log",
+          "reviewerVerified": true
+        },
+        {
+          "command": "COREPACK_ENABLE_AUTO_PIN=0 pnpm exec eslint <four changed TS/JS files>",
+          "result": {
+            "exitCode": 0
+          },
+          "log": "/private/tmp/q03-receipt-parent-final-lint.log",
+          "reviewerVerified": true
+        },
+        {
+          "check": "all five approved committed files exactly equal parent-tested SHA256; all shared destinations equal b76 or new absent before copy; all resulting shared bytes independently equal738bf7d",
+          "result": "exact",
+          "hashReport": "/private/tmp/q03-receipt-integration-hashes.json",
+          "reviewerVerified": true
+        },
+        {
+          "command": "node --test tests/accounting-*.test.js tests/qbo-*.test.js",
+          "cwd": "/Users/agustinzenuto/Desktop/Projects/arc",
+          "result": {
+            "tests": 264,
+            "pass": 264,
+            "fail": 0,
+            "skip": 0,
+            "cancelled": 0
+          },
+          "log": "/private/tmp/q03-receipt-parent-shared-tests.log",
+          "reviewerVerified": true
+        },
+        {
+          "check": "actual b76/current TypeScript intake + actual Supabase SDK synthetic injected HTTP response fixture,80events:40equivalent+40distinct",
+          "result": {
+            "beforeDbRequests": 80,
+            "afterDbRequests": 1,
+            "beforeProviderIds": 0,
+            "afterProviderIdsOnRepeatedFact": 40,
+            "semanticRowsBoth": 41,
+            "newWorkCountBoth": 41
+          },
+          "note": "Parent independently executed SDK fixture; exact SQL and signed-route fixture separately confirms80\u21921 intake dispatches. No native network. Embedded old TS function independently matches b76 AST exactly.",
+          "reviewerVerified": true
+        },
+        {
+          "check": "concurrency evidence distinction",
+          "result": "PGlite replay/role/rollback tests pass; genuine simultaneous PostgreSQL transactions not run",
+          "requiredIn": "Q17",
+          "reviewerVerified": true
+        },
+        {
+          "check": "Parent actual two-session PostgreSQL17.6 service-role webhook receipt merge",
+          "result": "Observed transactionid lock against competing PID; one semantic row, both provider IDs, terminal state/timestamp retained",
+          "evidencePath": "/private/tmp/arc-qbo-postgres-17.6/receipt-concurrency-evidence.json",
+          "scope": "Exact reviewed SQL with synthetic minimal fixture schema. Portable committed suite/full application/financial Q17 gates remain open.",
+          "sourceCommit": "75e9810dad944ffefacbfd515edbcb182b00956a"
+        }
+      ],
+      "remaining": [
+        "True simultaneous PostgreSQL receipt contention evidence remains required before full program acceptance (Q17).",
+        "Timestamp migration nuance remains: historical pre-parser high-precision legacy IDs may differ from the current canonical precise IDs; existing remote revision guards remain required.",
+        "Production migration20261005040538 must be installed before RPC-based webhook application rollout; old intake remains compatible. SQL remains unapplied."
+      ],
+      "executor": "qbo_webhook_executor",
+      "codeDefinitionsOfDone": [
+        {
+          "id": "Q03-01",
+          "criterion": "legacy and CloudEvents payloads normalize `type`, `intuitentityid`, `intuitaccountid`, `time` to the existing canonical representation",
+          "verified": true,
+          "evidence": [
+            "isolated commit d8b97bc; parent-reviewed signed HTTP-boundary and actual CDC intake fixtures;169/169 Node and13/13 Bun"
+          ]
+        },
+        {
+          "id": "Q03-02",
+          "criterion": "Normalize entity and operation spelling explicitly",
+          "verified": true,
+          "evidence": [
+            "isolated commit d8b97bc; parent-reviewed signed HTTP-boundary and actual CDC intake fixtures;169/169 Node and13/13 Bun"
+          ]
+        },
+        {
+          "id": "Q03-03",
+          "criterion": "Preserve provider event IDs as metadata while deduping semantically with CDC",
+          "verified": true,
+          "evidence": [
+            "Exact approved738bf7d additive SQL and signed HTTP/actual CDC fixtures retain all distinct provider IDs on one semantic row, preserve terminal fields, roll back metadata failures and recover on retry. Parent264/264 shared Node,55/55 isolated Bun,fulltypecheck/lint; genuine concurrent backend evidence remains explicit Q17 acceptance."
+          ]
+        },
+        {
+          "id": "Q03-04",
+          "criterion": "Multi-company arrays, duplicate delivery and out-of-order updates pass",
+          "verified": true,
+          "evidence": [
+            "isolated commit d8b97bc; parent-reviewed signed HTTP-boundary and actual CDC intake fixtures;169/169 Node and13/13 Bun"
+          ]
+        },
+        {
+          "id": "Q03-05",
+          "criterion": "Invalid signatures fail before persistence; malformed/unsupported nonempty shapes receive non-successful acknowledgment; valid empty notifications remain explicit no-ops",
+          "verified": true,
+          "evidence": [
+            "isolated commit d8b97bc; parent-reviewed signed HTTP-boundary and actual CDC intake fixtures;169/169 Node and13/13 Bun"
+          ]
+        },
+        {
+          "id": "Q03-06",
+          "criterion": "Database failure prevents acknowledgment",
+          "verified": true,
+          "evidence": [
+            "isolated commit d8b97bc; parent-reviewed signed HTTP-boundary and actual CDC intake fixtures;169/169 Node and13/13 Bun"
+          ]
+        },
+        {
+          "id": "Q03-07",
+          "criterion": "No legacy shared-secret bypass",
+          "verified": true,
+          "evidence": [
+            "isolated commit d8b97bc; parent-reviewed signed HTTP-boundary and actual CDC intake fixtures;169/169 Node and13/13 Bun"
+          ]
+        },
+        {
+          "id": "Q03-08",
+          "criterion": "Signed route-boundary tests run under Node and the standard suite.",
+          "verified": true,
+          "evidence": [
+            "isolated commit d8b97bc; parent-reviewed signed HTTP-boundary and actual CDC intake fixtures;169/169 Node and13/13 Bun"
+          ]
+        }
+      ],
+      "implementationCommit": "738bf7d5aab89d360c5b03a20c131cabbab516db",
+      "reviewVerdict": "APPROVE original eight code clauses; full package acceptance retains true PostgreSQL contention evidence in Q17",
+      "integrationStatus": "INTEGRATED exact approved five receipt files; parent verified shared bytes and264/264 shared Node tests; no shared commit or production SQL",
+      "closurePlan": "014c-qbo-webhook-receipts.md",
+      "acceptanceEvidencePending": [
+        "Required true two-session disposable PostgreSQL contention fixture: PGlite Promise.all proves serialized replay only. Track with Q17 CI database-contracts job."
+      ]
+    },
+    {
+      "id": "Q04",
+      "title": "Complete CDC recovery",
+      "status": "IN PROGRESS",
+      "codeDoDVerified": false,
+      "evidence": [
+        {
+          "check": "parent loaded actual current CDC ingestion via existing test helper with fail-closed native fetch; synthetic malformed and 1000-object envelopes",
+          "result": [
+            {
+              "fixture": "malformed",
+              "scanned": 0,
+              "inserted": 0,
+              "checkpointAdvanced": true
+            },
+            {
+              "fixture": "saturated",
+              "scanned": 1000,
+              "inserted": 1000,
+              "checkpointAdvanced": true,
+              "checkpointAfterRequestStart": true
+            }
+          ],
+          "note": "negative baseline only; no completeness guard implemented or accepted"
+        },
+        {
+          "check": "effective update_qbo_cdc_cursor exactSQL PGlite negative baseline",
+          "result": "new04:15UTC followed by stale04:10UTC regressed cursor; unrelated setting retained",
+          "note": "actualSQL sequential stale completion, not simultaneous transaction proof",
+          "reviewerVerified": true
+        },
+        {
+          "check": "actual QBOClient listTransactionsForImport with actual request/query path and injected synthetic fetch",
+          "result": "malformed{} returns[];cap1/totalCount2 returnsoneplainrow+log only",
+          "note": "negative baseline; no native HTTP",
+          "reviewerVerified": true
+        },
+        {
+          "check": "actual pure nightly planReconciliationItemSync with nonprojection category ownership",
+          "result": "uncollected open CDC gap resolves; collector must reproduce durable state",
+          "note": "negative baseline only; no DB/network",
+          "reviewerVerified": true
+        },
+        {
+          "check": "parent actual live-draft CDC parser and exact Q04 migration after full Q03 in serialized PGlite",
+          "result": {
+            "priorParserCorrections": "inflight edit accepted; positive-empty group incomplete",
+            "negativeShortPage": "one row,requested200,total10 incorrectly done=true",
+            "negativeSaturatedReclaim": "six complete entities plus saturated Invoice retain old observation boundary on later claim",
+            "sqlChecksPassed": 8,
+            "draftSqlSha256": "8f109a5f6c20718fc8b096aa433c74b0f28bc100746a64a6c96453473aeb0dce"
+          },
+          "note": "mutable draft review only; no final code acceptance or real concurrent PostgreSQL proof",
+          "reviewerVerified": true
+        },
+        {
+          "check": "parent initial exact SQL/runtime fixture review and independent additional probes",
+          "result": {
+            "scopedDraftTests": {
+              "pass": 9,
+              "fail": 0,
+              "skip": 0
+            },
+            "nullVersionFence": "accepted before correction, independently rejects and preserves version0 afterward",
+            "malformedCombinedResume": "two invocations repeat combined call;progress empty;safe recovery unreachable",
+            "impossibleCalendarCursor": "2026-09-31 normalizes in JS but fails SQL CAS;no invalid_cursor reason",
+            "candidateListingChecksPassed": 7,
+            "connectionCollectorLifecycleChecksPassed": 4
+          },
+          "note": "mutable draft, targeted seams with explicit fixture dependencies; full recovery/actual import ownership/nightly writes and immutable review pending",
+          "reviewerVerified": true
+        },
+        {
+          "command": "node --test tests/qbo-cdc-completeness.test.js tests/qbo-cdc-recovery-db.test.js tests/accounting-cdc-recovery-services.test.js",
+          "cwd": "/private/tmp/arc-qbo-goal-01a109ed",
+          "result": {
+            "tests": 25,
+            "pass": 25,
+            "fail": 0,
+            "skip": 0,
+            "cancelled": 0
+          },
+          "reviewerVerified": true,
+          "note": "Mutable live draft only; actual supported request loader dependency repaired. Import completion compatibility and full immutable package gates remain pending."
+        },
+        {
+          "check": "Exact new import completion SQL plus existing owned import-row RPC in isolated PGlite",
+          "result": "Adopt existing Payment100; mutate cash amount999; omit optional expected-payment argument; completion returns true and marks mapping synced/import_complete. Require expectation for normal Payment/BillPayment completion.",
+          "scope": "Synthetic actual SQL; parent probe only, no full app authorization proof or live data.",
+          "reviewerVerified": true
+        },
+        {
+          "command": "node --test tests/accounting-*.test.js tests/qbo-*.test.js",
+          "cwd": "/private/tmp/arc-qbo-goal-01a109ed",
+          "result": {
+            "tests": 328,
+            "pass": 284,
+            "fail": 44,
+            "skip": 0,
+            "cancelled": 0
+          },
+          "log": "/private/tmp/q04-parent-live-draft-node.log",
+          "reviewerVerified": true,
+          "note": "Mutable mid-development review, not a gate verdict. Missing explicit cdc-recovery dependency in two signed-webhook test loaders accounts for most failures; old authenticated markEventsResolved regex and required synthetic payload_hash seed also need adaptation. Executor notified; retain behavior/denial assertions."
+        },
+        {
+          "check": "Parent rerun of actual focused completion SQL after mandatory expected-payment guard",
+          "result": "Omitted expectation rejects; mapping remains pending and edited cash amount999 unchanged.",
+          "scope": "Synthetic actual SQL and owned import adoption; full application family fixtures still pending.",
+          "reviewerVerified": true
+        },
+        {
+          "check": "Actual facade plus exact SQL multi-invocation malformed mapped-read fairness probe",
+          "result": {
+            "invocations": 12,
+            "cdcRequests": 84,
+            "enumerationQueries": 7,
+            "poisonReads": 5,
+            "laterIdentityReads": 0,
+            "mappedAfter": null,
+            "mappedDone": false
+          },
+          "scope": "Synthetic35-day cursor/two ordered invoice mappings, valid empty CDC/enumeration, first direct-read malformed; full Q04 acceptance pending.",
+          "reviewerVerified": true
+        },
+        {
+          "command": "node --test tests/qbo-cdc-completeness.test.js tests/qbo-cdc-recovery-db.test.js tests/accounting-cdc-recovery-services.test.js tests/qbo-import-completion.test.js",
+          "cwd": "/private/tmp/arc-qbo-goal-01a109ed",
+          "result": {
+            "tests": 36,
+            "pass": 36,
+            "fail": 0,
+            "skip": 0,
+            "cancelled": 0
+          },
+          "log": "/private/tmp/q04-parent-focused-draft2.log",
+          "reviewerVerified": true,
+          "note": "Mutable draft, before final mapped-failure fixture/all existing-family caller closure and immutable full gates."
+        },
+        {
+          "check": "Exact SQL failed_mapping with completed_entities all7 and omitted caller reasons",
+          "negative": "status complete/count1/reasons empty/cursor advanced before correction",
+          "result": "After correction status open/count1/reasons malformed_response/cursor absent",
+          "sqlSha256": "66620999eaf5e39be924537d267b0273b831f858152f35bce0f550f053d5c36e",
+          "reviewerVerified": true,
+          "scope": "Synthetic serialized PGlite direct progress command, not full importer or actual concurrent PostgreSQL."
+        },
+        {
+          "check": "Parent actual facade/exact-SQL enumeration-poison and unclassified-mapping negatives",
+          "result": {
+            "malformedEnumerationInvocations": 12,
+            "failedInvocations": 12,
+            "healthyMappedReads": 0,
+            "unclassifiedMappingInvocations": 16,
+            "unclassifiedCurrentScanComplete": true
+          },
+          "scope": "Mutable draft; malformed page MetaData42 and unsupported mapping namespace are synthetic. Lease expiry between failures simulates later cron retries; serialized PGlite is not MVCC contention.",
+          "reviewerVerified": true,
+          "note": "Executor correcting typed conversion catch, durable enumeration/mapped phase fairness, and unclassified outcome guard before immutable acceptance."
+        },
+        {
+          "check": "Formal revision1 approved and hash-guard integrated",
+          "commit": "75e9810dad944ffefacbfd515edbcb182b00956a",
+          "files": 27,
+          "reviewerVerified": true,
+          "results": {
+            "isolatedNode": 365,
+            "sharedNode": 365,
+            "bun": 55,
+            "noGitFocused": 28,
+            "fail": 0,
+            "skip": 0,
+            "cancelled": 0,
+            "typecheckExit": 0,
+            "lintExit": 0,
+            "diffExit": 0
+          },
+          "logs": [
+            "/private/tmp/q04-parent-revision1-node.log",
+            "/private/tmp/q04-shared-integration-node.log",
+            "/private/tmp/q04-parent-revision1-bun.log",
+            "/private/tmp/q04-parent-portable.log",
+            "/private/tmp/q04-parent-revision1-types.log",
+            "/private/tmp/q04-parent-revision1-lint.log"
+          ],
+          "hashReport": "/private/tmp/q04-revision1-source-hashes.json",
+          "scope": "Exact SQL authorization/fences/replay/rollback use serialized PGlite. Actual import callers and owned row/child/identity SQL execute; posting/opening-payment collaborators are explicit inert seams. Real concurrent PostgreSQL and full financial/E2E remain Q17."
+        },
+        {
+          "check": "Parent actual two-session PostgreSQL17.6 claims/takeover/completion replay",
+          "result": "Only one owner; takeover rejects stale event/receipt before mutation; identical completion replays one version/receipt/event, preserved settings/terminal row",
+          "evidencePath": "/private/tmp/arc-qbo-postgres-17.6/cdc-concurrency-evidence.json",
+          "scope": "Actual observed transactionid lock in each case. Direct SQL, not full overlapping provider facade or portable CI test; Q04-06 remains unverified.",
+          "sourceCommit": "75e9810dad944ffefacbfd515edbcb182b00956a"
+        },
+        {
+          "check": "Parent actual ingestQboCdcChanges/recoverQboCdc overlap through service-role PostgreSQL17.6",
+          "result": "Owner waits on synthetic provider; second actual facade defers before provider request. One provider request, one completed run/version/receipt, complete current scan, unrelated settings preserved.",
+          "evidencePath": "/private/tmp/arc-qbo-postgres-17.6/cdc-facade-overlap-evidence.json",
+          "scope": "Actual facade and exact SQL via private local socket; pinned provider factory/responses/authority/deadline collaborators synthetic, native fetch forbidden. Durable committed portable test/CI and full financial acceptance remain open; Q04-06 false."
+        }
+      ],
+      "remaining": [
+        "Q04-06 actual concurrent PostgreSQL poll/lease contention remains Q17; serialized stale completion/takeover coverage passes.",
+        "Both additive migrations remain unapplied; provider/production rollout is separately reviewed."
+      ],
+      "codeDefinitionsOfDone": [
+        {
+          "id": "Q04-01",
+          "criterion": "strict response validation distinguishes valid empty from malformed results; cap-sized or ambiguous results cannot authorize a now checkpoint",
+          "verified": true,
+          "evidence": [
+            {
+              "commit": "75e9810dad944ffefacbfd515edbcb182b00956a",
+              "check": "Strict multi-group envelope/raw counts/0,999,1000,>1000/fault/timestamp/top-member validations.",
+              "gate": "365/365 isolated/shared Node;55/55 Bun;28/28 noGit;types/lint/diff0"
+            }
+          ]
+        },
+        {
+          "id": "Q04-02",
+          "criterion": "Catch-up uses supported per-entity/safe watermark recovery with explicit completeness proof; ties, deletion ordering and full-cap same-timestamp groups never silently skip records",
+          "verified": true,
+          "evidence": [
+            {
+              "commit": "75e9810dad944ffefacbfd515edbcb182b00956a",
+              "check": "Combined cap uses supported per-entity catch-up at pre-request boundary; permanent saturation retains gap and rotates current observation.",
+              "gate": "365/365 isolated/shared Node;55/55 Bun;28/28 noGit;types/lint/diff0"
+            }
+          ]
+        },
+        {
+          "id": "Q04-03",
+          "criterion": "If proof is impossible, preserve the checkpoint and persist a visible recovery-required state with resumable full reconciliation/import",
+          "verified": true,
+          "evidence": [
+            {
+              "commit": "75e9810dad944ffefacbfd515edbcb182b00956a",
+              "check": "Durable runs/phase/candidates/direct mapped reads resume and authorized candidate-to-import executes; poison/unclassified cases remain unresolved.",
+              "gate": "365/365 isolated/shared Node;55/55 Bun;28/28 noGit;types/lint/diff0"
+            }
+          ]
+        },
+        {
+          "id": "Q04-04",
+          "criterion": "A >30-day gap is durable operator-visible evidence, not only a log warning",
+          "verified": true,
+          "evidence": [
+            {
+              "commit": "75e9810dad944ffefacbfd515edbcb182b00956a",
+              "check": "Original raw cursor/first requested interval survives restart; actual nightly spine preserves historic/expired connection gap.",
+              "gate": "365/365 isolated/shared Node;55/55 Bun;28/28 noGit;types/lint/diff0"
+            }
+          ]
+        },
+        {
+          "id": "Q04-05",
+          "criterion": "Cursor update happens only after all required events are durably stored; replays do not reset terminal rows",
+          "verified": true,
+          "evidence": [
+            {
+              "commit": "75e9810dad944ffefacbfd515edbcb182b00956a",
+              "check": "Actual atomic intake/receipt/version/CAS failures retain cursor, current metadata and terminal queue rows.",
+              "gate": "365/365 isolated/shared Node;55/55 Bun;28/28 noGit;types/lint/diff0"
+            }
+          ]
+        },
+        {
+          "id": "Q04-06",
+          "criterion": "Tests cover 0, 999, 1000, >1000 synthetic changes, timestamp ties, malformed envelopes, deletion groups, partial DB failure, outage/reconnect and concurrent polls",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q04-07",
+          "criterion": "Capture per-connection outcomes and fairness.",
+          "verified": true,
+          "evidence": [
+            {
+              "commit": "75e9810dad944ffefacbfd515edbcb182b00956a",
+              "check": "Actual active-client failure207 and per-company fairness; twelve-invocation poison rotation and bounded phase/request tests pass.",
+              "gate": "365/365 isolated/shared Node;55/55 Bun;28/28 noGit;types/lint/diff0"
+            }
+          ]
+        }
+      ],
+      "implementationPlan": "014e-qbo-cdc-completeness.md",
+      "executor": "qbo_webhook_executor",
+      "implementationBaseline": "b1a7e9a84beab258b9dfaf1976d3bbcb6db06485",
+      "reviewNotes": [
+        "Parent approved typed CDC parser and fenced durable recovery runs/candidates; bounded scan+mapped direct reads+authorized manual import path, no snapshot proof invented.",
+        "Narrow approved source expansion: Books connection finding collector and accounting-import authorized read-only candidate listing; preserve financial domain operations and user destination authority.",
+        "Executor correcting short-page completion and cycling separately fenced operational observation after every entity attempted/intake durable; verified cursor and original historic gap remain intact. See014e independent draft review.",
+        "Parent reproduced permanent malformed-response starvation and impossible-but-JS-normalizable stored cursor; executor must preserve bounded progress and strict boundary validation before final review. Initial9 tests do not imply full Q04 acceptance.",
+        "Formal round1 repaired a historical git-object test dependency; self-contained helpers independently match original bodies/hash and28/28 run with no.git.27source/shared hashes match approved commit. Six original Q04 clauses accepted; Q04-06 retains real concurrency gate rather than equating PGlite interleavings with MVCC."
+      ],
+      "scopeDecisions": [
+        "Approved existing-run failed_mapping command, typed malformed-response classification, bounded100 failed-identity summary with truthful overflow and durable nonfinancial investigation per identity. Existing company/lease/version/receipt fences required; original gap and currentScanComplete remain unresolved. No new table or financial mutation.",
+        "Approved immutable first_changed_since/first_checkpoint health evidence, strict top-level CDC/query envelopes, bounded recovery_phase fairness and truthful unclassified currentScanComplete guard. Cost/deposit source preflight authorizes all actually used destinations before effects, caches repeated project lookups, and rejects irrelevant explicit allocations. Actual existing-document adoption and deposit cash expectations remain within import compatibility closure."
+      ],
+      "acceptedCommit": "75e9810dad944ffefacbfd515edbcb182b00956a"
+    },
+    {
+      "id": "Q05",
+      "title": "Bill/expense line fidelity",
+      "status": "IN PROGRESS",
+      "codeDoDVerified": false,
+      "evidence": [
+        {
+          "check": "parent executed actual local-change.ts and accounting-coding.ts pure exports with synthetic bill_lines; all native network and DB failclosed",
+          "result": "same10000cent bill moved project-A toproject-B, line expense account A toB and description Original toChanged; fingerprints stayed equal and arcChangedSinceSync returnedfalse",
+          "note": "Actual pure fingerprint negative baseline; not full reconcile or real posted-ledger execution",
+          "reviewerVerified": true
+        },
+        {
+          "check": "parent read actual reconcile/import/export/domain line writes and monotone Books revision triggers",
+          "result": "outbound sends all allocations; inbound compares header/first account; imported bill lines omit remote identity/customer/item metadata; current coding delete/insert and later header save are not atomic",
+          "note": "read-only source evidence; no financial mutation or Q05 acceptance",
+          "reviewerVerified": true
+        },
+        {
+          "check": "Executor before-change actual reconcile/import/adapter/processAccountingPush characterization inspected by parent",
+          "result": "Same-total child fingerprint equal; forced posted later-line changes accepted without children read; imported item Qty2 becomes1/no ID; item export becomes account line; in-flight same-total edit reports synced",
+          "evidencePath": [
+            "/private/tmp/q05-characterization-evidence.json",
+            "/private/tmp/q05-outbound-characterization-evidence.json"
+          ],
+          "scope": "Synthetic provider/application DB seams; owned import SQL actual; posting collaborators inert. Implementation started after narrow atomic/fence/snapshot/stamp contracts approved; no clause accepted.",
+          "sourceCommit": "75e9810dad944ffefacbfd515edbcb182b00956a"
+        },
+        {
+          "command": "node --test tests/qbo-cost-delivery.test.js tests/qbo-bill-line-fidelity.test.js",
+          "result": {
+            "tests": 21,
+            "pass": 21,
+            "fail": 0,
+            "skip": 0,
+            "cancelled": 0
+          },
+          "log": "/private/tmp/q05-parent-current-delivery.log",
+          "reviewerVerified": true,
+          "scope": "In-progress draft actual JS adapter/service plus pure line model; provider/database collaborators synthetic. No Q05 clauses accepted; atomic inbound/expense/financial SQL/current final artifact pending."
+        },
+        {
+          "command": "node --test /private/tmp/q05-parent-same-revision-retry.test.js",
+          "result": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "skip": 0,
+            "cancelled": 0
+          },
+          "log": "/private/tmp/q05-parent-same-revision-retry.log",
+          "evidence": "/private/tmp/q05-parent-same-revision-retry-evidence.json",
+          "reviewerVerified": true,
+          "scope": "Frozen draft SQL SHA438d4d0f7025270d547b81fc1d46385fa192e781d2ab51765b8548262371d618; exact receipt/lease functions and service role on minimal PGlite fixture. Equivalent new-attempt receipt returned true but retained processing/version1. Negative characterization; executor subsequent fix not yet parent accepted."
+        },
+        {
+          "command": "COREPACK_ENABLE_AUTO_PIN=0 node --test tests/qbo-cost-receipts-db.test.js tests/qbo-cost-delivery.test.js tests/qbo-bill-line-fidelity.test.js",
+          "result": {
+            "tests": 34,
+            "pass": 34,
+            "fail": 0,
+            "skip": 0,
+            "cancelled": 0
+          },
+          "log": "/private/tmp/q05-parent-receipt-refinement.log",
+          "reviewerVerified": true,
+          "scope": "In-progress actual adapter/service and exact receipt/lease SQL prefix with service/app roles on minimal PGlite fixture. No full mutable SQL/current financial domain/PostgreSQL concurrency/expense/inbound/final artifact acceptance.",
+          "observedAfterRunHashes": {
+            "supabase/migrations/20261005104435_qbo_cost_line_fidelity.sql": "f6d8863ba820faee3ea309b4cafe019c842327d0ca37ec353e9ac23feab165d2",
+            "lib/services/accounting-delivery.ts": "0bd04e653a0a3865fb1f58a98559551be9a03bb28db5ab56733946a3f38e0a9f",
+            "tests/qbo-cost-receipts-db.test.js": "403093647da9befaacaba58e4a5e40b1ca2023c59e4392799fad34233dbb7b39",
+            "tests/fixtures/qbo-cost-database.js": "91c595d64eeac4af9205162e1f4f0e2a71dc0e744bf7ebf5ab34e8b8e172770d",
+            "tests/qbo-cost-delivery.test.js": "438fae5060bd6df906fc6739cf3b9d399a4ef43196484e409f87e69e7641064a",
+            "tests/qbo-bill-line-fidelity.test.js": "fbd274030c6e12af9be3eaf6171f6d90eb86c082fb985cef33fa836e2ee137e3"
+          }
+        },
+        {
+          "command": "COREPACK_ENABLE_AUTO_PIN=0 node --test tests/qbo-mutable-bill-db.test.js tests/qbo-cost-delivery.test.js tests/qbo-cost-receipts-db.test.js tests/qbo-bill-line-fidelity.test.js",
+          "cwd": "/private/tmp/arc-qbo-goal-01a109ed",
+          "result": {
+            "tests": 44,
+            "pass": 44,
+            "fail": 0,
+            "skip": 0,
+            "cancelled": 0
+          },
+          "log": "/private/tmp/q05-parent-mutable-draft.log",
+          "reviewerVerified": true,
+          "scope": "Current draft only: actual outbound bill/expense facade with synthetic provider/DB collaborators; actual receipt SQL and expanded minimal mutable-bill PGlite fixture includes current money/source revision/child-touch/Books project-ownership definitions. Atomic header/children, invalid last detail, stable identity, retained approved/cost history and polymorphic source fences pass. Full inbound/multi-session/financial/portable final gates remain; no Q05 code acceptance."
+        },
+        {
+          "command": "COREPACK_ENABLE_AUTO_PIN=0 node --test tests/accounting-*.test.js tests/qbo-*.test.js",
+          "cwd": "/private/tmp/arc-qbo-goal-01a109ed",
+          "result": {
+            "tests": 364,
+            "pass": 271,
+            "fail": 93,
+            "skip": 0,
+            "cancelled": 0,
+            "exitCode": 1
+          },
+          "log": "/private/tmp/q05-parent-inbound-draft-node.log",
+          "reviewerVerified": true,
+          "scope": "Current changing isolated inbound draft only, not shared integrated source/final artifact. Existing explicit fixture loaders reject new node:crypto/cost-source dependencies; narrowed accounting-abstraction bill fixture now returns unknown cost hash. Executor instructed to load actual pure modules/native builtins explicitly and complete economic source fixtures while retaining prior safety assertions. Final full Node gate remains unmet; no formal artifact verdict/acceptance."
+        },
+        {
+          "command": "node --test /private/tmp/q05-parent-comparison-proof.test.js",
+          "cwd": "/private/tmp/arc-qbo-goal-01a109ed",
+          "result": {
+            "tests": 3,
+            "pass": 3,
+            "fail": 0,
+            "skip": 0,
+            "exitCode": 0
+          },
+          "log": "/private/tmp/q05-parent-comparison-proof.log",
+          "details": "/private/tmp/q05-parent-comparison-proof-evidence.json",
+          "migrationHash": "cccc38efe8684ad3f20a9d0fad80297953118481d194d0233fb54d5fedfc194b",
+          "scope": "Draft exact SQL minimal financial ancestors/synthetic comparison evidence. No Q05 acceptance/full financial/MVCC proof."
+        },
+        {
+          "command": "node --test tests/qbo-cost-inbound.test.js",
+          "cwd": "/private/tmp/arc-qbo-goal-01a109ed",
+          "result": {
+            "tests": 4,
+            "pass": 4,
+            "fail": 0,
+            "skip": 0,
+            "exitCode": 0
+          },
+          "log": "/private/tmp/q05-parent-inbound-full-draft.log",
+          "scope": "Draft actual public force facade plus full SQL with synthetic provider/current minimal money/source trigger fixture; no final artifact or full financial/MVCC acceptance."
+        },
+        {
+          "command": "node --test /private/tmp/q05-parent-reference-proof.test.js",
+          "result": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "skip": 0,
+            "exitCode": 0
+          },
+          "log": "/private/tmp/q05-parent-reference-proof.log",
+          "details": "/private/tmp/q05-parent-reference-proof-evidence.json",
+          "scope": "Negative actual-client synthetic HTTP characterization: malformed/missing Active flags accepted by new reference proof. Correction required; no acceptance."
+        }
+      ],
+      "remaining": [
+        "Implement full normalized line/allocation comparisons, posted conflict protection, proposed atomic mutable domain operation and exact dispatched revision receipts after Q04 acceptance.",
+        "Narrow inbound comparison receipt contract approved in014h: owned exact source+realm+external-ID+expected opaque mapping-version CAS; equal baseline/status atomic, mismatch review only; preserve accepted receipts/newer pending work. Exact SQL and real contention/full inbound fixtures still required; draft approval not code acceptance."
+      ],
+      "codeDefinitionsOfDone": [
+        {
+          "id": "Q05-01",
+          "criterion": "compare full normalized source lines, remote IDs, account/item/class/customer refs and project allocations",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q05-02",
+          "criterion": "Same-total redistribution across accounts/projects is a conflict for posted obligations; no posted job costs are silently moved or recreated",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q05-03",
+          "criterion": "Mutable documents may update header and children atomically only through established domain operations",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q05-04",
+          "criterion": "Add/remove/reorder lines, item-based lines, credit signs and multi-project groups are covered",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q05-05",
+          "criterion": "Fingerprints/revisions include all outbound-owned financial/content fields and stable line identity; edits during delivery remain queued even when totals are unchanged",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q05-06",
+          "criterion": "Successful receipts describe the revision actually delivered",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q05-07",
+          "criterion": "Retry/duplicate/out-of-order tests preserve one financial fact.",
+          "verified": false,
+          "evidence": []
+        }
+      ],
+      "implementationPlan": "014h-qbo-bill-line-fidelity.md",
+      "executor": "qbo_webhook_executor",
+      "implementationBaseline": "75e9810dad944ffefacbfd515edbcb182b00956a",
+      "reviewNotes": [
+        "Full seven-clause handoff dispatched after approved Q04 shared integration. Characterization starts now; new atomic mutable-domain SQL requires explicit parent signature/lock/validation/rollout proposal before implementation. Q04-06/Q17 real PostgreSQL gate remains open.",
+        "Parent approved provider-neutral cost-source module, exact atomic mutable bill seam, narrow shared payable/opening source fences, unambiguous snapshot persistence wrapper and source-revision-bound fingerprint stamp. External reference proof is a service trust boundary pinned to company/lease; SQL does not query Intuit. Preserve all seven clauses and money invariants."
+      ]
+    },
+    {
+      "id": "Q06",
+      "title": "Invoice discount/currency fidelity",
+      "status": "TODO",
+      "codeDoDVerified": false,
+      "evidence": [
+        {
+          "check": "parent actual deriveInvoiceLinesFromQbo plus actual calculateInvoiceTotals pure fixture",
+          "result": {
+            "remoteTotalCents": 9000,
+            "preservedSalesGrossCents": 10000,
+            "canonicalTotalsWithoutLostDiscountCents": 10000,
+            "discardedDiscountCents": 1000
+          },
+          "note": "translation/edit math negative baseline; balance-recalc SQL reads persisted total and does not itself recompute line totals; no DB/network",
+          "reviewerVerified": true
+        },
+        {
+          "check": "Actual neutral apply/QBO import/owned SQL source currency preflight negative",
+          "result": {
+            "sourceCurrency": "EUR",
+            "imported": 1,
+            "failed": 0,
+            "storedCurrency": "usd",
+            "storedTotalCents": 10000
+          },
+          "scope": "Synthetic actual current dispatcher/financial-row-child SQL with explicit permission/balance/posting/opening-payment fixture boundaries; not live QBO/foreign-currency ledger posting.",
+          "reviewerVerified": true,
+          "note": "Baseline failure for Q06; all original six criteria remain unverified."
+        }
+      ],
+      "remaining": [],
+      "codeDefinitionsOfDone": [
+        {
+          "id": "Q06-01",
+          "criterion": "fixed/percentage discounts, taxable/exempt ordering, groups/subtotals and rounding have one normalized translation used in both inbound paths",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q06-02",
+          "criterion": "Gross lines minus discount plus tax equals header total in cents",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q06-03",
+          "criterion": "Recalculation/export/round trip preserves the discount; no unexplained fabricated balancing line",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q06-04",
+          "criterion": "USD support is explicit; foreign-currency/exchange-rate transactions fail preflight before any financial mutation with actionable errors unless real multicurrency support is deliberately implemented and tested",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q06-05",
+          "criterion": "Unknown material document shapes do not import as misleading partial documents",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q06-06",
+          "criterion": "Fixtures include zero-tax, percentage/fixed discount, mixed tax, cent rounding, bundle/group and non-USD cases.",
+          "verified": false,
+          "evidence": []
+        }
+      ],
+      "implementationPlan": "014g-qbo-invoice-fidelity.md"
+    },
+    {
+      "id": "Q07",
+      "title": "Bounded transport and maintenance status",
+      "status": "DONE",
+      "codeDoDVerified": true,
+      "evidence": [
+        {
+          "command": "node --test tests/accounting-*.test.js tests/qbo-*.test.js",
+          "cwd": "/private/tmp/arc-qbo-goal-01a109ed",
+          "result": {
+            "tests": 214,
+            "pass": 214,
+            "fail": 0,
+            "skip": 0,
+            "cancelled": 0
+          },
+          "log": "/private/tmp/q07-parent-scoped-tests.log",
+          "reviewerVerified": true
+        },
+        {
+          "command": "bun test --preload ./scripts/bun-test-setup.js lib/integrations/accounting/qbo",
+          "result": {
+            "pass": 55,
+            "fail": 0
+          },
+          "log": "/private/tmp/q07-parent-bun.log",
+          "reviewerVerified": true
+        },
+        {
+          "command": "COREPACK_ENABLE_AUTO_PIN=0 pnpm typecheck",
+          "result": {
+            "exitCode": 0
+          },
+          "log": "/private/tmp/q07-parent-typecheck.log",
+          "reviewerVerified": true
+        },
+        {
+          "command": "COREPACK_ENABLE_AUTO_PIN=0 pnpm exec eslint <ten changed implementation files>",
+          "result": {
+            "exitCode": 0
+          },
+          "log": "/private/tmp/q07-parent-eslint.log",
+          "reviewerVerified": true
+        },
+        {
+          "command": "git diff --check",
+          "result": {
+            "exitCode": 0
+          },
+          "reviewerVerified": true
+        },
+        {
+          "check": "all ten destination files match preceding approved d8b97bc tree; two new destinations absent",
+          "result": "no source drift",
+          "reviewerVerified": true
+        },
+        {
+          "check": "parent compared all ten shared files byte-for-byte against approved a2ed029 and reran shared scoped Node tests",
+          "result": {
+            "filesMatched": 10,
+            "tests": 214,
+            "pass": 214,
+            "fail": 0,
+            "skip": 0,
+            "cancelled": 0
+          },
+          "log": "/private/tmp/q07-parent-shared-tests.log",
+          "hashReport": "/private/tmp/q07-integration-hashes.json",
+          "reviewerVerified": true
+        },
+        {
+          "command": "node --test tests/accounting-*.test.js tests/qbo-*.test.js",
+          "cwd": "/private/tmp/arc-qbo-goal-01a109ed",
+          "result": {
+            "tests": 302,
+            "pass": 302,
+            "fail": 0,
+            "skip": 0,
+            "cancelled": 0
+          },
+          "log": "/private/tmp/q07-parent-final-node.log",
+          "reviewerVerified": true
+        },
+        {
+          "command": "bun test --preload ./scripts/bun-test-setup.js <all five QBO test files>",
+          "result": {
+            "pass": 55,
+            "fail": 0,
+            "files": 5
+          },
+          "log": "/private/tmp/q07-parent-final-bun.log",
+          "reviewerVerified": true
+        },
+        {
+          "command": "COREPACK_ENABLE_AUTO_PIN=0 pnpm typecheck",
+          "result": {
+            "exitCode": 0
+          },
+          "log": "/private/tmp/q07-parent-final-types.log",
+          "reviewerVerified": true
+        },
+        {
+          "command": "COREPACK_ENABLE_AUTO_PIN=0 pnpm exec eslint <eleven changed TS/JS files>",
+          "result": {
+            "exitCode": 0
+          },
+          "log": "/private/tmp/q07-parent-final-lint.log",
+          "reviewerVerified": true
+        },
+        {
+          "check": "committed diff check; all11 tested isolated bytes match b1a7e9a; all shared baseline738/newabsent before copy; all final shared bytes independently equal approved commit",
+          "result": "exact",
+          "hashReport": "/private/tmp/q07-parent-integration-hashes.json",
+          "reviewerVerified": true
+        },
+        {
+          "command": "node --test tests/accounting-*.test.js tests/qbo-*.test.js",
+          "cwd": "/Users/agustinzenuto/Desktop/Projects/arc",
+          "result": {
+            "tests": 302,
+            "pass": 302,
+            "fail": 0,
+            "skip": 0,
+            "cancelled": 0
+          },
+          "log": "/private/tmp/q07-parent-shared-tests.log",
+          "reviewerVerified": true
+        }
+      ],
+      "remaining": [],
+      "codeDefinitionsOfDone": [
+        {
+          "id": "Q07-01",
+          "criterion": "OAuth exchange/refresh/revoke/company fetch and QBO transport obey explicit timeouts plus the inherited worker deadline",
+          "verified": true,
+          "evidence": [
+            "parent reviewed actual OAuth/callback/CAS/worker/Retry-After fixtures;214 Node,55 Bun,lint/typecheck passed",
+            "Parent reviewed all11 changed files and1305 test lines; actual SDK nested headers/bodies, cron success/partial/error/prune, SSR expired refresh/session preservation, events/exhausted services, fixed identity grace and100 lease cutoff verified. Parent302/302 isolated and shared Node,55/55 Bun,lint/typecheck/diff0; no HTTP past cutoff. SDK-local sleep promises can finish after response; explicit90-second bound covers response and external requests."
+          ]
+        },
+        {
+          "id": "Q07-02",
+          "criterion": "No new request starts after budget exhaustion",
+          "verified": true,
+          "evidence": [
+            "Nested service database requests not yet bounded;014d closure pending.",
+            "Parent executable negative baseline2026-10-05: actual shared accounting-delivery.ts + actual Supabase SDK with injected synthetic fetch, withAccountingDeadline(Date.now()-100) still issued claim/release RPC POSTs without AbortSignal. No provider/domain work or native network. See014d.",
+            "Parent reviewed all11 changed files and1305 test lines; actual SDK nested headers/bodies, cron success/partial/error/prune, SSR expired refresh/session preservation, events/exhausted services, fixed identity grace and100 lease cutoff verified. Parent302/302 isolated and shared Node,55/55 Bun,lint/typecheck/diff0; no HTTP past cutoff. SDK-local sleep promises can finish after response; explicit90-second bound covers response and external requests."
+          ]
+        },
+        {
+          "id": "Q07-03",
+          "criterion": "Timeout ambiguity retains credential rotation/remote identity safeguards",
+          "verified": true,
+          "evidence": [
+            "parent reviewed actual OAuth/callback/CAS/worker/Retry-After fixtures;214 Node,55 Bun,lint/typecheck passed",
+            "Parent reviewed all11 changed files and1305 test lines; actual SDK nested headers/bodies, cron success/partial/error/prune, SSR expired refresh/session preservation, events/exhausted services, fixed identity grace and100 lease cutoff verified. Parent302/302 isolated and shared Node,55/55 Bun,lint/typecheck/diff0; no HTTP past cutoff. SDK-local sleep promises can finish after response; explicit90-second bound covers response and external requests."
+          ]
+        },
+        {
+          "id": "Q07-04",
+          "criterion": "Keepalive DB lookup failures throw or produce explicit failure, and cron status includes maintenance failure even with no outbound jobs",
+          "verified": true,
+          "evidence": [
+            "parent reviewed actual OAuth/callback/CAS/worker/Retry-After fixtures;214 Node,55 Bun,lint/typecheck passed",
+            "Parent reviewed all11 changed files and1305 test lines; actual SDK nested headers/bodies, cron success/partial/error/prune, SSR expired refresh/session preservation, events/exhausted services, fixed identity grace and100 lease cutoff verified. Parent302/302 isolated and shared Node,55/55 Bun,lint/typecheck/diff0; no HTTP past cutoff. SDK-local sleep promises can finish after response; explicit90-second bound covers response and external requests."
+          ]
+        },
+        {
+          "id": "Q07-05",
+          "criterion": "Per-connection failures cannot starve every other tenant; unfinished work remains eligible",
+          "verified": true,
+          "evidence": [
+            "Nested service database requests not yet bounded;014d closure pending.",
+            "Parent reviewed all11 changed files and1305 test lines; actual SDK nested headers/bodies, cron success/partial/error/prune, SSR expired refresh/session preservation, events/exhausted services, fixed identity grace and100 lease cutoff verified. Parent302/302 isolated and shared Node,55/55 Bun,lint/typecheck/diff0; no HTTP past cutoff. SDK-local sleep promises can finish after response; explicit90-second bound covers response and external requests."
+          ]
+        },
+        {
+          "id": "Q07-06",
+          "criterion": "Retry-After is respected or rescheduled without consuming the whole invocation; no blind uncertain POST retries",
+          "verified": true,
+          "evidence": [
+            "parent reviewed actual OAuth/callback/CAS/worker/Retry-After fixtures;214 Node,55 Bun,lint/typecheck passed",
+            "Parent reviewed all11 changed files and1305 test lines; actual SDK nested headers/bodies, cron success/partial/error/prune, SSR expired refresh/session preservation, events/exhausted services, fixed identity grace and100 lease cutoff verified. Parent302/302 isolated and shared Node,55/55 Bun,lint/typecheck/diff0; no HTTP past cutoff. SDK-local sleep promises can finish after response; explicit90-second bound covers response and external requests."
+          ]
+        },
+        {
+          "id": "Q07-07",
+          "criterion": "Abort-aware tests prove bounded exit without real sleeps",
+          "verified": true,
+          "evidence": [
+            "Nested service database requests not yet bounded;014d closure pending.",
+            "Parent reviewed all11 changed files and1305 test lines; actual SDK nested headers/bodies, cron success/partial/error/prune, SSR expired refresh/session preservation, events/exhausted services, fixed identity grace and100 lease cutoff verified. Parent302/302 isolated and shared Node,55/55 Bun,lint/typecheck/diff0; no HTTP past cutoff. SDK-local sleep promises can finish after response; explicit90-second bound covers response and external requests."
+          ]
+        },
+        {
+          "id": "Q07-08",
+          "criterion": "Intuit correlation IDs are retained without credential/body leakage.",
+          "verified": true,
+          "evidence": [
+            "parent reviewed actual OAuth/callback/CAS/worker/Retry-After fixtures;214 Node,55 Bun,lint/typecheck passed",
+            "Parent reviewed all11 changed files and1305 test lines; actual SDK nested headers/bodies, cron success/partial/error/prune, SSR expired refresh/session preservation, events/exhausted services, fixed identity grace and100 lease cutoff verified. Parent302/302 isolated and shared Node,55/55 Bun,lint/typecheck/diff0; no HTTP past cutoff. SDK-local sleep promises can finish after response; explicit90-second bound covers response and external requests."
+          ]
+        }
+      ],
+      "executor": "qbo_webhook_executor",
+      "implementationPlan": "014a-qbo-worker-reliability.md",
+      "closurePlan": "014d-qbo-worker-deadline-closure.md",
+      "reviewVerdict": "APPROVE exact b1a7e9a; parent full source/test review and independent isolated/shared checks",
+      "verificationIncident": {
+        "observed": "one earlier fixture attempted native OAuth fetch with synthetic values; reachability unknown; original run exited1",
+        "scope": "no production env/key files loaded; no confirmed live test process remained after executor process audit",
+        "remediation": "fail-closed default fetch inside every fake-clock scope; final parent scoped tests passed",
+        "note": "do not claim all historical fixture runs were network-free"
+      },
+      "implementationCommit": "a2ed029c91aca0739d90ab3c85c521fe88bc276d",
+      "integrationStatus": "Scoped a2ed029 plus nested closure b1a7e9a integrated; no shared commit or production action",
+      "closureStatus": "INTEGRATED exact11 approved files; shared302/302 verified independently",
+      "closureCommit": "b1a7e9a84beab258b9dfaf1976d3bbcb6db06485"
+    },
+    {
+      "id": "Q08",
+      "title": "Expired reconnect",
+      "status": "TODO",
+      "codeDoDVerified": false,
+      "evidence": [],
+      "remaining": [],
+      "codeDefinitionsOfDone": [
+        {
+          "id": "Q08-01",
+          "criterion": "expired/error connections offer OAuth reconnect, active ones offer token refresh",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q08-02",
+          "criterion": "Reconnect binds existing connection and expected realm; wrong-company callbacks are refused without changing credentials/routes",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q08-03",
+          "criterion": "Successful reconnect preserves scoped mappings and revives eligible backlog exactly once",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q08-04",
+          "criterion": "Button/action/callback fixtures cover expired, active, disconnected, denied permission, wrong realm, cancellation and provider failure",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q08-05",
+          "criterion": "Error/confirmation copy accurately names the operation.",
+          "verified": false,
+          "evidence": []
+        }
+      ]
+    },
+    {
+      "id": "Q09",
+      "title": "Truthful status and receipts",
+      "status": "TODO",
+      "codeDoDVerified": false,
+      "evidence": [],
+      "remaining": [
+        "Execute truthful read-state/outcome/clock handoff after current Q04 closure; full Q09-06 depends on reviewed Q11 durable per-item producer. No criteria accepted from planning."
+      ],
+      "codeDefinitionsOfDone": [
+        {
+          "id": "Q09-01",
+          "criterion": "unloaded/loading/error/loaded are distinct",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q09-02",
+          "criterion": "Failed reads render persistent retryable errors; stale data is labeled stale and never green merely because empty",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q09-03",
+          "criterion": "An explicit outcome map covers synced/skipped/deferred/review/conflict/error",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q09-04",
+          "criterion": "Only delivered outcomes advance last-successful delivery",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q09-05",
+          "criterion": "Inbound/outbound success clocks are distinguishable",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q09-06",
+          "criterion": "Partial and failed-only imports retain receipts; item lists reflect actual outcomes rather than all submitted records",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q09-07",
+          "criterion": "Tests cover every outcome and failure transition.",
+          "verified": false,
+          "evidence": []
+        }
+      ],
+      "implementationPlan": "014i-qbo-truthful-status-receipts.md"
+    },
+    {
+      "id": "Q10",
+      "title": "Scoped pagination/company health",
+      "status": "TODO",
+      "codeDoDVerified": false,
+      "evidence": [
+        {
+          "check": "Parent actual queue-action 600newer-other/600older-requested negative characterization",
+          "result": "Requested project returns0 rows, truncated=true; original code filters only after org-wide501 cap",
+          "baseline": "75e9810dad944ffefacbfd515edbcb182b00956a",
+          "sourceHash": "5efe0253f3353105bf528b8d1dfb365a7a165886e342f18b4d5ce6fb5b15ce35",
+          "evidencePath": "/private/tmp/q10-parent-before-pagination-evidence.json",
+          "scope": "Actual action with synthetic PostgREST semantics; provider absence/auth stubs explicit. Five DBcalls excludesauth and is not acceptance performance proof. All eleven original Q10clauses remain false."
+        }
+      ],
+      "remaining": [],
+      "codeDefinitionsOfDone": [
+        {
+          "id": "Q10-01",
+          "criterion": "authorized org/division/project/connection filters apply before row limits",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q10-02",
+          "criterion": "Keyset cursors have stable timestamp+ID ordering and no duplicates/omissions under fixed fixtures",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q10-03",
+          "criterion": "A project with 600 older pending records remains discoverable behind another project's 600 newer rows",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q10-04",
+          "criterion": "Counts describe complete authorized scope separately from displayed pages",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q10-05",
+          "criterion": "Each row identifies its company/provider",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q10-06",
+          "criterion": "Health shows oldest actionable work, inbound/outbound/CDC success, maintenance failure and recovery-required findings",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q10-07",
+          "criterion": "Loading/error/empty states are truthful",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q10-08",
+          "criterion": "A page contains at most 100 rows",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q10-09",
+          "criterion": "Query counts stay at or below 12 database calls per page, independent of page-row count (no per-row queries); counts and authorization lookups are included",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q10-10",
+          "criterion": "Record EXPLAIN/fixture evidence for indexes",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q10-11",
+          "criterion": "Tenant isolation and division authorization remain intact.",
+          "verified": false,
+          "evidence": []
+        }
+      ],
+      "implementationPlan": "014k-qbo-scoped-pagination-health.md"
+    },
+    {
+      "id": "Q11",
+      "title": "Durable centralized import",
+      "status": "TODO",
+      "codeDoDVerified": false,
+      "evidence": [
+        {
+          "check": "Parent actual import outcome characterization",
+          "result": "2/2 negative probes reproduce identical busy/completed skip results, failed-only result without run, and actual adopted payment missing actual ID/project in result",
+          "sourceCommit": "75e9810dad944ffefacbfd515edbcb182b00956a",
+          "evidenceFile": "/private/tmp/q11-parent-characterization-evidence.json",
+          "scope": "Actual shared service/provider facade and owned SQL; synthetic provider/authorization and inert financial collaborators. No Q11 criterion accepted."
+        }
+      ],
+      "remaining": [
+        "Execute full seven-clause014l durable producer/resume/auth/UI handoff after required earlier reviewed contracts; private receipts must not weaken existing claim/financial fences."
+      ],
+      "codeDefinitionsOfDone": [
+        {
+          "id": "Q11-01",
+          "criterion": "each run has a durable identity and records every submitted item's imported/adopted/skipped/failed outcome, resulting Arc IDs, destination projects, amounts and error",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q11-02",
+          "criterion": "Retry resumes incomplete items without duplicating money or successful child rows",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q11-03",
+          "criterion": "Organization-level entry uses existing import workflow with explicit company/project destinations and permission checks; no fake destination project is required",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q11-04",
+          "criterion": "Receipt links navigate to actual records/projects, including multi-project allocations",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q11-05",
+          "criterion": "Failed-only runs remain inspectable",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q11-06",
+          "criterion": "Repeated viewing reads persisted results rather than recomputing from submission",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q11-07",
+          "criterion": "Authorization and partial-failure SQL tests pass; no credentials/full provider payloads are retained in receipts.",
+          "verified": false,
+          "evidence": []
+        }
+      ],
+      "implementationPlan": "014l-qbo-durable-centralized-import.md"
+    },
+    {
+      "id": "Q12",
+      "title": "Conflict comparison/correction",
+      "status": "TODO",
+      "codeDoDVerified": false,
+      "evidence": [
+        {
+          "check": "Parent actual conflict action negative probes",
+          "result": "2/2 show stale displayed versions ignored and two duplicate action submissions both dispatch/audit",
+          "sourceCommit": "75e9810dad944ffefacbfd515edbcb182b00956a",
+          "evidenceFile": "/private/tmp/q12-parent-conflict-characterization-evidence.json",
+          "scope": "Actual shared server action; synthetic DB/authorization/provider/audit. Does not prove duplicate financial effects or full provider bypass; all eight clauses remain false."
+        }
+      ],
+      "remaining": [
+        "Execute full eight-clause014m comparison/decision/posted payment correction handoff after Q05/Q06/Q10. Concrete baseline/decision/domain SQL signatures and scopes require root review before implementation."
+      ],
+      "codeDefinitionsOfDone": [
+        {
+          "id": "Q12-01",
+          "criterion": "comparison displays baseline/local/current remote revision, amount/balance/date/coding/lines/project allocations and linked settlements",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q12-02",
+          "criterion": "Fetch failures are explicit",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q12-03",
+          "criterion": "Decisions require the same current conflict and remote/local version displayed; a changed revision invalidates approval and reloads",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q12-04",
+          "criterion": "Keep-local and take-remote preserve historical remote ownership and existing freeze/authority checks",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q12-05",
+          "criterion": "Posted-payment/allocation correction uses existing reviewed reversal/reallocation domain operations, never generic overwrite; irreversible consequences are previewed",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q12-06",
+          "criterion": "Payments have an actionable resolution path beyond Retry",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q12-07",
+          "criterion": "Duplicate/cancellation/concurrency tests prove audit evidence and one correction",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q12-08",
+          "criterion": "Closed periods cannot be bypassed.",
+          "verified": false,
+          "evidence": []
+        }
+      ],
+      "implementationPlan": "014m-qbo-reviewed-conflict-resolution.md"
+    },
+    {
+      "id": "Q13",
+      "title": "Tax/item setup preflight",
+      "status": "TODO",
+      "codeDoDVerified": false,
+      "evidence": [
+        {
+          "check": "Actual strict settings/full adapter repeated-reference negative",
+          "result": "2/2: exporter-consumed tax keys rejected;100 lines/one item produce100 simultaneous synthetic lookup methods before financial dispatch",
+          "evidenceFile": "/private/tmp/q13-parent-preflight-characterization-evidence.json",
+          "scope": "Actual schema/full adapter, synthetic DB/lease/provider with pre-POST barrier; no real HTTP/financial proof or Q13 acceptance."
+        }
+      ],
+      "remaining": [
+        "Execute full seven-clause014n after reviewed prerequisites; includes required atomic Q02-06 existing-flow closure,100\u21921 actual lookup gate, typed company tax/item setup and no-financial-POST negatives."
+      ],
+      "codeDefinitionsOfDone": [
+        {
+          "id": "Q13-01",
+          "criterion": "taxable/exempt code settings accepted by strict schemas are actually configurable and validated for the selected realm",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q13-02",
+          "criterion": "Active item/account mappings are checked before the first posting; stale/inactive refs have replacement actions",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q13-03",
+          "criterion": "Preflight explains supported country/currency/document/tax modes and required mappings",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q13-04",
+          "criterion": "Settings refresh means metadata refresh; token refresh means authentication",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q13-05",
+          "criterion": "Repeated line refs resolve once per distinct reference per delivery, with connection-scoped cache and explicit invalidation; changing settings cannot reuse another company's ref",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q13-06",
+          "criterion": "No unattended remote account/item creation to hide configuration errors",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q13-07",
+          "criterion": "Negative preflight cases make zero financial POSTs.",
+          "verified": false,
+          "evidence": []
+        }
+      ],
+      "implementationPlan": "014n-qbo-setup-preflight-adoption.md"
+    },
+    {
+      "id": "Q14",
+      "title": "Customer credit/refund parity",
+      "status": "TODO",
+      "codeDoDVerified": false,
+      "evidence": [
+        {
+          "check": "Actual native credit/refund service, effective credit SQL, manual refund SQL, invoice_paid_cents and Books posting/projector reads",
+          "result": "Canonical invoice-linked credit_memo/write_off in receivable_adjustments; manual customer refunds create payment_reversals, preserve credit balance/deposit availability/idempotency. Missing unapplied customer credit and QBO-owned cash-refund adoption domain need explicit implementation.",
+          "reviewerVerified": true,
+          "scope": "Read-only source contract discovery, not implemented provider parity or current production state."
+        },
+        {
+          "command": "ARC_PGLITE_MODULE=@electric-sql/pglite node --test tests/customer-refunds-transaction.test.js tests/customer-refunds-service.test.js tests/receivables-policy.test.js",
+          "cwd": "/private/tmp/arc-qbo-goal-01a109ed",
+          "result": {
+            "tests": 10,
+            "pass": 10,
+            "fail": 0,
+            "skip": 0,
+            "cancelled": 0
+          },
+          "log": "/private/tmp/q14-parent-existing-domain-baseline.log",
+          "reviewerVerified": true,
+          "note": "Existing selected native refund SQL/service/policy baseline on synthetic minimal tables. Not provider CreditMemo/RefundReceipt parity, full current migration engine, or closed-period golden acceptance; Q14 remains0/8."
+        },
+        {
+          "command": "node --test /private/tmp/q14-parent-opening-credit-characterization.test.js",
+          "result": {
+            "tests": 2,
+            "pass": 2,
+            "fail": 0,
+            "skip": 0,
+            "cancelled": 0
+          },
+          "log": "/private/tmp/q14-parent-opening-credit-characterization.log",
+          "evidence": "/private/tmp/q14-parent-opening-credit-evidence.json",
+          "reviewerVerified": true,
+          "scope": "Actual effective D2 opening trigger/invoice_paid_cents definitions on minimal synthetic tables with service role. $100 invoice/$20 posted credit or write-off/no cash/$80 observed due creates $20 opening payment and $40 cleared AR. Negative characterization, not complete financial/provider/MVCC acceptance."
+        }
+      ],
+      "remaining": [
+        "Existing customer-refunds.ts supplies an offline/manual refund domain operation; inspect reversal/settlement semantics before choosing QBO refund representation.",
+        "Parent actual source review: native receivable_adjustments supports only issued active invoice-linked credits/write-offs capped by open invoice balance, not unapplied customer credit. recordCustomerRefund/record_manual_customer_refund_atomic accept received manual payments only and record money already returned; QBO/Stripe-owned payment refund import cannot reuse that wrapper. Define reviewed canonical extension for standalone/application/externally settled refund before exposing provider capability; preserve payment_reversals/Books posting/balance ownership and all8 original criteria.",
+        "Full self-contained Q14 execution handoff: advisor-plans/014o-qbo-customer-credit-refund-parity.md; all8 original clauses retained. Parent exact effective opening trigger characterizes noncash credits/write-offs producing synthetic cash; full canonical standalone credit/application/refund and current financial acceptance required."
+      ],
+      "codeDefinitionsOfDone": [
+        {
+          "id": "Q14-01",
+          "criterion": "define and implement a certified supported matrix for credit memos, application to invoices, write-offs and customer refunds",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q14-02",
+          "criterion": "Actual QBO CreditMemo/RefundReceipt or appropriate supported operations preserve tax/item/account/customer refs and canonical adjustment identities",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q14-03",
+          "criterion": "No refund is fabricated as an ordinary payment or silently moves bank money; external bookkeeping mirrors only authorized existing economic facts",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q14-04",
+          "criterion": "Imports/replays/outbound uncertain response recovery preserve one adjustment/refund and correct invoice balance",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q14-05",
+          "criterion": "Credit-before-payment, partial application, unapplied credit, reversal, cross-year date and closed-period cases pass golden fixtures",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q14-06",
+          "criterion": "Unsupported provider/country combinations show explicit capability errors",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q14-07",
+          "criterion": "Provider contract, queue registries and review UX include the new types",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q14-08",
+          "criterion": "If domain cash-refund settlement is absent, implement the deliberate domain workflow first; do not mark a capability complete with a generic export or manual instruction.",
+          "verified": false,
+          "evidence": []
+        }
+      ]
+    },
+    {
+      "id": "Q15",
+      "title": "Operation idempotency/recovery",
+      "status": "TODO",
+      "codeDoDVerified": false,
+      "evidence": [
+        {
+          "command": "node --test /private/tmp/q15-parent-request-id-characterization.test.js",
+          "result": {
+            "tests": 2,
+            "pass": 2,
+            "fail": 0,
+            "skip": 0,
+            "cancelled": 0
+          },
+          "log": "/private/tmp/q15-parent-request-id-characterization.log",
+          "evidence": "/private/tmp/q15-parent-request-id-evidence.json",
+          "reviewerVerified": true,
+          "scope": "Actual whole shared QBOClient with explicit synthetic dependencies/no network. Direct client lost-response retry lacks requestid; bypasses existing adapter/outbox guard and is not production duplicate proof. Actual marker lookup25k records/early match makes26GET/25k rows; synthetic23.25ms, no real provider latency or heap measurement."
+        },
+        {
+          "check": "Rendered official Intuit request-ID developer and support pages in read-only public browser",
+          "urls": [
+            "https://developer.intuit.com/app/developer/qbo/docs/learn/learn-basic-field-definitions#request-id",
+            "https://help.developer.intuit.com/s/article/What-is-RequestId-and-its-usage"
+          ],
+          "reviewerVerified": true,
+          "scope": "Primary contract documents company-wide unique query requestid, identical content replay and50character nonbatch limit; no retention duration found and no live sandbox tested. Q15-01 remains false."
+        }
+      ],
+      "remaining": [
+        "Full Q15 handoff014p preserves six original clauses: immutable operation/key/payload persisted before actual HTTP, exact retry vs new revision/recreation, private service-only SQL, historic/unknown-window recovery,0historyGET/one-document supported facade fixture, provider sandbox/retention verification outstanding."
+      ],
+      "codeDefinitionsOfDone": [
+        {
+          "id": "Q15-01",
+          "criterion": "verify current Intuit requestid behavior/retention limits from primary docs and sandbox fixtures",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q15-02",
+          "criterion": "Persist a distinct operation-scoped request ID and payload revision before sending; network retry uses the same ID, authorized recreation/new revision uses a new operation",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q15-03",
+          "criterion": "Never use a transaction-wide forever key or timestamp regenerated on retry",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q15-04",
+          "criterion": "Preserve marker-based recovery for historical writes and expired/ambiguous provider dedupe windows",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q15-05",
+          "criterion": "In the new supported retry fixture, recovering a response-lost create requires no full-history scan and produces one remote document",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q15-06",
+          "criterion": "Unexpected provider semantics fail closed with visible recovery, rather than claim exactly-once delivery.",
+          "verified": false,
+          "evidence": []
+        }
+      ],
+      "implementationPlan": "014p-qbo-operation-request-ids.md"
+    },
+    {
+      "id": "Q16",
+      "title": "Module maintainability/efficiency",
+      "status": "TODO",
+      "codeDoDVerified": false,
+      "evidence": [
+        {
+          "check": "Actual client history/import and full QBO preview function measured at1k/10k/25k, three separate processes each (27 measured runs)",
+          "evidence": "014-qbo-efficiency-baseline.json",
+          "probe": "/private/tmp/q16-parent-history-measure.js",
+          "reviewerVerified": true,
+          "scope": "GC baseline after actual module load; explicit synthetic paged fetch/config/auth and empty SELECT-only SQL. Preview25kreturns25krows/12177845JSONbytes/25HTTP/sixSQL; observed heap48.71MiB, not exhaustive profiler peak. No real provider latency, provider-neutral action/UI/full financial/current permission acceptance. Baseline does not violate128MiB lightweight observed target; confirms unbounded response/no resume."
+        },
+        {
+          "command": "node --test /private/tmp/q16-parent-limiter-characterization.test.js",
+          "result": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "skip": 0,
+            "cancelled": 0
+          },
+          "log": "/private/tmp/q16-parent-limiter-characterization.log",
+          "evidence": "/private/tmp/q16-parent-limiter-evidence.json",
+          "reviewerVerified": true,
+          "scope": "Actual whole QBOClient on two same-realm instances/fake held fetch starts10reads/peak10HTTP. In-process negative only; no distributed-worker/controllable-clock provider evidence."
+        }
+      ],
+      "remaining": [
+        "Full self-contained Q16 handoff014q preserves all13original clauses: accepted family/translator extraction, typed bounded200row/1MiBpreview, complete resumable25khistory, actual memory profiling,4itemworkers further limited by shared2HTTP/8starts-sec realm policy, distinct-ref and request-ID recovery measured improvement. Private limiter/resume SQL proposal must be reviewed before code; no Q16clauses accepted."
+      ],
+      "codeDefinitionsOfDone": [
+        {
+          "id": "Q16-01",
+          "criterion": "break transaction families into cohesive modules, share canonical invoice/line/money translation and remove duplicate implementations",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q16-02",
+          "criterion": "Transport, domain mutations and UI DTOs remain separate",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q16-03",
+          "criterion": "No new any/as escapes or speculative generic framework",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q16-04",
+          "criterion": "Existing behavioral fixtures run unchanged against the public facade",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q16-05",
+          "criterion": "Reference lookup request count is proportional to distinct refs, not number of lines; a 100-line invoice using one item performs one item lookup per dispatch",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q16-06",
+          "criterion": "Import preview pages contain at most 200 rows and at most 1 MiB serialized JSON for the supported synthetic fixture",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q16-07",
+          "criterion": "Traversing a 25k-record history is resumable rather than a single unbounded action",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q16-08",
+          "criterion": "Peak additional heap for the 25k lightweight fixture stays below 128 MiB; measure baseline, rows and payload bytes at 1k/10k/25k",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q16-09",
+          "criterion": "Import execution concurrency defaults to at most four items and is bounded further by per-realm transport limits",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q16-10",
+          "criterion": "Concurrent requests are bounded per realm (default at most two in flight); the controllable-clock limiter fixture admits no more than eight starts per realm per second across cooperating workers",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q16-11",
+          "criterion": "Raising global concurrency alone is not a fix",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q16-12",
+          "criterion": "Record before/after calls, queries, wall time, fixture/runtime/sample sizes and peak memory where measurable",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q16-13",
+          "criterion": "Require no regression and a demonstrable request/query reduction in the named repeated-reference and recovery cases.",
+          "verified": false,
+          "evidence": []
+        }
+      ],
+      "implementationPlan": "014q-qbo-modules-measured-efficiency.md"
+    },
+    {
+      "id": "Q17",
+      "title": "End-to-end/docs/release evidence",
+      "status": "TODO",
+      "codeDoDVerified": false,
+      "evidence": [
+        {
+          "check": "Temporary real PostgreSQL verification environment prepared and independently exercised",
+          "result": "Checksum-verified17.6 compiled into temporary prefix; TCP disabled/private Unix socket; four real service-role contention cases pass",
+          "implementationPlan": "014j-qbo-postgresql-verification.md",
+          "scope": "Portable PostgreSQL tests, actual overlapping facade, full financial/UI/CI/release acceptance still outstanding.",
+          "sourceCommit": "75e9810dad944ffefacbfd515edbcb182b00956a"
+        }
+      ],
+      "remaining": [],
+      "codeDefinitionsOfDone": [
+        {
+          "id": "Q17-01",
+          "criterion": "help names real controls and accurate directionality/latency/supported entities",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q17-02",
+          "criterion": "Duplicate guidance starts by identifying the obligation; it does not recommend renumbering to bypass warnings",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q17-03",
+          "criterion": "Isolated UI/action/provider journeys cover reconnect, setup preflight, partial multi-project import, scoped pagination, both webhook formats, conflict comparison and credit/refund lifecycle",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q17-04",
+          "criterion": "Run full lint/typecheck/financial/auth/Node/Bun suites and isolated migration/RLS tests",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q17-05",
+          "criterion": "Exact additive migrations have forward replay and privilege checks; pending D2 destructive cleanup remains separate",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q17-06",
+          "criterion": "CI application build passes",
+          "verified": false,
+          "evidence": []
+        },
+        {
+          "id": "Q17-07",
+          "criterion": "Record unapplied production migrations/rollout sequence and rollback compatibility without claiming deployment or production health.",
+          "verified": false,
+          "evidence": []
+        }
+      ]
+    }
+  ],
+  "productionChangesAuthorized": false,
+  "overallCodeComplete": false
+}

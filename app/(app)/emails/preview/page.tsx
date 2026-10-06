@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import Link from "next/link"
@@ -93,6 +94,7 @@ function pillClass(isActive: boolean) {
 }
 
 async function EmailPreviewPageContent({ searchParams }: { searchParams: SearchParams }) {
+  await connection()
   const resolvedSearchParams = await searchParams
   const params = toUrlParams(resolvedSearchParams)
 
@@ -531,7 +533,7 @@ async function EmailPreviewPageContent({ searchParams }: { searchParams: SearchP
 
 export default function EmailPreviewPage(props: Parameters<typeof EmailPreviewPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLayout title="Email Preview"><PageLoadingSkeleton /></PageLayout>}>
       <EmailPreviewPageContent {...props} />
     </Suspense>
   )

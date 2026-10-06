@@ -21,8 +21,7 @@ import type { EstimatePortalData } from "@/lib/services/estimate-portal"
 const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })
 const money = (cents?: number | null) => currency.format((cents ?? 0) / 100)
 
-const ELECTRONIC_SIGNATURE_CONSENT_TEXT =
-  "I agree to use electronic records and signatures for this estimate, I can access and retain the estimate electronically, and I intend my electronic signature to be legally binding."
+import { ELECTRONIC_SIGNATURE_CONSENT_TEXT } from "@/lib/esign/consent"
 
 interface EstimateBuilderSigningClientProps {
   token: string
@@ -45,6 +44,7 @@ export function EstimateBuilderSigningClient({
   const [captureOpen, setCaptureOpen] = useState(false)
   const [consentAccepted, setConsentAccepted] = useState(false)
   const [isComplete, setIsComplete] = useState(false)
+  const [isProcessing, setIsProcessing] = useState(false)
   const [pending, startTransition] = useTransition()
 
   const viewLines = useMemo<QuoteViewLine[]>(
@@ -92,7 +92,7 @@ export function EstimateBuilderSigningClient({
 
     startTransition(async () => {
       try {
-        await submitEstimateBuilderSignatureAction({
+        const result = await submitEstimateBuilderSignatureAction({
           token,
           signerName,
           signerEmail,
@@ -101,7 +101,8 @@ export function EstimateBuilderSigningClient({
           consentText: ELECTRONIC_SIGNATURE_CONSENT_TEXT,
         })
         setIsComplete(true)
-        toast.success("Estimate executed")
+        setIsProcessing(result.processing === true)
+        toast.success(result.processing ? "Signature recorded; completed copy is being prepared" : "Estimate executed")
       } catch (error: any) {
         toast.error(error?.message ?? "Unable to sign estimate.")
       }
@@ -113,10 +114,22 @@ export function EstimateBuilderSigningClient({
       orgName={estimate.org_name}
       orgLogoUrl={estimate.org_logo_url}
       documentLabel="Estimate"
-      statusLabel={isComplete ? "Executed" : "Builder signature"}
+      statusLabel={isComplete ? (isProcessing ? "Preparing completed copy" : "Executed") : "Builder signature"}
       statusTone={isComplete ? "success" : "info"}
       pdfUrl={pdfUrl}
       document={
+        <div className="space-y-4">
+          <div className="overflow-hidden rounded-lg border bg-background">
+            <div className="border-b p-4">
+              <p className="font-semibold">Agreement for your signature</p>
+              <p className="text-sm text-muted-foreground">Review the issued PDF below. These are the pages your signature will complete.</p>
+              <a href={pdfUrl} target="_blank" rel="noopener noreferrer" className="mt-2 inline-block text-sm underline">Open the issued PDF in a new tab</a>
+            </div>
+            <iframe src={pdfUrl} title="Issued agreement for signature" className="h-[75vh] min-h-[480px] w-full" />
+          </div>
+          <details className="rounded-lg border p-4">
+            <summary className="cursor-pointer text-sm font-medium">Reference summary</summary>
+            <p className="my-3 text-sm text-muted-foreground">This summary is for reference. Review the issued PDF above for the agreement you are signing.</p>
         <QuoteDocumentView
           orgName={estimate.org_name}
           orgLogoUrl={estimate.org_logo_url}
@@ -139,6 +152,8 @@ export function EstimateBuilderSigningClient({
           pricingDisplay={estimate.pricing_display}
           selectedOptionalIds={acceptedOptionalIds}
         />
+          </details>
+        </div>
       }
     >
       {estimate.photos.length > 0 ? (
@@ -163,8 +178,8 @@ export function EstimateBuilderSigningClient({
             <div className="flex items-start gap-2.5 border border-success/30 bg-success/5 p-3">
               <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-success" />
               <div className="text-sm">
-                <p className="font-semibold text-success">Estimate executed</p>
-                <p className="text-muted-foreground">Your signature has been recorded and the executed PDF was generated.</p>
+                <p className="font-semibold text-success">{isProcessing ? "Signature recorded" : "Estimate executed"}</p>
+                <p className="text-muted-foreground">{isProcessing ? "Your signature is safely recorded. The completed PDF is being prepared and will be emailed when ready." : "Your signature has been recorded and the executed PDF was generated."}</p>
               </div>
             </div>
           ) : (

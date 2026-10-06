@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache"
 import { z } from "zod"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/auth/context"
-import { requireAnyPermission } from "@/lib/services/permissions"
+import { requireAnyPlatformPermission } from "@/lib/services/platform-access"
 import { allBillingFeatureKeys, BILLING_FEATURE_CATALOG } from "@/lib/billing-feature-catalog"
 import { ensureBillingFeatureCatalog } from "@/lib/services/billing"
 
@@ -58,7 +58,7 @@ export async function createPlanAction(prevState: { error?: string; message?: st
       }
 
       const { user } = await requireAuth()
-      await requireAnyPermission(["billing.manage", "platform.billing.manage"], { userId: user.id })
+      await requireAnyPlatformPermission(["platform.billing.manage"])
 
       const supabase = createServiceSupabaseClient()
 
@@ -118,8 +118,7 @@ export async function createPlanAction(prevState: { error?: string; message?: st
 
 export async function deletePlanAction(planCode: string) {
   return run(async () => {
-      const { user } = await requireAuth()
-      await requireAnyPermission(["billing.manage", "platform.billing.manage"], { userId: user.id })
+      await requireAnyPlatformPermission(["platform.billing.manage"])
 
       if (!planCode || typeof planCode !== "string") {
         return { error: "Invalid plan code" }

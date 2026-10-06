@@ -29,7 +29,7 @@ function stubModule(request, exports) {
  * events and notifications are noise here.
  */
 function installStubs({ supabase, context, instantiate, generatePurchaseOrders, transferLandAtStart, slotTarget = 4 }) {
-  const calls = { instantiate: [], purchaseOrders: [], events: [], notifications: [], projects: [], outbox: [], landTransfers: [] }
+  const calls = { instantiate: [], purchaseOrders: [], events: [], notifications: [], projects: [], outbox: [], landTransfers: [], tradeNotices: [] }
 
   stubModule("@/lib/services/context", {
     requireOrgContext: async () => context,
@@ -42,27 +42,37 @@ function installStubs({ supabase, context, instantiate, generatePurchaseOrders, 
   })
   stubModule("@/lib/services/audit", { recordAudit: async () => undefined })
   stubModule("@/lib/services/events", {
-    recordEvent: async (event) => { calls.events.push(event); return { id: `event-${calls.events.length}` } },
+    recordEvent: async (event) => {
+      const prior = event.idempotencyId && calls.events.find(row => row.idempotencyId === event.idempotencyId)
+      if (!prior) calls.events.push(event)
+      return { id: event.idempotencyId ?? `event-${calls.events.length}` }
+    },
   })
   stubModule("@/lib/services/notifications", {
     NotificationService: class {
-      async createAndQueue(input) { calls.notifications.push(input) }
+      async createAndQueue(input, options) {
+        const prior = options?.idempotencyId && calls.notifications.find(row => row.idempotencyId === options.idempotencyId)
+        if (!prior) calls.notifications.push({ ...input, ...(options ? { idempotencyId: options.idempotencyId } : {}) })
+      }
     },
   })
   stubModule("@/lib/services/outbox", {
     enqueueOutboxJob: async (input) => {
       calls.outbox.push(input)
       const rows = supabase.store.outbox ?? (supabase.store.outbox = [])
+      const dedupeKey = `${input.jobType}:${(input.dedupeByPayloadKeys ?? ["start_package_id"]).map((key) => `${key}:${input.payload[key]}`).join("|")}`
+      if (rows.some((row) => row.org_id === input.orgId && row.dedupe_key === dedupeKey && row.status === "pending")) return { enqueued: false, reason: "duplicate" }
       rows.push({
         id: `job-${rows.length + 1}`, org_id: input.orgId, job_type: input.jobType, status: "pending",
         payload: input.payload, retry_count: 0, run_at: input.runAt ?? new Date().toISOString(),
         updated_at: new Date().toISOString(),
-        dedupe_key: `${input.jobType}:start_package_id:${input.payload.start_package_id}`,
+        dedupe_key: dedupeKey,
       })
       return { enqueued: true }
     },
   })
   stubModule("@/lib/services/authorization", {
+    authorize: async () => ({ allowed: true }),
     getDivisionAccessForUser: async () => ({ assignedOnly: false, divisionIds: [] }),
     getDivisionScopedProjectIds: async () => null,
   })
@@ -84,7 +94,7 @@ function installStubs({ supabase, context, instantiate, generatePurchaseOrders, 
     getCommunityReleaseSlots: async () => [],
   })
   stubModule("@/lib/services/trade-lookahead", {
-    sendTradeLookahead: async () => ({ sent: true }),
+    sendTradeLookahead: async (...args) => { calls.tradeNotices.push(args); return { sent: true } },
     sendScheduleChangeDigestJob: async () => undefined,
   })
   stubModule("@/lib/supabase/server", { createServiceSupabaseClient: () => supabase })
@@ -128,10 +138,10 @@ function releasingFixture({ purchasing = false, packageStatus = "releasing", met
     start_release_steps: RELEASE_STEPS.map((stepKey, index) => ({
       id: `step-${index}`, org_id: ORG, start_package_id: PACKAGE, step_key: stepKey,
       status: stepKey === "project" ? "completed" : "pending", attempt: 0,
-      started_at: null, completed_at: null, error: null, detail: {}, created_at: `2026-09-01T00:0${index}:00.000Z`,
+      started_at: null, completed_at: stepKey === "project" ? past : null, error: null, detail: {}, created_at: `2026-09-01T00:0${index}:00.000Z`,
     })),
-    start_gate_definitions: [],
-    start_package_gates: [],
+    start_gate_definitions: [{ id: "def-approval", org_id: ORG, key: "final_approval", label: "Final approval", check_kind: "manual", applies_when: "always", is_active: true }],
+    start_package_gates: [{ id: "gate-approval", org_id: ORG, start_package_id: PACKAGE, gate_definition_id: "def-approval", status: "passed", passed_via: "attested", attested_by: ACTOR, attested_at: past }],
     schedule_assignments: [],
     outbox: [{
       id: "job-1", org_id: ORG, job_type: "start_release", status: "pending",

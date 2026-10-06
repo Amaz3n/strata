@@ -140,8 +140,9 @@ export async function getStatementsForPeriod(input: {
   const context = await requireStatementsAccess(input.orgId)
   const orgId = context.orgId
   const priorYear = (date: string) => {
-    const [year, ...rest] = date.split("-")
-    return [String(Number(year) - 1), ...rest].join("-")
+    const [year, month, day] = date.split("-").map(Number)
+    const lastDay = new Date(Date.UTC(year - 1, month, 0)).getUTCDate()
+    return `${year - 1}-${String(month).padStart(2, "0")}-${String(Math.min(day, lastDay)).padStart(2, "0")}`
   }
 
   const comparison = input.comparison ?? (input.comparePriorYear === false ? "none" : "prior_year")
@@ -200,6 +201,7 @@ export async function getStatementsForPeriod(input: {
     cashBasis,
     priorProfitLoss,
     comparisonLabel: comparisonRange?.label ?? null,
+    comparisonRange,
     monthlyProfitLoss,
   }
 }
@@ -286,6 +288,8 @@ async function loadOpeningBalanceCents(args: {
 }
 
 export async function getAccountActivity(input: {
+  operatingOnly?: boolean
+  unassignedOnly?: boolean
   accountId: string
   startDate: string
   endDate: string
@@ -305,11 +309,21 @@ export async function getAccountActivity(input: {
   if (accountError) throw new Error(`Failed to load the account: ${accountError.message}`)
   if (!accountData) throw new Error("Account not found")
   const account = accountSchema.parse(accountData)
+  if (input.operatingOnly) account.normal_balance = ["asset", "cogs", "expense"].includes(account.account_type) ? "debit" : "credit"
+  const closingIds: string[] = []
+  if (input.operatingOnly) {
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await service.from("journal_entries").select("id").eq("org_id", orgId).eq("entry_kind", "closing").lte("entry_date", input.endDate).order("id").range(from, from + 999)
+      if (error) throw new Error("Could not resolve closing entries for this statement.")
+      closingIds.push(...(data ?? []).map(row => String(row.id)))
+      if ((data?.length ?? 0) < 1000) break
+    }
+  }
   const signed = (debitCents: number, creditCents: number) =>
     account.normal_balance === "debit" ? debitCents - creditCents : creditCents - debitCents
 
   const [{ openingDebit, openingCredit }, activity] = await Promise.all([
-    loadOpeningBalanceCents({ orgId, accountId: input.accountId, startDate: input.startDate, projectId: input.projectId }),
+    input.operatingOnly ? Promise.resolve({ openingDebit: 0, openingCredit: 0 }) : loadOpeningBalanceCents({ orgId, accountId: input.accountId, startDate: input.startDate, projectId: input.projectId }),
     // Queried entry-first, not line-first. PostgREST orders a parent only by its
     // OWN columns, and `journal_lines` has no date — ordering by an embedded
     // `entry_date` is silently not the sort you asked for, which would make the
@@ -332,7 +346,12 @@ export async function getAccountActivity(input: {
         .order("id", { ascending: true })
         // One past the cap, so truncation is detected rather than assumed.
         .range(0, ACTIVITY_ROW_CAP)
-      if (input.projectId) query = query.eq("lines.project_id", input.projectId)
+      if (input.operatingOnly) {
+        query = query.neq("entry_kind", "closing")
+        if (closingIds.length) query = query.or(`reversal_of_entry_id.is.null,reversal_of_entry_id.not.in.(${closingIds.join(",")})`)
+      }
+      if (input.unassignedOnly) query = query.is("lines.project_id", null)
+      else if (input.projectId) query = query.eq("lines.project_id", input.projectId)
       const { data, error } = await query
       if (error) throw new Error(`Failed to load account activity: ${error.message}`)
       return z.array(activityEntrySchema).parse(data ?? [])

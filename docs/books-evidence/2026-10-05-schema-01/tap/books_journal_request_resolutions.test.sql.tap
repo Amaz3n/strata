@@ -1,0 +1,5 @@
+1..4
+ok 1 - journal resolution RPC is private
+ok 2 - journal resolution respects invoker privileges
+ok 3 - browser cannot fabricate a journal cancellation receipt
+ok 4 - original writers enforce durable cancelled intents

@@ -1,0 +1,37 @@
+1..36
+ok 1 - browser roles cannot prepare or review workpapers
+ok 2 - RLS and revoked browser table access protect workpapers
+ok 3 - prepare native scoped draft
+ok 4 - identical preparation retry returns same draft
+ok 5 - retry key cannot overwrite evidence
+ok 6 - preparer cannot self-review
+ok 7 - changed basis digest blocks review
+ok 8 - approval requires substantive review notes
+ok 9 - separate reviewer approves
+ok 10 - approval retry is idempotent
+ok 11 - approved adjustments cannot be rewritten
+ok 12 - tax history cannot be deleted
+ok 13 - another draft may be prepared for review
+ok 14 - only one workpaper is counted for an exact reporting period
+ok 15 - replacement preserves original reference
+ok 16 - replacement approval atomically supersedes original
+ok 17 - original retained as superseded evidence
+ok 18 - only replacement remains approved
+ok 19 - original signed adjustment retained exactly
+ok 20 - tax adjustments do not post accrual journals
+ok 21 - all tax workpaper versions included in atomic export
+ok 22 - foreign or missing evidence file rejected
+ok 23 - missing basis fields cannot pass nullable CHECK expressions
+ok 24 - unsafe cents rejected
+ok 25 - numeric strings are not accepted as exact signed JSON cents
+ok 26 - actor must belong to organization
+ok 27 - future transactions do not invalidate prior-period review
+ok 28 - late posted history invalidates the source revision
+ok 29 - tax context carries one-statement source revision
+ok 30 - new completed payment without a journal invalidates review revision
+ok 31 - future-period completed payment does not invalidate prior review
+ok 32 - NULL review notes cannot bypass approval guards
+ok 33 - direct privileged update still requires organization reviewer
+ok 34 - category overflow is rejected even when timing offsets make net total safe
+ok 35 - actual service role can prepare through invoker RPC and trigger grants
+ok 36 - actual service role can approve replacement through invoker RPC

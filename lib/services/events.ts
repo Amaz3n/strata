@@ -1,3 +1,4 @@
+import { insertImmutableRecord } from "@/lib/services/immutable-record"
 import { afterResponse } from "@/lib/observability/after-response"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgMembership } from "@/lib/auth/context"
@@ -14,6 +15,8 @@ import type { NotificationType } from "@/lib/services/notifications"
 type EventChannel = "activity" | "integration" | "notification"
 
 export interface EventInput {
+  /** Caller owns durable fanout recovery when replaying a stable event. */
+  idempotencyId?: string
   orgId?: string
   actorId?: string | null
   eventType: string
@@ -165,21 +168,19 @@ export async function recordEvent(input: EventInput) {
     ...(actorId ? { actor_id: actorId } : {}),
   }
 
-  const { data, error } = await supabase
-    .from("events")
-    .insert({
-      org_id: resolvedOrgId,
-      event_type: input.eventType,
-      entity_type: input.entityType ?? null,
-      entity_id: input.entityId ?? null,
-      payload,
-      channel: input.channel ?? "activity",
-    })
-    .select("id, created_at")
-    .single()
-
-  if (error) {
-    throw new Error(`Failed to record event: ${error.message}`)
+  const eventValues = {
+    org_id: resolvedOrgId, event_type: input.eventType, entity_type: input.entityType ?? null,
+    entity_id: input.entityId ?? null, payload, channel: input.channel ?? "activity",
+  }
+  let data: { id: string; created_at: string }
+  if (input.idempotencyId) {
+    const receipt = await insertImmutableRecord(supabase, "events", { id: input.idempotencyId, ...eventValues })
+    data = { id: receipt.record.id, created_at: receipt.record.created_at }
+    if (!receipt.created) return data
+  } else {
+    const result = await supabase.from("events").insert(eventValues).select("id, created_at").single()
+    if (result.error || !result.data) throw new Error(`Failed to record event: ${result.error?.message ?? "Record unavailable"}`)
+    data = result.data
   }
 
   // Notification fan-out resolves an audience, checks each recipient's
@@ -290,6 +291,16 @@ function resolveTitle(event: ActivityEvent) {
       return "Change order update"
     case "schedule_update":
       return "Schedule updated"
+    case "inspection_completed":
+      return "Inspection completed"
+    case "inspection_obligation_create":
+      return "Required inspection registered"
+    case "inspection_obligation_reinspect":
+      return "Inspection reinspection started"
+    case "inspection_obligation_accept":
+      return "Required inspection accepted"
+    case "inspection_obligation_reject":
+      return "Inspection requires further correction"
     default:
       return event.event_type.replace("_", " ")
   }
@@ -2023,6 +2034,14 @@ function titleForEventType(eventType: string): string {
       return "New observation"
     case "inspection_completed":
       return "Inspection completed"
+    case "inspection_obligation_create":
+      return "Required inspection registered"
+    case "inspection_obligation_reinspect":
+      return "Inspection reinspection started"
+    case "inspection_obligation_accept":
+      return "Required inspection accepted"
+    case "inspection_obligation_reject":
+      return "Inspection requires further correction"
     case "vpo.requested":
       return "VPO awaiting approval"
     case "vpo.approved":

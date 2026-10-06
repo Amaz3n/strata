@@ -1,6 +1,6 @@
 "use client"
 
-import { Activity, useCallback, useEffect, useRef, useState } from "react"
+import { Activity, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import dynamic from "next/dynamic"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
@@ -82,49 +82,91 @@ export function SettingsWindow({
   const returnTo = searchParams.get("returnTo")
   const [cache, setCache] = useState<PanelCache>({ [initialTab]: initialPanel })
   const cacheRef = useRef(cache)
-  const pending = useRef(new Map<SettingsTab, Promise<void>>())
+  const pending = useRef(new Map<SettingsTab, AbortController>())
+  const mounted = useRef(false)
   const [visited, setVisited] = useState<SettingsTab[]>([initialTab])
-  const sections = visibleSettingsSections(permissions, productTier)
+  const sections = useMemo(() => visibleSettingsSections(permissions), [permissions])
+  const allowedTabs = useMemo(() => new Set(sections.flatMap(section => section.items)
+    .map(item => new URLSearchParams(item.url.split("?")[1]).get("tab"))), [sections])
+  const scope = `${orgId}:${productTier}:${[...permissions].sort().join(",")}`
+  const initialSource = useRef<{ scope: string; tab: SettingsTab; panel: ActionResult<SettingsPanelData> } | null>(null)
   const activeItem = sections
     .flatMap((section) => section.items)
     .find((item) => item.url === `/settings?tab=${tab}`)
 
+  const abortPending = useCallback((key: SettingsTab) => {
+    const request = pending.current.get(key)
+    pending.current.delete(key)
+    request?.abort()
+  }, [])
+
+  const abortAll = useCallback(() => {
+    for (const key of pending.current.keys()) abortPending(key)
+  }, [abortPending])
+
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      abortAll()
+    }
+  }, [scope, abortAll])
+
   const store = useCallback((key: SettingsTab, value: ActionResult<SettingsPanelData>) => {
+    abortPending(key)
     cacheRef.current = { ...cacheRef.current, [key]: value }
     if (value.success && value.data.tab === "organization") {
+      abortPending("invoicing")
       cacheRef.current.invoicing = {
         success: true,
         data: { tab: "invoicing", settings: value.data.settings },
       }
     }
     setCache(cacheRef.current)
-  }, [])
+  }, [abortPending])
 
   useEffect(() => {
+    const previous = initialSource.current
+    if (previous?.scope === scope && previous.tab === initialTab && previous.panel === initialPanel) return
+    initialSource.current = { scope, tab: initialTab, panel: initialPanel }
+    if (previous && previous.scope !== scope) {
+      abortAll()
+      cacheRef.current = {}
+      setVisited([initialTab])
+    }
     store(initialTab, initialPanel)
-  }, [initialTab, initialPanel, store])
+  }, [initialTab, initialPanel, scope, store, abortAll])
 
   const load = useCallback(
     (key: SettingsTab, retry = false) => {
+      if (!mounted.current || !allowedTabs.has(key)) return
       if ((!retry && cacheRef.current[key]) || pending.current.has(key)) return
-      const request = fetch(`/api/settings/panel?${new URLSearchParams({ tab: key, orgId })}`, {
+      const controller = new AbortController()
+      pending.current.set(key, controller)
+      const isCurrent = () => mounted.current && !controller.signal.aborted && pending.current.get(key) === controller
+      void fetch(`/api/settings/panel?${new URLSearchParams({ tab: key, orgId })}`, {
         cache: "no-store",
+        signal: controller.signal,
       })
         .then(async (response) => {
+          if (!isCurrent()) return
           if (response.redirected)
             throw new Error("Your session changed. Reload settings to continue.")
           const result: ActionResult<SettingsPanelData> = await response.json()
+          if (!isCurrent()) return
+          if (!result || (result.success !== true && result.success !== false) ||
+            (result.success ? !response.ok || result.data?.tab !== key : typeof result.error !== "string"))
+            throw new Error("Invalid settings section response")
           store(key, result)
         })
-        .catch(() =>
-          store(key, { success: false, error: "Unable to load this section. Please try again." }),
-        )
-        .finally(() => {
-          pending.current.delete(key)
+        .catch(() => {
+          if (isCurrent()) store(key, { success: false, error: "Unable to load this section. Please try again." })
         })
-      pending.current.set(key, request)
+        .finally(() => {
+          if (pending.current.get(key) === controller) pending.current.delete(key)
+        })
     },
-    [orgId, store],
+    [orgId, store, allowedTabs],
   )
 
   useEffect(() => {
@@ -133,7 +175,13 @@ export function SettingsWindow({
   }, [tab, load])
 
   const onOrganizationSaved = useCallback(
-    (settings: OrganizationSettings) => {
+    (settings: OrganizationSettings, source: Pick<PanelCache, "organization" | "invoicing">) => {
+      if (!mounted.current || cacheRef.current.organization !== source.organization ||
+        cacheRef.current.invoicing !== source.invoicing) return
+      const reload = (["organization", "invoicing"] as const)
+        .filter(key => pending.current.has(key) && !cacheRef.current[key]?.success)
+      abortPending("organization")
+      abortPending("invoicing")
       // Organization and Invoicing own different forms over the same record.
       // Keep both cached snapshots current without another read.
       for (const key of ["organization", "invoicing"] as const) {
@@ -145,8 +193,9 @@ export function SettingsWindow({
           store(key, { success: true, data: { ...entry.data, settings } })
         }
       }
+      for (const key of reload) load(key, true)
     },
-    [store],
+    [store, load, abortPending],
   )
 
   function renderPanel(data: SettingsPanelData) {
@@ -157,14 +206,15 @@ export function SettingsWindow({
         return (
           <OrganizationPanel
             initialSettings={data.settings}
-            onSettingsSaved={onOrganizationSaved}
+            onSettingsSaved={settings => onOrganizationSaved(settings, { organization: cache.organization, invoicing: cache.invoicing })}
             initialDocumentNumbering={data.numbering}
+            initialContractTemplates={data.contractTemplates}
             teamMembers={data.signers}
           />
         )
       case "invoicing":
         return (
-          <InvoicingPanel initialSettings={data.settings} onSettingsSaved={onOrganizationSaved} />
+          <InvoicingPanel initialSettings={data.settings} onSettingsSaved={settings => onOrganizationSaved(settings, { organization: cache.organization, invoicing: cache.invoicing })} />
         )
       case "billing":
         return <BillingPanel canManageBilling={data.canManage} initialBilling={data.billing} />
@@ -179,7 +229,7 @@ export function SettingsWindow({
       case "notifications":
         return <NotificationPreferences initialPreferences={data.preferences} />
       case "integrations":
-        return <IntegrationsPanel initialStripe={data.stripe} />
+        return <IntegrationsPanel initialStripe={data.stripe} booksEnabled={cache.accounting?.success && cache.accounting.data.tab === "accounting" ? cache.accounting.data.settings.enabled : data.booksEnabled} />
       case "team":
         return (
           <TeamSettingsPanel
@@ -229,7 +279,7 @@ export function SettingsWindow({
                 <Link
                   key={item.url}
                   href={href}
-                  prefetch={false}
+                  prefetch={isSettingsTab(itemTab) ? false : undefined}
                   aria-current={itemTab === tab ? "page" : undefined}
                   className={cn(
                     "shrink-0 border px-3 py-2 text-xs",
@@ -264,7 +314,9 @@ export function SettingsWindow({
       </header>
       {mountedTabs.map((key) => {
         const entry = cache[key]
-        const content = !entry ? (
+        const content = !allowedTabs.has(key) ? (
+          <div role="alert" className="p-6 text-sm text-destructive">You don&apos;t have access to this settings section.</div>
+        ) : !entry ? (
           <SettingsPanelSkeleton />
         ) : !entry.success ? (
           <div role="alert" className="space-y-4 p-6">

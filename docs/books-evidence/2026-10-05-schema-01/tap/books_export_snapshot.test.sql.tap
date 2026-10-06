@@ -1,0 +1,7 @@
+1..6
+ok 1 - export snapshot reads all real tables and organization columns
+ok 2 - an absent organization cannot export other organizations
+ok 3 - all internal reads share statement visibility
+ok 4 - only server service role can invoke snapshot capture
+ok 5 - separately collected Arc Pay fees are included in the real snapshot
+ok 6 - reviewed tax workpapers included in real recovery snapshot

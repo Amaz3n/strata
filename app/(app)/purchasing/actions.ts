@@ -8,6 +8,23 @@ import { approveCommitmentChangeOrder, rejectVarianceOrder } from "@/lib/service
 import { approvePoCompletion, rejectPoCompletion, verifyPoCompletion } from "@/lib/services/po-completions"
 import { dismissPoException, generatePurchaseOrders, resolvePoException } from "@/lib/services/po-generation"
 import { createPriceAgreement, repriceAgreement, setAgreementEnd, voidPriceAgreement } from "@/lib/services/price-book"
+import { getPoExceptionCandidates, searchPurchasingEntities } from "@/lib/services/purchasing-workspace"
+
+export async function getPoExceptionCandidatesAction(input: unknown) {
+  try {
+    return { success: true as const, data: await getPoExceptionCandidates(input) }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
+export async function searchPurchasingEntitiesAction(input: unknown) {
+  try {
+    return { success: true as const, data: await searchPurchasingEntities(input) }
+  } catch (error) {
+    return actionError(error)
+  }
+}
 
 async function run<T>(operation: () => Promise<T>, projectId?: string): Promise<ActionResult<T>> {
   try {

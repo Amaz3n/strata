@@ -1,4 +1,7 @@
 import { randomUUID } from "crypto"
+import { workerPersistenceDeadline, withWorkerDatabasePersistence } from "@/lib/supabase/worker-request-context"
+import { accountingDeliveryDeadline, AccountingDeliveryError, withAccountingDeadline } from "@/lib/services/accounting-delivery"
+import { QBOTransportError } from "@/lib/integrations/accounting/qbo/transport"
 
 import {
   decryptToken,
@@ -66,7 +69,7 @@ async function refreshConnectionTokens(
   supabase: ReturnType<typeof createServiceSupabaseClient>,
   connection: QBOConnectionTokenRow,
   options: { force: boolean; orgIdForLogs?: string | null; source: "auto" | "manual" | "keepalive" },
-): Promise<{ token: string; realmId: string } | null> {
+): Promise<{ token: string; realmId: string; persisted?: boolean } | null> {
   const configuredClientId = getQBOClientId()
 
   // Only the OAuth app (client_id) that minted the tokens can refresh them.
@@ -103,8 +106,12 @@ async function refreshConnectionTokens(
     // persist strands credentials only this process holds. A DB blip must be
     // retried, and must never count as a "refresh failure" (three of those
     // expire the connection over a problem that was never Intuit's).
-    const persistTokens = () =>
-      supabase
+    // A rotated token pair gets one shared five-second persistence grace,
+    // including the existing retry, even if the remote request spent its slice.
+    const persistenceDeadline = workerPersistenceDeadline()
+    const persistTokens = () => {
+      if (Date.now() >= persistenceDeadline) return Promise.resolve({ data: null, error: { message: "Credential persistence deadline reached" } })
+      return withWorkerDatabasePersistence(persistenceDeadline, () => supabase
         .from("accounting_connections")
         .update({
           access_token: encryptedAccessToken,
@@ -121,10 +128,12 @@ async function refreshConnectionTokens(
         .eq("status", "active")
         .eq("refresh_token", connection.refresh_token)
         .select("id")
-        .maybeSingle()
+        .abortSignal(AbortSignal.timeout(Math.max(1, persistenceDeadline - Date.now())))
+        .maybeSingle())
+    }
 
     let { data: updatedRow, error: updateError } = await persistTokens()
-    if (updateError) {
+    if (updateError && Date.now() < persistenceDeadline) {
       ;({ data: updatedRow, error: updateError } = await persistTokens())
     }
     if (updateError) {
@@ -137,15 +146,17 @@ async function refreshConnectionTokens(
       // Serve the fresh token for this request; the next refresh will get a
       // new pair from Intuit (the old refresh token stays valid briefly after
       // rotation, and invalid_grant on the next pass surfaces the real state).
-      return { token: newTokens.access_token, realmId: connection.external_account_id }
+      return { token: newTokens.access_token, realmId: connection.external_account_id, persisted: false }
     }
 
     if (!updatedRow) {
-      const { data: latest, error: latestError } = await supabase
+      if (Date.now() >= persistenceDeadline) return null
+      const { data: latest, error: latestError } = await withWorkerDatabasePersistence(persistenceDeadline, () => supabase
         .from("accounting_connections")
         .select("access_token, external_account_id, status")
         .eq("id", connection.id)
-        .maybeSingle()
+        .abortSignal(AbortSignal.timeout(Math.max(1, persistenceDeadline - Date.now())))
+        .maybeSingle())
 
       if (latestError || !latest || latest.status !== "active") {
         return null
@@ -156,81 +167,95 @@ async function refreshConnectionTokens(
 
     return { token: newTokens.access_token, realmId: connection.external_account_id }
   } catch (error) {
-    const invalidGrant = isInvalidGrantRefreshError(error)
-    const nextFailureCount = currentFailureCount + 1
-    const shouldExpire = invalidGrant || nextFailureCount >= MAX_TRANSIENT_REFRESH_FAILURES
-    const errorMessage = String(error ?? "Token refresh failed").slice(0, 500)
+    // Exhaustion before dispatch is scheduling deferral, never revoked credentials.
+    if (error instanceof QBOTransportError && error.reason === "deadline" && !error.started) throw error
+    const failureDeadline = workerPersistenceDeadline()
+    if (Date.now() >= failureDeadline) return null
+    return withWorkerDatabasePersistence(failureDeadline, async () => {
+      const invalidGrant = isInvalidGrantRefreshError(error)
+      const nextFailureCount = currentFailureCount + 1
+      const shouldExpire = invalidGrant || nextFailureCount >= MAX_TRANSIENT_REFRESH_FAILURES
+      const errorMessage = String(error ?? "Token refresh failed").slice(0, 500)
 
-    const { data: expiredRow, error: failureWriteError } = await supabase
-      .from("accounting_connections")
-      .update({
-        status: shouldExpire ? "expired" : "active",
-        refresh_failure_count: nextFailureCount,
-        last_error: errorMessage,
-      })
-      .eq("id", connection.id)
-      .eq("status", "active")
-      .eq("refresh_token", connection.refresh_token)
-      .eq("external_account_id", connection.external_account_id)
-      .select("id, org_id")
-      .maybeSingle()
-
-    if (failureWriteError) {
-      logQBO("error", "token_refresh_failure_persist_failed", { connectionId: connection.id, error: failureWriteError.message })
-      return null
-    }
-    if (!expiredRow) {
-      const { data: latest, error: latestError } = await supabase
+      const { data: expiredRow, error: failureWriteError } = await supabase
         .from("accounting_connections")
-        .select("access_token, external_account_id, status")
+        .update({
+          status: shouldExpire ? "expired" : "active",
+          refresh_failure_count: nextFailureCount,
+          last_error: errorMessage,
+        })
         .eq("id", connection.id)
+        .eq("status", "active")
+        .eq("refresh_token", connection.refresh_token)
+        .eq("external_account_id", connection.external_account_id)
+        .select("id, org_id")
+        .abortSignal(AbortSignal.timeout(Math.max(1, failureDeadline - Date.now())))
         .maybeSingle()
-      if (latestError || latest?.status !== "active") return null
-      return { token: decryptToken(latest.access_token), realmId: latest.external_account_id }
-    }
 
-    // The moment sync dies is the moment somebody has to hear about it — a
-    // status flip plus a log line left connections dead for days with the only
-    // signal being a settings badge nobody watches. The `expiredRow` guard
-    // means a concurrent worker's flip emits exactly one event.
-    if (shouldExpire && expiredRow?.org_id) {
-      await recordEvent({
-        orgId: expiredRow.org_id,
-        eventType: "accounting_connection_expired",
-        entityType: "accounting_connection",
-        entityId: connection.id,
-        payload: {
-          provider: "qbo",
-          reason: invalidGrant ? "authorization_revoked_or_expired" : "repeated_refresh_failures",
-          error: errorMessage,
-        },
-        channel: "notification",
-      }).catch((eventError) => {
-        logQBO("error", "connection_expired_event_failed", { connectionId: connection.id, error: String(eventError) })
+      if (failureWriteError) {
+        logQBO("error", "token_refresh_failure_persist_failed", { connectionId: connection.id, error: failureWriteError.message })
+        return null
+      }
+      if (!expiredRow) {
+        if (Date.now() >= failureDeadline) return null
+        const { data: latest, error: latestError } = await supabase
+          .from("accounting_connections")
+          .select("access_token, external_account_id, status")
+          .eq("id", connection.id)
+          .abortSignal(AbortSignal.timeout(Math.max(1, failureDeadline - Date.now())))
+          .maybeSingle()
+        if (latestError || latest?.status !== "active") return null
+        return { token: decryptToken(latest.access_token), realmId: latest.external_account_id }
+      }
+
+      // The moment sync dies is the moment somebody has to hear about it — a
+      // status flip plus a log line left connections dead for days with the only
+      // signal being a settings badge nobody watches. The `expiredRow` guard
+      // means a concurrent worker's flip emits exactly one event.
+      if (shouldExpire && expiredRow?.org_id) {
+        await recordEvent({
+          orgId: expiredRow.org_id,
+          eventType: "accounting_connection_expired",
+          entityType: "accounting_connection",
+          entityId: connection.id,
+          payload: {
+            provider: "qbo",
+            reason: invalidGrant ? "authorization_revoked_or_expired" : "repeated_refresh_failures",
+            error: errorMessage,
+          },
+          channel: "notification",
+        }).catch((eventError) => {
+          logQBO("error", "connection_expired_event_failed", { connectionId: connection.id, error: String(eventError) })
+        })
+      }
+
+      logQBO(shouldExpire ? "error" : "warn", "token_refresh_failed", {
+        orgId: options.orgIdForLogs ?? connection.org_id,
+        connectionId: connection.id,
+        source: options.source,
+        invalidGrant,
+        failureCount: nextFailureCount,
+        error: errorMessage,
       })
-    }
 
-    logQBO(shouldExpire ? "error" : "warn", "token_refresh_failed", {
-      orgId: options.orgIdForLogs ?? connection.org_id,
-      connectionId: connection.id,
-      source: options.source,
-      invalidGrant,
-      failureCount: nextFailureCount,
-      error: errorMessage,
+      if (!options.force && Number.isFinite(expiresAtMs) && expiresAtMs > Date.now() + 60 * 1000) {
+        return { token: decryptToken(connection.access_token), realmId: connection.external_account_id }
+      }
+
+      return null
     })
-
-    if (!options.force && Number.isFinite(expiresAtMs) && expiresAtMs > Date.now() + 60 * 1000) {
-      return { token: decryptToken(connection.access_token), realmId: connection.external_account_id }
-    }
-
-    return null
   }
+}
+
+function requireCredentialLookupBudget() {
+  if (Date.now() >= (accountingDeliveryDeadline() ?? Infinity)) throw new QBOTransportError("credential lookup", "deadline")
 }
 
 export async function getQBOAccessToken(
   orgId: string,
   options?: { forceRefresh?: boolean; connectionId?: string },
 ): Promise<{ token: string; realmId: string } | null> {
+  requireCredentialLookupBudget()
   const supabase = createServiceSupabaseClient()
   let query = supabase
     .from("accounting_connections")
@@ -241,7 +266,7 @@ export async function getQBOAccessToken(
     .eq("provider", "qbo")
     .eq("status", "active")
   query = options?.connectionId ? query.eq("id", options.connectionId) : query.order("connected_at", { ascending: true }).limit(1)
-  const { data: connection, error } = await query.maybeSingle()
+  const { data: connection, error } = await query.abortSignal(AbortSignal.timeout(Math.max(1, Math.min(10_000, (accountingDeliveryDeadline() ?? Date.now() + 10_000) - Date.now())))).maybeSingle()
 
   if (error || !connection) return null
   return refreshConnectionTokens(supabase, connection as QBOConnectionTokenRow, {
@@ -252,12 +277,14 @@ export async function getQBOAccessToken(
 }
 
 export async function getQBOAccessTokenForConnection(connectionId: string, options?: { forceRefresh?: boolean }) {
+  requireCredentialLookupBudget()
   const supabase = createServiceSupabaseClient()
   const { data: connection } = await supabase
     .from("accounting_connections")
     .select("org_id")
     .eq("id", connectionId)
     .eq("provider", "qbo")
+    .abortSignal(AbortSignal.timeout(Math.max(1, Math.min(10_000, (accountingDeliveryDeadline() ?? Date.now() + 10_000) - Date.now()))))
     .maybeSingle()
   if (!connection?.org_id) return null
   return getQBOAccessToken(connection.org_id, { ...options, connectionId })
@@ -397,6 +424,8 @@ export async function upsertQBOConnection(input: {
 }
 
 export async function refreshQBOConnectionsDueForKeepalive(limit = 10) {
+  const deadline = Math.min(Date.now() + 20_000, accountingDeliveryDeadline() ?? Infinity)
+  if (Date.now() >= deadline) return { scanned: 0, refreshed: 0, failed: 0, attempted: 0, deferred: 0, budgetExhausted: true }
   const supabase = createServiceSupabaseClient()
   const keepaliveHorizonIso = new Date(Date.now() + KEEPALIVE_REFRESH_WINDOW_MS).toISOString()
 
@@ -414,27 +443,38 @@ export async function refreshQBOConnectionsDueForKeepalive(limit = 10) {
     .or(`refresh_token_expires_at.is.null,refresh_token_expires_at.lte.${keepaliveHorizonIso}`)
     .order("refresh_token_expires_at", { ascending: true, nullsFirst: true })
     .limit(limit)
+    .abortSignal(AbortSignal.timeout(Math.max(1, Math.min(10_000, deadline - Date.now()))))
 
-  if (error || !candidates?.length) {
-    return { scanned: 0, refreshed: 0, failed: 0 }
-  }
+  if (error) throw new AccountingDeliveryError(`Unable to load QBO keepalive connections: ${error.message}`, true, "maintenance_lookup")
+  if (!candidates?.length) return { scanned: 0, refreshed: 0, failed: 0, attempted: 0, deferred: 0, budgetExhausted: false }
 
   const selected = candidates as QBOConnectionTokenRow[]
   let refreshed = 0
   let failed = 0
+  let attempted = 0
+  let deferred = 0
 
   for (const connection of selected) {
-    const result = await refreshConnectionTokens(supabase, connection, {
-      force: true,
-      orgIdForLogs: connection.org_id,
-      source: "keepalive",
-    })
-    if (result) {
-      refreshed += 1
-    } else {
-      failed += 1
+    if (Date.now() >= deadline) { deferred += 1; continue }
+    attempted += 1
+    try {
+      const result = await withAccountingDeadline(Math.min(deadline, Date.now() + 10_000), () => refreshConnectionTokens(supabase, connection, {
+        force: true,
+        orgIdForLogs: connection.org_id,
+        source: "keepalive",
+      }))
+      if (result && result.persisted !== false) refreshed += 1
+      else failed += 1
+    } catch (error) {
+      if (error instanceof QBOTransportError && !error.started && error.reason === "deadline") {
+        attempted -= 1
+        deferred += 1
+      } else {
+        failed += 1
+        logQBO("error", "keepalive_connection_failed", { connectionId: connection.id, error: error instanceof Error ? error.message : "Keepalive failed" })
+      }
     }
   }
 
-  return { scanned: selected.length, refreshed, failed }
+  return { scanned: selected.length, refreshed, failed, attempted, deferred, budgetExhausted: deferred > 0 || Date.now() >= deadline }
 }

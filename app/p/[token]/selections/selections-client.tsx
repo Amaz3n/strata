@@ -51,11 +51,20 @@ function daysUntil(dateValue: string | null | undefined) {
   return Math.ceil((Date.parse(`${dateValue}T00:00:00`) - Date.now()) / 86_400_000)
 }
 
-export function SelectionsPortalClient({ token, data }: Props) {
+export function SelectionsPortalClient(props: Props) {
+  return <SelectionsPortalWorkspace key={props.token} {...props} />
+}
+
+function SelectionsPortalWorkspace({ token, data }: Props) {
   const [selections, setSelections] = useState(data.selections)
+  const [selectionSource, setSelectionSource] = useState(data.selections)
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
+  if (selectionSource !== data.selections) {
+    setSelectionSource(data.selections)
+    setSelections(data.selections)
+  }
   const categoriesById = useMemo(() => new Map(data.categories.map((category) => [category.id, category])), [data.categories])
   const grouped = useMemo(() => {
     const groups = new Map<string, { id: string; name: string; cutoff: string | null; locked: boolean; items: PortalSelection[] }>()
@@ -167,7 +176,7 @@ export function SelectionsPortalClient({ token, data }: Props) {
                         <div className="mb-3 flex items-start justify-between gap-3"><div><h3 className="text-sm font-semibold">{category?.name ?? "Selection"}</h3>{category?.description && <p className="mt-0.5 text-xs text-muted-foreground">{category.description}</p>}</div><Badge variant="outline" className="rounded-none text-[10px]">{selection.status}</Badge></div>
                         {options.length === 0 ? <p className="text-sm text-muted-foreground">No options are available.</p> : <div className="space-y-2">{options.map((option) => {
                           const selected = selection.selected_option_id === option.id
-                          return <button key={option.id} type="button" disabled={isPending || allConfirmed} onClick={() => handleSelect(selection.id, option.id, group.id)} className={`flex w-full items-center gap-3 border p-2.5 text-left transition-colors ${selected ? "border-primary bg-primary/5" : "hover:bg-muted/50"}`}>
+                          return <button key={option.id} type="button" aria-pressed={selected} disabled={isPending || allConfirmed} onClick={() => handleSelect(selection.id, option.id, group.id)} className={`flex w-full items-center gap-3 border p-2.5 text-left transition-colors ${selected ? "border-primary bg-primary/5" : "hover:bg-muted/50"}`}>
                             {option.image_url ? <img src={option.image_url} alt="" className="h-12 w-12 border object-cover" /> : <div className="h-12 w-12 border bg-muted" />}
                             <span className="min-w-0 flex-1"><span className="block text-sm font-medium">{option.name}</span>{option.description && <span className="block truncate text-xs text-muted-foreground">{option.description}</span>}</span>
                             <span className="text-sm font-medium tabular-nums">{formatPriceLabel(option) ?? "—"}</span>

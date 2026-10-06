@@ -1,0 +1,9 @@
+1..8
+ok 1 - worker directory is a stable invoker read
+ok 2 - private service can read native worker names
+ok 3 - anonymous directory calls denied
+ok 4 - browser cannot bypass whole-org accounting checks
+ok 5 - empty organization returns no worker identities
+ok 6 - missing organization denied
+ok 7 - oversized worker page denied
+ok 8 - unbounded search denied

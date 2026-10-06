@@ -235,3 +235,128 @@ final class MyHousesStore {
         }
     }
 }
+
+/// View-owned queue; generations fence same-scope refreshes as well as org/day changes.
+@MainActor
+@Observable
+final class ServiceVisitsStore {
+    typealias Loader = @MainActor (String, String, String?) async throws -> MobileServiceVisitPage
+    private(set) var rows: [MobileServiceVisit] = []
+    private(set) var nextCursor: String?
+    private(set) var isLoading = false
+    private(set) var errorMessage: String?
+    private var organizationID: String?
+    private var date: String?
+    private var generation = 0
+    private var seenCursors: Set<String> = []
+
+    func refresh(organizationID: String?, date: String, load: Loader) async {
+        generation += 1
+        self.organizationID = organizationID
+        self.date = date
+        rows = []
+        nextCursor = nil
+        seenCursors = []
+        errorMessage = nil
+        isLoading = false
+        guard let organizationID else { return }
+        await fetch(organizationID: organizationID, date: date, cursor: nil, load: load)
+    }
+
+    func loadMore(load: Loader) async {
+        guard !isLoading, let organizationID, let date, let nextCursor else { return }
+        await fetch(organizationID: organizationID, date: date, cursor: nextCursor, load: load)
+    }
+
+    private func fetch(organizationID: String, date: String, cursor: String?, load: Loader) async {
+        let requestedGeneration = generation
+        isLoading = true
+        errorMessage = nil
+        defer { if generation == requestedGeneration { isLoading = false } }
+        do {
+            let page = try await load(organizationID, date, cursor)
+            guard !Task.isCancelled, generation == requestedGeneration else { return }
+            // A short page may still have more data when the database has a lower row cap.
+            // Only the server cursor proves continuation or exhaustion.
+            let ids = page.rows.map(\.id)
+            guard page.rows.count <= 100, Set(ids).count == ids.count,
+                  !ids.contains(where: { $0.isEmpty }),
+                  page.nextCursor.map({ !page.rows.isEmpty && !$0.isEmpty && !seenCursors.contains($0) }) ?? true else {
+                throw APIError.invalidResponse
+            }
+            // Rows can move forward between requests. Replace duplicates without creating duplicate identity.
+            var indices = Dictionary(uniqueKeysWithValues: rows.enumerated().map { ($0.element.id, $0.offset) })
+            for row in page.rows {
+                if let index = indices[row.id] { rows[index] = row }
+                else { indices[row.id] = rows.count; rows.append(row) }
+            }
+            if let next = page.nextCursor { seenCursors.insert(next) }
+            nextCursor = page.nextCursor
+        } catch is CancellationError {
+        } catch {
+            guard generation == requestedGeneration else { return }
+            if let apiError = error as? APIError, apiError == .forbidden || apiError == .unauthorized {
+                rows = []
+                nextCursor = nil
+            }
+            errorMessage = (error as? APIError)?.userMessage ?? "Service visits could not be loaded."
+        }
+    }
+}
+
+/// Freezes an attempted submission so an uncertain network result can recover the same receipt.
+@MainActor
+@Observable
+final class ServiceVisitCompletionStore {
+    private(set) var attempted: MobileServiceVisitCompletion?
+    private(set) var isDurable = false
+    private(set) var needsRefresh = false
+    private(set) var isSaving = false
+    private(set) var completedVisit: MobileServiceVisit?
+    private(set) var errorMessage: String?
+    private var generation = 0
+
+    func reset() {
+        generation += 1
+        attempted = nil
+        isDurable = false
+        needsRefresh = false
+        isSaving = false
+        completedVisit = nil
+        errorMessage = nil
+    }
+    func restore(_ input: MobileServiceVisitCompletion?) {
+        reset()
+        attempted = input
+        isDurable = input != nil
+    }
+    func markDurable(_ input: MobileServiceVisitCompletion) {
+        if attempted == input { isDurable = true }
+    }
+    func submit(_ input: MobileServiceVisitCompletion,
+                save: @MainActor (MobileServiceVisitCompletion) async throws -> MobileServiceVisit) async {
+        guard !isSaving, !needsRefresh, completedVisit == nil else { return }
+        if attempted == nil { attempted = input }
+        guard let attempt = attempted else { return }
+        let requestedGeneration = generation
+        isSaving = true
+        errorMessage = nil
+        defer { if generation == requestedGeneration { isSaving = false } }
+        do {
+            let visit = try await save(attempt)
+            guard !Task.isCancelled, generation == requestedGeneration else { return }
+            guard visit.status == "completed" else { throw APIError.invalidResponse }
+            completedVisit = visit
+            isDurable = false
+        } catch is CancellationError {
+        } catch {
+            guard generation == requestedGeneration else { return }
+            if let apiError = error as? APIError, case .conflict(let code, _) = apiError, ["visit_changed", "completion_recovery_required", "completion_already_recorded"].contains(code) {
+                needsRefresh = true
+                attempted = nil
+                isDurable = false
+            }
+            errorMessage = (error as? APIError)?.userMessage ?? "Completion could not be confirmed. Retry with the same details."
+        }
+    }
+}

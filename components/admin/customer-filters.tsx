@@ -15,6 +15,10 @@ interface CustomerFiltersProps {
 }
 
 export function CustomerFilters({ search, status, plan }: CustomerFiltersProps) {
+  return <CustomerFiltersContent key={search} search={search} status={status} plan={plan} />
+}
+
+function CustomerFiltersContent({ search, status, plan }: CustomerFiltersProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
 

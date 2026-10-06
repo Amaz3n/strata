@@ -177,6 +177,12 @@ class Query {
         rows.push(created)
         written.push(created)
       }
+      if (this.returning && this.cardinality) {
+        if (written.length > 1 || (this.cardinality === "single" && written.length !== 1)) {
+          return { data: null, error: { message: "expected exactly one written row" } }
+        }
+        return { data: clone(written[0] ?? null), error: null }
+      }
       return { data: this.returning ? clone(written) : null, error: null }
     }
     const matched = this.matched()

@@ -18,19 +18,24 @@ export type BankRuleCandidate = {
   direction: "inflow" | "outflow" | null
   bankAccountId: string | null
   glAccountId: string
+  vendorId: string | null
   projectId: string | null
   costCodeId: string | null
   confidence: number
   hitCount: number
   active: boolean
+  /** Manual rules are authored controls; learned patterns are Arc's memory. */
+  source: "manual_rule" | "learned_pattern"
 }
 
 export type BankRuleSuggestion = {
   ruleId: string
   glAccountId: string
+  vendorId: string | null
   projectId: string | null
   costCodeId: string | null
   confidence: number
+  source: "manual_rule" | "learned_pattern"
   /** True once the rule has earned enough clean confirmations to apply unread. */
   autoApplies: boolean
 }
@@ -70,12 +75,15 @@ export function selectBankRule(input: {
     const value = normalizeBankRuleValue(rule.matchValue)
     if (!value) return false
     if (rule.matchKind === "merchant_exact") return Boolean(merchant) && merchant === value
-    // A description rule may also match the merchant, since providers put the
-    // payee in either field depending on the institution.
-    return description.includes(value) || (Boolean(merchant) && merchant.includes(value))
+    if (description.includes(value)) return true
+    // Learned patterns predate explicit rules and historically tolerated banks
+    // moving payee text between these fields. A manual description condition is literal.
+    return rule.source === "learned_pattern" && Boolean(merchant) && merchant.includes(value)
   })
 
   matches.sort((left, right) => {
+    const bySource = Number(right.source === "manual_rule") - Number(left.source === "manual_rule")
+    if (bySource !== 0) return bySource
     const byKind = Number(right.matchKind === "merchant_exact") - Number(left.matchKind === "merchant_exact")
     if (byKind !== 0) return byKind
     const byAccount = Number(Boolean(right.bankAccountId)) - Number(Boolean(left.bankAccountId))
@@ -92,10 +100,13 @@ export function selectBankRule(input: {
   return {
     ruleId: winner.id,
     glAccountId: winner.glAccountId,
+    vendorId: winner.vendorId,
     projectId: winner.projectId,
     costCodeId: winner.costCodeId,
     confidence: winner.confidence,
-    autoApplies: winner.hitCount >= CODING_RULE_AUTO_APPLY_HITS,
+    source: winner.source,
+    // A person-authored rule remains a review suggestion. It never posts by itself.
+    autoApplies: winner.source === "learned_pattern" && winner.hitCount >= CODING_RULE_AUTO_APPLY_HITS,
   }
 }
 

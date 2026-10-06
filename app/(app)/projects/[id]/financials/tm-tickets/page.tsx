@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { notFound, redirect } from "next/navigation"
 import { Suspense } from "react"
 
@@ -18,14 +19,19 @@ interface PageProps {
   params: Promise<{ id: string }>
 }
 
-export default async function TimeAndMaterialsTicketsPage({ params }: PageProps) {
-  const { id } = await params
-
+export default function TimeAndMaterialsTicketsPage({ params }: PageProps) {
   return (
     <Suspense fallback={<TmTicketsSkeleton />}>
-      <TmTicketsContent id={id} />
+      <TimeAndMaterialsTicketsPageRoute params={params} />
     </Suspense>
   )
+}
+
+async function TimeAndMaterialsTicketsPageRoute({ params }: PageProps) {
+  await connection()
+  const { id } = await params
+
+  return <TmTicketsContent id={id} />
 }
 
 async function TmTicketsContent({ id }: { id: string }) {

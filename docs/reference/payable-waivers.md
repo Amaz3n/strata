@@ -83,3 +83,24 @@ incoming templates for supported property jurisdictions, and run authenticated c
 Automated checks live in `tests/payable-waiver-coverage.test.js`,
 `tests/payable-waiver-lifecycle.test.js`, and `tests/waiver-register.test.js`, alongside
 the existing company-template, invoice-waiver, financial, and authorization suites.
+
+## Integrated bill entry
+
+New project bills default to waivers off; overhead bills have no waiver controls.
+Enabling **Include lien waivers** captures an optional actual work-through date.
+**Create & prepare waiver** saves the bill once and keeps the creation workspace
+open for preparation, original-PDF upload, signing setup, and signed-document
+review. Leaving that step preserves the bill; **Save draft** saves and exits.
+Preparation and review also render inline on existing payables.
+
+An explicit bill waiver request participates in the shared coverage calculation,
+payment holds, manual/electronic release checks, register, and final readiness.
+Turning the creation option off does not override project compliance policy.
+Accepted conditional coverage releases only the waiver hold. Approval and other
+payment holds still apply. Paid funds without accepted unconditional coverage
+remain a collection item, including partial payments; final releases still require
+review of retainage and remaining scope.
+
+Verification: focused coverage, lifecycle, register, native coding, chase, and
+payment-guard tests; TypeScript and scoped ESLint. Browser checks cover overhead
+entry and the project opt-in control. No payment or signature invitation was sent.

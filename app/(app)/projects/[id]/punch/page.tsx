@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { Suspense } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
 import { notFound } from "next/navigation"
@@ -15,9 +16,7 @@ interface ProjectPunchPageProps {
   searchParams: Promise<{ item?: string }>
 }
 
-export default async function ProjectPunchPage({ params, searchParams }: ProjectPunchPageProps) {
-  const [{ id }, query] = await Promise.all([params, searchParams])
-
+export default function ProjectPunchPage({ params, searchParams }: ProjectPunchPageProps) {
   return (
     <>
       <PageLayout
@@ -28,10 +27,17 @@ export default async function ProjectPunchPage({ params, searchParams }: Project
         ]}
       />
       <Suspense fallback={<ProjectPunchFallback />}>
-        <ProjectPunchData id={id} initialItemId={query.item} />
+        <ProjectPunchPageRoute params={params} searchParams={searchParams} />
       </Suspense>
     </>
   )
+}
+
+async function ProjectPunchPageRoute({ params, searchParams }: ProjectPunchPageProps) {
+  await connection()
+  const [{ id }, query] = await Promise.all([params, searchParams])
+
+  return <ProjectPunchData id={id} initialItemId={query.item} />
 }
 
 function ProjectPunchFallback() {

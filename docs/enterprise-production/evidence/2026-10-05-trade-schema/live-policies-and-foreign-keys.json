@@ -1,0 +1,305 @@
+{
+  "date": "2026-10-05",
+  "project": "Arc production",
+  "readOnly": true,
+  "queryScope": "pg_catalog constraint and policy metadata only; no customer rows",
+  "facts": [
+    {
+      "kind": "foreign_key",
+      "relation": "commitment_lines",
+      "name": "commitment_lines_budget_line_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (budget_line_id) REFERENCES budget_lines(id) ON DELETE SET NULL"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "commitment_lines",
+      "name": "commitment_lines_commitment_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (commitment_id) REFERENCES commitments(id) ON DELETE CASCADE"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "commitment_lines",
+      "name": "commitment_lines_cost_code_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (cost_code_id) REFERENCES cost_codes(id) ON DELETE SET NULL"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "commitment_lines",
+      "name": "commitment_lines_org_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "lots",
+      "name": "lots_books_acquisition_entry_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (books_acquisition_entry_id) REFERENCES journal_entries(id) ON DELETE RESTRICT"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "lots",
+      "name": "lots_community_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (community_id) REFERENCES communities(id) ON DELETE CASCADE"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "lots",
+      "name": "lots_community_phase_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (community_phase_id) REFERENCES community_phases(id) ON DELETE SET NULL"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "lots",
+      "name": "lots_division_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (division_id) REFERENCES divisions(id) ON DELETE SET NULL"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "lots",
+      "name": "lots_house_plan_elevation_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (house_plan_elevation_id) REFERENCES house_plan_elevations(id)"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "lots",
+      "name": "lots_house_plan_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (house_plan_id) REFERENCES house_plans(id)"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "lots",
+      "name": "lots_house_plan_version_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (house_plan_version_id) REFERENCES house_plan_versions(id)"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "lots",
+      "name": "lots_org_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "lots",
+      "name": "lots_project_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "lots",
+      "name": "lots_takedown_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (takedown_id) REFERENCES lot_takedowns(id) ON DELETE SET NULL"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "project_members",
+      "name": "project_members_org_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "project_members",
+      "name": "project_members_project_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "project_members",
+      "name": "project_members_role_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (role_id) REFERENCES roles(id)"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "project_members",
+      "name": "project_members_user_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (user_id) REFERENCES app_users(id) ON DELETE CASCADE"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "schedule_assignments",
+      "name": "schedule_assignments_company_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE SET NULL"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "schedule_assignments",
+      "name": "schedule_assignments_contact_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE SET NULL"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "schedule_assignments",
+      "name": "schedule_assignments_org_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "schedule_assignments",
+      "name": "schedule_assignments_project_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "schedule_assignments",
+      "name": "schedule_assignments_schedule_item_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (schedule_item_id) REFERENCES schedule_items(id) ON DELETE CASCADE"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "schedule_assignments",
+      "name": "schedule_assignments_user_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (user_id) REFERENCES app_users(id) ON DELETE SET NULL"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "schedule_items",
+      "name": "schedule_items_assigned_to_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (assigned_to) REFERENCES app_users(id)"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "schedule_items",
+      "name": "schedule_items_cost_code_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (cost_code_id) REFERENCES cost_codes(id) ON DELETE SET NULL"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "schedule_items",
+      "name": "schedule_items_inspected_by_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (inspected_by) REFERENCES app_users(id)"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "schedule_items",
+      "name": "schedule_items_org_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (org_id) REFERENCES orgs(id) ON DELETE CASCADE"
+      }
+    },
+    {
+      "kind": "foreign_key",
+      "relation": "schedule_items",
+      "name": "schedule_items_project_id_fkey",
+      "detail": {
+        "definition": "FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE"
+      }
+    },
+    {
+      "kind": "policy",
+      "relation": "commitment_lines",
+      "name": "commitment_lines_access",
+      "detail": {
+        "check": "((( SELECT auth.role() AS role) = 'service_role'::text) OR (is_org_member(org_id) AND (EXISTS ( SELECT 1\n   FROM commitments c\n  WHERE ((c.id = commitment_lines.commitment_id) AND (c.org_id = commitment_lines.org_id) AND ((c.project_id IS NULL) OR is_project_member(c.project_id) OR is_org_admin_member(commitment_lines.org_id)))))))",
+        "roles": [
+          "public"
+        ],
+        "using": "((( SELECT auth.role() AS role) = 'service_role'::text) OR (is_org_member(org_id) AND (EXISTS ( SELECT 1\n   FROM commitments c\n  WHERE ((c.id = commitment_lines.commitment_id) AND (c.org_id = commitment_lines.org_id) AND ((c.project_id IS NULL) OR is_project_member(c.project_id) OR is_org_admin_member(commitment_lines.org_id)))))))",
+        "command": "ALL"
+      }
+    },
+    {
+      "kind": "policy",
+      "relation": "commitments",
+      "name": "commitments_access",
+      "detail": {
+        "check": "((( SELECT auth.role() AS role) = 'service_role'::text) OR (is_org_member(org_id) AND ((project_id IS NULL) OR is_project_member(project_id) OR is_org_admin_member(org_id))))",
+        "roles": [
+          "public"
+        ],
+        "using": "((( SELECT auth.role() AS role) = 'service_role'::text) OR (is_org_member(org_id) AND ((project_id IS NULL) OR is_project_member(project_id) OR is_org_admin_member(org_id))))",
+        "command": "ALL"
+      }
+    },
+    {
+      "kind": "policy",
+      "relation": "projects",
+      "name": "projects_access",
+      "detail": {
+        "check": "((( SELECT auth.role() AS role) = 'service_role'::text) OR is_org_member(org_id))",
+        "roles": [
+          "public"
+        ],
+        "using": "((( SELECT auth.role() AS role) = 'service_role'::text) OR is_org_member(org_id))",
+        "command": "ALL"
+      }
+    },
+    {
+      "kind": "policy",
+      "relation": "schedule_assignments",
+      "name": "schedule_assignments_access",
+      "detail": {
+        "check": "((( SELECT auth.role() AS role) = 'service_role'::text) OR is_org_member(org_id))",
+        "roles": [
+          "public"
+        ],
+        "using": "((( SELECT auth.role() AS role) = 'service_role'::text) OR is_org_member(org_id))",
+        "command": "ALL"
+      }
+    },
+    {
+      "kind": "policy",
+      "relation": "schedule_items",
+      "name": "schedule_items_access",
+      "detail": {
+        "check": "((( SELECT auth.role() AS role) = 'service_role'::text) OR (is_org_member(org_id) AND ((project_id IS NULL) OR is_project_member(project_id) OR is_org_admin_member(org_id))))",
+        "roles": [
+          "public"
+        ],
+        "using": "((( SELECT auth.role() AS role) = 'service_role'::text) OR (is_org_member(org_id) AND ((project_id IS NULL) OR is_project_member(project_id) OR is_org_admin_member(org_id))))",
+        "command": "ALL"
+      }
+    }
+  ]
+}

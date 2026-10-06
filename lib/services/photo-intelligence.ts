@@ -96,7 +96,7 @@ export async function processPhotoCaption(photoId: string, orgId: string) {
   if (file.mime_type?.startsWith("video/")) return photo
   const bytes = await downloadFilesObject({ supabase, orgId, path: file.storage_path })
   const result = await runAiObject({
-    feature: "document_extraction",
+    feature: "photo_analysis",
     schema: captionSchema,
     system:
       "You caption construction progress photos factually. Describe only what is visible; never infer " +

@@ -1087,9 +1087,10 @@ export async function listOrgExternalAccess(
 }
 
 /**
- * Removes one person from every project in the org. Loops the per-token revoke
- * rather than doing a bulk update so each access record still gets its own
- * grant cascade, event and audit entry.
+ * Revokes the supplied access records through the canonical per-token revoke,
+ * including each grant cascade, event and audit entry. The caller's token set
+ * may be incomplete and this loop can partially succeed; this is not an atomic
+ * person-wide removal contract.
  */
 export async function revokeOrgExternalPersonAccess({
   tokenIds,

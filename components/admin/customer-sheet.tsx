@@ -1,5 +1,6 @@
 "use client"
 
+import { useRouter } from "next/navigation"
 import { useState, useTransition } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
@@ -68,6 +69,7 @@ interface CustomerSheetProps {
 }
 
 export function CustomerSheet({ customer, open, onOpenChange, onUpdateCustomer }: CustomerSheetProps) {
+  const router = useRouter()
   const [activeTab, setActiveTab] = useState("details")
   const [editMode, setEditMode] = useState(false)
   const [editedName, setEditedName] = useState("")
@@ -107,7 +109,7 @@ export function CustomerSheet({ customer, open, onOpenChange, onUpdateCustomer }
         await onUpdateCustomer(formData)
         toast.success("Organization updated")
         setEditMode(false)
-        window.location.reload()
+        router.refresh()
       } catch (error: any) {
         console.error(error)
         toast.error("Failed to update organization", {

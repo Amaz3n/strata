@@ -9,11 +9,11 @@ import { revalidatePath } from "next/cache"
 import { z } from "zod"
 
 import { requireAuth } from "@/lib/auth/context"
-import { requireAnyPermission } from "@/lib/services/permissions"
+import { requireAnyPlatformPermission } from "@/lib/services/platform-access"
 import { retryAllFailedOutbox, retryOutboxItem } from "@/lib/services/ops"
 import { actionError, type ActionResult } from "@/lib/action-result"
 
-const OPS_PERMISSIONS = ["platform.support.write", "billing.manage"]
+const OPS_PERMISSIONS = ["platform.support.write"]
 
 const retryOutboxItemSchema = z.object({
   id: z.coerce.number().int().positive(),
@@ -22,7 +22,7 @@ const retryOutboxItemSchema = z.object({
 export async function retryOutboxItemAction(input: { id: number }): Promise<ActionResult<null>> {
   try {
     const { user } = await requireAuth()
-    await requireAnyPermission(OPS_PERMISSIONS, { userId: user.id })
+    await requireAnyPlatformPermission(OPS_PERMISSIONS)
     const { id } = retryOutboxItemSchema.parse(input)
     await retryOutboxItem(id, user.id)
     revalidatePath("/admin/ops")
@@ -35,7 +35,7 @@ export async function retryOutboxItemAction(input: { id: number }): Promise<Acti
 export async function retryAllFailedOutboxAction(): Promise<ActionResult<{ retried: number }>> {
   try {
     const { user } = await requireAuth()
-    await requireAnyPermission(OPS_PERMISSIONS, { userId: user.id })
+    await requireAnyPlatformPermission(OPS_PERMISSIONS)
     const retried = await retryAllFailedOutbox(user.id)
     revalidatePath("/admin/ops")
     return { success: true, data: { retried } }

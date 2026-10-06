@@ -96,7 +96,7 @@ interface ProjectSettingsSheetProps {
 }
 
 export function ProjectSettingsSheet({ project, contract, contacts = [], open, onOpenChange, onSave, initialStep = "details" }: ProjectSettingsSheetProps) {
-  const { productTier } = usePageTitle()
+  const { productTier, businessProfile } = usePageTitle()
   const initialLocation = useMemo(() => {
     const location = (project as any).location as Record<string, any> | undefined
     if (location) {
@@ -119,7 +119,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
   )
   const [propertyType, setPropertyType] = useState<Project["property_type"] | undefined>(project.property_type)
   const posture = getProjectPosture(propertyType, productTier)
-  const terms = terminology(posture)
+  const terms = terminology(posture, businessProfile)
   const [projectType, setProjectType] = useState<Project["project_type"] | undefined>(project.project_type)
   const [superintendentId, setSuperintendentId] = useState<string | null>(project.superintendent_id ?? null)
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([])

@@ -118,9 +118,9 @@ export function ScheduleView({
   projectId,
   focusItemId,
   items,
-  dependencies = [],
-  assignments = [],
-  baselines = [],
+  dependencies,
+  assignments,
+  baselines,
   onItemUpdate,
   onItemsBulkUpdate,
   onItemCreate,
@@ -131,6 +131,7 @@ export function ScheduleView({
 }: ScheduleViewProps) {
   return (
     <ScheduleProvider
+      key={projectId}
       initialItems={items}
       initialDependencies={dependencies}
       initialAssignments={assignments}

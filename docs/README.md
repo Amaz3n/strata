@@ -20,15 +20,21 @@ then the reference docs below.
 
 | Doc | What it covers |
 |---|---|
+| [`reference/arc-trade.md`](reference/arc-trade.md) | Trade workspace behavior, pilot setup, access boundaries, and acceptance checklist. |
+| [`reference/document-transfers.md`](reference/document-transfers.md) | Documents transfer recovery, mutations, exports, verification and pending rollout requirements. |
 | [`design.md`](design.md) | The design standard. Read before building any new surface. |
 | [`database-overview.md`](database-overview.md) | Schema reference. Live schema via Supabase MCP `list_tables` always wins. |
 | [`production-org-playbook.md`](production-org-playbook.md) | Role/surface map: who lives on which desk and what they mutate. |
 | [`books-revenue-recognition.md`](books-revenue-recognition.md) | Arc Books' full contract-lifecycle entry set, traced from the posting rules, with a worked percentage-of-completion example. **Carries the construction-CPA sign-off block that gates any org leaving `shadow` mode.** Read before changing anything in `lib/services/books/posting-rules.ts`. |
 | [`accounting-sync.md`](accounting-sync.md) | Provider boundaries, durable delivery/import, and the gated D2 release and acceptance process. |
 | [`mobile-api-v1.openapi.yaml`](mobile-api-v1.openapi.yaml) | Mobile API contract. Enforced by `pnpm test:mobile`. |
+| [`reference/pipeline.md`](reference/pipeline.md) | The one-screen pipeline: whose move it is, price firmness, the document that hardens from budget to agreement, client questions, and Start building. |
+| [`reference/drawings-workspace.md`](reference/drawings-workspace.md) | The modeless drawings workspace: item-first measuring, one-click room fill, the takeoff ledger and estimate handoff, and the 3D model as a view of the sheets. |
 | [`reference/payable-waivers.md`](reference/payable-waivers.md) | Incoming waiver preparation, review, payment/closeout integration, and migration/QA status. |
 | [`report-export-api.md`](report-export-api.md) | Report export route contract. |
 | [`repository-health.md`](repository-health.md) | Continuous reachability, deletion, dependency, and plan-lifecycle rules. |
+| [`automatic-area-takeoff.md`](automatic-area-takeoff.md) | Desktop auto-area preview, measurement contract, correction workflow, benchmark and outstanding accuracy gates. |
+| [`takeoff-evaluation.md`](takeoff-evaluation.md) | How takeoff and 3D recognition accuracy is measured: holdout/development split, tracing references and conventions, scoring tools, the frozen release protocol. |
 | [`takeoff-model.md`](takeoff-model.md) | The quantity model: reporting unit vs measured unit, axis factors, what counts and what deliberately does not, count by example. Read before touching `lib/drawings/measure.ts` or `lib/services/takeoff*.ts`. |
 | [`takeoff-reanchor-design.md`](takeoff-reanchor-design.md) | Revision re-anchoring state machine. Referenced from `lib/services/takeoff-reanchor.ts`. |
 | [`takeoff-vector-spike.md`](takeoff-vector-spike.md) | Vector-extraction spike verdict. Referenced from `lib/drawings/vector-snap.ts`. |

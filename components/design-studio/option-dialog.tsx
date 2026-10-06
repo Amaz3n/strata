@@ -1,5 +1,6 @@
 "use client"
 
+import { OptionConfigurationRules } from "./option-configuration-rules"
 import { useEffect, useState, useTransition } from "react"
 import { toast } from "sonner"
 
@@ -20,6 +21,12 @@ import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { OptionImageField, type OptionImage } from "@/components/design-studio/option-image-field"
+import {
+  OptionModelChanges,
+  modelChangeDrafts,
+  modelChangesFromDrafts,
+  type ModelChangeDraft,
+} from "@/components/design-studio/option-model-changes"
 
 interface Props {
   open: boolean
@@ -49,6 +56,7 @@ export function OptionDialog({
   const [isAvailable, setIsAvailable] = useState(true)
   const [scope, setScope] = useState<"design_studio" | "structural">("design_studio")
   const [image, setImage] = useState<OptionImage>({ fileId: null, url: null, fileName: null })
+  const [modelChanges, setModelChanges] = useState<ModelChangeDraft[]>([])
   const [pending, startTransition] = useTransition()
 
   useEffect(() => {
@@ -61,12 +69,17 @@ export function OptionDialog({
       url: option?.image_url ?? null,
       fileName: option?.image_url ? option.name : null,
     })
+    setModelChanges(modelChangeDrafts(option?.model_changes ?? []))
   }, [open, option])
 
   function save(formData: FormData) {
     const priceValue = Number(formData.get("price") ?? 0)
     const costValue = Number(formData.get("cost") ?? 0)
     const leadValue = String(formData.get("leadTimeDays") ?? "")
+    const changes = modelChangesFromDrafts(modelChanges)
+    // Sent only when there is something to store or clear, so an option with no
+    // model changes saves exactly as it did before the column existed.
+    const sendModelChanges = changes.length > 0 || (option?.model_changes.length ?? 0) > 0
     startTransition(async () => {
       try {
         unwrapAction(
@@ -87,6 +100,7 @@ export function OptionDialog({
             sortOrder: option?.sort_order ?? sortOrder,
             isAvailable,
             isStandard,
+            ...(sendModelChanges ? { modelChanges: changes } : {}),
           }),
         )
         onOpenChange(false)
@@ -102,7 +116,7 @@ export function OptionDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] overflow-y-auto rounded-none sm:max-w-lg">
+      <DialogContent className="max-h-[85vh] overflow-y-auto rounded-none sm:max-w-xl">
         <form action={save}>
           <DialogHeader>
             <DialogTitle>{option ? `Edit ${option.name}` : `Add an option to ${categoryName}`}</DialogTitle>
@@ -208,6 +222,8 @@ export function OptionDialog({
               <Switch id="option-available" checked={isAvailable} onCheckedChange={setIsAvailable} />
             </div>
           </div>
+          <OptionModelChanges value={modelChanges} onChange={setModelChanges} disabled={pending} />
+          {option && <OptionConfigurationRules key={option.id} optionId={option.id} />}
           <DialogFooter>
             <Button type="submit" disabled={pending} className="rounded-none">
               {option ? "Save option" : "Add option"}

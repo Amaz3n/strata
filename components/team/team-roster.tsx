@@ -266,6 +266,15 @@ export function TeamRoster({
           : { key, dir: "asc" },
     }))
 
+  const toggleRow = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+
+
   // ---- keyboard ------------------------------------------------------------
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -340,13 +349,6 @@ export function TeamRoster({
   }, [])
 
   // ---- selection -----------------------------------------------------------
-  const toggleRow = (id: string) =>
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
 
   const visibleIds = capped.map((member) => member.id)
   const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selected.has(id))

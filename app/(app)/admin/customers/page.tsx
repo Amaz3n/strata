@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -51,7 +52,8 @@ async function CustomersPageContent({
 }: {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>
 }) {
-  await requireAnyPermissionGuard(["billing.manage", "platform.billing.manage"])
+  await connection()
+  await requireAnyPermissionGuard(["platform.billing.manage"])
   const params = await searchParams
 
   const search = typeof params.search === 'string' ? params.search : ''
@@ -110,7 +112,17 @@ async function CustomersPageContent({
 
 export default function CustomersPage(props: Parameters<typeof CustomersPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={
+      <PageLayout
+      title="Customer Management"
+      breadcrumbs={[
+        { label: "Admin", href: "/admin" },
+        { label: "Customer Management" }
+      ]}
+    >
+        <PageLoadingSkeleton />
+      </PageLayout>
+    }>
       <CustomersPageContent {...props} />
     </Suspense>
   )

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import { Document, Page } from "react-pdf"
 import { ChevronLeft, ChevronRight, FileWarning, Loader2 } from "lucide-react"
 import { configurePdfWorker } from "@/lib/pdf/worker"
@@ -11,8 +11,11 @@ import { cn } from "@/lib/utils"
 configurePdfWorker()
 const OPTIONS = { isEvalSupported: false }
 
-export function WaiverPdfPreview({ url, fields = [], activeField, selectedId, onPlace, onSelect, onChange, onReady }: {
-  url: string; fields?: WaiverPlacement[]; activeField?: WaiverFieldKey | null; selectedId?: string | null;
+export function PdfDocumentPreview({ url, fields = [], activeField, selectedId, onPlace, onSelect, onChange, onReady, toolbar, renderOverlay, onPageCount, resetPageOnUrlChange = true }: {
+  onPageCount?: (count: number) => void;
+  resetPageOnUrlChange?: boolean;
+  renderOverlay?: (pageIndex: number) => ReactNode;
+  toolbar?: ReactNode; url: string; fields?: WaiverPlacement[]; activeField?: WaiverFieldKey | null; selectedId?: string | null;
   onPlace?: (key: WaiverFieldKey, page: number, x: number, y: number) => void;
   onSelect?: (id: string) => void; onChange?: (field: WaiverPlacement) => void; onReady?: () => void;
 }) {
@@ -24,14 +27,18 @@ export function WaiverPdfPreview({ url, fields = [], activeField, selectedId, on
   useEffect(() => {
     const node = container.current
     if (!node) return
-    const observer = new ResizeObserver(([entry]) => setWidth(Math.max(160, Math.min(760, entry.contentRect.width - 40))))
+    const observer = new ResizeObserver(([entry]) => {
+      // A retained composer pane reports zero width while hidden. Keep the last
+      // page size so switching steps does not render a miniature PDF first.
+      if (entry.contentRect.width > 0) setWidth(Math.max(160, Math.min(760, entry.contentRect.width - 40)))
+    })
     observer.observe(node)
     return () => observer.disconnect()
   }, [])
-  useEffect(() => { setPage(1); setError(false) }, [url])
+  useEffect(() => { if(resetPageOnUrlChange)setPage(1); setError(false) }, [url, resetPageOnUrlChange])
   return <div className="flex min-h-0 flex-1 flex-col bg-muted/35" ref={container}>
-    <div className="flex h-11 shrink-0 items-center justify-between border-b px-4 text-xs text-muted-foreground">
-      <span>{onPlace ? "Place fields on your original form" : "Document preview"}</span>
+    <div className="flex h-14 shrink-0 items-center justify-between border-b px-4 text-xs text-muted-foreground">
+      {toolbar ?? <span>{onPlace ? "Place fields on your original form" : "Document"}</span>}
       <div className="flex items-center gap-1">
         <Button size="icon" variant="ghost" className="size-7" aria-label="Previous page" disabled={page <= 1} onClick={() => setPage((n) => n - 1)}><ChevronLeft className="size-3.5" /></Button>
         <span className="min-w-12 text-center tabular-nums">{page} / {pages || "–"}</span>
@@ -40,7 +47,7 @@ export function WaiverPdfPreview({ url, fields = [], activeField, selectedId, on
     </div>
     <div className="min-h-0 flex-1 overflow-auto p-5">
       {error ? <div role="alert" className="mx-auto flex max-w-xs flex-col items-center gap-3 py-16 text-center text-sm text-muted-foreground"><FileWarning className="size-7" /><p>This PDF could not be previewed. Try an unlocked PDF.</p><a className="underline" href={url} target="_blank" rel="noreferrer">Open document</a></div> :
-        <Document file={url} options={OPTIONS} onLoadSuccess={({ numPages }) => setPages(numPages)} onLoadError={() => setError(true)}
+        <Document file={url} options={OPTIONS} onLoadSuccess={({ numPages }) => {setPages(numPages);setPage(p=>Math.min(p,numPages));onPageCount?.(numPages);}} onLoadError={() => setError(true)}
           loading={<div className="flex justify-center py-24" role="status"><Loader2 className="size-5 animate-spin motion-reduce:animate-none" /><span className="sr-only">Loading document</span></div>}>
           <div className={cn("relative mx-auto w-fit overflow-hidden bg-white shadow-sm", activeField && "cursor-crosshair")}
             onClick={(event) => {
@@ -49,6 +56,7 @@ export function WaiverPdfPreview({ url, fields = [], activeField, selectedId, on
               onPlace(activeField, page - 1, (event.clientX - box.left) / box.width, (event.clientY - box.top) / box.height)
             }}>
             <Page pageNumber={page} width={width} renderTextLayer={false} renderAnnotationLayer={false} onRenderSuccess={onReady} onRenderError={() => setError(true)} />
+            {renderOverlay?.(page - 1)}
             {fields.filter((f) => f.page === page - 1).map((field) => <button key={field.id} type="button"
               aria-label={`${WAIVER_FIELDS[field.key]}. Arrow keys move the field.`}
               onClick={(event) => { event.stopPropagation(); onSelect?.(field.id) }}
@@ -68,3 +76,6 @@ export function WaiverPdfPreview({ url, fields = [], activeField, selectedId, on
     </div>
   </div>
 }
+
+// Compatibility for the preparation and template-placement surfaces.
+export const WaiverPdfPreview = PdfDocumentPreview

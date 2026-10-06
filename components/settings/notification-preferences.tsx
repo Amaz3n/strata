@@ -1,14 +1,13 @@
 'use client'
 
-import { useCallback, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Skeleton } from '@/components/ui/skeleton'
-import { SettingsError, SettingsGroup, SettingsToggle } from '@/components/settings/settings-section'
+import { SettingsGroup, SettingsToggle } from '@/components/settings/settings-section'
 import { useUser } from '@/lib/auth/client'
-import { getNotificationPreferencesAction, updateNotificationPreferencesAction } from '@/app/(app)/settings/actions'
+import { type getNotificationPreferencesAction, updateNotificationPreferencesAction } from '@/app/(app)/settings/actions'
 import { unwrapAction } from '@/lib/action-result'
 import {
   EMAIL_NOTIFICATION_TYPES,
@@ -40,36 +39,33 @@ type Snapshot = {
   emailTypeSettings: EmailNotificationTypeSettings
 }
 
+function preferencesSnapshot(preferences: Awaited<ReturnType<typeof getNotificationPreferencesAction>>): Snapshot {
+  return {
+    emailEnabled: preferences.email_enabled !== false,
+    weeklySnapshotEnabled: preferences.weekly_snapshot_enabled === true,
+    emailTypeSettings: { ...DEFAULT_EMAIL_TYPE_SETTINGS, ...preferences.email_type_settings },
+  }
+}
+
 export function NotificationPreferences({ initialPreferences }: { initialPreferences: Awaited<ReturnType<typeof getNotificationPreferencesAction>> }) {
-  const [emailEnabled, setEmailEnabled] = useState(initialPreferences.email_enabled !== false)
-  const [weeklySnapshotEnabled, setWeeklySnapshotEnabled] = useState(initialPreferences.weekly_snapshot_enabled === true)
-  const [emailTypeSettings, setEmailTypeSettings] = useState<EmailNotificationTypeSettings>({ ...DEFAULT_EMAIL_TYPE_SETTINGS, ...initialPreferences.email_type_settings })
-  const [isLoading, setIsLoading] = useState(false)
+  const [state, setState] = useState({ source: initialPreferences, snapshot: preferencesSnapshot(initialPreferences) })
+  if (state.source !== initialPreferences) {
+    setState({ source: initialPreferences, snapshot: preferencesSnapshot(initialPreferences) })
+  }
+  const { emailEnabled, weeklySnapshotEnabled, emailTypeSettings } = state.snapshot
   const [isSaving, setIsSaving] = useState(false)
-  const [loadError, setLoadError] = useState(false)
   const [query, setQuery] = useState('')
   const { user } = useUser()
-
-  const loadPreferences = useCallback(async () => {
-    setIsLoading(true)
-    setLoadError(false)
-    try {
-      const prefs = await getNotificationPreferencesAction()
-      setEmailEnabled(prefs.email_enabled !== false)
-      setWeeklySnapshotEnabled(prefs.weekly_snapshot_enabled === true)
-      setEmailTypeSettings({
-        ...DEFAULT_EMAIL_TYPE_SETTINGS,
-        ...(prefs.email_type_settings ?? {}),
-      } as EmailNotificationTypeSettings)
-      return true
-    } catch (error) {
-      console.error('Failed to load notification preferences:', error)
-      setLoadError(true)
-      return false
-    } finally {
-      setIsLoading(false)
-    }
+  const mounted = useRef(false)
+  const inFlight = useRef(false)
+  const currentSource = useRef(initialPreferences)
+  const currentActor = useRef(user?.id)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
   }, [])
+  useEffect(() => { currentSource.current = initialPreferences }, [initialPreferences])
+  useEffect(() => { currentActor.current = user?.id }, [user?.id])
 
   const normalizedQuery = query.trim().toLowerCase()
   const visibleGroups = useMemo(() => {
@@ -85,106 +81,51 @@ export function NotificationPreferences({ initialPreferences }: { initialPrefere
   // Every toggle persists the full preference object. On failure we restore the snapshot
   // taken before the optimistic update, so the switch never lies about what's saved.
   const persist = async (next: Snapshot, previous: Snapshot) => {
-    if (!user) return
+    if (!mounted.current || !user || inFlight.current) return
+    inFlight.current = true
     setIsSaving(true)
+    setState((current) => ({ ...current, snapshot: next }))
     try {
-      unwrapAction(
-        await updateNotificationPreferencesAction({
-          emailEnabled: next.emailEnabled,
-          weeklySnapshotEnabled: next.weeklySnapshotEnabled,
-          emailTypeSettings: next.emailTypeSettings,
-        }),
-      )
+      const result = await updateNotificationPreferencesAction(next)
+      if (!mounted.current || currentSource.current !== initialPreferences || currentActor.current !== user.id) return
+      unwrapAction(result)
     } catch (error) {
+      if (!mounted.current || currentSource.current !== initialPreferences || currentActor.current !== user.id) return
       console.error('Failed to save notification preferences:', error)
       toast.error('Could not save that change', { description: 'We put the setting back the way it was.' })
-      setEmailEnabled(previous.emailEnabled)
-      setWeeklySnapshotEnabled(previous.weeklySnapshotEnabled)
-      setEmailTypeSettings(previous.emailTypeSettings)
+      setState((current) => current.source === initialPreferences
+        ? { ...current, snapshot: previous }
+        : current)
     } finally {
-      setIsSaving(false)
+      inFlight.current = false
+      if (mounted.current) setIsSaving(false)
     }
   }
 
-  const snapshot = (): Snapshot => ({ emailEnabled, weeklySnapshotEnabled, emailTypeSettings })
-
   const handleEmailChange = (checked: boolean) => {
-    const previous = snapshot()
     // Turning the master switch off also parks the digest; keep the per-type choices intact.
-    const nextWeekly = checked ? weeklySnapshotEnabled : false
-    setEmailEnabled(checked)
-    setWeeklySnapshotEnabled(nextWeekly)
-    void persist({ emailEnabled: checked, weeklySnapshotEnabled: nextWeekly, emailTypeSettings }, previous)
+    void persist({ ...state.snapshot, emailEnabled: checked, weeklySnapshotEnabled: checked ? weeklySnapshotEnabled : false }, state.snapshot)
   }
 
   const handleWeeklySnapshotChange = (checked: boolean) => {
-    const previous = snapshot()
-    setWeeklySnapshotEnabled(checked)
-    void persist({ emailEnabled, weeklySnapshotEnabled: checked, emailTypeSettings }, previous)
+    if (!emailEnabled) return
+    void persist({ ...state.snapshot, weeklySnapshotEnabled: checked }, state.snapshot)
   }
 
   const handleEmailTypeChange = (key: EmailNotificationType, checked: boolean) => {
-    const previous = snapshot()
-    const nextTypes = { ...emailTypeSettings, [key]: checked }
-    setEmailTypeSettings(nextTypes)
-    void persist({ emailEnabled, weeklySnapshotEnabled, emailTypeSettings: nextTypes }, previous)
+    if (!emailEnabled) return
+    void persist({ ...state.snapshot, emailTypeSettings: { ...emailTypeSettings, [key]: checked } }, state.snapshot)
   }
 
   const setGroup = (keys: readonly EmailNotificationType[], checked: boolean) => {
-    const previous = snapshot()
+    if (!emailEnabled) return
     const nextTypes = { ...emailTypeSettings }
     for (const key of keys) nextTypes[key] = checked
-    setEmailTypeSettings(nextTypes)
-    void persist({ emailEnabled, weeklySnapshotEnabled, emailTypeSettings: nextTypes }, previous)
-  }
-
-  if (isLoading) {
-    return (
-      <div className={containerClass} aria-busy>
-        <div>
-          <Skeleton className="h-3 w-16 rounded-none" />
-          <div className="mt-2 border-t border-border py-4">
-            <Skeleton className="h-4 w-44 rounded-none" />
-            <Skeleton className="mt-2 h-3 w-full max-w-md rounded-none" />
-          </div>
-        </div>
-        <Skeleton className="h-9 w-full rounded-none" />
-        {[4, 6, 5].map((rows, groupIndex) => (
-          <div key={groupIndex}>
-            <Skeleton className="h-3 w-40 rounded-none" />
-            <Skeleton className="mt-1.5 h-3 w-64 rounded-none" />
-            <div className="mt-3 divide-y divide-border border-t border-border">
-              {Array.from({ length: rows }).map((_, rowIndex) => (
-                <div key={rowIndex} className="flex items-start justify-between gap-6 py-4">
-                  <div className="min-w-0 flex-1 space-y-2">
-                    <Skeleton className="h-4 w-40 rounded-none" />
-                    <Skeleton className="h-3 w-full max-w-md rounded-none" />
-                  </div>
-                  <Skeleton className="h-5 w-9 shrink-0 rounded-full" />
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-    )
-  }
-
-  if (loadError) {
-    return (
-      <div className={containerClass}>
-        <div className="flex flex-col items-start gap-3 border border-border bg-muted/20 px-4 py-6">
-          <SettingsError>We couldn&rsquo;t load your notification preferences.</SettingsError>
-          <Button variant="outline" size="sm" onClick={() => void loadPreferences()}>
-            Try again
-          </Button>
-        </div>
-      </div>
-    )
+    void persist({ ...state.snapshot, emailTypeSettings: nextTypes }, state.snapshot)
   }
 
   const enabledCount = EMAIL_NOTIFICATION_TYPES.filter((type) => emailTypeSettings[type.key] !== false).length
-  const activityDisabled = isSaving || !emailEnabled
+  const activityDisabled = isSaving || !user || !emailEnabled
 
   return (
     <div className={containerClass}>
@@ -195,7 +136,7 @@ export function NotificationPreferences({ initialPreferences }: { initialPrefere
           description="The master switch for every email Arc sends you from workspace activity. Turn it off to pause them all — in-app notifications keep coming."
           checked={emailEnabled}
           onCheckedChange={handleEmailChange}
-          disabled={isSaving}
+          disabled={isSaving || !user}
         />
       </SettingsGroup>
 

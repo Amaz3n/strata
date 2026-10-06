@@ -332,7 +332,7 @@ export async function voidPendingInvoiceLienWaiversWithClient(
 ): Promise<number> {
   const { data, error } = await supabase
     .from("invoice_lien_waivers")
-    .update({ status: "void" })
+    .update({ status: "void", updated_at: new Date().toISOString() })
     .eq("org_id", orgId)
     .eq("invoice_id", invoiceId)
     .eq("status", "pending_payment")

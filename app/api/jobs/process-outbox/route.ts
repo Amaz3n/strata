@@ -1,3 +1,8 @@
+import { finalizeDocumentSigning } from "@/lib/services/esign-execution"
+import { deliverSigningInvitation, deliverAutomaticSigningReminder } from "@/lib/services/signature-delivery"
+import { processFileBlobCleanup } from "@/lib/services/file-versions"
+import { processDocumentExport, processDocumentExportCleanup } from "@/lib/services/document-exports"
+import { processDocumentTransferCleanup } from "@/lib/services/document-upload-transfers"
 import { finishPayApplicationCertification } from "@/lib/services/pay-applications"
 import { NextRequest, NextResponse } from "next/server"
 
@@ -29,7 +34,8 @@ import { enrollProjectWarrantyCoverageFromSystem } from "@/lib/services/warranty
 import { reanchorRevisionMeasurements } from "@/lib/services/takeoff-reanchor"
 import { isEmailNotificationTypeEnabled } from "@/lib/services/notifications"
 import { deliverNotificationEmail } from "@/lib/services/notification-email-delivery"
-import { isApnsConfigured, sendApnsNotification } from "@/lib/services/apns"
+import { deliverNotificationPush } from "@/lib/services/notification-push-delivery"
+import { notificationDeliveryContext } from "@/lib/services/notification-delivery-authorization"
 import { buildDrawingsTilesBaseUrl } from "@/lib/storage/drawings-urls"
 import {
   deleteTilesObjects,
@@ -129,11 +135,18 @@ const OUTBOX_JOB_TYPES = [
   "deliver_push",
   "send_daily_log_mention_email",
   "send_esign_executed_email",
+  "send_esign_invitation",
+  "send_esign_reminder",
+  "finalize_document_signing",
   "send_bid_email",
   "process_esign_execution_side_effects",
   "refresh_drawing_sheets_list",
   "index_file",
   "generate_file_preview",
+  "delete_file_blob",
+  "export_documents",
+  "cleanup_document_export",
+  "cleanup_document_transfer",
   "reindex_search",
   "remove_search_index",
   "process_inbound_bill_email",
@@ -528,9 +541,15 @@ async function processOutboxQueue(request: NextRequest) {
       } else if (job.job_type === "deliver_notification") {
         await deliverNotificationJob(supabase, job)
       } else if (job.job_type === "deliver_push") {
-        await deliverPushJob(supabase, job)
+        await deliverNotificationPush(supabase, job)
       } else if (job.job_type === "send_daily_log_mention_email") {
         await sendDailyLogMentionEmailJob(supabase, job)
+      } else if (job.job_type === "finalize_document_signing") {
+        await finalizeDocumentSigning(job.org_id, job.payload.signing_request_id)
+      } else if (job.job_type === "send_esign_invitation") {
+        await deliverSigningInvitation({ orgId: job.org_id, requestId: job.payload.signing_request_id })
+      } else if (job.job_type === "send_esign_reminder") {
+        await deliverAutomaticSigningReminder({ orgId: job.org_id, requestId: job.payload.signing_request_id, deliveryKey: job.payload.delivery_key })
       } else if (job.job_type === "send_esign_executed_email") {
         await sendESignExecutedEmailJob(supabase, job)
       } else if (job.job_type === "send_bid_email") {
@@ -541,6 +560,14 @@ async function processOutboxQueue(request: NextRequest) {
         await refreshDrawingSheetsListJob(supabase)
       } else if (job.job_type === "index_file") {
         await indexFileJob(supabase, job)
+      } else if (job.job_type === "delete_file_blob") {
+        await processFileBlobCleanup(job.org_id, job.payload ?? {})
+      } else if (job.job_type === "export_documents") {
+        await processDocumentExport(job.org_id, job.payload ?? {}, (job.retry_count ?? 0) + 1 >= MAX_RETRIES)
+      } else if (job.job_type === "cleanup_document_export") {
+        await processDocumentExportCleanup(job.org_id, job.payload ?? {})
+      } else if (job.job_type === "cleanup_document_transfer") {
+        await processDocumentTransferCleanup(job.org_id, job.payload ?? {})
       } else if (job.job_type === "generate_file_preview") {
         await generateFilePreviewJob(supabase, job)
       } else if (job.job_type === "reindex_search") {
@@ -621,7 +648,7 @@ async function processOutboxQueue(request: NextRequest) {
       } else if (job.job_type === FLOORPLAN_INTERPRET_JOB) {
         const target = floorplanTargetSchema.safeParse(job.payload?.target)
         if (!target.success) throw new Error("Floorplan interpretation has no valid target")
-        await runFloorplanInterpretation({ orgId: job.org_id, target: target.data })
+        await runFloorplanInterpretation({ orgId: job.org_id, target: target.data, generationId: typeof job.payload?.generationId === "string" ? job.payload.generationId : undefined })
       } else {
         await supabase
           .from("outbox")
@@ -709,53 +736,6 @@ async function processOutboxQueue(request: NextRequest) {
 export const GET = withCronRun("process-outbox", handleGet)
 export const POST = withCronRun("process-outbox", processOutboxQueue)
 
-async function deliverPushJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
-  if (!isApnsConfigured()) return // env-gated: nothing to do until APNs is configured
-
-  const payload = job.payload ?? {}
-  const notificationId =
-    (typeof payload.notificationId === "string" ? payload.notificationId : null) ??
-    (typeof payload.notification_id === "string" ? payload.notification_id : null)
-  if (!notificationId) throw new Error("Missing notificationId")
-
-  const { data: notification, error: notifError } = await supabase
-    .from("notifications")
-    .select("id, org_id, user_id, notification_type, payload")
-    .eq("id", notificationId)
-    .maybeSingle()
-  if (notifError || !notification) throw new Error(`Notification not found (${notifError?.message ?? "unknown error"})`)
-
-  const { data: tokens } = await supabase
-    .from("device_tokens")
-    .select("id, token")
-    .eq("user_id", notification.user_id)
-  if (!tokens?.length) return
-
-  const nPayload = (notification.payload ?? {}) as any
-  const title = typeof nPayload.title === "string" ? nPayload.title : "Arc"
-  const body = typeof nPayload.message === "string" ? nPayload.message : ""
-
-  const staleTokenIds: string[] = []
-  for (const row of tokens as Array<{ id: string; token: string }>) {
-    const result = await sendApnsNotification({
-      deviceToken: row.token,
-      title,
-      body,
-      data: {
-        notification_id: notification.id,
-        type: notification.notification_type,
-        project_id: typeof nPayload.project_id === "string" ? nPayload.project_id : undefined,
-      },
-    })
-    if (result.unregistered) staleTokenIds.push(row.id)
-  }
-
-  // Prune tokens Apple reports as no longer valid so the table stays clean.
-  if (staleTokenIds.length) {
-    await supabase.from("device_tokens").delete().in("id", staleTokenIds)
-  }
-}
-
 async function deliverNotificationJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
   const payload = job.payload ?? {}
   const notificationId =
@@ -766,7 +746,7 @@ async function deliverNotificationJob(supabase: ReturnType<typeof createServiceS
     throw new Error("Missing notificationId")
   }
 
-  await deliverNotificationEmail(notificationId, supabase)
+  await deliverNotificationEmail(notificationId, job.org_id, supabase, notificationDeliveryContext(job))
 }
 
 async function sendDailyLogMentionEmailJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
@@ -888,8 +868,9 @@ async function sendESignExecutedEmailJob(supabase: ReturnType<typeof createServi
     }),
   )
 
-  await sendEmail({
+  const delivered = await sendEmail({
     to: [recipientEmail],
+    idempotencyKey: `esign-copy-${file.id}-${recipientEmail.toLowerCase()}`,
     subject: `Document executed: ${documentTitle}`,
     html,
     from: getOrgSenderEmail(org?.slug, org?.name),
@@ -901,6 +882,7 @@ async function sendESignExecutedEmailJob(supabase: ReturnType<typeof createServi
       },
     ],
   })
+  if (!delivered) throw new Error("Executed copy delivery failed; retry required")
 }
 
 async function sendBidEmailJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
@@ -1115,7 +1097,13 @@ async function processESignExecutionSideEffectsJob(supabase: ReturnType<typeof c
       ? document.source_entity_id
       : (document.metadata?.estimate_id as string | undefined)
   if (estimateId) {
-    await executeEstimateFromEnvelopeExecution({
+    const { data: nativeSignatures, error: nativeError } = await supabase.from("document_signatures")
+      .select("signing_request_id,audit_data").eq("org_id",orgId).eq("document_id",documentId).eq("audit_data->>source","estimate_native_builder_signing").limit(1)
+    if(nativeError) throw new Error(nativeError.message)
+    if(nativeSignatures?.[0]) {
+      const { finalizeEstimateBuilderSignature } = await import("@/lib/services/estimate-portal")
+      await finalizeEstimateBuilderSignature({orgId,requestId:nativeSignatures[0].signing_request_id})
+    } else await executeEstimateFromEnvelopeExecution({
       orgId,
       estimateId,
       documentId,
@@ -1325,11 +1313,14 @@ async function indexFileJob(supabase: ReturnType<typeof createServiceSupabaseCli
     .from("files")
     .select("id, org_id, project_id, file_name, storage_path, mime_type, metadata, checksum")
     .eq("id", fileId)
+    .eq("org_id", job.org_id)
     .maybeSingle()
 
   if (error || !file) {
     throw new Error(`File not found (${error?.message ?? "unknown error"})`)
   }
+
+  if (payload.storagePath && payload.storagePath !== file.storage_path) return
 
   const bytes = await downloadFilesObject({
     supabase,
@@ -1352,31 +1343,27 @@ async function indexFileJob(supabase: ReturnType<typeof createServiceSupabaseCli
     extractionError = String(error?.message ?? error).slice(0, 500)
     console.warn("[index_file] Failed to extract file text", { fileId: file.id, error: extractionError })
   }
-  const metadata = file.metadata && typeof file.metadata === "object" ? file.metadata as Record<string, any> : {}
-
-  const { error: updateError } = await supabase
-    .from("files")
-    .update({
-      checksum: file.checksum ?? checksum,
-      metadata: {
-        ...metadata,
-        search: {
-          ...(metadata.search ?? {}),
-          extracted_text: extractedText,
-          extracted_at: new Date().toISOString(),
-          extraction_status: extractionStatus,
-          extraction_source: extractedText ? "embedded_text" : "none",
-          character_count: extractedText.length,
-          extraction_error: extractionError ?? null,
-        },
-      },
-    })
-    .eq("id", file.id)
+  const { data: applied, error: updateError } = await supabase.rpc("patch_document_artifact", {
+    p_org_id: job.org_id,
+    p_file_id: file.id,
+    p_storage_path: file.storage_path,
+    p_kind: "search",
+    p_checksum: checksum,
+    p_value: {
+      extracted_text: extractedText,
+      extracted_at: new Date().toISOString(),
+      extraction_status: extractionStatus,
+      extraction_source: extractedText ? "embedded_text" : "none",
+      character_count: extractedText.length,
+      extraction_error: extractionError ?? null,
+    },
+  })
 
   if (updateError) {
     throw new Error(`Failed to update file search metadata: ${updateError.message}`)
   }
 
+  if (!applied) return
   await reindexEntity({ orgId: file.org_id, entityType: "file", entityId: file.id }, supabase)
 }
 
@@ -1391,26 +1378,16 @@ async function generateFilePreviewJob(supabase: ReturnType<typeof createServiceS
     .from("files")
     .select("id, org_id, project_id, file_name, storage_path, mime_type, metadata, category")
     .eq("id", fileId)
+    .eq("org_id", job.org_id)
     .maybeSingle()
 
   if (error || !file) {
     throw new Error(`File not found (${error?.message ?? "unknown error"})`)
   }
 
-  const metadata = file.metadata && typeof file.metadata === "object" ? file.metadata as any : {}
-  await supabase
-    .from("files")
-    .update({
-      metadata: {
-        ...metadata,
-        preview: {
-          ...(metadata.preview ?? {}),
-          status: "processing",
-          started_at: new Date().toISOString(),
-        },
-      },
-    })
-    .eq("id", file.id)
+  if (payload.storagePath && payload.storagePath !== file.storage_path) return
+  await updateFilePreviewMetadata(supabase, file, { status: "processing", started_at: new Date().toISOString() })
+
 
   try {
     const mimeType = file.mime_type ?? "application/octet-stream"
@@ -1449,7 +1426,7 @@ async function generateFilePreviewJob(supabase: ReturnType<typeof createServiceS
         contentType: "text/html; charset=utf-8",
         cacheControl: "private, max-age=86400",
       })
-      await updateFilePreviewMetadata(supabase, file.id, metadata, {
+      await updateFilePreviewMetadata(supabase, file, {
         status: "ready",
         kind: "html",
         html_path: htmlPath,
@@ -1493,7 +1470,7 @@ async function generateFilePreviewJob(supabase: ReturnType<typeof createServiceS
         (entry) => entry.width === primary.width && entry.content_type === primary.contentType,
       )?.path
 
-      await updateFilePreviewMetadata(supabase, file.id, metadata, {
+      await updateFilePreviewMetadata(supabase, file, {
         status: "ready",
         thumbnail_path: primaryPath,
         width: previewSet.width,
@@ -1529,7 +1506,7 @@ async function generateFilePreviewJob(supabase: ReturnType<typeof createServiceS
         : null
 
     if (!preview) {
-      await updateFilePreviewMetadata(supabase, file.id, metadata, {
+      await updateFilePreviewMetadata(supabase, file, {
         status: "skipped",
         reason: "unsupported_type",
         mime_type: mimeType,
@@ -1548,7 +1525,7 @@ async function generateFilePreviewJob(supabase: ReturnType<typeof createServiceS
       cacheControl: "private, max-age=86400",
     })
 
-    await updateFilePreviewMetadata(supabase, file.id, metadata, {
+    await updateFilePreviewMetadata(supabase, file, {
       status: "ready",
       thumbnail_path: thumbnailPath,
       width: preview.width,
@@ -1557,7 +1534,7 @@ async function generateFilePreviewJob(supabase: ReturnType<typeof createServiceS
       generated_at: new Date().toISOString(),
     })
   } catch (error: any) {
-    await updateFilePreviewMetadata(supabase, file.id, metadata, {
+    await updateFilePreviewMetadata(supabase, file, {
       status: "failed",
       error: String(error?.message ?? error).slice(0, 500),
       failed_at: new Date().toISOString(),
@@ -1568,23 +1545,14 @@ async function generateFilePreviewJob(supabase: ReturnType<typeof createServiceS
 
 async function updateFilePreviewMetadata(
   supabase: ReturnType<typeof createServiceSupabaseClient>,
-  fileId: string,
-  existingMetadata: Record<string, any>,
-  preview: Record<string, any>
+  file: { id: string; org_id: string; storage_path: string },
+  preview: Record<string, unknown>,
 ) {
-  const { error } = await supabase
-    .from("files")
-    .update({
-      metadata: {
-        ...existingMetadata,
-        preview,
-      },
-    })
-    .eq("id", fileId)
-
-  if (error) {
-    throw new Error(`Failed to update preview metadata: ${error.message}`)
-  }
+  const { error } = await supabase.rpc("patch_document_artifact", {
+    p_org_id: file.org_id, p_file_id: file.id, p_storage_path: file.storage_path,
+    p_kind: "preview", p_value: preview,
+  })
+  if (error) throw new Error(`Failed to update preview metadata: ${error.message}`)
 }
 
 /** Ladder rungs, in CSS pixels: grid thumb, detail view, full-bleed. */

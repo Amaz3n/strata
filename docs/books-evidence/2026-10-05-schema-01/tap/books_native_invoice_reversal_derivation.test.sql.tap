@@ -1,0 +1,6 @@
+1..5
+ok 1 - anonymous clients cannot derive private native corrections
+ok 2 - browser roles cannot bypass authorized correction service
+ok 3 - server may derive native correction evidence
+ok 4 - native correction derivation retains INVOKER authority
+ok 5 - native correction helper pins its search path

@@ -1,3 +1,7 @@
+import { z } from "zod"
+import { isInspectionLifecycleEnabled, inspectionItemNeedsCorrection, inspectionReviewSource, inspectionCompletionResponseSchema, inspectionLifecycleInputSchema, inspectionLifecycleResponseSchema, inspectionObligationPageSchema } from "@/lib/inspections/lifecycle"
+import { requireAuthorization } from "@/lib/services/authorization"
+import { readAllRowsById } from "@/lib/land/paging"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
@@ -7,6 +11,7 @@ import { sendPunchDispatchEmail } from "@/lib/services/punch-lists"
 import { createObservation } from "@/lib/services/safety"
 import { resolveProjectLocation } from "@/lib/services/locations"
 import {
+  checklistTemplateActiveSchema,
   checklistTemplateInputSchema,
   createInspectionSchema,
   inspectionDeficiencyActionSchema,
@@ -59,6 +64,7 @@ export type Inspection = {
   company_name?: string | null
   schedule_item_id: string | null
   notes: string | null
+  metadata: Record<string, unknown>
   deficient_count?: number
   created_at: string
   updated_at: string
@@ -84,7 +90,7 @@ export type InspectionDetail = Inspection & { items: InspectionItem[] }
 const TEMPLATE_SELECT = "id, org_id, name, kind, trade, description, is_active, created_at, structured_form_items(count)"
 const TEMPLATE_ITEM_SELECT = "id, template_id, section, prompt, response_type, sort_order"
 const INSPECTION_SELECT =
-  "id, org_id, project_id, inspection_number, template_id, kind, title, status, result, inspected_at, inspector_user_id, inspector_name, location, location_id, company_id, schedule_item_id, notes, created_at, updated_at, company:companies(name)"
+  "id, org_id, project_id, inspection_number, template_id, kind, title, status, result, inspected_at, inspector_user_id, inspector_name, location, location_id, company_id, schedule_item_id, notes, metadata, created_at, updated_at, company:companies(name)"
 const ITEM_SELECT =
   "id, inspection_id, section, prompt, response_type, response, is_deficient, note, photo_file_id, punch_item_id, observation_id, sort_order"
 
@@ -212,15 +218,20 @@ export async function updateChecklistTemplate(templateId: string, input: Checkli
 }
 
 export async function setChecklistTemplateActive(templateId: string, isActive: boolean, orgId?: string): Promise<void> {
+  const parsed = checklistTemplateActiveSchema.parse({ templateId, isActive })
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("inspection.write", { supabase, orgId: resolvedOrgId, userId })
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("structured_form_templates")
-    .update({ is_active: isActive })
+    .update({ is_active: parsed.isActive })
     .eq("org_id", resolvedOrgId)
-    .eq("id", templateId)
-  if (error) throw new Error(`Failed to update checklist template: ${error.message}`)
-  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "checklist_template", entityId: templateId, after: { is_active: isActive } })
+    .eq("id", parsed.templateId)
+    .select("id,is_active")
+    .single()
+  if (error || !data || data.id !== parsed.templateId || data.is_active !== parsed.isActive) {
+    throw new Error("Checklist template unavailable or changed. Reload before retrying.")
+  }
+  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "checklist_template", entityId: data.id, after: { is_active: data.is_active } })
 }
 
 // ---------------------------------------------------------------------------
@@ -345,11 +356,14 @@ const STARTER_TEMPLATES: Array<{ name: string; kind: "safety" | "quality"; trade
 export async function seedChecklistTemplates(orgId?: string): Promise<number> {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
 
-  const { count } = await supabase
+  const { count, error: countError } = await supabase
     .from("structured_form_templates")
     .select("id", { count: "exact", head: true })
     .eq("org_id", resolvedOrgId)
-  if ((count ?? 0) > 0) return 0
+  if (countError || count === null || !Number.isSafeInteger(count) || count < 0) {
+    throw new Error("Unable to verify the checklist library before seeding. Try again after it reloads.")
+  }
+  if (count > 0) return 0
 
   for (const template of STARTER_TEMPLATES) {
     const { data: created, error } = await supabase
@@ -410,13 +424,21 @@ export async function listInspections(projectId: string, orgId?: string): Promis
 }
 
 export async function getInspection(inspectionId: string, orgId?: string): Promise<InspectionDetail> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
-  const [{ data: inspection, error }, { data: items }] = await Promise.all([
-    supabase.from("inspections").select(INSPECTION_SELECT).eq("org_id", resolvedOrgId).eq("id", inspectionId).single(),
-    supabase.from("inspection_items").select(ITEM_SELECT).eq("org_id", resolvedOrgId).eq("inspection_id", inspectionId).order("sort_order"),
-  ])
+  const context = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId } = context
+  const { data: inspection, error } = await supabase.from("inspections").select(INSPECTION_SELECT)
+    .eq("org_id", resolvedOrgId).eq("id", inspectionId).single()
   if (error || !inspection) throw new Error("Inspection not found")
-  return { ...mapInspection(inspection), items: (items ?? []) as InspectionItem[] }
+  await requireAuthorization({ ...context, permission: "project.read", projectId: inspection.project_id,
+    resourceType: "inspection", resourceId: inspectionId, logDecision: true })
+  const items = await readAllRowsById<InspectionItem>((afterId, limit) => {
+    let query = supabase.from("inspection_items").select(ITEM_SELECT).eq("org_id", resolvedOrgId)
+      .eq("inspection_id", inspectionId).order("id").limit(limit)
+    if (afterId) query = query.gt("id", afterId)
+    return query.returns<InspectionItem[]>()
+  }, { cap: 10_000, label: "Unable to read inspection checklist" })
+  items.sort((a, b) => a.sort_order - b.sort_order || a.id.localeCompare(b.id))
+  return { ...mapInspection(inspection), items }
 }
 
 /** The inspection linked to a scheduled Gantt slot, if one has been started. */
@@ -605,6 +627,10 @@ export async function updateInspectionItem(
     .eq("id", inspectionItemId)
     .maybeSingle()
   if (!existing) throw new Error("Inspection item not found")
+  const parent = await getInspection(existing.inspection_id, resolvedOrgId)
+  await requireAuthorization({ supabase, orgId: resolvedOrgId, userId, permission: "inspection.write",
+    projectId: parent.project_id, resourceType: "inspection", resourceId: parent.id, logDecision: true })
+  if (parent.status === "completed") throw new Error("Completed inspection evidence is read-only; record corrections in a new inspection")
 
   const updateData: Record<string, unknown> = {}
   if (parsed.response !== undefined) {
@@ -624,55 +650,63 @@ export async function updateInspectionItem(
     .update(updateData)
     .eq("org_id", resolvedOrgId)
     .eq("id", inspectionItemId)
+    .eq("inspection_id", parent.id)
     .select(ITEM_SELECT)
     .single()
   if (error || !data) throw new Error(`Failed to update inspection item: ${error?.message}`)
   return data as InspectionItem
 }
 
+async function completeInspectionScheduledWork(
+  detail: InspectionDetail,
+  context: Awaited<ReturnType<typeof requireOrgContext>>,
+) {
+  if (!detail.schedule_item_id || detail.result !== "pass") return
+  const { data, error } = await context.supabase.from("schedule_items")
+    .update({ status: "completed", progress: 100 }).eq("org_id", context.orgId)
+    .eq("project_id", detail.project_id).eq("id", detail.schedule_item_id)
+    .neq("status", "cancelled").select("id").single()
+  if (error || !data) throw new Error(`Inspection is recorded; retry scheduled work completion after resolving its home or status: ${error?.message ?? "Scheduled item unavailable"}`)
+}
+
 export async function completeInspection(inspectionId: string, orgId?: string): Promise<InspectionDetail> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("inspection.write", { supabase, orgId: resolvedOrgId, userId })
-
+  const context = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = context
+  await requirePermission("inspection.write", context)
   const detail = await getInspection(inspectionId, resolvedOrgId)
-  if (detail.status === "completed") return detail
-
+  await requireAuthorization({ ...context, permission: "inspection.write", projectId: detail.project_id,
+    resourceType: "inspection", resourceId: inspectionId, logDecision: true })
+  if (isInspectionLifecycleEnabled()) {
+    const { data, error } = await supabase.rpc("complete_inspection_attempt", {
+      p_org: resolvedOrgId, p_home: detail.project_id, p_id: inspectionId, p_actor: userId,
+      p_source: inspectionReviewSource(detail),
+    })
+    if (error) throw new Error(`Unable to complete inspection attempt: ${error.message}`)
+    const receipt = inspectionCompletionResponseSchema.parse(data)
+    if (receipt.inspectionId !== detail.id) throw new Error("Inspection completion returned another attempt")
+    return getInspection(inspectionId, resolvedOrgId)
+  }
   const answered = detail.items.filter((item) => item.response !== null && item.response !== "" && item.response !== "n/a")
-  const hasDeficiency = detail.items.some((item) => item.is_deficient)
+  const hasDeficiency = detail.items.some(inspectionItemNeedsCorrection)
   const result: "pass" | "fail" | "partial" = hasDeficiency
     ? "fail"
-    : answered.length < detail.items.length
-      ? "partial"
-      : "pass"
-
-  const { data, error } = await supabase
-    .from("inspections")
-    .update({ status: "completed", result, inspected_at: detail.inspected_at ?? new Date().toISOString() })
-    .eq("org_id", resolvedOrgId)
-    .eq("id", inspectionId)
-    .select(INSPECTION_SELECT)
-    .single()
-  if (error || !data) throw new Error(`Failed to complete inspection: ${error?.message}`)
-
-  // Completing the inspection checks off its scheduled slot on the Gantt.
-  if (detail.schedule_item_id) {
-    await supabase
-      .from("schedule_items")
-      .update({ status: "completed", progress: 100 })
-      .eq("org_id", resolvedOrgId)
-      .eq("id", detail.schedule_item_id)
+    : !detail.items.length || answered.length < detail.items.length ? "partial" : "pass"
+  if (detail.status === "completed") {
+    if (detail.result === "pass" && result !== "pass") throw new Error("Recorded inspection no longer matches its passing checklist; reconcile its evidence before advancing scheduled work")
+    await completeInspectionScheduledWork(detail, context)
+    return detail
   }
-
-  await recordEvent({
-    orgId: resolvedOrgId,
-    eventType: "inspection_completed",
-    entityType: "inspection",
-    entityId: inspectionId,
-    payload: { project_id: detail.project_id, kind: detail.kind, result, deficient_items: detail.items.filter((item) => item.is_deficient).length },
-  })
+  const { data, error } = await supabase.from("inspections")
+    .update({ status: "completed", result, inspected_at: detail.inspected_at ?? new Date().toISOString() })
+    .eq("org_id", resolvedOrgId).eq("project_id", detail.project_id).eq("id", inspectionId)
+    .eq("status", detail.status).select(INSPECTION_SELECT).single()
+  if (error || !data) throw new Error(`Failed to complete inspection: ${error?.message ?? "Inspection changed concurrently"}`)
+  const completed = { ...mapInspection(data), items: detail.items }
+  await recordEvent({ orgId: resolvedOrgId, eventType: "inspection_completed", entityType: "inspection", entityId: inspectionId,
+    payload: { project_id: detail.project_id, kind: detail.kind, result, deficient_items: detail.items.filter((item) => item.is_deficient).length } })
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "inspection", entityId: inspectionId, after: data })
-
-  return { ...mapInspection(data), items: detail.items }
+  await completeInspectionScheduledWork(completed, context)
+  return completed
 }
 
 /**
@@ -700,6 +734,10 @@ export async function createPunchItemFromInspectionItem(
 
   const inspection = Array.isArray(item.inspection) ? item.inspection[0] : item.inspection
   if (!inspection) throw new Error("Inspection not found")
+  const parent = await getInspection(item.inspection_id, resolvedOrgId)
+  await requireAuthorization({ supabase, orgId: resolvedOrgId, userId, permission: "inspection.write", projectId: parent.project_id, logDecision: true })
+  if (parent.id !== inspection.id || parent.project_id !== inspection.project_id) throw new Error("Inspection corrective work ancestry changed")
+  if (!inspectionItemNeedsCorrection(item)) throw new Error("Corrective punch work requires a deficient inspection item")
 
   const { data: punchItem, error } = await supabase
     .from("punch_items")
@@ -786,6 +824,9 @@ export async function createObservationFromInspectionItem(
 
   const inspection = Array.isArray(item.inspection) ? item.inspection[0] : item.inspection
   if (!inspection) throw new Error("Inspection not found")
+  const parent = await getInspection(item.inspection_id, resolvedOrgId)
+  await requireAuthorization({ supabase, orgId: resolvedOrgId, userId, permission: "inspection.write", projectId: parent.project_id, logDecision: true })
+  if (parent.id !== inspection.id || parent.project_id !== inspection.project_id) throw new Error("Inspection observation ancestry changed")
 
   const observation = await createObservation(
     {
@@ -811,4 +852,38 @@ export async function createObservationFromInspectionItem(
     .single()
   if (updateError || !updated) throw new Error(`Observation created but link failed: ${updateError?.message}`)
   return updated as InspectionItem
+}
+
+/** Original inspection owner; staged until its SQL and legacy writers are accepted. */
+export async function listInspectionObligations(projectId: string, after?: string, orgId?: string, inspectionId?: string) {
+  if (!isInspectionLifecycleEnabled()) return { rows: [], nextCursor: null }
+  z.string().uuid().parse(projectId)
+  if (after) z.string().uuid().parse(after)
+  if (inspectionId) z.string().uuid().parse(inspectionId)
+  const context = await requireOrgContext(orgId)
+  await requireAuthorization({ ...context, permission: "project.read", projectId, logDecision: true })
+  const { data, error } = await context.supabase.rpc("read_inspection_obligations", { p_org: context.orgId, p_home: projectId, p_actor: context.userId, p_after: after ?? null, p_limit: 20, p_inspection: inspectionId ?? null })
+  if (error) throw new Error(`Unable to read required inspections: ${error.message}`)
+  const page = inspectionObligationPageSchema.parse(data)
+  if (page.rows.some(row => row.org_id !== context.orgId || row.project_id !== projectId)) throw new Error("Required inspection scope differs from the current home")
+  return page
+}
+
+export async function mutateInspectionObligation(projectId: string, input: unknown, orgId?: string) {
+  if (!isInspectionLifecycleEnabled()) throw new Error("Inspection lifecycle is pending release acceptance")
+  z.string().uuid().parse(projectId)
+  const parsed = inspectionLifecycleInputSchema.parse(input)
+  if (parsed.request.source.project_id !== projectId || parsed.request.source.id !== parsed.request.inspectionId) throw new Error("Inspection request source belongs to another home or attempt")
+  const context = await requireOrgContext(orgId)
+  await requirePermission(parsed.request.operation === "accept" || parsed.request.operation === "reject" ? "inspection.review" : "inspection.write", context)
+  await requireAuthorization({ ...context, permission: parsed.request.operation === "accept" || parsed.request.operation === "reject" ? "inspection.review" : "inspection.write", projectId, logDecision: true })
+  const { data, error } = await context.supabase.rpc("mutate_inspection_obligation", { p_org: context.orgId, p_home: projectId, p_actor: context.userId, p_key: parsed.key, p_request: parsed.request })
+  if (error) {
+    const failure = new Error(`Unable to update required inspection: ${error.message}`) as Error & { code?: string }
+    // A PostgreSQL error aborts this RPC statement; transport failures do not
+    // establish an uncommitted outcome and retain the original request in UI.
+    if (/^[A-Z0-9]{5}$/.test(error.code)) failure.code = "INSPECTION_NOT_COMMITTED"
+    throw failure
+  }
+  return inspectionLifecycleResponseSchema.parse(data)
 }

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react"
 import { useRouter } from "next/navigation"
-import { useForm } from "react-hook-form"
+import { useForm, useWatch } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { format } from "date-fns"
 import { cn } from "@/lib/utils"
@@ -340,12 +340,11 @@ export function ScheduleItemSheet({
     }
   }, [item, activeProjectId, form, initialDates, open, setDateRange])
 
-  const isInspection = form.watch("item_type") === "inspection"
-  const assignedToValue = form.watch("assigned_to")
-  const watchedTrade = form.watch("trade")
-  const watchedCostCodeId = form.watch("cost_code_id")
-  const watchedBudgetCents = form.watch("budget_cents")
-  const watchedActualCostCents = form.watch("actual_cost_cents")
+  const [itemType, assignedToValue, watchedTrade, watchedCostCodeId, watchedBudgetCents, watchedActualCostCents, dependencies] = useWatch({
+    control: form.control,
+    name: ["item_type", "assigned_to", "trade", "cost_code_id", "budget_cents", "actual_cost_cents", "dependencies"],
+  })
+  const isInspection = itemType === "inspection"
   const budgetDataPresent = Boolean(watchedCostCodeId || watchedBudgetCents || watchedActualCostCents)
 
   // Load cost codes only when budget data is relevant to avoid extra sheet-open latency.
@@ -444,7 +443,7 @@ export function ScheduleItemSheet({
       .reduce((sum, co) => sum + (co.days_adjusted ?? 0), 0),
   }
 
-  const isMilestone = form.watch("item_type") === "milestone"
+  const isMilestone = itemType === "milestone"
 
   // Update form project_id when selected project changes
   useEffect(() => {
@@ -1114,9 +1113,9 @@ export function ScheduleItemSheet({
                       <div className="flex items-center gap-2">
                         <Link2 className="h-4 w-4" />
                         Dependencies
-                        {form.watch("dependencies")?.length ? (
+                        {dependencies?.length ? (
                           <Badge variant="secondary" className="ml-2">
-                            {form.watch("dependencies")?.length}
+                            {dependencies.length}
                           </Badge>
                         ) : null}
                       </div>

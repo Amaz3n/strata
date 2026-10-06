@@ -19,6 +19,7 @@ export interface ProjectExpenseLine {
 
 /** Single source of truth for the expense shape used by the table and the workspace. */
 export interface ProjectExpense {
+  updated_at?: string
   id: string
   expense_date: string
   vendor_name_text: string | null

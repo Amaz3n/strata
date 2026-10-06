@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 
@@ -47,7 +48,8 @@ async function OpsData() {
 }
 
 async function OpsPageContent() {
-  await requireAnyPermissionGuard(["billing.manage", "platform.support.read"])
+  await connection()
+  await requireAnyPermissionGuard(["platform.support.read"])
 
   return (
     <PageLayout
@@ -92,7 +94,17 @@ function OpsSkeleton() {
 
 export default function OpsPage() {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={
+      <PageLayout
+      title="Ops"
+      breadcrumbs={[
+        { label: "Admin", href: "/admin" },
+        { label: "Ops" },
+      ]}
+    >
+        <PageLoadingSkeleton />
+      </PageLayout>
+    }>
       <OpsPageContent />
     </Suspense>
   )

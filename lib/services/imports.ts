@@ -1,11 +1,13 @@
 import "server-only"
 
+import { z } from "zod"
+import { readAllRows } from "@/lib/land/paging"
+import { importRowStatusSchema } from "@/lib/validation/import-navigation"
+
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-import { requireAuth } from "@/lib/auth/context"
-import { getProjectPosture, normalizeProductTier, type ProductTier } from "@/lib/product-tier"
-import { orgHasPriceAgreements } from "@/lib/services/price-book"
-import { getCurrentPlatformAccess } from "@/lib/services/platform-access"
+import { normalizeProductTier, type ProductTier } from "@/lib/product-tier"
+import { requireAnyPlatformPermission } from "@/lib/services/platform-access"
 import { requireOrgContext } from "@/lib/services/context"
 import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -36,6 +38,7 @@ const INSERT_CHUNK = 500
 export interface ImportAccess {
   orgId?: string
   platformOrgId?: string
+  expectedImporter?: ImporterKey
 }
 
 interface ResolvedImportContext {
@@ -44,6 +47,7 @@ interface ResolvedImportContext {
   userId: string
   productTier: ProductTier
   platform: boolean
+  expectedImporter?: ImporterKey
 }
 
 export interface ImportBatchSummary {
@@ -78,52 +82,34 @@ export interface ImportRowRecord {
   action: string | null
 }
 
-async function resolveImportContext(access: ImportAccess = {}): Promise<ResolvedImportContext> {
+async function resolveImportContext(access: ImportAccess = {}, intent: "read" | "write" = "write"): Promise<ResolvedImportContext> {
   if (access.platformOrgId) {
-    const [platformAccess, auth] = await Promise.all([getCurrentPlatformAccess(), requireAuth()])
-    if (!platformAccess.canAccessPlatform) throw new Error("Platform access is required")
+    const user = await requireAnyPlatformPermission([
+      intent === "read" ? "platform.support.read" : "platform.support.write",
+    ])
     const supabase = createServiceSupabaseClient()
     const { data: org, error } = await supabase.from("orgs").select("id, product_tier").eq("id", access.platformOrgId).maybeSingle()
     if (error || !org) throw new Error("Organization not found")
-    return { supabase, orgId: org.id, userId: auth.user.id, productTier: normalizeProductTier(org.product_tier), platform: true }
+    return { supabase, orgId: org.id, userId: user.id, productTier: normalizeProductTier(org.product_tier), platform: true, expectedImporter: access.expectedImporter }
   }
 
   const context = await requireOrgContext(access.orgId)
   await requirePermission("import.manage", context)
-  return { ...context, supabase: createServiceSupabaseClient(), platform: false }
+  return { ...context, supabase: createServiceSupabaseClient(), platform: false, expectedImporter: access.expectedImporter }
 }
 
 async function requireImporterPermission(importer: ImporterKey, context: ResolvedImportContext) {
+  if (context.expectedImporter && importer !== context.expectedImporter) {
+    throw new Error("Import batch does not belong to this importer")
+  }
   // Platform onboarding runs every importer on the customer's behalf, whatever tier they're on.
   if (context.platform) return
   if (importer === "open_wip") throw new Error("Open-WIP cutover is restricted to the platform onboarding workbench")
-  await requireImporterPosture(importer, context)
   if (importer === "price_book") await requireAnyPermission(["price_book.write", "commitment.write"], context)
   if (importer === "plan_library") await requirePermission("plan.write", context)
   if (importer === "option_catalog") await requirePermission("selections.catalog.manage", context)
   if (importer === "communities_lots") await requireAnyPermission(["community.write", "lot.write"], context)
   if (importer === "team") await requirePermission("members.manage", context)
-}
-
-/**
- * An importer whose destination feature is production-only is refused outright —
- * otherwise a custom builder could stage a plan library into a Plans workbench
- * their nav never shows them. Price book follows Purchasing's rule instead of raw
- * posture, since an org running price agreements keeps it off the production tier.
- */
-async function requireImporterPosture(importer: ImporterKey, context: ResolvedImportContext) {
-  const posture = getProjectPosture(null, context.productTier)
-  if (posture === "production") return
-
-  if (importer === "price_book") {
-    if (await orgHasPriceAgreements(context.orgId)) return
-    throw new Error("The price book importer is available to production builders and orgs using price agreements")
-  }
-
-  const definition = IMPORTER_DEFINITIONS[importer]
-  if (definition.postures && !definition.postures.includes(posture)) {
-    throw new Error(`The ${definition.label.toLowerCase()} importer is available to production builders`)
-  }
 }
 
 function mapBatch(row: Record<string, unknown>): ImportBatchSummary {
@@ -152,29 +138,34 @@ function mapImportRow(row: Record<string, unknown>): ImportRowRecord {
 }
 
 export async function listImportBatches(input: { importer?: ImporterKey; page?: number; limit?: number } = {}, access: ImportAccess = {}) {
-  const context = await resolveImportContext(access)
+  const context = await resolveImportContext(access, "read")
   if (input.importer) await requireImporterPermission(input.importer, context)
-  const limit = Math.min(Math.max(input.limit ?? 25, 1), 100)
-  const page = Math.max(input.page ?? 1, 1)
-  let query = context.supabase.from("import_batches").select("*", { count: "exact" }).eq("org_id", context.orgId).order("created_at", { ascending: false }).range((page - 1) * limit, page * limit - 1)
+  const limit = Math.min(z.number().int().positive().parse(input.limit ?? 25), 100)
+  const page = z.number().int().min(1).max(100_000).parse(input.page ?? 1)
+  let query = context.supabase.from("import_batches").select("*", { count: "exact" }).eq("org_id", context.orgId).order("created_at", { ascending: false }).order("id", { ascending: false }).range((page - 1) * limit, page * limit - 1)
   if (input.importer) query = query.eq("importer", input.importer)
   const { data, error, count } = await query
   if (error) throw new Error(`Failed to list import batches: ${error.message}`)
-  return { batches: (data ?? []).map(mapBatch), total: count ?? 0, page, limit }
+  if (!data || typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) throw new Error("Import batch history is unavailable")
+  if (data.length !== Math.min(limit, Math.max(0, count - (page - 1) * limit))) throw new Error("Import batch page is incomplete; reload before reviewing history")
+  return { batches: data.map(mapBatch), total: count, page, limit }
 }
 
 export async function getImportBatch(batchId: string, input: { page?: number; limit?: number; status?: string } = {}, access: ImportAccess = {}) {
-  const context = await resolveImportContext(access)
+  const context = await resolveImportContext(access, "read")
   const { data: batch, error: batchError } = await context.supabase.from("import_batches").select("*").eq("org_id", context.orgId).eq("id", batchId).maybeSingle()
   if (batchError || !batch) throw new Error("Import batch not found")
   await requireImporterPermission(batch.importer as ImporterKey, context)
-  const limit = Math.min(Math.max(input.limit ?? 200, 1), 500)
-  const page = Math.max(input.page ?? 1, 1)
-  let query = context.supabase.from("import_rows").select("*", { count: "exact" }).eq("org_id", context.orgId).eq("batch_id", batchId).order("row_number").range((page - 1) * limit, page * limit - 1)
-  if (input.status && input.status !== "all") query = query.eq("status", input.status)
+  const limit = Math.min(z.number().int().positive().parse(input.limit ?? 200), 500)
+  const page = z.number().int().min(1).max(100_000).parse(input.page ?? 1)
+  const status = importRowStatusSchema.parse(input.status ?? "all")
+  let query = context.supabase.from("import_rows").select("*", { count: "exact" }).eq("org_id", context.orgId).eq("batch_id", batchId).order("row_number").order("id").range((page - 1) * limit, page * limit - 1)
+  if (status !== "all") query = query.eq("status", status)
   const { data: rows, error: rowsError, count } = await query
   if (rowsError) throw new Error(`Failed to list import rows: ${rowsError.message}`)
-  return { batch: mapBatch(batch), rows: (rows ?? []).map(mapImportRow), total: count ?? 0, page, limit }
+  if (!rows || typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) throw new Error("Import row review is unavailable")
+  if (rows.length !== Math.min(limit, Math.max(0, count - (page - 1) * limit))) throw new Error("Import row page is incomplete; reload before reviewing rows")
+  return { batch: mapBatch(batch), rows: rows.map(mapImportRow), total: count, page, limit, status }
 }
 
 function exactColumnMapping(importer: ImporterKey, headers: string[]) {
@@ -189,11 +180,12 @@ async function saveMappingProfile(context: ResolvedImportContext, importer: Impo
 }
 
 export async function getImportMappingProfile(importer: ImporterKey, headers: string[], access: ImportAccess = {}) {
-  const context = await resolveImportContext(access)
+  const context = await resolveImportContext(access, "read")
+  await requireImporterPermission(importer, context)
   const signature = sourceSignature(headers)
   const { data, error } = await context.supabase.from("import_mapping_profiles").select("column_mapping").eq("org_id", context.orgId).eq("importer", importer).eq("source_signature", signature).maybeSingle()
   if (error) throw new Error(`Failed to load import mapping profile: ${error.message}`)
-  return data?.column_mapping as Record<string, string | null> | null
+  return (data?.column_mapping ?? null) as Record<string, string | null> | null
 }
 
 async function loadValidationLookups(context: ResolvedImportContext) {
@@ -301,25 +293,94 @@ async function persistValidatedRows(context: ResolvedImportContext, batchId: str
   }
 }
 
-async function validateOpenWipCompanions(rows: ImportRowRecord[], context: ResolvedImportContext, batchContext: Record<string, unknown>) {
+const companionIdsSchema = z.object({ budgets: z.string().uuid(), purchase_orders: z.string().uuid() }).strict()
+
+async function loadOpenWipCompanionBatches(context: ResolvedImportContext, asOfDate: string, onboardingRunId: string | null, batchContext: Record<string, unknown> = {}) {
+  const explicit = batchContext.companion_batch_ids === undefined ? null : companionIdsSchema.parse(batchContext.companion_batch_ids)
+  if (batchContext.is_sample === true && !explicit) throw new Error("Sample houses require their original companion batch IDs")
+  if (explicit && explicit.budgets === explicit.purchase_orders) throw new Error("Open-WIP companion batch IDs must be distinct")
+  const ids = explicit ? [explicit.budgets, explicit.purchase_orders] : null
+  const batches: Array<{ id: string; context: Record<string, unknown>; row_count: number; committed_count: number; skipped_count: number; error_count: number }> = []
+  for (let offset = 0; ; offset += INSERT_CHUNK) {
+    let query = context.supabase.from("import_batches").select("id,context,created_by,row_count,committed_count,skipped_count,error_count")
+      .eq("org_id", context.orgId).eq("importer", "open_wip")
+      .eq("context->>as_of_date", asOfDate).in("context->>file_kind", ["budgets", "purchase_orders"])
+      .in("status", explicit ? ["committed"] : ["staged", "committed"]).order("id").range(offset, offset + INSERT_CHUNK - 1)
+    if (ids) query = query.in("id", ids).eq("created_by", context.userId)
+    query = onboardingRunId ? query.eq("onboarding_run_id", onboardingRunId) : query.is("onboarding_run_id", null)
+    const { data, error } = await query
+    if (error) throw new Error(`Unable to load Open-WIP companion batches: ${error.message}`)
+    batches.push(...(data ?? []))
+    if ((data ?? []).length < INSERT_CHUNK) break
+  }
+  if (explicit && (batches.length !== 2 ||
+    !batches.some(batch => batch.id === explicit.budgets && batch.context.file_kind === "budgets") ||
+    !batches.some(batch => batch.id === explicit.purchase_orders && batch.context.file_kind === "purchase_orders") ||
+    batches.some(batch => (batch.context.is_sample === true) !== (batchContext.is_sample === true) ||
+      !Number.isInteger(batch.row_count) || batch.row_count < 1 || batch.committed_count !== batch.row_count ||
+      batch.skipped_count !== 0 || batch.error_count !== 0))) {
+    throw new Error("Original Open-WIP companion batches are missing or do not match the requested source scope")
+  }
+  return batches
+}
+
+function openWipHouseKey(parsed: ImportParsedRow) {
+  return JSON.stringify([parsed.community, parsed.block, parsed.lot_number].map(normalizeKey))
+}
+
+function groupOpenWipCompanions(rows: ImportRowRecord[]) {
+  const byHouse = new Map<string, ImportRowRecord[]>()
+  const sourceKeys = new Set<string>()
+  for (const row of rows) {
+    if (sourceKeys.has(row.natural_key)) throw new Error(`Duplicate Open-WIP companion row ${row.natural_key}; reconcile the source files before importing`)
+    sourceKeys.add(row.natural_key)
+    const key = openWipHouseKey(row.parsed)
+    const group = byHouse.get(key) ?? []
+    group.push(row)
+    byHouse.set(key, group)
+  }
+  return byHouse
+}
+
+async function loadOpenWipCompanionRows(context: ResolvedImportContext, batches: Array<{ id: string; row_count: number; context: Record<string, unknown> }>, kind: "budgets" | "purchase_orders", explicit: boolean) {
+  const selected = batches.filter(batch => batch.context.file_kind === kind)
+  if (!explicit) return loadImportCommitRows(context, selected.map(batch => batch.id), true)
+  const results = await Promise.all(selected.map(async batch => {
+    const rows = await loadImportCommitRows(context, [batch.id], true, true)
+    if (rows.length !== batch.row_count || new Set(rows.map(row => row.id)).size !== rows.length ||
+      new Set(rows.map(row => row.row_number)).size !== rows.length ||
+      rows.some(row => !z.string().uuid().safeParse(row.id).success || !Number.isInteger(row.row_number) || row.row_number < 1 ||
+        row.status !== "committed" || row.action !== "created" || row.target_entity_type !== "open_wip" || row.target_entity_id !== row.id)) {
+      throw new Error("Original Open-WIP companion receipts are incomplete or do not match their committed source")
+    }
+    return rows
+  }))
+  return results.flat()
+}
+
+async function validateOpenWipCompanions(rows: ImportRowRecord[], context: ResolvedImportContext, batchContext: Record<string, unknown>, onboardingRunId: string | null = null) {
   if (batchContext.file_kind !== "houses") return rows
   const asOfDate = typeof batchContext.as_of_date === "string" ? batchContext.as_of_date : null
   if (!asOfDate) {
     rows.forEach((row) => withIssue(row, { level: "error", code: "missing_as_of_date", message: "Open-WIP houses require an as-of date" }))
     return rows
   }
-  const { data: batches, error: batchError } = await context.supabase.from("import_batches").select("id,context").eq("org_id", context.orgId).eq("importer", "open_wip").in("status", ["staged", "committed"])
-  if (batchError) throw new Error(`Unable to validate Open-WIP companion files: ${batchError.message}`)
+  const batches = await loadOpenWipCompanionBatches(context, asOfDate, onboardingRunId, batchContext)
   const budgetBatchIds = (batches ?? []).filter((batch) => batch.context?.file_kind === "budgets" && batch.context?.as_of_date === asOfDate).map((batch) => batch.id)
   if (!budgetBatchIds.length) {
     rows.forEach((row) => withIssue(row, { level: "error", code: "missing_budget_file", message: `Stage the ${asOfDate} budget snapshot before the house file` }))
     return rows
   }
-  const { data: budgetRows, error: budgetError } = await context.supabase.from("import_rows").select("natural_key,parsed").eq("org_id", context.orgId).in("batch_id", budgetBatchIds).in("status", ["valid", "warning", "committed"])
-  if (budgetError) throw new Error(`Unable to validate Open-WIP budgets: ${budgetError.message}`)
+  const explicit = batchContext.companion_batch_ids !== undefined
+  const [budgetItems, poItems] = await Promise.all([
+    loadOpenWipCompanionRows(context, batches, "budgets", explicit),
+    loadOpenWipCompanionRows(context, batches, "purchase_orders", explicit),
+  ])
+  const budgetRows = groupOpenWipCompanions(budgetItems)
+  groupOpenWipCompanions(poItems)
   for (const row of rows) {
-    const houseKey = [row.parsed.community, row.parsed.block, row.parsed.lot_number].map(normalizeKey).filter(Boolean).join(":")
-    const sum = (budgetRows ?? []).filter((item) => String(item.natural_key).startsWith(`${houseKey}:`)).reduce((total, item) => total + Number(item.parsed?.budget_cents ?? 0), 0)
+    const houseKey = openWipHouseKey(row.parsed)
+    const sum = (budgetRows.get(houseKey) ?? []).reduce((total, item) => total + Number(item.parsed?.budget_cents ?? 0), 0)
     if (sum !== Number(row.parsed.budget_total_cents)) withIssue(row, { level: "error", code: "budget_total_mismatch", message: `Budget snapshot totals ${sum} cents; the house row declares ${Number(row.parsed.budget_total_cents)} cents`, column: "budget_total_cents" })
   }
   return rows
@@ -354,7 +415,7 @@ export async function stageImportBatch(input: { importer: ImporterKey; csvText: 
       return { id: crypto.randomUUID(), row_number: index + 1, raw, parsed: result.parsed, status: "pending", issues: result.issues, natural_key: result.naturalKey, target_entity_type: null, target_entity_id: null, action: null }
     })
     staged = await validateRows(input.importer, staged, resolved)
-    if (input.importer === "open_wip") staged = await validateOpenWipCompanions(staged, resolved, contextPayload)
+    if (input.importer === "open_wip") staged = await validateOpenWipCompanions(staged, resolved, contextPayload, input.onboardingRunId ?? null)
     await persistValidatedRows(resolved, batch.id, staged)
     const counts = rowCounts(staged)
     const report = { source_headers: headers, file_kind: contextPayload.file_kind ?? null, duplicate_rows: staged.filter((row) => row.issues.some((issue) => issue.code === "duplicate_natural_key")).length, unmatched_vendors: staged.filter((row) => row.issues.some((issue) => issue.code === "vendor_unmatched")).length }
@@ -380,18 +441,29 @@ export async function patchImportRow(input: { batchId: string; rowId: string; pa
   const reparsed = parseImporterRow({ importer: batch.importer as ImporterKey, raw: parsed as Record<string, string>, mapping: Object.fromEntries(Object.keys(parsed).map((key) => [key, key])), context: batch.context ?? {} })
   let rows = [mapImportRow({ ...existing, parsed: reparsed.parsed, issues: reparsed.issues, natural_key: reparsed.naturalKey, status: input.skip ? "skipped" : "pending" })]
   rows = input.skip ? rows : await validateRows(batch.importer as ImporterKey, rows, context)
-  if (!input.skip && batch.importer === "open_wip") rows = await validateOpenWipCompanions(rows, context, batch.context ?? {})
+  if (!input.skip && batch.importer === "open_wip") rows = await validateOpenWipCompanions(rows, context, batch.context ?? {}, batch.onboarding_run_id ?? null)
   await persistValidatedRows(context, input.batchId, rows)
   await refreshBatchCounts(context, input.batchId)
   return rows[0]
 }
 
 async function refreshBatchCounts(context: ResolvedImportContext, batchId: string) {
-  const { data, error } = await context.supabase.from("import_rows").select("status").eq("org_id", context.orgId).eq("batch_id", batchId)
-  if (error) throw new Error(`Failed to recount import batch: ${error.message}`)
-  const statuses = data ?? []
+  const total = await context.supabase.from("import_rows").select("id", { count: "exact", head: true }).eq("org_id", context.orgId).eq("batch_id", batchId)
+  if (total.error) throw new Error(`Failed to recount import batch: ${total.error.message}`)
+  if (typeof total.count !== "number" || !Number.isSafeInteger(total.count) || total.count < 0) throw new Error("Import recount total is unavailable")
+  const result = await readAllRows(async (from, to) => {
+    const page = await context.supabase.from("import_rows").select("id,row_number,status")
+      .eq("org_id", context.orgId).eq("batch_id", batchId).order("row_number").order("id").range(from, to)
+    if (!page.data && !page.error) throw new Error("Import recount page is unavailable")
+    return page
+  }, { cap: MAX_ROWS + 1, label: "Failed to recount import batch" })
+  if (result.rows.length !== total.count) throw new Error("Import recount membership is incomplete or changed; reload before committing")
+  if (result.truncated || result.rows.length > MAX_ROWS) throw new Error("Import batch exceeds the supported row limit; reconcile before committing")
+  const statuses = result.rows
+  if (new Set(statuses.map(row => row.id)).size !== statuses.length) throw new Error("Import row membership changed while recounting; reload before committing")
   const counts = { row_count: statuses.length, valid_count: statuses.filter((row) => row.status === "valid").length, warning_count: statuses.filter((row) => row.status === "warning").length, error_count: statuses.filter((row) => row.status === "error").length, skipped_count: statuses.filter((row) => row.status === "skipped").length }
-  await context.supabase.from("import_batches").update(counts).eq("org_id", context.orgId).eq("id", batchId)
+  const { data: saved, error } = await context.supabase.from("import_batches").update(counts).eq("org_id", context.orgId).eq("id", batchId).eq("status", "staged").select("id").single()
+  if (error || !saved) throw new Error(`Failed to save import counts: ${error?.message ?? "Batch changed while recounting"}`)
   return counts
 }
 
@@ -628,7 +700,25 @@ function addDays(date: string, days: number) {
   const value = new Date(`${date}T00:00:00Z`); value.setUTCDate(value.getUTCDate() + days); return value.toISOString().slice(0, 10)
 }
 
-async function commitOpenWip(rows: ImportRowRecord[], context: ResolvedImportContext, batchId: string, batchContext: Record<string, unknown>, fileKind: string) {
+/** Read bounded pages so PostgREST's response limit cannot truncate a cutover. */
+async function loadImportCommitRows(context: ResolvedImportContext, batchIds: string[], includeCommitted = false, requireCommitted = false) {
+  const rows: ImportRowRecord[] = []
+  for (let batchOffset = 0; batchOffset < batchIds.length; batchOffset += 100) {
+    const ids = batchIds.slice(batchOffset, batchOffset + 100)
+    for (let offset = 0; ; offset += INSERT_CHUNK) {
+      const { data, error } = await context.supabase.from("import_rows").select("*")
+        .eq("org_id", context.orgId).in("batch_id", ids)
+        .in("status", requireCommitted ? ["committed"] : includeCommitted ? ["valid", "warning", "committed"] : ["valid", "warning"])
+        .order("row_number").order("id").range(offset, offset + INSERT_CHUNK - 1)
+      if (error) throw new Error(`Failed to load import rows: ${error.message}`)
+      rows.push(...(data ?? []).map(mapImportRow))
+      if ((data ?? []).length < INSERT_CHUNK) break
+    }
+  }
+  return rows
+}
+
+async function commitOpenWip(rows: ImportRowRecord[], context: ResolvedImportContext, batchId: string, batchContext: Record<string, unknown>, fileKind: string, onboardingRunId: string | null = null) {
   const results = new Map<string, { id: string; action: string }>()
   if (fileKind !== "houses") {
     rows.forEach((row) => results.set(row.id, { id: row.id, action: "created" }))
@@ -636,18 +726,18 @@ async function commitOpenWip(rows: ImportRowRecord[], context: ResolvedImportCon
   }
   const asOfDate = typeof batchContext.as_of_date === "string" ? batchContext.as_of_date : null
   if (!asOfDate) throw new Error("Open-WIP house imports require an as-of date")
-  const { data: siblingBatches } = await context.supabase.from("import_batches").select("id,context").eq("org_id", context.orgId).eq("importer", "open_wip").in("status", ["staged", "committed"]).neq("id", batchId)
-  const budgetBatchIds = (siblingBatches ?? []).filter((batch) => batch.context?.file_kind === "budgets" && batch.context?.as_of_date === asOfDate).map((batch) => batch.id)
-  const poBatchIds = (siblingBatches ?? []).filter((batch) => batch.context?.file_kind === "purchase_orders" && batch.context?.as_of_date === asOfDate).map((batch) => batch.id)
-  const [budgetResult, poResult] = await Promise.all([
-    budgetBatchIds.length ? context.supabase.from("import_rows").select("parsed,natural_key").eq("org_id", context.orgId).in("batch_id", budgetBatchIds).in("status", ["valid", "warning", "committed"]) : Promise.resolve({ data: [], error: null }),
-    poBatchIds.length ? context.supabase.from("import_rows").select("parsed,natural_key").eq("org_id", context.orgId).in("batch_id", poBatchIds).in("status", ["valid", "warning", "committed"]) : Promise.resolve({ data: [], error: null }),
+  const siblingBatches = await loadOpenWipCompanionBatches(context, asOfDate, onboardingRunId, batchContext)
+  const explicit = batchContext.companion_batch_ids !== undefined
+  const [budgetItems, poItems] = await Promise.all([
+    loadOpenWipCompanionRows(context, siblingBatches, "budgets", explicit),
+    loadOpenWipCompanionRows(context, siblingBatches, "purchase_orders", explicit),
   ])
-  if (budgetResult.error || poResult.error) throw new Error("Unable to load Open-WIP companion files")
+  const budgetsByHouse = groupOpenWipCompanions(budgetItems)
+  const posByHouse = groupOpenWipCompanions(poItems)
   for (const row of rows) {
-    const houseKey = [row.parsed.community, row.parsed.block, row.parsed.lot_number].map(normalizeKey).filter(Boolean).join(":")
-    const budgetRows = (budgetResult.data ?? []).filter((item) => String(item.natural_key).startsWith(`${houseKey}:`))
-    const poRows = (poResult.data ?? []).filter((item) => String(item.natural_key).startsWith(`${houseKey}:`))
+    const houseKey = openWipHouseKey(row.parsed)
+    const budgetRows = budgetsByHouse.get(houseKey) ?? []
+    const poRows = posByHouse.get(houseKey) ?? []
     const budgetSum = budgetRows.reduce((sum, item) => sum + Number(item.parsed?.budget_cents ?? 0), 0)
     if (budgetSum !== Number(row.parsed.budget_total_cents)) throw new Error(`Lot ${row.parsed.lot_number}: budget lines total does not match the house total`)
     const { data: community, error: communityError } = await context.supabase.from("communities").select("id,name,division_id").eq("org_id", context.orgId).eq("id", row.parsed.community_id).single()
@@ -656,13 +746,20 @@ async function commitOpenWip(rows: ImportRowRecord[], context: ResolvedImportCon
     const { data: lot, error: lotError } = await lotQuery.single()
     if (communityError || !community) throw new Error(`Unable to resolve the Open-WIP community: ${communityError?.message}`)
     if (lotError || !lot) throw new Error(`Unable to resolve the Open-WIP lot: ${lotError?.message}`)
-    if (lot.project_id) { results.set(row.id, { id: lot.project_id, action: "skipped_existing" }); continue }
+    if (lot.project_id) {
+      const { data: existing, error } = await context.supabase.from("projects").select("id,metadata").eq("org_id", context.orgId).eq("id", lot.project_id).single()
+      if (error || existing?.metadata?.wip_cutover?.batch_id !== batchId || existing?.metadata?.wip_cutover?.row_id !== row.id) {
+        throw new Error(`Lot ${row.parsed.lot_number} already has a project; reconcile it before importing`)
+      }
+      results.set(row.id, { id: lot.project_id, action: "skipped_existing" })
+      continue
+    }
     let projectId: string | null = null
     try {
-      const { data: project, error: projectError } = await context.supabase.from("projects").insert({ org_id: context.orgId, name: `${community.name} — Lot ${row.parsed.lot_number}`, status: "active", property_type: "production", division_id: community.division_id, created_by: context.userId, metadata: { wip_cutover: { as_of_date: asOfDate, batch_id: batchId }, imported_open_wip: true } }).select("id").single()
+      const { data: project, error: projectError } = await context.supabase.from("projects").insert({ org_id: context.orgId, name: `${community.name} — Lot ${row.parsed.lot_number}`, status: "active", property_type: "production", division_id: community.division_id, created_by: context.userId, metadata: { wip_cutover: { as_of_date: asOfDate, batch_id: batchId, row_id: row.id }, imported_open_wip: true } }).select("id").single()
       if (projectError || !project) throw new Error(`Failed to create project: ${projectError?.message}`)
       projectId = project.id
-      await context.supabase.from("lots").update({ project_id: projectId, status: "started", house_plan_id: row.parsed.house_plan_id, house_plan_version_id: row.parsed.house_plan_version_id, house_plan_elevation_id: row.parsed.elevation_id }).eq("org_id", context.orgId).eq("id", lot.id)
+
       const { data: budget, error: budgetError } = await context.supabase.from("budgets").insert({ org_id: context.orgId, project_id: projectId, version: 1, status: "approved", total_cents: budgetSum, metadata: { imported_open_wip: true, as_of_date: asOfDate } }).select("id").single()
       if (budgetError || !budget) throw new Error(`Failed to create WIP budget: ${budgetError?.message}`)
       if (budgetRows.length) {
@@ -673,32 +770,47 @@ async function commitOpenWip(rows: ImportRowRecord[], context: ResolvedImportCon
         const companyId = await ensureCompany(context, { ...row, parsed: item.parsed as ImportParsedRow })
         const { data: commitment, error } = await context.supabase.from("commitments").insert({ org_id: context.orgId, project_id: projectId, company_id: companyId, commitment_type: "purchase_order", title: item.parsed?.description ?? `Imported PO ${item.parsed?.po_number}`, status: "approved", total_cents: item.parsed?.remaining_cents, currency: "usd", contract_number: item.parsed?.po_number, metadata: { imported_open_wip: true, original_cents: item.parsed?.original_cents, as_of_date: asOfDate } }).select("id").single()
         if (error || !commitment) throw new Error(`Failed to create imported PO: ${error?.message}`)
-        await context.supabase.from("commitment_lines").insert({ org_id: context.orgId, commitment_id: commitment.id, cost_code_id: item.parsed?.cost_code_id, description: item.parsed?.description, quantity: 1, unit: "remaining", unit_cost_cents: item.parsed?.remaining_cents, metadata: { imported_open_wip: true } })
+        const { error: lineError } = await context.supabase.from("commitment_lines").insert({ org_id: context.orgId, commitment_id: commitment.id, cost_code_id: item.parsed?.cost_code_id, description: item.parsed?.description, quantity: 1, unit: "remaining", unit_cost_cents: item.parsed?.remaining_cents, metadata: { imported_open_wip: true } })
+        if (lineError) throw new Error(`Failed to create imported PO lines: ${lineError.message}`)
       }
       if (row.parsed.schedule_template_id) {
-        const { data: template } = await context.supabase.from("schedule_templates").select("items").eq("org_id", context.orgId).eq("id", row.parsed.schedule_template_id).maybeSingle()
+        const { data: template, error: templateError } = await context.supabase.from("schedule_templates").select("items").eq("org_id", context.orgId).eq("id", row.parsed.schedule_template_id).maybeSingle()
+        if (templateError || !template) throw new Error(`Unable to load WIP schedule template: ${templateError?.message ?? "Template not found"}`)
         const items = Array.isArray(template?.items) ? template.items : []
         const anchorIndex = items.findIndex((item) => normalizeKey(item.name) === normalizeKey(row.parsed.stage_task))
         if (anchorIndex < 0) throw new Error(`Schedule task ${row.parsed.stage_task} was not found in the plan template`)
         const stageDate = typeof row.parsed.stage_date === "string" ? row.parsed.stage_date : asOfDate
-        await context.supabase.from("schedule_items").insert(items.map((item, index) => ({ org_id: context.orgId, project_id: projectId, name: item.name, item_type: item.item_type ?? "task", status: index < anchorIndex ? "completed" : index === anchorIndex ? "in_progress" : "planned", start_date: addDays(stageDate, Number(item.offset_days ?? index - anchorIndex)), end_date: addDays(stageDate, Number(item.offset_days ?? index - anchorIndex) + Math.max(0, Number(item.duration_days ?? 1) - 1)), progress: index < anchorIndex ? 100 : index === anchorIndex ? 10 : 0, sort_order: index, metadata: { imported_open_wip: true, completed_at_cutover: index < anchorIndex ? asOfDate : null } })))
+        const { error: scheduleError } = await context.supabase.from("schedule_items").insert(items.map((item, index) => ({ org_id: context.orgId, project_id: projectId, name: item.name, item_type: item.item_type ?? "task", status: index < anchorIndex ? "completed" : index === anchorIndex ? "in_progress" : "planned", start_date: addDays(stageDate, (Number(item.offset_days ?? index) - Number(items[anchorIndex].offset_days ?? anchorIndex))), end_date: addDays(stageDate, (Number(item.offset_days ?? index) - Number(items[anchorIndex].offset_days ?? anchorIndex)) + Math.max(0, Number(item.duration_days ?? 1) - 1)), progress: index < anchorIndex ? 100 : index === anchorIndex ? 10 : 0, sort_order: index, metadata: { imported_open_wip: true, completed_at_cutover: index < anchorIndex ? asOfDate : null } })))
+        if (scheduleError) throw new Error(`Failed to create WIP schedule: ${scheduleError.message}`)
       }
       if (row.parsed.sold) {
         let contactId: string | null = null
         if (row.parsed.buyer_email) {
-          const { data: existingContact } = await context.supabase.from("contacts").select("id").eq("org_id", context.orgId).ilike("email", String(row.parsed.buyer_email)).limit(1).maybeSingle()
+          const { data: existingContact, error: contactLookupError } = await context.supabase.from("contacts").select("id").eq("org_id", context.orgId).ilike("email", String(row.parsed.buyer_email)).limit(1).maybeSingle()
+          if (contactLookupError) throw new Error(`Unable to resolve imported buyer: ${contactLookupError.message}`)
           if (existingContact) contactId = existingContact.id
           else {
-            const { data: contact } = await context.supabase.from("contacts").insert({ org_id: context.orgId, full_name: row.parsed.buyer_name, email: row.parsed.buyer_email, contact_type: "client", metadata: { imported_open_wip: true } }).select("id").single()
-            contactId = contact?.id ?? null
+            const { data: contact, error: contactError } = await context.supabase.from("contacts").insert({ org_id: context.orgId, full_name: row.parsed.buyer_name, email: row.parsed.buyer_email, contact_type: "client", metadata: { imported_open_wip: true } }).select("id").single()
+            if (contactError || !contact) throw new Error(`Failed to create imported buyer: ${contactError?.message}`)
+            contactId = contact.id
           }
         }
-        if (contactId) await context.supabase.from("projects").update({ client_id: contactId }).eq("org_id", context.orgId).eq("id", projectId)
-        await context.supabase.from("contracts").insert({ org_id: context.orgId, project_id: projectId, number: `WIP-${String(row.parsed.community).slice(0, 3).toUpperCase()}-${row.parsed.lot_number}`, title: `Imported purchase agreement — Lot ${row.parsed.lot_number}`, status: "executed", contract_type: "purchase_agreement", total_cents: row.parsed.sale_price_cents, currency: "usd", effective_date: row.parsed.sale_date ?? asOfDate, snapshot: { imported_open_wip: true, as_of_date: asOfDate, agreement_total_only: true } })
+        if (contactId) {
+          const { error } = await context.supabase.from("projects").update({ client_id: contactId }).eq("org_id", context.orgId).eq("id", projectId)
+          if (error) throw new Error(`Failed to associate imported buyer: ${error.message}`)
+        }
+        const { error: contractError } = await context.supabase.from("contracts").insert({ org_id: context.orgId, project_id: projectId, number: `WIP-${String(row.parsed.community).slice(0, 3).toUpperCase()}-${row.parsed.lot_number}`, title: `Imported purchase agreement — Lot ${row.parsed.lot_number}`, status: "active", signed_at: row.parsed.sale_date ? `${row.parsed.sale_date}T00:00:00Z` : null, contract_type: "purchase_agreement", total_cents: row.parsed.sale_price_cents, currency: "usd", effective_date: row.parsed.sale_date ?? asOfDate, snapshot: { imported_open_wip: true, as_of_date: asOfDate, agreement_total_only: true } })
+        if (contractError) throw new Error(`Failed to create imported purchase agreement: ${contractError.message}`)
       }
+      // Publish the completed home only if this lot is still unassigned.
+      const { data: linked, error: linkError } = await context.supabase.from("lots").update({ project_id: projectId, status: "started", house_plan_id: row.parsed.house_plan_id, house_plan_version_id: row.parsed.house_plan_version_id, house_plan_elevation_id: row.parsed.elevation_id }).eq("org_id", context.orgId).eq("id", lot.id).is("project_id", null).select("id").maybeSingle()
+      if (linkError || !linked) throw new Error(`Unable to attach imported home: ${linkError?.message ?? "Lot was assigned during import"}`)
       results.set(row.id, { id: project.id, action: "created" })
     } catch (error) {
-      if (projectId) await context.supabase.from("projects").delete().eq("org_id", context.orgId).eq("id", projectId)
+      if (projectId) {
+        const { error: cleanupError } = await context.supabase.from("projects").delete().eq("org_id", context.orgId).eq("id", projectId)
+        if (cleanupError) throw new Error(`${error instanceof Error ? error.message : "Import failed"}. Cleanup failed for project ${projectId}; reconcile before retrying: ${cleanupError.message}`)
+      }
       throw error
     }
   }
@@ -707,14 +819,14 @@ async function commitOpenWip(rows: ImportRowRecord[], context: ResolvedImportCon
 
 export async function commitImportBatch(batchId: string, access: ImportAccess = {}) {
   const context = await resolveImportContext(access)
-  const { data: claimed, error: claimError } = await context.supabase.from("import_batches").update({ status: "committing" }).eq("org_id", context.orgId).eq("id", batchId).eq("status", "staged").eq("error_count", 0).select("*").maybeSingle()
+  const { data: candidate, error: candidateError } = await context.supabase.from("import_batches").select("importer").eq("org_id", context.orgId).eq("id", batchId).maybeSingle()
+  if (candidateError || !candidate) throw new Error("Import batch not found")
+  await requireImporterPermission(candidate.importer as ImporterKey, context)
+  const { data: claimed, error: claimError } = await context.supabase.from("import_batches").update({ status: "committing" }).eq("org_id", context.orgId).eq("id", batchId).eq("importer", candidate.importer).eq("status", "staged").eq("error_count", 0).select("*").maybeSingle()
   if (claimError || !claimed) throw new Error("Batch must be staged with all errors fixed or explicitly skipped")
   const importer = claimed.importer as ImporterKey
-  await requireImporterPermission(importer, context)
-  const { data, error } = await context.supabase.from("import_rows").select("*").eq("org_id", context.orgId).eq("batch_id", batchId).in("status", ["valid", "warning"]).order("row_number")
-  if (error) throw new Error(`Failed to load import rows: ${error.message}`)
-  const rows = (data ?? []).map(mapImportRow)
   try {
+    const rows = await loadImportCommitRows(context, [batchId])
     const fileKind = typeof claimed.context?.file_kind === "string" ? claimed.context.file_kind : ""
     let results: Map<string, { id: string; action: string }>
     if (importer === "cost_codes") results = await commitCostCodes(rows, context, claimed.update_existing)
@@ -723,13 +835,16 @@ export async function commitImportBatch(batchId: string, access: ImportAccess = 
     else if (importer === "price_book") results = await commitPriceBook(rows, context)
     else if (importer === "communities_lots") results = await commitCommunitiesLots(rows, context, claimed.update_existing)
     else if (importer === "team") results = await commitTeam(rows, context)
-    else results = await commitOpenWip(rows, context, batchId, claimed.context ?? {}, fileKind)
+    else results = await commitOpenWip(rows, context, batchId, claimed.context ?? {}, fileKind, claimed.onboarding_run_id ?? null)
     for (let index = 0; index < rows.length; index += INSERT_CHUNK) {
       const chunk = rows.slice(index, index + INSERT_CHUNK)
-      await Promise.all(chunk.map((row) => {
+      const savedRows = await Promise.all(chunk.map((row) => {
         const result = results.get(row.id)
-        return context.supabase.from("import_rows").update({ status: result?.action === "skipped_existing" ? "skipped" : "committed", target_entity_type: importer, target_entity_id: result?.id ?? null, action: result?.action ?? "skipped_error" }).eq("org_id", context.orgId).eq("id", row.id)
+        if (!result) throw new Error(`No commit result for import row ${row.row_number}`)
+        return context.supabase.from("import_rows").update({ status: result.action === "skipped_existing" ? "skipped" : "committed", target_entity_type: importer, target_entity_id: result.id, action: result.action }).eq("org_id", context.orgId).eq("id", row.id)
       }))
+      const failedRow = savedRows.find((result) => result.error)
+      if (failedRow?.error) throw new Error(`Failed to save import row results: ${failedRow.error.message}`)
     }
     const actions = [...results.values()].reduce<Record<string, number>>((counts, result) => ({ ...counts, [result.action]: (counts[result.action] ?? 0) + 1 }), {})
     const committedCount = (actions.created ?? 0) + (actions.updated ?? 0)

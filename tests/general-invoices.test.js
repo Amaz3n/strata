@@ -1,0 +1,38 @@
+require('../scripts/register-ts-node-test')
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const { validateGeneralInvoice } = require('../lib/receivables/general-invoice')
+const { getGeneralReceivablesPolicy } = require('../lib/receivables/policy')
+const { newInvoiceHref, resumeInvoiceHref, invoiceHref } = require('../lib/financials/invoice-destinations')
+
+test('general invoices require an identifiable customer, not only bill-to text', () => {
+  assert.match(validateGeneralInvoice({}), /Choose a customer/)
+  assert.equal(validateGeneralInvoice({ customer_id: 'customer' }), null)
+  assert.equal(validateGeneralInvoice({ qbo_customer_id: 'qbo-customer' }), null)
+  assert.equal(validateGeneralInvoice({ project_id: 'project' }), null)
+})
+test('general billing cannot smuggle project sources or closing invoices', () => {
+  for (const source_type of ['draw','change_order','from_costs','fee','pay_application']) assert.match(validateGeneralInvoice({ customer_id:'customer', source_type }), /require a project/)
+  for (const key of ['source_draw_id','source_change_order_id','source_pay_application_id']) assert.match(validateGeneralInvoice({customer_id:'customer',[key]:'source'}), /require a project/)
+  assert.match(validateGeneralInvoice({ customer_id:'customer', metadata:{invoice_kind:'closing'} }), /require a project/)
+})
+test('general deposit requests require an Arc customer and cannot bill project sources', () => {
+  assert.match(validateGeneralInvoice({ qbo_customer_id:'qbo',metadata:{invoice_kind:'earnest_deposit'} }), /Arc customer/)
+  assert.equal(validateGeneralInvoice({ customer_id:'customer',metadata:{invoice_kind:'earnest_deposit'} }), null)
+  assert.match(validateGeneralInvoice({ project_id:'project',source_type:'draw',metadata:{invoice_kind:'earnest_deposit'} }), /cannot bill project work/)
+})
+test('general workflow does not inherit construction-specific approval or closing', () => {
+  const policy = getGeneralReceivablesPolicy()
+  assert.equal(policy.customerLabel, 'Customer')
+  assert.equal(policy.supportsClosingInvoices, false)
+  assert.equal(policy.supportsRetainage, false)
+  assert.equal(policy.supportsProgressApplications, false)
+  assert.notEqual(policy.approvalMode, 'required_review')
+})
+test('general and project invoice links preserve customer and draft context', () => {
+  assert.equal(newInvoiceHref(null, {customerId:'customer'}), '/billing?compose=new&customer=customer')
+  assert.equal(newInvoiceHref(null, {duplicateOf:'invoice'}), '/billing?compose=new&duplicate=invoice')
+  assert.equal(resumeInvoiceHref(null,'invoice'), '/billing?compose=invoice')
+  assert.equal(invoiceHref('invoice'), '/billing?invoice=invoice')
+  assert.equal(newInvoiceHref('project'), '/projects/project/financials/billing?compose=new')
+})

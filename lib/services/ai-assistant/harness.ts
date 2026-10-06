@@ -1,9 +1,9 @@
 import "server-only"
 
-import { stepCountIs, streamText, type LanguageModelUsage } from "ai"
+import { stepCountIs, streamText } from "ai"
 
 import type { AiSearchTraceEvent, AskAiSearchResponse } from "@/lib/services/ai-search/types"
-import { getOrgAiSearchConfigFromContext, type AiConfigSource, type AiProvider } from "@/lib/services/ai-config"
+import { getOrgAiSearchConfigFromContext, getAiFeatureTierConfig, type AiSearchConfig, type AiTier, type AiConfigSource, type AiProvider } from "@/lib/services/ai-config"
 import { auditNumericClaims, describeUnsupportedFigures } from "@/lib/ai/numeric-audit"
 import { describeBlockedTypes } from "@/lib/ai/search-visibility"
 import { lookupCachedAnswer, storeCachedAnswer } from "@/lib/services/ai-assistant/answer-cache"
@@ -24,7 +24,8 @@ import {
 import { recordAiSearchEvent } from "@/lib/services/ai-search/telemetry"
 import { getAiSearchRuntimeFlags } from "@/lib/services/ai-search-flags"
 import { getApiKeyForProvider, resolveLanguageModel } from "@/lib/services/ai/provider"
-import { recordAiUsage } from "@/lib/services/ai/usage"
+import { generationOptions, assistantTier, classifyAiError, canRetryAssistant, redactAiError } from "@/lib/services/ai/policy"
+import { recordAiUsage, toTokenUsage, usageFromError, addTokenUsage, type AiTokenUsage } from "@/lib/services/ai/usage"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import type { SearchResult } from "@/lib/services/search"
@@ -329,7 +330,7 @@ export async function streamAiAssistant({
   }
 
   const context = await requireOrgContext()
-  const [aiConfig, runtimeFlags] = await Promise.all([
+  const [initialConfig, runtimeFlags] = await Promise.all([
     getOrgAiSearchConfigFromContext(context),
     getAiSearchRuntimeFlags(context),
   ])
@@ -339,6 +340,13 @@ export async function streamAiAssistant({
     return
   }
 
+  let aiConfig: AiSearchConfig = initialConfig
+  let selectedTier: AiTier = "standard"
+  // Explicit organization settings remain authoritative.
+  if (initialConfig.source !== "org" && assistantTier(query) === "heavy") {
+    aiConfig = await getAiFeatureTierConfig({ supabase: createServiceSupabaseClient(), feature: "search", tier: "heavy" })
+    selectedTier = "heavy"
+  }
   const assistantMode = payload.mode ?? "org"
   const limit = clampLimit(payload.limit)
   const sessionId = await ensureAiSearchSession(context, assistantMode, payload.sessionId)
@@ -363,7 +371,7 @@ export async function streamAiAssistant({
     // Zero tokens, zero cost, and that is the point: without a row here the
     // cache looks like reduced usage rather than avoided spend, and nobody can
     // tell a working cache from a quiet week.
-    void recordAiUsage(createServiceSupabaseClient(), {
+    await recordAiUsage(createServiceSupabaseClient(), {
       orgId: context.orgId,
       feature: "search",
       tier: "standard",
@@ -440,7 +448,15 @@ export async function streamAiAssistant({
     })
   }
 
-  const apiKey = getApiKeyForProvider(aiConfig.provider)
+  let apiKey = getApiKeyForProvider(aiConfig.provider)
+  const fallbackConfig = initialConfig.source === "org" ? null : await getAiFeatureTierConfig({
+    supabase: createServiceSupabaseClient(), feature: "search", tier: "fast",
+  })
+  if (!apiKey && fallbackConfig && fallbackConfig.provider !== aiConfig.provider) {
+    aiConfig = fallbackConfig
+    selectedTier = "fast"
+    apiKey = getApiKeyForProvider(aiConfig.provider)
+  }
   if (!apiKey) {
     await emitTrace(emit, {
       id: "llm-unavailable",
@@ -472,7 +488,6 @@ export async function streamAiAssistant({
     return
   }
 
-  const model = resolveLanguageModel(aiConfig.provider, apiKey, aiConfig.model)
   const tools =
     assistantMode === "org"
       ? createAiAssistantTools({
@@ -487,41 +502,34 @@ export async function streamAiAssistant({
 
   let text = ""
   let streamFailed = false
-  let usage: LanguageModelUsage | null = null
+  let calledTool = false
+  const modelDeadline = Date.now() + TOTAL_TIMEOUT_MS
+  const firstTier = selectedTier
 
-  try {
-    const result = streamText({
-      model,
-      system: buildSystemPrompt(assistantMode),
-      prompt: buildPrompt({
-        query,
-        sessionContext,
-        currentProjectId: payload.currentProjectId,
-        speculativeContext: assistantMode === "org" ? formatResultContext(speculativeResults) : "",
-      }),
-      tools,
-      stopWhen: stepCountIs(6),
-      temperature: assistantMode === "org" ? 0.2 : 0.4,
-      maxOutputTokens: 800,
-      abortSignal,
-      timeout: {
-        stepMs: STEP_TIMEOUT_MS,
-        totalMs: TOTAL_TIMEOUT_MS,
-      },
-      experimental_telemetry: {
-        isEnabled: true,
-        functionId: "ai-search.tool-loop",
-        metadata: {
-          orgId: context.orgId,
-          assistantMode,
-          provider: aiConfig.provider,
-          model: aiConfig.model,
-        },
-      },
-    })
-
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    let usage: AiTokenUsage | null = null
+    let streamError: unknown = null
+    const attemptStartedAt = Date.now()
+    streamFailed = false
+    try {
+      const result = streamText({
+        model: resolveLanguageModel(aiConfig.provider, apiKey!, aiConfig.model),
+        system: buildSystemPrompt(assistantMode),
+        prompt: buildPrompt({ query, sessionContext, currentProjectId: payload.currentProjectId,
+          speculativeContext: assistantMode === "org" ? formatResultContext(speculativeResults) : "" }),
+        tools,
+        onStepFinish: (step) => { usage = addTokenUsage(usage, toTokenUsage(step.usage, step.providerMetadata)) },
+        stopWhen: stepCountIs(6),
+        ...generationOptions(aiConfig.provider, aiConfig.model, "search", selectedTier === "heavy" ? "low" : "none"),
+        maxRetries: 0,
+        maxOutputTokens: selectedTier === "heavy" ? 2400 : 1200,
+        abortSignal,
+        timeout: { stepMs: STEP_TIMEOUT_MS, totalMs: Math.max(1, modelDeadline - Date.now()) },
+        experimental_telemetry: { isEnabled: true, functionId: "ai-search.tool-loop",
+          metadata: { orgId: context.orgId, assistantMode, provider: aiConfig.provider, model: aiConfig.model } },
+      })
     for await (const part of result.fullStream) {
-      if (abortSignal?.aborted) break
+      if (abortSignal?.aborted) { streamFailed = true; break }
 
       if (part.type === "text-delta") {
         text += part.text
@@ -530,6 +538,7 @@ export async function streamAiAssistant({
       }
 
       if (part.type === "tool-call") {
+        calledTool = true
         await emitTrace(emit, {
           id: `tool-call-${part.toolCallId}`,
           status: "running",
@@ -561,54 +570,45 @@ export async function streamAiAssistant({
 
       if (part.type === "error") {
         streamFailed = true
+        streamError = part.error
         await emitTrace(emit, {
           id: "stream-error",
           status: "warning",
           label: "Model stream warning",
-          detail: part.error instanceof Error ? part.error.message : "The model stream reported an error.",
+          detail: part.error instanceof Error ? redactAiError(part.error.message) : "The model stream reported an error.",
         })
       }
     }
 
-    // Safe only because the stream above is fully drained by here; this covers
-    // every step of the tool loop, not just the final one.
-    usage = await result.totalUsage
-  } catch (error) {
-    streamFailed = true
-    await emitTrace(emit, {
-      id: "stream-failed",
-      status: "warning",
-      label: "Model stream failed",
-      detail: error instanceof Error ? error.message : "The assistant stream failed.",
-    })
-  }
 
-  // The assistant is the highest-volume model call in the product and was the
-  // one nobody was billing: the gateway logs every extraction attempt, while
-  // this loop — six tool steps of it — reported nothing. Fire-and-forget, like
-  // every other usage row, because analytics must not fail an answer.
-  void recordAiUsage(createServiceSupabaseClient(), {
-    orgId: context.orgId,
-    feature: "search",
-    // The assistant resolves its model through the legacy per-org search config,
-    // which has no tier. Recording the feature's base tier keeps the row
-    // groupable next to gateway rows rather than inventing a tier it never used.
-    tier: "standard",
-    provider: aiConfig.provider,
-    model: aiConfig.model,
-    usage: {
-      inputTokens: usage?.inputTokens ?? null,
-      outputTokens: usage?.outputTokens ?? null,
-      totalTokens: usage?.totalTokens ?? null,
-    },
-    latencyMs: Date.now() - startedAt,
-    attempt: 1,
-    escalatedFrom: null,
-    status: streamFailed ? "error" : "ok",
-    errorKind: streamFailed ? "stream_failed" : null,
-    entityType: "ai_search_session",
-    entityId: sessionId,
-  })
+      usage = { ...toTokenUsage(await result.totalUsage), upstreamProvider: (usage as AiTokenUsage | null)?.upstreamProvider }
+    } catch (error) {
+      streamFailed = true
+      streamError = error
+      await emitTrace(emit, { id: "stream-failed", status: "warning", label: "Model stream failed",
+        detail: error instanceof Error ? redactAiError(error.message) : "The assistant stream failed." })
+    }
+    const kind = streamError ? classifyAiError(streamError) : null
+    await recordAiUsage(createServiceSupabaseClient(), {
+      orgId: context.orgId, feature: "search", tier: selectedTier,
+      provider: aiConfig.provider, model: aiConfig.model,
+      usage: usage ?? usageFromError(streamError),
+      latencyMs: Date.now() - attemptStartedAt, attempt,
+      escalatedFrom: attempt > 1 ? firstTier : null,
+      status: streamFailed ? "error" : "ok", errorKind: kind,
+      errorMessage: streamError instanceof Error ? streamError.message : null,
+      entityType: "ai_search_session", entityId: sessionId,
+    })
+    if (attempt === 2 || !streamFailed || !kind || !fallbackConfig ||
+      fallbackConfig.provider === aiConfig.provider || !getApiKeyForProvider(fallbackConfig.provider) ||
+      !canRetryAssistant({ kind, emittedText: text.length > 0, calledTool,
+        aborted: abortSignal?.aborted ?? false, remainingMs: modelDeadline - Date.now() })) break
+    aiConfig = fallbackConfig
+    selectedTier = "fast"
+    apiKey = getApiKeyForProvider(aiConfig.provider)
+    await emitTrace(emit, { id: "provider-recovery", status: "started", label: "Retrying assistant",
+      detail: "The provider is temporarily unavailable. Trying the alternate provider." })
+  }
 
   const toolContext = buildToolContext(state)
   if (!text.trim() && toolContext) {

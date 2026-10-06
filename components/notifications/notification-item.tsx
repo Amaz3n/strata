@@ -1,19 +1,19 @@
 'use client'
 
 import { formatDistanceToNow } from 'date-fns'
-import { Check, CheckCheck } from 'lucide-react'
+import { Check } from 'lucide-react'
 import { useRouter } from "next/navigation"
 import { Button } from '@/components/ui/button'
 import type { NotificationRecord } from '@/lib/types/notifications'
-import { useNotifications } from '@/hooks/use-notifications'
+import { getNotificationHref } from "@/lib/notifications/destinations"
 
 interface NotificationItemProps {
   notification: NotificationRecord
   isRead: boolean
+  markAsRead: (id: string) => Promise<void>
 }
 
-export function NotificationItem({ notification, isRead }: NotificationItemProps) {
-  const { markAsRead } = useNotifications()
+export function NotificationItem({ notification, isRead, markAsRead }: NotificationItemProps) {
   const router = useRouter()
   const payload = notification.payload as any
   const href = getNotificationHref(payload)
@@ -62,6 +62,7 @@ export function NotificationItem({ notification, isRead }: NotificationItemProps
         {/* Mark as read button */}
         {!isRead && (
           <Button
+            aria-label="Mark notification as read"
             variant="ghost"
             size="sm"
             className="h-8 w-8 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -77,48 +78,3 @@ export function NotificationItem({ notification, isRead }: NotificationItemProps
     </div>
   )
 }
-
-function getNotificationHref(payload: any): string | null {
-  const projectId = typeof payload?.project_id === "string" ? payload.project_id : null
-  const entityType = typeof payload?.entity_type === "string" ? payload.entity_type : null
-  const entityId = typeof payload?.entity_id === "string" ? payload.entity_id : null
-  const logId = typeof payload?.daily_log_id === "string" ? payload.daily_log_id : null
-
-  // An explicit destination wins. Everything below infers a link from a project,
-  // which left every ORG-level notification — reconciliation drift among them —
-  // unable to link anywhere at all.
-  const explicit = typeof payload?.href === "string" ? payload.href : null
-  if (explicit?.startsWith("/")) return explicit
-
-  if (!projectId) return null
-
-  switch (entityType) {
-    case "rfi":
-      return `/projects/${projectId}/rfis`
-    case "submittal":
-      return `/projects/${projectId}/submittals`
-    case "invoice":
-      return `/projects/${projectId}/invoices`
-    case "change_order":
-      return `/projects/${projectId}/change-orders`
-    case "file":
-      return entityId ? `/projects/${projectId}/documents?fileId=${entityId}` : `/projects/${projectId}/documents`
-    case "drawing_set":
-    case "drawing_sheet":
-    case "drawing_revision":
-      return `/projects/${projectId}/drawings`
-    case "task":
-      return `/projects/${projectId}/tasks`
-    case "daily_log":
-      return logId ? `/projects/${projectId}/daily-logs?logId=${logId}` : `/projects/${projectId}/daily-logs`
-    default:
-      return `/projects/${projectId}`
-  }
-}
-
-
-
-
-
-
-

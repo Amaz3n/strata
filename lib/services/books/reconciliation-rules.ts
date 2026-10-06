@@ -194,7 +194,7 @@ export function reconciliationRunStatus(args: { itemCount: number; projectsSkipp
  * rather than buried in a generic failure list nobody reads.
  */
 export function classifyProjectionFailure(error: string) {
-  return error.includes("Cannot post into a closed accounting period")
+  return /cannot post into a closed accounting period|accounting period is closed and cannot accept postings/i.test(error)
     ? ("projection_blocked_by_closed_period" as const)
     : ("projection_failed" as const)
 }
@@ -255,4 +255,13 @@ export function planRetainageControlFindings(args: {
     })
   }
   return findings
+}
+
+/** An incremental pass can only resolve findings for sources it actually evaluated. */
+export function projectionFindingWasEvaluated(
+  item: { entityType: string | null; entityId: string | null },
+  evaluatedSourceKeys: ReadonlySet<string>,
+) {
+  return item.entityType !== null && item.entityId !== null
+    && evaluatedSourceKeys.has(`${item.entityType}:${item.entityId}`)
 }

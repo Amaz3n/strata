@@ -9,7 +9,8 @@ import type { ProjectTeamMember } from "@/app/(app)/projects/[id]/actions"
 import { bulkAssignPunchCompanyAction, createProjectPunchItemAction, type ProjectPunchItem, updateProjectPunchItemAction } from "@/app/(app)/projects/[id]/actions"
 import { derivePunchBallInCourt } from "@/lib/punch"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
-import { attachFileAction, detachFileLinkAction, listAttachmentsAction, uploadFileAction } from "@/app/(app)/documents/actions"
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
+import { attachFileAction, detachFileLinkAction, listAttachmentsAction } from "@/app/(app)/documents/actions"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -70,15 +71,7 @@ const shortStatusLabel: Record<string, string> = {
   closed: "Closed",
 }
 
-export function PunchTab({
-  projectId,
-  initialItems,
-  initialItemId,
-  team,
-  companies,
-  locations,
-  canManageLocations,
-}: {
+interface PunchTabProps {
   projectId: string
   initialItems: ProjectPunchItem[]
   initialItemId?: string
@@ -86,7 +79,21 @@ export function PunchTab({
   companies: Array<{ id: string; name: string }>
   locations: ProjectLocation[]
   canManageLocations: boolean
-}) {
+}
+
+export function PunchTab(props: PunchTabProps) {
+  return <PunchTabContent key={props.projectId} {...props} />
+}
+
+function PunchTabContent({
+  projectId,
+  initialItems,
+  initialItemId,
+  team,
+  companies,
+  locations,
+  canManageLocations,
+}: PunchTabProps) {
   const isMobile = useIsMobile()
   const [items, setItems] = useState<ProjectPunchItem[]>(initialItems)
   const [search, setSearch] = useState("")
@@ -99,7 +106,23 @@ export function PunchTab({
   const [selected, setSelected] = useState<ProjectPunchItem | null>(initialItem)
   const [isPending, startTransition] = useTransition()
 
-  useEffect(() => setItems(initialItems), [initialItems])
+  const [itemSource, setItemSource] = useState(initialItems)
+  const [itemIdSource, setItemIdSource] = useState(initialItemId)
+  if (itemSource !== initialItems) {
+    setItemSource(initialItems)
+    setItems(initialItems)
+    setSelectedIds((current) => new Set([...current].filter((id) => initialItems.some((item) => item.id === id))))
+    if (selected) {
+      const updated = initialItems.find((item) => item.id === selected.id) ?? null
+      setSelected(updated)
+      if (!updated) setSheetOpen(false)
+    }
+  }
+  if (itemIdSource !== initialItemId) {
+    setItemIdSource(initialItemId)
+    setSelected(initialItem)
+    setSheetOpen(Boolean(initialItem))
+  }
 
   const filtered = useMemo(() => {
     const safeItems = items ?? []
@@ -546,6 +569,7 @@ export function PunchTab({
       </div>
 
       <PunchItemSheet
+        key={`${selected?.id ?? "new"}:${sheetOpen ? "open" : "closed"}`}
         open={sheetOpen}
         onOpenChange={(open) => {
           setSheetOpen(open)
@@ -588,45 +612,49 @@ function PunchItemSheet({
   onUpdated: (item: ProjectPunchItem) => void
 }) {
   const isEditing = !!item
-  const [title, setTitle] = useState("")
-  const [description, setDescription] = useState("")
-  const [location, setLocation] = useState("")
-  const [locationId, setLocationId] = useState<string | null>(null)
-  const [severity, setSeverity] = useState("")
-  const [dueDate, setDueDate] = useState<Date | undefined>(undefined)
-  const [assignedTo, setAssignedTo] = useState<string>("__none__")
-  const [assignedCompany, setAssignedCompany] = useState<string>("__none__")
-  const [backCharge, setBackCharge] = useState(false)
-  const [status, setStatus] = useState<PunchStatus>("open")
-  const [verificationRequired, setVerificationRequired] = useState(false)
-  const [verificationNotes, setVerificationNotes] = useState("")
+  const [title, setTitle] = useState(item?.title ?? "")
+  const [description, setDescription] = useState(item?.description ?? "")
+  const [location, setLocation] = useState(item?.location ?? "")
+  const [locationId, setLocationId] = useState<string | null>(item?.location_id ?? null)
+  const [severity, setSeverity] = useState(item?.severity ?? "")
+  const [dueDate, setDueDate] = useState<Date | undefined>(() => item?.due_date ? new Date(item.due_date) : undefined)
+  const [assignedTo, setAssignedTo] = useState<string>(item?.assigned_to ?? "__none__")
+  const [assignedCompany, setAssignedCompany] = useState<string>(item?.assigned_company_id ?? "__none__")
+  const [backCharge, setBackCharge] = useState(Boolean(item?.back_charge_flag))
+  const [status, setStatus] = useState<PunchStatus>((item?.status as PunchStatus) ?? "open")
+  const [verificationRequired, setVerificationRequired] = useState(Boolean(item?.verification_required))
+  const [verificationNotes, setVerificationNotes] = useState(item?.verification_notes ?? "")
   const [isPending, startTransition] = useTransition()
 
   const [attachmentsLoading, setAttachmentsLoading] = useState(false)
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [shareWithClients, setShareWithClients] = useState(true)
 
-  useEffect(() => {
-    if (!open) return
-    setTitle(item?.title ?? "")
-    setDescription(item?.description ?? "")
-    setLocation(item?.location ?? "")
-    setLocationId(item?.location_id ?? null)
-    setSeverity(item?.severity ?? "")
-    setDueDate(item?.due_date ? new Date(item.due_date) : undefined)
-    setAssignedTo(item?.assigned_to ?? "__none__")
-    setAssignedCompany(item?.assigned_company_id ?? "__none__")
-    setBackCharge(Boolean(item?.back_charge_flag))
-    setStatus(((item?.status as PunchStatus) ?? "open") as PunchStatus)
-    setVerificationRequired(Boolean(item?.verification_required))
-    setVerificationNotes(item?.verification_notes ?? "")
-  }, [open, item])
+  const [formSource, setFormSource] = useState(item)
+  if (formSource !== item) {
+    setFormSource(item)
+    if (formSource?.title !== item?.title) setTitle(item?.title ?? "")
+    if (formSource?.description !== item?.description) setDescription(item?.description ?? "")
+    if (formSource?.location !== item?.location) setLocation(item?.location ?? "")
+    if (formSource?.location_id !== item?.location_id) setLocationId(item?.location_id ?? null)
+    if (formSource?.severity !== item?.severity) setSeverity(item?.severity ?? "")
+    if (formSource?.due_date !== item?.due_date) setDueDate(item?.due_date ? new Date(item.due_date) : undefined)
+    if (formSource?.assigned_to !== item?.assigned_to) setAssignedTo(item?.assigned_to ?? "__none__")
+    if (formSource?.assigned_company_id !== item?.assigned_company_id) setAssignedCompany(item?.assigned_company_id ?? "__none__")
+    if (formSource?.back_charge_flag !== item?.back_charge_flag) setBackCharge(Boolean(item?.back_charge_flag))
+    if (formSource?.status !== item?.status) setStatus((item?.status as PunchStatus) ?? "open")
+    if (formSource?.verification_required !== item?.verification_required) setVerificationRequired(Boolean(item?.verification_required))
+    if (formSource?.verification_notes !== item?.verification_notes) setVerificationNotes(item?.verification_notes ?? "")
+  }
 
   useEffect(() => {
     if (!open || !item) return
+    let cancelled = false
+    setAttachments([])
     setAttachmentsLoading(true)
     listAttachmentsAction("punch_item", item.id)
-      .then((links) =>
+      .then((links) => {
+        if (cancelled) return
         setAttachments(
           links.map((link) => ({
             id: link.file.id,
@@ -639,10 +667,11 @@ function PunchItemSheet({
             created_at: link.created_at,
             link_role: link.link_role,
           })),
-        ),
-      )
-      .catch((error) => console.error("Failed to load punch item attachments", error))
-      .finally(() => setAttachmentsLoading(false))
+        )
+      })
+      .catch((error) => { if (!cancelled) console.error("Failed to load punch item attachments", error) })
+      .finally(() => { if (!cancelled) setAttachmentsLoading(false) })
+    return () => { cancelled = true }
   }, [open, item])
 
   const beforeAttachments = attachments.filter((a) => (a.link_role ?? "") === "before")

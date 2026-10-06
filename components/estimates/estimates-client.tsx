@@ -1,5 +1,8 @@
 "use client"
 
+import Link from "next/link"
+import { useSearchParams } from "next/navigation"
+import { EstimateWithdrawDialog } from "@/components/estimates/estimate-withdraw-dialog"
 import { useEffect, useMemo, useState, useTransition } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
@@ -79,6 +82,7 @@ export function EstimatesClient({
   initialProjectId,
   initialProspectId,
 }: EstimatesClientProps) {
+  const selectedEstimateId = useSearchParams().get("estimate")
   const [items, setItems] = useState(estimates)
   const [search, setSearch] = useState("")
   const [statusFilter, setStatusFilter] = useState<"all" | StatusKey>("all")
@@ -87,14 +91,24 @@ export function EstimatesClient({
   const [countersigningId, setCountersigningId] = useState<string | null>(null)
   const [duplicatingId, setDuplicatingId] = useState<string | null>(null)
   const [sendingId, setSendingId] = useState<string | null>(null)
+  const [withdrawId, setWithdrawId] = useState<string | null>(null)
   const [revisingId, setRevisingId] = useState<string | null>(null)
   const [activityEstimate, setActivityEstimate] = useState<(Estimate & { recipient_name?: string | null }) | null>(null)
+  const [estimateSource, setEstimateSource] = useState(estimates)
+  if (estimateSource !== estimates) {
+    setEstimateSource(estimates)
+    setItems(estimates)
+    if (activityEstimate) setActivityEstimate(estimates.find(item => item.id === activityEstimate.id) ?? null)
+    if (withdrawId && !estimates.some(item => item.id === withdrawId)) setWithdrawId(null)
+  }
 
   useEffect(() => {
     if (initialRecipientId || initialProjectId || initialProspectId) {
       setCreateOpen(true)
     }
   }, [initialRecipientId, initialProjectId, initialProspectId])
+
+  useEffect(() => { const item = estimates.find(item => item.id === selectedEstimateId); if (item) { setSearch(item.title); setActivityEstimate(item); } }, [selectedEstimateId, estimates])
 
   const filtered = useMemo(() => {
     const term = search.toLowerCase()
@@ -307,6 +321,7 @@ export function EstimatesClient({
                     >
                       {estimate.title}
                     </button>
+                    {estimate.project_id && estimate.status === "draft" && estimate.is_current_version !== false && !estimate.metadata?.pricing_worksheet && <Link className="mt-1 block text-xs text-muted-foreground hover:underline" href={`/projects/${estimate.project_id}/drawings?destination=estimate&target=${estimate.id}&takeoff=1`}>Measure estimate scope</Link>}
                     {estimate.is_current_version === false ? (
                       <div className="text-xs text-muted-foreground">superseded · v{estimate.version}</div>
                     ) : null}
@@ -338,7 +353,7 @@ export function EstimatesClient({
                         <DropdownMenuContent align="end">
                           <DropdownMenuItem
                             onClick={() => void handleSend(estimate.id)}
-                            disabled={sendingId === estimate.id}
+                            disabled={sendingId === estimate.id || ["approved", "client_signed", "executed", "converted_to_project"].includes(statusKey) || estimate.is_current_version === false}
                           >
                             <Send className="mr-2 h-4 w-4" />
                             {sendingId === estimate.id ? "Sending..." : "Send to client"}
@@ -363,7 +378,7 @@ export function EstimatesClient({
                           </DropdownMenuItem>
                           <DropdownMenuItem
                             onClick={() => void handleRevise(estimate.id)}
-                            disabled={revisingId === estimate.id}
+                            disabled={revisingId === estimate.id || ["client_signed", "executed", "converted_to_project"].includes(statusKey)}
                           >
                             <Copy className="mr-2 h-4 w-4" />
                             {revisingId === estimate.id ? "Creating..." : "Revise (new version)"}
@@ -375,6 +390,7 @@ export function EstimatesClient({
                             <FileText className="mr-2 h-4 w-4" />
                             {duplicatingId === estimate.id ? "Duplicating..." : "Duplicate"}
                           </DropdownMenuItem>
+                          {statusKey === "client_signed" && <DropdownMenuItem onClick={() => setWithdrawId(estimate.id)}>Withdraw and revise</DropdownMenuItem>}
                           <DropdownMenuSeparator />
                           <DropdownMenuItem onClick={() => void handleStatus(estimate.id, "approved")}>
                             Mark approved
@@ -411,6 +427,7 @@ export function EstimatesClient({
           </TableBody>
         </Table>
       </div>
+      {withdrawId && <EstimateWithdrawDialog estimateId={withdrawId} open onOpenChange={(open) => { if (!open) setWithdrawId(null) }} onWithdrawn={(revised) => setItems((prev) => [revised, ...prev.map((item) => item.id === withdrawId ? { ...item, is_current_version: false } : item)])} />}
     </div>
   )
 }

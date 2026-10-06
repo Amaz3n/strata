@@ -20,7 +20,7 @@ export async function getOverheadBudgetWorkspace(input: { fiscalYear: number; or
   if (settingsError) throw new Error(`Failed to load fiscal calendar: ${settingsError.message}`);
   const range = fiscalYearRange(input.fiscalYear, Number(settings.fiscal_year_start_month));
   const [accountResult, budgetResult, snapshot] = await Promise.all([
-    service.from("gl_accounts").select("id,code,name").eq("org_id", context.orgId).eq("account_type", "expense").eq("active", true).order("code"),
+    service.from("gl_accounts").select("id,code,name,active").eq("org_id", context.orgId).eq("account_type", "expense").order("code"),
     service.from("books_overhead_budgets").select("id,name,status,notes,lines:books_overhead_budget_lines(account_id,month_start,budget_cents,notes)").eq("org_id", context.orgId).eq("fiscal_year", input.fiscalYear).order("status", { ascending: true }).order("updated_at", { ascending: false }).limit(1).maybeSingle(),
     loadPostedLedger(context.orgId, range.endDate),
   ]);
@@ -49,7 +49,7 @@ export async function getOverheadBudgetWorkspace(input: { fiscalYear: number; or
     fiscalYear: input.fiscalYear,
     monthStarts: range.months,
     budget: budget ? { id: budget.id, name: budget.name, status: budget.status, notes: budget.notes } : null,
-    accounts: (accountResult.data ?? []).map((account) => ({ ...account, budgetCents: budgetLines[account.id] ?? Array(12).fill(0), actualCents: actuals[account.id] ?? Array(12).fill(0) })),
+    accounts: (accountResult.data ?? []).filter((account) => account.active || (actuals[account.id] ?? []).some(value => value !== 0) || (budgetLines[account.id] ?? []).some(value => value !== 0)).map((account) => ({ ...account, budgetCents: budgetLines[account.id] ?? Array(12).fill(0), actualCents: actuals[account.id] ?? Array(12).fill(0) })),
   };
 }
 

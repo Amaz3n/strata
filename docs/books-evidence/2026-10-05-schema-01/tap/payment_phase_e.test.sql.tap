@@ -1,0 +1,20 @@
+1..19
+ok 1 - payout invitations are their own kind of access record
+ok 2 - Function public.assert_vendor_relationship_claim_live() should exist
+ok 3 - Function public.assert_claim_withdrawal_closes_access() should exist
+ok 4 - a relationship cannot go active behind the invariant's back
+ok 5 - a claim cannot be withdrawn behind the invariant's back
+ok 6 - payout invitations are indexed by the (org, company, contact) they belong to
+ok 7 - existing access records stay ordinary portal access — a project link that was once reused as a payout link is not reclassified
+ok 8 - purpose is a closed set
+ok 9 - a relationship cannot be active while its claim is only pending
+ok 10 - a verified claim lets the relationship go active
+ok 11 - a claim cannot be withdrawn out from under an active relationship
+ok 12 - withdrawing access in the right order — relationship first, then claim — is allowed
+ok 13 - money cannot be restored against a revoked claim without restoring the claim
+ok 14 - restoring the claim first is what makes restore work without SQL
+ok 15 - a bill with no vendor company cannot enter a payment run
+ok 16 - an attributed bill enters the run normally
+ok 17 - every disbursement descends from a run item
+ok 18 - a disbursement cannot name a bill its run item does not
+ok 19 - an unattributed bill is still a bill — email ingest writes them before anyone files them

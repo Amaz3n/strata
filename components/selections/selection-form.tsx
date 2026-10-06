@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { useForm } from "react-hook-form"
+import { useForm, useWatch } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 
 import type { Project, SelectionCategory } from "@/lib/types"
@@ -68,6 +68,8 @@ export function SelectionForm({
       notes: "",
     },
   })
+
+  const [categoryId, dueDate] = useWatch({ control: form.control, name: ["category_id", "due_date"] })
 
   const handleSubmit = form.handleSubmit(async (values) => {
     await onSubmit(values)
@@ -222,11 +224,11 @@ export function SelectionForm({
               <div className="rounded-lg border bg-muted/40 p-4 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Badge variant="outline">Status: {statusValue}</Badge>
-                  <Badge variant="outline">Category: {form.watch("category_id") ? "Selected" : "None"}</Badge>
+                  <Badge variant="outline">Category: {categoryId ? "Selected" : "None"}</Badge>
                 </div>
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <Calendar className="h-4 w-4" />
-                  {form.watch("due_date") ? `Due ${form.watch("due_date")}` : "No due date"}
+                  {dueDate ? `Due ${dueDate}` : "No due date"}
                 </div>
               </div>
             </div>
@@ -246,7 +248,6 @@ export function SelectionForm({
     </Sheet>
   )
 }
-
 
 
 

@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { notFound } from "next/navigation"
 
 import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
@@ -6,6 +7,7 @@ import { RfqResponseForm } from "./rfq-response-form"
 
 
 export default async function RfqPage({ params }: { params: Promise<{ token: string }> }) {
+  await connection()
   const { token } = await params
   const portal = await getPortalChangeEventRfq(token)
   if (!portal) notFound()

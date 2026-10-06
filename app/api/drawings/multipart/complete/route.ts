@@ -13,7 +13,7 @@ export async function POST(request: Request) {
     const uploadId = typeof body?.uploadId === "string" ? body.uploadId : null
     const rawParts = Array.isArray(body?.parts) ? body.parts : null
 
-    if (!storagePath || !uploadId || !rawParts || rawParts.length === 0) {
+    if (!storagePath || !uploadId || !rawParts || rawParts.length === 0 || rawParts.length > 10000) {
       return NextResponse.json({ error: "Missing required fields." }, { status: 400 })
     }
 
@@ -21,7 +21,7 @@ export async function POST(request: Request) {
     for (const part of rawParts) {
       const partNumber = Number(part?.partNumber)
       const etag = typeof part?.etag === "string" ? part.etag : null
-      if (!Number.isInteger(partNumber) || partNumber < 1 || !etag) {
+      if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > 10000 || !etag?.trim() || parts.some(existing => existing.partNumber === partNumber)) {
         return NextResponse.json({ error: "Invalid part list." }, { status: 400 })
       }
       parts.push({ partNumber, etag })
@@ -32,7 +32,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid upload path." }, { status: 400 })
     }
 
-    const denied = await requireDrawingUploadForPath({ supabase, orgId, userId, storagePath: normalizedStoragePath })
+    const denied = await requireDrawingUploadForPath({ supabase, orgId, userId, storagePath: normalizedStoragePath, uploadId, transferId: body.transferId })
     if (denied) return denied
 
     const result = await completeDrawingPdfMultipartUpload({

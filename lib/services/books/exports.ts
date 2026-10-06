@@ -1,7 +1,8 @@
 import "server-only";
-import { EXPORT_TABLES, verifyBooksExportBundle } from "@/lib/services/books/export-contract";
+import { BOOKS_EXPORT_SCHEMA_VERSION, EXPORT_TABLES, verifyBooksExportBundle } from "@/lib/services/books/export-contract";
 export { verifyBooksExportBundle } from "@/lib/services/books/export-contract";
 
+import { historicalDocumentInventory } from "./tax-attachment-archive";
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { z } from "zod";
@@ -29,24 +30,6 @@ async function requireExportContext(orgId?: string) {
   return context;
 }
 
-async function fetchAllRows(table: string, orgId: string) {
-  const service = createServiceSupabaseClient();
-  const rows: Record<string, unknown>[] = [];
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await service
-      .from(table)
-      .select("*")
-      .eq("org_id", orgId)
-      .order("id")
-      .range(from, from + 999);
-    if (error) throw new Error(`Failed to export ${table}: ${error.message}`);
-    const page = z.array(z.record(z.unknown())).parse(data ?? []);
-    rows.push(...page);
-    if (page.length < 1000) break;
-  }
-  return rows;
-}
-
 function redact(table: string, rows: Record<string, unknown>[]) {
   if (table === "org_funding_sources") return rows.map((row) => Object.fromEntries(["id", "org_id", "provider", "bank_name", "account_type", "last4", "status", "books_gl_account_id", "created_at", "updated_at"].map(key => [key, row[key]])));
   if (table !== "companies") return rows;
@@ -70,7 +53,7 @@ export async function createCompleteBooksExport(input: {
     .insert({
       org_id: context.orgId,
       export_type: input.exportType ?? "complete",
-      schema_version: 2,
+      schema_version: BOOKS_EXPORT_SCHEMA_VERSION,
       status: "generating",
       requested_by: context.userId,
     })
@@ -80,29 +63,56 @@ export async function createCompleteBooksExport(input: {
     throw new Error(`Failed to create Books export: ${createError.message}`);
   const exportId = z.object({ id: z.string().uuid() }).parse(exportData).id;
   try {
+    const { data: snapshotData, error: snapshotError } = await service.rpc("capture_books_entity_authorized_export", { p_org_id: context.orgId, p_actor_id: context.userId });
+    if (snapshotError) throw new Error(`Failed to capture Books export snapshot: ${snapshotError.message}`);
+    const snapshot = z.object({
+      orgId: z.string(), capturedAt: z.string().datetime({ offset: true }),
+      databaseSnapshot: z.string().min(1), tables: z.record(z.array(z.record(z.unknown()))),
+    }).parse(snapshotData);
+    if (snapshot.orgId !== context.orgId) throw new Error("Books export snapshot organization mismatch");
     const tables: Record<string, Record<string, unknown>[]> = {};
-    for (const table of EXPORT_TABLES)
-      tables[table] = redact(table, await fetchAllRows(table, context.orgId));
-    // Hash storage bytes, not only the database's claimed checksum. Process one
-    // stream at a time so evidence size does not multiply export memory usage.
+    for (const table of EXPORT_TABLES) {
+      if (!snapshot.tables[table]) throw new Error(`Books export snapshot missing ${table}`);
+      tables[table] = redact(table, snapshot.tables[table]);
+    }
+    // Include the same bytes we verify; recovery must not depend on live storage.
+    const supportingObjects: { fileId: string; dataBase64: string }[] = [];
     for (const file of tables.files ?? []) {
       if (typeof file.storage_path !== "string" || !file.storage_path) throw new Error(`Supporting file ${file.id} has no storage path`);
       const object = await getFilesObjectStream({ supabase: service, orgId: context.orgId, path: file.storage_path });
       const digest = createHash("sha256"); let bytes = 0;
-      if ("getReader" in object.body) {
-        const reader = object.body.getReader();
-        try { for (;;) { const chunk = await reader.read(); if (chunk.done) break; digest.update(chunk.value); bytes += chunk.value.byteLength; } } finally { reader.releaseLock(); }
-      } else { for await (const chunk of object.body) { digest.update(chunk); bytes += chunk.length; } }
+      const chunks: Uint8Array[] = [];
+      const reader = object.body.getReader();
+      try { for (;;) { const chunk = await reader.read(); if (chunk.done) break; digest.update(chunk.value); bytes += chunk.value.byteLength; chunks.push(chunk.value); } } finally { reader.releaseLock(); }
       const checksum = digest.digest("hex");
       if (file.checksum && file.checksum !== checksum) throw new Error(`Supporting file checksum mismatch: ${file.id}`);
       if (file.size_bytes != null && Number(file.size_bytes) !== bytes) throw new Error(`Supporting file size mismatch: ${file.id}`);
       file.checksum = checksum; file.size_bytes = bytes;
+      supportingObjects.push({ fileId: String(file.id), dataBase64: Buffer.concat(chunks).toString("base64") });
+    }
+    const supportingHistoricalFiles = historicalDocumentInventory(tables,context.orgId);
+    const supportingHistoricalObjects: { attachmentId: string; dataBase64: string }[] = [];
+    for (const attachment of supportingHistoricalFiles) {
+      if (attachment.currentFileId) continue; // Reuse the already embedded current object.
+      const object = await getFilesObjectStream({ supabase: service, orgId: context.orgId, path: attachment.storagePath });
+      const reader = object.body.getReader(), digest = createHash("sha256"), chunks: Uint8Array[] = [];
+      let size = 0;
+      try { for (;;) {
+        const chunk = await reader.read(); if (chunk.done) break;
+        size += chunk.value.byteLength;
+        if (!Number.isSafeInteger(size) || size > attachment.sizeBytes) { await reader.cancel(); throw new Error("Frozen tax attachment size differs"); }
+        digest.update(chunk.value); chunks.push(chunk.value);
+      } } finally { reader.releaseLock(); }
+      if (size !== attachment.sizeBytes || digest.digest("hex") !== attachment.checksum) throw new Error("Frozen tax attachment bytes differ from reviewed evidence");
+      supportingHistoricalObjects.push({ attachmentId: attachment.id, dataBase64: Buffer.concat(chunks).toString("base64") });
     }
     const generatedAt = new Date().toISOString();
     const manifest = {
-      schemaVersion: 2,
+      schemaVersion: BOOKS_EXPORT_SCHEMA_VERSION,
+      legalEntityIds: (tables.books_legal_entities ?? []).map(row => String(row.id)).sort(),
       orgId: context.orgId,
       generatedAt,
+      databaseSnapshot: { capturedAt: snapshot.capturedAt, visibility: snapshot.databaseSnapshot },
       tables: Object.fromEntries(
         Object.entries(tables).map(([table, rows]) => [
           table,
@@ -122,14 +132,15 @@ export async function createCompleteBooksExport(input: {
         checksum: file.checksum,
         mimeType: file.mime_type,
       })),
+      supportingHistoricalFiles,
       restoreInstructions:
-        "This data bundle includes a verified manifest of supporting storage objects. Copy those objects separately using the manifest paths, preserving bytes. Restore data into an empty isolated organization, preserve UUIDs, verify the copied file checksums, and run ledger rebuild and subledger tie-outs before enabling access. Credentials and full tax identities must be re-established separately.",
+        "This data bundle includes supporting storage objects in supportingObjects as base64 bytes keyed by fileId. Verify the archive offline, then decode each object to its manifest storage path, preserving bytes. Schema 8 also retains frozen historical tax objects in supportingHistoricalObjects keyed by attachmentId; supportingHistoricalFiles identifies their original paths and any shared current-file object. Tax attachments lacking frozen metadata do not establish review-time byte identity. Restore data into an empty isolated organization, preserve UUIDs, verify the copied file checksums, and run ledger rebuild and subledger tie-outs before enabling access. Credentials and full tax identities must be re-established separately.",
     };
-    const bundle = { manifest, tables };
+    const bundle = { manifest, tables, supportingObjects, supportingHistoricalObjects };
     const verification = verifyBooksExportBundle(bundle);
     if (!verification.valid)
       throw new Error(
-        "Books export verification found unbalanced or incomplete journals",
+        `Books export verification failed: ${verification.integrityErrors[0] ?? "Unbalanced or incomplete journal entries"}`,
       );
     const json = JSON.stringify(bundle);
     const contentHash = booksDigest(json);

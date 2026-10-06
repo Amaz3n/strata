@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { Suspense } from "react"
 import { notFound } from "next/navigation"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -22,20 +23,10 @@ interface ProjectChangeOrdersPageProps {
   searchParams: Promise<{ new?: string; title?: string; description?: string }>
 }
 
-export default async function ProjectChangeOrdersPage({
+export default function ProjectChangeOrdersPage({
   params,
   searchParams,
 }: ProjectChangeOrdersPageProps) {
-  const { id } = await params
-  const query = await searchParams
-  // `?new=1&description=…` — a takeoff quantity moved after a revision and the
-  // estimator chose to draft a CO. The composer opens prefilled; nothing is
-  // created until they submit.
-  const initialDraft =
-    query.new === "1"
-      ? { title: query.title ?? null, notes: query.description ?? null }
-      : null
-
   return (
     <>
       <PageLayout title="Change Orders" breadcrumbs={[
@@ -52,10 +43,28 @@ export default async function ProjectChangeOrdersPage({
           </div>
         </div>
       }>
-        <ProjectChangeOrdersData id={id} initialDraft={initialDraft} />
+        <ProjectChangeOrdersPageRoute params={params} searchParams={searchParams} />
       </Suspense>
     </>
   )
+}
+
+async function ProjectChangeOrdersPageRoute({
+  params,
+  searchParams,
+}: ProjectChangeOrdersPageProps) {
+  await connection()
+  const { id } = await params
+  const query = await searchParams
+  // `?new=1&description=…` — a takeoff quantity moved after a revision and the
+  // estimator chose to draft a CO. The composer opens prefilled; nothing is
+  // created until they submit.
+  const initialDraft =
+    query.new === "1"
+      ? { title: query.title ?? null, notes: query.description ?? null }
+      : null
+
+  return <ProjectChangeOrdersData id={id} initialDraft={initialDraft} />
 }
 
 async function ProjectChangeOrdersData({
@@ -71,17 +80,23 @@ async function ProjectChangeOrdersData({
     notFound()
   }
 
-  const { supabase, orgId } = await requireOrgContext()
-  const costCodesEnabled = resolveCostCodesEnabled(
-    project.financial_settings?.cost_codes_enabled,
-    await getOrgCostCodesEnabled(supabase, orgId),
-  )
-  const [changeOrders, changeEvents, orgBilling, costCodes, budgetLines] = await Promise.all([
+  const costOptionsPromise = (async () => {
+    const { supabase, orgId } = await requireOrgContext()
+    const costCodesEnabled = resolveCostCodesEnabled(
+      project.financial_settings?.cost_codes_enabled,
+      await getOrgCostCodesEnabled(supabase, orgId),
+    )
+    const [costCodes, budgetLines] = await Promise.all([
+      costCodesEnabled ? listCostCodes().catch(() => []) : Promise.resolve([]),
+      costCodesEnabled ? Promise.resolve([]) : listProjectBudgetLines(id).catch(() => []),
+    ])
+    return { costCodesEnabled, costCodes, budgetLines }
+  })()
+  const [changeOrders, changeEvents, orgBilling, { costCodesEnabled, costCodes, budgetLines }] = await Promise.all([
     listChangeOrdersAction(id),
     listChangeEvents(id).catch(() => []),
     getOrgBilling().catch(() => null),
-    costCodesEnabled ? listCostCodes().catch(() => []) : Promise.resolve([]),
-    costCodesEnabled ? Promise.resolve([]) : listProjectBudgetLines(id).catch(() => []),
+    costOptionsPromise,
   ])
 
   return (
@@ -89,6 +104,7 @@ async function ProjectChangeOrdersData({
       <TabsList><TabsTrigger value="events">Change events</TabsTrigger><TabsTrigger value="orders">Change orders</TabsTrigger></TabsList>
       <TabsContent value="events"><ChangeEventsClient projectId={id} initialEvents={changeEvents} /></TabsContent>
       <TabsContent value="orders"><ChangeOrdersClient
+        key={project.id}
         changeOrders={changeOrders}
         projects={[project]}
         costCodes={costCodes}

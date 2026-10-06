@@ -37,19 +37,19 @@ export async function stageOrgImportAction(input: { orgId?: string; importer: Im
 export async function patchOrgImportRowAction(input: { orgId?: string; importer: ImporterKey; batchId: string; rowId: string; patch?: Record<string, string | number | boolean | null>; skip?: boolean }) {
   return run(async () => {
     const parsed = z.object({ importer: importerSchema, batchId: uuid, rowId: uuid, patch: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(), skip: z.boolean().optional() }).parse(input)
-    const result = await patchImportRow({ batchId: parsed.batchId, rowId: parsed.rowId, patch: parsed.patch ?? {}, skip: parsed.skip })
+    const result = await patchImportRow({ batchId: parsed.batchId, rowId: parsed.rowId, patch: parsed.patch ?? {}, skip: parsed.skip }, { expectedImporter: parsed.importer })
     revalidatePath(path(parsed.importer)); return result
   })
 }
 
 export async function setOrgImportUpdateExistingAction(input: { orgId?: string; importer: ImporterKey; batchId: string; updateExisting: boolean }) {
-  return run(async () => { const parsed = z.object({ importer: importerSchema, batchId: uuid, updateExisting: z.boolean() }).parse(input); await setImportUpdateExisting(parsed.batchId, parsed.updateExisting); revalidatePath(path(parsed.importer)) })
+  return run(async () => { const parsed = z.object({ importer: importerSchema, batchId: uuid, updateExisting: z.boolean() }).parse(input); await setImportUpdateExisting(parsed.batchId, parsed.updateExisting, { expectedImporter: parsed.importer }); revalidatePath(path(parsed.importer)) })
 }
 
 export async function commitOrgImportAction(input: { orgId?: string; importer: ImporterKey; batchId: string }) {
-  return run(async () => { const parsed = z.object({ importer: importerSchema, batchId: uuid }).parse(input); const result = await commitImportBatch(parsed.batchId); revalidatePath(path(parsed.importer)); return result })
+  return run(async () => { const parsed = z.object({ importer: importerSchema, batchId: uuid }).parse(input); const result = await commitImportBatch(parsed.batchId, { expectedImporter: parsed.importer }); revalidatePath(path(parsed.importer)); return result })
 }
 
 export async function discardOrgImportAction(input: { orgId?: string; importer: ImporterKey; batchId: string }) {
-  return run(async () => { const parsed = z.object({ importer: importerSchema, batchId: uuid }).parse(input); await discardImportBatch(parsed.batchId); revalidatePath(path(parsed.importer)) })
+  return run(async () => { const parsed = z.object({ importer: importerSchema, batchId: uuid }).parse(input); await discardImportBatch(parsed.batchId, { expectedImporter: parsed.importer }); revalidatePath(path(parsed.importer)) })
 }

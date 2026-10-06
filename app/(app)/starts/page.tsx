@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -11,6 +12,7 @@ async function StartsPageContent({
 }: {
   searchParams: Promise<{ community?: string; package?: string }>
 }) {
+  await connection()
   const params = await searchParams
   const scope = await resolveProductionDeskScope({ communityId: params.community })
   const desk = await getStartsDesk({ communityId: scope.communityId, divisionId: scope.divisionId })
@@ -29,7 +31,7 @@ async function StartsPageContent({
 
 export default function StartsPage(props: Parameters<typeof StartsPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLayout title="Starts" fullBleed><PageLoadingSkeleton /></PageLayout>}>
       <StartsPageContent {...props} />
     </Suspense>
   )

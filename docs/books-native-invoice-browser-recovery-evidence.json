@@ -1,0 +1,60 @@
+{
+  "recorded_at": "2026-10-05T03:48:39.843391+00:00",
+  "environment": "Codex in-app browser, localhost 127.0.0.1:58443, disposable PGlite actual scoped SQL fixture",
+  "production_database_modified": false,
+  "transport": "Fixture HTTP endpoints; not authenticated Next.js actions",
+  "observations": [
+    {
+      "mode": "posting",
+      "phase": "lost committed response",
+      "pendingRequestId": "88200000-0000-4000-8000-000000000700",
+      "postingCount": 1,
+      "cancellationCount": 0
+    },
+    {
+      "mode": "posting",
+      "phase": "reload",
+      "pendingRequestId": "88200000-0000-4000-8000-000000000700",
+      "postingCount": 1,
+      "cancellationCount": 0
+    },
+    {
+      "mode": "posting",
+      "phase": "recover verified",
+      "pendingRequestId": null,
+      "postingCount": 1,
+      "cancellationCount": 0
+    },
+    {
+      "mode": "cancellation",
+      "phase": "lost committed response",
+      "pendingRequestId": "88200000-0000-4000-8000-000000000810",
+      "pendingResolutionId": "88200000-0000-4000-8000-000000000840",
+      "postingCount": 1,
+      "cancellationCount": 1
+    },
+    {
+      "mode": "cancellation",
+      "phase": "reload",
+      "pendingRequestId": "88200000-0000-4000-8000-000000000810",
+      "pendingResolutionId": "88200000-0000-4000-8000-000000000840",
+      "postingCount": 1,
+      "cancellationCount": 1
+    },
+    {
+      "mode": "cancellation",
+      "phase": "recover verified",
+      "pendingRequestId": null,
+      "pendingResolutionId": null,
+      "postingCount": 1,
+      "cancellationCount": 1
+    }
+  ],
+  "nativeLedgerActivated": false,
+  "screenshot": {
+    "path": "/Users/agustinzenuto/.codex/visualizations/2026/10/03/01a0ff13-c07c-7fd2-8488-200bfc787322/books-recovery-verified.jpg",
+    "sha256": "f1fbab5d1e48def79adfe06e3e21850eebcbde7ecfd947f6b45979136c5b3273"
+  },
+  "temporary_tab_closed": true,
+  "fixture_process_exit_code": 0
+}

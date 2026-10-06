@@ -81,6 +81,7 @@ export type ManualOfflineChangeOrderApprovalInput = {
 
 function normalizeLines(lines: ChangeOrderLineInput[]): ChangeOrderLine[] {
   return lines.map((line) => ({
+    id: line.id,
     cost_code_id: line.cost_code_id ?? null,
     budget_line_id: line.budget_line_id ?? null,
     description: line.description,
@@ -303,6 +304,7 @@ function mapChangeOrderLineRow(row: ChangeOrderLineRow): ChangeOrderLine {
   const metadata = row.metadata ?? {}
   return {
     id: row.id ?? undefined,
+    metadata,
     cost_code_id: row.cost_code_id ?? null,
     budget_line_id: row.budget_line_id ?? null,
     description: row.description ?? "",
@@ -1219,7 +1221,8 @@ export async function approveChangeOrderFromEnvelopeExecution(input: {
     existing.metadata?.approved_via_envelope &&
     priorEnvelopeId &&
     input.envelopeId &&
-    priorEnvelopeId === input.envelopeId
+    priorEnvelopeId === input.envelopeId &&
+    existing.metadata?.envelope_effects_completed === true
   ) {
     return { success: true, idempotent: true }
   }
@@ -1303,7 +1306,7 @@ export async function approveChangeOrderFromEnvelopeExecution(input: {
     createdBy: null,
   })
 
-  if (needsApprovalTransition && hasBudgetDistributions(financialImpact)) {
+  if (hasBudgetDistributions(financialImpact)) {
     await postBudgetRevisionForChangeOrder({
       supabase,
       changeOrder: {
@@ -1319,14 +1322,14 @@ export async function approveChangeOrderFromEnvelopeExecution(input: {
       orgId: existing.org_id,
       projectId: existing.project_id,
     })
-  } else if (needsApprovalTransition) {
+  } else {
     await applyChangeOrderFinancialImpact({
       supabase,
       orgId: existing.org_id,
       projectId: existing.project_id,
     })
   }
-  if (needsApprovalTransition) {
+  {
     await postApprovedChangeOrderToSovIfNeeded({
       supabase,
       orgId: existing.org_id,
@@ -1353,6 +1356,10 @@ export async function approveChangeOrderFromEnvelopeExecution(input: {
     },
   })
 
+  const { error: completionError } = await supabase.from("change_orders")
+    .update({ metadata: { ...metadataPatch, envelope_effects_completed: true } })
+    .eq("org_id", input.orgId).eq("id", input.changeOrderId)
+  if (completionError) throw new Error(`Failed to complete envelope effects: ${completionError.message}`)
   return { success: true, idempotent: false }
 }
 
@@ -2303,6 +2310,11 @@ export async function updateChangeOrder({
   }
 
   const normalizedLines = normalizeLines(input.lines)
+  for (const line of normalizedLines) {
+    const prior = existing.lines?.find(item => item.id === line.id)
+    if (prior?.metadata?.takeoff) line.metadata = { takeoff: prior.metadata.takeoff }
+    if (prior?.commitment_change_order_id) line.commitment_change_order_id = prior.commitment_change_order_id
+  }
   const hasInternalCosts = input.lines.some((line) => line.internal_cost_cents != null)
   const totals = calculateTotals(
     input.lines,
@@ -2398,6 +2410,7 @@ export async function updateChangeOrder({
     gmp_delta_cents: calculateGmpDeltaCents(changeOrderOwnerPriceCents(line), normalizeGmpImpact(line.gmp_impact)),
     sort_order: idx,
     metadata: {
+      ...line.metadata,
       allowance_cents: line.allowance_cents ?? 0,
       allowance_draw_cents: line.allowance_cents ?? 0,
       budget_revision_cents: calculateLineBudgetRevisionCents(line),

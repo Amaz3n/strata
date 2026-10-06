@@ -232,9 +232,9 @@ export function PayableLinesEditor({
 
                   {accountingEnabled ? (
                     <div className="min-w-0">
-                      <p className="mb-1.5 text-xs font-medium text-muted-foreground">Expense account</p>
+                      <label htmlFor={`line-account-${line.id}`} className="mb-1.5 block text-xs font-medium text-muted-foreground">{accountingProviderName === "Arc Books" ? "Accounting category" : "Expense account"}</label>
                       <Select value={line.qboExpenseAccountId} onValueChange={(value) => updateLine(line.id, { qboExpenseAccountId: value })} disabled={qboExpenseAccounts.length === 0}>
-                        <SelectTrigger className="h-9 w-full min-w-0 overflow-hidden [&>span]:min-w-0 [&>span]:truncate">
+                        <SelectTrigger id={`line-account-${line.id}`} className="h-9 w-full min-w-0 overflow-hidden [&>span]:min-w-0 [&>span]:truncate">
                           <SelectValue placeholder={qboExpenseAccounts.length === 0 ? `${accountingProviderName ?? "Accounting"} accounts unavailable` : "Choose account"} />
                         </SelectTrigger>
                         <SelectContent className="w-[var(--radix-select-trigger-width)] max-w-[var(--radix-select-trigger-width)]">

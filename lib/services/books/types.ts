@@ -38,6 +38,7 @@ export const GL_ACCOUNT_SUBTYPES = [
   "current_debt",
   "long_term_debt",
   "other_liability",
+  "expected_contract_loss_reserve",
   "owner_equity",
   "owner_contributions",
   "owner_distributions",
@@ -52,6 +53,7 @@ export const GL_ACCOUNT_SUBTYPES = [
   "direct_labor",
   "equipment_costs",
   "warranty_costs",
+  "expected_contract_loss_expense",
   "rent",
   "insurance",
   "software",
@@ -87,6 +89,7 @@ export const GL_ACCOUNT_SUBTYPE_TYPES: Record<GlAccountSubtype, GlAccountType> =
   current_debt: "liability",
   long_term_debt: "liability",
   other_liability: "liability",
+  expected_contract_loss_reserve: "liability",
   owner_equity: "equity",
   owner_contributions: "equity",
   owner_distributions: "equity",
@@ -101,6 +104,7 @@ export const GL_ACCOUNT_SUBTYPE_TYPES: Record<GlAccountSubtype, GlAccountType> =
   direct_labor: "cogs",
   equipment_costs: "cogs",
   warranty_costs: "cogs",
+  expected_contract_loss_expense: "cogs",
   rent: "expense",
   insurance: "expense",
   software: "expense",
@@ -209,8 +213,8 @@ export function assertIntegerCents(value: number, label: string) {
 export function assertBalancedJournalDraft(draft: JournalEntryDraft) {
   if (draft.lines.length < 2) throw new Error("A journal entry requires at least two lines")
 
-  let debitCents = 0
-  let creditCents = 0
+  let debitTotal = BigInt(0)
+  let creditTotal = BigInt(0)
   for (const [index, line] of draft.lines.entries()) {
     assertIntegerCents(line.debitCents, `Line ${index + 1} debit`)
     assertIntegerCents(line.creditCents, `Line ${index + 1} credit`)
@@ -219,13 +223,15 @@ export function assertBalancedJournalDraft(draft: JournalEntryDraft) {
     if (!hasDebit && !hasCredit) {
       throw new Error(`Line ${index + 1} must contain exactly one positive debit or credit`)
     }
-    debitCents += line.debitCents
-    creditCents += line.creditCents
+    debitTotal += BigInt(line.debitCents)
+    creditTotal += BigInt(line.creditCents)
   }
 
-  if (debitCents <= 0 || debitCents !== creditCents) {
-    throw new Error(`Journal entry is not balanced: debits ${debitCents}, credits ${creditCents}`)
+  if (debitTotal <= BigInt(0) || debitTotal !== creditTotal) {
+    throw new Error(`Journal entry is not balanced: debits ${debitTotal}, credits ${creditTotal}`)
   }
+  const debitCents = Number(debitTotal), creditCents = Number(creditTotal)
+  if (!Number.isSafeInteger(debitCents) || !Number.isSafeInteger(creditCents)) throw new Error("Journal entry totals exceed safe integer cents")
   return { debitCents, creditCents }
 }
 

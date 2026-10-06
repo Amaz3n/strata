@@ -241,7 +241,7 @@ export async function requireAuth(): Promise<AuthContext & { user: User }> {
 }
 
 // Request-cached per orgId argument: dedupes the membership/platform lookups
-// (and the org-cookie side effect) across the many service calls in one render.
+// across the many service calls in one render.
 export const requireOrgMembership = cache(async (
   orgId?: string,
 ): Promise<AuthContext & { user: User; orgId: string; membership: OrgMembership }> => {
@@ -288,19 +288,6 @@ export const requireOrgMembership = cache(async (
 
     if (!resolvedOrgId) {
       throw new Error("No organizations available for platform admin")
-    }
-
-    const cookieStore = await cookies()
-    const cookieOrgId = cookieStore.get("org_id")?.value
-    if (!cookieOrgId || cookieOrgId !== resolvedOrgId) {
-      cookieStore.set({
-        name: "org_id",
-        value: resolvedOrgId,
-        path: "/",
-        httpOnly: false,
-        sameSite: "lax",
-        maxAge: 60 * 60 * 24 * 30,
-      })
     }
 
     const svc = createServiceSupabaseClient()
@@ -351,19 +338,8 @@ export const requireOrgMembership = cache(async (
     throw new Error("No active organization found for this user")
   }
 
-  // Persist org cookie when we successfully resolve membership.
-  const cookieStore = await cookies()
-  const cookieOrgId = cookieStore.get("org_id")?.value
-  if (!cookieOrgId || cookieOrgId !== resolvedOrgId) {
-    cookieStore.set({
-      name: "org_id",
-      value: resolvedOrgId,
-      path: "/",
-      httpOnly: false,
-      sameSite: "lax",
-      maxAge: 60 * 60 * 24 * 30,
-    })
-  }
+  // Organization selection is persisted by auth and switch-org actions.
+  // Membership resolution also runs during rendering, where cookies are read-only.
 
   if (membership.status === "active") {
     touchMembershipActivity(resolvedOrgId, context.user.id, membership.last_active_at)

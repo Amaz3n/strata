@@ -4,10 +4,14 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 
 import { Check, CheckCircle2, ChevronLeft, ChevronRight, Loader2, PenLine } from "@/components/icons"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
+import { ESignPdfPage } from "@/lib/esign/esign-ui-pdf-page"
 import { cn } from "@/lib/utils"
 
-import { isFieldComplete, normalizeFieldLabel, type SigningField } from "./types"
+import "react-pdf/dist/Page/TextLayer.css"
+
+import { formatFieldValue, isFieldComplete, normalizeFieldLabel, type SigningField } from "./types"
 
 interface PdfFieldViewerProps {
   PDFComponents: { Document: any; Page: any } | null
@@ -52,6 +56,7 @@ export function PdfFieldViewer({
   const pageRefs = useRef<Record<number, HTMLDivElement | null>>({})
   const overlayRefs = useRef<Record<string, HTMLElement | null>>({})
   const [pageWidth, setPageWidth] = useState(1100)
+  const [renderAll, setRenderAll] = useState(false)
 
   useEffect(() => {
     const element = wrapperRef.current
@@ -139,15 +144,10 @@ export function PdfFieldViewer({
         className="relative mx-auto w-fit overflow-hidden rounded-md border bg-background shadow-sm"
       >
         {PDFComponents && (
-          <PDFComponents.Page
-            pageNumber={pageIndex + 1}
-            width={pageWidth}
-            renderTextLayer={false}
-            renderAnnotationLayer={false}
-          />
+          <ESignPdfPage Page={PDFComponents.Page} pageNumber={pageIndex + 1} width={pageWidth} textLayer renderAll={renderAll} />
         )}
 
-        <div className="absolute inset-0">
+        <div className="pointer-events-none absolute inset-0">
           {pageFields.map((field) => {
             const belongsToCurrentSigner = !field.signer_role || field.signer_role === signerRole
             const filled = isFieldComplete(field, values)
@@ -157,7 +157,7 @@ export function PdfFieldViewer({
             const label = normalizeFieldLabel(field)
 
             const overlayClassName = cn(
-              "absolute overflow-hidden rounded-sm border text-[10px] font-medium uppercase tracking-wide transition-all duration-200",
+              "pointer-events-auto absolute overflow-hidden rounded-sm border text-[10px] font-medium uppercase tracking-wide transition-all duration-200",
               belongsToCurrentSigner && !filled && "hover:bg-primary/5",
               isActive && "z-20 border-primary bg-primary/10 text-primary ring-1 ring-primary/35",
               !isActive && filled && "border-success/70 bg-success/10 text-success",
@@ -170,6 +170,10 @@ export function PdfFieldViewer({
               top: `${field.y * 100}%`,
               width: `${field.w * 100}%`,
               height: `${field.h * 100}%`,
+              fontFamily: field.metadata?.fontFamily === "serif" ? "Georgia, serif" : field.metadata?.fontFamily === "mono" ? "monospace" : "Arial, sans-serif",
+              fontSize: `${Number(field.metadata?.fontSize) || 14}px`,
+              textTransform: "none" as const,
+              letterSpacing: "normal",
             }
 
             if (!belongsToCurrentSigner) {
@@ -179,7 +183,7 @@ export function PdfFieldViewer({
                     <img src={value} alt={label} className="h-full w-full object-contain p-0.5" />
                   ) : (
                     <div className="flex h-full items-center justify-between gap-1 px-1.5">
-                      <span className="truncate">{label}</span>
+                      <span className="truncate" title={formatFieldValue(field, rawValue)}>{filled || rawValue === false ? formatFieldValue(field, rawValue) : label}</span>
                       {filled ? <CheckCircle2 className="h-3 w-3 shrink-0" /> : null}
                     </div>
                   )}
@@ -197,6 +201,7 @@ export function PdfFieldViewer({
                   }}
                   className={overlayClassName}
                   style={style}
+                  aria-label={`${label}${filled ? ": signed" : ": add signature"}`}
                   onClick={() => {
                     onFieldSelect(field.id)
                     onSignatureRequested(field)
@@ -222,6 +227,10 @@ export function PdfFieldViewer({
                   ref={(node) => {
                     overlayRefs.current[field.id] = node
                   }}
+                  role="checkbox"
+                  aria-label={label}
+                  aria-checked={rawValue === true}
+                  aria-required={field.required !== false}
                   className={overlayClassName}
                   style={style}
                   onClick={() => {
@@ -256,6 +265,10 @@ export function PdfFieldViewer({
                   style={style}
                 >
                   <Input
+                    maxLength={4000}
+                    style={{ fontFamily: "inherit", fontSize: "inherit" }}
+                    aria-label={label}
+                    aria-required={field.required !== false}
                     autoFocus
                     value={value}
                     onChange={(event) => {
@@ -274,7 +287,10 @@ export function PdfFieldViewer({
                           : event.currentTarget.value
                       handleInlineKeyDown(event, field, nextValue)
                     }}
-                    type={field.field_type === "date" ? "date" : "text"}
+                    type={field.field_type === "date" ? "date" : field.metadata?.validation === "email" ? "email" : "text"}
+                    inputMode={field.metadata?.validation === "number" ? "decimal" : undefined}
+                    aria-invalid={Boolean(value) && !filled}
+                    title={field.metadata?.validation === "email" ? "Enter an email address" : field.metadata?.validation === "number" ? "Enter a number, such as 12.50" : label}
                     className="h-full rounded-none border-0 bg-transparent px-1.5 py-0 text-[11px] font-medium focus-visible:ring-0"
                   />
                 </div>
@@ -293,7 +309,7 @@ export function PdfFieldViewer({
                 onClick={() => onFieldSelect(field.id)}
               >
                 <div className="flex h-full items-center justify-between gap-1 px-1.5">
-                  <span className="truncate">{label}</span>
+                  <span className="truncate" title={formatFieldValue(field, rawValue)}>{filled || rawValue === false ? formatFieldValue(field, rawValue) : label}</span>
                   {filled ? <CheckCircle2 className="h-3 w-3 shrink-0" /> : null}
                 </div>
               </button>
@@ -338,6 +354,7 @@ export function PdfFieldViewer({
         </div>
       </div>
 
+      <label className="flex items-center gap-2 px-4 py-2 text-xs text-muted-foreground"><Checkbox checked={renderAll} onCheckedChange={value => setRenderAll(value === true)} />Load all pages for assistive reading (may use more memory)</label>
       <div ref={wrapperRef} className="h-[calc(100vh-13.5rem)] min-h-[500px] overflow-auto p-3 sm:p-4">
         {!PDFComponents ? (
           <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">

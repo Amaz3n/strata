@@ -187,6 +187,7 @@ export function ChangeOrderForm({
         changeOrder.lines?.length
           ? changeOrder.lines.map((line) =>
               newLineDraft({
+                id: line.id ?? crypto.randomUUID(),
                 description: line.description ?? "",
                 costCodeId: line.cost_code_id ?? "",
                 budgetLineId: line.budget_line_id ?? "",
@@ -279,6 +280,7 @@ export function ChangeOrderForm({
       status,
       client_visible: changeOrder ? changeOrder.client_visible ?? false : false,
       lines: normalizedLines.map((line) => ({
+        id: line.id,
         cost_code_id: costCodesEnabled ? line.costCodeId || undefined : undefined,
         budget_line_id: costCodesEnabled ? undefined : line.budgetLineId || undefined,
         description: line.description,

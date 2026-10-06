@@ -9,7 +9,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { assertPaymentLaunchReady } from "@/lib/services/payment-launch-readiness"
 import { sendVendorPayoutDestinationChangedEmail } from "@/lib/services/mailer"
-import { hasPermission, requirePermission } from "@/lib/services/permissions"
+import { hasPermission, requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 import { requireRecentPaymentStepUp } from "@/lib/services/payment-step-up"
 import { type PaymentRunApprover } from "@/lib/services/payment-approver-roster"
 import {
@@ -132,19 +132,21 @@ export interface PaymentRailSettings {
     viewerUserId: string
   }
   canManage: boolean
+  canManageAutoApproval: boolean
   canApprove: boolean
 }
 
 export async function getPaymentRailSettings(orgId?: string): Promise<PaymentRailSettings> {
   const context = await requireOrgContext(orgId)
-  await requirePermission("payment.release", context)
+  await requireAnyPermission(["payment.release", "payment.approve_run", "payment.manage_rail"], context)
   const supabase = createServiceSupabaseClient()
-  const [{ data: policy, error: policyError }, { data: fundingSources, error: fundingError }, { data: changes, error: changesError }, canManage, canApprove] = await Promise.all([
+  const [{ data: policy, error: policyError }, { data: fundingSources, error: fundingError }, { data: changes, error: changesError }, canManage, canApprove, canManageAutoApproval] = await Promise.all([
     supabase.from("payment_rail_policies").select("enabled,approval_mode,requester_may_approve,control_change_cooling_hours,per_payment_limit_cents,per_run_limit_cents,daily_limit_cents,max_inflight_cents,return_loss_ceiling_cents,payout_hold_hours,new_vendor_hold_hours,waiver_jurisdiction,enabled_jurisdictions").eq("org_id", context.orgId).maybeSingle(),
     supabase.from("org_funding_sources").select("id,provider,bank_name,last4,verification_status,status,is_default,usable_after").eq("org_id", context.orgId).order("created_at", { ascending: false }).limit(20),
     supabase.from("payment_control_change_requests").select("id,funding_source_id,requested_by_user_id,status,required_approvals,apply_after,proposed_masked_details").eq("org_id", context.orgId).eq("kind", "org_funding_source").in("status", ["pending_approval", "cooling_off"]).order("created_at", { ascending: false }).limit(20),
     hasPermission("payment.manage_rail", context),
     hasPermission("payment.approve_run", context),
+    hasPermission("bill.approve", context),
   ])
   if (policyError || fundingError || changesError) throw new Error("Unable to load payment settings.")
   const changeIds = (changes ?? []).map((change) => change.id)
@@ -203,6 +205,7 @@ export async function getPaymentRailSettings(orgId?: string): Promise<PaymentRai
     },
     canManage,
     canApprove,
+    canManageAutoApproval,
   }
 }
 
@@ -608,19 +611,23 @@ export async function syncVendorRecipient(
   auditSource = "stripe_webhook",
 ) {
   const provider = getPaymentRailProvider(providerKey)
-  const snapshot = await provider.retrieveRecipient(providerAccountId)
   const supabase = createServiceSupabaseClient()
   // The destination as Arc last knew it, read before the sync overwrites it. A
   // provider-side bank swap — a vendor's compromised Stripe login is the whole
   // threat — arrives here as an ordinary `account.updated` and used to be
   // absorbed silently, so the next run paid the new bank with no hold and no
   // notification.
-  const { data: priorRecipient } = await supabase
+  const { data: priorRecipient, error: lookupError } = await supabase
     .from("payment_recipient_accounts")
     .select("id,payout_bank_name,payout_bank_last4,destination_version")
     .eq("provider", providerKey)
     .eq("provider_account_id", providerAccountId)
     .maybeSingle()
+  if (lookupError) throw new Error(`Unable to resolve payment recipient: ${lookupError.message}`)
+  // Connect also sends updates for platform and receivables accounts. Only
+  // retrieve bank details after confirming that Arc owns an AP recipient row.
+  if (!priorRecipient) return null
+  const snapshot = await provider.retrieveRecipient(providerAccountId)
   const { data: recipient, error } = await supabase.from("payment_recipient_accounts").update({
     status: snapshot.status,
     details_submitted: snapshot.detailsSubmitted,

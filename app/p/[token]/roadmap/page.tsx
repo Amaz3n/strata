@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { PortalRoadmapTab } from "@/components/portal/tabs/portal-roadmap-tab"
 import { loadClientPortalPage } from "../load-portal"
@@ -8,6 +9,7 @@ interface Props {
 
 
 export default async function ClientPortalRoadmapPage({ params }: Props) {
+  await connection()
   const { token } = await params
   const { data } = await loadClientPortalPage(token)
   const label = data.portalPresentation?.roadmapLabel ?? "Roadmap"

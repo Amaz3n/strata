@@ -6,7 +6,7 @@ import { cookies } from "next/headers"
 
 import { getProvider, isAccountingProviderKey } from "@/lib/integrations/accounting/registry"
 import type { AccountingAccountKind, AccountingCapabilities, AccountingDimensionKind, AccountingProviderKey } from "@/lib/integrations/accounting/provider"
-import { createFileAccountingConnection, disconnectAccountingConnection, listAccountingConnections, requireAccountingConnectionForOrg, updateAccountingConnectionLabel, updateAccountingConnectionSettings, type AccountingConnectionDTO } from "@/lib/services/accounting-connections"
+import { createFileAccountingConnection, disconnectAccountingConnection, listAccountingConnections, refreshAccountingConnectionToken, requireAccountingConnectionForOrg, updateAccountingConnectionLabel, updateAccountingConnectionSettings, type AccountingConnectionDTO } from "@/lib/services/accounting-connections"
 import {
   createStripeConnectedAccountDashboardLoginLink,
   createStripeConnectedAccountOnboardingLink,
@@ -211,12 +211,8 @@ export async function refreshAccountingConnectionAction(connectionId: string) {
   return run(async () => {
     const { supabase, orgId, userId } = await requireOrgContext()
     await requirePermission("org.admin", { supabase, orgId, userId })
-    const connection = await requireAccountingConnectionForOrg(connectionId, orgId, { activeOnly: true })
-    const provider = getProvider(connection.provider)
-    const result = provider.refreshConnection
-      ? await provider.refreshConnection(connectionId)
-      : await provider.ensureHealthy(connectionId)
-    if (!result.ok) throw new Error(result.error ?? "Accounting connection refresh failed")
+    await requireAccountingConnectionForOrg(connectionId, orgId, { activeOnly: true })
+    await refreshAccountingConnectionToken(connectionId, orgId)
     return { refreshed: true }
   })
 }

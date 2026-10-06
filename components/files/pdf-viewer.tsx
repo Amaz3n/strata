@@ -68,6 +68,7 @@ interface PdfViewerProps {
    * own — a portal token route, say — where no signed equivalent exists.
    */
   fileId?: string
+  revision?: string
   fileName: string
   zoom: PdfZoom
   rotation: number
@@ -167,6 +168,7 @@ function displaySize(meta: PageMeta, rotation: number): { width: number; height:
 export function PdfViewer({
   url,
   fileId,
+  revision,
   fileName,
   zoom,
   rotation,
@@ -224,14 +226,14 @@ export function PdfViewer({
 
     let cancelled = false
     setDirectUrl(undefined)
-    void resolveFileViewUrl(fileId).then((resolved) => {
+    void resolveFileViewUrl(fileId, revision).then((resolved) => {
       if (!cancelled) setDirectUrl(resolved)
     })
 
     return () => {
       cancelled = true
     }
-  }, [fileId, reloadKey])
+  }, [fileId, revision, reloadKey])
 
   /** What pdf.js actually reads. `null` means we are still deciding. */
   const sourceUrl = directUrl === undefined ? null : (directUrl ?? url)

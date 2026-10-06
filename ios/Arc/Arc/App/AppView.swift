@@ -1,6 +1,21 @@
 import SwiftUI
 
 struct AppView: View {
+    @Environment(AppDependencies.self) private var dependencies
+
+    var body: some View {
+        Group {
+            if UIDevice.current.userInterfaceIdiom == .pad {
+                TabletWorkspaceView { FieldAppView() }
+            } else {
+                FieldAppView()
+            }
+        }
+        .id(dependencies.session.userID)
+    }
+}
+
+private struct FieldAppView: View {
     private enum ShellMode {
         case global
         case project
@@ -65,7 +80,7 @@ private struct ProjectContextShell: View {
                 onSelectProject: onOpenProject
             )
             .id(project.id)
-        } else if dependencies.workspace.isLoading || dependencies.workspace.projects.isEmpty {
+        } else if dependencies.workspace.isLoading {
             ProgressView("Loading project…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(.systemGroupedBackground))
@@ -115,7 +130,6 @@ private struct GlobalWorkspaceShell: View {
 }
 
 private struct ProjectWorkspaceShell: View {
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var selectedTab: AppTab = .overview
     @State private var tabRouter = TabRouter()
     @State private var switcher = ProjectSwitcherModel()
@@ -127,7 +141,7 @@ private struct ProjectWorkspaceShell: View {
 
     var body: some View {
         Group {
-            if horizontalSizeClass == .regular {
+            if UIDevice.current.userInterfaceIdiom == .pad {
                 ProjectSidebarShell(
                     project: project,
                     selectedTab: $selectedTab,
@@ -160,7 +174,7 @@ private struct ProjectTabShell: View {
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            ForEach(AppTab.allCases) { tab in
+            ForEach(AppTab.phoneTabs) { tab in
                 ProjectNavigationStack(
                     project: project,
                     tab: tab,
@@ -272,7 +286,20 @@ private struct ProjectNavigationStack: View {
                     }
                     ToolbarItemGroup(placement: .topBarTrailing) {
                         SyncStatusIndicator()
-                        ProfileToolbarButton { router.presentedSheet = .account }
+                        Menu {
+                            Button("Project Contacts", systemImage: "person.2") { router.navigate(to: .team) }
+                            Button("Project Details", systemImage: "info.circle") { router.navigate(to: .projectDetails) }
+                            Divider()
+                            Button("RFIs", systemImage: "questionmark.bubble") { router.navigate(to: .rfis) }
+                            Button("Receipts & Expenses", systemImage: "receipt") { router.navigate(to: .expenses) }
+                            Button("Field Tools", systemImage: "wrench.and.screwdriver") { router.navigate(to: .fieldTools) }
+                            Divider()
+                            Button("Account", systemImage: "person.crop.circle") { router.presentedSheet = .account }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                        .accessibilityLabel("Project tools and contacts")
+                        .accessibilityIdentifier("project-tools")
                     }
                 }
                 .navigationDestination(for: AppRoute.self) { route in
@@ -284,6 +311,7 @@ private struct ProjectNavigationStack: View {
                     case .team: ProjectTeamView(project: project)
                     case .expenses: ProjectExpensesView(project: project)
                     case .projectDetails: ProjectDetailView(projectID: project.id)
+                    case .fieldTools: ProjectFieldToolsView(project: project)
                     case .dailyLog(let id): DailyLogDetailView(project: project, logID: id)
                     case .scanReceipt: ReceiptCaptureView(project: project)
                     case .drawingSheet(let id): DrawingSheetViewerView(project: project, sheetID: id)

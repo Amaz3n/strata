@@ -14,15 +14,14 @@ import type {
 } from "@/lib/services/commitments";
 import { isCommitmentAwaitingExecution } from "@/lib/financials/commitment-position";
 import {
-  executeProjectCommitmentAction,
   getCommitmentDetailAction,
   updateProjectCommitmentAction,
 } from "@/app/(app)/projects/[id]/commitments/actions";
 import type { EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard";
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
 import {
   listAttachmentsAction,
   detachFileLinkAction,
-  uploadFileAction,
   attachFileAction,
 } from "@/app/(app)/documents/actions";
 import { Button } from "@/components/ui/button";
@@ -36,14 +35,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
+import { RecordExecutionDialog } from "@/components/commitments/record-execution-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EntityAttachments, type AttachedFile } from "@/components/files";
 import { AlertTriangle, ArrowUpRight, Download, PenLine, Send, Upload } from "@/components/icons";
@@ -71,7 +64,6 @@ const STATUS_OPTIONS = [
   { value: "canceled", label: "Canceled" },
 ];
 
-const todayIso = () => new Date().toISOString().slice(0, 10);
 
 const CHANGE_ORDER_STATUS_TONE: Record<string, string> = {
   approved: "text-success",
@@ -293,8 +285,6 @@ export function CommitmentDetailSheet({
   const [attachmentsLoading, setAttachmentsLoading] = useState(false);
   const [signatureOpen, setSignatureOpen] = useState(false);
   const [recordOpen, setRecordOpen] = useState(false);
-  const [recordForm, setRecordForm] = useState({ executed_at: todayIso(), note: "" });
-  const [recordFile, setRecordFile] = useState<File | null>(null);
 
   const commitmentId = commitment?.id;
   const projectId = commitment?.project_id;
@@ -420,42 +410,6 @@ export function CommitmentDetailSheet({
           title: "Unable to update commitment",
           description: (error as Error).message,
         });
-      }
-    });
-  };
-
-  const recordExecution = () => {
-    if (!commitmentId || !projectId) return;
-    if (!recordFile) {
-      toast({
-        title: "Signed agreement required",
-        description: "Attach the countersigned document to record execution.",
-      });
-      return;
-    }
-    startTransition(async () => {
-      try {
-        const formData = new FormData();
-        formData.append("file", recordFile);
-        formData.append("projectId", projectId);
-        formData.append("category", "contracts");
-        const uploaded = unwrapAction(await uploadFileAction(formData));
-        unwrapAction(
-          await executeProjectCommitmentAction(projectId, commitmentId, {
-            executed_file_id: uploaded.id,
-            executed_at: recordForm.executed_at,
-            note: recordForm.note.trim() || undefined,
-          }),
-        );
-        toast({ title: "Execution recorded" });
-        setRecordOpen(false);
-        setRecordFile(null);
-        setRecordForm({ executed_at: todayIso(), note: "" });
-        await loadDetail(commitmentId);
-        await refreshAttachments();
-        router.refresh();
-      } catch (error) {
-        toast({ title: "Unable to record execution", description: (error as Error).message });
       }
     });
   };
@@ -878,65 +832,19 @@ export function CommitmentDetailSheet({
         />
       ) : null}
 
-      <Dialog
-        open={recordOpen}
-        onOpenChange={(next) => {
-          setRecordOpen(next);
-          if (!next) setRecordFile(null);
-        }}
-      >
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Record signed agreement</DialogTitle>
-            <DialogDescription>
-              For an agreement signed outside Arc — on paper, or countersigned and returned by
-              email. The signed document is kept with the commitment as the record of execution.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="executed-agreement">Signed agreement</Label>
-              <input
-                id="executed-agreement"
-                type="file"
-                accept="application/pdf,image/*"
-                onChange={(event) => setRecordFile(event.target.files?.[0] ?? null)}
-                className="block w-full border bg-background px-2 py-1.5 text-sm file:mr-3 file:border-0 file:bg-muted file:px-2 file:py-1 file:text-xs"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="executed-date">Date signed</Label>
-              <Input
-                id="executed-date"
-                type="date"
-                max={todayIso()}
-                value={recordForm.executed_at}
-                onChange={(event) =>
-                  setRecordForm((prev) => ({ ...prev, executed_at: event.target.value }))
-                }
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="executed-note">Note</Label>
-              <Textarea
-                id="executed-note"
-                value={recordForm.note}
-                onChange={(event) => setRecordForm((prev) => ({ ...prev, note: event.target.value }))}
-                placeholder="Where the original is held, who signed, or anything worth knowing later."
-                rows={2}
-              />
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setRecordOpen(false)} disabled={isPending}>
-                Cancel
-              </Button>
-              <Button onClick={recordExecution} disabled={isPending || !recordFile}>
-                {isPending ? "Recording…" : "Record execution"}
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+      {current ? (
+        <RecordExecutionDialog
+          open={recordOpen}
+          onOpenChange={setRecordOpen}
+          projectId={current.project_id}
+          commitmentId={current.id}
+          onRecorded={async () => {
+            await loadDetail(current.id);
+            await refreshAttachments();
+            router.refresh();
+          }}
+        />
+      ) : null}
     </Sheet>
   );
 }

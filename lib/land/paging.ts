@@ -49,3 +49,29 @@ export async function readAllRows<Row>(
   }
   return { rows, truncated: true }
 }
+
+/**
+ * Exhaust an ID-ordered UUID query. Only an empty page proves exhaustion:
+ * a provider may return fewer rows than requested because of its own row cap.
+ * Callers must reapply organization/actor/scope predicates on every page.
+ */
+export async function readAllRowsById<Row extends { id: string }>(
+  read: (afterId: string | null, limit: number) => PromiseLike<RangeResult<Row>>,
+  { cap, label, pageSize = 100 }: { cap: number; label: string; pageSize?: number },
+): Promise<Row[]> {
+  if (!Number.isSafeInteger(cap) || cap < 1 || !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 1000) throw new Error(`${label}: Invalid paging bounds`)
+  const rows: Row[] = []
+  let afterId: string | null = null
+  while (true) {
+    const take = Math.min(pageSize, cap - rows.length + 1)
+    const { data, error } = await read(afterId, take)
+    if (error || !Array.isArray(data) || data.length > take) throw new Error(`${label}: ${error?.message ?? "Invalid page response"}`)
+    if (!data.length) return rows
+    for (const row of data) {
+      if (typeof row.id !== "string" || !row.id || (afterId !== null && row.id <= afterId)) throw new Error(`${label}: ID cursor did not advance`)
+      rows.push(row)
+      afterId = row.id
+      if (rows.length > cap) throw new Error(`${label}: Validation limit exceeded (${cap} rows)`)
+    }
+  }
+}

@@ -75,3 +75,9 @@ export function getReceivablesPosturePolicy(posture: ProjectPosture): Receivable
 export function getOrgReceivablesPolicy(tier: ProductTier): ReceivablesPosturePolicy {
   return POLICIES[tier]
 }
+
+/** General customer billing has no job-specific retainage or closing workflow. */
+const GENERAL_POLICY: ReceivablesPosturePolicy = { ...POLICIES.residential, customerLabel: "Customer", customerPluralLabel: "Customers", approvalMode: "optional_review", supportsRetainage: false }
+export function getGeneralReceivablesPolicy(): ReceivablesPosturePolicy {
+  return GENERAL_POLICY
+}

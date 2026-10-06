@@ -1,10 +1,8 @@
 import "server-only"
 
-import {
-  getProjectFinancialFeatureConfig,
-  resolveRevenueRecognitionBasis,
-  type RevenueRecognitionBasis,
-} from "@/lib/financials/billing-model"
+import { type RevenueRecognitionBasis } from "@/lib/financials/billing-model"
+import { resolveProjectRevenueBasis } from "@/lib/financials/project-revenue-basis"
+import { todayIsoDateOnly } from "@/lib/services/reports/dates"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 const PAGE_SIZE = 500
@@ -38,7 +36,7 @@ export type ProjectRevenueBasis = {
  * agreement has no percentage-of-completion position and must never be asked
  * for one.
  */
-export async function loadProjectRevenueBases(orgId: string): Promise<ProjectRevenueBasis[]> {
+export async function loadProjectRevenueBases(orgId: string, asOf = todayIsoDateOnly()): Promise<ProjectRevenueBasis[]> {
   const service = createServiceSupabaseClient()
   const [projects, settings, contracts] = await Promise.all([
     // Every paged read carries a total order. Without one, PostgREST is free to
@@ -53,30 +51,36 @@ export async function loadProjectRevenueBases(orgId: string): Promise<ProjectRev
       "project financial settings",
     ),
     collectPages(
-      (from, to) => service.from("contracts").select("project_id, contract_type, fixed_fee_cents, gmp_cents, snapshot, open_book, requires_client_cost_approval").eq("org_id", orgId).order("id", { ascending: true }).range(from, to),
+      (from, to) => service.from("contracts").select("id, project_id, status, parent_contract_id, effective_date, contract_type, fixed_fee_cents, gmp_cents, snapshot, open_book, requires_client_cost_approval").eq("org_id", orgId).order("id", { ascending: true }).range(from, to),
       "contracts for revenue basis",
     ),
   ])
   const settingsByProject = new Map(settings.map((row) => [String(row.project_id), row]))
-  const contractByProject = new Map(contracts.map((row) => [String(row.project_id), row]))
+  const contractsByProject = new Map<string, typeof contracts>()
+  for (const contract of contracts) {
+    const projectId = String(contract.project_id)
+    const group = contractsByProject.get(projectId) ?? []
+    group.push(contract)
+    contractsByProject.set(projectId, group)
+  }
   return projects.map((project) => {
     const projectId = String(project.id)
     const financialSettings = settingsByProject.get(projectId)
-    const config = getProjectFinancialFeatureConfig({
+    const basis = resolveProjectRevenueBasis({
+      id: projectId,
       status: project.status ?? undefined,
       property_type: project.property_type ?? undefined,
-      billing_contract: contractByProject.get(projectId) ?? null,
       financial_settings: financialSettings
         ? {
             billing_model: financialSettings.billing_model ?? undefined,
             fixed_price_billing_basis: financialSettings.fixed_price_billing_basis ?? null,
           }
         : null,
-    })
+    }, contractsByProject.get(projectId) ?? [], asOf)
     return {
       projectId,
       status: project.status ? String(project.status) : null,
-      basis: resolveRevenueRecognitionBasis(config),
+      basis,
     }
   })
 }

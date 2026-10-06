@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, type CSSProperties } from "react";
-import { useForm, type UseFormReturn } from "react-hook-form";
+import { useForm, useWatch, type UseFormReturn } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
 import { DEFAULT_ACCOUNTING_PROVIDER_LABEL } from "@/components/accounting/provider-label";
@@ -352,14 +352,14 @@ function ProjectFormSheet({
   const [step, setStep] = useState<"details" | "financials">("details");
   const financialMessages = validateFinancialSetup(financialSetup);
   const canSubmit = financialMessages.blocking.length === 0 && !isSubmitting;
-  const propertyType = form.watch("property_type");
+  const [propertyType, qboCustomerId, qboCustomerName, clientId] = useWatch({
+    control: form.control,
+    name: ["property_type", "qbo_customer_id", "qbo_customer_name", "client_id"],
+  });
   const posture = getProjectPosture(propertyType, productTier);
   const terms = terminology(posture);
 
   // Default QBO customer — drives cost attribution and pre-fills new invoices. Stored on the form (qbo_customer_id/name).
-  const qboCustomerId = form.watch("qbo_customer_id");
-  const qboCustomerName = form.watch("qbo_customer_name");
-  const clientId = form.watch("client_id");
   // The contact backing the unified "Client" field — also the auto QBO customer name when none is set explicitly.
   const selectedClientContact = clientId
     ? (clientContacts.find((contact) => contact.id === clientId) ?? null)

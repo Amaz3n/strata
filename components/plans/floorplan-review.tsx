@@ -1,4 +1,4 @@
-"use client"
+"use client";
 
 /**
  * 2D review: the interpreted wall graph, drawn on the sheet it came from.
@@ -14,154 +14,212 @@
  * superintendent who opens the sheet.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import { Check, Loader2, PencilRuler, Trash2, X } from "@/components/icons"
-import { TiledDrawingViewer, type ImageToScreenMatrix, type TileManifest } from "@/components/drawings/viewer/tiled-drawing-viewer"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Check, Loader2, PencilRuler, Trash2, X } from "@/components/icons";
+import {
+  TiledDrawingViewer,
+  type ImageToScreenMatrix,
+  type TileManifest,
+} from "@/components/drawings/viewer/tiled-drawing-viewer";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   modelToImagePx,
   imagePxToModel,
-  polygonCentroid,
   wallDirection,
   wallLengthFt,
   type FloorplanEdit,
   type Level,
   type OpeningKind,
   type Wall,
-} from "@/lib/drawings/floorplan-model"
-import type { FloorplanSheetView } from "@/lib/services/floorplan-models"
-import { cn } from "@/lib/utils"
+} from "@/lib/drawings/floorplan-model";
+import type { FloorplanSheetView } from "@/lib/services/floorplan-models";
+import { interiorPoint } from "@/lib/drawings/architectural-polygon";
+import { cn } from "@/lib/utils";
 
-type Tool = "select" | "draw"
+type Tool = "select" | "draw";
 
 const OPENING_LABEL: Record<OpeningKind, string> = {
   door: "Door",
   window: "Window",
   cased: "Cased opening",
-}
+};
 
 /** Confidence below this gets tinted for attention. */
-const LOW_CONFIDENCE = 0.6
+const LOW_CONFIDENCE = 0.6;
 
 export interface FloorplanReviewProps {
-  level: Level
-  sheet: FloorplanSheetView | null
-  editable: boolean
-  saving: boolean
-  onEdit: (edit: FloorplanEdit) => void
+  selection?: string | null;
+  onSelect?: (id: string | null) => void;
+  level: Level;
+  sheet: FloorplanSheetView | null;
+  editable: boolean;
+  saving: boolean;
+  onEdit: (edit: FloorplanEdit) => void;
 }
 
-export function FloorplanReview({ level, sheet, editable, saving, onEdit }: FloorplanReviewProps) {
-  const [tool, setTool] = useState<Tool>("select")
-  const [selectedWallId, setSelectedWallId] = useState<string | null>(null)
-  const [editingRoomId, setEditingRoomId] = useState<string | null>(null)
-  const [roomDraft, setRoomDraft] = useState("")
-  const [drawStart, setDrawStart] = useState<{ x: number; y: number } | null>(null)
-  const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null)
+export function FloorplanReview({
+  level,
+  sheet,
+  editable,
+  saving,
+  onEdit,
+  selection,
+  onSelect,
+}: FloorplanReviewProps) {
+  const [tool, setTool] = useState<Tool>("select");
+  const [selectedWallId, setSelectedWallId] = useState<string | null>(null);
+  useEffect(() => {
+    if (selection !== undefined)
+      setSelectedWallId(
+        level.walls.some((w) => w.id === selection) ? selection : null,
+      );
+  }, [selection, level.walls]);
+  const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
+  const [roomDraft, setRoomDraft] = useState("");
+  const [drawStart, setDrawStart] = useState<{ x: number; y: number } | null>(
+    null,
+  );
+  const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
 
-  const svgRef = useRef<SVGSVGElement>(null)
-  const groupRef = useRef<SVGGElement>(null)
-  const wrapperRef = useRef<HTMLDivElement>(null)
-  const matrixRef = useRef<ImageToScreenMatrix | null>(null)
+  const objectDragRef = useRef<{ x: number; y: number } | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const groupRef = useRef<SVGGElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const matrixRef = useRef<ImageToScreenMatrix | null>(null);
 
   // The overlay writes the transform straight to the DOM on every viewer
   // frame; routing it through React state would drop frames while panning.
-  const onTransformChange = useCallback(({ matrix }: { matrix: ImageToScreenMatrix }) => {
-    matrixRef.current = matrix
-    groupRef.current?.setAttribute(
-      "transform",
-      `matrix(${matrix.a} ${matrix.b} ${matrix.c} ${matrix.d} ${matrix.e} ${matrix.f})`,
-    )
-  }, [])
+  const onTransformChange = useCallback(
+    ({ matrix }: { matrix: ImageToScreenMatrix }) => {
+      matrixRef.current = matrix;
+      groupRef.current?.setAttribute(
+        "transform",
+        `matrix(${matrix.a} ${matrix.b} ${matrix.c} ${matrix.d} ${matrix.e} ${matrix.f})`,
+      );
+    },
+    [],
+  );
 
   /** Screen point → model feet, through the viewer's current transform. */
   const toModelPoint = useCallback(
     (clientX: number, clientY: number): { x: number; y: number } | null => {
-      const matrix = matrixRef.current
-      const element = wrapperRef.current
-      if (!matrix || !element) return null
-      const rect = element.getBoundingClientRect()
-      const sx = clientX - rect.left
-      const sy = clientY - rect.top
-      const determinant = matrix.a * matrix.d - matrix.b * matrix.c
-      if (Math.abs(determinant) < 1e-9) return null
-      const dx = sx - matrix.e
-      const dy = sy - matrix.f
-      const px = (dx * matrix.d - dy * matrix.c) / determinant
-      const py = (dy * matrix.a - dx * matrix.b) / determinant
-      return imagePxToModel(level.source, px, py)
+      const matrix = matrixRef.current;
+      const element = wrapperRef.current;
+      if (!matrix || !element) return null;
+      const rect = element.getBoundingClientRect();
+      const sx = clientX - rect.left;
+      const sy = clientY - rect.top;
+      const determinant = matrix.a * matrix.d - matrix.b * matrix.c;
+      if (Math.abs(determinant) < 1e-9) return null;
+      const dx = sx - matrix.e;
+      const dy = sy - matrix.f;
+      const px = (dx * matrix.d - dy * matrix.c) / determinant;
+      const py = (dy * matrix.a - dx * matrix.b) / determinant;
+      return imagePxToModel(level.source, px, py);
     },
     [level.source],
-  )
+  );
 
   useEffect(() => {
-    setSelectedWallId(null)
-    setDrawStart(null)
-    setEditingRoomId(null)
-  }, [level.id])
+    setSelectedWallId(null);
+    setDrawStart(null);
+    setEditingRoomId(null);
+  }, [level.id]);
 
   useEffect(() => {
-    if (!editable) return
+    if (!editable) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setDrawStart(null)
-        setSelectedWallId(null)
-        setTool("select")
-        return
+        setDrawStart(null);
+        setSelectedWallId(null);
+        setTool("select");
+        return;
       }
-      if ((event.key === "Delete" || event.key === "Backspace") && selectedWallId) {
-        const target = event.target as HTMLElement | null
-        if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return
-        event.preventDefault()
-        onEdit({ type: "wall.delete", levelId: level.id, wallId: selectedWallId })
-        setSelectedWallId(null)
+      if (
+        (event.key === "Delete" || event.key === "Backspace") &&
+        selectedWallId
+      ) {
+        const target = event.target as HTMLElement | null;
+        if (
+          target &&
+          (target.tagName === "INPUT" || target.tagName === "TEXTAREA")
+        )
+          return;
+        event.preventDefault();
+        onEdit({
+          type: "wall.delete",
+          levelId: level.id,
+          wallId: selectedWallId,
+        });
+        setSelectedWallId(null);
       }
-    }
-    window.addEventListener("keydown", onKey)
-    return () => window.removeEventListener("keydown", onKey)
-  }, [editable, level.id, onEdit, selectedWallId])
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editable, level.id, onEdit, selectedWallId]);
 
   // A drag that pans the sheet ends in a click event too. Only a pointer that
   // barely moved is a placement — otherwise every pan would drop a wall end.
-  const pressRef = useRef<{ x: number; y: number } | null>(null)
-  const onSurfaceDown = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    pressRef.current = { x: event.clientX, y: event.clientY }
-  }, [])
+  const pressRef = useRef<{ x: number; y: number } | null>(null);
+  const onSurfaceDown = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      pressRef.current = { x: event.clientX, y: event.clientY };
+    },
+    [],
+  );
 
   const onSurfaceClick = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
-      if (tool !== "draw" || !editable) return
-      const press = pressRef.current
-      pressRef.current = null
-      if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 5) return
-      const point = toModelPoint(event.clientX, event.clientY)
-      if (!point) return
+      if (tool !== "draw" || !editable) return;
+      const press = pressRef.current;
+      pressRef.current = null;
+      if (
+        press &&
+        Math.hypot(event.clientX - press.x, event.clientY - press.y) > 5
+      )
+        return;
+      const point = toModelPoint(event.clientX, event.clientY);
+      if (!point) return;
       if (!drawStart) {
-        setDrawStart(point)
-        return
+        setDrawStart(point);
+        return;
       }
-      onEdit({ type: "wall.add", levelId: level.id, x0: drawStart.x, y0: drawStart.y, x1: point.x, y1: point.y })
-      setDrawStart(null)
+      onEdit({
+        type: "wall.add",
+        levelId: level.id,
+        x0: drawStart.x,
+        y0: drawStart.y,
+        x1: point.x,
+        y1: point.y,
+      });
+      setDrawStart(null);
     },
     [drawStart, editable, level.id, onEdit, toModelPoint, tool],
-  )
+  );
 
   const onSurfaceMove = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
-      if (tool !== "draw" || !drawStart) return
-      setCursor(toModelPoint(event.clientX, event.clientY))
+      if (tool !== "draw" || !drawStart) return;
+      setCursor(toModelPoint(event.clientX, event.clientY));
     },
     [drawStart, toModelPoint, tool],
-  )
+  );
 
-  const selectedWall = level.walls.find((wall) => wall.id === selectedWallId) ?? null
-  const px = (x: number, y: number) => modelToImagePx(level.source, x, y)
+  const selectedWall =
+    level.walls.find((wall) => wall.id === selectedWallId) ?? null;
+  const px = (x: number, y: number) => modelToImagePx(level.source, x, y);
   /** Room labels are sized in FEET so they stay legible at any zoom. */
-  const labelSizePx = 2.2 / level.source.feetPerImagePx
+  const labelSizePx = 2.2 / level.source.feetPerImagePx;
 
   return (
     <div className="flex h-full flex-col">
@@ -172,8 +230,8 @@ export function FloorplanReview({ level, sheet, editable, saving, onEdit }: Floo
               size="sm"
               variant={tool === "select" ? "default" : "ghost"}
               onClick={() => {
-                setTool("select")
-                setDrawStart(null)
+                setTool("select");
+                setDrawStart(null);
               }}
             >
               Select
@@ -183,8 +241,8 @@ export function FloorplanReview({ level, sheet, editable, saving, onEdit }: Floo
               variant={tool === "draw" ? "default" : "ghost"}
               className="gap-1.5"
               onClick={() => {
-                setTool("draw")
-                setSelectedWallId(null)
+                setTool("draw");
+                setSelectedWallId(null);
               }}
             >
               <PencilRuler className="h-3.5 w-3.5" />
@@ -196,8 +254,12 @@ export function FloorplanReview({ level, sheet, editable, saving, onEdit }: Floo
                 variant="ghost"
                 className="gap-1.5 text-destructive"
                 onClick={() => {
-                  onEdit({ type: "wall.delete", levelId: level.id, wallId: selectedWall.id })
-                  setSelectedWallId(null)
+                  onEdit({
+                    type: "wall.delete",
+                    levelId: level.id,
+                    wallId: selectedWall.id,
+                  });
+                  setSelectedWallId(null);
                 }}
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -216,16 +278,26 @@ export function FloorplanReview({ level, sheet, editable, saving, onEdit }: Floo
           ) : null}
           {editable ? (
             <div className="flex items-center gap-1.5">
-              <Label htmlFor={`ceiling-${level.id}`} className="text-xs text-muted-foreground">
+              <Label
+                htmlFor={`ceiling-${level.id}`}
+                className="text-xs text-muted-foreground"
+              >
                 Ceiling
               </Label>
               <Select
                 value={String(level.ceilingHeightFt)}
                 onValueChange={(value) =>
-                  onEdit({ type: "level.height", levelId: level.id, ceilingHeightFt: Number(value) })
+                  onEdit({
+                    type: "level.height",
+                    levelId: level.id,
+                    ceilingHeightFt: Number(value),
+                  })
                 }
               >
-                <SelectTrigger id={`ceiling-${level.id}`} className="h-7 w-24 text-xs">
+                <SelectTrigger
+                  id={`ceiling-${level.id}`}
+                  className="h-7 w-24 text-xs"
+                >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -238,17 +310,23 @@ export function FloorplanReview({ level, sheet, editable, saving, onEdit }: Floo
               </Select>
             </div>
           ) : (
-            <span className="text-xs text-muted-foreground tabular-nums">{level.ceilingHeightFt}′ ceilings</span>
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {level.ceilingHeightFt}′ ceilings
+            </span>
           )}
           <span className="text-xs text-muted-foreground tabular-nums">
-            {level.walls.length} walls · {level.openings.length} openings · {level.rooms.length} rooms
+            {level.walls.length} walls · {level.openings.length} openings ·{" "}
+            {level.rooms.length} rooms
           </span>
         </div>
       </div>
 
       <div
         ref={wrapperRef}
-        className={cn("relative min-h-0 flex-1", tool === "draw" && editable ? "cursor-crosshair" : null)}
+        className={cn(
+          "relative min-h-0 flex-1",
+          tool === "draw" && editable ? "cursor-crosshair" : null,
+        )}
         onMouseDown={onSurfaceDown}
         onClick={onSurfaceClick}
         onMouseMove={onSurfaceMove}
@@ -264,19 +342,76 @@ export function FloorplanReview({ level, sheet, editable, saving, onEdit }: Floo
           <SheetlessCanvas level={level} onTransform={onTransformChange} />
         )}
 
-        <svg ref={svgRef} className="pointer-events-none absolute inset-0 h-full w-full">
+        <svg
+          ref={svgRef}
+          className="pointer-events-none absolute inset-0 h-full w-full"
+        >
           {/* Under the transform, `vectorEffect` is what keeps a hairline a
               hairline at every zoom; wall strokes deliberately do NOT use it,
               because their width IS the wall's real thickness. */}
-          <g ref={groupRef} className={tool === "draw" && editable ? "pointer-events-none" : undefined}>
+          <g
+            ref={groupRef}
+            className={
+              tool === "draw" && editable ? "pointer-events-none" : undefined
+            }
+          >
+            {level.reconstruction?.issues
+              .filter(
+                (issue) =>
+                  selection === `reconstruction:${issue.id}` ||
+                  selection?.startsWith(`reconstruction:${issue.id}:member:`),
+              )
+              .flatMap((issue) => {
+                const prefix = `reconstruction:${issue.id}:member:`,
+                  index = selection?.startsWith(prefix)
+                    ? Number(selection.slice(prefix.length))
+                    : null;
+                const members = issue.members ?? [issue],
+                  shown =
+                    index !== null
+                      ? Number.isInteger(index) &&
+                        index >= 0 &&
+                        index < members.length
+                        ? [members[index]]
+                        : []
+                      : members;
+                return shown
+                  .filter((member) => member.point)
+                  .map((member, index) => (
+                    <circle
+                      key={`${issue.id}:${member.id}:${index}`}
+                      cx={member.point![0] * level.source.imageWidth}
+                      cy={member.point![1] * level.source.imageHeight}
+                      r={Math.max(12, level.source.imageWidth * 0.009)}
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={3}
+                      vectorEffect="non-scaling-stroke"
+                      className="text-destructive pointer-events-none"
+                    >
+                      <title>{member.message}</title>
+                    </circle>
+                  ));
+              })}
             {level.rooms.map((room) => {
-              const points = room.polygon.map(([x, y]) => px(x, y))
-              const centroid = polygonCentroid(room.polygon.map(([x, y]) => [x, y] as [number, number]))
-              const center = px(centroid[0], centroid[1])
+              const points = room.polygon.map(([x, y]) => px(x, y));
+              const centroid = interiorPoint(room.polygon, room.holes);
+              const center = px(centroid[0], centroid[1]);
               return (
                 <g key={room.id}>
-                  <polygon
-                    points={points.map((point) => `${point.x},${point.y}`).join(" ")}
+                  <path
+                    fillRule="evenodd"
+                    d={[
+                      points,
+                      ...(room.holes ?? []).map((hole) =>
+                        hole.map(([x, y]) => px(x, y)),
+                      ),
+                    ]
+                      .map(
+                        (ring) =>
+                          `M ${ring.map((point) => `${point.x},${point.y}`).join(" L ")} Z`,
+                      )
+                      .join(" ")}
                     vectorEffect="non-scaling-stroke"
                     strokeWidth={1.5}
                     className={cn(
@@ -284,10 +419,11 @@ export function FloorplanReview({ level, sheet, editable, saving, onEdit }: Floo
                       !room.label && "fill-warning/10 stroke-warning/40",
                     )}
                     onClick={(event) => {
-                      if (!editable) return
-                      event.stopPropagation()
-                      setEditingRoomId(room.id)
-                      setRoomDraft(room.label ?? "")
+                      if (!editable) return;
+                      event.stopPropagation();
+                      setEditingRoomId(room.id);
+                      onSelect?.(room.id);
+                      setRoomDraft(room.label ?? "");
                     }}
                   />
                   <text
@@ -304,15 +440,16 @@ export function FloorplanReview({ level, sheet, editable, saving, onEdit }: Floo
                     {room.label ?? "Unnamed"}
                   </text>
                 </g>
-              )
+              );
             })}
 
             {level.walls.map((wall) => {
-              const a = px(wall.x0, wall.y0)
-              const b = px(wall.x1, wall.y1)
-              const selected = wall.id === selectedWallId
-              const low = wall.confidence < LOW_CONFIDENCE
-              const thicknessPx = wall.thicknessFt / level.source.feetPerImagePx
+              const a = px(wall.x0, wall.y0);
+              const b = px(wall.x1, wall.y1);
+              const selected = wall.id === selectedWallId;
+              const low = wall.confidence < LOW_CONFIDENCE;
+              const thicknessPx =
+                wall.thicknessFt / level.source.feetPerImagePx;
               return (
                 <line
                   key={wall.id}
@@ -333,50 +470,210 @@ export function FloorplanReview({ level, sheet, editable, saving, onEdit }: Floo
                           : "stroke-primary/60",
                   )}
                   onClick={(event) => {
-                    if (!editable || tool === "draw") return
-                    event.stopPropagation()
-                    setSelectedWallId(selected ? null : wall.id)
+                    if (!editable || tool === "draw") return;
+                    event.stopPropagation();
+                    setSelectedWallId(selected ? null : wall.id);
+                    onSelect?.(selected ? null : wall.id);
                   }}
                 />
-              )
+              );
             })}
 
             {level.openings.map((opening) => {
-              const wall = level.walls.find((candidate) => candidate.id === opening.wallId)
-              if (!wall) return null
-              const { ux, uy } = wallDirection(wall)
-              const mid = opening.offsetFt + opening.widthFt / 2
-              const point = px(wall.x0 + ux * mid, wall.y0 + uy * mid)
-              const radius = Math.max(0.5, opening.widthFt / 3) / level.source.feetPerImagePx
+              const wall = level.walls.find(
+                (candidate) => candidate.id === opening.wallId,
+              );
+              if (!wall) return null;
+              const { ux, uy } = wallDirection(wall);
+              const start = px(
+                  wall.x0 + ux * opening.offsetFt,
+                  wall.y0 + uy * opening.offsetFt,
+                ),
+                end = px(
+                  wall.x0 + ux * (opening.offsetFt + opening.widthFt),
+                  wall.y0 + uy * (opening.offsetFt + opening.widthFt),
+                );
+              const selectOpening = () => {
+                if (!editable) return;
+                const order: OpeningKind[] = ["door", "window", "cased"];
+                if (onSelect) onSelect(opening.id);
+                else
+                  onEdit({
+                    type: "opening.set",
+                    levelId: level.id,
+                    openingId: opening.id,
+                    kind: order[
+                      (order.indexOf(opening.kind) + 1) % order.length
+                    ],
+                  });
+              };
+              const halfDepth =
+                  wall.thicknessFt / 2 / level.source.feetPerImagePx,
+                hitPoints = [
+                  [start.x - uy * halfDepth, start.y + ux * halfDepth],
+                  [end.x - uy * halfDepth, end.y + ux * halfDepth],
+                  [end.x + uy * halfDepth, end.y - ux * halfDepth],
+                  [start.x + uy * halfDepth, start.y - ux * halfDepth],
+                ]
+                  .map((p) => p.join(","))
+                  .join(" ");
               return (
-                <circle
+                <g
                   key={opening.id}
-                  cx={point.x}
-                  cy={point.y}
-                  r={radius}
-                  vectorEffect="non-scaling-stroke"
-                  strokeWidth={1.5}
+                  data-opening-id={opening.id}
+                  role="button"
+                  tabIndex={editable ? 0 : -1}
+                  aria-disabled={!editable}
+                  aria-label={`${onSelect ? "Select" : "Change"} ${opening.kind} opening`}
                   className={cn(
                     "pointer-events-auto cursor-pointer",
                     opening.kind === "door"
-                      ? "fill-success/40 stroke-success"
+                      ? "text-success"
                       : opening.kind === "window"
-                        ? "fill-chart-2/40 stroke-chart-2"
-                        : "fill-muted stroke-muted-foreground",
+                        ? "text-chart-2"
+                        : "text-muted-foreground",
                   )}
                   onClick={(event) => {
-                    if (!editable) return
-                    event.stopPropagation()
-                    const order: OpeningKind[] = ["door", "window", "cased"]
-                    const next = order[(order.indexOf(opening.kind) + 1) % order.length]
-                    onEdit({ type: "opening.set", levelId: level.id, openingId: opening.id, kind: next })
+                    event.stopPropagation();
+                    selectOpening();
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      selectOpening();
+                    }
                   }}
                 >
-                  <title>{`${OPENING_LABEL[opening.kind]} — ${opening.widthFt.toFixed(1)}′ (click to change)`}</title>
-                </circle>
-              )
+                  <title>{`${OPENING_LABEL[opening.kind]} — ${opening.widthFt.toFixed(1)}′`}</title>
+                  <polygon points={hitPoints} fill="transparent" />
+                  <line
+                    x1={start.x}
+                    y1={start.y}
+                    x2={end.x}
+                    y2={end.y}
+                    stroke="transparent"
+                    strokeWidth={14}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                  <line
+                    x1={start.x}
+                    y1={start.y}
+                    x2={end.x}
+                    y2={end.y}
+                    stroke="currentColor"
+                    strokeWidth={3}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                </g>
+              );
             })}
 
+            {selectedWall &&
+              editable &&
+              ([0, 1] as const).map((end) => {
+                const point = px(
+                  end ? selectedWall.x1 : selectedWall.x0,
+                  end ? selectedWall.y1 : selectedWall.y0,
+                );
+                return (
+                  <circle
+                    key={`handle-${end}`}
+                    cx={point.x}
+                    cy={point.y}
+                    r={0.35 / level.source.feetPerImagePx}
+                    className="pointer-events-auto cursor-move fill-background stroke-primary"
+                    strokeWidth={2}
+                    vectorEffect="non-scaling-stroke"
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      e.currentTarget.setPointerCapture(e.pointerId);
+                    }}
+                    onPointerMove={(e) => {
+                      if (!e.currentTarget.hasPointerCapture(e.pointerId))
+                        return;
+                      e.stopPropagation();
+                      const p = toModelPoint(e.clientX, e.clientY);
+                      if (p) {
+                        const screen = px(p.x, p.y);
+                        e.currentTarget.setAttribute("cx", String(screen.x));
+                        e.currentTarget.setAttribute("cy", String(screen.y));
+                      }
+                    }}
+                    onPointerUp={(e) => {
+                      e.stopPropagation();
+                      const p = toModelPoint(e.clientX, e.clientY);
+                      if (p)
+                        onEdit({
+                          type: "wall.update",
+                          levelId: level.id,
+                          wallId: selectedWall.id,
+                          changes: end
+                            ? { x1: p.x, y1: p.y }
+                            : { x0: p.x, y0: p.y },
+                        });
+                      e.currentTarget.releasePointerCapture(e.pointerId);
+                    }}
+                  />
+                );
+              })}
+            {level.objects?.map((object) => {
+              const p = px(object.xFt, object.yFt),
+                scale = level.source.feetPerImagePx;
+              return (
+                <rect
+                  key={object.id}
+                  x={p.x - object.widthFt / scale / 2}
+                  y={p.y - object.depthFt / scale / 2}
+                  width={object.widthFt / scale}
+                  height={object.depthFt / scale}
+                  transform={`rotate(${object.rotationDeg} ${p.x} ${p.y})`}
+                  fill={object.color}
+                  fillOpacity={0.7}
+                  stroke="currentColor"
+                  strokeWidth={selection === object.id ? 3 : 1}
+                  vectorEffect="non-scaling-stroke"
+                  className="pointer-events-auto cursor-move"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelect?.(object.id);
+                  }}
+                  onPointerDown={(e) => {
+                    if (!editable || saving) return;
+                    e.stopPropagation();
+                    objectDragRef.current = toModelPoint(e.clientX, e.clientY);
+                    e.currentTarget.setPointerCapture(e.pointerId);
+                  }}
+                  onPointerUp={(e) => {
+                    if (
+                      !editable ||
+                      !e.currentTarget.hasPointerCapture(e.pointerId)
+                    )
+                      return;
+                    e.stopPropagation();
+                    const point = toModelPoint(e.clientX, e.clientY);
+                    const start = objectDragRef.current;
+                    if (
+                      point &&
+                      start &&
+                      Math.hypot(point.x - start.x, point.y - start.y) > 0.05
+                    )
+                      onEdit({
+                        type: "object.upsert",
+                        levelId: level.id,
+                        object: {
+                          ...object,
+                          xFt: object.xFt + point.x - start.x,
+                          yFt: object.yFt + point.y - start.y,
+                        },
+                      });
+                    objectDragRef.current = null;
+                    e.currentTarget.releasePointerCapture(e.pointerId);
+                  }}
+                >
+                  <title>{object.name}</title>
+                </rect>
+              );
+            })}
             {drawStart && cursor ? (
               <line
                 x1={px(drawStart.x, drawStart.y).x}
@@ -399,10 +696,15 @@ export function FloorplanReview({ level, sheet, editable, saving, onEdit }: Floo
               onChange={(event) => setRoomDraft(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
-                  onEdit({ type: "room.label", levelId: level.id, roomId: editingRoomId, label: roomDraft || null })
-                  setEditingRoomId(null)
+                  onEdit({
+                    type: "room.label",
+                    levelId: level.id,
+                    roomId: editingRoomId,
+                    label: roomDraft || null,
+                  });
+                  setEditingRoomId(null);
                 }
-                if (event.key === "Escape") setEditingRoomId(null)
+                if (event.key === "Escape") setEditingRoomId(null);
               }}
               placeholder="Room name"
               className="h-8 w-44 text-sm"
@@ -411,14 +713,24 @@ export function FloorplanReview({ level, sheet, editable, saving, onEdit }: Floo
               size="sm"
               variant="ghost"
               onClick={() => {
-                onEdit({ type: "room.label", levelId: level.id, roomId: editingRoomId, label: roomDraft || null })
-                setEditingRoomId(null)
+                onEdit({
+                  type: "room.label",
+                  levelId: level.id,
+                  roomId: editingRoomId,
+                  label: roomDraft || null,
+                });
+                setEditingRoomId(null);
               }}
               aria-label="Save room name"
             >
               <Check className="h-3.5 w-3.5" />
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setEditingRoomId(null)} aria-label="Cancel">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setEditingRoomId(null)}
+              aria-label="Cancel"
+            >
               <X className="h-3.5 w-3.5" />
             </Button>
           </div>
@@ -426,7 +738,10 @@ export function FloorplanReview({ level, sheet, editable, saving, onEdit }: Floo
 
         {tool === "draw" && editable ? (
           <div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground">
-            {drawStart ? "Click the far end of the wall" : "Click where the wall starts"} · Esc to cancel
+            {drawStart
+              ? "Click the far end of the wall"
+              : "Click where the wall starts"}{" "}
+            · Esc to cancel
           </div>
         ) : null}
       </div>
@@ -436,11 +751,13 @@ export function FloorplanReview({ level, sheet, editable, saving, onEdit }: Floo
         <LegendDot className="bg-warning/70" label="Low confidence" />
         <LegendDot className="bg-success/70" label="Drawn by hand" />
         <span className="ml-auto tabular-nums">
-          {selectedWall ? `${wallLengthFt(selectedWall).toFixed(1)}′ · ${(selectedWall.thicknessFt * 12).toFixed(1)}″ thick` : "Click a wall to select it"}
+          {selectedWall
+            ? `${wallLengthFt(selectedWall).toFixed(1)}′ · ${(selectedWall.thicknessFt * 12).toFixed(1)}″ thick`
+            : "Click a wall to select it"}
         </span>
       </div>
     </div>
-  )
+  );
 }
 
 function LegendDot({ className, label }: { className: string; label: string }) {
@@ -449,7 +766,7 @@ function LegendDot({ className, label }: { className: string; label: string }) {
       <span className={cn("h-2 w-2 rounded-full", className)} />
       {label}
     </span>
-  )
+  );
 }
 
 /**
@@ -462,20 +779,24 @@ function SheetlessCanvas({
   level,
   onTransform,
 }: {
-  level: Level
-  onTransform: (args: { matrix: ImageToScreenMatrix }) => void
+  level: Level;
+  onTransform: (args: { matrix: ImageToScreenMatrix }) => void;
 }) {
-  const ref = useRef<HTMLDivElement>(null)
+  const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const element = ref.current
-    if (!element) return
+    const element = ref.current;
+    if (!element) return;
     const fit = () => {
-      const width = element.clientWidth
-      const height = element.clientHeight
-      if (!width || !height) return
-      const bounds = wallBoundsPx(level)
-      const scale = Math.min(width / Math.max(bounds.width, 1), height / Math.max(bounds.height, 1)) * 0.85
+      const width = element.clientWidth;
+      const height = element.clientHeight;
+      if (!width || !height) return;
+      const bounds = wallBoundsPx(level);
+      const scale =
+        Math.min(
+          width / Math.max(bounds.width, 1),
+          height / Math.max(bounds.height, 1),
+        ) * 0.85;
       onTransform({
         matrix: {
           a: scale,
@@ -485,35 +806,40 @@ function SheetlessCanvas({
           e: (width - bounds.width * scale) / 2 - bounds.minX * scale,
           f: (height - bounds.height * scale) / 2 - bounds.minY * scale,
         },
-      })
-    }
-    fit()
-    const observer = new ResizeObserver(fit)
-    observer.observe(element)
-    return () => observer.disconnect()
-  }, [level, onTransform])
+      });
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [level, onTransform]);
 
-  return <div ref={ref} className="absolute inset-0 bg-muted" />
+  return <div ref={ref} className="absolute inset-0 bg-muted" />;
 }
 
-function wallBoundsPx(level: Level): { minX: number; minY: number; width: number; height: number } {
-  let minX = Infinity
-  let minY = Infinity
-  let maxX = -Infinity
-  let maxY = -Infinity
+function wallBoundsPx(level: Level): {
+  minX: number;
+  minY: number;
+  width: number;
+  height: number;
+} {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
   const consider = (wall: Wall) => {
     for (const [x, y] of [
       [wall.x0, wall.y0],
       [wall.x1, wall.y1],
     ]) {
-      const point = modelToImagePx(level.source, x, y)
-      minX = Math.min(minX, point.x)
-      minY = Math.min(minY, point.y)
-      maxX = Math.max(maxX, point.x)
-      maxY = Math.max(maxY, point.y)
+      const point = modelToImagePx(level.source, x, y);
+      minX = Math.min(minX, point.x);
+      minY = Math.min(minY, point.y);
+      maxX = Math.max(maxX, point.x);
+      maxY = Math.max(maxY, point.y);
     }
-  }
-  for (const wall of level.walls) consider(wall)
-  if (!Number.isFinite(minX)) return { minX: 0, minY: 0, width: 1, height: 1 }
-  return { minX, minY, width: maxX - minX, height: maxY - minY }
+  };
+  for (const wall of level.walls) consider(wall);
+  if (!Number.isFinite(minX)) return { minX: 0, minY: 0, width: 1, height: 1 };
+  return { minX, minY, width: maxX - minX, height: maxY - minY };
 }

@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -30,7 +31,8 @@ async function ImpersonationLauncher() {
 }
 
 async function SupportPageContent() {
-  await requireAnyPermissionGuard(["billing.manage", "platform.support.read"])
+  await connection()
+  await requireAnyPermissionGuard(["platform.support.read"])
 
   return (
     <PageLayout
@@ -67,7 +69,17 @@ function SupportTableSkeleton() {
 
 export default function SupportPage() {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={
+      <PageLayout
+      title="Support Contracts"
+      breadcrumbs={[
+        { label: "Admin", href: "/admin" },
+        { label: "Support Contracts" },
+      ]}
+    >
+        <PageLoadingSkeleton />
+      </PageLayout>
+    }>
       <SupportPageContent />
     </Suspense>
   )

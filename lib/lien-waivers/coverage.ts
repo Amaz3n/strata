@@ -29,6 +29,7 @@ export interface CoverageBill {
   project_id?: string | null
   company_id?: string | null
   commitment_id?: string | null
+  lien_waiver_status?: string | null
   total_cents: number
   paid_cents?: number | null
   retainage_cents?: number | null
@@ -78,6 +79,7 @@ export function waiverCoverage(
   missingCommitment = false,
   paymentAmountCents?: number,
 ) {
+  required = required || bill.lien_waiver_status === "requested" || bill.lien_waiver_status === "received"
   const through = coveredWorkDate(bill)
   const outstandingCents = payableOutstandingCents(bill)
   const paymentCents = paymentAmountCents ?? outstandingCents

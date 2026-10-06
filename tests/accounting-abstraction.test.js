@@ -686,7 +686,7 @@ test("permanent QuickBooks failures become reviewable work instead of retries", 
   // The outbox stops retrying and routes to needs_review with the cure attached.
   const route = fs.readFileSync(path.join(__dirname, "../app/api/accounting/process-outbox/route.ts"), "utf8")
   assert.match(route, /const shouldRetry = !permanent && newRetry < MAX_RETRIES/)
-  assert.match(route, /markAccountingPushPermanentlyFailed\(\{ orgId: job\.org_id, entityType, entityId, message: permanent\.message \}\)/)
+  assert.match(route, /markAccountingPushPermanentlyFailed\(\{ orgId, entityType, entityId, message: permanent\.message \}\)/)
 
   // A deleted QuickBooks bill payment cannot be re-synced either, so its
   // conflict says what the person is choosing between.
@@ -798,20 +798,8 @@ test("a QuickBooks void arrives as a zeroed Update and routes through the atomic
   assert.equal(source.match(/rpc\("void_invoice_atomic"/g).length, 2)
 })
 
-test("the CDC cursor is clamped to Intuit's 30-day changedSince window", () => {
-  const source = fs.readFileSync(path.join(__dirname, "../lib/integrations/accounting/qbo/reconcile.ts"), "utf8")
-
-  // An idle month (paused org, cron outage, a reconnect carrying the old cursor
-  // forward) made every poll fail forever: the cursor could never advance to
-  // heal itself. Clamping forfeits changes older than the window, which the
-  // reconciliation digest reports as drift.
-  assert.match(source, /const CDC_MAX_LOOKBACK_DAYS = 29/)
-  assert.match(source, /const cdcFloorMs = Date\.now\(\) - CDC_MAX_LOOKBACK_DAYS \* 24 \* 60 \* 60 \* 1000/)
-  assert.match(source, /Math\.max\(Number\.isFinite\(rawCursorMs\) \? rawCursorMs : cdcFloorMs, cdcFloorMs\)/)
-  // The overlap rewind must not push the request back through the floor again.
-  assert.match(source, /new Date\(Math\.max\(cursorMs - CDC_OVERLAP_MINUTES \* 60 \* 1000, cdcFloorMs\)\)/)
-  assert.match(source, /qbo_cdc_cursor_clamped/)
-})
+// CDC boundary clamping and durable lost-window evidence are executed against
+// the real ingestion facade and exact SQL in qbo-cdc-completeness.test.js.
 
 test("the reclaim sweep charges an attempt and dead-letters an event that keeps crashing", () => {
   const source = fs.readFileSync(path.join(__dirname, "../lib/integrations/accounting/qbo/reconcile.ts"), "utf8")
@@ -832,17 +820,8 @@ test("the reclaim sweep charges an attempt and dead-letters an event that keeps 
   assert.match(source, /attempts\.lt\.\$\{MAX_EVENT_ATTEMPTS\}/)
 })
 
-test("resolving webhook events after an import is scoped to the entity that was imported", () => {
-  const source = fs.readFileSync(path.join(__dirname, "../lib/integrations/accounting/qbo/import.ts"), "utf8")
-
-  // QBO ids are unique per entity type, not globally: importing Invoice 42 must
-  // not mark the pending Bill 42 event reconciled.
-  assert.match(source, /\.eq\("realm_id", realmId\)\s*\n\s*\.eq\("entity_qbo_id", qboId\)\s*\n\s*\.in\("entity_name", entityNames\)/)
-  assert.match(source, /markEventsResolved\(supabase, qboId, ctx\.externalAccountId, \["Invoice"\]\)/)
-  assert.match(source, /markEventsResolved\(supabase, qboId, ctx\.externalAccountId, \["Purchase", "Bill"\]\)/)
-  // Only unfinished events get swept; a reconciled one is never rewritten.
-  assert.match(source, /\.in\("process_status", \["ignored", "pending", "error"\]\)/)
-})
+// Claim-fenced namespace/precision completion is exercised against exact SQL
+// and the actual import service in qbo-import-completion.test.js.
 
 test("deferred accounting work keeps its delivery budget and requeues", () => {
   const source = fs.readFileSync(path.join(__dirname, "../app/api/accounting/process-outbox/route.ts"), "utf8")

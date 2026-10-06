@@ -1,5 +1,3 @@
-export { FilesManager } from "./files-manager"
-export { FileUploadZone } from "./file-upload-zone"
 export { FileDropOverlay } from "./file-drop-overlay"
 export { FileViewer } from "./file-viewer"
 export { FileGrid } from "./file-grid"

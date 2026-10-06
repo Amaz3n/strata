@@ -1,6 +1,18 @@
-import "server-only"
+import "server-only";
+import { randomUUID } from "node:crypto";
+import { validateArchitecturalModel } from "@/lib/drawings/architectural-validation";
+import type { ModelSourceSelection } from "@/lib/drawings/architectural-model";
+import { runAreaEngine } from "@/lib/drawings/area-engine";
+import {
+  type AreaEvidence,
+} from "@/lib/drawings/area-evidence";
+import { buildingToFloorplan } from "@/lib/drawings/building-floorplan";
+import { loadArchitecturalEvidence } from "./architectural-evidence";
+import { createArchitecturalRecognizer } from "./architectural-recognition";
+import { ensureSheetBuildingRun } from "./sheet-building-records";
+import { sheetBuildingInputKey, sheetBuildingRunKey, type SheetBuildingRun } from "@/lib/drawings/sheet-building-record";
 
-import type { SupabaseClient } from "@supabase/supabase-js"
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 /**
  * Floorplan models — interpreting a plan version's sheets into a walkable 3D
@@ -21,39 +33,48 @@ import type { SupabaseClient } from "@supabase/supabase-js"
  */
 
 import {
-  interpretFloorplan,
   selectFloorplanSheets,
   type InterpretLevelInput,
   type SelectedSheet,
   type SheetCandidate,
-} from "@/lib/drawings/floorplan-interpret"
+} from "@/lib/drawings/floorplan-sheets";
 import {
   modelConfidence,
   modelFloorAreaSqft,
   applyFloorplanEdit,
   type FloorplanEdit,
   type FloorplanModel,
-} from "@/lib/drawings/floorplan-model"
-import { parseVectorsBin } from "@/lib/drawings/vector-snap"
-import { parseTextRuns, TEXT_RUNS_FILE, type TextRun } from "@/lib/drawings/text-runs"
-import { recordAudit } from "@/lib/services/audit"
-import { requireOrgContext } from "@/lib/services/context"
-import { drawingsVisionConfigured } from "@/lib/services/ai/drawings-vision"
-import { assistFloorplanModelWithVision } from "@/lib/services/floorplan-vision-assist"
-import { recordEvent } from "@/lib/services/events"
-import { enqueueOutboxJob } from "@/lib/services/outbox"
-import { requirePermission } from "@/lib/services/permissions"
-import { downloadTilesObject } from "@/lib/storage/drawings-tiles-storage"
-import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { floorplanEditsSchema, floorplanModelSchema } from "@/lib/validation/floorplan"
+} from "@/lib/drawings/floorplan-model";
+import { parseVectorsBin } from "@/lib/drawings/vector-snap";
+import {
+  parseTextRuns,
+  TEXT_RUNS_FILE,
+  type TextRun,
+} from "@/lib/drawings/text-runs";
+import { recordAudit } from "@/lib/services/audit";
+import { requireOrgContext } from "@/lib/services/context";
+import { drawingsVisionConfigured } from "@/lib/services/ai/drawings-vision";
+import { recordEvent } from "@/lib/services/events";
+import { enqueueOutboxJob } from "@/lib/services/outbox";
+import { requirePermission } from "@/lib/services/permissions";
+import { downloadTilesObject } from "@/lib/storage/drawings-tiles-storage";
+import { createServiceSupabaseClient } from "@/lib/supabase/server";
+import {
+  floorplanEditsSchema,
+  floorplanModelSchema,
+} from "@/lib/validation/floorplan";
 
 /** Bump when interpretation changes in a way that should re-run on existing plans. */
 // 2: perimeter-gap bridging, filled-face pairing boost, vision assist.
-export const FLOORPLAN_ALGO_VERSION = 2
+export const FLOORPLAN_ALGO_VERSION = 42;
 
-export const FLOORPLAN_INTERPRET_JOB = "interpret_floorplan"
+export const FLOORPLAN_INTERPRET_JOB = "interpret_floorplan";
 
-export type FloorplanModelStatus = "processing" | "draft" | "published" | "failed"
+export type FloorplanModelStatus =
+  | "processing"
+  | "draft"
+  | "published"
+  | "failed";
 
 /**
  * What a model hangs off.
@@ -70,65 +91,75 @@ export type FloorplanModelStatus = "processing" | "draft" | "published" | "faile
  */
 export type FloorplanTarget =
   | { kind: "plan"; housePlanVersionId: string }
-  | { kind: "project"; projectId: string }
+  | { kind: "project"; projectId: string };
 
 /** The column/value pair an anchor filters and writes on. */
-function anchorColumn(target: FloorplanTarget): { column: string; value: string } {
+function anchorColumn(target: FloorplanTarget): {
+  column: string;
+  value: string;
+} {
   return target.kind === "plan"
     ? { column: "house_plan_version_id", value: target.housePlanVersionId }
-    : { column: "project_id", value: target.projectId }
+    : { column: "project_id", value: target.projectId };
 }
 
 /** Stable string form, for outbox dedupe keys and job payloads. */
 export function floorplanTargetKey(target: FloorplanTarget): string {
-  return target.kind === "plan" ? `plan:${target.housePlanVersionId}` : `project:${target.projectId}`
+  return target.kind === "plan"
+    ? `plan:${target.housePlanVersionId}`
+    : `project:${target.projectId}`;
 }
 
 export interface FloorplanModelDto {
-  id: string
-  house_plan_version_id: string | null
-  project_id: string | null
-  drawing_revision_id: string | null
-  status: FloorplanModelStatus
-  model: FloorplanModel | null
-  algo_version: number
-  confidence: number | null
-  level_count: number
-  correction_count: number
-  error: string | null
-  interpreted_at: string | null
-  published_at: string | null
-  updated_at: string
+  generation_stage: string | null;
+  source_selection: ModelSourceSelection[] | null;
+  id: string;
+  house_plan_version_id: string | null;
+  project_id: string | null;
+  drawing_revision_id: string | null;
+  status: FloorplanModelStatus;
+  model: FloorplanModel | null;
+  algo_version: number;
+  confidence: number | null;
+  level_count: number;
+  correction_count: number;
+  error: string | null;
+  interpreted_at: string | null;
+  published_at: string | null;
+  updated_at: string;
   /**
    * True when a newer interpretation algorithm exists than the one that ran,
    * or — for project-anchored models — when the project's drawings have been
    * re-issued since the model was interpreted.
    */
-  stale: boolean
+  stale: boolean;
 }
 
 interface ModelRow {
-  id: string
-  house_plan_version_id: string | null
-  project_id: string | null
-  drawing_revision_id: string | null
-  status: FloorplanModelStatus
-  model: unknown
-  algo_version: number
-  confidence: string | number | null
-  level_count: number
-  correction_count: number
-  error: string | null
-  interpreted_at: string | null
-  published_at: string | null
-  updated_at: string
+  published_model?: unknown;
+  generation_stage?: string | null;
+  source_selection?: ModelSourceSelection[] | null;
+  id: string;
+  house_plan_version_id: string | null;
+  project_id: string | null;
+  drawing_revision_id: string | null;
+  status: FloorplanModelStatus;
+  model: unknown;
+  algo_version: number;
+  confidence: string | number | null;
+  level_count: number;
+  correction_count: number;
+  error: string | null;
+  interpreted_at: string | null;
+  published_at: string | null;
+  updated_at: string;
 }
 
 const MODEL_COLUMNS =
-  "id, house_plan_version_id, project_id, drawing_revision_id, status, model, algo_version, confidence, level_count, correction_count, error, interpreted_at, published_at, updated_at"
+  "id, house_plan_version_id, project_id, drawing_revision_id, status, model, generation_stage, source_selection, algo_version, confidence, level_count, correction_count, error, interpreted_at, published_at, updated_at";
 /** Everything but the geometry — for chips and lists, which never need it. */
 const MODEL_STATUS_COLUMNS =
-  "id, house_plan_version_id, project_id, drawing_revision_id, status, algo_version, confidence, level_count, correction_count, error, interpreted_at, published_at, updated_at"
+  "id, house_plan_version_id, project_id, drawing_revision_id, status, generation_stage, source_selection, algo_version, confidence, level_count, correction_count, error, interpreted_at, published_at, updated_at";
 
 /**
  * Parse a stored model document.
@@ -138,12 +169,15 @@ const MODEL_STATUS_COLUMNS =
  * which is the only useful thing to do about it.
  */
 function parseModel(raw: unknown): FloorplanModel | null {
-  if (!raw || typeof raw !== "object") return null
-  const parsed = floorplanModelSchema.safeParse(raw)
-  return parsed.success ? (parsed.data as FloorplanModel) : null
+  if (!raw || typeof raw !== "object") return null;
+  const parsed = floorplanModelSchema.safeParse(raw);
+  return parsed.success ? (parsed.data as FloorplanModel) : null;
 }
 
-function mapModel(row: ModelRow, currentDrawingRevisionId?: string | null): FloorplanModelDto {
+function mapModel(
+  row: ModelRow,
+  currentDrawingRevisionId?: string | null,
+): FloorplanModelDto {
   // Stale two ways: the interpreter improved since this model was built
   // (algo_version), or the drawings themselves were re-issued under it. The
   // revision check binds only project-anchored models — a released plan
@@ -153,8 +187,10 @@ function mapModel(row: ModelRow, currentDrawingRevisionId?: string | null): Floo
     row.drawing_revision_id !== null &&
     currentDrawingRevisionId !== undefined &&
     currentDrawingRevisionId !== null &&
-    row.drawing_revision_id !== currentDrawingRevisionId
+    row.drawing_revision_id !== currentDrawingRevisionId;
   return {
+    generation_stage: row.generation_stage ?? null,
+    source_selection: row.source_selection ?? null,
     id: row.id,
     house_plan_version_id: row.house_plan_version_id,
     project_id: row.project_id,
@@ -170,7 +206,7 @@ function mapModel(row: ModelRow, currentDrawingRevisionId?: string | null): Floo
     published_at: row.published_at,
     updated_at: row.updated_at,
     stale: row.algo_version < FLOORPLAN_ALGO_VERSION || revisionStale,
-  }
+  };
 }
 
 /**
@@ -182,7 +218,7 @@ async function currentDrawingRevisionIdFor(
   context: { supabase: SupabaseClient; orgId: string },
   target: FloorplanTarget,
 ): Promise<string | null> {
-  if (target.kind !== "project") return null
+  if (target.kind !== "project") return null;
   const { data, error } = await context.supabase
     .from("drawing_revisions")
     .select("id")
@@ -191,9 +227,12 @@ async function currentDrawingRevisionIdFor(
     .eq("status", "published")
     .order("published_at", { ascending: false, nullsFirst: false })
     .limit(1)
-    .maybeSingle()
-  if (error) throw new Error(`Failed to load current drawing revision: ${error.message}`)
-  return (data?.id as string | undefined) ?? null
+    .maybeSingle();
+  if (error)
+    throw new Error(
+      `Failed to load current drawing revision: ${error.message}`,
+    );
+  return (data?.id as string | undefined) ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -204,19 +243,50 @@ export async function getFloorplanModel(
   target: FloorplanTarget,
   orgId?: string,
 ): Promise<FloorplanModelDto | null> {
-  const context = await requireOrgContext(orgId)
-  await requirePermission("plan.read", context)
+  const context = await requireOrgContext(orgId);
+  await requirePermission("plan.read", context);
 
-  const anchor = anchorColumn(target)
+  const anchor = anchorColumn(target);
   const { data, error } = await context.supabase
     .from("floorplan_models")
     .select(MODEL_COLUMNS)
     .eq("org_id", context.orgId)
     .eq(anchor.column, anchor.value)
-    .maybeSingle()
-  if (error) throw new Error(`Failed to load floorplan model: ${error.message}`)
-  if (!data) return null
-  return mapModel(data as ModelRow, await currentDrawingRevisionIdFor(context, target))
+    .maybeSingle();
+  if (error)
+    throw new Error(`Failed to load floorplan model: ${error.message}`);
+  if (!data) return null;
+  return mapModel(
+    data as ModelRow,
+    await currentDrawingRevisionIdFor(context, target),
+  );
+}
+
+/**
+ * The model's status without its geometry — what a generating model is polled
+ * with, so watching progress never re-downloads a megabyte document.
+ */
+export async function getFloorplanModelStatus(
+  target: FloorplanTarget,
+  orgId?: string,
+): Promise<FloorplanModelDto | null> {
+  const context = await requireOrgContext(orgId);
+  await requirePermission("plan.read", context);
+
+  const anchor = anchorColumn(target);
+  const { data, error } = await context.supabase
+    .from("floorplan_models")
+    .select(MODEL_STATUS_COLUMNS)
+    .eq("org_id", context.orgId)
+    .eq(anchor.column, anchor.value)
+    .maybeSingle();
+  if (error)
+    throw new Error(`Failed to load floorplan model status: ${error.message}`);
+  if (!data) return null;
+  return mapModel(
+    { ...(data as unknown as ModelRow), model: null },
+    await currentDrawingRevisionIdFor(context, target),
+  );
 }
 
 /** Status per plan version, for the library's model chips. */
@@ -224,23 +294,27 @@ export async function listFloorplanModelStatuses(
   housePlanVersionIds: string[],
   orgId?: string,
 ): Promise<Map<string, FloorplanModelDto>> {
-  const result = new Map<string, FloorplanModelDto>()
-  if (housePlanVersionIds.length === 0) return result
-  const context = await requireOrgContext(orgId)
-  await requirePermission("plan.read", context)
+  const result = new Map<string, FloorplanModelDto>();
+  if (housePlanVersionIds.length === 0) return result;
+  const context = await requireOrgContext(orgId);
+  await requirePermission("plan.read", context);
 
   const { data, error } = await context.supabase
     .from("floorplan_models")
     // The document itself is megabytes; a chip only needs the status.
     .select(MODEL_STATUS_COLUMNS)
     .eq("org_id", context.orgId)
-    .in("house_plan_version_id", housePlanVersionIds.slice(0, 500))
-  if (error) throw new Error(`Failed to load floorplan model statuses: ${error.message}`)
+    .in("house_plan_version_id", housePlanVersionIds.slice(0, 500));
+  if (error)
+    throw new Error(
+      `Failed to load floorplan model statuses: ${error.message}`,
+    );
 
   for (const row of (data ?? []) as unknown as ModelRow[]) {
-    if (row.house_plan_version_id) result.set(row.house_plan_version_id, mapModel({ ...row, model: null }))
+    if (row.house_plan_version_id)
+      result.set(row.house_plan_version_id, mapModel({ ...row, model: null }));
   }
-  return result
+  return result;
 }
 
 /**
@@ -252,8 +326,8 @@ export async function getPublishedFloorplanModelForPlan(
   housePlanId: string,
   orgId?: string,
 ): Promise<FloorplanModelDto | null> {
-  const context = await requireOrgContext(orgId)
-  await requirePermission("plan.read", context)
+  const context = await requireOrgContext(orgId);
+  await requirePermission("plan.read", context);
 
   const { data: version } = await context.supabase
     .from("house_plan_versions")
@@ -263,18 +337,23 @@ export async function getPublishedFloorplanModelForPlan(
     .eq("status", "released")
     .order("version_number", { ascending: false })
     .limit(1)
-    .maybeSingle()
-  if (!version) return null
+    .maybeSingle();
+  if (!version) return null;
 
   const { data, error } = await context.supabase
     .from("floorplan_models")
-    .select(MODEL_COLUMNS)
+    .select(`${MODEL_COLUMNS}, published_model`)
     .eq("org_id", context.orgId)
     .eq("house_plan_version_id", version.id)
-    .eq("status", "published")
-    .maybeSingle()
-  if (error) throw new Error(`Failed to load published floorplan model: ${error.message}`)
-  return data ? mapModel(data as ModelRow) : null
+    .not("published_model", "is", null)
+    .maybeSingle();
+  if (error)
+    throw new Error(
+      `Failed to load published floorplan model: ${error.message}`,
+    );
+  return data
+    ? mapModel({ ...data, model: data.published_model } as ModelRow)
+    : null;
 }
 
 /**
@@ -283,14 +362,14 @@ export async function getPublishedFloorplanModelForPlan(
  * the linework underneath is guesswork.
  */
 export interface FloorplanSheetView {
-  sheetVersionId: string
-  tileBaseUrl: string | null
-  tileManifest: Record<string, unknown> | null
-  thumbnailUrl: string | null
-  imageWidth: number
-  imageHeight: number
-  sheetNumber: string | null
-  sheetTitle: string | null
+  sheetVersionId: string;
+  tileBaseUrl: string | null;
+  tileManifest: Record<string, unknown> | null;
+  thumbnailUrl: string | null;
+  imageWidth: number;
+  imageHeight: number;
+  sheetNumber: string | null;
+  sheetTitle: string | null;
 }
 
 /**
@@ -304,24 +383,28 @@ export async function listPlansWithPublishedModels(
   housePlanIds: string[],
   orgId?: string,
 ): Promise<Set<string>> {
-  const result = new Set<string>()
-  if (housePlanIds.length === 0) return result
-  const context = await requireOrgContext(orgId)
-  await requirePermission("plan.read", context)
+  const result = new Set<string>();
+  if (housePlanIds.length === 0) return result;
+  const context = await requireOrgContext(orgId);
+  await requirePermission("plan.read", context);
 
   const { data, error } = await context.supabase
     .from("floorplan_models")
     .select("house_plan_versions!inner(house_plan_id, status)")
     .eq("org_id", context.orgId)
-    .eq("status", "published")
+    .not("published_model", "is", null)
     .eq("house_plan_versions.status", "released")
-    .in("house_plan_versions.house_plan_id", housePlanIds.slice(0, 500))
-  if (error) throw new Error(`Failed to load published models: ${error.message}`)
+    .in("house_plan_versions.house_plan_id", housePlanIds.slice(0, 500));
+  if (error)
+    throw new Error(`Failed to load published models: ${error.message}`);
 
-  for (const row of (data ?? []) as unknown as Array<{ house_plan_versions: { house_plan_id: string } | null }>) {
-    if (row.house_plan_versions?.house_plan_id) result.add(row.house_plan_versions.house_plan_id)
+  for (const row of (data ?? []) as unknown as Array<{
+    house_plan_versions: { house_plan_id: string } | null;
+  }>) {
+    if (row.house_plan_versions?.house_plan_id)
+      result.add(row.house_plan_versions.house_plan_id);
   }
-  return result
+  return result;
 }
 
 /**
@@ -335,20 +418,22 @@ export async function getFloorplanModelWithSheets(
   target: FloorplanTarget,
   orgId?: string,
 ): Promise<{ record: FloorplanModelDto | null; sheets: FloorplanSheetView[] }> {
-  const record = await getFloorplanModel(target, orgId)
-  if (!record?.model) return { record, sheets: [] }
-  const sheetIds = [...new Set(record.model.levels.map((level) => level.source.sheetVersionId))]
-  const sheets = await listFloorplanSheetViews(sheetIds, orgId)
-  return { record, sheets }
+  const record = await getFloorplanModel(target, orgId);
+  if (!record?.model) return { record, sheets: [] };
+  const sheetIds = [
+    ...new Set(record.model.levels.map((level) => level.source.sheetVersionId)),
+  ];
+  const sheets = await listFloorplanSheetViews(sheetIds, orgId);
+  return { record, sheets };
 }
 
 export async function listFloorplanSheetViews(
   sheetVersionIds: string[],
   orgId?: string,
 ): Promise<FloorplanSheetView[]> {
-  if (sheetVersionIds.length === 0) return []
-  const context = await requireOrgContext(orgId)
-  await requirePermission("plan.read", context)
+  if (sheetVersionIds.length === 0) return [];
+  const context = await requireOrgContext(orgId);
+  await requirePermission("plan.read", context);
 
   const { data, error } = await context.supabase
     .from("drawing_sheet_versions")
@@ -356,8 +441,9 @@ export async function listFloorplanSheetViews(
       "id, tile_base_url, tile_manifest, thumbnail_url, image_width, image_height, drawing_sheets!inner(sheet_number, sheet_title)",
     )
     .eq("org_id", context.orgId)
-    .in("id", sheetVersionIds.slice(0, 20))
-  if (error) throw new Error(`Failed to load floorplan sheets: ${error.message}`)
+    .in("id", sheetVersionIds);
+  if (error)
+    throw new Error(`Failed to load floorplan sheets: ${error.message}`);
 
   return (data ?? []).map((row: any) => ({
     sheetVersionId: row.id as string,
@@ -368,7 +454,7 @@ export async function listFloorplanSheetViews(
     imageHeight: Number(row.image_height ?? 0),
     sheetNumber: row.drawing_sheets?.sheet_number ?? null,
     sheetTitle: row.drawing_sheets?.sheet_title ?? null,
-  }))
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -391,13 +477,15 @@ async function assertInterpretable(
       .select("id, drawing_source_file_id")
       .eq("org_id", context.orgId)
       .eq("id", target.housePlanVersionId)
-      .maybeSingle()
-    if (error) throw new Error(`Failed to load plan version: ${error.message}`)
-    if (!version) throw new Error("Plan version not found")
+      .maybeSingle();
+    if (error) throw new Error(`Failed to load plan version: ${error.message}`);
+    if (!version) throw new Error("Plan version not found");
     if (!version.drawing_source_file_id) {
-      throw new Error("This edition has no plan-set PDF to interpret. Attach one first.")
+      throw new Error(
+        "This edition has no plan-set PDF to interpret. Attach one first.",
+      );
     }
-    return
+    return;
   }
 
   const { data: project, error } = await context.supabase
@@ -405,18 +493,20 @@ async function assertInterpretable(
     .select("id")
     .eq("org_id", context.orgId)
     .eq("id", target.projectId)
-    .maybeSingle()
-  if (error) throw new Error(`Failed to load project: ${error.message}`)
-  if (!project) throw new Error("Project not found")
+    .maybeSingle();
+  if (error) throw new Error(`Failed to load project: ${error.message}`);
+  if (!project) throw new Error("Project not found");
 
   const { count } = await context.supabase
     .from("drawing_revisions")
     .select("id", { count: "exact", head: true })
     .eq("org_id", context.orgId)
     .eq("project_id", target.projectId)
-    .eq("status", "published")
+    .eq("status", "published");
   if (!count) {
-    throw new Error("This project has no published drawings yet. Upload and publish a set first.")
+    throw new Error(
+      "This project has no published drawings yet. Upload and publish a set first.",
+    );
   }
 }
 
@@ -428,49 +518,77 @@ async function assertInterpretable(
  * it discards before calling with it.
  */
 export async function requestFloorplanInterpretation(
-  input: { target: FloorplanTarget; force?: boolean },
+  input: {
+    target: FloorplanTarget;
+    force?: boolean;
+    sources?: ModelSourceSelection[];
+  },
   orgId?: string,
 ): Promise<FloorplanModelDto> {
-  const context = await requireOrgContext(orgId)
-  await requirePermission("plan.write", context)
-  await assertInterpretable(context, input.target)
+  const context = await requireOrgContext(orgId);
+  await requirePermission("plan.write", context);
+  await assertInterpretable(context, input.target);
 
-  const existing = await getFloorplanModel(input.target, context.orgId)
-  if (existing?.status === "processing") return existing
+  const existing = await getFloorplanModel(input.target, context.orgId);
+  if (existing?.status === "processing") return existing;
   if (existing && existing.correction_count > 0 && !input.force) {
     throw new Error(
       `Re-interpreting discards ${existing.correction_count} correction${existing.correction_count === 1 ? "" : "s"}.`,
-    )
+    );
   }
 
-  const anchor = anchorColumn(input.target)
-  const { data, error } = await context.supabase
-    .from("floorplan_models")
-    .upsert(
-      {
-        org_id: context.orgId,
-        [anchor.column]: anchor.value,
-        status: "processing" as const,
-        model: null,
-        confidence: null,
-        level_count: 0,
-        correction_count: 0,
-        error: null,
-        algo_version: FLOORPLAN_ALGO_VERSION,
-        created_by: context.userId,
-      },
-      { onConflict: anchor.column },
-    )
-    .select(MODEL_COLUMNS)
-    .single()
-  if (error) throw new Error(`Failed to queue interpretation: ${error.message}`)
+  const generationId = randomUUID();
+  const anchor = anchorColumn(input.target);
+  const values = {
+    org_id: context.orgId,
+    [anchor.column]: anchor.value,
+    status: "processing" as const,
+    generation_id: generationId,
+    generation_stage: "queued",
+    source_selection: input.sources ?? existing?.source_selection ?? null,
+    error: null,
+    algo_version: FLOORPLAN_ALGO_VERSION,
+    created_by: context.userId,
+  };
+  // Claim exactly the revision we inspected. A concurrent correction or
+  // generation must not be replaced by a blind upsert.
+  const mutation = existing
+    ? context.supabase
+        .from("floorplan_models")
+        .update(values)
+        .eq("org_id", context.orgId)
+        .eq("id", existing.id)
+        .eq("updated_at", existing.updated_at)
+    : context.supabase.from("floorplan_models").insert(values);
+  const { data, error } = await mutation.select(MODEL_COLUMNS).single();
+  if (error)
+    throw new Error(`Failed to queue interpretation: ${error.message}`);
 
-  await enqueueOutboxJob({
-    orgId: context.orgId,
-    jobType: FLOORPLAN_INTERPRET_JOB,
-    payload: { orgId: context.orgId, target: input.target, targetKey: floorplanTargetKey(input.target) },
-    dedupeByPayloadKeys: ["targetKey"],
-  })
+  try {
+    await enqueueOutboxJob({
+      orgId: context.orgId,
+      jobType: FLOORPLAN_INTERPRET_JOB,
+      payload: {
+        orgId: context.orgId,
+        target: input.target,
+        targetKey: floorplanTargetKey(input.target),
+        generationId,
+      },
+      dedupeByPayloadKeys: ["generationId"],
+    });
+  } catch (queueError) {
+    await context.supabase
+      .from("floorplan_models")
+      .update({
+        status: "failed",
+        generation_stage: "failed",
+        error: "Could not queue model generation. Please try again.",
+      })
+      .eq("org_id", context.orgId)
+      .eq(anchor.column, anchor.value)
+      .eq("generation_id", generationId);
+    throw queueError;
+  }
 
   await recordAudit({
     orgId: context.orgId,
@@ -479,9 +597,12 @@ export async function requestFloorplanInterpretation(
     entityId: data.id,
     after: { status: "processing", target: floorplanTargetKey(input.target) },
     source: "floorplan.interpret",
-  })
+  });
 
-  return mapModel(data as ModelRow, await currentDrawingRevisionIdFor(context, input.target))
+  return mapModel(
+    data as ModelRow,
+    await currentDrawingRevisionIdFor(context, input.target),
+  );
 }
 
 /**
@@ -489,26 +610,36 @@ export async function requestFloorplanInterpretation(
  * UI previews with, so what a reviewer sees is what gets stored.
  */
 export async function applyFloorplanCorrections(
-  input: { target: FloorplanTarget; edits: FloorplanEdit[] },
+  input: {
+    target: FloorplanTarget;
+    edits: FloorplanEdit[];
+    expectedUpdatedAt: string;
+  },
   orgId?: string,
 ): Promise<FloorplanModelDto> {
-  const context = await requireOrgContext(orgId)
-  await requirePermission("plan.write", context)
-  const edits = floorplanEditsSchema.parse(input.edits) as FloorplanEdit[]
+  const context = await requireOrgContext(orgId);
+  await requirePermission("plan.write", context);
+  const edits = floorplanEditsSchema.parse(input.edits) as FloorplanEdit[];
 
-  const existing = await getFloorplanModel(input.target, context.orgId)
-  if (!existing) throw new Error("There is no model to correct yet")
-  if (!existing.model) throw new Error("This model has no geometry to correct")
+  const existing = await getFloorplanModel(input.target, context.orgId);
+  if (!existing) throw new Error("There is no model to correct yet");
+  if (!existing.model) throw new Error("This model has no geometry to correct");
+  if (existing.status === "processing")
+    throw new Error("Wait for generation to finish before editing");
+  if (existing.updated_at !== input.expectedUpdatedAt)
+    throw new Error(
+      "This model changed in another session. Reload before editing.",
+    );
 
-  let model = existing.model
-  let applied = 0
+  let model = existing.model;
+  let applied = 0;
   for (const edit of edits) {
-    const next = applyFloorplanEdit(model, edit)
-    if (next === model) continue
-    model = next
-    applied++
+    const next = applyFloorplanEdit(model, edit);
+    if (next === model) continue;
+    model = next;
+    applied++;
   }
-  if (applied === 0) return existing
+  if (applied === 0) return existing;
 
   const { data, error } = await context.supabase
     .from("floorplan_models")
@@ -516,17 +647,16 @@ export async function applyFloorplanCorrections(
       model,
       // A corrected model is a draft again: publishing is a deliberate act.
       status: "draft" as const,
-      published_at: null,
-      published_by: null,
       confidence: modelConfidence(model),
       correction_count: model.correctionCount,
       level_count: model.levels.length,
     })
     .eq("org_id", context.orgId)
     .eq("id", existing.id)
+    .eq("updated_at", existing.updated_at)
     .select(MODEL_COLUMNS)
-    .single()
-  if (error) throw new Error(`Failed to save corrections: ${error.message}`)
+    .single();
+  if (error) throw new Error(`Failed to save corrections: ${error.message}`);
 
   await recordAudit({
     orgId: context.orgId,
@@ -536,36 +666,47 @@ export async function applyFloorplanCorrections(
     before: { correction_count: existing.correction_count },
     after: { correction_count: model.correctionCount },
     source: "floorplan.correct",
-  })
+  });
 
-  return mapModel(data as ModelRow, await currentDrawingRevisionIdFor(context, input.target))
+  return mapModel(
+    data as ModelRow,
+    await currentDrawingRevisionIdFor(context, input.target),
+  );
 }
 
 export async function publishFloorplanModel(
   input: { target: FloorplanTarget },
   orgId?: string,
 ): Promise<FloorplanModelDto> {
-  const context = await requireOrgContext(orgId)
-  await requirePermission("plan.write", context)
+  const context = await requireOrgContext(orgId);
+  await requirePermission("plan.write", context);
 
-  const existing = await getFloorplanModel(input.target, context.orgId)
-  if (!existing) throw new Error("There is no model to publish")
-  if (!existing.model || existing.model.levels.every((level) => level.walls.length === 0)) {
-    throw new Error("This model has no geometry to publish")
+  const existing = await getFloorplanModel(input.target, context.orgId);
+  if (!existing) throw new Error("There is no model to publish");
+  if (
+    !existing.model ||
+    existing.model.levels.every((level) => level.walls.length === 0)
+  ) {
+    throw new Error("This model has no geometry to publish");
   }
 
+  const issues = validateArchitecturalModel(existing.model);
+  if (existing.status === "processing" || issues.length)
+    throw new Error(issues[0]?.message ?? "Wait for generation to finish");
   const { data, error } = await context.supabase
     .from("floorplan_models")
     .update({
+      published_model: existing.model,
       status: "published" as const,
       published_at: new Date().toISOString(),
       published_by: context.userId,
     })
     .eq("org_id", context.orgId)
     .eq("id", existing.id)
+    .eq("updated_at", existing.updated_at)
     .select(MODEL_COLUMNS)
-    .single()
-  if (error) throw new Error(`Failed to publish model: ${error.message}`)
+    .single();
+  if (error) throw new Error(`Failed to publish model: ${error.message}`);
 
   await Promise.all([
     recordEvent({
@@ -590,30 +731,42 @@ export async function publishFloorplanModel(
       after: { status: "published" },
       source: "floorplan.publish",
     }),
-  ])
+  ]);
 
-  return mapModel(data as ModelRow, await currentDrawingRevisionIdFor(context, input.target))
+  return mapModel(
+    data as ModelRow,
+    await currentDrawingRevisionIdFor(context, input.target),
+  );
 }
 
 export async function unpublishFloorplanModel(
   input: { target: FloorplanTarget },
   orgId?: string,
 ): Promise<FloorplanModelDto> {
-  const context = await requireOrgContext(orgId)
-  await requirePermission("plan.write", context)
+  const context = await requireOrgContext(orgId);
+  await requirePermission("plan.write", context);
 
-  const existing = await getFloorplanModel(input.target, context.orgId)
-  if (!existing) throw new Error("There is no model to unpublish")
+  const existing = await getFloorplanModel(input.target, context.orgId);
+  if (!existing) throw new Error("There is no model to unpublish");
 
   const { data, error } = await context.supabase
     .from("floorplan_models")
-    .update({ status: "draft" as const, published_at: null, published_by: null })
+    .update({
+      status: "draft" as const,
+      published_model: null,
+      published_at: null,
+      published_by: null,
+    })
     .eq("org_id", context.orgId)
     .eq("id", existing.id)
+    .eq("updated_at", existing.updated_at)
     .select(MODEL_COLUMNS)
-    .single()
-  if (error) throw new Error(`Failed to unpublish model: ${error.message}`)
-  return mapModel(data as ModelRow, await currentDrawingRevisionIdFor(context, input.target))
+    .single();
+  if (error) throw new Error(`Failed to unpublish model: ${error.message}`);
+  return mapModel(
+    data as ModelRow,
+    await currentDrawingRevisionIdFor(context, input.target),
+  );
 }
 
 /**
@@ -622,9 +775,11 @@ export async function unpublishFloorplanModel(
  * Editions that already carry corrections are skipped rather than force-run:
  * a bulk action must never silently destroy somebody's review work.
  */
-export async function interpretAllActivePlans(orgId?: string): Promise<{ queued: number; skipped: number }> {
-  const context = await requireOrgContext(orgId)
-  await requirePermission("plan.write", context)
+export async function interpretAllActivePlans(
+  orgId?: string,
+): Promise<{ queued: number; skipped: number }> {
+  const context = await requireOrgContext(orgId);
+  await requirePermission("plan.write", context);
 
   const { data: versions, error } = await context.supabase
     .from("house_plan_versions")
@@ -633,35 +788,38 @@ export async function interpretAllActivePlans(orgId?: string): Promise<{ queued:
     .eq("status", "released")
     .eq("house_plans.status", "active")
     .not("drawing_source_file_id", "is", null)
-    .limit(300)
-  if (error) throw new Error(`Failed to list plan editions: ${error.message}`)
+    .limit(300);
+  if (error) throw new Error(`Failed to list plan editions: ${error.message}`);
 
-  const versionIds = (versions ?? []).map((row) => row.id as string)
-  const existing = await listFloorplanModelStatuses(versionIds, context.orgId)
+  const versionIds = (versions ?? []).map((row) => row.id as string);
+  const existing = await listFloorplanModelStatuses(versionIds, context.orgId);
 
-  let queued = 0
-  let skipped = 0
+  let queued = 0;
+  let skipped = 0;
   for (const versionId of versionIds) {
-    const model = existing.get(versionId)
-    if (model && (model.status === "processing" || model.correction_count > 0)) {
-      skipped++
-      continue
+    const model = existing.get(versionId);
+    if (
+      model &&
+      (model.status === "processing" || model.correction_count > 0)
+    ) {
+      skipped++;
+      continue;
     }
     if (model?.status === "published" && !model.stale) {
-      skipped++
-      continue
+      skipped++;
+      continue;
     }
     try {
       await requestFloorplanInterpretation(
         { target: { kind: "plan", housePlanVersionId: versionId } },
         context.orgId,
-      )
-      queued++
+      );
+      queued++;
     } catch {
-      skipped++
+      skipped++;
     }
   }
-  return { queued, skipped }
+  return { queued, skipped };
 }
 
 // ---------------------------------------------------------------------------
@@ -669,10 +827,10 @@ export async function interpretAllActivePlans(orgId?: string): Promise<{ queued:
 // ---------------------------------------------------------------------------
 
 export interface PortalFloorplanModel {
-  model: FloorplanModel
-  planLabel: string
-  levelCount: number
-  floorAreaSqft: number
+  model: FloorplanModel;
+  planLabel: string;
+  levelCount: number;
+  floorAreaSqft: number;
 }
 
 /**
@@ -691,34 +849,37 @@ export interface PortalFloorplanModel {
  * which is what makes it safe on a portal at all.
  */
 export async function getPortalFloorplanModel(input: {
-  orgId: string
-  projectId: string
+  orgId: string;
+  projectId: string;
 }): Promise<PortalFloorplanModel | null> {
-  const supabase = createServiceSupabaseClient()
+  const supabase = createServiceSupabaseClient();
 
   const published = async (column: string, value: string) => {
     const { data } = await supabase
       .from("floorplan_models")
-      .select("model")
+      .select("published_model")
       .eq("org_id", input.orgId)
       .eq(column, value)
-      .eq("status", "published")
-      .maybeSingle()
-    return parseModel(data?.model)
-  }
+      .not("published_model", "is", null)
+      .maybeSingle();
+    return parseModel(data?.published_model);
+  };
 
-  const describe = (model: FloorplanModel, planLabel: string): PortalFloorplanModel | null => {
-    if (!model.levels.some((level) => level.walls.length > 0)) return null
+  const describe = (
+    model: FloorplanModel,
+    planLabel: string,
+  ): PortalFloorplanModel | null => {
+    if (!model.levels.some((level) => level.walls.length > 0)) return null;
     return {
       model,
       planLabel,
       levelCount: model.levels.length,
       floorAreaSqft: modelFloorAreaSqft(model),
-    }
-  }
+    };
+  };
 
-  const projectModel = await published("project_id", input.projectId)
-  if (projectModel) return describe(projectModel, "Your home")
+  const projectModel = await published("project_id", input.projectId);
+  if (projectModel) return describe(projectModel, "Your home");
 
   const { data: lot } = await supabase
     .from("lots")
@@ -727,14 +888,23 @@ export async function getPortalFloorplanModel(input: {
     .eq("project_id", input.projectId)
     .not("house_plan_version_id", "is", null)
     .limit(1)
-    .maybeSingle()
-  if (!lot?.house_plan_version_id) return null
+    .maybeSingle();
+  if (!lot?.house_plan_version_id) return null;
 
-  const planModel = await published("house_plan_version_id", lot.house_plan_version_id as string)
-  if (!planModel) return null
+  const planModel = await published(
+    "house_plan_version_id",
+    lot.house_plan_version_id as string,
+  );
+  if (!planModel) return null;
 
-  const plan = lot.house_plans as unknown as { code: string | null; name: string | null } | null
-  return describe(planModel, [plan?.code, plan?.name].filter(Boolean).join(" — ") || "Your home")
+  const plan = lot.house_plans as unknown as {
+    code: string | null;
+    name: string | null;
+  } | null;
+  return describe(
+    planModel,
+    [plan?.code, plan?.name].filter(Boolean).join(" — ") || "Your home",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -742,14 +912,21 @@ export async function getPortalFloorplanModel(input: {
 // ---------------------------------------------------------------------------
 
 interface SheetRow {
-  id: string
-  page_index: number
-  image_width: number | null
-  image_height: number | null
-  tiles_base_path: string | null
-  extracted_metadata: Record<string, any> | null
-  drawing_sheets: { sheet_number: string | null; sheet_title: string | null; discipline: string | null; current_revision_id: string | null } | null
-  drawing_revision_id: string | null
+  id: string;
+  page_index: number;
+  file_id: string | null;
+  image_width: number | null;
+  image_height: number | null;
+  tiles_base_path: string | null;
+  extracted_metadata: Record<string, any> | null;
+  drawing_sheets: {
+    sheet_number: string | null;
+    sheet_title: string | null;
+    discipline: string | null;
+    current_revision_id: string | null;
+    project_id: string;
+  } | null;
+  drawing_revision_id: string | null;
 }
 
 /**
@@ -771,51 +948,56 @@ async function loadPlanSheetVersions(
     .select("id")
     .eq("org_id", orgId)
     .contains("metadata", { source_plan_version_id: housePlanVersionId })
-    .limit(50)
+    .limit(50);
 
-  const fileIds = new Set<string>((derived ?? []).map((row) => row.id as string))
-  if (drawingSourceFileId) fileIds.add(drawingSourceFileId)
-  if (fileIds.size === 0) return []
+  const fileIds = new Set<string>(
+    (derived ?? []).map((row) => row.id as string),
+  );
+  if (drawingSourceFileId) fileIds.add(drawingSourceFileId);
+  if (fileIds.size === 0) return [];
 
   const { data: revisions } = await supabase
     .from("drawing_revisions")
     .select("id")
     .eq("org_id", orgId)
     .in("source_file_id", [...fileIds])
-    .limit(100)
-  const revisionIds = (revisions ?? []).map((row) => row.id as string)
-  if (revisionIds.length === 0) return []
+    .limit(100);
+  const revisionIds = (revisions ?? []).map((row) => row.id as string);
+  if (revisionIds.length === 0) return [];
 
   const { data, error } = await supabase
     .from("drawing_sheet_versions")
     .select(
-      "id, page_index, image_width, image_height, tiles_base_path, extracted_metadata, drawing_revision_id, drawing_sheets!inner(sheet_number, sheet_title, discipline, current_revision_id)",
+      "id, file_id, page_index, image_width, image_height, tiles_base_path, extracted_metadata, drawing_revision_id, drawing_sheets!inner(sheet_number, sheet_title, discipline, current_revision_id, project_id)",
     )
     .eq("org_id", orgId)
     .in("drawing_revision_id", revisionIds)
     .not("tiles_base_path", "is", null)
     .order("page_index")
-    .limit(400)
-  if (error) throw new Error(`Failed to load plan sheets: ${error.message}`)
+    .limit(400);
+  if (error) throw new Error(`Failed to load plan sheets: ${error.message}`);
 
   // Only the sheet's CURRENT revision describes the house as it is built now.
   return ((data ?? []) as unknown as SheetRow[]).filter(
-    (row) => row.drawing_sheets?.current_revision_id === row.drawing_revision_id,
-  )
+    (row) =>
+      row.drawing_sheets?.current_revision_id === row.drawing_revision_id,
+  );
 }
 
 function feetPerImagePxOf(
   metadata: Record<string, any> | null,
 ): { value: number; confirmed: boolean } | null {
-  const calibrated = metadata?.calibration?.feet_per_image_px
-  if (typeof calibrated === "number" && calibrated > 0) return { value: calibrated, confirmed: true }
+  const calibrated = metadata?.calibration?.feet_per_image_px;
+  if (typeof calibrated === "number" && calibrated > 0)
+    return { value: calibrated, confirmed: true };
   // An unconfirmed proposal is still measured evidence, and a model built at
   // a slightly wrong scale is far more useful than no model — but every length
   // and area rides linearly on this number, so the fallback is flagged and the
   // caller puts it on the model's warnings instead of absorbing it silently.
-  const proposed = metadata?.calibration_proposal?.feet_per_image_px
-  if (typeof proposed === "number" && proposed > 0) return { value: proposed, confirmed: false }
-  return null
+  const proposed = metadata?.calibration_proposal?.feet_per_image_px;
+  if (typeof proposed === "number" && proposed > 0)
+    return { value: proposed, confirmed: false };
+  return null;
 }
 
 /**
@@ -835,50 +1017,79 @@ async function loadProjectSheetVersions(
   const revisionId = await currentDrawingRevisionIdFor(
     { supabase, orgId },
     { kind: "project", projectId },
-  )
+  );
 
   const { data, error } = await supabase
     .from("drawing_sheet_versions")
     .select(
-      "id, page_index, image_width, image_height, tiles_base_path, extracted_metadata, drawing_revision_id, drawing_sheets!inner(sheet_number, sheet_title, discipline, current_revision_id, project_id)",
+      "id, file_id, page_index, image_width, image_height, tiles_base_path, extracted_metadata, drawing_revision_id, drawing_sheets!inner(sheet_number, sheet_title, discipline, current_revision_id, project_id)",
     )
     .eq("org_id", orgId)
     .eq("drawing_sheets.project_id", projectId)
     .not("tiles_base_path", "is", null)
     .order("page_index")
-    .limit(400)
-  if (error) throw new Error(`Failed to load project sheets: ${error.message}`)
+    .limit(400);
+  if (error) throw new Error(`Failed to load project sheets: ${error.message}`);
 
   // The sheet's CURRENT version is the one that describes the house being
   // built; superseded versions describe a house that changed.
   const sheets = ((data ?? []) as unknown as SheetRow[]).filter(
-    (row) => row.drawing_sheets?.current_revision_id === row.drawing_revision_id,
-  )
-  return { sheets, revisionId }
+    (row) =>
+      row.drawing_sheets?.current_revision_id === row.drawing_revision_id,
+  );
+  return { sheets, revisionId };
 }
 
 /**
  * Run interpretation for one target. Called by the outbox worker with the
  * service client — no user context, so it writes directly.
  */
-export async function runFloorplanInterpretation(input: {
-  orgId: string
-  target: FloorplanTarget
+async function interpretGeneration(input: {
+  orgId: string;
+  target: FloorplanTarget;
+  generationId: string;
 }): Promise<void> {
-  const supabase = createServiceSupabaseClient()
-  const { orgId, target } = input
-  const anchor = anchorColumn(target)
-
-  const fail = async (message: string) => {
-    await supabase
+  const supabase = createServiceSupabaseClient();
+  const { orgId, target } = input;
+  const anchor = anchorColumn(target);
+  const { data: generation } = await supabase
+    .from("floorplan_models")
+    .select("generation_id, source_selection")
+    .eq("org_id", orgId)
+    .eq(anchor.column, anchor.value)
+    .single();
+  if (generation?.generation_id !== input.generationId) return;
+  const selection = generation.source_selection as
+    | ModelSourceSelection[]
+    | null;
+  const stage = async (name: string) => {
+    const { error } = await supabase
       .from("floorplan_models")
-      .update({ status: "failed", error: message, interpreted_at: new Date().toISOString() })
+      .update({ generation_stage: name })
       .eq("org_id", orgId)
       .eq(anchor.column, anchor.value)
-  }
+      .eq("generation_id", input.generationId);
+    if (error) throw error;
+  };
+  await stage("preparing");
 
-  let sheets: SheetRow[] = []
-  let revisionId: string | null = null
+  const fail = async (message: string) => {
+    const { error } = await supabase
+      .from("floorplan_models")
+      .update({
+        status: "failed",
+        generation_stage: "failed",
+        error: message,
+        interpreted_at: new Date().toISOString(),
+      })
+      .eq("org_id", orgId)
+      .eq(anchor.column, anchor.value)
+      .eq("generation_id", input.generationId);
+    if (error) throw error;
+  };
+
+  let sheets: SheetRow[] = [];
+  let revisionId: string | null = null;
 
   if (target.kind === "plan") {
     const { data: version } = await supabase
@@ -886,25 +1097,36 @@ export async function runFloorplanInterpretation(input: {
       .select("id, drawing_source_file_id")
       .eq("org_id", orgId)
       .eq("id", target.housePlanVersionId)
-      .maybeSingle()
+      .maybeSingle();
     if (!version) {
-      await fail("Plan edition no longer exists")
-      return
+      await fail("Plan edition no longer exists");
+      return;
     }
-    sheets = await loadPlanSheetVersions(supabase, orgId, target.housePlanVersionId, version.drawing_source_file_id)
+    sheets = await loadPlanSheetVersions(
+      supabase,
+      orgId,
+      target.housePlanVersionId,
+      version.drawing_source_file_id,
+    );
     if (sheets.length === 0) {
       await fail(
         "No processed drawings for this edition yet. Release it to a lot, or upload the plan set to a project, then try again.",
-      )
-      return
+      );
+      return;
     }
   } else {
-    const loaded = await loadProjectSheetVersions(supabase, orgId, target.projectId)
-    sheets = loaded.sheets
-    revisionId = loaded.revisionId
+    const loaded = await loadProjectSheetVersions(
+      supabase,
+      orgId,
+      target.projectId,
+    );
+    sheets = loaded.sheets;
+    revisionId = loaded.revisionId;
     if (sheets.length === 0) {
-      await fail("No processed drawings on this project yet. Upload and publish a drawing set, then try again.")
-      return
+      await fail(
+        "No processed drawings on this project yet. Upload and publish a drawing set, then try again.",
+      );
+      return;
     }
   }
 
@@ -914,86 +1136,120 @@ export async function runFloorplanInterpretation(input: {
     sheetTitle: sheet.drawing_sheets?.sheet_title ?? null,
     discipline: sheet.drawing_sheets?.discipline ?? null,
     pageIndex: sheet.page_index ?? 0,
-    roomSizedLoopCount: Number(sheet.extracted_metadata?.vector_stats?.room_sized_loop_count ?? 0),
+    roomSizedLoopCount: Number(
+      sheet.extracted_metadata?.vector_stats?.room_sized_loop_count ?? 0,
+    ),
     hasVectors: sheet.extracted_metadata?.vector_stats?.aligned === true,
-  }))
+  }));
 
-  const selected = selectFloorplanSheets(candidates)
+  const selected = selection?.length
+    ? selection.map((source) => {
+        const candidate = candidates.find(
+          (c) => c.sheetVersionId === source.sheetVersionId,
+        );
+        if (!candidate)
+          throw new Error("A selected source sheet is no longer current");
+        return {
+          ...candidate,
+          levelName: source.name,
+          order: source.order,
+          reason: "Selected by reviewer",
+        };
+      })
+    : selectFloorplanSheets(candidates);
   if (selected.length === 0) {
     await fail(
       "No floorplan sheets found in this plan set. Interpretation needs an architectural sheet titled as a floor plan with traceable linework.",
-    )
-    return
+    );
+    return;
   }
 
-  const byId = new Map(sheets.map((sheet) => [sheet.id, sheet]))
-  const inputs: InterpretLevelInput[] = []
+  selected.sort((a, b) => a.order - b.order);
+  const byId = new Map(sheets.map((sheet) => [sheet.id, sheet]));
+  await stage("recognizing");
+  const inputs: InterpretLevelInput[] = [];
+  const evidenceBySheet = new Map<string, AreaEvidence>();
+  const originalSourceBySheet=new Map<string,{fileId:string;pageIndex:number}>();
   // Why each candidate sheet was dropped. A sheet that LOOKS like a floor plan
   // and still produces nothing is the single most confusing outcome here, so
   // the reason is carried all the way to the panel instead of being swallowed.
-  const skipped: Array<{ sheet: string; reason: "scale" | "vectors" }> = []
-  const nameOf = (sheet: SelectedSheet) => sheet.sheetNumber || sheet.sheetTitle || "a sheet"
+  const skipped: Array<{ sheet: string; reason: "scale" | "vectors" }> = [];
+  const nameOf = (sheet: SelectedSheet) =>
+    sheet.sheetNumber || sheet.sheetTitle || "a sheet";
   // Sheets with no vector linework (scans) can still be traced by the vision
   // assist below — flagged loudly, because a traced level is a proposal.
-  const visionAvailable = await drawingsVisionConfigured()
-  const scanTraced: string[] = []
+  const visionAvailable = await drawingsVisionConfigured();
+  const scanTraced: string[] = [];
   // Sheets whose scale came from an unconfirmed pipeline proposal rather than
   // a human calibration. The model still builds, but it says so on the record.
-  const proposalScaled: string[] = []
-  const tilesBasePathBySheet = new Map<string, string>()
+  const proposalScaled: string[] = [];
+  const tilesBasePathBySheet = new Map<string, string>();
 
   for (const sheet of selected) {
-    const row = byId.get(sheet.sheetVersionId)
+    const row = byId.get(sheet.sheetVersionId);
     if (!row?.tiles_base_path) {
-      skipped.push({ sheet: nameOf(sheet), reason: "vectors" })
-      continue
+      skipped.push({ sheet: nameOf(sheet), reason: "vectors" });
+      continue;
     }
-    const scale = feetPerImagePxOf(row.extracted_metadata)
+    const sourceSelection = selection?.find(
+      (s) => s.sheetVersionId === row.id && s.order === sheet.order,
+    );
+    const scale = sourceSelection
+      ? { value: sourceSelection.feetPerImagePx, confirmed: true }
+      : feetPerImagePxOf(row.extracted_metadata);
     if (!scale) {
-      skipped.push({ sheet: nameOf(sheet), reason: "scale" })
-      continue
+      skipped.push({ sheet: nameOf(sheet), reason: "scale" });
+      continue;
     }
-    if (!scale.confirmed) proposalScaled.push(nameOf(sheet))
+    if (!scale.confirmed) proposalScaled.push(nameOf(sheet));
 
-    let segments: Float32Array | null = null
-    let flags: Uint8Array | null = null
+    let segments: Float32Array | null = null;
+    let flags: Uint8Array | null = null;
     try {
-      const buffer = await downloadTilesObject({ supabase, path: `${row.tiles_base_path}/vectors.bin` })
+      const buffer = await downloadTilesObject({
+        supabase,
+        path: `${row.tiles_base_path}/vectors.bin`,
+      });
       const parsed = parseVectorsBin(
-        buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer,
-      )
+        buffer.buffer.slice(
+          buffer.byteOffset,
+          buffer.byteOffset + buffer.byteLength,
+        ) as ArrayBuffer,
+      );
       if (parsed) {
-        segments = parsed.segments
-        flags = parsed.flags
+        segments = parsed.segments;
+        flags = parsed.flags;
       }
     } catch {
       // No vectors.bin stored — fall through: a scan has none, and the vision
       // assist may still be able to trace it from the rendered tiles.
     }
-    if (!segments || segments.length === 0) {
-      if (!visionAvailable) {
-        skipped.push({ sheet: nameOf(sheet), reason: "vectors" })
-        continue
-      }
-      // A scanned sheet: no vector evidence at all. The level goes in empty
-      // and vision traces it below, at vision confidence, for review.
-      segments = new Float32Array(0)
-      flags = null
-      scanTraced.push(nameOf(sheet))
-    }
-
-    let textRuns: TextRun[] = []
+    segments ??= new Float32Array(0);
+    let textRuns: TextRun[] = [];
     try {
-      const body = await downloadTilesObject({ supabase, path: `${row.tiles_base_path}/${TEXT_RUNS_FILE}` })
-      textRuns = parseTextRuns(body.toString("utf8"))
+      const body = await downloadTilesObject({
+        supabase,
+        path: `${row.tiles_base_path}/${TEXT_RUNS_FILE}`,
+      });
+      textRuns = parseTextRuns(body.toString("utf8"));
     } catch {
       // Sheets extracted before algo 4 have no positioned text: rooms simply
       // come out unlabelled for a human to name.
-      textRuns = []
+      textRuns = [];
     }
 
-    tilesBasePathBySheet.set(sheet.sheetVersionId, row.tiles_base_path)
+    const sharedSource = await loadArchitecturalEvidence({
+      supabase, orgId, version: row, feetPerImagePx: scale.value, region: sourceSelection?.region,
+      imageSize: { width: Number(row.image_width), height: Number(row.image_height) },
+    });
+    if (sharedSource.evidence) evidenceBySheet.set(row.id, sharedSource.evidence);
+    if(row.file_id)originalSourceBySheet.set(row.id,{fileId:row.file_id,pageIndex:row.page_index??0});
+    if (sharedSource.evidence?.raster) scanTraced.push(nameOf(sheet));
+    tilesBasePathBySheet.set(sheet.sheetVersionId, row.tiles_base_path);
     inputs.push({
+      region: sourceSelection?.region,
+      scaleConfirmed: scale.confirmed,
+      ceilingHeightFt: sourceSelection?.ceilingHeightFt,
       sheetVersionId: sheet.sheetVersionId,
       sheetNumber: sheet.sheetNumber,
       sheetTitle: sheet.sheetTitle,
@@ -1005,67 +1261,120 @@ export async function runFloorplanInterpretation(input: {
       segments,
       flags,
       textRuns,
-    })
+    });
   }
 
   if (inputs.length === 0) {
     // "No calibrated vector geometry" conflated two very different problems and
     // named neither the sheet nor the fix. Missing SCALE is the common one, and
     // it is a two-click repair in the drawings viewer.
-    const unscaled = skipped.filter((entry) => entry.reason === "scale").map((entry) => entry.sheet)
+    const unscaled = skipped
+      .filter((entry) => entry.reason === "scale")
+      .map((entry) => entry.sheet);
     if (unscaled.length > 0) {
-      const list = unscaled.join(", ")
+      const list = unscaled.join(", ");
       await fail(
         `${list} ${unscaled.length === 1 ? "has" : "have"} no scale set, so the model would have no real dimensions. ` +
           `Open ${unscaled.length === 1 ? "it" : "them"} in the drawings viewer, set the scale, then interpret again.`,
-      )
-      return
+      );
+      return;
     }
-    const list = skipped.map((entry) => entry.sheet).join(", ")
+    const list = skipped.map((entry) => entry.sheet).join(", ");
     await fail(
       list
         ? `No vector linework could be read from ${list}. The sheet may be a scan rather than a vector PDF.`
         : "The floorplan sheets in this set have no vector geometry to interpret.",
-    )
-    return
+    );
+    return;
   }
 
-  const model = interpretFloorplan(inputs)
-  // Vision assist: confirm what the vectors found, add what they missed, name
-  // what the text runs could not — and trace scans outright. Best-effort; the
-  // vector-only model stands if it fails.
-  const vision = await assistFloorplanModelWithVision({ supabase, model, tilesBasePathBySheet, orgId })
+  const model: FloorplanModel = { version: 1, schemaRevision: 2, units: "feet", levels: [], correctionCount: 0, warnings: [] };
+  let elevation = 0;
+  const recognition: Record<string, string> = {};
+  for (const source of inputs) {
+    const evidence = evidenceBySheet.get(source.sheetVersionId);
+    const tilesBasePath = tilesBasePathBySheet.get(source.sheetVersionId)!;
+    const engineInput = {
+      ...source, flags: source.flags ?? undefined,
+      region: source.region ?? { x0: 0, y0: 0, x1: 1, y1: 1 },
+      evidence, finishPolicy: "include-fixtures" as const,
+    };
+    const wholeSheet = !source.region || (source.region.x0 === 0 && source.region.y0 === 0 && source.region.x1 === 1 && source.region.y1 === 1);
+    const interpret = (): Promise<SheetBuildingRun> => runAreaEngine(engineInput, {
+      wholeSheet,
+      recognize: visionAvailable ? createArchitecturalRecognizer({
+        supabase, orgId, sheetVersionId: source.sheetVersionId, tilesBasePath,
+        imageWidth: source.imageWidth, imageHeight: source.imageHeight,
+        feetPerImagePx: source.feetPerImagePx,
+        source: originalSourceBySheet.get(source.sheetVersionId),
+        evidence,
+      }) : undefined,
+    }).then((run) => ({ detection: run.detection, recognition: run.recognition }));
+    // A whole-sheet level is the sheet's building record, shared with takeoff.
+    const projectId = byId.get(source.sheetVersionId)?.drawing_sheets?.project_id;
+    const shared = (wholeSheet && projectId
+      ? await ensureSheetBuildingRun(
+          { supabase, orgId, projectId, sheetVersionId: source.sheetVersionId },
+          { inputKey: sheetBuildingInputKey(engineInput), runKey: sheetBuildingRunKey("include-fixtures", visionAvailable ? "hybrid" : "vector") },
+          interpret,
+        )
+      : null) ?? await interpret();
+    if (!shared.detection.architecture?.building) throw new Error(`${source.name}: shared building reconstruction failed. Your previous draft is preserved.`);
+    const level = buildingToFloorplan(source, shared.detection.architecture);
+    level.placement = { xFt: 0, yFt: 0, rotationDeg: 0, elevationFt: elevation, assemblyFt: 1, confirmed: inputs.length === 1 };
+    elevation += level.ceilingHeightFt + 1;
+    model.levels.push(level);
+    recognition[source.sheetVersionId] = shared.recognition;
+    model.warnings!.push(...shared.detection.warnings.map(w => `${source.name}: ${w}`));
+  }
+  await stage("reconciling");
   // A sheet that looked like a floor plan but could not be used is a MISSING
   // STOREY, and the geometry alone will never reveal it. Say so on the record.
-  const warnings = skipped.map((entry) =>
-    entry.reason === "scale"
-      ? `${entry.sheet} was skipped — no scale is set on that sheet.`
-      : `${entry.sheet} was skipped — no vector linework could be read from it.`,
-  )
+  const warnings = [
+    ...(model.warnings ?? []),
+    ...skipped.map((entry) =>
+      entry.reason === "scale"
+        ? `${entry.sheet} was skipped — no scale is set on that sheet.`
+        : `${entry.sheet} was skipped — no vector linework could be read from it.`,
+    ),
+  ];
   for (const sheet of scanTraced) {
     warnings.push(
-      `${sheet} has no vector linework; its level was traced by AI vision and needs review before publishing.`,
-    )
+      `${sheet} was reconstructed from measured scan contours; pixel detail and architectural classification need review before publishing.`,
+    );
   }
   // Every dimension on a level rides linearly on its sheet's scale, so a scale
   // nobody confirmed is a review item, not a footnote.
   for (const sheet of proposalScaled) {
     warnings.push(
       `${sheet} is scaled from an unconfirmed proposal; confirm the scale in the drawings viewer before trusting the model's dimensions.`,
-    )
+    );
   }
-  if (warnings.length > 0) model.warnings = warnings
-  const usable = model.levels.some((level) => level.walls.length > 0)
+  if (warnings.length > 0) model.warnings = warnings.slice(0, 20);
+  const usable = model.levels.some((level) => level.walls.length > 0);
   if (!usable) {
-    await fail("No walls could be traced on the floorplan sheets. The linework may be a scan rather than vectors.")
-    return
+    model.warnings = [
+      ...(model.warnings ?? []),
+      "Automatic recognition found no walls. Trace the layout in the 2D editor before publishing.",
+    ].slice(0, 20);
   }
 
-  const { data: saved } = await supabase
+  await stage("validating");
+  if (model.warnings)
+    model.warnings = [...new Set(model.warnings)]
+      .slice(0, 20)
+      .map((warning) => warning.slice(0, 300));
+  const validated = floorplanModelSchema.safeParse(model);
+  if (!validated.success)
+    throw new Error(
+      `Generated model has invalid data at ${validated.error.issues[0]?.path.join(".") || "document"}. Your previous draft is preserved.`,
+    );
+  const { data: saved, error: saveError } = await supabase
     .from("floorplan_models")
     .update({
       status: "draft",
-      model,
+      generation_stage: "ready",
+      model: validated.data,
       algo_version: FLOORPLAN_ALGO_VERSION,
       confidence: modelConfidence(model),
       level_count: model.levels.length,
@@ -1077,9 +1386,12 @@ export async function runFloorplanInterpretation(input: {
     })
     .eq("org_id", orgId)
     .eq(anchor.column, anchor.value)
+    .eq("generation_id", input.generationId)
     .select("id")
-    .maybeSingle()
+    .maybeSingle();
 
+  if (saveError) throw saveError;
+  if (!saved) return;
   await recordEvent({
     orgId,
     eventType: "floorplan.interpreted",
@@ -1088,11 +1400,189 @@ export async function runFloorplanInterpretation(input: {
     payload: {
       target: floorplanTargetKey(target),
       level_count: model.levels.length,
-      wall_count: model.levels.reduce((total, level) => total + level.walls.length, 0),
-      room_count: model.levels.reduce((total, level) => total + level.rooms.length, 0),
+      wall_count: model.levels.reduce(
+        (total, level) => total + level.walls.length,
+        0,
+      ),
+      room_count: model.levels.reduce(
+        (total, level) => total + level.rooms.length,
+        0,
+      ),
       floor_area_sqft: modelFloorAreaSqft(model),
       confidence: modelConfidence(model),
-      ...(vision ? { vision_assist: vision } : {}),
+      recognition,
     },
-  })
+  });
+}
+
+export async function runFloorplanInterpretation(input: {
+  orgId: string;
+  target: FloorplanTarget;
+  generationId?: string;
+}): Promise<void> {
+  const supabase = createServiceSupabaseClient(),
+    anchor = anchorColumn(input.target);
+  const { data } = await supabase
+    .from("floorplan_models")
+    .select("generation_id, status")
+    .eq("org_id", input.orgId)
+    .eq(anchor.column, anchor.value)
+    .single();
+  // Legacy jobs cannot overwrite a newly queued generation.
+  if (
+    !input.generationId ||
+    data?.generation_id !== input.generationId ||
+    data.status !== "processing"
+  )
+    return;
+  try {
+    await interpretGeneration({ ...input, generationId: input.generationId });
+  } catch (error) {
+    const { error: stateError } = await supabase
+      .from("floorplan_models")
+      .update({
+        status: "failed",
+        generation_stage: "failed",
+        error:
+          error instanceof Error ? error.message : "Model generation failed",
+      })
+      .eq("org_id", input.orgId)
+      .eq(anchor.column, anchor.value)
+      .eq("generation_id", input.generationId);
+    if (stateError) throw stateError;
+    throw error;
+  }
+}
+
+export async function getFloorplanSources(target: FloorplanTarget) {
+  const context = await requireOrgContext();
+  await requirePermission("plan.read", context);
+  let sheets: SheetRow[] = [];
+  if (target.kind === "project")
+    sheets = (
+      await loadProjectSheetVersions(
+        context.supabase,
+        context.orgId,
+        target.projectId,
+      )
+    ).sheets;
+  else {
+    const { data } = await context.supabase
+      .from("house_plan_versions")
+      .select("drawing_source_file_id")
+      .eq("org_id", context.orgId)
+      .eq("id", target.housePlanVersionId)
+      .single();
+    sheets = await loadPlanSheetVersions(
+      context.supabase,
+      context.orgId,
+      target.housePlanVersionId,
+      data?.drawing_source_file_id ?? null,
+    );
+  }
+  const views = await listFloorplanSheetViews(
+    sheets.map((s) => s.id),
+    context.orgId,
+  );
+  return views.map((view) => {
+    const row = sheets.find((s) => s.id === view.sheetVersionId)!;
+    return {
+      ...view,
+      feetPerImagePx: feetPerImagePxOf(row.extracted_metadata)?.value ?? null,
+    };
+  });
+}
+
+export async function replaceFloorplanDraft(input: {
+  target: FloorplanTarget;
+  model: FloorplanModel;
+  expectedUpdatedAt: string;
+}) {
+  const context = await requireOrgContext();
+  await requirePermission("plan.write", context);
+  const model = floorplanModelSchema.parse(input.model) as FloorplanModel;
+  const existing = await getFloorplanModel(input.target, context.orgId);
+  if (
+    !existing ||
+    existing.updated_at !== input.expectedUpdatedAt ||
+    existing.status === "processing"
+  )
+    throw new Error("The model changed. Reload before restoring this edit.");
+  const { data, error } = await context.supabase
+    .from("floorplan_models")
+    .update({
+      model,
+      status: "draft",
+      correction_count: model.correctionCount,
+      confidence: modelConfidence(model),
+      level_count: model.levels.length,
+    })
+    .eq("org_id", context.orgId)
+    .eq("id", existing.id)
+    .eq("updated_at", input.expectedUpdatedAt)
+    .select(MODEL_COLUMNS)
+    .single();
+  if (error)
+    throw new Error(
+      "The model changed before this edit could be saved. Reload to continue.",
+    );
+  return mapModel(data as ModelRow);
+}
+
+export async function listFloorplanRevisions(target: FloorplanTarget) {
+  const context = await requireOrgContext();
+  await requirePermission("plan.read", context);
+  const existing = await getFloorplanModel(target, context.orgId);
+  if (!existing) return [];
+  const { data, error } = await context.supabase
+    .from("floorplan_model_revisions")
+    .select("id, saved_at")
+    .eq("org_id", context.orgId)
+    .eq("model_id", existing.id)
+    .order("saved_at", { ascending: false })
+    .limit(50);
+  if (error) throw new Error("Could not load model history.");
+  return data as Array<{ id: string; saved_at: string }>;
+}
+
+/** A saved revision's model, read-only — what the 3D diff compares the current model against. */
+export async function getFloorplanRevisionModel(target: FloorplanTarget, revisionId: string): Promise<FloorplanModel | null> {
+  const context = await requireOrgContext();
+  await requirePermission("plan.read", context);
+  const existing = await getFloorplanModel(target, context.orgId);
+  if (!existing) return null;
+  const { data, error } = await context.supabase
+    .from("floorplan_model_revisions")
+    .select("model")
+    .eq("org_id", context.orgId)
+    .eq("model_id", existing.id)
+    .eq("id", revisionId)
+    .maybeSingle();
+  if (error) throw new Error("Could not load that revision.");
+  return parseModel(data?.model);
+}
+
+export async function restoreFloorplanRevision(input: {
+  target: FloorplanTarget;
+  revisionId: string;
+  expectedUpdatedAt: string;
+}) {
+  const context = await requireOrgContext();
+  await requirePermission("plan.write", context);
+  const existing = await getFloorplanModel(input.target, context.orgId);
+  if (!existing) throw new Error("There is no model to restore.");
+  const { data, error } = await context.supabase
+    .from("floorplan_model_revisions")
+    .select("model")
+    .eq("org_id", context.orgId)
+    .eq("model_id", existing.id)
+    .eq("id", input.revisionId)
+    .single();
+  const model = parseModel(data?.model);
+  if (error || !model) throw new Error("This saved revision is unavailable.");
+  return replaceFloorplanDraft({
+    target: input.target,
+    model,
+    expectedUpdatedAt: input.expectedUpdatedAt,
+  });
 }

@@ -37,13 +37,22 @@ function formatDay(value: string | null) {
   return new Date(`${value}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })
 }
 
+function findActiveCategory(groups: SheetGroup[], categoryId: string) {
+  for (const group of groups) {
+    const category = group.categories.find((candidate) => candidate.id === categoryId)
+    if (category) return { activeCategory: category, activeGroup: group }
+  }
+  return { activeCategory: groups[0]?.categories[0] ?? null, activeGroup: groups[0] ?? null }
+}
+
 export function SelectionSheetClient({ sheet }: Props) {
+  const { groups } = sheet
   const router = useRouter()
   const [buyerView, setBuyerView] = useState(true)
   const [pending, startTransition] = useTransition()
-  const [activeCategoryId, setActiveCategoryId] = useState(
-    sheet.groups.flatMap((group) => group.categories).find((category) => !category.selectedOptionId)?.id ??
-      sheet.groups[0]?.categories[0]?.id ??
+  const [activeCategoryId, setActiveCategoryId] = useState(() =>
+    groups.flatMap((group) => group.categories).find((category) => !category.selectedOptionId)?.id ??
+      groups[0]?.categories[0]?.id ??
       "",
   )
   const [signing, setSigning] = useState<EnvelopeWizardSourceEntity | null>(null)
@@ -51,17 +60,14 @@ export function SelectionSheetClient({ sheet }: Props) {
 
   const showInternals = sheet.canReadMargin && !buyerView
 
-  const { activeCategory, activeGroup } = useMemo(() => {
-    for (const group of sheet.groups) {
-      const match = group.categories.find((category) => category.id === activeCategoryId)
-      if (match) return { activeCategory: match, activeGroup: group }
-    }
-    return { activeCategory: sheet.groups[0]?.categories[0] ?? null, activeGroup: sheet.groups[0] ?? null }
-  }, [sheet.groups, activeCategoryId])
+  const { activeCategory, activeGroup } = useMemo(
+    () => findActiveCategory(groups, activeCategoryId),
+    [groups, activeCategoryId],
+  )
 
   const nextCutoff = useMemo(
-    () => sheet.groups.find((group) => group.status === "open" && group.daysToCutoff !== null) ?? null,
-    [sheet.groups],
+    () => groups.find((group) => group.status === "open" && group.daysToCutoff !== null) ?? null,
+    [groups],
   )
 
   function choose(category: SheetCategory, option: SheetOption) {
@@ -100,10 +106,10 @@ export function SelectionSheetClient({ sheet }: Props) {
 
   function confirmGroup(group: SheetGroup) {
     startTransition(async () => {
+      const anchor = group.categories[0]?.selectionId
       try {
         unwrapAction(await confirmGroupAction({ projectId: sheet.home.projectId, groupId: group.groupId }))
         toast.success(`${group.name} confirmed`)
-        const anchor = group.categories[0]?.selectionId
         if (anchor) {
           setSigning({
             type: "selection",

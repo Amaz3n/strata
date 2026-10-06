@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Dialog,
   DialogContent,
@@ -64,7 +64,6 @@ import {
   retryDraftRevisionAction,
   listRevisionRecipientsAction,
   distributeRevisionAction,
-  listDraftRevisionSheetsAction,
   listRecentlyDeletedSheetNumbersAction,
 } from "@/app/(app)/drawings/actions"
 import type { DraftRevisionSheetPreview } from "@/app/(app)/drawings/types"
@@ -82,6 +81,7 @@ import { toRenderableDrawingsUrl } from "@/lib/drawings/tile-urls"
 import { unwrapAction } from "@/lib/action-result"
 
 interface RevisionReviewDialogProps {
+  preconstruction?: boolean
   open: boolean
   onOpenChange: (open: boolean) => void
   revisionId: string
@@ -91,7 +91,7 @@ interface RevisionReviewDialogProps {
   onDistribute?: (revisionId: string) => void
 }
 
-type SheetEdit = { sheet_number?: string; sheet_title?: string; discipline?: DrawingDiscipline }
+type SheetEdit = { version_id?: string; identity_reviewed?: boolean; sheet_number?: string; sheet_title?: string; discipline?: DrawingDiscipline }
 
 const ISSUANCE_TYPE_ORDER: DrawingIssuanceType[] = [
   "revision",
@@ -107,6 +107,7 @@ const ISSUANCE_TYPE_ORDER: DrawingIssuanceType[] = [
 ]
 
 export function RevisionReviewDialog({
+  preconstruction = false,
   open,
   onOpenChange,
   revisionId,
@@ -129,7 +130,8 @@ export function RevisionReviewDialog({
   const [retryNonce, setRetryNonce] = useState(0)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [unchangedOpen, setUnchangedOpen] = useState(false)
-  const [previewRetries, setPreviewRetries] = useState(0)
+  const initializedRevision = useRef<string | null>(null)
+  const [visibleRows, setVisibleRows] = useState(50)
   // Pages already split out of the draft, shown live while processing runs.
   const [draftSheets, setDraftSheets] = useState<DraftRevisionSheetPreview[]>([])
   // Sheet numbers deleted from this register before — annotates "new" sheets.
@@ -138,15 +140,17 @@ export function RevisionReviewDialog({
   )
 
   const loadDiff = useCallback(async () => {
-    setLoading(true)
     try {
       const data = await getRevisionDiffAction(revisionId)
       setDiff(data)
-      setLabel((prev) => prev || data.revision.revision_label || "")
+      if (initializedRevision.current !== revisionId) {
+      initializedRevision.current = revisionId
+      setLabel(data.revision.revision_label || "")
       setIssuanceType((data.revision.issuance_type as DrawingIssuanceType | null) ?? "revision")
       setIssuedDate(data.revision.issued_date?.slice(0, 10) ?? "")
       setReceivedFrom(data.revision.received_from ?? "")
       setNotes(data.revision.notes ?? "")
+      }
 
       // A sheet with no live predecessor may still have existed here before
       // someone deleted it. Best-effort: the review reads fine without this.
@@ -161,85 +165,57 @@ export function RevisionReviewDialog({
     } catch (err) {
       console.error("Failed to load revision diff:", err)
       toast.error("Failed to load revision for review")
+      throw err
     } finally {
       setLoading(false)
     }
   }, [revisionId])
 
-  // Thumbnails/tiles are generated just after the draft becomes ready, so the
-  // first diff load can have missing previews. Refresh a few times to fill them.
-  useEffect(() => {
-    if (!open || !diff || processing || previewRetries >= 6) return
-    const pending = [...diff.updated, ...diff.added].some(
-      (s) => !s.draft.thumbnail_url,
-    )
-    if (!pending) return
-    const timer = setTimeout(() => {
-      setPreviewRetries((n) => n + 1)
-      void loadDiff()
-    }, 4000)
-    return () => clearTimeout(timer)
-  }, [open, diff, processing, previewRetries, loadDiff])
-
-  // Poll until the draft finishes processing, then load the diff.
+  // One non-overlapping poll owns status and diff requests, including preview updates.
   useEffect(() => {
     if (!open) return
-    setPreviewRetries(0)
     setDraftSheets([])
+    setFailed(null)
+    setEdits({})
+    setDecisions({})
+    setVisibleRows(50)
+    initializedRevision.current = null
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
-
+    let failures = 0
+    let previousProgress = ""
+    let unchangedTicks = 0
+    const schedule = (ms: number) => { if (!cancelled) timer = setTimeout(tick, ms) }
     const tick = async () => {
+      if (document.hidden) { schedule(5000); return }
       try {
         const status = await getDraftRevisionStatusAction(revisionId)
         if (cancelled) return
-        if (!status) {
-          setFailed("This revision no longer exists.")
-          setProcessing(false)
-          setLoading(false)
+        if (!status || ["published", "discarded", "cancelled"].includes(status.status)) {
+          setProcessing(false); setLoading(false)
+          if (!status) setFailed("This revision no longer exists.")
           return
         }
-        if (
-          status.processing_stage === "failed" ||
-          status.processing_stage === "worker_unavailable"
-        ) {
-          setFailed(status.error_message || "Processing failed.")
-          setProcessing(false)
-          setLoading(false)
-          return
+        if (["failed", "worker_unavailable"].includes(status.processing_stage ?? "")) {
+          setFailed(status.error_message || "Processing failed."); setProcessing(false); setLoading(false); return
         }
-        if (status.status === "processing") {
-          setProcessing(true)
-          setDiff({
-            revision: status,
-            updated: [],
-            added: [],
-            unchanged: [],
-          })
-          // Sheet + version rows are written at split time, so pages show up
-          // here long before their tiles finish. Degrade silently: a failed
-          // page fetch just leaves the grid where it was.
-          const pages = await listDraftRevisionSheetsAction(revisionId)
-          if (cancelled) return
-          if (pages.success) setDraftSheets(pages.data)
-          timer = setTimeout(tick, 2000)
-          return
-        }
-        // draft ready
-        setProcessing(false)
-        await loadDiff()
+        const progress = `${status.processed_pages}:${status.total_pages}:${status.updated_at}:${status.processing_stage}`
+        unchangedTicks = progress === previousProgress ? unchangedTicks + 1 : 0
+        if (progress !== previousProgress || unchangedTicks % 3 === 0) await loadDiff()
+        if (cancelled) return
+        previousProgress = progress
+        failures = 0
+        setProcessing(status.status === "processing")
+        setLoading(false)
+        if (status.status === "processing") schedule(Math.min(15000, 2000 + unchangedTicks * 1500))
       } catch (err) {
         if (cancelled) return
         console.error("Failed to poll draft status:", err)
-        timer = setTimeout(tick, 3000)
+        schedule(Math.min(30000, 3000 * 2 ** Math.min(failures++, 3)))
       }
     }
-
     void tick()
-    return () => {
-      cancelled = true
-      if (timer) clearTimeout(timer)
-    }
+    return () => { cancelled = true; if (timer) clearTimeout(timer) }
   }, [open, revisionId, loadDiff, retryNonce])
 
   const setEdit = (sheetId: string, patch: SheetEdit) =>
@@ -255,6 +231,10 @@ export function RevisionReviewDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [diff, decisions])
 
+  const unresolvedCount = diff ? [...diff.updated, ...diff.added].filter(sheet => accepted(sheet.sheet_id) &&
+    (!sheet.rendered || (sheet.verificationStatus !== "verified" && !edits[sheet.sheet_id]?.identity_reviewed))).length : 0
+  const publicationReady = Boolean(diff?.revision.manifest_complete) && unresolvedCount === 0
+
   const handlePublish = async () => {
     if (!diff) return
     setPublishing(true)
@@ -268,8 +248,9 @@ export function RevisionReviewDialog({
         notes: notes.trim() || undefined,
         decisions,
         sheetEdits: edits,
+        expectedRevisionUpdatedAt: diff.revision.updated_at,
       }))
-      toast.success("Issuance published")
+      toast.success(preconstruction ? "Plans ready for estimating" : "Issuance published")
       onPublished()
       onOpenChange(false)
       onDistribute?.(revisionId)
@@ -318,10 +299,9 @@ export function RevisionReviewDialog({
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="flex max-h-[90vh] w-[min(1100px,96vw)] max-w-none flex-col overflow-hidden">
           <DialogHeader>
-            <DialogTitle>Review issuance</DialogTitle>
+            <DialogTitle>{preconstruction ? "Review plans for estimating" : "Review issuance"}</DialogTitle>
             <DialogDescription>
-              Nothing changes in the live drawings until you publish. Review what
-              this package changes, then publish or discard it.
+              {preconstruction ? "Confirm sheet names and review changed pages before using these plans for takeoff. Making them ready does not send them to anyone." : "Nothing changes in the live drawings until you publish. Review what this package changes, then publish or discard it."}
             </DialogDescription>
           </DialogHeader>
 
@@ -331,7 +311,7 @@ export function RevisionReviewDialog({
               <p className="text-sm font-medium text-destructive">Processing failed</p>
               <p className="text-xs text-muted-foreground">{failed}</p>
             </div>
-          ) : processing || (loading && !diff) ? (
+          ) : (processing && !diff?.updated.length && !diff?.added.length) || (loading && !diff) ? (
             <ProcessingPanel
               processedPages={diff?.revision.processed_pages ?? 0}
               totalPages={diff?.revision.total_pages ?? null}
@@ -339,6 +319,7 @@ export function RevisionReviewDialog({
             />
           ) : diff ? (
             <div className="flex-1 space-y-5 overflow-y-auto pr-1">
+              {processing && <p role="status" className="border bg-muted/20 p-3 text-sm">Pages are still processing. Review available sheets now; confirm uncertain identities before publishing.</p>}
               {/* Issuance metadata */}
               <div className="grid gap-3 rounded-lg border bg-muted/20 p-3 sm:grid-cols-2">
                 <div className="space-y-1.5">
@@ -405,12 +386,13 @@ export function RevisionReviewDialog({
                 <Badge variant="secondary" className="gap-1">
                   <FilePlus2 className="h-3 w-3" /> {diff.added.length} new
                 </Badge>
+                <Badge variant="outline">{unresolvedCount} awaiting rendering or identity review</Badge>
                 <Badge variant="outline">{diff.unchanged.length} not in this upload</Badge>
               </div>
 
               {diff.updated.length > 0 && (
                 <Section title="Updated sheets" hint="A new version replaces the current one when published.">
-                  {diff.updated.map((sheet) => (
+                  {diff.updated.slice(0, visibleRows).map((sheet) => (
                     <UpdatedRow
                       key={sheet.sheet_id}
                       sheet={sheet}
@@ -425,7 +407,7 @@ export function RevisionReviewDialog({
 
               {diff.added.length > 0 && (
                 <Section title="New sheets" hint="Sheets not in the current register. Added when published.">
-                  {diff.added.map((sheet) => (
+                  {diff.added.slice(0, visibleRows).map((sheet) => (
                     <AddedRow
                       key={sheet.sheet_id}
                       sheet={sheet}
@@ -439,6 +421,7 @@ export function RevisionReviewDialog({
                 </Section>
               )}
 
+              {Math.max(diff.updated.length, diff.added.length, unchangedOpen ? diff.unchanged.length : 0) > visibleRows && <Button variant="outline" onClick={() => setVisibleRows(count => count + 50)}>Show next 50 sheets</Button>}
               {diff.unchanged.length > 0 && (
                 <Collapsible open={unchangedOpen} onOpenChange={setUnchangedOpen}>
                   <CollapsibleTrigger className="flex w-full items-center gap-2 rounded-md border p-3 text-left text-sm hover:bg-muted/50">
@@ -453,7 +436,7 @@ export function RevisionReviewDialog({
                     </span>
                   </CollapsibleTrigger>
                   <CollapsibleContent className="space-y-1 px-3 pb-2 pt-2">
-                    {diff.unchanged.map((s) => (
+                    {diff.unchanged.slice(0, visibleRows).map((s) => (
                       <div
                         key={s.sheet_id}
                         className="flex items-center gap-3 py-1 text-sm"
@@ -470,7 +453,7 @@ export function RevisionReviewDialog({
             </div>
           ) : null}
 
-          {diff && !processing && !failed && (
+          {diff && !failed && (
             <DialogFooter className="flex-row items-center justify-between gap-2 sm:justify-between">
               <Button
                 variant="ghost"
@@ -480,13 +463,13 @@ export function RevisionReviewDialog({
               >
                 Discard draft
               </Button>
-              <Button onClick={handlePublish} disabled={publishing || acceptedCount === 0}>
+              <Button onClick={handlePublish} disabled={publishing || acceptedCount === 0 || !publicationReady}>
                 {publishing ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Publishing…
                   </>
                 ) : (
-                  `Publish ${acceptedCount} sheet${acceptedCount === 1 ? "" : "s"}`
+                  preconstruction ? `Use ${acceptedCount} sheet${acceptedCount === 1 ? "" : "s"} for estimating` : `Publish ${acceptedCount} sheet${acceptedCount === 1 ? "" : "s"}`
                 )}
               </Button>
             </DialogFooter>
@@ -583,7 +566,7 @@ export function DistributeRevisionDialog({
       const data = unwrapAction(await listRevisionRecipientsAction(revisionId))
       setRecipients(data.recipients)
       setLastDistribution(data.last_distribution)
-      setSelected(new Set(data.recipients.map((r) => r.token_id + " " + r.email)))
+      setSelected(new Set(data.recipients.map((r) => r.token_id + "\0" + r.email)))
     } catch (err) {
       console.error("Failed to load distribution recipients:", err)
       setLoadError(err instanceof Error ? err.message : "Failed to load recipients")
@@ -598,7 +581,7 @@ export function DistributeRevisionDialog({
     void loadRecipients()
   }, [open, loadRecipients])
 
-  const keyOf = (r: RevisionDistributionRecipient) => r.token_id + " " + r.email
+  const keyOf = (r: RevisionDistributionRecipient) => r.token_id + "\0" + r.email
   const toggle = (recipient: RevisionDistributionRecipient, value: boolean) => {
     setSelected((prev) => {
       const next = new Set(prev)
@@ -952,6 +935,21 @@ function MetaEditor({
   )
 }
 
+function IdentityReview({ sheet, edit, onEdit }: { sheet: RevisionDiffSheet; edit?: SheetEdit; onEdit: (patch: SheetEdit) => void }) {
+  if (!sheet.rendered) return <p className="text-xs text-muted-foreground">Rendering page…</p>
+  if (sheet.verificationStatus === "verified") return <span className="text-xs text-muted-foreground">Identity verified</span>
+  return <label className="flex items-center gap-2 text-xs">
+    <Checkbox checked={edit?.identity_reviewed ?? false} onCheckedChange={value => onEdit({
+      version_id: sheet.draft.version_id,
+      identity_reviewed: Boolean(value),
+      sheet_number: edit?.sheet_number ?? sheet.sheet_number,
+      sheet_title: edit?.sheet_title ?? sheet.sheet_title ?? "",
+      discipline: edit?.discipline ?? sheet.discipline ?? undefined,
+    })} />
+    I checked this page and confirm its sheet identity
+  </label>
+}
+
 function UpdatedRow({
   sheet,
   edit,
@@ -983,6 +981,7 @@ function UpdatedRow({
         <Thumb preview={sheet.draft} label="new" />
       </div>
       <MetaEditor sheet={sheet} edit={edit} onEdit={onEdit} />
+      <IdentityReview sheet={sheet} edit={edit} onEdit={onEdit} />
     </div>
   )
 }
@@ -1018,6 +1017,7 @@ function AddedRow({
       <Thumb preview={sheet.draft} label="new" />
       <div className="flex min-w-[240px] flex-1 flex-col gap-2">
         <MetaEditor sheet={sheet} edit={edit} onEdit={onEdit} />
+      <IdentityReview sheet={sheet} edit={edit} onEdit={onEdit} />
         {previouslyDeleted && (
           <Badge variant="outline" className="w-fit font-normal text-muted-foreground">
             Previously deleted — returning as new

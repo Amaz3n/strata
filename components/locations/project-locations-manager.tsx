@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useTransition } from "react"
+import { useState, useTransition } from "react"
 import { toast } from "sonner"
 import { unwrapAction } from "@/lib/action-result"
 import {
@@ -17,15 +17,23 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea"
 
 export function ProjectLocationsManager({ projectId, initialLocations }: { projectId: string; initialLocations: ProjectLocation[] }) {
+  return <ProjectLocationsManagerContent key={projectId} projectId={projectId} initialLocations={initialLocations} />
+}
+
+function ProjectLocationsManagerContent({ projectId, initialLocations }: { projectId: string; initialLocations: ProjectLocation[] }) {
   const [locations, setLocations] = useState(initialLocations)
+  const [locationSource, setLocationSource] = useState(initialLocations)
+  if (locationSource !== initialLocations) {
+    setLocationSource(initialLocations)
+    setLocations(initialLocations)
+  }
   const [name, setName] = useState("")
   const [parentId, setParentId] = useState("__root__")
   const [bulkText, setBulkText] = useState("")
   const [pending, startTransition] = useTransition()
-  useEffect(() => setLocations(initialLocations), [initialLocations])
 
   const reload = () => window.dispatchEvent(new Event("arc-org-change"))
-  const run = (work: () => Promise<void>) => startTransition(() => void work().catch((error) => toast.error(error instanceof Error ? error.message : "Could not update locations")))
+  const run = (work: () => Promise<void>) => startTransition(() => work().catch((error) => { toast.error(error instanceof Error ? error.message : "Could not update locations") }))
 
   return (
     <div className="space-y-3 border-t pt-5">
@@ -38,6 +46,7 @@ export function ProjectLocationsManager({ projectId, initialLocations }: { proje
           {locations.map((location) => (
             <div key={location.id} className="flex items-center gap-2 px-3 py-2" style={{ paddingLeft: `${12 + location.depth * 16}px` }}>
               <Input
+                key={location.name}
                 className="h-8 flex-1"
                 defaultValue={location.name}
                 disabled={pending}
@@ -91,4 +100,3 @@ export function ProjectLocationsManager({ projectId, initialLocations }: { proje
     </div>
   )
 }
-

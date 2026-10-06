@@ -1,9 +1,10 @@
-import { createHmac } from "crypto"
+import { hasSigningAccess } from "@/lib/esign/access-code"
+import { resolveSigningRequestToken } from "@/lib/esign/signing-tokens"
+import { ensureFrozenSigningSource, loadFrozenSigningBytes } from "@/lib/services/esign-execution"
 
 import { NextResponse } from "next/server"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { downloadFilesObject } from "@/lib/storage/files-storage"
 
 function buildInlineDisposition(filename?: string | null) {
   const safe = (filename ?? "document.pdf").replace(/[\r\n"]/g, "_")
@@ -41,23 +42,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ token: s
       return NextResponse.json({ error: "Misconfigured" }, { status: 500 })
     }
 
-    const tokenHash = createHmac("sha256", secret).update(token).digest("hex")
     const supabase = createServiceSupabaseClient()
-
-    const { data: signingRequest, error } = await supabase
-      .from("document_signing_requests")
-      .select(
-        `
-        id,
-        org_id,
-        document_id,
-        expires_at,
-        document:documents(source_file_id)
-      `,
-      )
-      .eq("token_hash", tokenHash)
-      .maybeSingle()
-
+    const { data: signingRequest, error } = await resolveSigningRequestToken(supabase, token,
+      "id,org_id,document_id,status,expires_at,token_hash,access_code_hash,document:documents(source_file_id,status,metadata)")
     const linkedDocument = Array.isArray(signingRequest?.document) ? signingRequest?.document[0] : signingRequest?.document
     const sourceFileId = linkedDocument?.source_file_id
 
@@ -65,6 +52,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ token: s
       return NextResponse.json({ error: "Not found" }, { status: 404 })
     }
 
+    if (signingRequest.status === "voided" || signingRequest.status === "expired" || linkedDocument?.status === "voided" || linkedDocument?.status === "expired") return NextResponse.json({ error: "Revoked" }, { status: 410 })
+
+    if (!(await hasSigningAccess(signingRequest))) return NextResponse.json({ error: "Access code required" }, { status: 403 })
     const now = new Date()
     if (signingRequest.expires_at && new Date(signingRequest.expires_at) < now) {
       return NextResponse.json({ error: "Expired" }, { status: 410 })
@@ -81,11 +71,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ token: s
       return NextResponse.json({ error: "Not found" }, { status: 404 })
     }
 
-    const bytes = await downloadFilesObject({
-      supabase,
-      orgId: signingRequest.org_id,
-      path: file.storage_path,
-    })
+    // Freeze before the first display so acceptance cannot switch the bytes later.
+    // Historical completed copies remain available from their executed-file route.
+    const source = linkedDocument?.metadata?.esign_source ?? await ensureFrozenSigningSource(signingRequest.org_id, signingRequest.document_id)
+    const bytes = await loadFrozenSigningBytes(signingRequest.org_id, source)
     const payload = new Uint8Array(bytes)
 
     const total = payload.length

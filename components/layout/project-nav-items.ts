@@ -1,3 +1,4 @@
+import { BUILDER_PROFILE, type BusinessProfile } from "@/lib/business-profile"
 import { Briefcase, Flag, Hammer, LayoutDashboard, Wallet } from "@/components/icons"
 import type { LucideIcon } from "@/components/icons"
 import { getProjectFinancialFeatureConfig } from "@/lib/financials/billing-model"
@@ -12,7 +13,6 @@ export type ProjectSection =
   | "overview"
   | "documents"
   | "drawings"
-  | "drawings-model"
   | "bids"
   | "signatures"
   | "schedule"
@@ -51,6 +51,7 @@ export type ProjectSection =
 export type ProjectNavSubItem = {
   title: string
   url: string
+  prefetch?: boolean | "auto"
   isActive?: boolean
   badge?: number
   requiredAny?: string[]
@@ -110,7 +111,7 @@ export const BUILD_SECTIONS = new Set<ProjectSection>([
   "selections",
 ])
 
-export const PLAN_SECTIONS = new Set<ProjectSection>(["documents", "drawings", "drawings-model", "specs", "bids", "signatures"])
+export const PLAN_SECTIONS = new Set<ProjectSection>(["documents", "drawings", "specs", "bids", "signatures"])
 
 export function getProjectIdFromPath(pathname: string): string | null {
   const segments = pathname.split("?")[0]?.split("/").filter(Boolean) ?? []
@@ -138,6 +139,7 @@ export function getProjectSection(pathname: string): ProjectSection {
       case "close":
         return "receivables"
       case "budget":
+      case "inventory":
         return "budget"
       case "payables":
         return "payables"
@@ -151,7 +153,6 @@ export function getProjectSection(pathname: string): ProjectSection {
 
   // The 3D model is a sub-route of drawings, so it needs its own section or
   // the nav would highlight Drawings while you are looking at the model.
-  if (segment === "drawings" && subSegment === "model") return "drawings-model"
 
   switch (segment) {
     case "documents":
@@ -279,6 +280,7 @@ export function buildProjectNavGroups({
   reviewBadgeCount,
   correspondenceBadgeCount,
   orgTier = "residential",
+  businessProfile = BUILDER_PROFILE,
 }: {
   projectId: string
   section: ProjectSection
@@ -287,6 +289,7 @@ export function buildProjectNavGroups({
   /** Filed mail nobody has ruled on. The only signal that the log has work in it. */
   correspondenceBadgeCount?: number
   orgTier?: ProductTier
+  businessProfile?: BusinessProfile
 }): ProjectNavGroup[] {
   const base = `/projects/${projectId}`
   const url = (suffix = "") => `${base}${suffix}`
@@ -304,6 +307,8 @@ export function buildProjectNavGroups({
       title: "Documents",
       moduleKey: "documents",
       url: url("/documents"),
+      // File reads stay live; prefetch the shell rather than uncached URL data.
+      prefetch: "auto",
       isActive: section === "documents",
       requiredAny: ["docs.read"],
     },
@@ -313,17 +318,6 @@ export function buildProjectNavGroups({
       url: url("/drawings"),
       isActive: section === "drawings",
       requiredAny: ["drawing.read", "docs.read"],
-    },
-    {
-      // Production projects get their model at the PLAN, where one
-      // interpretation serves every lot; anchoring a second one here would
-      // describe the same house twice.
-      title: "3D model",
-      moduleKey: "drawings",
-      url: url("/drawings/model"),
-      isActive: section === "drawings-model",
-      requiredAny: ["drawing.read", "docs.read"],
-      postures: ["residential", "commercial"],
     },
     {
       title: "Specifications",
@@ -383,7 +377,7 @@ export function buildProjectNavGroups({
     config?.showTime === false
       ? null
       : {
-          title: "Time",
+          title: businessProfile.kind === "trade" ? "Crew time" : "Time",
           moduleKey: "time",
           postures: ["residential", "commercial"],
           url: url("/time"),
@@ -440,10 +434,10 @@ export function buildProjectNavGroups({
     {
       title: "Safety",
       moduleKey: "safety",
-      postures: ["commercial"],
+      postures: ["commercial", "production"],
       url: url("/safety"),
       isActive: section === "safety",
-      requiredAny: ["project.read", "safety.write"],
+      requiredAny: ["safety.read", "safety.write"],
     },
     {
       title: "Selections",
@@ -495,6 +489,13 @@ export function buildProjectNavGroups({
   const groups: ProjectNavGroup[] = [
     {
       items: [
+        ...(isPrecon && project && "prospect_id" in project && project.prospect_id ? [{
+          title: "Back to the deal",
+          url: `/pipeline/${project.prospect_id}`,
+          icon: Briefcase,
+          isActive: false,
+          requiredAny: ["org.member", "project.read"],
+        }] : []),
         {
           title: "Overview",
           url: url(),
@@ -539,6 +540,7 @@ export function buildProjectNavGroups({
   ]
 
   const visibleForPosture = <T extends ProjectNavItem | ProjectNavSubItem>(item: T) => {
+    if (businessProfile.kind === "trade" && item.moduleKey && ["bids", "selections", "decisions", "closing"].includes(item.moduleKey) && moduleOverrides[item.moduleKey] === undefined) return false
     const override = item.moduleKey ? moduleOverrides[item.moduleKey] : undefined
     return override ?? (!item.postures || item.postures.includes(posture))
   }

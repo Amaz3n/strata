@@ -1,4 +1,5 @@
 import { Suspense } from "react"
+import { connection } from "next/server"
 import { redirect } from "next/navigation"
 
 import { PageLayout } from "@/components/layout/page-layout"
@@ -10,6 +11,7 @@ import { getCurrentPlatformAccess } from "@/lib/services/platform-access"
 
 
 async function PlatformData() {
+  await connection()
   const access = await getCurrentPlatformAccess()
   if (!access.canAccessPlatform) {
     redirect("/unauthorized")

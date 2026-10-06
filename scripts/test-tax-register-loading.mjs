@@ -1,0 +1,70 @@
+import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
+import { chromium, expect } from "@playwright/test"
+import babel from "next/dist/compiled/babel/core.js"
+import compiler from "babel-plugin-react-compiler"
+
+const built = await Bun.build({ entrypoints: ["tests/fixtures/tax-register-loading/ui.jsx"], target: "browser", define: { "process.env.NODE_ENV": '"production"', "process.env": "{}" }, plugins: [{ name: "tax-register-loading", setup(builder) {
+  builder.onLoad({ filter: /tax-register\.tsx$/ }, async ({ path }) => ({ loader: "tsx", contents: babel.transformSync(await readFile(path, "utf8"), { filename: path, configFile: false, babelrc: false, parserOpts: { plugins: ["typescript", "jsx"] }, plugins: [[compiler, { target: "19" }]] }).code }))
+  builder.onResolve({ filter: /^@\/app\/\(app\)\/books\/actions$/ }, () => ({ path: "actions", namespace: "fixture" }))
+  builder.onLoad({ filter: /^actions$/, namespace: "fixture" }, () => ({ loader: "js", contents: 'export function loadTaxRegisterAction(){return new Promise((resolve,reject)=>(window.taxReads??=[]).push({resolve,reject}))} export async function createTaxJurisdictionAction(){return {success:true}} export async function recordTaxFilingAction(){return {success:true}} export async function storeCompanyTaxIdentityAction(){throw Error("Unexpected identity write")} export async function replaceCompanyTaxIdentityAction(){throw Error("Unexpected identity replacement")}' }))
+  builder.onResolve({ filter: /^sonner$/ }, () => ({ path: "toast", namespace: "fixture" }))
+  builder.onLoad({ filter: /^toast$/, namespace: "fixture" }, () => ({ loader: "js", contents: 'export const toast={error(message){(window.taxToasts??=[]).push(message)},success(){}}' }))
+} }] })
+assert.ok(built.success, built.logs.join("\n"))
+const bundle = await built.outputs[0].text()
+const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: request => new URL(request.url).pathname === "/bundle.js" ? new Response(bundle, { headers: { "content-type": "text/javascript" } }) : new Response('<html><body><div id="root"></div><script type="module" src="/bundle.js"></script></body></html>', { headers: { "content-type": "text/html" } }) })
+let browser
+try {
+  browser = await chromium.launch({ headless: true })
+  const page = await browser.newPage(), errors = [], blocked = [], origin = `http://127.0.0.1:${server.port}`
+  page.on("pageerror", error => errors.push(error.message))
+  await page.route("**/*", route => new URL(route.request().url()).origin === origin ? route.continue() : (blocked.push(route.request().url()), route.abort()))
+  async function open(mode = "settings") { await page.goto("about:blank"); await page.goto(`${origin}/?mode=${mode}`); await expect.poll(() => page.evaluate(() => window.taxReads?.length)).toBe(1) }
+  async function resolve(index, name) { await page.evaluate(({index,name}) => window.taxReads[index].resolve({success:true,data:{jurisdictions:[{id:"fixture",name,sales_tax_rate_micros:0,use_tax_rate_micros:0}],filings:[{id:"filing",filing_type:"sales_use_tax",period_end:"2026-09-30",status:"filed",confirmation_number:name}],vendors:[]}}), {index,name}) }
+  await open()
+  await page.evaluate(() => window.taxReads[0].resolve({success:false,error:"Tax access unavailable"}))
+  await expect(page.getByRole("alert")).toContainText("Tax access unavailable")
+  await page.getByRole("button", {name:"Retry"}).click()
+  await expect.poll(() => page.evaluate(() => window.taxReads.length)).toBe(2)
+  await resolve(1,"Recovered jurisdiction")
+  await expect(page.getByText("Recovered jurisdiction",{exact:true})).toBeVisible()
+  await expect(page.getByRole("alert")).toHaveCount(0)
+  await page.getByPlaceholder("Jurisdiction name").fill("Mock jurisdiction")
+  await page.locator('input[name="effectiveFrom"]').fill("2026-10-01")
+  await page.getByPlaceholder("Sales tax %").fill("0")
+  await page.getByPlaceholder("Use tax %").fill("0")
+  await page.getByRole("button",{name:"Add jurisdiction"}).click()
+  await expect.poll(() => page.evaluate(() => window.taxReads.length)).toBe(3)
+  await page.evaluate(() => window.taxReads[2].resolve({success:false,error:"Reload unavailable"}))
+  await expect(page.getByRole("alert")).toContainText("Reload unavailable")
+  await expect(page.getByRole("button",{name:"Add jurisdiction"})).toBeEnabled()
+  await page.getByPlaceholder("Jurisdiction name").fill("Unsaved next jurisdiction")
+  await expect(page.getByText("Recovered jurisdiction",{exact:true})).toBeVisible()
+  await page.getByRole("button", {name:"Retry"}).click()
+  await expect.poll(() => page.evaluate(() => window.taxReads.length)).toBe(4)
+  await resolve(3,"Refreshed jurisdiction")
+  await expect(page.getByText("Refreshed jurisdiction",{exact:true})).toBeVisible()
+  await expect(page.getByPlaceholder("Jurisdiction name")).toHaveValue("Unsaved next jurisdiction")
+  await open("filings")
+  await page.evaluate(() => window.taxReads[0].reject(new Error("Connection interrupted")))
+  await expect(page.getByRole("alert")).toContainText("Connection interrupted")
+  await page.getByRole("button", {name:"Retry"}).click()
+  await expect.poll(() => page.evaluate(() => window.taxReads.length)).toBe(2)
+  await resolve(1,"Recovered filing")
+  await expect(page.getByText("filed · Recovered filing",{exact:true})).toBeVisible()
+  await open()
+  await page.evaluate(() => window.taxFixture.unmount())
+  await expect(page.getByText("Register removed")).toBeVisible()
+  await page.evaluate(() => window.taxReads[0].resolve({success:false,error:"Obsolete error"}))
+  await page.waitForTimeout(100)
+  assert.equal(await page.evaluate(() => window.taxToasts?.length ?? 0),0,"unmounted reads must not report obsolete errors")
+  await open()
+  await page.evaluate(() => window.taxFixture.unmount())
+  await expect(page.getByText("Register removed")).toBeVisible()
+  await page.evaluate(() => window.taxReads[0].reject(new Error("Obsolete rejection")))
+  await page.waitForTimeout(100)
+  assert.deepEqual(errors, [])
+  assert.deepEqual(blocked, [])
+  console.log("Tax register recovers in both modes, preserves rows and drafts after reload failure, and ignores unmounted reads")
+} finally { await browser?.close(); server.stop(true) }

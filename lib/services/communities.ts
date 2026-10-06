@@ -334,6 +334,34 @@ export async function listCommunities(
  * `listCommunities()` — 200 rows plus an org-wide lot-count aggregation — so a
  * single page load ran that scan about five times.
  */
+/** Authorized chrome identity, without inventory, phases, or takedown reads. */
+export const getCommunityIdentity = cache(async function getCommunityIdentity(
+  id: string,
+  orgId?: string,
+): Promise<Pick<CommunityListItemDTO, "id" | "name" | "status" | "plannedLotCount">> {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("community.read", context)
+  const decision = resolveDivisionScope(await allowedDivisionScope(context.orgId, context.userId))
+  if (decision.kind === "none") throw new Error("Community not found")
+
+  let query = context.supabase
+    .from("communities")
+    .select("id, name, status, planned_lot_count")
+    .eq("org_id", context.orgId)
+    .eq("id", id)
+    .is("archived_at", null)
+  if (decision.kind === "limited") query = query.in("division_id", decision.divisionIds)
+  const { data, error } = await query.maybeSingle()
+  if (error) throw new Error(`Failed to load community identity: ${error.message}`)
+  if (!data) throw new Error("Community not found")
+  return {
+    id: data.id,
+    name: data.name,
+    status: data.status as CommunityListItemDTO["status"],
+    plannedLotCount: data.planned_lot_count,
+  }
+})
+
 export const getCommunity = cache(async function getCommunity(
   id: string,
   orgId?: string,

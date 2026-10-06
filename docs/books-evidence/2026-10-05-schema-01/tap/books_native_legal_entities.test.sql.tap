@@ -1,0 +1,41 @@
+1..40
+ok 1 - private server can read setup registry
+ok 2 - anonymous registry read denied
+ok 3 - organization login does not grant entity read
+ok 4 - browser cannot grant entity access
+ok 5 - browser cannot forge identity revisions
+ok 6 - browser cannot forge approval
+ok 7 - entity access audit is private
+ok 8 - creation requires private permission-checked service
+ok 9 - membership changes are private
+ok 10 - identity preparation is private
+ok 11 - identity approval is private
+ok 12 - entity reads are private
+ok 13 - entity functions never bypass RLS
+ok 14 - all entity tables have RLS
+ok 15 - profile lineage is tenant and entity scoped
+ok 16 - approval is tenant and entity scoped
+ok 17 - registry cannot activate an unenforced ledger
+ok 18 - USD functional currency scope is enforced
+ok 19 - complete entity export is private
+ok 20 - permission-checked server can capture entity export
+ok 21 - access events have stable archive row identities
+ok 22 - audit ordering resumes from retained entity events without identity reseeding
+ok 23 - browser cannot read private export manifest
+ok 24 - browser cannot rewrite export proof
+ok 25 - download scope is checked by a private invoker RPC
+ok 26 - preparation pins same-entity access evidence
+ok 27 - capture retains exact bigint audit identities before JSON transport
+ok 28 - legacy ownership history has RLS
+ok 29 - legacy population is private
+ok 30 - anonymous cannot approve ownership
+ok 31 - legacy preparation is private
+ok 32 - legacy review is private
+ok 33 - legacy review RPCs do not bypass RLS
+ok 34 - proposal identity is entity scoped
+ok 35 - prepared evidence cannot be rewritten
+ok 36 - schema19 captures retained ownership reviews
+ok 37 - ownership summaries require private authorization
+ok 38 - original evidence selection requires private authorization
+ok 39 - entity capabilities require private authorization
+ok 40 - workspace readers never bypass RLS

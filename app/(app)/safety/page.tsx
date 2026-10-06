@@ -1,3 +1,5 @@
+import { connection } from "next/server"
+import { QueuePagination } from "@/components/layout/queue-pagination"
 import Link from "next/link"
 import { Suspense } from "react"
 
@@ -17,19 +19,23 @@ function SafetyDeskLoading() {
   return <div className="space-y-4 p-6">{Array.from({ length: 8 }).map((_, index) => <Skeleton className="h-10 w-full" key={index} />)}</div>
 }
 
-async function SafetyDeskData() {
-  const data = await getSafetyDesk()
+async function SafetyDeskData({ searchParams }: { searchParams: Promise<{ incidentsPage?: string; observationsPage?: string; inspectionsPage?: string }> }) {
+  await connection()
+  const query = await searchParams
+  const data = await getSafetyDesk(undefined, { incidents: Number(query.incidentsPage ?? 1), observations: Number(query.observationsPage ?? 1), inspections: Number(query.inspectionsPage ?? 1) })
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(query)) if (typeof value === "string") params.set(key, value)
+  const href = `/safety?${params}`
   const openIncidents = data.incidents.filter((incident) => incident.status !== "closed")
   const openObservations = data.observations.filter((observation) => observation.status === "open")
-  const failedInspections = data.inspections.filter((inspection) => inspection.result === "fail")
 
   return (
     <div className="space-y-8 p-6">
       <div className="grid gap-px border bg-border sm:grid-cols-3">
         {[
-          ["Open incidents", openIncidents.length],
-          ["Open observations", openObservations.length],
-          ["Failed inspections", failedInspections.length],
+          ["Open incidents", data.openIncidentCount],
+          ["Open observations", data.openObservationCount],
+          ["Failed inspections", data.failedInspectionCount],
         ].map(([label, value]) => (
           <div className="bg-background px-4 py-3" key={label}>
             <div className="text-xs text-muted-foreground">{label}</div>
@@ -40,7 +46,7 @@ async function SafetyDeskData() {
 
       <section className="space-y-2">
         <div><h2 className="text-sm font-semibold">Open incidents</h2><p className="text-xs text-muted-foreground">Newest first across every project.</p></div>
-        {openIncidents.length === 0 ? <div className="border p-8 text-center text-sm text-muted-foreground">No open safety incidents.</div> : (
+        {openIncidents.length === 0 ? <div className="border p-8 text-center text-sm text-muted-foreground">No open safety incidents on this page.</div> : (
           <Table><TableHeader><TableRow><TableHead>Project</TableHead><TableHead>Incident</TableHead><TableHead>Occurred</TableHead><TableHead>Severity</TableHead><TableHead>Description</TableHead><TableHead>Status</TableHead></TableRow></TableHeader><TableBody>
             {openIncidents.map((incident) => <TableRow key={incident.id}>
               <TableCell><Link className="font-medium hover:underline" href={`/projects/${incident.project_id}/safety`}>{incident.project_name}</Link></TableCell>
@@ -50,11 +56,12 @@ async function SafetyDeskData() {
             </TableRow>)}
           </TableBody></Table>
         )}
+        <QueuePagination page={data.pages.incidents} pageSize={data.pageSize} total={data.openIncidentCount} href={href} pageParam="incidentsPage" label="Incidents pages" />
       </section>
 
       <section className="space-y-2">
         <div><h2 className="text-sm font-semibold">Open observations</h2><p className="text-xs text-muted-foreground">At-risk conditions and deficiencies awaiting resolution.</p></div>
-        {openObservations.length === 0 ? <div className="border p-8 text-center text-sm text-muted-foreground">No open safety observations.</div> : (
+        {openObservations.length === 0 ? <div className="border p-8 text-center text-sm text-muted-foreground">No open safety observations on this page.</div> : (
           <Table><TableHeader><TableRow><TableHead>Project</TableHead><TableHead>Observation</TableHead><TableHead>Category</TableHead><TableHead>Description</TableHead><TableHead>Due</TableHead></TableRow></TableHeader><TableBody>
             {openObservations.map((observation) => <TableRow key={observation.id}>
               <TableCell><Link className="font-medium hover:underline" href={`/projects/${observation.project_id}/safety?tab=observations`}>{observation.project_name}</Link></TableCell>
@@ -63,13 +70,14 @@ async function SafetyDeskData() {
             </TableRow>)}
           </TableBody></Table>
         )}
+        <QueuePagination page={data.pages.observations} pageSize={data.pageSize} total={data.openObservationCount} href={href} pageParam="observationsPage" label="Observations pages" />
       </section>
 
       <section className="space-y-2">
         <div><h2 className="text-sm font-semibold">Recent safety inspections</h2><p className="text-xs text-muted-foreground">Completed and in-progress inspections across the portfolio.</p></div>
-        {data.inspections.length === 0 ? <div className="border p-8 text-center text-sm text-muted-foreground">No safety inspections yet.</div> : (
+        {data.inspections.length === 0 ? <div className="border p-8 text-center text-sm text-muted-foreground">No safety inspections on this page.</div> : (
           <Table><TableHeader><TableRow><TableHead>Project</TableHead><TableHead>Inspection</TableHead><TableHead>Title</TableHead><TableHead>Result</TableHead><TableHead>Inspected</TableHead></TableRow></TableHeader><TableBody>
-            {data.inspections.slice(0, 100).map((inspection) => <TableRow key={inspection.id}>
+            {data.inspections.map((inspection) => <TableRow key={inspection.id}>
               <TableCell><Link className="font-medium hover:underline" href={`/projects/${inspection.project_id}/inspections`}>{inspection.project_name}</Link></TableCell>
               <TableCell className="tabular-nums">#{inspection.inspection_number}</TableCell><TableCell>{inspection.title}</TableCell>
               <TableCell><Badge variant={inspection.result === "fail" ? "destructive" : "outline"}>{inspection.result ?? inspection.status.replaceAll("_", " ")}</Badge></TableCell>
@@ -77,11 +85,12 @@ async function SafetyDeskData() {
             </TableRow>)}
           </TableBody></Table>
         )}
+        <QueuePagination page={data.pages.inspections} pageSize={data.pageSize} total={data.inspectionCount} href={href} pageParam="inspectionsPage" label="Inspections pages" />
       </section>
     </div>
   )
 }
 
-export default function SafetyDeskPage() {
-  return <PageLayout title="Safety"><Suspense fallback={<SafetyDeskLoading />}><SafetyDeskData /></Suspense></PageLayout>
+export default function SafetyDeskPage(props: { searchParams: Promise<{ incidentsPage?: string; observationsPage?: string; inspectionsPage?: string }> }) {
+  return <PageLayout title="Safety"><Suspense fallback={<SafetyDeskLoading />}><SafetyDeskData {...props} /></Suspense></PageLayout>
 }

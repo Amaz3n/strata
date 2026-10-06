@@ -1,5 +1,7 @@
 "use client"
 
+import { folderParent } from "../view-state"
+
 import { useCallback, useEffect, useState } from "react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
@@ -24,7 +26,7 @@ interface FolderRenameDialogProps {
 }
 
 export function FolderRenameDialog({ open, onOpenChange, path }: FolderRenameDialogProps) {
-  const { projectId, refreshFiles } = useDocuments()
+  const { projectId, refreshFiles, loadFolderChildren, currentPath, setCurrentPath } = useDocuments()
   const [value, setValue] = useState("")
   const [isRenaming, setIsRenaming] = useState(false)
 
@@ -41,13 +43,17 @@ export function FolderRenameDialog({ open, onOpenChange, path }: FolderRenameDia
       unwrapAction(await renameFolderAction(projectId, path, value.trim()))
       onOpenChange(false)
       await refreshFiles({ invalidateCache: true })
+      await loadFolderChildren(folderParent(path))
+      if (currentPath === path || currentPath.startsWith(`${path}/`)) {
+        setCurrentPath(`${folderParent(path)}/${value.trim()}${currentPath.slice(path.length)}`)
+      }
       toast.success("Folder renamed")
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to rename folder")
     } finally {
       setIsRenaming(false)
     }
-  }, [path, value, projectId, onOpenChange, refreshFiles])
+  }, [path, value, projectId, onOpenChange, refreshFiles, loadFolderChildren, currentPath, setCurrentPath])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

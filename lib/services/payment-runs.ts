@@ -785,9 +785,9 @@ export async function listReleaseBlockedIncidents(orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requireAnyPermission(["payment.reconcile", "payment.manage_rail"], context)
   const { data, error } = await createServiceSupabaseClient().from("payment_operations_incidents")
-    .select("id,finding_code,detail,created_at")
+    .select("id,finding_code,detail,created_at:opened_at")
     .eq("org_id", context.orgId).eq("status", "open").like("finding_code", "release_blocked:%")
-    .order("created_at", { ascending: false }).limit(101)
+    .order("opened_at", { ascending: false }).limit(101)
   if (error) throw new Error(`Unable to load blocked payment releases: ${error.message}`)
   return {
     items: (data ?? []).slice(0, 100).map((row) => ({ ...row, runId: row.finding_code.slice("release_blocked:".length) })),

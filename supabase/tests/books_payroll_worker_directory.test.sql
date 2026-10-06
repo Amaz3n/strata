@@ -1,0 +1,22 @@
+-- Current full-schema boundary drill. Execute in the isolated acceptance target;
+-- populated pagination/native-labor proofs also run in scoped PGlite tests.
+begin;
+create extension if not exists pgtap with schema extensions;
+set local search_path=public,extensions;
+select plan(8);
+select ok(exists(select 1 from pg_proc where oid='public.read_books_payroll_workers(uuid,uuid,text,integer)'::regprocedure and provolatile='s' and not prosecdef),'worker directory is a stable invoker read');
+select ok(has_function_privilege('service_role','public.read_books_payroll_workers(uuid,uuid,text,integer)','execute'),'private service can read native worker names');
+set local role anon;
+select throws_like($$select public.read_books_payroll_workers('99420000-0000-4000-8000-000000000099')$$,'%permission denied%','anonymous directory calls denied');
+reset role;
+set local role authenticated;
+select throws_like($$select public.read_books_payroll_workers('99420000-0000-4000-8000-000000000099')$$,'%permission denied%','browser cannot bypass whole-org accounting checks');
+reset role;
+set local role service_role;
+select is(public.read_books_payroll_workers('99420000-0000-4000-8000-000000000099'),'{"workers":[],"nextCursor":null}'::jsonb,'empty organization returns no worker identities');
+select throws_like($$select public.read_books_payroll_workers(null)$$,'%Invalid payroll worker directory request%','missing organization denied');
+select throws_like($$select public.read_books_payroll_workers('99420000-0000-4000-8000-000000000099',null,'',51)$$,'%Invalid payroll worker directory request%','oversized worker page denied');
+select throws_like($$select public.read_books_payroll_workers('99420000-0000-4000-8000-000000000099',null,repeat('x',201),50)$$,'%Invalid payroll worker directory request%','unbounded search denied');
+reset role;
+select * from finish();
+rollback;

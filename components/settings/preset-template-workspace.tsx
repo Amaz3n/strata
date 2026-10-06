@@ -19,6 +19,7 @@ export function PresetTemplateWorkspace({
   onSave,
   saveForm,
   busy,
+  readOnly = false,
   ...data
 }: PresetPreviewData & {
   children: ReactNode;
@@ -26,6 +27,7 @@ export function PresetTemplateWorkspace({
   onSave?: () => void;
   saveForm?: string;
   busy: boolean;
+  readOnly?: boolean;
 }) {
   const [discard, setDiscard] = useState(false);
   const dirty = useRef(false);
@@ -77,11 +79,11 @@ export function PresetTemplateWorkspace({
                   {data.kind} template
                 </DialogTitle>
                 <DialogDescription className="text-xs">
-                  Edit the details. See the result.
+                  {readOnly ? "View the saved details." : "Edit the details. See the result."}
                 </DialogDescription>
               </div>
             </div>
-            <Button
+            {!readOnly ? <Button
               onClick={onSave}
               type={saveForm ? "submit" : "button"}
               form={saveForm}
@@ -93,7 +95,7 @@ export function PresetTemplateWorkspace({
                 <Check className="mr-2 size-4" />
               )}
               {busy ? "Saving…" : "Save template"}
-            </Button>
+            </Button> : null}
           </header>
           <div className="grid min-h-0 flex-1 grid-cols-[minmax(580px,1.1fr)_minmax(440px,.9fr)]">
             <div
@@ -105,7 +107,7 @@ export function PresetTemplateWorkspace({
                 dirty.current = true;
               }}
             >
-              <fieldset disabled={busy} className="min-w-0">
+              <fieldset disabled={busy || readOnly} className="min-w-0">
                 {children}
               </fieldset>
             </div>

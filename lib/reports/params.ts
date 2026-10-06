@@ -8,6 +8,9 @@ import type { ReportDefinition, ReportParamSpec, ReportParams } from "@/lib/repo
  */
 
 export const PERIOD_PRESETS = [
+  { value: "custom", label: "Custom dates" },
+  { value: "lastmonth", label: "Last month" },
+  { value: "fytd", label: "Fiscal year to date" },
   { value: "all", label: "All dates" },
   { value: "ytd", label: "Year to date" },
   { value: "qtd", label: "Quarter to date" },
@@ -28,9 +31,15 @@ export function todayIso() {
 
 /** Resolve a period preset to an inclusive date range. `null` means unbounded. */
 export function periodRange(preset: string, now = new Date()): { from: string | null; to: string | null } {
+  if (preset.startsWith("range:")) {
+    const [, from, to] = preset.split(":")
+    return { from, to }
+  }
   const year = now.getUTCFullYear()
   const today = iso(now)
   switch (preset) {
+    case "lastmonth":
+      return { from: iso(new Date(Date.UTC(year, now.getUTCMonth() - 1, 1))), to: iso(new Date(Date.UTC(year, now.getUTCMonth(), 0))) }
     case "ytd":
       return { from: `${year}-01-01`, to: today }
     case "qtd": {
@@ -60,7 +69,7 @@ function defaultFor(spec: ReportParamSpec): string {
     case "date":
       return todayIso()
     case "period":
-      return "all"
+      return "ytd"
     case "select":
       return spec.options[0]?.value ?? ""
     case "toggle":
@@ -96,6 +105,10 @@ export function parseReportParams(
     const value = Array.isArray(candidate) ? candidate[0] : candidate
     const parsed = value === undefined ? null : schemaFor(spec).safeParse(value)
     params[spec.key] = parsed?.success ? String(parsed.data) : defaultFor(spec)
+  }
+  for (const key of ["_layout", "_from", "_to", "_division", "_community", "_packet", "_visibility", "_favorite", "_name", "comparison", "dimension", "monthly"]) {
+    const value = raw[key]
+    if (typeof value === "string" && value.length <= 40000) params[key] = value
   }
   return params
 }

@@ -140,21 +140,23 @@ async function transcribeAudio(input: {
   if (!model) throw new Error("OpenAI is not configured for transcription")
 
   const startedAt = Date.now()
+  let logged = false
   try {
     const result = await transcribe({
       model,
       audio: new Uint8Array(input.bytes),
+      maxRetries: 0,
       abortSignal: AbortSignal.timeout(TRANSCRIPTION_TIMEOUT_MS),
     })
     const text = result.text.trim()
 
-    void recordAiUsage(supabase, {
+    if (!logged) await recordAiUsage(supabase, {
       orgId: input.orgId ?? null,
       feature: "transcription",
       tier: "fast",
       provider: "openai",
       model: config.model,
-      usage: { inputTokens: null, outputTokens: null, totalTokens: null },
+      usage: { inputTokens: null, outputTokens: null, totalTokens: null, audioSeconds: result.durationInSeconds ?? null },
       latencyMs: Date.now() - startedAt,
       attempt: 1,
       escalatedFrom: null,
@@ -165,10 +167,11 @@ async function transcribeAudio(input: {
       entityId: input.entityId ?? null,
     })
 
+    logged = true
     if (!text) throw new Error("Transcription provider returned no text")
     return text
   } catch (error) {
-    void recordAiUsage(supabase, {
+    if (!logged) await recordAiUsage(supabase, {
       orgId: input.orgId ?? null,
       feature: "transcription",
       tier: "fast",

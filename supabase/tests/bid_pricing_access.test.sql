@@ -1,0 +1,13 @@
+begin;
+select plan(9);
+select ok(not has_table_privilege('authenticated','public.bid_pricing_decisions','select'),'decision reads require server project authorization');
+select ok(not has_table_privilege('anon','public.bid_pricing_decisions','select'),'anonymous clients cannot read pricing decisions');
+select ok(not has_table_privilege('authenticated','public.bid_pricing_decisions','insert'),'pricing decisions require authorized server validation');
+select ok(not has_table_privilege('authenticated','public.bid_pricing_decisions','update'),'clients cannot rewrite decision history');
+select ok(not has_table_privilege('authenticated','public.bid_scope_revisions','delete'),'clients cannot delete issued scope snapshots');
+select ok(not has_function_privilege('authenticated','public.save_bid_pricing_decision(uuid,uuid,uuid,jsonb)','execute'),'pricing RPC is server only');
+select ok(not has_function_privilege('anon','public.begin_bid_scope_revision(uuid,uuid,text)','execute'),'scope revision RPC is server only');
+select ok(not has_function_privilege('authenticated','public.run_reviewed_bid_award(uuid,uuid,uuid,text,uuid[],text,text,text)','execute'),'reviewed award requires server authorization');
+select ok(has_function_privilege('service_role','public.create_bid_submission_version(uuid,uuid,jsonb,jsonb,text,uuid)','execute'),'authorized portal service can submit against an issued revision');
+select * from finish();
+rollback;

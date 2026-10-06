@@ -1,0 +1,5 @@
+1..4
+ok 1 - invoice economics remain private
+ok 2 - anonymous cannot inspect invoice economics
+ok 3 - authorized server can read scoped invoice economics
+ok 4 - invoice economics retain invoker authority

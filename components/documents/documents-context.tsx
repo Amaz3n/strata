@@ -21,6 +21,8 @@ import {
 import type { FileWithUrls, ProjectFolderPermissions } from "@/app/(app)/documents/types"
 import type { DocumentsContextValue, QuickFilter, RefreshFilesOptions, FolderNode } from "./types"
 
+import { reconcileFolderChildren, appendUniqueFiles, isCurrentViewRequest } from "./view-state"
+
 const DocumentsContext = createContext<DocumentsContextValue | null>(null)
 
 const SEARCH_DEBOUNCE_MS = 250
@@ -172,8 +174,23 @@ export function DocumentsProvider({
 
   // Data state
   const [files, setFiles] = useState<FileWithUrls[]>(initialFiles)
-  const [folders, setFolders] = useState<string[]>(initialFolders)
-  const [folderItemCounts, setFolderItemCounts] = useState<Record<string, number>>(initialFolderCounts)
+  const [pendingMoves, setPendingMoves] = useState<Map<string, symbol>>(new Map())
+  const beginOptimisticMove = useCallback((fileIds: string[]) => {
+    const token = Symbol("move")
+    setPendingMoves((previous) => {
+      const next = new Map(previous)
+      fileIds.forEach((id) => next.set(id, token))
+      return next
+    })
+    return () => setPendingMoves((previous) => {
+      const next = new Map(previous)
+      fileIds.forEach((id) => { if (next.get(id) === token) next.delete(id) })
+      return next
+    })
+  }, [])
+  const visibleFiles = useMemo(() => files.filter((file) => !pendingMoves.has(file.id)), [files, pendingMoves])
+  const [folderState, setFolderState] = useState(() => ({ paths: initialFolders, counts: initialFolderCounts }))
+  const { paths: folders, counts: folderItemCounts } = folderState
   const [folderPermissions, setFolderPermissions] = useState<ProjectFolderPermissions[]>(initialFolderPermissions)
   const [counts, setCounts] = useState<Record<string, number>>(initialCounts)
   const [totalCount, setTotalCount] = useState<number>(initialTotalCount)
@@ -191,6 +208,13 @@ export function DocumentsProvider({
 
   const [sort, setSort] = useState<SortField>(readStoredSort)
   const [direction, setDirection] = useState<SortDirection>(readStoredDirection)
+  const activeViewKey = buildFileViewCacheKey({ path: currentPath, quickFilter, searchQuery, sort, direction })
+  const activeViewRef = useRef({ currentPath, quickFilter, searchQuery, sort, direction })
+  activeViewRef.current = { currentPath, quickFilter, searchQuery, sort, direction }
+  const activeViewKeyRef = useRef(activeViewKey)
+  activeViewKeyRef.current = activeViewKey
+  const paginationRequestRef = useRef<symbol | null>(null)
+  const folderGenerationRef = useRef(0)
 
   useEffect(() => {
     if (initialCacheSeededRef.current) return
@@ -241,7 +265,7 @@ export function DocumentsProvider({
 
   const [isLoading, setIsLoading] = useState(false)
   const [isLoadingMore, setIsLoadingMore] = useState(false)
-  const loadingFolderPathsRef = useRef<Set<string>>(new Set())
+  const loadingFolderPathsRef = useRef<Map<string, symbol>>(new Map())
   const syncedUrlStateRef = useRef(initialNormalizedPath)
 
   const pushDocsState = useCallback(
@@ -352,36 +376,26 @@ export function DocumentsProvider({
     const cacheKey = normalizedPath || "/"
     if (loadingFolderPathsRef.current.has(cacheKey)) return
 
-    loadingFolderPathsRef.current.add(cacheKey)
+    const requestToken = Symbol(cacheKey)
+    const generation = folderGenerationRef.current
+    loadingFolderPathsRef.current.set(cacheKey, requestToken)
     try {
       const childFolders = await listChildFoldersAction(project.id, normalizedPath || undefined)
-      setFolderItemCounts((prev) => {
-        const next = { ...prev }
-        for (const folder of childFolders) {
-          next[folder.path] = folder.itemCount
-        }
-        return next
-      })
-      setFolders((prev) => {
-        const next = new Set(prev)
-        if (normalizedPath) {
-          next.add(normalizedPath)
-        }
-        for (const folder of childFolders) {
-          next.add(folder.path)
-        }
-        return Array.from(next).sort()
-      })
+      if (generation !== folderGenerationRef.current) return
+      setFolderState((prev) => reconcileFolderChildren(prev, normalizedPath, childFolders))
     } catch (error) {
       console.error("Failed to load folder children:", error)
       toast.error("Could not load folders")
     } finally {
-      loadingFolderPathsRef.current.delete(cacheKey)
+      if (loadingFolderPathsRef.current.get(cacheKey) === requestToken) {
+        loadingFolderPathsRef.current.delete(cacheKey)
+      }
     }
   }, [project.id])
 
   // Refresh functions
   const refreshFiles = useCallback(async (options: RefreshFilesOptions = {}) => {
+    const { currentPath, quickFilter, searchQuery, sort, direction } = activeViewRef.current
     const searchFilter = searchQuery.trim()
     const includeMetadata = options.includeMetadata ?? true
     const isTrashView = quickFilter === "trash"
@@ -389,11 +403,16 @@ export function DocumentsProvider({
     const dueRange = getExpiringDueRange(quickFilter)
     const requestId = fileRefreshRequestRef.current + 1
     fileRefreshRequestRef.current = requestId
+    const requestKey = buildFileViewCacheKey({ path: currentPath, quickFilter, searchQuery, sort, direction })
+    paginationRequestRef.current = null
+    setIsLoadingMore(false)
     setIsLoading(true)
     setError(null)
     // A mutation invalidates every cached view, not just the one being refreshed.
     if (options.invalidateCache) {
       fileViewCacheRef.current.clear()
+      folderGenerationRef.current += 1
+      loadingFolderPathsRef.current.clear()
     }
     try {
       const shouldLoadFolders = includeMetadata && !searchFilter
@@ -418,7 +437,7 @@ export function DocumentsProvider({
         includeChildFolders: shouldLoadFolders,
         childFolderPath: currentPath || undefined,
       })
-      if (requestId !== fileRefreshRequestRef.current) return
+      if (!isCurrentViewRequest(requestKey, requestId, activeViewKeyRef.current, fileRefreshRequestRef.current)) return
       const cacheKey = buildFileViewCacheKey({
         path: currentPath,
         quickFilter,
@@ -432,41 +451,26 @@ export function DocumentsProvider({
         hasMore: view.hasMore,
       })
       setFiles(view.files)
+
       setTotalCount(view.totalCount)
       setHasMore(view.hasMore)
       if (view.counts) setCounts(view.counts)
       if (view.folderPermissions) setFolderPermissions(view.folderPermissions)
       if (view.childFolders) {
         const childFolders = view.childFolders
-        setFolderItemCounts((prev) => {
-          const next = { ...prev }
-          for (const folder of childFolders) {
-            next[folder.path] = folder.itemCount
-          }
-          return next
-        })
-        setFolders((prev) => {
-          const next = new Set(prev)
-          if (currentPath) {
-            next.add(currentPath)
-          }
-          for (const folder of childFolders) {
-            next.add(folder.path)
-          }
-          return Array.from(next).sort()
-        })
+        setFolderState((prev) => reconcileFolderChildren(prev, currentPath, childFolders))
       }
     } catch (error) {
       console.error("Failed to refresh files:", error)
-      if (requestId === fileRefreshRequestRef.current) {
+      if (isCurrentViewRequest(requestKey, requestId, activeViewKeyRef.current, fileRefreshRequestRef.current)) {
         setError(error instanceof Error ? error.message : "Could not load documents")
       }
     } finally {
-      if (requestId === fileRefreshRequestRef.current) {
+      if (isCurrentViewRequest(requestKey, requestId, activeViewKeyRef.current, fileRefreshRequestRef.current)) {
         setIsLoading(false)
       }
     }
-  }, [project.id, quickFilter, searchQuery, currentPath, sort, direction])
+  }, [project.id])
 
   const refreshFolderPermissions = useCallback(async () => {
     try {
@@ -478,8 +482,13 @@ export function DocumentsProvider({
   }, [project.id])
 
   const loadMore = useCallback(async () => {
-    if (!hasMore || isLoadingMore) return
-
+    if (!hasMore || isLoading || paginationRequestRef.current) return
+    const requestToken = Symbol("page")
+    paginationRequestRef.current = requestToken
+    const requestKey = activeViewKey
+    const generation = fileRefreshRequestRef.current
+    const isCurrent = () => paginationRequestRef.current === requestToken &&
+      isCurrentViewRequest(requestKey, generation, activeViewKeyRef.current, fileRefreshRequestRef.current)
     setIsLoadingMore(true)
     try {
       const dueRange = getExpiringDueRange(quickFilter)
@@ -498,8 +507,10 @@ export function DocumentsProvider({
         offset: files.length,
       })
 
+      if (!isCurrent()) return
       setFiles((prev) => {
-        const nextFiles = [...prev, ...filesData.data]
+        if (!isCurrentViewRequest(requestKey, generation, activeViewKeyRef.current, fileRefreshRequestRef.current)) return prev
+        const nextFiles = appendUniqueFiles(prev, filesData.data)
         const cacheKey = buildFileViewCacheKey({
           path: currentPath,
           quickFilter,
@@ -517,12 +528,17 @@ export function DocumentsProvider({
       setHasMore(filesData.hasMore)
       setTotalCount(filesData.count)
     } catch (error) {
-      console.error("Failed to load more files:", error)
-      toast.error("Could not load more documents")
+      if (isCurrent()) {
+        console.error("Failed to load more files:", error)
+        toast.error("Could not load more documents")
+      }
     } finally {
-      setIsLoadingMore(false)
+      if (paginationRequestRef.current === requestToken) {
+        paginationRequestRef.current = null
+        setIsLoadingMore(false)
+      }
     }
-  }, [project.id, quickFilter, hasMore, isLoadingMore, currentPath, searchQuery, sort, direction, files.length])
+  }, [project.id, quickFilter, hasMore, isLoading, activeViewKey, currentPath, searchQuery, sort, direction, files.length])
 
   const urlPath = useMemo(() => normalizeDocsPath(searchParams.get("path")), [searchParams])
   const urlSort = searchParams.get("sort")
@@ -600,7 +616,7 @@ export function DocumentsProvider({
     () => ({
       projectId: project.id,
       projectName: project.name,
-      files,
+      files: visibleFiles,
       folders,
       folderItemCounts,
       folderPermissions,
@@ -623,6 +639,7 @@ export function DocumentsProvider({
       navigateToFolder,
       loadFolderChildren,
       refreshFiles,
+      beginOptimisticMove,
       loadMore,
       refreshFolderPermissions,
       isLoading,
@@ -631,7 +648,7 @@ export function DocumentsProvider({
       toggleFolderExpanded,
     }),
     [
-      files,
+      visibleFiles,
       folders,
       folderItemCounts,
       folderPermissions,
@@ -648,6 +665,7 @@ export function DocumentsProvider({
       isLoadingMore,
       expandedFolders,
       refreshFiles,
+      beginOptimisticMove,
       loadMore,
       refreshFolderPermissions,
       setCurrentPath,

@@ -14,7 +14,7 @@ import type { HoldBuyer } from "@/components/sales/lot-hold-form";
 import { MarkLostDialog } from "@/components/sales/mark-lost-dialog";
 import { NextActionCell } from "@/components/sales/next-action-cell";
 import { StageMeter } from "@/components/sales/stage-meter";
-import type { PipelineCommunityOption } from "@/components/prospects/prospect-presentation";
+import type { SalesCommunityOption } from "@/components/sales/community-option";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -75,7 +75,7 @@ interface DealBoardProps {
   owners: Record<string, string>;
   /** Lost reasons by prospect id — only loaded for the Lost view. */
   lostReasons: Record<string, string>;
-  communities: PipelineCommunityOption[];
+  communities: SalesCommunityOption[];
   /** True when the query hit its row cap, so the footer can say so. */
   truncated: boolean;
   /** Page-level buttons, rendered at the end of the toolbar. */

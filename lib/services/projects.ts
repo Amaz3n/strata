@@ -217,7 +217,7 @@ async function mapProjectsWithAccounting(supabase: SupabaseClient, orgId: string
   return rows.map((row) => mapProject(row, dimensions.get(row.id)))
 }
 
-async function resolveVisibleProjectIds(input: {
+export async function resolveVisibleProjectIds(input: {
   supabase: SupabaseClient
   orgId: string
   userId: string
@@ -226,12 +226,13 @@ async function resolveVisibleProjectIds(input: {
   const divisionProjectIds = await getDivisionScopedProjectIds(input)
   if (divisionProjectIds?.length === 0) return []
 
-  const { data: scopeRows } = await input.supabase
+  const { data: scopeRows, error: scopeError } = await input.supabase
     .from("memberships")
     .select("project_scope")
     .eq("org_id", input.orgId)
     .eq("user_id", input.userId)
     .eq("status", "active")
+  if (scopeError) throw new Error("Unable to resolve project membership scope.")
   const assignedOnly = (scopeRows ?? []).some(
     (row) => (row as { project_scope?: string }).project_scope === "assigned",
   )
@@ -256,6 +257,25 @@ async function resolveVisibleProjectIds(input: {
   return (data ?? [])
     .map((row) => row.project_id as string | null)
     .filter((id): id is string => id !== null && (!divisionSet || divisionSet.has(id)))
+}
+
+export function prepareProjectAccountingDimensions(params: {
+  existingDimensions?: ProjectAccountingDimensions | null
+  classId?: string | null
+  className?: string | null
+  customerId?: string | null
+  customerName?: string | null
+}) {
+  const dimensions = { ...(params.existingDimensions ?? {}) }
+  if (params.classId !== undefined || params.className !== undefined) {
+    if (params.classId) dimensions.class = { id: params.classId, name: params.className ?? null }
+    else delete dimensions.class
+  }
+  if (params.customerId !== undefined || params.customerName !== undefined) {
+    if (params.customerId) dimensions.customer = { id: params.customerId, name: params.customerName ?? null }
+    else delete dimensions.customer
+  }
+  return dimensions
 }
 
 async function saveProjectAccountingDimensions(params: {
@@ -289,15 +309,9 @@ async function saveProjectAccountingDimensions(params: {
     connectionId = defaultMap?.connection_id ?? null
   }
   if (!connectionId) return
-  const dimensions = { ...((existing?.dimensions as ProjectAccountingDimensions | null) ?? {}) }
-  if (params.classId !== undefined || params.className !== undefined) {
-    if (params.classId) dimensions.class = { id: params.classId, name: params.className ?? null }
-    else delete dimensions.class
-  }
-  if (params.customerId !== undefined || params.customerName !== undefined) {
-    if (params.customerId) dimensions.customer = { id: params.customerId, name: params.customerName ?? null }
-    else delete dimensions.customer
-  }
+  const dimensions = prepareProjectAccountingDimensions({
+    ...params, existingDimensions: existing?.dimensions,
+  })
   const query = existing?.id
     ? params.supabase.from("accounting_entity_map").update({ dimensions }).eq("id", existing.id)
     : params.supabase.from("accounting_entity_map").insert({
@@ -545,20 +559,13 @@ export async function getProjectWithFinancials({
   return mapped[0] ?? null
 }
 
-export async function createProject({
-  input,
-  orgId,
-  context,
-  authorizationPermission = "project.manage",
-}: {
+/** Prepare the original project row without creating it or its financial records. */
+export function prepareProjectCreation({ input, orgId, userId, productTier }: {
   input: ProjectInput
-  orgId?: string
-  context?: OrgServiceContext
-  authorizationPermission?: string
+  orgId: string
+  userId: string
+  productTier: OrgServiceContext["productTier"]
 }) {
-  const { supabase, orgId: resolvedOrgId, userId, productTier } = context || await requireOrgContext(orgId)
-  await requirePermission(authorizationPermission, { supabase, orgId: resolvedOrgId, userId })
-
   const propertyType = input.property_type ?? getDefaultProjectPropertyType(productTier)
   const retainagePercent =
     input.retainage_percent ?? (getProjectPosture(propertyType, productTier) === "commercial" ? 10 : 0)
@@ -569,7 +576,7 @@ export async function createProject({
   }
 
   const payload = {
-    org_id: resolvedOrgId,
+    org_id: orgId,
     name: normalizedInput.name,
     status: normalizedInput.status ?? "active",
     phase: normalizedInput.phase ?? "delivery",
@@ -585,6 +592,27 @@ export async function createProject({
     created_by: userId,
     prospect_id: normalizedInput.prospect_id || null,
   }
+
+  return { input: normalizedInput, project: payload }
+}
+
+export async function createProject({
+  input,
+  orgId,
+  context,
+  authorizationPermission = "project.manage",
+}: {
+  input: ProjectInput
+  orgId?: string
+  context?: OrgServiceContext
+  authorizationPermission?: string
+}) {
+  const { supabase, orgId: resolvedOrgId, userId, productTier } = context || await requireOrgContext(orgId)
+  await requirePermission(authorizationPermission, { supabase, orgId: resolvedOrgId, userId })
+
+  const { input: normalizedInput, project: payload } = prepareProjectCreation({
+    input, orgId: resolvedOrgId, userId, productTier,
+  })
 
   const { data, error } = await supabase
     .from("projects")
@@ -734,6 +762,92 @@ export async function updateProject({
   return mapped[0]
 }
 
+/** Preserve billing defaults and existing terms before choosing the commit boundary. */
+export function prepareProjectBillingContract({ input, existing, existingSettings, orgId, projectId, projectName }: {
+  input: Partial<ProjectInput>
+  existing?: Partial<Contract> | null
+  existingSettings?: { billing_model?: string | null } | null
+  orgId: string
+  projectId: string
+  projectName: string
+}) {
+  const ownerPct = input.savings_split_owner_pct ?? 0
+  const builderPct = input.savings_split_builder_pct ?? 0
+  if (ownerPct + builderPct > 100) throw new Error("Savings split percentages cannot exceed 100%.")
+  const billingModel = billingModelForContractInput(input, existing, existingSettings)
+  const contractType = input.billing_model ? contractTypeForBillingModel(billingModel) : input.contract_type ?? contractTypeForBillingModel(billingModel)
+  const isFixedPrice = billingModel === "fixed_price"
+  const isFixedFee = billingModel === "cost_plus_fixed_fee"
+  const feePresentation =
+    normalizeFeePresentation(input.fee_presentation) ??
+    normalizeFeePresentation(existing?.fee_presentation) ??
+    normalizeFeePresentation(existing?.snapshot?.fee_presentation) ??
+    (existing ? "embedded" : defaultFeePresentationForBillingModel(billingModel))
+  const existingSnapshot = existing?.snapshot ?? {}
+  const {
+    billing_model: _legacySnapshotBillingModel,
+    fixed_fee_cents: _legacySnapshotFixedFeeCents,
+    ...nextSnapshotBase
+  } = existingSnapshot
+  const approvedChangeOrdersCents = Number(existingSnapshot.approved_change_orders_cents ?? 0)
+  const existingBaseTotalCents = existing
+    ? Number(
+        existingSnapshot.base_total_cents ??
+          Math.max(0, Number(existing.total_cents ?? 0) - approvedChangeOrdersCents),
+      )
+    : null
+  const requestedBaseTotalCents =
+    input.total_contract_value_cents ??
+    (typeof input.total_value === "number" ? Math.round(input.total_value * 100) : null)
+  const baseTotalCents = requestedBaseTotalCents ?? existingBaseTotalCents
+  const revisedTotalCents = baseTotalCents == null ? null : baseTotalCents + approvedChangeOrdersCents
+  const payload = {
+    org_id: orgId,
+    project_id: projectId,
+    title: existing?.title ?? `${projectName} Contract`,
+    status: existing?.status ?? "active",
+    contract_type: contractType,
+    total_cents: revisedTotalCents,
+    currency: existing?.currency ?? "usd",
+    markup_percent: isFixedPrice || isFixedFee ? null : input.markup_percent ?? existing?.markup_percent ?? 0,
+    gmp_cents: billingModel === "cost_plus_gmp" ? input.gmp_cents ?? existing?.gmp_cents ?? null : null,
+    contingency_cents:
+      billingModel === "cost_plus_gmp"
+        ? input.contingency_cents ?? existing?.contingency_cents ?? existing?.snapshot?.contingency_cents ?? null
+        : null,
+    fixed_fee_cents: isFixedFee ? input.fixed_fee_cents ?? existing?.fixed_fee_cents ?? existing?.snapshot?.fixed_fee_cents ?? null : null,
+    fee_presentation: feePresentation,
+    savings_split_owner_pct: billingModel === "cost_plus_gmp" ? input.savings_split_owner_pct ?? existing?.savings_split_owner_pct ?? 0 : 0,
+    savings_split_builder_pct: billingModel === "cost_plus_gmp" ? input.savings_split_builder_pct ?? existing?.savings_split_builder_pct ?? 0 : 0,
+    labor_burden_multiplier: input.labor_burden_multiplier ?? existing?.labor_burden_multiplier ?? 1,
+    rate_schedule_id: billingModel === "time_and_materials" ? input.rate_schedule_id ?? existing?.rate_schedule_id ?? null : null,
+    requires_client_cost_approval: input.requires_client_cost_approval ?? existing?.requires_client_cost_approval ?? false,
+    open_book: input.open_book ?? existing?.open_book ?? true,
+    retainage_percent: input.retainage_percent ?? existing?.retainage_percent ?? 0,
+    retainage_applies_to_fee:
+      input.retainage_applies_to_fee ?? existing?.retainage_applies_to_fee ?? existing?.snapshot?.retainage_applies_to_fee ?? false,
+    retainage_schedule: isFixedPrice ? input.retainage_schedule ?? existing?.retainage_schedule ?? null : null,
+    stored_materials_retainage_percent: isFixedPrice
+      ? input.stored_materials_retainage_percent ?? existing?.stored_materials_retainage_percent ?? null
+      : null,
+    snapshot: {
+      ...nextSnapshotBase,
+      billing_setup_source: "project_settings",
+      base_total_cents: baseTotalCents,
+      approved_change_orders_cents: approvedChangeOrdersCents,
+      revised_total_cents: revisedTotalCents,
+      fee_presentation: feePresentation,
+      rate_schedule_id: billingModel === "time_and_materials" ? input.rate_schedule_id ?? existing?.rate_schedule_id ?? null : null,
+      paid_costs_required: input.paid_costs_required ?? existing?.snapshot?.paid_costs_required ?? false,
+      proof_required: input.proof_required ?? existing?.snapshot?.proof_required ?? false,
+      retainage_applies_to_fee:
+        input.retainage_applies_to_fee ?? existing?.retainage_applies_to_fee ?? existing?.snapshot?.retainage_applies_to_fee ?? false,
+    },
+  }
+
+  return { billingModel, contract: payload }
+}
+
 async function upsertProjectBillingContract({
   supabase,
   orgId,
@@ -800,76 +914,9 @@ async function upsertProjectBillingContract({
   }
 
   const existing = existingResult.data
-  const billingModel = billingModelForContractInput(input, existing, existingSettings)
-  const contractType = input.billing_model ? contractTypeForBillingModel(billingModel) : input.contract_type ?? contractTypeForBillingModel(billingModel)
-  const isFixedPrice = billingModel === "fixed_price"
-  const isFixedFee = billingModel === "cost_plus_fixed_fee"
-  const feePresentation =
-    normalizeFeePresentation(input.fee_presentation) ??
-    normalizeFeePresentation(existing?.fee_presentation) ??
-    normalizeFeePresentation(existing?.snapshot?.fee_presentation) ??
-    (existing ? "embedded" : defaultFeePresentationForBillingModel(billingModel))
-  const existingSnapshot = (existing?.snapshot ?? {}) as Record<string, any>
-  const {
-    billing_model: _legacySnapshotBillingModel,
-    fixed_fee_cents: _legacySnapshotFixedFeeCents,
-    ...nextSnapshotBase
-  } = existingSnapshot
-  const approvedChangeOrdersCents = Number(existingSnapshot.approved_change_orders_cents ?? 0)
-  const existingBaseTotalCents = existing
-    ? Number(
-        existingSnapshot.base_total_cents ??
-          Math.max(0, Number(existing.total_cents ?? 0) - approvedChangeOrdersCents),
-      )
-    : null
-  const requestedBaseTotalCents =
-    input.total_contract_value_cents ??
-    (typeof input.total_value === "number" ? Math.round(input.total_value * 100) : null)
-  const baseTotalCents = requestedBaseTotalCents ?? existingBaseTotalCents
-  const revisedTotalCents = baseTotalCents == null ? null : baseTotalCents + approvedChangeOrdersCents
-  const payload = {
-    org_id: orgId,
-    project_id: projectId,
-    title: existing?.title ?? `${projectName} Contract`,
-    status: existing?.status ?? "active",
-    contract_type: contractType,
-    total_cents: revisedTotalCents,
-    currency: existing?.currency ?? "usd",
-    markup_percent: isFixedPrice || isFixedFee ? null : input.markup_percent ?? existing?.markup_percent ?? 0,
-    gmp_cents: billingModel === "cost_plus_gmp" ? input.gmp_cents ?? existing?.gmp_cents ?? null : null,
-    contingency_cents:
-      billingModel === "cost_plus_gmp"
-        ? input.contingency_cents ?? existing?.contingency_cents ?? existing?.snapshot?.contingency_cents ?? null
-        : null,
-    fixed_fee_cents: isFixedFee ? input.fixed_fee_cents ?? existing?.fixed_fee_cents ?? existing?.snapshot?.fixed_fee_cents ?? null : null,
-    fee_presentation: feePresentation,
-    savings_split_owner_pct: billingModel === "cost_plus_gmp" ? input.savings_split_owner_pct ?? existing?.savings_split_owner_pct ?? 0 : 0,
-    savings_split_builder_pct: billingModel === "cost_plus_gmp" ? input.savings_split_builder_pct ?? existing?.savings_split_builder_pct ?? 0 : 0,
-    labor_burden_multiplier: input.labor_burden_multiplier ?? existing?.labor_burden_multiplier ?? 1,
-    rate_schedule_id: billingModel === "time_and_materials" ? input.rate_schedule_id ?? existing?.rate_schedule_id ?? null : null,
-    requires_client_cost_approval: input.requires_client_cost_approval ?? existing?.requires_client_cost_approval ?? false,
-    open_book: input.open_book ?? existing?.open_book ?? true,
-    retainage_percent: input.retainage_percent ?? existing?.retainage_percent ?? 0,
-    retainage_applies_to_fee:
-      input.retainage_applies_to_fee ?? existing?.retainage_applies_to_fee ?? existing?.snapshot?.retainage_applies_to_fee ?? false,
-    retainage_schedule: isFixedPrice ? input.retainage_schedule ?? existing?.retainage_schedule ?? null : null,
-    stored_materials_retainage_percent: isFixedPrice
-      ? input.stored_materials_retainage_percent ?? existing?.stored_materials_retainage_percent ?? null
-      : null,
-    snapshot: {
-      ...nextSnapshotBase,
-      billing_setup_source: "project_settings",
-      base_total_cents: baseTotalCents,
-      approved_change_orders_cents: approvedChangeOrdersCents,
-      revised_total_cents: revisedTotalCents,
-      fee_presentation: feePresentation,
-      rate_schedule_id: billingModel === "time_and_materials" ? input.rate_schedule_id ?? existing?.rate_schedule_id ?? null : null,
-      paid_costs_required: input.paid_costs_required ?? existing?.snapshot?.paid_costs_required ?? false,
-      proof_required: input.proof_required ?? existing?.snapshot?.proof_required ?? false,
-      retainage_applies_to_fee:
-        input.retainage_applies_to_fee ?? existing?.retainage_applies_to_fee ?? existing?.snapshot?.retainage_applies_to_fee ?? false,
-    },
-  }
+  const { billingModel, contract: payload } = prepareProjectBillingContract({
+    input, existing, existingSettings, orgId, projectId, projectName,
+  })
 
   const contractSave = await saveBillingContractWithAmendment({
     supabase,

@@ -24,12 +24,12 @@ import {
   updateProjectCommitmentAction,
   voidCommitmentChangeOrderAction,
 } from "@/app/(app)/projects/[id]/commitments/actions"
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
 import {
   attachFileAction,
   detachFileLinkAction,
   listAttachmentsAction,
-  uploadFileAction,
-} from "@/app/(app)/documents/actions"
+  } from "@/app/(app)/documents/actions"
 
 import { Button } from "@/components/ui/button"
 import {

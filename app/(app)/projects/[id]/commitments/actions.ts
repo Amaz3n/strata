@@ -182,3 +182,10 @@ export async function generateSubcontractDocumentAction(projectId: string, commi
     return result
   })
 }
+
+export async function previewSubcontractPdfAction(commitmentId: string) {
+  return run(async () => {
+    const { renderSubcontractPreview } = await import("@/lib/services/subcontract-documents")
+    return { pdfBase64: await renderSubcontractPreview({ commitmentId }) }
+  })
+}

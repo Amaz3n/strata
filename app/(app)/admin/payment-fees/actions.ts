@@ -9,7 +9,7 @@ import {
   replacePaymentFeePolicy,
   retireOrganizationPaymentFeePolicy,
 } from "@/lib/services/payment-fee-policies"
-import { requirePermission } from "@/lib/services/permissions"
+import { requireAnyPlatformPermission } from "@/lib/services/platform-access"
 
 async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   try {
@@ -21,7 +21,7 @@ async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
 
 async function requirePaymentFeeAdmin() {
   const { user } = await requireAuth()
-  await requirePermission("platform.billing.manage", { userId: user.id })
+  await requireAnyPlatformPermission(["platform.billing.manage"])
   return user
 }
 

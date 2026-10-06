@@ -9,7 +9,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ proj
     const context = await requireMobileOrg(request)
     const { projectId } = await params
     const folder = new URL(request.url).searchParams.get("folder") ?? "/"
-    return mobileDataResponse(await listMobileFiles(context, projectId, folder), requestId)
+    return mobileDataResponse(await listMobileFiles(context, projectId, folder, new URL(request.url).searchParams.get("recursive") === "true"), requestId)
   } catch (error) {
     return mobileErrorResponse(error, requestId)
   }

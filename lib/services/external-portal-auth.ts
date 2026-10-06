@@ -19,7 +19,9 @@ import {
   isLockedOut,
   nextLockoutState,
 } from "@/lib/services/portal-credentials"
-import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server"
+import { requireTradeContext } from "@/lib/services/business-profile"
+import { z } from "zod"
 import type {
   ExternalIdentity,
   ExternalPortalWorkspaceContext,
@@ -941,14 +943,18 @@ export async function getExternalPortalWorkspaceContext({
 } = {}): Promise<ExternalPortalWorkspaceContext | null> {
   const session = await findSession()
   if (!session) return null
+  return loadExternalWorkspace(session.identity, orgId)
+}
 
+/** One read model for portal accounts and verified members of a trade company. */
+async function loadExternalWorkspace(identity: ExternalIdentity, orgId?: string): Promise<ExternalPortalWorkspaceContext> {
   const supabase = createServiceSupabaseClient()
 
   const buildGrantQuery = (relation: string) => {
     let query = supabase
       .from("external_identity_grants")
       .select(relation)
-      .eq("identity_id", session.identity.id)
+      .eq("identity_id", identity.id)
       .eq("status", "active")
       .is("paused_at", null)
       .is("revoked_at", null)
@@ -1087,15 +1093,52 @@ export async function getExternalPortalWorkspaceContext({
 
   return {
     identity: {
-      id: session.identity.id,
-      email: session.identity.email,
-      full_name: session.identity.full_name ?? null,
-      last_login_at: session.identity.last_login_at ?? null,
-      email_verified_at: session.identity.email_verified_at ?? null,
+      id: identity.id,
+      email: identity.email,
+      full_name: identity.full_name ?? null,
+      last_login_at: identity.last_login_at ?? null,
+      email_verified_at: identity.email_verified_at ?? null,
     },
     orgs: Array.from(orgs.values()).sort((a, b) => a.name.localeCompare(b.name)),
     items,
   }
+}
+
+// A company membership is never itself a grant into a builder's organization.
+// Only a live, previously claimed identity with the same verified email may be
+// used. The current Supabase identity is recovered fresh, not from UI metadata.
+async function getTradeExternalIdentity(): Promise<ExternalIdentity | null> {
+  const context = await requireTradeContext()
+  await requirePermission("org.member", context)
+  const auth = await createServerSupabaseClient()
+  const { data: { user }, error } = await auth.auth.getUser()
+  if (error || !user || user.id !== context.userId || !user.email_confirmed_at || !user.email) return null
+  const service = createServiceSupabaseClient()
+  const { data: row, error: identityError } = await service.from("external_identities")
+    .select("id,email,full_name,status,email_verified_at,last_login_at,paused_at,revoked_at,created_at")
+    .eq("email", user.email.trim().toLowerCase()).eq("status", "active")
+    .is("paused_at", null).is("revoked_at", null).not("email_verified_at", "is", null).maybeSingle()
+  if (identityError) throw new Error("Unable to load your builder connections.")
+  return row ? mapIdentity(row) : null
+}
+
+export async function getTradeBuilderWorkspace(): Promise<ExternalPortalWorkspaceContext | null> {
+  const identity = await getTradeExternalIdentity()
+  return identity ? loadExternalWorkspace(identity) : null
+}
+
+export async function openTradeBuilderConnection(rawGrantId: unknown) {
+  const grantId = z.string().uuid().parse(rawGrantId)
+  const identity = await getTradeExternalIdentity()
+  if (!identity) throw new Error("Accept and verify your builder invitation using the same email as your Arc Trade account first.")
+  const workspace = await loadExternalWorkspace(identity)
+  const item = workspace.items.find((entry) => entry.id === grantId && (entry.kind === "sub" || entry.kind === "bid"))
+  if (!item) throw new Error("This invitation is no longer available. Ask the builder to check your access.")
+  // Establish the existing external session only after resolving the exact
+  // grant. Every destination still enforces its token, grant, and permissions.
+  await touchIdentityLogin(identity.id)
+  await createSession(identity.id)
+  return { href: item.href }
 }
 
 // ── Email verification ───────────────────────────────────────────────────────

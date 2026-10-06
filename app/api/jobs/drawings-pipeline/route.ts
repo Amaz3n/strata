@@ -5,9 +5,11 @@ import { after } from "next/server"
 
 import {
   hasPendingDrawingJobs,
+  recoverDrawingJobs,
   runDrawingsPipeline,
 } from "@/lib/services/drawings-pipeline"
 import { triggerDrawingsPipeline } from "@/lib/services/drawings-pipeline-trigger"
+import { queueDrawingStorageReconciliation } from "@/lib/services/drawing-storage-cleanup"
 import { withCronRun } from "@/lib/services/job-runs"
 
 export const maxDuration = 800
@@ -17,6 +19,8 @@ async function handle(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
+  await recoverDrawingJobs()
+  await queueDrawingStorageReconciliation()
   const pending = await hasPendingDrawingJobs()
   if (!pending) {
     return NextResponse.json({ ok: true, message: "No pending drawing jobs" })

@@ -1,0 +1,21 @@
+1..20
+ok 1 - members cannot manufacture passing days
+ok 2 - service role cannot erase failed days
+ok 3 - even service callers use the measured collector
+ok 4 - anonymous callers cannot capture release evidence
+ok 5 - members cannot invoke service collector
+ok 6 - cron service can invoke collector
+ok 7 - no campaign means no synthetic acceptance history
+ok 8 - global parity returns a complete aggregate
+ok 9 - unhealthy or unidentified deployment fails closed
+ok 10 - candidate mismatch is measured
+ok 11 - incomplete nightly run is persisted as a failure
+ok 12 - release evidence must affirm repaired artifacts and rehearsal
+ok 13 - matching SHA alone cannot manufacture a passing day
+ok 14 - retries append instead of replacing failed evidence
+ok 15 - approved disposition matches exact reviewed before values
+ok 16 - changed financial facts invalidate an old disposition
+ok 17 - conflicting project dimensions require review
+ok 18 - equivalent project dimensions retain parity
+ok 19 - matching one historical company link cannot hide another conflicting book
+ok 20 - equivalent counterparty links retain parity

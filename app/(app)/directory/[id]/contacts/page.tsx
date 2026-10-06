@@ -1,7 +1,7 @@
 // Browser-private account data; runtime-prefetched by the bounded tab strip.
 export const instant = true;
 
-import { notFound, redirect } from "next/navigation";
+import { notFound, redirect, unstable_rethrow } from "next/navigation";
 import { Suspense } from "react";
 import { z } from "zod";
 
@@ -44,7 +44,10 @@ async function CompanyContactsContent({ id }: { id: string }) {
     // Reachability decorates the roster; it must never be the reason the roster
     // fails to render. An empty map reads as "nobody has access" — which the UI
     // states as an invitation to send one, not as a claim about the vendor.
-    listCompanyContactAccess(id).catch(() => new Map()),
+    listCompanyContactAccess(id).catch((error) => {
+      unstable_rethrow(error);
+      return new Map();
+    }),
   ]);
 
   return (

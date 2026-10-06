@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
 import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -7,6 +8,7 @@ import { listGateDefinitions } from "@/lib/services/starts"
 
 
 async function StartSettingsPageContent() {
+  await connection()
   const [definitions, permissions] = await Promise.all([listGateDefinitions(), getCurrentUserPermissions()])
   const grants = permissions.permissions
   const canManage = grants.includes("*") || grants.includes("org.admin") || grants.includes("start.release")
@@ -27,7 +29,10 @@ async function StartSettingsPageContent() {
 
 export default function StartSettingsPage() {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<PageLayout
+      title="Start gate settings"
+      breadcrumbs={[{ label: "Settings", href: "/settings" }, { label: "Start gates" }]}
+    ><PageLoadingSkeleton /></PageLayout>}>
       <StartSettingsPageContent />
     </Suspense>
   )

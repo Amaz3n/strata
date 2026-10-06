@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { MAX_RESERVATION_DEPOSIT_CENTS } from "@/lib/sales/reservation-deposit"
 
 export const createLotHoldSchema = z.object({
   lotId: z.string().uuid(),
@@ -19,8 +20,19 @@ export type CreateProspectLotHoldInput = z.infer<typeof createProspectLotHoldSch
 
 export const convertReservationSchema = z.object({
   reservationId: z.string().uuid(),
-  depositCents: z.number().int().min(0),
+  depositCents: z.number().int().safe().min(0).max(MAX_RESERVATION_DEPOSIT_CENTS, "The deposit exceeds the supported invoice amount"),
   projectName: z.string().min(1).max(200).optional(),
+})
+
+/** Source evidence for conversion; partial embedded rows are never sellable holds. */
+export const reservationConversionSourceSchema = z.object({
+  id: z.string().uuid(), org_id: z.string().uuid(), community_id: z.string().uuid(), lot_id: z.string().uuid(),
+  buyer_contact_id: z.string().uuid(), co_buyer_contact_id: z.string().uuid().nullable(), prospect_id: z.string().uuid().nullable(),
+  status: z.literal("hold"), expires_at: z.string().datetime({ offset: true }).nullable(), updated_at: z.string().datetime({ offset: true }),
+  deposit_invoice_id: z.string().uuid().nullable(), contract_id: z.string().uuid().nullable(),
+  lot: z.object({ id: z.string().uuid(), org_id: z.string().uuid(), community_id: z.string().uuid(), division_id: z.string().uuid().nullable(),
+    lot_number: z.string(), status: z.enum(["owned", "developed", "assigned", "started"]), project_id: z.string().uuid().nullable(), updated_at: z.string().datetime({ offset: true }),
+  }),
 })
 
 export const releaseReservationSchema = z.object({
@@ -66,6 +78,7 @@ export const agreementConfigurationSchema = z.object({
 
 export const createPurchaseAgreementSchema = agreementConfigurationSchema.extend({
   reservationId: z.string().uuid(),
+  expectedQuoteHash: z.string().regex(/^[a-f0-9]{64}$/, "Review a current quote before creating the agreement"),
   terms: z.string().max(20_000).optional().nullable(),
   effectiveDate: z.string().date().optional(),
 })

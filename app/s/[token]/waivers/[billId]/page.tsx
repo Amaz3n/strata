@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { notFound } from "next/navigation"
 
 import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
@@ -12,6 +13,7 @@ interface PageProps {
 export default async function VendorBillWaiverPortalPage({
   params,
 }: PageProps) {
+  await connection()
   const { token, billId } = await params
   let access
   try {

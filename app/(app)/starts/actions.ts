@@ -7,7 +7,7 @@ import { actionError, type ActionResult } from "@/lib/action-result"
 import { setReleaseSlot } from "@/lib/services/even-flow"
 import {
   attestGate, cancelRelease, cancelStartPackage, getStartPackage, listSuperintendentCandidates,
-  openStartPackage, refreshAutoGates, releaseStart, releaseStarts, reopenGate, retryRelease,
+  openStartPackage, refreshAutoGates, releaseStart, releaseStarts, reopenGate, retryRelease, retryStartTradeNotice, retryStartConfirmation, retryStartNotificationDelivery, inspectStartNotificationDeliveries,
   seedDefaultGateDefinitions, setProjectSuperintendent, updateStartPackage, upsertGateDefinition,
   waiveGate,
 } from "@/lib/services/starts"
@@ -15,6 +15,7 @@ import {
   gateAttestSchema, gateDefinitionSchema, gateWaiveSchema, releaseInputSchema,
   startPackageInputSchema, startPackageUpdateSchema, targetWeekSchema,
 } from "@/lib/validation/starts"
+import { confirmationRecoveryInputSchema, notificationRecoveryInputSchema, deliveryInspectionInputSchema } from "@/lib/services/starts-confirmation-recovery"
 
 const uuid = z.string().uuid()
 
@@ -84,6 +85,22 @@ export async function setStartTargetWeekAction(packageId: string, weekStart: unk
 
 export async function retryReleaseAction(packageId: string) {
   return await run(() => retryRelease(uuid.parse(packageId)), packagePaths(packageId))
+}
+
+export async function retryStartConfirmationAction(packageId: string, input: unknown) {
+  return await run(() => retryStartConfirmation(uuid.parse(packageId), confirmationRecoveryInputSchema.parse(input)), packagePaths(packageId))
+}
+
+export async function retryStartNotificationDeliveryAction(packageId: string, input: unknown) {
+  return await run(() => retryStartNotificationDelivery(uuid.parse(packageId), notificationRecoveryInputSchema.parse(input)), packagePaths(packageId))
+}
+
+export async function inspectStartNotificationDeliveriesAction(packageId: string, input: unknown) {
+  return await run(() => inspectStartNotificationDeliveries(uuid.parse(packageId), deliveryInspectionInputSchema.parse(input)), [])
+}
+
+export async function retryStartTradeNoticeAction(packageId: string, noticeId: string) {
+  return await run(() => retryStartTradeNotice(uuid.parse(packageId), z.string().regex(/^[1-9]\d{0,18}$/).parse(noticeId)), packagePaths(packageId))
 }
 
 export async function cancelReleaseAction(packageId: string) {

@@ -17,7 +17,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea"
 import { Separator } from "@/components/ui/separator"
 import { AttachmentField } from "@/components/files"
-import { uploadFileAction } from "@/app/(app)/documents/actions"
+import { uploadDocumentForm as uploadFileAction } from "@/lib/files/upload-document-form"
 import { cn } from "@/lib/utils"
 import { Plus, Search, Send, FileText, Eye, Download } from "@/components/icons"
 import { createTransmittalAction, sendTransmittalAction } from "./actions"
@@ -72,7 +72,7 @@ export function TransmittalsClient({ projectId, transmittals, files }: { project
   const [selected, setSelected] = useState<Transmittal | null>(null)
 
   const submit = (work: () => Promise<void>) =>
-    startTransition(() => { void work().catch((error) => toast.error(error instanceof Error ? error.message : "Something went wrong")) })
+    startTransition(() => { return work().catch((error) => { toast.error(error instanceof Error ? error.message : "Something went wrong") }) })
 
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase()
@@ -308,7 +308,7 @@ function CreateTransmittalSheet({
     const element = event.currentTarget
     const form = new FormData(element)
     startTransition(() => {
-      void (async () => {
+      return (async () => {
         try {
           const recipients = parseRecipients(String(form.get("recipients") ?? ""))
           if (recipients.length === 0) {

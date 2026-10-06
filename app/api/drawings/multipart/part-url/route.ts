@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 
 import { requireOrgContext } from "@/lib/services/context"
-import { requireDrawingUploadForPath } from "@/app/api/drawings/multipart/upload-gate"
+import { requireDrawingUploadForPath, localDrawingPartProxyUrl } from "@/app/api/drawings/multipart/upload-gate"
 import { ensureOrgScopedPath } from "@/lib/storage/files-storage"
 import { createDrawingPdfMultipartPartUrl } from "@/lib/storage/drawings-pdfs-storage"
 
@@ -13,7 +13,7 @@ export async function POST(request: Request) {
     const uploadId = typeof body?.uploadId === "string" ? body.uploadId : null
     const partNumber = Number(body?.partNumber)
 
-    if (!storagePath || !uploadId || !Number.isInteger(partNumber) || partNumber < 1) {
+    if (!storagePath || !uploadId || !Number.isInteger(partNumber) || partNumber < 1 || partNumber > 10000) {
       return NextResponse.json({ error: "Missing required fields." }, { status: 400 })
     }
 
@@ -22,9 +22,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid upload path." }, { status: 400 })
     }
 
-    const denied = await requireDrawingUploadForPath({ supabase, orgId, userId, storagePath: normalizedStoragePath })
+    const denied = await requireDrawingUploadForPath({ supabase, orgId, userId, storagePath: normalizedStoragePath, uploadId, transferId: body.transferId })
     if (denied) return denied
 
+    const proxyUrl = localDrawingPartProxyUrl(request, { storagePath: normalizedStoragePath, uploadId, transferId: body.transferId }, partNumber)
+    if (proxyUrl) return NextResponse.json({ uploadUrl: proxyUrl })
     const result = await createDrawingPdfMultipartPartUrl({
       orgId,
       path: normalizedStoragePath,

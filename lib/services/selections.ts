@@ -1,3 +1,4 @@
+import { assertProjectConfiguration } from "@/lib/services/configuration-rules"
 import { attachFileWithServiceRole } from "@/lib/services/file-links"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
@@ -220,6 +221,7 @@ async function updateSingleSelection(input: {
   skipGate?: boolean
   sourceChangeOrderId?: string | null
   forceConfirmed?: boolean
+  configurationPrevalidated?: boolean
   packageId?: string | null
   priceCentsOverride?: number
   costCentsOverride?: number | null
@@ -232,7 +234,9 @@ async function updateSingleSelection(input: {
     housePlanVersionId: mutation.lot?.house_plan_version_id ?? undefined,
     communityId: mutation.lot?.community_id ?? undefined,
   })
-  if (!pricing.available) throw new Error("This option is not available for the lot's plan")
+  if (!pricing.available) throw new Error("This option is not available for the lot's plan or community")
+  if (!pricing.categoryIds.includes(mutation.selection.category_id)) throw new Error("This option belongs to a different selection category")
+  if (!input.configurationPrevalidated) await assertProjectConfiguration(input.orgId, input.projectId, [{ selectionId: input.selectionId, optionId: pricing.optionId ?? input.optionId }])
   const nowIso = new Date().toISOString()
   const payload = {
     selected_option_id: pricing.optionId ?? input.optionId,
@@ -315,9 +319,20 @@ export async function selectProjectPackage(input: {
       group_id: (selection.group_id as string | null) ?? null,
     })),
   })
-  const { data: lot } = await supabase.from("lots").select("community_id, house_plan_version_id").eq("org_id", input.orgId).eq("project_id", input.projectId).maybeSingle()
+  const { data: lot, error: lotError } = await supabase.from("lots").select("community_id, house_plan_version_id").eq("org_id", input.orgId).eq("project_id", input.projectId).maybeSingle()
+  if (lotError) throw new Error(`Failed to load package home: ${lotError.message}`)
   const [pricing] = await resolveOptionPricing({ orgId: input.orgId, items: [{ packageId: input.packageId }], housePlanVersionId: lot?.house_plan_version_id ?? undefined, communityId: lot?.community_id ?? undefined })
   if (!pricing.available) throw new Error("This package is not available for the lot's plan")
+
+  const memberPrices = await resolveOptionPricing({ orgId: input.orgId, items: plan.members.map((member) => ({ optionId: member.optionId })), housePlanVersionId: lot?.house_plan_version_id ?? undefined, communityId: lot?.community_id ?? undefined })
+  for (const [index, member] of plan.members.entries()) {
+    const resolved = memberPrices[index]
+    if (!resolved?.available) throw new Error("A package option is no longer available for this home. Review the package before applying it.")
+    const category = packageMembers.find((item) => item.option_id === member.optionId)?.category_id
+    if (!category || !resolved.categoryIds.includes(category)) throw new Error("A package option resolves to a different category")
+  }
+
+  await assertProjectConfiguration(input.orgId, input.projectId, plan.members.map((member) => ({ selectionId: member.selectionId, optionId: memberPrices[member.index].optionId ?? member.optionId })))
 
   // Every member is gated before any member is written. A cutoff lock hit
   // halfway through used to leave the home carrying half a package with no
@@ -334,7 +349,7 @@ export async function selectProjectPackage(input: {
     const { error: updateError } = await supabase
       .from("project_selections")
       .update({
-        selected_option_id: member.optionId,
+        selected_option_id: memberPrices[member.index].optionId ?? member.optionId,
         package_id: input.packageId,
         status: "selected",
         selected_at: nowIso,
@@ -384,6 +399,9 @@ export async function confirmSelection(input: { orgId: string; projectId: string
   await assertSelectionMutable(mutation, { portal: Boolean(input.portalAccess) })
   if (!mutation.selection.selected_option_id) throw new Error("Choose an option before confirming")
   const [pricing] = await resolveOptionPricing({ orgId: input.orgId, items: [{ optionId: mutation.selection.selected_option_id }], housePlanVersionId: mutation.lot?.house_plan_version_id ?? undefined, communityId: mutation.lot?.community_id ?? undefined })
+  if (!pricing.available) throw new Error("This option is no longer available for this home. Choose an available option before confirming.")
+  if (!pricing.categoryIds.includes(mutation.selection.category_id)) throw new Error("This option belongs to a different selection category")
+  await assertProjectConfiguration(input.orgId, input.projectId)
   const nowIso = new Date().toISOString()
   const payload = {
     status: "confirmed",
@@ -418,6 +436,9 @@ export async function applySelectionChangeFromChangeOrder(changeOrderId: string,
   if (!selectionChange || typeof selectionChange !== "object" || !Array.isArray(selectionChange.changes)) {
     return { applied: 0, varianceOrders: 0, unroutedDeltas: 0 }
   }
+  await assertProjectConfiguration(changeOrder.org_id, changeOrder.project_id, selectionChange.changes
+    .filter((change: { selection_id?: unknown; new_option_id?: unknown }) => typeof change?.selection_id === "string" && typeof change?.new_option_id === "string")
+    .map((change: { selection_id: string; new_option_id: string }) => ({ selectionId: change.selection_id, optionId: change.new_option_id })))
   let applied = 0
   for (const change of selectionChange.changes) {
     if (!change || typeof change !== "object" || typeof change.selection_id !== "string" || typeof change.new_option_id !== "string") continue
@@ -431,6 +452,7 @@ export async function applySelectionChangeFromChangeOrder(changeOrderId: string,
       skipGate: true,
       sourceChangeOrderId: changeOrder.id,
       forceConfirmed: true,
+      configurationPrevalidated: true,
       packageId: typeof change.new_package_id === "string" ? change.new_package_id : null,
       priceCentsOverride: typeof change.price_cents === "number" ? change.price_cents : undefined,
       costCentsOverride: typeof change.cost_cents === "number" || change.cost_cents === null ? change.cost_cents : undefined,

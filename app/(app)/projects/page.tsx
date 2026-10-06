@@ -1,4 +1,8 @@
-import { PageLoadingSkeleton } from "@/components/layout/page-loading-skeleton"
+import { connection } from "next/server";
+import { defaultTradeJobType } from "@/lib/business-profile";
+import { NewTradeJob } from "@/components/trade/new-job";
+import { getTradeJobCustomers } from "@/lib/services/trade-workspace";
+import { WorkspaceLoading } from "@/components/layout/workspace-loading"
 import { Suspense } from "react";
 import { loadProjectDirectory } from "@/lib/services/project-directory";
 import { projectDirectoryQuerySchema } from "@/lib/projects/directory";
@@ -8,22 +12,32 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 import { requireOrgContext } from "@/lib/services/context";
 
+import { getBusinessProfile } from "@/lib/services/business-profile";
 import { terminology } from "@/lib/terminology";
 
 async function ProjectsData({
   params,
+  context,
+  profile,
 }: {
   params: Promise<Record<string, string | undefined>>;
+  context: Awaited<ReturnType<typeof requireOrgContext>>;
+  profile: Awaited<ReturnType<typeof getBusinessProfile>>;
 }) {
-  const [context, raw] = await Promise.all([requireOrgContext(), params]);
+  const raw = await params;
   const query = projectDirectoryQuerySchema.parse(raw);
-  const data = await loadProjectDirectory(query, context);
+  const [data, tradeCustomers] = await Promise.all([
+    loadProjectDirectory(query, context),
+    profile.kind === "trade" ? getTradeJobCustomers() : null,
+  ]);
   return (
     <ProjectsClient
       key={`${context.orgId}:${data.divisionId ?? "all"}:${data.communityId ?? "all"}`}
       initialPage={data.page}
       initialQuery={query}
       productTier={context.productTier}
+      businessProfile={profile}
+      tradeCreateButton={tradeCustomers?.canManage ? <NewTradeJob contacts={tradeCustomers.contacts} contactsTotal={tradeCustomers.contactsTotal} defaultJobType={defaultTradeJobType(context.productTier)} /> : null}
       communities={data.communities}
       communityId={data.communityId}
       canReadSchedule={data.canReadSchedule}
@@ -36,12 +50,13 @@ async function ProjectsPageContent({
 }: {
   searchParams: Promise<Record<string, string | undefined>>;
 }) {
-  const context = await requireOrgContext();
+  await connection();
+  const [context, profile] = await Promise.all([requireOrgContext(), getBusinessProfile()]);
   return (
-    <PageLayout title={terminology(context.productTier).projects}>
+    <PageLayout title={terminology(context.productTier, profile).projects}>
       <div className="-m-4 -mt-6 h-[calc(100vh-3.5rem)]">
         <Suspense fallback={<ProjectsSkeleton />}>
-          <ProjectsData params={searchParams} />
+          <ProjectsData params={searchParams} context={context} profile={profile} />
         </Suspense>
       </div>
     </PageLayout>
@@ -66,7 +81,7 @@ function ProjectsSkeleton() {
 
 export default function ProjectsPage(props: Parameters<typeof ProjectsPageContent>[0]) {
   return (
-    <Suspense fallback={<PageLoadingSkeleton />}>
+    <Suspense fallback={<WorkspaceLoading destination="projects" />}>
       <ProjectsPageContent {...props} />
     </Suspense>
   )

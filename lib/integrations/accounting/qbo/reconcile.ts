@@ -1,9 +1,10 @@
+import { recoverQboCdc, type QboCdcOutcome } from "@/lib/integrations/accounting/qbo/cdc-recovery"
 import { withAccountingDeliveryGroup } from "@/lib/services/accounting-delivery"
 import { createHash } from "crypto"
 
 import type { QBOClient } from "@/lib/integrations/accounting/qbo/client"
 import { QBOClient as QBOClientFactory } from "@/lib/integrations/accounting/qbo/client"
-import { extractIntuitEntityEvents, normalizeEventTimestamp, verifyIntuitWebhookSignature } from "@/lib/integrations/accounting/qbo/webhook"
+import { extractIntuitEntityEvents, IntuitWebhookPayloadError, verifyIntuitWebhookSignature } from "@/lib/integrations/accounting/qbo/webhook"
 import { collectPaginatedRows, extractLinkedQboAmounts, qboPurchaseIsCredit } from "@/lib/integrations/accounting/qbo/import-rules"
 import {
   arcChangedSinceSync,
@@ -20,10 +21,6 @@ import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
 import { recordAccountingSyncAttempt } from "@/lib/services/accounting-sync-attempts"
 import { rememberAccountingInvoiceNumberCursor } from "@/lib/services/invoice-numbers"
 
-const CDC_ENTITIES = ["Invoice", "Payment", "Purchase", "Bill", "BillPayment", "VendorCredit", "JournalEntry"]
-const CDC_OVERLAP_MINUTES = 5
-/** Intuit rejects `changedSince` older than 30 days; stay safely inside it. */
-const CDC_MAX_LOOKBACK_DAYS = 29
 const EVENT_CLAIM_LEASE_MINUTES = 30
 const MAX_EVENT_ATTEMPTS = 5
 
@@ -895,39 +892,44 @@ export async function receiveQboWebhook(input: {
     return null
   }
 
+  let payload: unknown
+  try {
+    payload = JSON.parse(input.rawBody)
+  } catch {
+    throw new IntuitWebhookPayloadError("Invalid webhook JSON")
+  }
+  const events = extractIntuitEntityEvents(payload)
+  if (!events.length) return { received: 0, inserted: 0 }
   const supabase = createServiceSupabaseClient()
   const payloadHash = createHash("sha256").update(input.rawBody).digest("hex")
-  const events = extractIntuitEntityEvents(JSON.parse(input.rawBody || "{}"))
   let inserted = 0
-  for (const event of events) {
-    // ignoreDuplicates: a redelivered event must not reset an already-processed row to pending.
-    const { error } = await checkedDatabase(
-      supabase.from("qbo_webhook_events").upsert(
-        {
-          event_id: event.eventId,
-          payload_hash: payloadHash,
-          realm_id: event.realmId,
-          entity_name: event.entityName,
-          entity_qbo_id: event.entityId,
-          operation: event.operation,
-          last_updated: Number.isFinite(Date.parse(event.lastUpdated)) ? new Date(event.lastUpdated).toISOString() : null,
-          received_at: new Date().toISOString(),
-          process_status: "pending",
-          process_error: null,
-          processed_at: null,
-        },
-        {
-          onConflict: "event_id",
-          ignoreDuplicates: true,
-        },
-      ),
-    )
-    if (!error) {
-      inserted += 1
-    } else {
-      // A duplicate is silently ignored by the upsert; reaching here is a real
-      // insert failure and must not be indistinguishable from one.
-      throw new Error(`Webhook event was not durably stored: ${error.message}`)
+  // Validate the entire delivery above, then persist every bounded batch.
+  // The migration must be installed first; an unavailable RPC fails closed.
+  for (let offset = 0; offset < events.length; offset += 200) {
+    const batch = events.slice(offset, offset + 200)
+    const { data, error } = await checkedDatabase(supabase.rpc("intake_qbo_webhook_events", {
+      p_payload_hash: payloadHash,
+      p_events: batch.map((event) => ({
+        event_id: event.eventId,
+        realm_id: event.realmId,
+        entity_name: event.entityName,
+        entity_qbo_id: event.entityId,
+        operation: event.operation,
+        last_updated: event.lastUpdated,
+        ...(event.providerEventId ? { provider_event_id: event.providerEventId } : {}),
+      })),
+    }))
+    const expectedIds = new Set(batch.map((event) => event.eventId))
+    if (error || !Array.isArray(data) || data.some((id) => typeof id !== "string" || !expectedIds.has(id)) || new Set(data).size !== data.length) {
+      throw new Error("Webhook work or provider metadata was not durably stored")
+    }
+    inserted += data.length
+    for (const event of batch) {
+      if (event.providerEventId) logQBO("info", "webhook_event_stored", {
+        providerEventId: event.providerEventId,
+        eventId: event.eventId,
+        inserted: data.includes(event.eventId),
+      })
     }
   }
   return { received: events.length, inserted }
@@ -940,129 +942,17 @@ export async function receiveQboWebhook(input: {
 export async function ingestQboCdcChanges(input: {
   connectionId: string
   lookbackMinutes?: number | null
-}): Promise<{ scanned: number; inserted: number }> {
+}): Promise<QboCdcOutcome> {
   const supabase = createServiceSupabaseClient()
   const { data: connection } = await checkedDatabase(
-    supabase
-      .from("accounting_connections")
-      .select("id, org_id, external_account_id, settings")
-      .eq("id", input.connectionId)
-      .eq("status", "active")
-      .maybeSingle(),
+    supabase.from("accounting_connections").select("id, org_id, external_account_id, settings").eq("id", input.connectionId).eq("status", "active").maybeSingle(),
   )
-  if (!connection?.org_id) return { scanned: 0, inserted: 0 }
-
-  // Fails closed: an unreadable authority row throws rather than letting an
-  // Arc-authoritative org's ledger be overwritten from outside. CDC ingestion is
-  // cron-driven, so the throw surfaces on the job run and the next pass retries.
-  if ((await resolveLedgerAuthority(connection.org_id, supabase)) === "arc") {
-    return { scanned: 0, inserted: 0 }
-  }
-
-  const settings = (connection.settings as Record<string, unknown> | null) ?? {}
-  const storedCursor = typeof settings.qbo_cdc_last_synced_at === "string" ? settings.qbo_cdc_last_synced_at : null
-  const rawCursorMs =
-    input.lookbackMinutes != null
-      ? Date.now() - input.lookbackMinutes * 60 * 1000
-      : storedCursor
-        ? new Date(storedCursor).getTime()
-        : Date.now() - 24 * 60 * 60 * 1000
-  // Intuit rejects changedSince older than 30 days, so an idle month (paused
-  // org, cron outage, a reconnect carrying the old cursor forward) used to
-  // fail EVERY poll forever — the cursor could never advance to heal itself.
-  // Clamping forfeits changes older than the window, which the reconciliation
-  // digest reports as drift; an unfixable poll loop reported nothing.
-  const cdcFloorMs = Date.now() - CDC_MAX_LOOKBACK_DAYS * 24 * 60 * 60 * 1000
-  const cursorMs = Math.max(Number.isFinite(rawCursorMs) ? rawCursorMs : cdcFloorMs, cdcFloorMs)
-  if (rawCursorMs < cdcFloorMs) {
-    logQBO("warn", "qbo_cdc_cursor_clamped", {
-      connectionId: connection.id,
-      storedCursor,
-      clampedTo: new Date(cdcFloorMs).toISOString(),
-    })
-  }
-  const changedSince = new Date(Math.max(cursorMs - CDC_OVERLAP_MINUTES * 60 * 1000, cdcFloorMs)).toISOString()
-
+  const empty: QboCdcOutcome = { scanned: 0, inserted: 0, recoveryRequired: false, deferred: false, runId: null, recoveryReasons: [], currentScanComplete: false }
+  if (!connection?.org_id) return empty
+  if ((await resolveLedgerAuthority(connection.org_id, supabase)) === "arc") return empty
   const client = await QBOClientFactory.forConnection(connection.id)
-  if (!client) return { scanned: 0, inserted: 0 }
-
-  const payload = await client.changeDataCapture(CDC_ENTITIES, changedSince)
-  const response = (payload as any)?.CDCResponse?.[0]?.QueryResponse ?? []
-  const rows: Array<{ entityName: string; id: string; lastUpdated: string; deleted: boolean }> = []
-  for (const queryResponse of response) {
-    for (const entityName of CDC_ENTITIES) {
-      const entities = queryResponse?.[entityName]
-      if (!Array.isArray(entities)) continue
-      for (const entity of entities) {
-        if (!entity?.Id) continue
-        rows.push({
-          entityName,
-          id: String(entity.Id),
-          // No wall-clock fallback: stamping now() minted a brand-new event id
-          // for the same unchanged entity on every poll — unbounded queue rows
-          // plus repeated reconciliation. The sentinel keeps the id stable.
-          lastUpdated: entity.MetaData?.LastUpdatedTime ? String(entity.MetaData.LastUpdatedTime) : "unknown-time",
-          deleted: String(entity.status ?? "") === "Deleted",
-        })
-      }
-    }
-  }
-
-  let inserted = 0
-  let insertFailed = false
-  const nowIso = new Date().toISOString()
-  for (const row of rows) {
-    const operation = row.deleted ? "Delete" : "Update"
-    // Same event-id shape as webhook deliveries — with the timestamp ISO-
-    // normalized on BOTH paths (see normalizeEventTimestamp) — so a change that
-    // arrives via webhook and CDC collapses into one queue row instead of being
-    // reconciled twice.
-    const idTimestamp = row.lastUpdated === "unknown-time" ? row.lastUpdated : normalizeEventTimestamp(row.lastUpdated)
-    const eventId = `${connection.external_account_id}:${row.entityName}:${row.id}:${operation}:${idTimestamp}`
-    const { error: insertError } = await checkedDatabase(
-      supabase.from("qbo_webhook_events").upsert(
-        {
-          event_id: eventId,
-          payload_hash: createHash("sha256").update(eventId).digest("hex"),
-          realm_id: connection.external_account_id,
-          entity_name: row.entityName,
-          entity_qbo_id: row.id,
-          operation,
-          last_updated: Number.isFinite(Date.parse(row.lastUpdated)) ? new Date(row.lastUpdated).toISOString() : null,
-          received_at: nowIso,
-          process_status: "pending",
-          process_error: null,
-          processed_at: null,
-        },
-        {
-          onConflict: "event_id",
-          ignoreDuplicates: true,
-        },
-      ),
-    )
-    if (insertError) insertFailed = true
-    else inserted += 1
-  }
-
-  // Advance the cursor whenever the fetch and all inserts succeeded — duplicates are
-  // ignored (not errors), so an all-duplicate overlap window can no longer stall it.
-  if (!insertFailed) {
-    const maxUpdatedAt = rows.reduce<string | null>((max, row) => {
-      const timestamp = Date.parse(row.lastUpdated)
-      if (!Number.isFinite(timestamp)) return max
-      const iso = new Date(timestamp).toISOString()
-      return !max || iso > max ? iso : max
-    }, null)
-    const { error: cursorError } = await supabase.rpc("update_qbo_cdc_cursor", {
-      p_connection_id: connection.id,
-      p_cursor: maxUpdatedAt && maxUpdatedAt > nowIso ? maxUpdatedAt : nowIso,
-    })
-    if (cursorError) throw new Error(`Failed to persist CDC cursor: ${cursorError.message}`)
-  } else {
-    throw new Error("CDC events were not all durably stored; cursor was retained")
-  }
-
-  return { scanned: rows.length, inserted }
+  if (!client) throw new Error("QBO change-feed client is unavailable for the active connection")
+  return recoverQboCdc({ connection, client, supabase, lookbackMinutes: input.lookbackMinutes })
 }
 
 /**

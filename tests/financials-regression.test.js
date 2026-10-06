@@ -1243,7 +1243,8 @@ test("the invoice document is one layout in two renderers, and an invoice can na
   // An invoice can turn a method off but never on: the pay pages narrow the org policy by the invoice.
   assert.match(feeEngine, /achEnabled: policy\.achEnabled && methods\.ach !== false/);
   assert.match(publicPage, /restrictPaymentFeePolicyToInvoice\(policy, invoice\.metadata\)/);
-  assert.match(portalPage, /restrictPaymentFeePolicyToInvoice\(policy, invoice\.metadata\)/);
+  assert.match(portalPage, /restrictPaymentFeePolicyToInvoice\(policy, (?:invoice|portalInvoice)\.metadata\)/);
+  if (/restrictPaymentFeePolicyToInvoice\(policy, portalInvoice\.metadata\)/.test(portalPage)) assert.match(portalPage, /const portalInvoice = invoice/);
 });
 
 test("a scheduled send is a timestamp on the draft that the outbox honours only while it still stands", () => {

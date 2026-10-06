@@ -13,12 +13,13 @@ import { useHydrated } from '@/hooks/use-hydrated'
 import { NotificationList } from './notification-list'
 
 export function NotificationBell() {
-  const { unreadCount, isLoading } = useNotifications()
+  const notifications = useNotifications()
+  const { unreadCount, isLoading } = notifications
   const hydrated = useHydrated()
 
   if (!hydrated) {
     return (
-      <Button variant="ghost" size="icon" className="relative">
+      <Button variant="ghost" size="icon" className="relative" aria-label="Notifications">
         <Bell className="h-5 w-5" />
       </Button>
     )
@@ -27,7 +28,7 @@ export function NotificationBell() {
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="ghost" size="icon" className="relative">
+        <Button variant="ghost" size="icon" className="relative" aria-label="Notifications">
           <Bell className="h-5 w-5" />
           {unreadCount > 0 && !isLoading && (
             <Badge
@@ -40,12 +41,11 @@ export function NotificationBell() {
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-80 p-0" align="end">
-        <NotificationList />
+        <NotificationList {...notifications} />
       </PopoverContent>
     </Popover>
   )
 }
-
 
 
 

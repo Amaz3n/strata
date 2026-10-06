@@ -1,0 +1,14 @@
+1..13
+ok 1 - debt instrument register exists
+ok 2 - immutable debt event register exists
+ok 3 - fixed asset register exists
+ok 4 - immutable fixed asset event register exists
+ok 5 - tax jurisdiction register exists
+ok 6 - tax filing evidence register exists
+ok 7 - greenfield launch evidence exists
+ok 8 - maker-checker journal proposals exist
+ok 9 - registered subledger posting RPC exists
+ok 10 - greenfield launch RPC exists
+ok 11 - maker-checker review RPC exists
+ok 12 - Vault-backed taxpayer identity RPC exists
+ok 13 - Vault-backed taxpayer identity rotation RPC exists

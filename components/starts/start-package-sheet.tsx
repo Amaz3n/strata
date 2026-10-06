@@ -7,6 +7,7 @@ import { toast } from "sonner"
 import { AlertTriangle, ArrowRight, Check, Loader2 } from "@/components/icons"
 import { formatDay } from "@/components/starts/start-card"
 import { StartStatusBadge } from "@/components/starts/start-badges"
+import { StartDeliveryPanel } from "@/components/starts/start-delivery-panel"
 import { Button } from "@/components/ui/button"
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -24,13 +25,13 @@ import { superintendentLoad } from "@/lib/starts/superintendent-load"
 import { cn } from "@/lib/utils"
 import {
   attestGateAction, cancelReleaseAction, cancelStartPackageAction, getStartPackageAction,
-  refreshGatesAction, releaseStartAction, reopenGateAction, retryReleaseAction,
+  refreshGatesAction, releaseStartAction, reopenGateAction, retryReleaseAction, retryStartTradeNoticeAction, retryStartConfirmationAction,
   setProjectSuperintendentAction, setStartTargetWeekAction, waiveGateAction,
 } from "@/app/(app)/starts/actions"
 
 const STEP_LABELS: Record<string, string> = {
   project: "Project", budget: "Budget", schedule: "Schedule", checklists: "Checklists",
-  drawings: "Drawings", pos: "Purchase orders", notify_trades: "Notify trades", finalize: "Finalize",
+  drawings: "Drawings", pos: "Purchase orders", notify_trades: "Queue trade notices", finalize: "Finalize",
 }
 
 /** What an unmet automatic check is actually waiting for, and where to go fix it. */
@@ -42,9 +43,6 @@ const AUTO_GATE_HINTS: Record<string, { hint: string; tab?: string; cta?: string
   budget: { hint: "Generated when the house is released" },
   po_set: { hint: "Generated when the house is released" },
 }
-
-/** Steps whose failure is deliberately non-fatal — the release goes on without them. */
-const NON_FATAL_STEPS = new Set(["notify_trades"])
 
 function gateEvidence(gate: StartGateDTO) {
   if (gate.status === "waived") return `Waived by ${gate.attestedByName ?? "coordinator"}${gate.waivedReason ? ` — ${gate.waivedReason}` : ""}`
@@ -68,6 +66,7 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
   const [superintendents, setSuperintendents] = useState<SuperintendentCandidateDTO[]>([])
   const [loading, setLoading] = useState(false)
   const [pending, startTransition] = useTransition()
+  const [confirmationReason, setConfirmationReason] = useState("")
 
   const [releaseOpen, setReleaseOpen] = useState(false)
   const [releaseDate, setReleaseDate] = useState("")
@@ -79,6 +78,8 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
   const [cancelOpen, setCancelOpen] = useState(false)
   const [cancelReason, setCancelReason] = useState("")
   const [dismissedWarning, setDismissedWarning] = useState(false)
+  const [noticePage, setNoticePage] = useState(1)
+  const [failedNoticesOnly, setFailedNoticesOnly] = useState(false)
 
   async function load(id: string) {
     setLoading(true)
@@ -96,6 +97,9 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
 
   useEffect(() => {
     setDismissedWarning(false)
+    setConfirmationReason("")
+    setNoticePage(1)
+    setFailedNoticesOnly(false)
     if (!packageId) {
       setPkg(null)
       return
@@ -148,21 +152,19 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
 
   const editable = pkg ? ["open", "ready"].includes(pkg.status) : false
   const gatesLocked = pkg ? ["releasing", "released", "cancelled"].includes(pkg.status) : true
-  // Only a package that is actually parked in `attention` has a failed release.
-  // A `notify_trades` failure is deliberately non-fatal and leaves a failed row
-  // behind, so keying the banner off "any failed step" put a red "release
-  // failed" banner — with Retry and Cancel buttons that both throw — on houses
-  // that released perfectly.
+  // Automatic retries remain in releasing. Only attention permits a manual
+  // release retry. Historical releases may retain non-fatal notification errors.
   const failedStep = pkg?.status === "attention"
-    ? pkg.steps.find((step) => step.status === "failed" && !NON_FATAL_STEPS.has(step.stepKey))
-      ?? pkg.steps.find((step) => step.status === "failed")
-      ?? null
+    ? pkg.steps.find((step) => step.status === "failed") ?? null
     : null
-  const nonFatalFailures = pkg && pkg.status !== "attention"
+  const nonFatalFailures = pkg?.status === "released"
     ? pkg.steps.filter((step) => step.status === "failed")
     : []
   const assignedSuper = superintendents.find((candidate) => candidate.id === pkg?.superintendentId) ?? null
   const overloadedSuper = assignedSuper && superintendentLoad(assignedSuper.activeHouses) !== "clear" ? assignedSuper : null
+  const visibleNotices = (pkg?.tradeNotices ?? []).filter((notice) => !failedNoticesOnly || notice.status === "failed")
+  const noticePageCount = Math.max(1, Math.ceil(visibleNotices.length / 20))
+  const activeNoticePage = Math.min(noticePage, noticePageCount)
 
   return (
     <>
@@ -227,6 +229,31 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
               {/* The blocker is the loudest thing in the sheet, because it is the
                   only thing anyone opens this sheet to find out. */}
               <div className="border-b p-5">
+                {pkg.status === "released" && pkg.confirmationJobs.some(job => job.status === "failed") ? (
+                  <div className="mb-4 space-y-3 border border-destructive/50 p-3">
+                    <p className="text-sm font-medium text-destructive">Release confirmation needs attention</p>
+                    <p className="text-xs text-muted-foreground">The home is released. Repair the reported delivery issue, then retry confirmation.</p>
+                    {pkg.confirmationJobs.filter(job => job.status === "failed").map(job => (
+                      <div key={job.id} className="space-y-2">
+                        <p className="text-xs text-muted-foreground">{job.error ?? "Confirmation did not finish."}</p>
+                        {canRelease && pkg.confirmationRecoveryEnabled ? (
+                          <Button size="sm" disabled={pending || confirmationReason.trim().length < 10} onClick={() => runAction(async () => {
+                            unwrapAction(await retryStartConfirmationAction(pkg.id, { jobId: job.id, reason: confirmationReason }))
+                            setConfirmationReason("")
+                          }, "Confirmation retry queued", "Unable to retry confirmation")}>
+                            Retry confirmation
+                          </Button>
+                        ) : null}
+                      </div>
+                    ))}
+                    {canRelease && pkg.confirmationRecoveryEnabled ? (
+                      <div className="space-y-1.5">
+                        <Label htmlFor="confirmation-recovery-reason">Recovery reason</Label>
+                        <Textarea id="confirmation-recovery-reason" value={confirmationReason} onChange={event => setConfirmationReason(event.target.value)} maxLength={1000} disabled={pending} placeholder="Describe what was repaired (at least 10 characters)" />
+                      </div>
+                    ) : <p className="text-xs text-muted-foreground">{canRelease ? "Confirmation recovery is not enabled. Contact your administrator." : "A starts coordinator can arrange recovery."}</p>}
+                  </div>
+                ) : null}
                 {failedStep ? (
                   <div className="border border-destructive/50 bg-destructive/5 p-3">
                     <p className="flex items-center gap-1.5 text-sm font-medium text-destructive">
@@ -314,6 +341,8 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
                   </>
                 )}
               </div>
+
+              {pkg.status === "released" && canRelease && pkg.confirmationRecoveryEnabled ? <StartDeliveryPanel key={pkg.id} packageId={pkg.id} /> : null}
 
               {/* Keyboard-and-mouse equivalent of dragging a card between weeks. */}
               <div className="grid gap-3 border-b p-5 sm:grid-cols-2">
@@ -504,6 +533,48 @@ export function StartPackageSheet({ packageId, weeks, currentWeek, canWrite, can
                       </li>
                     ))}
                   </ol>
+                </section>
+              ) : null}
+
+              {pkg.tradeNotices.length ? (
+                <section className="border-b p-5">
+                  <div className="mb-3 flex items-center justify-between gap-2">
+                    <h3 className="text-[11px] font-semibold uppercase tracking-wide">Trade delivery</h3>
+                    <Button size="sm" variant="ghost" disabled={pending || loading} onClick={() => void load(pkg.id)}>Refresh</Button>
+                  </div>
+                  <p className="mb-3 text-xs text-muted-foreground">
+                    {pkg.tradeNotices.filter((notice) => notice.status === "completed").length} sent · {pkg.tradeNotices.filter((notice) => notice.status === "failed").length} need attention · {pkg.tradeNotices.filter((notice) => notice.status === "pending" || notice.status === "processing").length} queued or sending
+                  </p>
+                  <Button size="sm" variant="outline" className="mb-3" aria-pressed={failedNoticesOnly} onClick={() => { setFailedNoticesOnly((value) => !value); setNoticePage(1) }}>
+                    {failedNoticesOnly ? "Show all notices" : "Show failed notices"}
+                  </Button>
+                  <ul className="space-y-3">
+                    {visibleNotices.slice((activeNoticePage - 1) * 20, activeNoticePage * 20).map((notice) => (
+                      <li key={notice.id} className="flex items-start gap-2 text-xs">
+                        <div className="min-w-0 flex-1">
+                          <p className="font-medium">{notice.companyName}</p>
+                          <p className={cn("mt-1", notice.status === "failed" ? "text-destructive" : "text-muted-foreground")}>
+                            {notice.status === "completed" ? "Sent" : notice.status === "processing" ? "Sending" : notice.status === "failed" ? "Needs attention" : "Queued"}
+                            {notice.retryCount ? ` · ${notice.retryCount} unsuccessful attempts` : ""}
+                          </p>
+                          {notice.error ? <p className="mt-1 break-words text-muted-foreground">{notice.error}</p> : null}
+                        </div>
+                        {canRelease && canWrite && pkg.status === "released" && notice.status === "failed" ? (
+                          <Button size="sm" variant="outline" disabled={pending} onClick={() => runAction(async () => { unwrapAction(await retryStartTradeNoticeAction(pkg.id, notice.id)) }, "Trade notice retry queued", "Unable to retry trade notice")}>
+                            Retry notice
+                          </Button>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                  {!visibleNotices.length ? <p className="text-xs text-muted-foreground">No failed notices.</p> : null}
+                  {visibleNotices.length > 20 ? (
+                    <div className="mt-3 flex items-center justify-between gap-2 text-xs">
+                      <Button size="sm" variant="ghost" disabled={activeNoticePage <= 1} onClick={() => setNoticePage(activeNoticePage - 1)}>Previous</Button>
+                      <span>Page {activeNoticePage} of {noticePageCount}</span>
+                      <Button size="sm" variant="ghost" disabled={activeNoticePage >= noticePageCount} onClick={() => setNoticePage(activeNoticePage + 1)}>Next</Button>
+                    </div>
+                  ) : null}
                 </section>
               ) : null}
 

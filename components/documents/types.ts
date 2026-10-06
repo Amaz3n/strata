@@ -64,6 +64,8 @@ export interface DocumentsContextValue {
 
   // Actions
   refreshFiles: (options?: RefreshFilesOptions) => Promise<void>
+  /** Hide pending rows; call the returned cleanup after reconciliation or failure. */
+  beginOptimisticMove: (fileIds: string[]) => () => void
   loadMore: () => Promise<void>
   refreshFolderPermissions: () => Promise<void>
 
@@ -77,6 +79,7 @@ export interface DocumentsContextValue {
 }
 
 export interface UnifiedDocumentsLayoutProps {
+  preconstruction?: boolean
   project: { id: string; name: string }
   initialFiles: FileWithUrls[]
   initialCounts: Record<string, number>

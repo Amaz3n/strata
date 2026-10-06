@@ -1,3 +1,6 @@
+import "server-only"
+
+import { requireAnyPlatformPermission } from "@/lib/services/platform-access"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
 import { normalizeProductTier, type ProductTier } from "@/lib/product-tier"
@@ -10,6 +13,7 @@ export interface AdminStats {
 }
 
 export async function getAdminStats(): Promise<AdminStats> {
+  await requireAnyPlatformPermission(["platform.org.read"])
   const supabase = createServiceSupabaseClient()
 
   const startOfMonth = new Date()
@@ -142,6 +146,7 @@ export async function getCustomers({
   page?: number
   limit?: number
 }): Promise<CustomersResult> {
+  await requireAnyPlatformPermission(["platform.billing.manage"])
   const supabase = createServiceSupabaseClient()
   const offset = (page - 1) * limit
 
@@ -355,6 +360,7 @@ export async function getSubscriptions({
   page?: number
   limit?: number
 }): Promise<SubscriptionsResult> {
+  await requireAnyPlatformPermission(["platform.billing.manage"])
   const supabase = createServiceSupabaseClient()
   const offset = (page - 1) * limit
 
@@ -442,6 +448,7 @@ export async function getAuditLogs({
   page?: number
   limit?: number
 }): Promise<AuditLogsResult> {
+  await requireAnyPlatformPermission(["platform.support.read"])
   const supabase = createServiceSupabaseClient()
   const offset = (page - 1) * limit
 
@@ -605,6 +612,7 @@ export interface FeatureFlagOrganization {
 }
 
 export async function getFeatureFlagOrganizations(): Promise<FeatureFlagOrganization[]> {
+  await requireAnyPlatformPermission(["platform.feature_flags.manage"])
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
     .from("orgs")
@@ -621,6 +629,7 @@ export async function getFeatureFlagOrganizations(): Promise<FeatureFlagOrganiza
 }
 
 export async function getFeatureFlags(): Promise<FeatureFlag[]> {
+  await requireAnyPlatformPermission(["platform.feature_flags.manage"])
   const supabase = createServiceSupabaseClient()
 
   const { data, error } = await supabase
@@ -659,6 +668,8 @@ export async function toggleFeatureFlag(
   enabled: boolean,
   actorId?: string,
 ): Promise<void> {
+  const actor = await requireAnyPlatformPermission(["platform.feature_flags.manage"])
+  if (actorId && actorId !== actor.id) throw new Error("Platform actor mismatch")
   const supabase = createServiceSupabaseClient()
   const { data: existing, error: existingError } = await supabase
     .from("feature_flags")
@@ -678,7 +689,7 @@ export async function toggleFeatureFlag(
 
   await recordAudit({
     orgId,
-    actorId,
+    actorId: actor.id,
     action: "update",
     entityType: "feature_flag",
     entityId: flagId,
@@ -695,6 +706,8 @@ export async function createFeatureFlag(input: {
   expiresAt: string | null
   actorId?: string
 }): Promise<FeatureFlag> {
+  const actor = await requireAnyPlatformPermission(["platform.feature_flags.manage"])
+  if (input.actorId && input.actorId !== actor.id) throw new Error("Platform actor mismatch")
   const supabase = createServiceSupabaseClient()
   const { data: org, error: orgError } = await supabase
     .from("orgs")
@@ -723,7 +736,7 @@ export async function createFeatureFlag(input: {
 
   await recordAudit({
     orgId: input.orgId,
-    actorId: input.actorId,
+    actorId: actor.id,
     action: "insert",
     entityType: "feature_flag",
     entityId: data.id,
@@ -750,6 +763,8 @@ export async function updateFeatureFlag(input: {
   expiresAt: string | null
   actorId?: string
 }): Promise<void> {
+  const actor = await requireAnyPlatformPermission(["platform.feature_flags.manage"])
+  if (input.actorId && input.actorId !== actor.id) throw new Error("Platform actor mismatch")
   const supabase = createServiceSupabaseClient()
   const { data: existing, error: existingError } = await supabase
     .from("feature_flags")
@@ -777,7 +792,7 @@ export async function updateFeatureFlag(input: {
 
   await recordAudit({
     orgId: input.orgId,
-    actorId: input.actorId,
+    actorId: actor.id,
     action: "update",
     entityType: "feature_flag",
     entityId: input.flagId,
@@ -791,6 +806,8 @@ export async function deleteFeatureFlag(input: {
   orgId: string
   actorId?: string
 }): Promise<void> {
+  const actor = await requireAnyPlatformPermission(["platform.feature_flags.manage"])
+  if (input.actorId && input.actorId !== actor.id) throw new Error("Platform actor mismatch")
   const supabase = createServiceSupabaseClient()
   const { data: existing, error: existingError } = await supabase
     .from("feature_flags")
@@ -809,7 +826,7 @@ export async function deleteFeatureFlag(input: {
 
   await recordAudit({
     orgId: input.orgId,
-    actorId: input.actorId,
+    actorId: actor.id,
     action: "delete",
     entityType: "feature_flag",
     entityId: input.flagId,
@@ -886,6 +903,7 @@ function monthlyAmountCents(plan: { amount_cents: number | null; interval: strin
 }
 
 export async function getSystemMetrics(): Promise<SystemMetrics> {
+  await requireAnyPlatformPermission(["platform.billing.manage"])
   const supabase = createServiceSupabaseClient()
   const now = new Date()
   const dayAgoIso = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()
@@ -975,6 +993,7 @@ export async function getSystemMetrics(): Promise<SystemMetrics> {
 }
 
 export async function getUsageTrends(): Promise<UsageTrends> {
+  await requireAnyPlatformPermission(["platform.billing.manage"])
   const supabase = createServiceSupabaseClient()
   const now = new Date()
   const monthStarts = Array.from({ length: 6 }).map(
@@ -1052,6 +1071,7 @@ export async function getUsageTrends(): Promise<UsageTrends> {
 }
 
 export async function getPlans(): Promise<Plan[]> {
+  await requireAnyPlatformPermission(["platform.billing.manage"])
   const supabase = createServiceSupabaseClient()
 
   const { data, error } = await supabase
@@ -1095,6 +1115,7 @@ export async function getPlans(): Promise<Plan[]> {
 }
 
 export async function getSupportContracts(): Promise<SupportContract[]> {
+  await requireAnyPlatformPermission(["platform.support.read"])
   const supabase = createServiceSupabaseClient()
 
   const { data, error } = await supabase
@@ -1159,6 +1180,7 @@ const PLATFORM_USERS_CAP = 500
 // freshest membership.last_active_at (touched on activity with a 15-min
 // throttle by requireOrgContext). Sorted most-recently-active first.
 export async function getPlatformUsers(): Promise<PlatformUsersResult> {
+  await requireAnyPlatformPermission(["platform.support.read"])
   const supabase = createServiceSupabaseClient()
 
   const { data, error, count } = await supabase
@@ -1241,6 +1263,7 @@ export async function getPlatformUsers(): Promise<PlatformUsersResult> {
 }
 
 export async function getAuditUsers() {
+  await requireAnyPlatformPermission(["platform.support.read"])
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
     .from("app_users")

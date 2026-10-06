@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useRef, useState, useTransition } from "react"
 import type { PunchItem } from "@/lib/types"
 import {
   createPunchItemAction,
@@ -22,7 +22,11 @@ interface Props {
   items: PunchItem[]
 }
 
-export function PunchListPortalClient({ token, items: initialItems }: Props) {
+export function PunchListPortalClient(props: Props) {
+  return <PunchListPortalWorkspace key={props.token} {...props} />
+}
+
+function PunchListPortalWorkspace({ token, items: initialItems }: Props) {
   const [items, setItems] = useState(initialItems)
   const [form, setForm] = useState({ title: "", description: "", location: "", severity: "" })
   const [isPending, startTransition] = useTransition()
@@ -30,6 +34,28 @@ export function PunchListPortalClient({ token, items: initialItems }: Props) {
   const [attachmentsLoading, setAttachmentsLoading] = useState(false)
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [selectedItem, setSelectedItem] = useState<PunchItem | null>(null)
+  const [itemSource, setItemSource] = useState(initialItems)
+  const attachmentRead = useRef<AbortController | null>(null)
+  const selectedItemId = selectedItem?.id
+  if (itemSource !== initialItems) {
+    setItemSource(initialItems)
+    setItems(initialItems)
+    if (selectedItem) {
+      const current = initialItems.find(item => item.id === selectedItem.id) ?? null
+      setSelectedItem(current)
+      if (!current) {
+        setAttachmentsOpen(false)
+        setAttachments([])
+        setAttachmentsLoading(false)
+      }
+    }
+  }
+
+
+  useEffect(() => () => attachmentRead.current?.abort(), [])
+  useEffect(() => {
+    if (!attachmentsOpen || !selectedItemId) attachmentRead.current?.abort()
+  }, [attachmentsOpen, selectedItemId])
 
   const handleSubmit = () => {
     if (!form.title.trim()) return
@@ -45,11 +71,16 @@ export function PunchListPortalClient({ token, items: initialItems }: Props) {
   }
 
   const openAttachments = (item: PunchItem) => {
+    attachmentRead.current?.abort()
+    const controller = new AbortController()
+    attachmentRead.current = controller
+    setAttachments([])
     setSelectedItem(item)
     setAttachmentsOpen(true)
     setAttachmentsLoading(true)
     listPunchItemAttachmentsAction({ token, punchItemId: item.id })
       .then((rows) => {
+        if (controller.signal.aborted) return
         setAttachments(
           rows.map((row) => ({
             id: row.id,
@@ -64,19 +95,22 @@ export function PunchListPortalClient({ token, items: initialItems }: Props) {
           }))
         )
       })
-      .catch((error) => console.error("Failed to load punch item attachments", error))
-      .finally(() => setAttachmentsLoading(false))
+      .catch((error) => { if (!controller.signal.aborted) console.error("Failed to load punch item attachments", error) })
+      .finally(() => { if (!controller.signal.aborted) setAttachmentsLoading(false) })
   }
 
   const handleAttach = async (files: File[]) => {
     if (!selectedItem) return
+    const controller = attachmentRead.current
     for (const file of files) {
       const formData = new FormData()
       formData.append("file", file)
       await uploadPunchItemAttachmentAction({ token, punchItemId: selectedItem.id, formData })
     }
 
+    if (controller !== attachmentRead.current || controller?.signal.aborted) return
     const rows = await listPunchItemAttachmentsAction({ token, punchItemId: selectedItem.id })
+    if (controller !== attachmentRead.current || controller?.signal.aborted) return
     setAttachments(
       rows.map((row) => ({
         id: row.id,
@@ -93,9 +127,12 @@ export function PunchListPortalClient({ token, items: initialItems }: Props) {
   }
 
   const handleDetach = async (linkId: string) => {
+    const controller = attachmentRead.current
     await detachPunchItemAttachmentAction({ token, linkId })
     if (!selectedItem) return
+    if (controller !== attachmentRead.current || controller?.signal.aborted) return
     const rows = await listPunchItemAttachmentsAction({ token, punchItemId: selectedItem.id })
+    if (controller !== attachmentRead.current || controller?.signal.aborted) return
     setAttachments(
       rows.map((row) => ({
         id: row.id,
@@ -180,6 +217,8 @@ export function PunchListPortalClient({ token, items: initialItems }: Props) {
         onOpenChange={(open) => {
           setAttachmentsOpen(open)
           if (!open) {
+            attachmentRead.current?.abort()
+            attachmentRead.current = null
             setSelectedItem(null)
             setAttachments([])
             setAttachmentsLoading(false)

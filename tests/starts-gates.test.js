@@ -140,3 +140,57 @@ test("a package goes ready only once every auto gate is proven and the manual on
   await starts.attestGate(PACKAGE, "gate-final_approval", {})
   assert.equal(harness.store.start_packages[0].status, "ready")
 })
+
+test("automatic readiness evidence read failures surface instead of recording a false verdict", async () => {
+  for (const failingTable of ["lots", "files", "budgets", "po_generation_runs"]) {
+    const tables = gateFixture({ purchasing: true })
+    for (const [key, auto_source] of [["budget", "budget_generated"], ["po_set", "pos_generated"]]) {
+      const definition = { id: `def-${key}`, org_id: ORG, key, auto_source, check_kind: "auto", applies_when: "always", is_active: true }
+      tables.start_gate_definitions.push(definition)
+      tables.start_package_gates.push({ id: `gate-${key}`, org_id: ORG, start_package_id: PACKAGE, gate_definition_id: definition.id, status: "pending", definition })
+    }
+    const harness = buildHarness({ tables, instantiate: async () => ({ success: true }) })
+    const from = harness.supabase.from.bind(harness.supabase)
+    harness.supabase.from = table => {
+      const query = from(table), run = query.run.bind(query)
+      query.run = () => table === failingTable && query.action === "select"
+        ? { data: null, count: null, error: { message: "Readiness evidence unavailable" } } : run()
+      return query
+    }
+    await assert.rejects(loadStarts().refreshAutoGates(PACKAGE), /Readiness evidence unavailable/, failingTable)
+    assert.equal(harness.store.start_packages[0].status, "open")
+  }
+})
+
+test("missing selection or exception counts cannot prove readiness", async () => {
+  for (const failingTable of ["project_selection_groups", "po_generation_exceptions"]) {
+    const harness = buildHarness({ tables: gateFixture({ purchasing: true }), instantiate: async () => ({ success: true }) })
+    const from = harness.supabase.from.bind(harness.supabase)
+    harness.supabase.from = table => {
+      const query = from(table), run = query.run.bind(query)
+      query.run = () => table === failingTable && query.action === "select"
+        ? { data: null, count: null, error: null } : run()
+      return query
+    }
+    await assert.rejects(loadStarts().refreshAutoGates(PACKAGE), /evidence counts unavailable/, failingTable)
+  }
+})
+
+test("gate refresh checks automatic, inapplicable and restored manual writes", async () => {
+  for (const mode of ["auto", "inapplicable", "manual"]) {
+    const tables = gateFixture({ purchasing: mode !== "inapplicable" })
+    const key = mode === "auto" ? "plan_pinned" : mode === "inapplicable" ? "price_book" : "final_approval"
+    const target = tables.start_package_gates.find(row => row.definition.key === key)
+    if (mode === "manual") target.status = "not_applicable"
+    const harness = buildHarness({ tables, instantiate: async () => ({ success: true }) })
+    const from = harness.supabase.from.bind(harness.supabase)
+    harness.supabase.from = table => {
+      const query = from(table), run = query.run.bind(query)
+      query.run = () => table === "start_package_gates" && query.action === "update" && query.filters.every(filter => filter(target))
+        ? { data: [], error: null } : run()
+      return query
+    }
+    await assert.rejects(loadStarts().refreshAutoGates(PACKAGE), /Gate no longer exists/, mode)
+    assert.equal(harness.store.start_packages[0].status, "open")
+  }
+})

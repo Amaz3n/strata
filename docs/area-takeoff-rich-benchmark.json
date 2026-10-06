@@ -1,0 +1,552 @@
+{
+  "engine": 9,
+  "matching": "192×192 raster IoU ≥0.5; exact polygon area; boundary samples every 0.25 ft",
+  "geometryGatePassed": false,
+  "categoryResults": [
+    {
+      "category": "layered-vector",
+      "sheets": 0,
+      "truthRooms": 0,
+      "withinTwoPercent": 0,
+      "passed": false
+    },
+    {
+      "category": "flattened-vector",
+      "sheets": 0,
+      "truthRooms": 0,
+      "withinTwoPercent": 0,
+      "passed": false
+    },
+    {
+      "category": "outlined-text",
+      "sheets": 0,
+      "truthRooms": 0,
+      "withinTwoPercent": 0,
+      "passed": false
+    },
+    {
+      "category": "raster",
+      "sheets": 0,
+      "truthRooms": 0,
+      "withinTwoPercent": 0,
+      "passed": false
+    }
+  ],
+  "releaseReady": false,
+  "releaseReason": "Requires ≥50 unique independently checked held-out original PDF pages across ≥3 projects, ≥10 sheets per source category with each category passing, ≥95% of truth rooms within 2% area, and no merge/split/false-positive errors; estimator timing trial also required.",
+  "results": [
+    {
+      "name": "Swiss Dwellings site 127 floor 716",
+      "project": "swiss-site-127",
+      "kind": "reconstructed-public-geometry",
+      "split": "development",
+      "annotationStatus": "publisher-geometry",
+      "source": {
+        "url": "https://zenodo.org/records/7070952",
+        "license": "CC-BY-4.0",
+        "attribution": "Standfest et al., Archilyse AG, Swiss Dwellings (2022)",
+        "modifications": "Subset; WKT normalized and y-flipped; separators/openings/features rendered as edges; synthetic label positions. No original PDFs. Publisher non-area entity types retained as synthetic CAD layers; fixture footprints included to match room-polygon scope."
+      },
+      "detectionMode": "region",
+      "elapsedMs": 23.014667000000003,
+      "truthRooms": 6,
+      "proposedRooms": 6,
+      "matched": 4,
+      "missed": 2,
+      "falsePositives": 2,
+      "merged": 1,
+      "splitRooms": 0,
+      "withinTwoPercent": 3,
+      "worstAreaErrorPct": 36.834904871068716,
+      "matches": [
+        {
+          "prediction": 1,
+          "truth": 5,
+          "iou": 0.9994419642857143,
+          "truthCoverage": 0.9994419642857143,
+          "predictionCoverage": 1,
+          "label": "Room",
+          "areaErrorPct": 0.08213521763262832,
+          "predictedSqft": 136.65465402485955,
+          "truthSqft": 136.54250454159327,
+          "boundary": {
+            "p95Feet": 0.012366353087998213,
+            "maxFeet": 0.012366354500110407
+          }
+        },
+        {
+          "prediction": 2,
+          "truth": 0,
+          "iou": 0.9989944695827049,
+          "truthCoverage": 0.9994969818913481,
+          "predictionCoverage": 0.9994969818913481,
+          "label": "Room",
+          "areaErrorPct": 0.008189572525841684,
+          "predictedSqft": 151.86747141928043,
+          "truthSqft": 151.87990973464034,
+          "boundary": {
+            "p95Feet": 0.029056694608153768,
+            "maxFeet": 0.029056699435935612
+          }
+        },
+        {
+          "prediction": 5,
+          "truth": 1,
+          "iou": 0.9955947136563876,
+          "truthCoverage": 0.9988950276243094,
+          "predictionCoverage": 0.9966923925027563,
+          "label": "Bathroom",
+          "areaErrorPct": 0.00017107655185568988,
+          "predictedSqft": 69.21723550246585,
+          "truthSqft": 69.21735391712822,
+          "boundary": {
+            "p95Feet": 0.028013551748571192,
+            "maxFeet": 0.028013552126624645
+          }
+        },
+        {
+          "prediction": 0,
+          "truth": 4,
+          "iou": 0.7316908538643268,
+          "truthCoverage": 0.9997694258704174,
+          "predictionCoverage": 0.7318143459915611,
+          "label": "Living Room",
+          "areaErrorPct": 36.834904871068716,
+          "predictedSqft": 452.54482308727125,
+          "truthSqft": 330.72323433386896,
+          "boundary": {
+            "p95Feet": 9.073258422081521,
+            "maxFeet": 11.684543019150865
+          }
+        }
+      ]
+    },
+    {
+      "name": "Swiss Dwellings site 1913 floor 13374",
+      "project": "swiss-site-1913",
+      "kind": "reconstructed-public-geometry",
+      "split": "development",
+      "annotationStatus": "publisher-geometry",
+      "source": {
+        "url": "https://zenodo.org/records/7070952",
+        "license": "CC-BY-4.0",
+        "attribution": "Standfest et al., Archilyse AG, Swiss Dwellings (2022)",
+        "modifications": "Subset; WKT normalized and y-flipped; separators/openings/features rendered as edges; synthetic label positions. No original PDFs. Publisher non-area entity types retained as synthetic CAD layers; fixture footprints included to match room-polygon scope."
+      },
+      "detectionMode": "region",
+      "elapsedMs": 15.705165999999963,
+      "truthRooms": 15,
+      "proposedRooms": 17,
+      "matched": 11,
+      "missed": 4,
+      "falsePositives": 6,
+      "merged": 3,
+      "splitRooms": 0,
+      "withinTwoPercent": 8,
+      "worstAreaErrorPct": 49.19097821685855,
+      "matches": [
+        {
+          "prediction": 5,
+          "truth": 2,
+          "iou": 1,
+          "truthCoverage": 1,
+          "predictionCoverage": 1,
+          "label": "Bathroom",
+          "areaErrorPct": 0.10565445078970372,
+          "predictedSqft": 41.362287393285335,
+          "truthSqft": 41.31863241912909,
+          "boundary": {
+            "p95Feet": 0.012133285805853645,
+            "maxFeet": 0.012133287144117447
+          }
+        },
+        {
+          "prediction": 14,
+          "truth": 4,
+          "iou": 1,
+          "truthCoverage": 1,
+          "predictionCoverage": 1,
+          "label": "Bathroom",
+          "areaErrorPct": 0.16947327487994834,
+          "predictedSqft": 17.447392503519765,
+          "truthSqft": 17.417873862270916,
+          "boundary": {
+            "p95Feet": 0.008320892171692422,
+            "maxFeet": 0.008320892294717512
+          }
+        },
+        {
+          "prediction": 16,
+          "truth": 13,
+          "iou": 1,
+          "truthCoverage": 1,
+          "predictionCoverage": 1,
+          "label": "Bathroom",
+          "areaErrorPct": 0.09146026242809238,
+          "predictedSqft": 41.77839602631522,
+          "truthSqft": 41.74022031128046,
+          "boundary": {
+            "p95Feet": 0.012791913258532442,
+            "maxFeet": 0.012791913675689909
+          }
+        },
+        {
+          "prediction": 8,
+          "truth": 3,
+          "iou": 0.999348109517601,
+          "truthCoverage": 0.999348109517601,
+          "predictionCoverage": 1,
+          "label": "Room",
+          "areaErrorPct": 0.031743802878654144,
+          "predictedSqft": 171.18469968845153,
+          "truthSqft": 171.2390574773084,
+          "boundary": {
+            "p95Feet": 0.025311335585029827,
+            "maxFeet": 0.02531133574223318
+          }
+        },
+        {
+          "prediction": 15,
+          "truth": 10,
+          "iou": 0.9976580796252927,
+          "truthCoverage": 1,
+          "predictionCoverage": 0.9976580796252927,
+          "label": "Bathroom",
+          "areaErrorPct": 0.10174023397709771,
+          "predictedSqft": 47.84078200328302,
+          "truthSqft": 47.79215814975875,
+          "boundary": {
+            "p95Feet": 0.013930906266579599,
+            "maxFeet": 0.013930907398221103
+          }
+        },
+        {
+          "prediction": 13,
+          "truth": 9,
+          "iou": 0.9972451790633609,
+          "truthCoverage": 0.9990800367985281,
+          "predictionCoverage": 0.9981617647058824,
+          "label": "Room",
+          "areaErrorPct": 0.023266543560469106,
+          "predictedSqft": 121.51657205606162,
+          "truthSqft": 121.54485134184458,
+          "boundary": {
+            "p95Feet": 0.025311333940751482,
+            "maxFeet": 0.025311335324423506
+          }
+        },
+        {
+          "prediction": 11,
+          "truth": 7,
+          "iou": 0.9960356788899901,
+          "truthCoverage": 0.9990059642147118,
+          "predictionCoverage": 0.9970238095238095,
+          "label": "Room",
+          "areaErrorPct": 0.07227470720510225,
+          "predictedSqft": 112.52997903724211,
+          "truthSqft": 112.61136857415875,
+          "boundary": {
+            "p95Feet": 0.02531133197672072,
+            "maxFeet": 0.025311332466269324
+          }
+        },
+        {
+          "prediction": 7,
+          "truth": 6,
+          "iou": 0.995253164556962,
+          "truthCoverage": 0.9976209357652657,
+          "predictionCoverage": 0.9976209357652657,
+          "label": "Corridor",
+          "areaErrorPct": 0.13836569806811946,
+          "predictedSqft": 141.17152186601632,
+          "truthSqft": 141.36712547602005,
+          "boundary": {
+            "p95Feet": 0.016794695973392483,
+            "maxFeet": 0.024481887969049168
+          }
+        },
+        {
+          "prediction": 1,
+          "truth": 1,
+          "iou": 0.8397346368715084,
+          "truthCoverage": 0.9991690901537184,
+          "predictionCoverage": 0.8403214535290007,
+          "label": "Room",
+          "areaErrorPct": 18.684189047766875,
+          "predictedSqft": 319.6626963149233,
+          "truthSqft": 269.33890594834713,
+          "boundary": {
+            "p95Feet": 7.2980930388927305,
+            "maxFeet": 8.287462987944593
+          }
+        },
+        {
+          "prediction": 9,
+          "truth": 11,
+          "iou": 0.7606244579358196,
+          "truthCoverage": 0.9996200607902735,
+          "predictionCoverage": 0.7608444187391555,
+          "label": "Living Dining",
+          "areaErrorPct": 31.42194765850992,
+          "predictedSqft": 387.55913825576386,
+          "truthSqft": 294.8968153042498,
+          "boundary": {
+            "p95Feet": 6.69975841364311,
+            "maxFeet": 8.208415029603009
+          }
+        },
+        {
+          "prediction": 4,
+          "truth": 5,
+          "iou": 0.6691485917772741,
+          "truthCoverage": 0.9995164410058027,
+          "predictionCoverage": 0.6693652849740933,
+          "label": "Living Dining",
+          "areaErrorPct": 49.19097821685855,
+          "predictedSqft": 345.15722720182197,
+          "truthSqft": 231.35261349390314,
+          "boundary": {
+            "p95Feet": 8.217433400168098,
+            "maxFeet": 8.989203727849809
+          }
+        }
+      ]
+    },
+    {
+      "name": "Swiss Dwellings site 85 floor 11138",
+      "project": "swiss-site-85",
+      "kind": "reconstructed-public-geometry",
+      "split": "development",
+      "annotationStatus": "publisher-geometry",
+      "source": {
+        "url": "https://zenodo.org/records/7070952",
+        "license": "CC-BY-4.0",
+        "attribution": "Standfest et al., Archilyse AG, Swiss Dwellings (2022)",
+        "modifications": "Subset; WKT normalized and y-flipped; separators/openings/features rendered as edges; synthetic label positions. No original PDFs. Publisher non-area entity types retained as synthetic CAD layers; fixture footprints included to match room-polygon scope."
+      },
+      "detectionMode": "region",
+      "elapsedMs": 21.707249999999988,
+      "truthRooms": 15,
+      "proposedRooms": 15,
+      "matched": 14,
+      "missed": 1,
+      "falsePositives": 1,
+      "merged": 1,
+      "splitRooms": 0,
+      "withinTwoPercent": 13,
+      "worstAreaErrorPct": 35.69722455906272,
+      "matches": [
+        {
+          "prediction": 1,
+          "truth": 5,
+          "iou": 1,
+          "truthCoverage": 1,
+          "predictionCoverage": 1,
+          "label": "Bathroom",
+          "areaErrorPct": 0.1283806664568169,
+          "predictedSqft": 21.247998630499993,
+          "truthSqft": 21.220755283439942,
+          "boundary": {
+            "p95Feet": 0.015340143945039882,
+            "maxFeet": 0.015340146036160416
+          }
+        },
+        {
+          "prediction": 2,
+          "truth": 8,
+          "iou": 1,
+          "truthCoverage": 1,
+          "predictionCoverage": 1,
+          "label": "Bathroom",
+          "areaErrorPct": 0.0779423548152211,
+          "predictedSqft": 71.80904744950388,
+          "truthSqft": 71.75312137704918,
+          "boundary": {
+            "p95Feet": 0.015340143906005271,
+            "maxFeet": 0.015340145928649403
+          }
+        },
+        {
+          "prediction": 3,
+          "truth": 2,
+          "iou": 1,
+          "truthCoverage": 1,
+          "predictionCoverage": 1,
+          "label": "Room",
+          "areaErrorPct": 0.059578020860586244,
+          "predictedSqft": 154.0463625878008,
+          "truthSqft": 153.95463946058712,
+          "boundary": {
+            "p95Feet": 0.023320561891155646,
+            "maxFeet": 0.02332056229878553
+          }
+        },
+        {
+          "prediction": 10,
+          "truth": 9,
+          "iou": 1,
+          "truthCoverage": 1,
+          "predictionCoverage": 1,
+          "label": "Bathroom",
+          "areaErrorPct": 0.015741404035030337,
+          "predictedSqft": 63.031266494725756,
+          "truthSqft": 63.02134605001571,
+          "boundary": {
+            "p95Feet": 0.020660427816711673,
+            "maxFeet": 0.020660428091970946
+          }
+        },
+        {
+          "prediction": 14,
+          "truth": 14,
+          "iou": 1,
+          "truthCoverage": 1,
+          "predictionCoverage": 1,
+          "label": "Kitchen",
+          "areaErrorPct": 0.08102330091027368,
+          "predictedSqft": 68.21822711873715,
+          "truthSqft": 68.16299920678037,
+          "boundary": {
+            "p95Feet": 0.007359721426361476,
+            "maxFeet": 0.007359723056394411
+          }
+        },
+        {
+          "prediction": 0,
+          "truth": 0,
+          "iou": 0.9991776315789473,
+          "truthCoverage": 1,
+          "predictionCoverage": 0.9991776315789473,
+          "label": "Room",
+          "areaErrorPct": 0.018680957483378835,
+          "predictedSqft": 270.72500608132856,
+          "truthSqft": 270.7755895540885,
+          "boundary": {
+            "p95Feet": 0.023320555333226505,
+            "maxFeet": 0.04194153896390653
+          }
+        },
+        {
+          "prediction": 9,
+          "truth": 10,
+          "iou": 0.99867197875166,
+          "truthCoverage": 1,
+          "predictionCoverage": 0.99867197875166,
+          "label": "Living Room",
+          "areaErrorPct": 0.029019507941542955,
+          "predictedSqft": 334.83338249169316,
+          "truthSqft": 334.73624368087496,
+          "boundary": {
+            "p95Feet": 0.015340138401031161,
+            "maxFeet": 0.015340140593135893
+          }
+        },
+        {
+          "prediction": 4,
+          "truth": 3,
+          "iou": 0.9986480396575034,
+          "truthCoverage": 0.9986480396575034,
+          "predictionCoverage": 1,
+          "label": "Corridor",
+          "areaErrorPct": 0.03819442716414812,
+          "predictedSqft": 492.68653545746133,
+          "truthSqft": 492.87478615867116,
+          "boundary": {
+            "p95Feet": 0.04194153879519605,
+            "maxFeet": 0.04194154579770501
+          }
+        },
+        {
+          "prediction": 7,
+          "truth": 4,
+          "iou": 0.9973568281938326,
+          "truthCoverage": 0.999117387466902,
+          "predictionCoverage": 0.9982363315696648,
+          "label": "Room",
+          "areaErrorPct": 0.02076239240562792,
+          "predictedSqft": 252.09223165250393,
+          "truthSqft": 252.1445829002352,
+          "boundary": {
+            "p95Feet": 0.023320562182034897,
+            "maxFeet": 0.0419415448751118
+          }
+        },
+        {
+          "prediction": 6,
+          "truth": 6,
+          "iou": 0.9969078540507111,
+          "truthCoverage": 0.9987608426270136,
+          "predictionCoverage": 0.9981424148606811,
+          "label": "Living Room",
+          "areaErrorPct": 0.03857389593214895,
+          "predictedSqft": 359.6305926355658,
+          "truthSqft": 359.7693696978288,
+          "boundary": {
+            "p95Feet": 0.023320562062074925,
+            "maxFeet": 0.04194153754186558
+          }
+        },
+        {
+          "prediction": 12,
+          "truth": 11,
+          "iou": 0.9968102073365231,
+          "truthCoverage": 1,
+          "predictionCoverage": 0.9968102073365231,
+          "label": "Room",
+          "areaErrorPct": 0.06725069609738521,
+          "predictedSqft": 139.93499905325405,
+          "truthSqft": 139.84095503756205,
+          "boundary": {
+            "p95Feet": 0.015340137648763552,
+            "maxFeet": 0.015340139027910364
+          }
+        },
+        {
+          "prediction": 11,
+          "truth": 13,
+          "iou": 0.9967532467532467,
+          "truthCoverage": 0.9967532467532467,
+          "predictionCoverage": 1,
+          "label": "Corridor",
+          "areaErrorPct": 0.02668597594370348,
+          "predictedSqft": 137.69830925795932,
+          "truthSqft": 137.66157292372517,
+          "boundary": {
+            "p95Feet": 0.007359724688046057,
+            "maxFeet": 0.010019863606124006
+          }
+        },
+        {
+          "prediction": 13,
+          "truth": 12,
+          "iou": 0.9933259176863182,
+          "truthCoverage": 0.9966517857142857,
+          "predictionCoverage": 0.9966517857142857,
+          "label": "Room",
+          "areaErrorPct": 0.015233716934146414,
+          "predictedSqft": 199.42894230469915,
+          "truthSqft": 199.3985664915091,
+          "boundary": {
+            "p95Feet": 0.023320561670836303,
+            "maxFeet": 0.02332056218202874
+          }
+        },
+        {
+          "prediction": 5,
+          "truth": 7,
+          "iou": 0.7354698533405758,
+          "truthCoverage": 1,
+          "predictionCoverage": 0.7354698533405758,
+          "label": "Dining",
+          "areaErrorPct": 35.69722455906272,
+          "predictedSqft": 410.5213991593483,
+          "truthSqft": 302.52748388429075,
+          "boundary": {
+            "p95Feet": 9.502664068467611,
+            "maxFeet": 11.37811749798197
+          }
+        }
+      ]
+    }
+  ]
+}

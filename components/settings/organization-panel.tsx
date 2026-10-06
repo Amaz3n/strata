@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState, type ComponentProps } from "react"
 import Link from "next/link"
 import { toast } from "sonner"
 
@@ -98,15 +98,26 @@ export function OrganizationPanel({
   initialDocumentNumbering,
   teamMembers,
   teamLoading = false,
+  initialContractTemplates,
 }: {
   initialSettings: OrgSettings
   onSettingsSaved: (settings: OrgSettings) => void
   initialDocumentNumbering: DocumentNumberingSettings | null
   teamMembers: Pick<TeamMember, "user" | "status">[]
   teamLoading?: boolean
+  initialContractTemplates: ComponentProps<typeof ContractTemplateSettings>["initialTemplates"]
 }) {
   const [settings, setSettings] = useState<OrgSettings>(initialSettings)
-  const [numbering, setNumbering] = useState<DocumentNumberingSettings | null>(initialDocumentNumbering)
+  const [numberingState, setNumberingState] = useState({
+    source: initialDocumentNumbering,
+    value: initialDocumentNumbering,
+  })
+  if (numberingState.source !== initialDocumentNumbering) {
+    setNumberingState({ source: initialDocumentNumbering, value: initialDocumentNumbering })
+  }
+  const numbering = numberingState.source === initialDocumentNumbering
+    ? numberingState.value
+    : initialDocumentNumbering
   const [editing, setEditing] = useState<EditKey | null>(null)
 
   // Logo — the one thing edited in place, mirroring the Profile avatar.
@@ -406,7 +417,7 @@ export function OrganizationPanel({
         title="Contract templates"
         description="Standard terms PDFs prepended to signature packets as the paper terms, with the Arc document as the exhibit."
       >
-        <ContractTemplateSettings canManage={canManage} />
+        <ContractTemplateSettings canManage={canManage} initialTemplates={initialContractTemplates} />
       </SettingsGroup>
 
       {numbering ? (
@@ -415,7 +426,7 @@ export function OrganizationPanel({
           description="Prefixes and zero-padding for RFIs, submittals, change orders, meetings, and transmittals."
         >
           <SettingsField label="Numbering" hint="Display format only — stored sequence numbers never change.">
-            <RowControl canManage buttonLabel="Configure" onEdit={() => setEditing("numbering")}>
+            <RowControl canManage={canManage} buttonLabel="Configure" onEdit={() => setEditing("numbering")}>
               <span className="truncate font-mono text-xs tabular-nums text-muted-foreground">
                 {[
                   formatDocNumber("rfi", 7, numbering),
@@ -507,9 +518,13 @@ export function OrganizationPanel({
               </DialogDescription>
             </DialogHeader>
             <DocumentNumberingForm
+              key={initialSettings.id}
               initial={numbering}
+              canManage={canManage}
               onSaved={(next) => {
-                setNumbering(next)
+                setNumberingState((current) => current.source === initialDocumentNumbering
+                  ? { ...current, value: next }
+                  : current)
                 setEditing(null)
               }}
             />

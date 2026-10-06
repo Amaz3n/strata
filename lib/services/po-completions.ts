@@ -1,8 +1,10 @@
+import { z } from "zod"
 import type { PortalAccessToken, ProjectScopedPortalAccess } from "@/lib/types"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
-import { getDivisionScopedProjectIds, requireAuthorization } from "@/lib/services/authorization"
+import { requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
+import { purchasingQueueFiltersSchema, purchasingQueueProjectSelect, resolvePurchasingQueueReadScope, type PurchasingQueueFilters } from "@/lib/services/purchasing-queue-scope"
 import { recordEvent } from "@/lib/services/events"
 import { postJobCostActualsForVendorBill } from "@/lib/services/job-cost-actuals"
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
@@ -218,26 +220,33 @@ export async function approvePoCompletion(completionId: string, orgId?: string) 
   return approved ?? data
 }
 
-export async function listPoCompletions({ status, projectId, communityId, page = 1, pageSize = 50, orgId }: { status?: PoCompletionStatus; projectId?: string; communityId?: string; page?: number; pageSize?: number; orgId?: string } = {}) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+export type PoCompletionQueueRow = {
+  id: string
+  project: unknown
+  commitment: unknown
+  status: PoCompletionStatus
+  amount_cents: number | null
+  reported_at: string
+}
+
+export async function listPoCompletions(filters: PurchasingQueueFilters & { status?: PoCompletionStatus; orgId?: string } = {}) {
+  const parsed = purchasingQueueFiltersSchema.extend({ status: z.enum(["reported", "verified", "approved", "rejected", "billed", "void"]).optional() }).parse(filters)
+  const context = await requireOrgContext(filters.orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = context
   await requireAuthorization({ permission: "price_book.read", userId, orgId: resolvedOrgId, supabase, logDecision: true })
-  const authorizedProjectIds = await getDivisionScopedProjectIds({ orgId: resolvedOrgId, userId, supabase })
-  if (authorizedProjectIds?.length === 0) return { items: [], count: 0, page, pageSize: Math.min(Math.max(pageSize, 1), 100) }
-  let projectIds: string[] | null = null
-  if (communityId) {
-    const { data: lots } = await supabase.from("lots").select("project_id").eq("org_id", resolvedOrgId).eq("community_id", communityId).not("project_id", "is", null)
-    projectIds = (lots ?? []).flatMap((lot) => lot.project_id ? [lot.project_id] : [])
-    if (projectIds.length === 0) return { items: [], count: 0, page, pageSize }
-  }
-  const size = Math.min(Math.max(pageSize, 1), 100)
-  let query = supabase.from("po_completions").select("*,project:projects(name),commitment:commitments(title,total_cents,company:companies(name)),vendor_bill:vendor_bills(status,paid_cents,total_cents)", { count: "exact" }).eq("org_id", resolvedOrgId).order("reported_at", { ascending: false })
-  if (status) query = query.eq("status", status)
-  if (projectId) query = query.eq("project_id", projectId)
-  if (projectIds) query = query.in("project_id", projectIds)
-  if (authorizedProjectIds) query = query.in("project_id", authorizedProjectIds)
-  const { data, error, count } = await query.range((page - 1) * size, page * size - 1)
+  const scope = await resolvePurchasingQueueReadScope(context, parsed.divisionId)
+  if (scope.divisionIds?.length === 0) return { items: [], count: 0, page: parsed.page, pageSize: parsed.pageSize }
+  const columns: string = `*,${purchasingQueueProjectSelect("name", scope, parsed.communityId)},commitment:commitments(title,total_cents,company:companies(name)),vendor_bill:vendor_bills(status,paid_cents,total_cents)`
+  let query = supabase.from("po_completions").select(columns, { count: "exact" })
+    .eq("org_id", resolvedOrgId).eq("project.org_id", resolvedOrgId).order("reported_at", { ascending: false }).order("id", { ascending: false })
+  if (parsed.status) query = query.eq("status", parsed.status)
+  if (parsed.projectId) query = query.eq("project_id", parsed.projectId)
+  if (scope.divisionIds) query = query.in("project.division_id", scope.divisionIds)
+  if (parsed.communityId) query = query.eq("project.lot.community_id", parsed.communityId).eq("project.lot.org_id", resolvedOrgId).eq("project.lot.community.org_id", resolvedOrgId)
+  if (scope.projectMembershipRequired) query = query.eq("project.access.org_id", resolvedOrgId).eq("project.access.user_id", userId).eq("project.access.status", "active")
+  const { data, error, count } = await query.range((parsed.page - 1) * parsed.pageSize, parsed.page * parsed.pageSize - 1).returns<PoCompletionQueueRow[]>()
   if (error) throw new Error(`Failed to list PO completions: ${error.message}`)
-  return { items: data ?? [], count: count ?? 0, page, pageSize: size }
+  return { items: data ?? [], count: count ?? 0, page: parsed.page, pageSize: parsed.pageSize }
 }
 
 export type PortalPurchaseOrder = {

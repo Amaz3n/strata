@@ -1,5 +1,6 @@
 export type NotificationType =
   | "task_assigned"
+  | "task_mentioned"
   | "task_created"
   | "task_updated"
   | "task_completed"
@@ -213,6 +214,12 @@ export const NOTIFICATION_EMAIL_CATEGORIES = [
 export type NotificationEmailCategory = (typeof NOTIFICATION_EMAIL_CATEGORIES)[number]["key"]
 
 export const EMAIL_NOTIFICATION_TYPES = [
+  {
+    key: "task_mentioned",
+    category: "project",
+    label: "Task mentions",
+    description: "Email me when someone tags me in a task.",
+  },
   {
     key: "vendor_bill_submitted",
     category: "payables",

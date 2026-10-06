@@ -1,0 +1,199 @@
+{
+  "date": "2026-10-05",
+  "recordedAt": "2026-10-05T10:43:17.401432+00:00",
+  "classification": "progress_local_implementation_not_acceptance",
+  "previousGoalTurnClassification": "progress_eleven_source_page_reviews",
+  "taskIds": [
+    "E07-03",
+    "E01-01",
+    "E01-02",
+    "E02-02",
+    "F04",
+    "F01"
+  ],
+  "head": "9f1549af84a6998eb2d851415ec6f119ab89a96f",
+  "dirtyTreeStatusSha256": "25bae1fdd799906aa157259d737db61c1f19239a2fdd58cb65bb7e2c141abcbb",
+  "sourceSnapshots": [
+    {
+      "path": "app/(app)/schedule/trades/page.tsx",
+      "sha256": "28d59dadb932c11091d475a8fb61197abcba5dd8d984282782588b36142c9888",
+      "basis": "Post-implementation snapshot, no across-all-checks before/after invariant claimed"
+    },
+    {
+      "path": "app/(app)/schedule/trade-actions.ts",
+      "sha256": "12e629009e3483e8fea6ca6d1e83c6ebb793d5293a60f811c49106548a88f006",
+      "basis": "Post-implementation snapshot, no across-all-checks before/after invariant claimed"
+    },
+    {
+      "path": "components/schedule/trade-lookahead-client.tsx",
+      "sha256": "05aa4fe24b32695a1aa08df5fe220b0637f33b6dca091332b431455ffeb55525",
+      "basis": "Post-implementation snapshot, no across-all-checks before/after invariant claimed"
+    },
+    {
+      "path": "lib/services/trade-lookahead.ts",
+      "sha256": "686e8cc49daa108d5b5069cc82c035f9b6294e793fdac2ce04dc257b0b446570",
+      "basis": "Post-implementation snapshot, no across-all-checks before/after invariant claimed"
+    },
+    {
+      "path": "lib/validation/starts.ts",
+      "sha256": "108bd2e00440b428208a91bebd1eb0d24ec309a43a048b5d7dc16fef8bd58370",
+      "basis": "Post-implementation snapshot, no across-all-checks before/after invariant claimed"
+    },
+    {
+      "path": "tests/trade-lookahead-scale.test.js",
+      "sha256": "8d0a5da33e44bbefa620244fd06bb8016320dd84a5dd99592785313721aa4954",
+      "basis": "Post-implementation snapshot, no across-all-checks before/after invariant claimed"
+    },
+    {
+      "path": "scripts/test-field-client-refresh.mjs",
+      "sha256": "2dd7b1ed21de34023023c21ec11e8ae9112c2d9f78bfe02911bef2294543760f",
+      "basis": "Post-implementation snapshot, no across-all-checks before/after invariant claimed"
+    },
+    {
+      "path": "tests/fixtures/field-client-refresh/ui.jsx",
+      "sha256": "055672562a4c83f24d1a01e73e7525006af5788250f1507e30d832e03185aa07",
+      "basis": "Post-implementation snapshot, no across-all-checks before/after invariant claimed"
+    },
+    {
+      "path": "package.json",
+      "sha256": "71d46d83dd6a64bf3d6a6b5935f46bed74a3a511aeb91c27d717254c73e6892f",
+      "basis": "Post-implementation snapshot, no across-all-checks before/after invariant claimed"
+    }
+  ],
+  "schemaVersion": "No schema change/application; full applicable database schema unverified",
+  "dataset": "Synthetic org/home/community/division/company schedules. Original TS service and action in isolated test transports; real Supabase SDK with custom fetch; actual compiled React in loopback fixture, off-origin requests blocked. No production data or credentials used.",
+  "actors": [
+    "reader",
+    "start.write writer",
+    "division-assigned actor",
+    "denied division actor"
+  ],
+  "checks": [
+    {
+      "name": "focused",
+      "command": "node --test tests/trade-lookahead-scale.test.js",
+      "exitCode": 0,
+      "log": "focused.log",
+      "sha256": "5a3e8a5727c3b5fd950dbd2e900495e1c5198b77469e017a6352844c2f21dc47",
+      "tests": 17,
+      "pass": 17,
+      "fail": 0,
+      "skipped": 0
+    },
+    {
+      "name": "auth",
+      "command": "pnpm test:auth",
+      "exitCode": 0,
+      "log": "auth.log",
+      "sha256": "30635790d95beb8ee5b3dc0088e8f2254fc2d014e25f6919059af2fd7033f148",
+      "tests": 1672,
+      "pass": 1672,
+      "fail": 0,
+      "skipped": 0
+    },
+    {
+      "name": "starts",
+      "command": "pnpm test:starts",
+      "exitCode": 0,
+      "log": "starts.log",
+      "sha256": "f574dae97d396fa82e7d34a14941a9ee3a8fc203cec045c3ada702fd6720f4cd",
+      "tests": 96,
+      "pass": 96,
+      "fail": 0,
+      "skipped": 0
+    },
+    {
+      "name": "schedule",
+      "command": "pnpm test:schedule",
+      "exitCode": 0,
+      "log": "schedule.log",
+      "sha256": "21222f79cfb4ca88ca2bdb35ce57007e7880e82872b56a632e591c5a0fa6eb25",
+      "tests": 27,
+      "pass": 27,
+      "fail": 0,
+      "skipped": 0
+    },
+    {
+      "name": "typecheck",
+      "command": "pnpm typecheck",
+      "exitCode": 0,
+      "log": "typecheck.log",
+      "sha256": "3129e0dd6fffe6e39cca0949fc31cbaf641f8d72bc70baa672ede1b949b7603b"
+    },
+    {
+      "name": "lint",
+      "command": "pnpm lint",
+      "exitCode": 0,
+      "log": "lint.log",
+      "sha256": "8ecf36ad9a01a38ba89fc8054307d3aa095367bbeb12f35a74dfa741fb135a2d"
+    },
+    {
+      "name": "browser",
+      "command": "pnpm test:field:browser",
+      "exitCode": 0,
+      "log": "browser.log",
+      "sha256": "451a6fc6c5382e282d18787e8a78e4b3f685be384b5a5e31a0b49170ef764c7e"
+    },
+    {
+      "name": "browser-sandbox-listen-failure",
+      "command": "pnpm test:field:browser",
+      "exitCode": 1,
+      "log": "browser-sandbox-listen-failure.log",
+      "sha256": "a107751758e70836ffcf42fe04af8dc10cc71019e6690e43a25fcd16829afd7a"
+    },
+    {
+      "name": "diff-check",
+      "command": "git diff --check",
+      "exitCode": 0,
+      "log": "diff-check.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "inventory-refresh",
+      "command": "node scripts/enterprise-production-inventory.cjs --refresh",
+      "exitCode": 0,
+      "log": "inventory-refresh.log",
+      "sha256": "63f1ff90bab9a9cbe4d3cc00c62bc5065e2b18244b1d3a524925b9ecbc5105a7"
+    },
+    {
+      "name": "inventory-check",
+      "command": "node scripts/enterprise-production-inventory.cjs --check",
+      "exitCode": 1,
+      "log": "inventory-check.log",
+      "sha256": "8f956ac1fe3f84ebdd53b6b420b32fe1ce5f7e15b8323c196d9d7b62c2abad7e"
+    }
+  ],
+  "inventoryCheck": {
+    "mode": "--check",
+    "surfaces": 727,
+    "sourceModules": 2915,
+    "nativeFiles": 70,
+    "drift": 0,
+    "dependencyDrift": 0,
+    "dependencyRemoved": 0,
+    "unresolvedLocalImports": 0,
+    "nativeDrift": 0,
+    "nativeMissing": 0,
+    "nativeUnmapped": 70,
+    "nativeUnaccepted": 70,
+    "missing": 0,
+    "unmapped": 571,
+    "unaccepted": 727,
+    "invalidTaskMappings": 0,
+    "unresolvedRemoved": 0,
+    "unresolvedNativeRemoved": 0,
+    "limit": "Static register consistency is not runtime/JWT/RLS, persona, concurrency or release acceptance."
+  },
+  "testRevision": "Original beyond-cap assertion now verifies ID continuation past item004999. Original11 reference batches remain asserted as11 distinct bounded batches; new empty-page probes additionally establish exhaustion. No assertions removed/critical tests skipped.",
+  "browserScope": "Passed on final UI after role/search/navigation/selection refinement. Database keyset refinement separately verified by focused/actual-SDK/auth/starts/schedule/typecheck/lint checks. Browser transport is stubbed and is not authenticated QA.",
+  "implementationAcceptance": false,
+  "releaseAcceptance": false,
+  "remaining": [
+    "Full-schema/current JWT/RLS, actual-home/assignment authority and independent revocation/parent-move/concurrent-edit races remain unproven.",
+    "Browser DTOs are bounded, but original service still collects up to100,000 schedule rows and per-reference PO rows before grouping/search. Database aggregation, server query plans, measured SLOs and snapshot-safe pagination remain open.",
+    "Schedule/PO/contact keyset reads exhaust empty sources and surface caps/errors, but embedded child completeness must be proven against real PostgREST/schema.",
+    "Dispatch still reads sent events before sending and records event/audit after provider acceptance. Atomic intent/claim/exact-body receipt, ambiguous provider responses, cancellation and durable recovery are missing.",
+    "Existing daily company-level suppression can suppress another scoped notice on the same day; reviewed-scope delivery policy and legacy-writer cutover need explicit contract/acceptance.",
+    "No authenticated browser/device, full accessibility/dark/mobile, customer policy, archive/restore or delivery sandbox acceptance. No production sends, migrations or deployment."
+  ]
+}

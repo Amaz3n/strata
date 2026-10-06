@@ -1,5 +1,9 @@
 "use client"
 
+import type { MeasurementContext } from "@/lib/drawings/measurement-context"
+import { MeasurementContextBar } from "./measurement-context-bar"
+import type { FloorplanTarget } from "@/lib/services/floorplan-models"
+import type { WorkspaceView } from "./workspace/workspace-tools"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { ElementType } from "react"
 import { useRouter } from "next/navigation"
@@ -35,14 +39,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -81,11 +77,11 @@ import {
   DRAWING_ISSUANCE_TYPE_LABELS,
 } from "@/lib/validation/drawings"
 import type { DrawingDiscipline, DrawingIssuanceType } from "@/lib/validation/drawings"
-import { uploadDrawingFileToStorage } from "@/lib/services/drawings-client"
+import { useDrawingUploadOperation } from "@/lib/hooks/use-drawing-upload-operation"
+import { UploadOperationPanel } from "@/components/drawings/upload-operation-panel"
 import {
   createDrawingMarkupAction,
   createDrawingPinAction,
-  createDrawingSetFromUpload,
   createPunchItemFromDrawingAction,
   createRfiFromDrawingAction,
   captureDrawingRegionSnapshotAction,
@@ -93,10 +89,10 @@ import {
   deleteDrawingMarkupAction,
   deleteDrawingSetAction,
   deleteDrawingSheetAction,
+  deleteDrawingSheetsAction,
   getProcessingStatusAction,
   getSheetDownloadUrlAction,
   getSheetOptimizedImageUrlsAction,
-  listUploadedSheetsAction,
   listDrawingMarkupsAction,
   listDrawingPinsWithEntitiesAction,
   listDrawingSetsAction,
@@ -119,7 +115,6 @@ import type {
   DrawingPin,
   DrawingSet,
   DrawingSheet,
-  UploadReviewSheet,
   DrawingRevision,
   DrawingSheetVersion,
 } from "@/app/(app)/drawings/types"
@@ -145,6 +140,10 @@ type SaveMarkupInput = import("./drawing-viewer").SaveMarkupInput
 
 
 interface DrawingsSetsViewProps {
+  measurementContext?: MeasurementContext
+  prospectId?: string
+  estimateId?: string
+  preconstruction?: boolean
   initialSets: DrawingSet[]
   initialSheets?: DrawingSheet[]
   /**
@@ -165,6 +164,12 @@ interface DrawingsSetsViewProps {
    * plan rather than to the lot that happens to carry the sheets.
    */
   takeoffPlanVersionId?: string
+  /** The building these drawings describe, for the workspace's 3D view. */
+  modelTarget?: FloorplanTarget | null
+  modelUnavailable?: { message: string; href?: string; linkLabel?: string } | null
+  canWriteModel?: boolean
+  initialView?: WorkspaceView
+  initialModelViewId?: string | null
 }
 
 const DISCIPLINE_ORDER: DrawingDiscipline[] = [
@@ -385,6 +390,10 @@ function describeProcessingStage(set: DrawingSet | null) {
 }
 
 export function DrawingsSetsView({
+  measurementContext,
+  prospectId,
+  estimateId,
+  preconstruction = false,
   initialSets,
   initialSheets = [],
   totalSheetCount,
@@ -394,8 +403,14 @@ export function DrawingsSetsView({
   canWriteTakeoff = false,
   initialConditionId,
   takeoffPlanVersionId,
+  modelTarget = null,
+  modelUnavailable = null,
+  canWriteModel = false,
+  initialView,
+  initialModelViewId = null,
 }: DrawingsSetsViewProps) {
   const router = useRouter()
+  const uploadOperation = useDrawingUploadOperation(selectedProjectId)
   const [sets, setSets] = useState<DrawingSet[]>(initialSets)
   const [selectedSetId, setSelectedSetId] = useState<string | null>(
     initialSelectedSetId ?? null,
@@ -415,19 +430,13 @@ export function DrawingsSetsView({
   const [snapshotSheets, setSnapshotSheets] = useState<DrawingSheet[]>([])
   const [snapshotLoading, setSnapshotLoading] = useState(false)
   const [isDragActive, setIsDragActive] = useState(false)
-  const [processingMessageIndex, setProcessingMessageIndex] = useState(0)
   const dragCounterRef = useRef(0)
+  const bulkDeletion = useRef<{ key: string; operationId: string } | null>(null)
 
   // Upload dialog
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false)
   const [uploadFile, setUploadFile] = useState<File | null>(null)
   const [isUploading, setIsUploading] = useState(false)
-  const [uploadStage, setUploadStage] = useState<string | null>(null)
-  const [uploadTransfer, setUploadTransfer] = useState<{
-    loaded: number
-    total: number
-    percent: number
-  } | null>(null)
   const [issuanceLabel, setIssuanceLabel] = useState("")
   const [issuanceType, setIssuanceType] = useState<DrawingIssuanceType>("revision")
   const [issuanceDate, setIssuanceDate] = useState(() =>
@@ -435,17 +444,6 @@ export function DrawingsSetsView({
   )
   const [issuanceSource, setIssuanceSource] = useState("")
   const [issuanceNotes, setIssuanceNotes] = useState("")
-  const [uploadStep, setUploadStep] = useState<"prepare" | "processing" | "review">("prepare")
-  const [uploadSetId, setUploadSetId] = useState<string | null>(null)
-  const [uploadSourceFileId, setUploadSourceFileId] = useState<string | null>(null)
-  const [uploadStatus, setUploadStatus] = useState<{
-    status: string
-    processed_pages: number
-    total_pages?: number
-    processing_stage?: string
-    error_message?: string
-  } | null>(null)
-  const [uploadedReviewSheets, setUploadedReviewSheets] = useState<UploadReviewSheet[]>([])
   // Draft -> publish revision review
   const [reviewOpen, setReviewOpen] = useState(false)
   // Post-publish (or on-demand) distribution of a published revision to portals.
@@ -523,6 +521,9 @@ export function DrawingsSetsView({
   } | null>(null)
   const sheetOpenRequestIdRef = useRef(0)
   const initialSheetHandledRef = useRef(false)
+  const conditionLandingHandledRef = useRef<string | null>(null)
+  const [conditionLandingError, setConditionLandingError] = useState<{ scopeKey: string; message: string } | null>(null)
+  const [conditionLandingRetry, setConditionLandingRetry] = useState(0)
 
   useEffect(() => {
     setSets(initialSets)
@@ -676,21 +677,6 @@ export function DrawingsSetsView({
     () => describeProcessingStage(activeSet),
     [activeSet],
   )
-  const uploadProcessingMessage = useMemo(() => {
-    if (!uploadStatus) return null
-    return describeProcessingStage({
-      id: uploadSetId ?? "",
-      org_id: "",
-      project_id: selectedProjectId ?? "",
-      title: uploadFile?.name ?? "Upload",
-      status: uploadStatus.status as DrawingSet["status"],
-      processed_pages: uploadStatus.processed_pages,
-      total_pages: uploadStatus.total_pages,
-      processing_stage: uploadStatus.processing_stage,
-      created_at: "",
-      updated_at: "",
-    } as DrawingSet)
-  }, [selectedProjectId, uploadFile?.name, uploadSetId, uploadStatus])
   const liveSheets = useMemo(
     () => (selectedSetId ? sheetsBySet.get(selectedSetId) ?? [] : []),
     [selectedSetId, sheetsBySet],
@@ -715,7 +701,7 @@ export function DrawingsSetsView({
     ? "revision"
     : "baseline"
   const handleUploadModeChange = (mode: string) => {
-    setIssuanceType(mode === "revision" ? "revision" : "ifc_set")
+    setIssuanceType(mode === "revision" ? "revision" : preconstruction ? "bid_set" : "ifc_set")
   }
   // When a past revision is selected, render its snapshot instead of the live set.
   const activeSheets = revisionFilter === "current" ? liveSheets : snapshotSheets
@@ -869,15 +855,10 @@ export function DrawingsSetsView({
     }
     setUploadFile(file)
     setIssuanceLabel("")
-    setIssuanceType(sets.length > 0 ? "revision" : "ifc_set")
+    setIssuanceType(sets.length > 0 ? "revision" : preconstruction ? "bid_set" : "ifc_set")
     setIssuanceDate(new Date().toISOString().slice(0, 10))
     setIssuanceSource("")
     setIssuanceNotes("")
-    setUploadStep("prepare")
-    setUploadStatus(null)
-    setUploadedReviewSheets([])
-    setUploadSetId(null)
-    setUploadSourceFileId(null)
     setUploadDialogOpen(true)
   }
 
@@ -891,39 +872,18 @@ export function DrawingsSetsView({
   const handleUpload = async () => {
     if (!uploadFile || !selectedProjectId) return
     setIsUploading(true)
-    setUploadStage("Uploading PDF…")
     try {
-      const orgId = document.cookie.match(/(?:^|; )org_id=([^;]+)/)?.[1]
-      if (!orgId) throw new Error("Organization not found. Please refresh.")
-
-      const { storagePath } = await uploadDrawingFileToStorage(
-        uploadFile,
-        selectedProjectId,
-        orgId,
-        {
-          onProgress: setUploadTransfer,
-          onStage: (stage) => {
-            if (stage === "preparing") setUploadStage("Preparing upload…")
-            if (stage === "uploading") setUploadStage("Uploading PDF…")
-            if (stage === "finalizing") setUploadStage("Finalizing upload…")
-          },
-        },
-      )
-
-      setUploadStage("Processing PDF…")
-      setUploadTransfer(null)
-      const { set: newSet, draftRevisionId } = unwrapAction(await createDrawingSetFromUpload({
+      const { set: newSet, draftRevisionId } = await uploadOperation.run(uploadFile, uploadOperation.saved?.intent ?? {
         projectId: selectedProjectId,
         fileName: uploadFile.name,
-        storagePath,
         fileSize: uploadFile.size,
-        mimeType: uploadFile.type,
+        mimeType: "application/pdf",
         issuanceLabel: issuanceLabel.trim() || undefined,
         issuanceType,
         issuedDate: issuanceDate || undefined,
         receivedFrom: issuanceSource.trim() || undefined,
         notes: issuanceNotes.trim() || undefined,
-      }))
+      })
 
       setSets((prev) => {
         const withoutCurrent = prev.filter((set) => set.id !== newSet.id)
@@ -946,74 +906,8 @@ export function DrawingsSetsView({
       )
     } finally {
       setIsUploading(false)
-      setUploadStage(null)
-      setUploadTransfer(null)
     }
   }
-
-  useEffect(() => {
-    if (!uploadDialogOpen || uploadStep !== "processing" || !uploadSetId) return
-
-    let cancelled = false
-
-    const poll = async () => {
-      try {
-        const status = await getProcessingStatusAction(uploadSetId)
-        if (cancelled) return
-        setUploadStatus(status)
-
-        setSets((prev) =>
-          prev.map((set) =>
-            set.id === uploadSetId
-              ? {
-                  ...set,
-                  status: status.status as DrawingSet["status"],
-                  processed_pages: status.processed_pages,
-                  total_pages: status.total_pages,
-                  processing_stage: status.processing_stage,
-                  error_message: status.error_message,
-                }
-              : set,
-          ),
-        )
-
-        if (status.status === "ready") {
-          await Promise.all([refreshSets(), loadProjectSheets()])
-          // The worker re-points sheets onto this newly processed set, so the
-          // previously selected set is now empty. Switch to the new set so the
-          // register isn't left showing an empty table after a revision upload.
-          if (!cancelled) setSelectedSetId(uploadSetId)
-          if (uploadSourceFileId) {
-            const reviewSheets = await listUploadedSheetsAction(uploadSourceFileId)
-            if (cancelled) return
-            setUploadedReviewSheets(reviewSheets)
-          }
-          if (!cancelled) {
-            setUploadStep("review")
-          }
-        }
-      } catch (error) {
-        console.error("Failed to poll upload status:", error)
-      }
-    }
-
-    void poll()
-    const interval = setInterval(() => {
-      void poll()
-    }, 2500)
-
-    return () => {
-      cancelled = true
-      clearInterval(interval)
-    }
-  }, [
-    loadProjectSheets,
-    refreshSets,
-    uploadDialogOpen,
-    uploadSetId,
-    uploadSourceFileId,
-    uploadStep,
-  ])
 
   const handleDeleteSet = async () => {
     if (!setToDelete) return
@@ -1106,14 +1000,14 @@ export function DrawingsSetsView({
   }
 
   const handleDeleteDisciplineGroup = async () => {
-    if (!disciplineGroupToDelete) return
+    if (!disciplineGroupToDelete || !selectedProjectId) return
+    const sheetIds = disciplineGroupToDelete.sheets.map(sheet => sheet.id).sort()
+    const key = `${selectedProjectId}:${sheetIds.join(",")}`
+    if (bulkDeletion.current?.key !== key) bulkDeletion.current = { key, operationId: crypto.randomUUID() }
     setIsDeleting(true)
     try {
-      await Promise.all(
-        disciplineGroupToDelete.sheets.map((sheet) =>
-          deleteDrawingSheetAction(sheet.id).then(unwrapAction),
-        ),
-      )
+      unwrapAction(await deleteDrawingSheetsAction({ operationId: bulkDeletion.current.operationId, projectId: selectedProjectId, sheetIds }))
+      bulkDeletion.current = null
       setSheetsBySet((curr) => {
         const next = new Map(curr)
         for (const [setId, list] of next) {
@@ -1239,29 +1133,18 @@ export function DrawingsSetsView({
     }
     setSavingSheetRevision(true)
     try {
-      const orgId = document.cookie.match(/(?:^|; )org_id=([^;]+)/)?.[1]
-      if (!orgId) throw new Error("Organization not found. Please refresh.")
-
-      const { storagePath } = await uploadDrawingFileToStorage(
-        revisionFile,
-        selectedProjectId,
-        orgId,
-        { onProgress: setUploadTransfer },
-      )
-      setUploadTransfer(null)
-      const { draftRevisionId } = unwrapAction(await createDrawingSetFromUpload({
+      const { draftRevisionId } = await uploadOperation.run(revisionFile, {
         projectId: selectedProjectId,
         fileName: revisionFile.name,
-        storagePath,
         fileSize: revisionFile.size,
-        mimeType: revisionFile.type,
+        mimeType: "application/pdf",
         issuanceLabel: cleanRevisionLabel,
         issuanceType: sheetRevisionType,
         issuedDate: sheetRevisionDate || undefined,
         receivedFrom: sheetRevisionSource.trim() || undefined,
         notes: sheetRevisionNotes.trim() || undefined,
         targetSheetId: revisionTargetSheet.id,
-      }))
+      })
 
       await Promise.all([refreshSets(), refreshPendingDraft()])
       setReviewRevisionId(draftRevisionId)
@@ -1271,12 +1154,12 @@ export function DrawingsSetsView({
       setRevisionFile(null)
     } catch (error) {
       console.error("Failed to queue sheet revision:", error)
-      toast.error("Failed to queue sheet revision")
+      toast.error(error instanceof Error ? error.message : "Failed to queue sheet revision")
     } finally {
       setSavingSheetRevision(false)
-      setUploadTransfer(null)
     }
   }, [
+    uploadOperation,
     selectedProjectId,
     selectedSetId,
     sheetRevisionLabel,
@@ -1504,31 +1387,36 @@ export function DrawingsSetsView({
     }
   }, [handleViewSheet, initialSheetId, sheetsBySet])
 
-  // Deep link from an estimate line (?condition=): land on whichever sheet
-  // carries the most of that condition, already in takeoff mode.
+  // Deep link from an estimate line (?condition=): use current scoped evidence.
   useEffect(() => {
-    if (!initialConditionId || initialSheetId || initialSheetHandledRef.current) return
-    if (sheetsBySet.size === 0) return
+    if (!initialConditionId || initialSheetId || sheetsBySet.size === 0) return
+    const scopeKey = `${selectedProjectId ?? takeoffPlanVersionId ?? ""}:${initialConditionId}`
+    if (conditionLandingHandledRef.current === scopeKey) return
     let cancelled = false
-    initialSheetHandledRef.current = true
+    setConditionLandingError(null)
     void getConditionLandingSheetAction(initialConditionId)
+      .then(unwrapAction)
       .then((landing) => {
-        if (cancelled || !landing) return
+        if (cancelled) return
+        if (!landing) {
+          conditionLandingHandledRef.current = scopeKey
+          return
+        }
         for (const sheets of sheetsBySet.values()) {
           const match = sheets.find((sheet) => sheet.id === landing.drawing_sheet_id)
           if (!match) continue
+          conditionLandingHandledRef.current = scopeKey
           setSelectedSetId(match.drawing_set_id)
           void handleViewSheet(match)
           return
         }
+        throw new Error("This condition’s sheet is unavailable in the current register. Refresh and retry.")
       })
-      .catch(() => {
-        // The condition may have no measurements yet; the register is fine.
+      .catch((error) => {
+        if (!cancelled) setConditionLandingError({ scopeKey, message: error instanceof Error ? error.message : "Unable to open this condition. Retry after refreshing the drawings." })
       })
-    return () => {
-      cancelled = true
-    }
-  }, [handleViewSheet, initialConditionId, initialSheetId, sheetsBySet])
+    return () => { cancelled = true }
+  }, [handleViewSheet, initialConditionId, initialSheetId, selectedProjectId, takeoffPlanVersionId, sheetsBySet, conditionLandingRetry])
 
   const handleSaveMarkup = async (markup: SaveMarkupInput) => {
     try {
@@ -1543,12 +1431,27 @@ export function DrawingsSetsView({
           })
         }
       }
-      toast.success("Markup saved")
     } catch (err) {
       console.error(err)
-      toast.error("Failed to save markup")
+      toast.error("Couldn't save that redline")
     }
   }
+
+  /**
+   * Re-read the open sheet's markups after the server saved some on its own
+   * (rooms filled from detection, accepted counts, moved measurements).
+   */
+  const handleMarkupsChanged = useCallback(() => {
+    const sheet = viewerSheet
+    if (!sheet) return
+    void listDrawingMarkupsAction({ drawing_sheet_id: sheet.id })
+      .then((markups) => {
+        setViewerMarkups(markups)
+        const cached = viewerSheetCacheRef.current.get(sheet.id)
+        if (cached) viewerSheetCacheRef.current.set(sheet.id, { ...cached, markups })
+      })
+      .catch(() => {})
+  }, [viewerSheet])
 
   /**
    * A finished measurement. Same write path, different feedback: the panel
@@ -1744,7 +1647,7 @@ export function DrawingsSetsView({
 
   return (
     <div
-      className="relative flex h-full flex-col"
+      className="relative flex h-full min-h-0 w-full flex-1 flex-col"
       onDragEnter={(e) => {
         e.preventDefault()
         e.stopPropagation()
@@ -1776,6 +1679,13 @@ export function DrawingsSetsView({
         if (file) acceptFile(file)
       }}
     >
+      {measurementContext && <MeasurementContextBar context={measurementContext} />}
+      {conditionLandingError && conditionLandingError.scopeKey === `${selectedProjectId ?? takeoffPlanVersionId ?? ""}:${initialConditionId}` && initialConditionId && !initialSheetId && (
+        <div role="alert" className="flex items-center justify-between gap-3 border-b px-4 py-2 text-sm text-destructive">
+          <span>{conditionLandingError.message}</span>
+          <Button variant="outline" size="sm" onClick={() => setConditionLandingRetry(value => value + 1)}>Retry</Button>
+        </div>
+      )}
       <input
         ref={fileInputRef}
         type="file"
@@ -1784,17 +1694,19 @@ export function DrawingsSetsView({
         onChange={handleFileSelect}
       />
 
+      <div className={cn("flex min-h-0 min-w-0 flex-1 flex-col", preconstruction && "overflow-hidden bg-card [&_[data-slot=button]]:rounded-none")}>
       {/* Toolbar */}
-      <div className="border-b">
-        <div className="flex flex-wrap items-center gap-2 px-4 pb-0 pt-0 sm:pb-3 sm:pt-3">
+      <div className="shrink-0 border-b">
+        <div className={cn("flex flex-wrap items-center gap-2 px-4 pb-0 pt-0 sm:pb-3 sm:pt-3", preconstruction && "sm:gap-3 sm:px-5 sm:py-4")}>
           {/* Desktop search lives inline in the toolbar row. */}
-          <div className="relative hidden w-full sm:block sm:max-w-sm">
+          <div className="relative hidden min-w-0 flex-1 sm:block sm:max-w-sm">
             <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               placeholder="Search sheets…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="h-9 pl-9 pr-9"
+              className={cn("h-9 pl-9 pr-9", preconstruction && "h-10 rounded-none border-border/60 bg-muted/30 shadow-none")}
+              aria-label="Search drawing sheets"
               disabled={!activeSet}
             />
             {search && (
@@ -1817,7 +1729,7 @@ export function DrawingsSetsView({
                 Showing
               </span>
               <Select value={revisionFilter} onValueChange={setRevisionFilter}>
-                <SelectTrigger className="h-9 w-[200px]">
+                <SelectTrigger aria-label="Drawing issuance" className={cn("h-9 w-[200px]", preconstruction && "h-10 rounded-none shadow-none")}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -1833,21 +1745,27 @@ export function DrawingsSetsView({
           )}
 
           {/* Upload is desktop-only — mobile is a read/review surface. */}
-          <div className="ml-auto hidden items-center gap-2 sm:flex">
+          <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
+            {canWriteTakeoff && initialSheets.length > 0 && <Button size="sm" variant="default" onClick={() => {
+              const sheets = selectedSetId ? sheetsBySet.get(selectedSetId) ?? [] : initialSheets
+              const sheet = sheets.find(item => item.current_revision_id)
+              if (sheet) void handleViewSheet(sheet)
+              else toast.info("Review and publish the sheets before measuring.")
+            }}>Start takeoff</Button>}
             {sets.length === 0 && !pendingDraft ? (
               <Button
                 onClick={openFilePicker}
                 disabled={!selectedProjectId}
                 size="sm"
-                className="h-9"
+                className={cn("h-9", preconstruction && "h-10 rounded-none px-4")}
               >
                 <Upload className="mr-2 h-4 w-4" />
-                Upload drawings
+                {preconstruction ? "Upload plans" : "Upload drawings"}
               </Button>
             ) : (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button disabled={!selectedProjectId} size="sm" className="h-9">
+                  <Button disabled={!selectedProjectId} size="sm" className={cn("h-9", preconstruction && "h-10 rounded-none px-4")}>
                     {pendingDraft ? (
                       <>
                         <History className="mr-2 h-4 w-4" />
@@ -1856,7 +1774,7 @@ export function DrawingsSetsView({
                     ) : (
                       <>
                         <Upload className="mr-2 h-4 w-4" />
-                        Add issuance
+                        {preconstruction ? "Add plans" : "Add issuance"}
                       </>
                     )}
                     <ChevronDown className="ml-2 h-3.5 w-3.5" />
@@ -1867,13 +1785,13 @@ export function DrawingsSetsView({
                     {pendingDraft ? (
                       <DisabledUploadMenuItem
                         icon={Upload}
-                        label="Add drawing issuance"
+                        label={preconstruction ? "Upload plan package" : "Add drawing issuance"}
                         reason="Publish or discard the pending issuance before uploading another drawing package."
                       />
                     ) : (
                       <DropdownMenuItem onClick={openFilePicker}>
                         <Upload className="mr-2 h-4 w-4" />
-                        Add drawing issuance
+                        {preconstruction ? "Upload plan package" : "Add drawing issuance"}
                       </DropdownMenuItem>
                     )}
                     {pendingDraft ? (
@@ -1889,7 +1807,7 @@ export function DrawingsSetsView({
                       />
                     )}
                     <DropdownMenuSeparator />
-                    {registerRevisions.length > 0 ? (
+                    {!preconstruction && (registerRevisions.length > 0 ? (
                       <DropdownMenuItem
                         onClick={() => {
                           const target =
@@ -1914,7 +1832,7 @@ export function DrawingsSetsView({
                         label="Distribute issuance"
                         reason="Publish an issuance before sending it to portal contacts."
                       />
-                    )}
+                    ))}
                     {selectedProjectId && liveSheets.length > 0 ? (
                       <DropdownMenuItem onClick={() => setSetCheckOpen(true)}>
                         <Search className="mr-2 h-4 w-4" />
@@ -2012,6 +1930,11 @@ export function DrawingsSetsView({
         </div>
       )}
 
+      <UploadOperationPanel operation={uploadOperation} onResume={() => {
+          const file = uploadOperation.saved?.intent.targetSheetId ? revisionFile : uploadFile
+          if (!file || !uploadOperation.saved) { toast.info("Choose the same PDF in the upload dialog to resume."); setUploadDialogOpen(true); return }
+          void uploadOperation.run(file, uploadOperation.saved.intent).then(({ draftRevisionId }) => { setReviewRevisionId(draftRevisionId); setReviewOpen(true) }).catch(error => toast.error(error instanceof Error ? error.message : "Unable to resume upload"))
+        }} />
       {/* Pending draft revision banner */}
       {pendingDraft && (
         <div className="flex items-center gap-3 border-b bg-amber-500/10 px-4 py-2 text-xs">
@@ -2094,15 +2017,17 @@ export function DrawingsSetsView({
         </div>
       )}
 
-      <div className="flex-1 overflow-auto">
+      <div className="min-h-0 flex-1 overflow-auto">
         {!selectedProjectId ? (
           <EmptyState
+            preconstruction={preconstruction}
             icon={FileText}
             title="Select a project"
             description="Choose a project to view its drawings."
           />
         ) : sets.length === 0 ? (
           <EmptyState
+            preconstruction={preconstruction}
             icon={Upload}
             title="No plan sets yet"
             description="Upload a PDF plan set to get started. It will be split into sheets automatically."
@@ -2115,12 +2040,14 @@ export function DrawingsSetsView({
           />
         ) : !activeSet ? (
           <EmptyState
+            preconstruction={preconstruction}
             icon={FileText}
             title="No plan set available"
             description="Upload a plan set to start organizing drawings."
           />
         ) : totalSheetsInSet === 0 ? (
           <EmptyState
+            preconstruction={preconstruction}
             icon={FileText}
             title="No sheets yet"
             description={
@@ -2133,6 +2060,7 @@ export function DrawingsSetsView({
           />
         ) : filteredSheets.length === 0 ? (
           <EmptyState
+            preconstruction={preconstruction}
             icon={Search}
             title="No results"
             description="No sheets match your search."
@@ -2144,6 +2072,7 @@ export function DrawingsSetsView({
           />
         ) : (
           <SheetRegister
+            preconstruction={preconstruction}
             sheets={filteredSheets}
             totalSheetCount={totalSheetCount}
             loadedSheetCount={activeSheets.length}
@@ -2211,46 +2140,36 @@ export function DrawingsSetsView({
         )}
       </div>
 
+      </div>
+
       <Dialog open={uploadDialogOpen} onOpenChange={setUploadDialogOpen}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>
-              {uploadStep === "review"
-                ? "Review imported pages"
-                : sets.length > 0
-                  ? "Upload drawing package"
-                  : "Upload initial drawing package"}
+              {preconstruction ? "Upload plans for estimating" : sets.length > 0 ? "Upload drawing package" : "Upload initial drawing package"}
             </DialogTitle>
             <DialogDescription>
-              {uploadStep === "review"
-                ? "The new pages are ready. Review them here and make any quick corrections before closing."
+              {preconstruction
+                ? "Add a PDF plan set. Review sheet names and revisions, then use the plans to measure your estimate. Uploading does not send plans to the prospect or trades."
                 : sets.length > 0
                   ? "Upload another PDF into this project's single drawing register. We'll process it as a draft package, detect pages by trade, and keep the existing register intact while it runs."
                   : "Upload a PDF and we'll process it, detect page metadata, and separate the pages into trades automatically."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
-            {uploadStep !== "review" && (
-              <div className="rounded-lg border bg-muted/30 p-3 text-xs text-muted-foreground">
-                We process the PDF into a draft issuance first, then let you review what changed before the live register updates.
-              </div>
-            )}
-
+            <div className="border bg-muted/30 p-3 text-xs text-muted-foreground">
+              We process the PDF into a draft issuance first, then let you review what changed before the live register updates.
+            </div>
             {uploadFile && (
-              <div className="flex items-center gap-3 rounded-lg border p-3">
+              <div className="flex items-center gap-3 border p-3">
                 <FileText className="h-5 w-5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">
-                    {uploadFile.name}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {(uploadFile.size / 1024 / 1024).toFixed(2)} MB
-                  </p>
+                  <p className="truncate text-sm font-medium">{uploadFile.name}</p>
+                  <p className="text-xs text-muted-foreground">{(uploadFile.size / 1024 / 1024).toFixed(2)} MB</p>
                 </div>
               </div>
             )}
-
-            {uploadStep === "prepare" && canonicalSet && projectSheetCount > 0 && (
+            {canonicalSet && projectSheetCount > 0 && (
               <div className="space-y-2">
                 <p className="microlabel">How this package lands</p>
                 <RadioGroup
@@ -2293,10 +2212,7 @@ export function DrawingsSetsView({
                         Log as a new baseline package
                       </span>
                       <span className="block text-xs text-muted-foreground">
-                        Recorded as a standalone issuance — permit set, IFC, bid
-                        set. It still lands in {canonicalSet.title}: a project
-                        has one register, so matching sheet numbers still
-                        version up.
+                        Recorded as a new plan package in {canonicalSet.title}. Matching sheet numbers create new versions so you can compare changes before updating quantities.
                       </span>
                     </span>
                   </Label>
@@ -2304,7 +2220,6 @@ export function DrawingsSetsView({
               </div>
             )}
 
-            {uploadStep === "prepare" && (
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="space-y-1.5">
                   <Label htmlFor="issuance-type">Package type</Label>
@@ -2321,7 +2236,7 @@ export function DrawingsSetsView({
                           ? REVISION_ISSUANCE_TYPES
                           : BASELINE_ISSUANCE_TYPES
                         : ISSUANCE_TYPE_ORDER
-                      ).map((type) => (
+                      ).filter((type) => !preconstruction || ["revision", "addendum", "permit_set", "bid_set", "sketch", "other"].includes(type)).map((type) => (
                         <SelectItem key={type} value={type}>
                           {DRAWING_ISSUANCE_TYPE_LABELS[type]}
                         </SelectItem>
@@ -2335,7 +2250,7 @@ export function DrawingsSetsView({
                     id="issuance-label"
                     value={issuanceLabel}
                     onChange={(e) => setIssuanceLabel(e.target.value)}
-                    placeholder="e.g., ASI 03, Bulletin 02"
+                    placeholder={preconstruction ? "e.g., Concept plans, Pricing set 02" : "e.g., ASI 03, Bulletin 02"}
                   />
                 </div>
                 <div className="space-y-1.5">
@@ -2365,216 +2280,16 @@ export function DrawingsSetsView({
                     placeholder="Optional package notes"
                   />
                 </div>
-                {isUploading && (
-                  <div className="space-y-2 sm:col-span-2">
-                    <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <span>{uploadStage ?? "Uploading PDF…"}</span>
-                      {uploadTransfer && (
-                        <span className="tabular-nums">
-                          {(uploadTransfer.loaded / 1024 / 1024).toFixed(1)} /{" "}
-                          {(uploadTransfer.total / 1024 / 1024).toFixed(1)} MB ·{" "}
-                          {uploadTransfer.percent}%
-                        </span>
-                      )}
-                    </div>
-                    <Progress value={uploadTransfer?.percent ?? 0} className="h-1.5" />
-                  </div>
-                )}
               </div>
-            )}
-
-            {uploadStep === "processing" && uploadStatus && uploadProcessingMessage && (
-              <div className="space-y-4 rounded-xl border bg-muted/20 p-4">
-                <div className="flex items-start gap-3">
-                  <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-chart-1" />
-                  <div className="min-w-0 flex-1">
-                    <div
-                      key={`${uploadStatus.processing_stage}-${uploadStatus.processed_pages}`}
-                      className="animate-in slide-in-from-bottom-2 fade-in duration-300"
-                    >
-                      <p className="text-sm font-medium">
-                        {uploadProcessingMessage.title}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {uploadProcessingMessage.detail}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-                <Progress
-                  value={
-                    uploadStatus.total_pages && uploadStatus.total_pages > 0
-                      ? (uploadStatus.processed_pages / uploadStatus.total_pages) * 100
-                      : 5
-                  }
-                  className="h-1.5"
-                />
-                {uploadStage && (
-                  <p className="text-xs text-muted-foreground">{uploadStage}</p>
-                )}
-                {uploadStatus.error_message && (
-                  <p className="text-xs text-destructive">
-                    {uploadStatus.error_message}
-                  </p>
-                )}
-              </div>
-            )}
-
-            {uploadStep === "review" && (
-              <div className="space-y-4">
-                <div className="rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground">
-                  Review the imported pages below. You can rename a page or change its trade right here before closing.
-                </div>
-                <div className="max-h-[420px] overflow-auto rounded-lg border">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Page</TableHead>
-                        <TableHead>Trade</TableHead>
-                        <TableHead className="w-[80px]" />
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {uploadedReviewSheets.length === 0 ? (
-                        <TableRow>
-                          <TableCell
-                            colSpan={3}
-                            className="py-8 text-center text-sm text-muted-foreground"
-                          >
-                            No imported pages were found for review.
-                          </TableCell>
-                        </TableRow>
-                      ) : (
-                        uploadedReviewSheets.map((sheet) => (
-                          <TableRow key={sheet.id}>
-                            <TableCell className="whitespace-normal break-words">
-                              <div className="flex flex-col">
-                                <span className="font-medium">
-                                  {sheet.sheet_number}
-                                </span>
-                                {sheet.sheet_title ? (
-                                  <span className="text-xs text-muted-foreground">
-                                    {sheet.sheet_title}
-                                  </span>
-                                ) : null}
-                              </div>
-                            </TableCell>
-                            <TableCell>
-                              <Select
-                                value={sheet.discipline ?? "X"}
-                                onValueChange={(value) => {
-                                  const nextDiscipline = value as DrawingDiscipline
-                                  setUploadedReviewSheets((prev) =>
-                                    prev.map((candidate) =>
-                                      candidate.id === sheet.id
-                                        ? { ...candidate, discipline: nextDiscipline }
-                                        : candidate,
-                                    ),
-                                  )
-                                  void handleDisciplineChange(sheet.id, nextDiscipline)
-                                }}
-                              >
-                                <SelectTrigger className="h-8 w-[180px]">
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {DISCIPLINE_ORDER.map((code) => (
-                                    <SelectItem key={code} value={code}>
-                                      {disciplineLabel(code)}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </TableCell>
-                            <TableCell className="text-right">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => {
-                                  const liveSheet =
-                                    activeSheets.find((candidate) => candidate.id === sheet.id) ??
-                                    (({
-                                      ...sheet,
-                                      org_id: "",
-                                      project_id: selectedProjectId ?? "",
-                                      share_with_clients: false,
-                                      share_with_subs: false,
-                                      created_at: sheet.updated_at,
-                                    } as unknown) as DrawingSheet)
-                                  setSheetToRename(liveSheet)
-                                  setRenameSheetNumber(sheet.sheet_number)
-                                  setRenameSheetTitle(sheet.sheet_title ?? "")
-                                }}
-                              >
-                                <Pencil className="h-4 w-4" />
-                              </Button>
-                            </TableCell>
-                          </TableRow>
-                        ))
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
-              </div>
-            )}
           </div>
+          <UploadOperationPanel operation={uploadOperation} onResume={() => void handleUpload()} />
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setUploadDialogOpen(false)
-                setUploadFile(null)
-                setUploadStatus(null)
-                setUploadStep("prepare")
-                setUploadedReviewSheets([])
-                setUploadSetId(null)
-                setUploadSourceFileId(null)
-              }}
-              disabled={
-                isUploading ||
-                (uploadStep === "processing" &&
-                  (uploadStatus?.status ?? "processing") === "processing")
-              }
-            >
-              {uploadStep === "review" ? "Close" : "Cancel"}
+            <Button variant="outline" onClick={() => { setUploadDialogOpen(false); setUploadFile(null) }} disabled={isUploading}>
+              Close
             </Button>
-            {uploadStep === "prepare" ? (
-              <Button onClick={handleUpload} disabled={isUploading}>
-                {isUploading ? (
-                  <>
-                    <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                    Uploading…
-                  </>
-                ) : (
-                  <>
-                    <Upload className="mr-2 h-4 w-4" />
-                    Start processing
-                  </>
-                )}
-              </Button>
-            ) : uploadStep === "review" ? (
-              <Button
-                onClick={() => {
-                  setUploadDialogOpen(false)
-                  setUploadFile(null)
-                  setUploadStatus(null)
-                  setUploadStep("prepare")
-                  setUploadedReviewSheets([])
-                  setUploadSetId(null)
-                  setUploadSourceFileId(null)
-                }}
-              >
-                Finish review
-              </Button>
-            ) : uploadStatus?.status === "failed" && uploadSetId ? (
-              <Button
-                onClick={() => {
-                  void handleRetry(uploadSetId)
-                }}
-              >
-                Retry import
-              </Button>
-            ) : null}
+            <Button onClick={handleUpload} disabled={isUploading}>
+              {isUploading ? <><RefreshCw className="mr-2 h-4 w-4 animate-spin" />Uploading…</> : <><Upload className="mr-2 h-4 w-4" />Start processing</>}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -2767,7 +2482,7 @@ export function DrawingsSetsView({
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
-            <div className="rounded-lg border bg-muted/30 px-3 py-2 text-sm">
+            <div className="rounded-none border bg-muted/30 px-3 py-2 text-sm">
               <p className="font-medium">
                 {revisionTargetSheet?.sheet_number}{" "}
                 {revisionTargetSheet?.sheet_title ?? ""}
@@ -2848,22 +2563,9 @@ export function DrawingsSetsView({
               />
             </div>
             {loadingRevisionMeta && (
-              <div className="rounded-lg border bg-muted/30 px-3 py-2 text-xs text-muted-foreground flex items-center gap-2">
+              <div className="rounded-none border bg-muted/30 px-3 py-2 text-xs text-muted-foreground flex items-center gap-2">
                 <RefreshCw className="h-3.5 w-3.5 animate-spin" />
                 Loading revision details...
-              </div>
-            )}
-            {savingSheetRevision && uploadTransfer && (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>Uploading PDF…</span>
-                  <span className="tabular-nums">
-                    {(uploadTransfer.loaded / 1024 / 1024).toFixed(1)} /{" "}
-                    {(uploadTransfer.total / 1024 / 1024).toFixed(1)} MB ·{" "}
-                    {uploadTransfer.percent}%
-                  </span>
-                </div>
-                <Progress value={uploadTransfer.percent} className="h-1.5" />
               </div>
             )}
             {knownRevisions.length > 0 && (
@@ -2873,6 +2575,7 @@ export function DrawingsSetsView({
               </p>
             )}
           </div>
+          <UploadOperationPanel operation={uploadOperation} onResume={() => void handleUploadSheetRevision()} />
           <DialogFooter>
             <Button
               variant="outline"
@@ -2900,6 +2603,7 @@ export function DrawingsSetsView({
 
       {reviewOpen && reviewRevisionId && (
         <RevisionReviewDialog
+          preconstruction={preconstruction}
           open={reviewOpen}
           onOpenChange={(open) => {
             setReviewOpen(open)
@@ -2908,7 +2612,7 @@ export function DrawingsSetsView({
           revisionId={reviewRevisionId}
           onPublished={handleReviewResolved}
           onDiscarded={handleReviewResolved}
-          onDistribute={(revisionId) =>
+          onDistribute={preconstruction ? undefined : (revisionId) =>
             setDistributeTarget({
               id: revisionId,
               label: pendingDraft?.id === revisionId ? issuanceDisplayLabel(pendingDraft) : null,
@@ -2947,8 +2651,11 @@ export function DrawingsSetsView({
 
       {viewerOpen && viewerSheet && (
         <DrawingViewer
+          measurementContext={measurementContext}
+          prospectId={prospectId}
+          estimateId={estimateId}
           sheet={viewerSheet}
-          initialVersionsPanelOpen={viewerVersionsOpen}
+          initialVersionsOpen={viewerVersionsOpen}
           fileUrl={viewerUrl ?? undefined}
           markups={viewerMarkups}
           pins={viewerPins}
@@ -2957,7 +2664,8 @@ export function DrawingsSetsView({
           onSaveMarkup={handleSaveMarkup}
           onSaveMeasurement={handleSaveMeasurement}
           onDeleteMarkup={handleDeleteMarkup}
-          onCreatePin={handleCreatePin}
+          onMarkupsChanged={handleMarkupsChanged}
+          onCreatePin={preconstruction ? undefined : handleCreatePin}
           takeoffProjectId={viewerSheet.project_id ?? selectedProjectId ?? null}
           takeoffPlanVersionId={takeoffPlanVersionId ?? null}
           canWriteTakeoff={canWriteTakeoff}
@@ -2968,6 +2676,11 @@ export function DrawingsSetsView({
           imageThumbnailUrl={viewerSheet.image_thumbnail_url}
           imageWidth={viewerSheet.image_width}
           imageHeight={viewerSheet.image_height}
+          modelTarget={modelTarget}
+          modelUnavailable={modelUnavailable}
+          canWriteModel={canWriteModel}
+          initialView={initialView}
+          initialModelViewId={initialModelViewId}
         />
       )}
 
@@ -3002,19 +2715,21 @@ export function DrawingsSetsView({
 }
 
 function EmptyState({
+  preconstruction = false,
   icon: Icon,
   title,
   description,
   action,
 }: {
+  preconstruction?: boolean
   icon: React.ComponentType<{ className?: string }>
   title: string
   description: string
   action?: React.ReactNode
 }) {
   return (
-    <div className="flex flex-col items-center justify-center py-16 text-center">
-      <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-md border bg-muted/40">
+    <div className={cn("flex flex-col items-center justify-center py-16 text-center", preconstruction && "px-5 [&_button]:h-10 [&_button]:rounded-none [&_button]:px-4")}>
+      <div className={cn("mb-4 flex h-12 w-12 items-center justify-center rounded-none border bg-muted/40", preconstruction && "rounded-[16px] border-border/60")}>
         <Icon className="h-5 w-5 text-muted-foreground" />
       </div>
       <h2 className="mb-1 text-base font-semibold">{title}</h2>

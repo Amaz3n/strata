@@ -83,7 +83,7 @@ export async function suggestDocumentFileNameFromBytes({
   }
 
   const result = await runAiObject({
-    feature: "document_extraction",
+    feature: "document_naming",
     schema: filenameSuggestionSchema,
     system: DOCUMENT_RENAME_SYSTEM,
     prompt: `Original file name: ${fileName}`,

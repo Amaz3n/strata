@@ -1,5 +1,7 @@
 import "server-only"
 
+import { tagSampleImportedHomes } from "@/lib/services/sample-home-provenance"
+import { requireAnyPlatformPermission } from "@/lib/services/platform-access"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { commitImportBatch, stageImportBatch } from "@/lib/services/imports"
 import { recordAudit } from "@/lib/services/audit"
@@ -33,16 +35,48 @@ async function importCsv(input: { orgId: string; importer: "plan_library" | "opt
   return commitImportBatch(batch.id, { platformOrgId: input.orgId })
 }
 
-export async function seedSampleCommunity(orgId: string, actorUserId: string): Promise<{ communityId: string }> {
+async function assertSampleNamespaceAvailable(orgId: string) {
   const supabase = createServiceSupabaseClient()
-  const { data: existing } = await supabase.from("communities").select("id").eq("org_id", orgId).contains("metadata", { is_sample: true }).maybeSingle()
-  if (existing) return { communityId: existing.id }
+  const probes = [
+    ["house_plans", "code", SAMPLE_COMMUNITY_SPEC.plans.map(plan => plan.code)],
+    ["selection_options", "sku", Array.from({ length: 15 }, (_, i) => `CYP-OPT-${String(i + 1).padStart(2, "0")}`)],
+    ["selection_categories", "name", ["Kitchen", "Flooring", "Electrical", "Exterior"].map(name => `Cypress Sample — ${name}`)],
+    ["companies", "name", Array.from({ length: 6 }, (_, i) => `Cypress Sample Trade ${i + 1}`)],
+    ["communities", "name", [SAMPLE_COMMUNITY_SPEC.name]],
+    ["communities", "code", [SAMPLE_COMMUNITY_SPEC.code]],
+    ["schedule_templates", "name", ["Cypress Landing 120-day build"]],
+    ["contacts", "email", ["sample-buyer-1@example.invalid", "sample-buyer-2@example.invalid"]],
+  ] as const
+  // Every value is a server-owned template constant, not user-supplied filter
+  // text. ilike catches casing differences also normalized by the importers.
+  const results = await Promise.all(probes.map(async ([table, column, values]) => ({
+    table,
+    result: await supabase.from(table).select("id", { count: "exact", head: true })
+      .eq("org_id", orgId).or(values.map(value => `${column}.ilike.${value}`).join(",")),
+  })))
+  for (const { table, result } of results) {
+    if (result.error || result.count == null) throw new Error(`Unable to verify sample namespace in ${table}`)
+    if (result.count > 0) throw new Error(`Sample namespace already exists in ${table}; reconcile original ownership before seeding`)
+  }
+}
 
-  const planRows = SAMPLE_COMMUNITY_SPEC.plans.flatMap((plan) => ["A", "B"].map((elevation, index) => ({ plan_code: plan.code, plan_name: plan.name, series: "Cypress Landing Sample", heated_sqft: plan.heatedSqft, total_sqft: plan.heatedSqft + 320, beds: plan.beds, baths: plan.baths, stories: plan.heatedSqft > 2000 ? 2 : 1, garage_bays: 2, elevation_code: elevation, elevation_name: index ? "Coastal" : "Craftsman", elevation_sqft_delta: index * 40, swing_applicable: true })))
-  await importCsv({ orgId, importer: "plan_library", name: "sample-plans.csv", headers: Object.keys(planRows[0]), rows: planRows, context: { file_kind: "plans", is_sample: true } })
+export async function seedSampleCommunity(orgId: string, actorUserId: string): Promise<{ communityId: string }> {
+  const actor = await requireAnyPlatformPermission(["platform.support.write"])
+  if (actor.id !== actorUserId) throw new Error("Platform actor mismatch")
+  const supabase = createServiceSupabaseClient()
+  const { data: existing, error: existingError } = await supabase.from("communities").select("id,metadata").eq("org_id", orgId).contains("metadata", { is_sample: true }).maybeSingle()
+  if (existingError) throw new Error("Unable to inspect the original sample community")
+  if (existing) {
+    if (existing.metadata?.sample_seed_status !== "seeded") throw new Error("Existing sample completion is unproven; reconcile its original import evidence before retrying")
+    return { communityId: existing.id }
+  }
+  await assertSampleNamespaceAvailable(orgId)
 
   const { data: costCodes } = await supabase.from("cost_codes").select("code").eq("org_id", orgId).eq("is_active", true).order("code").limit(25)
   if (!costCodes || costCodes.length < 5) throw new Error("Seed cost codes before the sample community")
+  const planRows = SAMPLE_COMMUNITY_SPEC.plans.flatMap((plan) => ["A", "B"].map((elevation, index) => ({ plan_code: plan.code, plan_name: plan.name, series: "Cypress Landing Sample", heated_sqft: plan.heatedSqft, total_sqft: plan.heatedSqft + 320, beds: plan.beds, baths: plan.baths, stories: plan.heatedSqft > 2000 ? 2 : 1, garage_bays: 2, elevation_code: elevation, elevation_name: index ? "Coastal" : "Craftsman", elevation_sqft_delta: index * 40, swing_applicable: true })))
+  await importCsv({ orgId, importer: "plan_library", name: "sample-plans.csv", headers: Object.keys(planRows[0]), rows: planRows, context: { file_kind: "plans", is_sample: true } })
+
   // Sample takeoff aims at a believable production direct cost: the square-foot
   // scopes carry roughly $95/sf and the lump-sum scopes another ~$38k, landing a
   // 1,650 sf plan near $118/sf and a 2,400 sf plan near $111/sf. Values are cents.
@@ -71,11 +105,11 @@ export async function seedSampleCommunity(orgId: string, actorUserId: string): P
   ]
   const { data: schedule, error: scheduleError } = await supabase.from("schedule_templates").insert({ org_id: orgId, name: "Cypress Landing 120-day build", property_type: "production", items: scheduleItems, created_by: actorUserId }).select("id").single()
   if (scheduleError || !schedule) throw new Error(`Failed to create sample schedule: ${scheduleError?.message}`)
-  const { data: plans } = await supabase.from("house_plans").select("id,code,metadata,versions:house_plan_versions(id,status)").eq("org_id", orgId).eq("series", "Cypress Landing Sample")
+  const { data: plans } = await supabase.from("house_plans").select("id,code,metadata,versions:house_plan_versions(id,status,metadata)").eq("org_id", orgId).eq("series", "Cypress Landing Sample").in("code", SAMPLE_COMMUNITY_SPEC.plans.map(plan => plan.code))
   for (const plan of plans ?? []) {
     const draft = Array.isArray(plan.versions) ? plan.versions.find((version) => version.status === "draft") : null
     if (!draft) continue
-    const { error: configureError } = await supabase.from("house_plan_versions").update({ schedule_template_id: schedule.id, metadata: { is_sample: true } }).eq("org_id", orgId).eq("id", draft.id)
+    const { error: configureError } = await supabase.from("house_plan_versions").update({ schedule_template_id: schedule.id, metadata: { ...(draft.metadata ?? {}), is_sample: true } }).eq("org_id", orgId).eq("id", draft.id)
     if (configureError) throw new Error(`Failed to configure sample plan: ${configureError.message}`)
     const { error: releaseError } = await supabase.rpc("release_house_plan_version", { p_org_id: orgId, p_version_id: draft.id, p_actor_id: actorUserId, p_bundle_snapshot: { sample: true, schedule_template: { id: schedule.id, items: scheduleItems } } })
     if (releaseError) throw new Error(`Failed to release sample plan: ${releaseError.message}`)
@@ -92,17 +126,24 @@ export async function seedSampleCommunity(orgId: string, actorUserId: string): P
   await importCsv({ orgId, importer: "communities_lots", name: "sample-lots.csv", headers: Object.keys(lotRows[0]), rows: lotRows, context: { is_sample: true } })
   const { data: community, error: communityError } = await supabase.from("communities").select("id,metadata").eq("org_id", orgId).eq("name", SAMPLE_COMMUNITY_SPEC.name).single()
   if (communityError || !community) throw new Error(`Failed to load sample community: ${communityError?.message}`)
-  await supabase.from("communities").update({ metadata: { ...(community.metadata ?? {}), is_sample: true } }).eq("org_id", orgId).eq("id", community.id)
+  const { data: building, error: buildingError } = await supabase.from("communities").update({ metadata: { ...(community.metadata ?? {}), is_sample: true, sample_seed_status: "building" } }).eq("org_id", orgId).eq("id", community.id).eq("metadata", JSON.stringify(community.metadata ?? {})).select("id").maybeSingle()
+  if (buildingError || !building) throw new Error("Sample community changed before house import; inspect original import evidence")
 
   const asOfDate = new Date().toISOString().slice(0, 10)
   const houseLots = [12, 13, 14, 15, 16, 17]
   const budgets = houseLots.flatMap((lotNumber) => costCodes.slice(0, 5).map((costCode, index) => ({ community: SAMPLE_COMMUNITY_SPEC.name, lot_number: String(lotNumber), cost_code: costCode.code, budget_cents: (5000000 + index * 1000000) / 100 })))
   const purchaseOrders = houseLots.flatMap((lotNumber) => [0, 1].map((index) => ({ community: SAMPLE_COMMUNITY_SPEC.name, lot_number: String(lotNumber), po_number: `CYP-${lotNumber}-${index + 1}`, vendor: `Cypress Sample Trade ${index + 1}`, cost_code: costCodes[index].code, description: index ? "Open finish allowance" : "Open framing balance", remaining_cents: (1250000 + index * 500000) / 100, original_cents: (2500000 + index * 500000) / 100 })))
   const houses = houseLots.map((lotNumber, index) => ({ community: SAMPLE_COMMUNITY_SPEC.name, lot_number: String(lotNumber), plan_code: SAMPLE_COMMUNITY_SPEC.plans[index % 3].code, elevation_code: index % 2 ? "A" : "B", stage_task: ["Foundation", "Framing", "Dry-in", "MEP rough", "Drywall", "Interior finishes"][index], stage_date: asOfDate, budget_total_cents: 350000, sold: index >= 4, buyer_name: index >= 4 ? `Sample Buyer ${index - 3}` : "", buyer_email: index >= 4 ? `sample-buyer-${index - 3}@example.invalid` : "", sale_price_cents: index >= 4 ? (52500000 + index * 1000000) / 100 : "", sale_date: index >= 4 ? asOfDate : "" }))
-  await importCsv({ orgId, importer: "open_wip", name: "sample-wip-budgets.csv", headers: Object.keys(budgets[0]), rows: budgets, context: { file_kind: "budgets", as_of_date: asOfDate, is_sample: true } })
-  await importCsv({ orgId, importer: "open_wip", name: "sample-wip-pos.csv", headers: Object.keys(purchaseOrders[0]), rows: purchaseOrders, context: { file_kind: "purchase_orders", as_of_date: asOfDate, is_sample: true } })
-  await importCsv({ orgId, importer: "open_wip", name: "sample-wip-houses.csv", headers: Object.keys(houses[0]), rows: houses, context: { file_kind: "houses", as_of_date: asOfDate, is_sample: true } })
-  await supabase.from("projects").update({ metadata: { is_sample: true, sample_community_id: community.id } }).eq("org_id", orgId).contains("metadata", { imported_open_wip: true })
+  const budgetBatch = await importCsv({ orgId, importer: "open_wip", name: "sample-wip-budgets.csv", headers: Object.keys(budgets[0]), rows: budgets, context: { file_kind: "budgets", as_of_date: asOfDate, is_sample: true } })
+  const poBatch = await importCsv({ orgId, importer: "open_wip", name: "sample-wip-pos.csv", headers: Object.keys(purchaseOrders[0]), rows: purchaseOrders, context: { file_kind: "purchase_orders", as_of_date: asOfDate, is_sample: true } })
+  const houseBatch = await importCsv({ orgId, importer: "open_wip", name: "sample-wip-houses.csv", headers: Object.keys(houses[0]), rows: houses, context: { file_kind: "houses", as_of_date: asOfDate, is_sample: true, companion_batch_ids: { budgets: budgetBatch.id, purchase_orders: poBatch.id } } })
+  await tagSampleImportedHomes({ orgId, communityId: community.id, batchId: houseBatch.id, actorUserId })
+  const { data: seeded, error: seededError } = await supabase.from("communities").update({ metadata: {
+    ...(community.metadata ?? {}), is_sample: true, sample_seed_status: "seeded", sample_home_batch_id: houseBatch.id,
+  } }).eq("org_id", orgId).eq("id", community.id)
+    .eq("metadata", JSON.stringify({ ...(community.metadata ?? {}), is_sample: true, sample_seed_status: "building" }))
+    .select("id").maybeSingle()
+  if (seededError || !seeded) throw new Error("Sample completion changed; inspect original import evidence before retrying")
 
   await Promise.all([
     recordEvent({ orgId, actorId: actorUserId, eventType: "sample_community_seeded", entityType: "community", entityId: community.id, payload: { lot_count: 20, plan_count: 3 } }),
@@ -112,27 +153,10 @@ export async function seedSampleCommunity(orgId: string, actorUserId: string): P
 }
 
 export async function deleteSampleCommunity(orgId: string, communityId: string, actorUserId: string) {
-  const supabase = createServiceSupabaseClient()
-  const { data: community } = await supabase.from("communities").select("id,metadata").eq("org_id", orgId).eq("id", communityId).maybeSingle()
-  if (!community || community.metadata?.is_sample !== true) throw new Error("Only a marked sample community can be removed")
-  const { data: projects } = await supabase.from("projects").select("id").eq("org_id", orgId).contains("metadata", { sample_community_id: communityId })
-  if (projects?.length) await supabase.from("projects").delete().eq("org_id", orgId).in("id", projects.map((project) => project.id))
-  await supabase.from("communities").delete().eq("org_id", orgId).eq("id", communityId)
-  const { data: sampleOptions } = await supabase.from("selection_options").select("id,category_id").eq("org_id", orgId).ilike("sku", "CYP-OPT-%")
-  if (sampleOptions?.length) await supabase.from("selection_options").delete().eq("org_id", orgId).in("id", sampleOptions.map((option) => option.id))
-  const categoryIds = [...new Set((sampleOptions ?? []).map((option) => option.category_id))]
-  if (categoryIds.length) await supabase.from("selection_categories").delete().eq("org_id", orgId).in("id", categoryIds)
-  const { data: sampleCompanies } = await supabase.from("companies").select("id").eq("org_id", orgId).ilike("name", "Cypress Sample Trade %")
-  if (sampleCompanies?.length) {
-    const companyIds = sampleCompanies.map((company) => company.id)
-    await supabase.from("vendor_price_agreements").delete().eq("org_id", orgId).in("company_id", companyIds)
-    await supabase.from("companies").delete().eq("org_id", orgId).in("id", companyIds)
-  }
-  const { data: samplePlans } = await supabase.from("house_plans").select("id").eq("org_id", orgId).contains("metadata", { is_sample: true })
-  if (samplePlans?.length) await supabase.from("house_plans").delete().eq("org_id", orgId).in("id", samplePlans.map((plan) => plan.id))
-  await supabase.from("schedule_templates").delete().eq("org_id", orgId).eq("name", "Cypress Landing 120-day build")
-  await supabase.from("contacts").delete().eq("org_id", orgId).ilike("email", "sample-buyer-%@example.invalid")
-  const { data: sampleBatches } = await supabase.from("import_batches").select("id").eq("org_id", orgId).contains("context", { is_sample: true })
-  if (sampleBatches?.length) await supabase.from("import_batches").delete().eq("org_id", orgId).in("id", sampleBatches.map((batch) => batch.id))
-  await recordAudit({ orgId, actorId: actorUserId, action: "delete", entityType: "community", entityId: communityId, before: { is_sample: true } })
+  const actor = await requireAnyPlatformPermission(["platform.support.write"])
+  if (actor.id !== actorUserId) throw new Error("Platform actor mismatch")
+  // Names and mutable sample markers cannot prove ownership. Do not run any
+  // delete until original-run ownership and a transactional reset are available.
+  if (!orgId || !communityId) throw new Error("Sample reset scope is required")
+  throw new Error("Sample reset is unavailable until original ownership can be verified. Existing data has been preserved.")
 }

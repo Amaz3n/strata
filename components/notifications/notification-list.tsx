@@ -4,11 +4,10 @@ import { Bell, CheckCheck, Settings } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
-import { useNotifications } from '@/hooks/use-notifications'
+import type { useNotifications } from '@/hooks/use-notifications'
 import { NotificationItem } from './notification-item'
 
-export function NotificationList() {
-  const { notifications, unreadCount, markAllAsRead, isLoading } = useNotifications()
+export function NotificationList({ notifications, unreadCount, markAsRead, markAllAsRead, isLoading }: ReturnType<typeof useNotifications>) {
 
   const unreadNotifications = notifications.filter(n => !n.is_read)
   const readNotifications = notifications.filter(n => n.is_read)
@@ -60,6 +59,7 @@ export function NotificationList() {
                     key={notification.id}
                     notification={notification}
                     isRead={false}
+                    markAsRead={markAsRead}
                   />
                 ))}
                 {readNotifications.length > 0 && <Separator className="my-2" />}
@@ -72,6 +72,7 @@ export function NotificationList() {
                 key={notification.id}
                 notification={notification}
                 isRead={true}
+                markAsRead={markAsRead}
               />
             ))}
           </div>

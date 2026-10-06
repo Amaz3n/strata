@@ -1,8 +1,12 @@
+import { wipSourcesCurrent } from "@/lib/services/books/wip-source-evidence";
+import { loadPocPositionsAsOf } from "@/lib/services/poc";
+import { wipSnapshotEvidence, wipReviewMatches } from "@/lib/services/books/wip-period-rules";
 import "server-only";
 
 import { z } from "zod";
 import { clearingReviewSchema, loadClearingPosition } from "@/lib/services/books/clearing-support";
 import { clearingSupportMatches } from "@/lib/services/books/clearing-support-rules";
+import { requireLedgerTieOut, retainageCloseChecks } from "@/lib/services/books/close-control-rules";
 
 import {
   BILLED_INVOICE_STATUSES,
@@ -11,6 +15,7 @@ import {
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access";
 import { recordAudit } from "@/lib/services/audit";
+import { getBooksModuleSettings } from "@/lib/services/books/module";
 import { booksDigest } from "@/lib/services/books/hash";
 import {
   buildBalanceSheet,
@@ -23,7 +28,7 @@ import { fiscalYearRangeEndingOn } from "@/lib/services/books/fiscal-calendar";
 import { postBooksJournalEntry } from "@/lib/services/books/ledger";
 import { postYearEndClose } from "@/lib/services/books/posting-rules";
 import { resolveProjectionVersion } from "@/lib/services/books/projector";
-import { loadProjectRevenueBases } from "@/lib/services/books/revenue-basis";
+import { loadPocProjectsForPeriod } from "@/lib/services/books/wip-project-scope";
 import { recognizeRevenueForPeriod } from "@/lib/services/books/revenue-recognition";
 import { runLedgerTieOuts } from "@/lib/services/books/verifier";
 import { TIE_OUT_ITEM_CATEGORIES } from "@/lib/services/books/reconciliation-rules";
@@ -197,6 +202,9 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
   if (periodError)
     throw new Error(`Failed to load accounting period: ${periodError.message}`);
   const period = periodSchema.parse(periodData);
+  const { settings } = await getBooksModuleSettings({ orgId: context.orgId });
+  if (!settings) throw new Error("Books settings are required to run close checks");
+  const requiresExternalSync = settings.external_sync_posture !== "disconnected";
 
   const [
     drafts,
@@ -289,19 +297,8 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle(),
-    loadProjectRevenueBases(context.orgId),
-    collectPages(
-      (from, to) =>
-        service
-          .from("poc_snapshots")
-          .select("project_id, as_of")
-          .eq("org_id", context.orgId)
-          .lte("as_of", period.period_end)
-          .order("created_at", { ascending: true })
-          .order("id", { ascending: true })
-          .range(from, to),
-      "POC snapshots",
-    ),
+    loadPocProjectsForPeriod(context.orgId, period.period_end),
+    loadPocPositionsAsOf({ orgId: context.orgId, asOf: period.period_end }),
     // Bills are loaded for the coding check only; AR/AP balances come from the tie-outs.
     collectPages(
       (from, to) =>
@@ -337,7 +334,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
     // Approved work that never reached the external system. Closing a period
     // while the mirror is behind means the two ledgers disagree about a period
     // nobody can reopen without an audit trail.
-    service
+    requiresExternalSync ? service
       .from("accounting_sync_records")
       .select("id, entity_type, entity_id, status")
       .eq("org_id", context.orgId)
@@ -348,7 +345,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
         "needs_review",
         "conflict",
       ])
-      .limit(SYNC_BACKLOG_SCAN_LIMIT),
+      .limit(SYNC_BACKLOG_SCAN_LIMIT) : Promise.resolve({ data: [], error: null }),
     // Payments the compliance gate is holding. These are real obligations that
     // belong to this period even though no cash moved.
     service
@@ -410,13 +407,8 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
   // Every control check reads the tie-outs rather than recomputing them. The AR and AP
   // numbers used to be derived a second time here, against hardcoded "1100"/"2000"
   // literals, so the close and the verifier could disagree about the same balance.
-  const tieOut = (code: string) =>
-    tieOuts.find((row) => row.code === code) ?? {
-      status: "passed" as const,
-      ledgerCents: 0,
-      subledgerCents: 0,
-      differenceCents: 0,
-    };
+  const tieOut = (code: Parameters<typeof requireLedgerTieOut>[1]) =>
+    requireLedgerTieOut(tieOuts, code);
   const jobCostTieOut = tieOut("job_cost_control");
   const arTieOut = tieOut("ar_control");
   const apTieOut = tieOut("ap_control");
@@ -455,22 +447,13 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
     const end = latestBankReconciliation.get(account.id);
     return !end || end < period.period_end;
   });
-  const latestPoc = new Map<string, string>();
-  for (const row of pocSnapshots) {
-    const current = latestPoc.get(row.project_id);
-    if (!current || row.as_of > current)
-      latestPoc.set(row.project_id, row.as_of);
-  }
+  const latestPoc = pocSnapshots;
   // Only percentage-of-completion projects have a POC position. A production
   // spec home sold under a purchase agreement earns revenue at closing, so
   // requiring a snapshot for it would block the period forever.
-  const pocProjects = pocProjectBases.filter(
-    (project) =>
-      project.basis === "percentage_of_completion" &&
-      (project.status === "active" || project.status === "on_hold"),
-  );
+  const pocProjects = pocProjectBases;
   const missingPoc = pocProjects.filter(
-    (project) => latestPoc.get(project.projectId) !== period.period_end,
+    (project) => latestPoc.get(project.projectId)?.asOf !== period.period_end,
   );
   const unmatched = bankTransactions.filter((transaction) => {
     const matches = Array.isArray(transaction.bank_transaction_matches)
@@ -480,12 +463,17 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       (match: { status?: string }) => match.status === "confirmed",
     );
   });
-  const [clearingPosition, clearingItem] = await Promise.all([
+  const [clearingPosition, clearingItem, wipItem] = await Promise.all([
     loadClearingPosition(context.orgId, period.period_end),
     service.from("books_close_items").select("support_review").eq("org_id", context.orgId).eq("period_id", period.id).eq("code", "clearing_accounts").maybeSingle(),
+    service.from("books_close_items").select("support_review").eq("org_id", context.orgId).eq("period_id", period.id).eq("code", "poc_snapshots").maybeSingle(),
   ]);
   if (clearingItem.error) throw new Error(`Failed to load clearing support: ${clearingItem.error.message}`);
   const clearingBalances = clearingPosition.balances;
+  if (wipItem.error) throw new Error(`Failed to load WIP review: ${wipItem.error.message}`);
+  const currentWipEvidence = wipSnapshotEvidence(pocSnapshots, pocProjects.map(row => row.projectId));
+  const wipSourcesUnchanged = await wipSourcesCurrent(service, context.orgId, currentWipEvidence.map(row => row.snapshotId));
+  const wipReviewed = pocProjects.length === 0 || (wipSourcesUnchanged && wipReviewMatches(wipItem.data?.support_review, currentWipEvidence));
   const clearingReview = clearingReviewSchema.safeParse(clearingItem.data?.support_review);
   const clearingSupported = clearingReview.success && clearingReview.data.ledgerDigest === clearingPosition.ledgerDigest &&
     clearingSupportMatches(clearingBalances, clearingReview.data.items, period.period_end);
@@ -526,6 +514,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
   );
 
   const checks: CloseCheck[] = [
+    ...retainageCloseChecks(tieOuts),
     {
       code: "journal_drafts",
       label: "All journals posted",
@@ -601,13 +590,13 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
     },
     {
       code: "poc_snapshots",
-      label: "WIP and POC captured through period end",
+      label: "WIP and POC reviewed through period end",
       category: "construction",
       blocking: true,
-      status: missingPoc.length ? "failed" : "passed",
-      issueCount: missingPoc.length,
+      status: missingPoc.length || !wipReviewed ? "failed" : "passed",
+      issueCount: missingPoc.length || (wipReviewed ? 0 : 1),
       href: "/reports/wip-over-under",
-      evidence: { project_ids: missingPoc.map((row) => row.projectId) },
+      evidence: { project_ids: missingPoc.map((row) => row.projectId), snapshots: currentWipEvidence, reviewed: wipReviewed, sources_current: wipSourcesUnchanged },
     },
     {
       code: "job_cost_control",
@@ -650,6 +639,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
     },
     {
       code: "customer_deposits_control",
+      href: "/billing/deposits",
       label: "Customer-deposit liability ties to unapplied deposits",
       category: "controls",
       blocking: true,
@@ -685,7 +675,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
         blocking: true,
         status: item.tieOut.status,
         issueCount: item.tieOut.status === "failed" ? 1 : 0,
-        href: "/books",
+        href: "/books/assets",
         evidence: {
           ledger_cents: item.tieOut.ledgerCents,
           subledger_cents: item.tieOut.subledgerCents,
@@ -700,7 +690,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       blocking: true,
       status: clearingBalances.length && !clearingSupported ? "failed" : "passed",
       issueCount: clearingSupported ? 0 : clearingBalances.length,
-      href: "/books/chart",
+      href: "/settings/accounting/chart-of-accounts",
       evidence: { balances: clearingBalances, ledger_digest: clearingPosition.ledgerDigest, supported: clearingSupported, review: clearingReview.success ? clearingReview.data : null },
     },
     {
@@ -710,7 +700,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       blocking: true,
       status: missingDepreciation.length ? "failed" : "passed",
       issueCount: missingDepreciation.length,
-      href: "/books",
+      href: "/books/assets",
       evidence: { asset_ids: missingDepreciation.map((asset) => asset.id) },
     },
     {
@@ -726,7 +716,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
           : "passed",
       issueCount:
         (unassignedTaxInvoices.count ?? 0) + (unassignedUseTaxBills.count ?? 0),
-      href: "/books/accountant",
+      href: "/settings/accounting/taxes",
       evidence: {
         invoice_count: unassignedTaxInvoices.count ?? 0,
         bill_count: unassignedUseTaxBills.count ?? 0,
@@ -746,7 +736,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       code: "sync_backlog",
       label: "Approved records pushed to the external system",
       category: "integrations",
-      blocking: true,
+      blocking: requiresExternalSync,
       status: closeScanStatus({
         issueCount: unpushed.length,
         scanCapped: unpushed.length >= SYNC_BACKLOG_SCAN_LIMIT,
@@ -755,6 +745,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       issueCount: unpushed.length,
       href: "/settings/integrations",
       evidence: {
+        applicable: requiresExternalSync,
         entity_ids: unpushed.slice(0, 100).map((row) => row.entity_id),
         scan_capped: unpushed.length >= SYNC_BACKLOG_SCAN_LIMIT,
       },
@@ -801,7 +792,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       blocking: false,
       status: taxExceptions.length ? "warning" : "passed",
       issueCount: taxExceptions.length,
-      href: "/books/accountant",
+      href: "/settings/accounting/taxes",
       evidence: { company_ids: taxExceptions.map((row) => row.id) },
     },
   ];
@@ -833,6 +824,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
     // recognition runs over the same set, and the caller compares the two rather
     // than letting a project quietly recognize against a substituted position.
     pocProjectIds: pocProjects.map((project) => project.projectId),
+    pocSnapshotEvidence: wipSnapshotEvidence(pocSnapshots, pocProjects.map(project => project.projectId)),
   };
 }
 
@@ -862,6 +854,13 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
       );
     }
     const { period } = checklist;
+    // Recheck eligibility after the period freeze, before any close-owned journals.
+    for (const snapshot of checklist.pocSnapshotEvidence) {
+      const { error } = await service.rpc("books_assert_loss_wip_supported", {
+        p_org_id: context.orgId, p_snapshot_id: snapshot.snapshotId,
+      });
+      if (error) throw new Error(`Close blocked: ${error.message}`);
+    }
     // Revenue is earned before the books are closed on it: recognize percentage-of
     // -completion revenue through period end so the statements snapshotted below
     // show earned revenue rather than billings alone. `period_end` is passed
@@ -869,6 +868,8 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
     const recognition = await recognizeRevenueForPeriod(
       context.orgId,
       period.period_end,
+      checklist.pocProjectIds,
+      checklist.pocSnapshotEvidence,
     );
     // The checklist has just proved a period-end position exists for every project in
     // `pocProjectIds`. If recognition could not find one anyway, the two disagree, and
@@ -884,6 +885,15 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
       throw new Error(
         `Close blocked: no percentage-of-completion position as of ${period.period_end} for ${withoutPosition.length} project${withoutPosition.length === 1 ? "" : "s"} (${withoutPosition.map((row) => row.projectId).join(", ")})`,
       );
+    }
+    const lossVersions = await resolveBooksVersions(context.orgId);
+    for (const snapshot of checklist.pocSnapshotEvidence) {
+      const { error: lossError } = await service.rpc("post_books_expected_loss_atomic", {
+        p_org_id: context.orgId, p_period_id: period.id, p_snapshot_id: snapshot.snapshotId,
+        p_actor_id: context.userId, p_policy_version: lossVersions.policyVersion,
+        p_projection_version: lossVersions.projectionVersion,
+      });
+      if (lossError) throw new Error(`Failed to post expected contract loss: ${lossError.message}`);
     }
     if (period.fiscal_period === 12 || period.fiscal_period === 13) {
       await closeFiscalYearToRetainedEarnings(period.id, context.orgId);

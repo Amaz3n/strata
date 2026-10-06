@@ -1,0 +1,9 @@
+1..8
+ok 1 - native correction proposals are private
+ok 2 - server may append but cannot rewrite correction proposals
+ok 3 - native correction proposals have RLS enabled
+ok 4 - native correction proposals are immutable
+ok 5 - direct insertion derives original journal evidence
+ok 6 - public clients cannot bypass correction authorization
+ok 7 - native correction preparation retains INVOKER authority
+ok 8 - native correction originals have organization and entity scoped references

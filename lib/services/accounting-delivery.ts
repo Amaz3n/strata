@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks"
+import { workerPersistenceDeadline, withWorkerDatabasePersistence } from "@/lib/supabase/worker-request-context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 export interface AccountingDeliveryIdentity {
@@ -7,7 +8,7 @@ export interface AccountingDeliveryIdentity {
   entityType: string
   entityId: string
 }
-interface DeliveryLease extends AccountingDeliveryIdentity { token: string; deadline: number }
+interface DeliveryLease extends AccountingDeliveryIdentity { token: string; deadline: number; persistenceDeadline?: number }
 const delivery = new AsyncLocalStorage<DeliveryLease>()
 const deadlineContext = new AsyncLocalStorage<number>()
 
@@ -25,14 +26,17 @@ export function accountingDeliveryDeadline() {
 }
 export function withAccountingDeadline<T>(deadline: number, work: () => Promise<T>): Promise<T> { return deadlineContext.run(Math.min(deadline, accountingDeliveryDeadline() ?? Infinity), work) }
 export async function withAccountingDelivery<T>(input: AccountingDeliveryIdentity, deadline: number, work: () => Promise<T>): Promise<{ deferred: true } | { deferred: false; result: T }> {
+  deadline = Math.min(deadline, accountingDeliveryDeadline() ?? Infinity)
+  if (Date.now() >= deadline) throw new AccountingDeliveryError("Accounting delivery deadline reached", true, "deadline")
   const client = createServiceSupabaseClient()
-  const { data, error } = await client.rpc("claim_accounting_delivery", { p_org_id: input.orgId, p_connection_id: input.connectionId, p_entity_type: input.entityType, p_entity_id: input.entityId })
+  const { data, error } = await withAccountingDeadline(deadline, async () => await client.rpc("claim_accounting_delivery", { p_org_id: input.orgId, p_connection_id: input.connectionId, p_entity_type: input.entityType, p_entity_id: input.entityId }))
   if (error) throw new Error(`Unable to claim accounting delivery: ${error.message}`)
   if (!data) return { deferred: true }
-  const lease = { ...input, token: String(data), deadline }
+  const lease: DeliveryLease = { ...input, token: String(data), deadline }
   try { return { deferred: false, result: await delivery.run(lease, work) } }
   finally {
-    const { error: releaseError } = await client.rpc("release_accounting_delivery", { p_token: lease.token })
+    lease.persistenceDeadline ??= workerPersistenceDeadline()
+    const { error: releaseError } = await withWorkerDatabasePersistence(lease.persistenceDeadline, () => client.rpc("release_accounting_delivery", { p_token: lease.token }))
     if (releaseError) throw new Error(`Unable to release accounting delivery: ${releaseError.message}`)
   }
 }
@@ -40,11 +44,18 @@ export async function withAccountingDelivery<T>(input: AccountingDeliveryIdentit
 export async function persistAccountingDelivery(input: AccountingDeliveryIdentity & { provider: string; externalId?: string | null; externalVersion?: string | null; status?: string; reason?: string | null; message?: string | null; attemptId?: string | null; fingerprint?: string | null }) {
   const lease = currentAccountingDelivery(input)
   if (!lease) throw new Error("Accounting delivery persistence requires an owned lease")
-  const { data, error } = await createServiceSupabaseClient().rpc("persist_accounting_delivery", {
+  const ordinaryDeadline = accountingDeliveryDeadline() ?? lease.deadline
+  // Early ordinary writes must not start a five-second clock for later work.
+  // Freeze once a returned identity needs allowance beyond the ordinary budget.
+  if (Date.now() >= ordinaryDeadline || (input.externalId && Date.now() + 5_000 > ordinaryDeadline)) {
+    lease.persistenceDeadline ??= workerPersistenceDeadline()
+  }
+  const persistenceDeadline = lease.persistenceDeadline ?? ordinaryDeadline
+  const { data, error } = await withWorkerDatabasePersistence(persistenceDeadline, () => createServiceSupabaseClient().rpc("persist_accounting_delivery", {
     p_token: lease.token, p_provider: input.provider, p_external_id: input.externalId ?? null,
     p_external_version: input.externalVersion ?? null, p_status: input.status ?? null,
     p_reason: input.reason ?? null, p_message: input.message ?? null, p_attempt_id: input.attemptId ?? null, p_fingerprint: input.fingerprint ?? null,
-  })
+  }))
   if (error || data !== true) throw new Error(`Accounting delivery lease lost or persistence failed${error ? `: ${error.message}` : ""}`)
 }
 

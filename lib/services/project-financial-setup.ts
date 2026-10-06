@@ -11,6 +11,7 @@ import {
   type ProjectBillingModel,
   resolveProjectBillingModel,
 } from "@/lib/financials/billing-model"
+import type { Contract } from "@/lib/types"
 import type { ProjectInput } from "@/lib/validation/projects"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
@@ -72,7 +73,7 @@ export interface ProjectFinancialSetupStatusResult {
 type ContractLike = {
   id?: string | null
   title?: string | null
-  contract_type?: string | null
+  contract_type?: Contract["contract_type"] | null
   total_cents?: number | null
   currency?: string | null
   markup_percent?: number | null
@@ -592,6 +593,56 @@ export async function getProjectFinancialSetupStatus({
   }
 }
 
+/** Calculate settings without writing; null cost coding continues to inherit the org default. */
+export function prepareProjectFinancialSettings(args: {
+  orgId: string
+  projectId: string
+  userId?: string | null
+  input: Partial<ProjectInput>
+  existingContract?: ContractLike | null
+  existingSettings?: ProjectFinancialSettings | null
+  existingRawCostCodesEnabled: boolean | null
+  now: string
+}) {
+  const { existingSettings, existingRawCostCodesEnabled, now } = args
+  const billingModel =
+    normalizeBillingModel(args.input.billing_model) ??
+    existingSettings?.billing_model ??
+    resolveProjectBillingModel({ ...args.existingContract, contract_type: args.existingContract?.contract_type ?? undefined, snapshot: args.existingContract?.snapshot ?? undefined })
+  const isCostPlus = billingModel === "cost_plus_percent" || billingModel === "cost_plus_fixed_fee" || billingModel === "cost_plus_gmp"
+  const metadata = {
+    source: "project_settings",
+    updated_from_project_form_at: now,
+  }
+
+  const payload = {
+    org_id: args.orgId,
+    project_id: args.projectId,
+    billing_model: billingModel,
+    fixed_price_billing_basis:
+      billingModel === "fixed_price"
+        ? args.input.fixed_price_billing_basis ?? existingSettings?.fixed_price_billing_basis ?? "draws"
+        : "draws",
+    paid_costs_required:
+      args.input.paid_costs_required ?? Boolean(args.existingContract?.snapshot?.paid_costs_required ?? false),
+    proof_required:
+      args.input.proof_required ?? Boolean(args.existingContract?.snapshot?.proof_required ?? false),
+    client_cost_approval_required:
+      args.input.requires_client_cost_approval ?? args.existingContract?.requires_client_cost_approval ?? false,
+    open_book_required: isCostPlus ? args.input.open_book ?? args.existingContract?.open_book ?? true : false,
+    // null = inherit org default; only overwrite when the caller sends a value.
+    cost_codes_enabled:
+      args.input.cost_codes_enabled !== undefined ? args.input.cost_codes_enabled : existingRawCostCodesEnabled,
+    setup_completed_at: now,
+    setup_completed_by: args.userId ?? null,
+    updated_by: args.userId ?? null,
+    created_by: args.userId ?? null,
+    metadata,
+  }
+
+  return payload
+}
+
 export async function upsertProjectFinancialSettingsFromProjectInput(args: {
   supabase: SupabaseClient
   orgId: string
@@ -617,41 +668,9 @@ export async function upsertProjectFinancialSettingsFromProjectInput(args: {
     getOrgCostCodesEnabled(args.supabase, args.orgId),
   ])
   const existingRawCostCodesEnabled = (existingRawResult.data?.cost_codes_enabled ?? null) as boolean | null
-  const billingModel =
-    normalizeBillingModel(args.input.billing_model) ??
-    existingSettings?.billing_model ??
-    resolveProjectBillingModel(args.existingContract as any)
-  const isCostPlus = billingModel === "cost_plus_percent" || billingModel === "cost_plus_fixed_fee" || billingModel === "cost_plus_gmp"
-  const now = new Date().toISOString()
-  const metadata = {
-    source: "project_settings",
-    updated_from_project_form_at: now,
-  }
-
-  const payload = {
-    org_id: args.orgId,
-    project_id: args.projectId,
-    billing_model: billingModel,
-    fixed_price_billing_basis:
-      billingModel === "fixed_price"
-        ? args.input.fixed_price_billing_basis ?? existingSettings?.fixed_price_billing_basis ?? "draws"
-        : "draws",
-    paid_costs_required:
-      args.input.paid_costs_required ?? Boolean((args.existingContract?.snapshot as any)?.paid_costs_required ?? false),
-    proof_required:
-      args.input.proof_required ?? Boolean((args.existingContract?.snapshot as any)?.proof_required ?? false),
-    client_cost_approval_required:
-      args.input.requires_client_cost_approval ?? args.existingContract?.requires_client_cost_approval ?? false,
-    open_book_required: isCostPlus ? args.input.open_book ?? args.existingContract?.open_book ?? true : false,
-    // null = inherit org default; only overwrite when the caller sends a value.
-    cost_codes_enabled:
-      args.input.cost_codes_enabled !== undefined ? args.input.cost_codes_enabled : existingRawCostCodesEnabled,
-    setup_completed_at: now,
-    setup_completed_by: args.userId ?? null,
-    updated_by: args.userId ?? null,
-    created_by: args.userId ?? null,
-    metadata,
-  }
+  const payload = prepareProjectFinancialSettings({
+    ...args, existingSettings, existingRawCostCodesEnabled, now: new Date().toISOString(),
+  })
 
   const { data, error } = await args.supabase
     .from("project_financial_settings")

@@ -31,6 +31,8 @@ import { useToast } from "@/hooks/use-toast"
 import { unwrapAction } from "@/lib/action-result"
 
 interface DealActionsMenuProps {
+  canEditProspect: boolean
+  canManageSale: boolean
   deal: DealEditable
   teamMembers: { id: string; name: string }[]
   /** For re-homing a lead that has not been matched to a lot yet. */
@@ -72,6 +74,8 @@ export function DealActionsMenu({
   isDeletable,
   reservation,
   agreement,
+  canEditProspect,
+  canManageSale,
 }: DealActionsMenuProps) {
   const router = useRouter()
   const { toast } = useToast()
@@ -106,6 +110,8 @@ export function DealActionsMenu({
     })
   }
 
+  if (!canEditProspect && !canManageSale) return null
+
   return (
     <>
       <DropdownMenu>
@@ -115,9 +121,9 @@ export function DealActionsMenu({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-52 rounded-none">
-          <DropdownMenuItem onSelect={() => setEditOpen(true)}>Edit deal</DropdownMenuItem>
+          {canEditProspect && !isLost && !isClosed ? <DropdownMenuItem onSelect={() => setEditOpen(true)}>Edit deal</DropdownMenuItem> : null}
 
-          {isLost ? (
+          {isLost && canEditProspect ? (
             <>
               <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={reopen}>Reopen deal</DropdownMenuItem>
@@ -125,23 +131,21 @@ export function DealActionsMenu({
           ) : isClosed ? null : (
             <>
               <DropdownMenuSeparator />
-              {agreement ? (
+              {canManageSale && agreement ? (
                 <DropdownMenuItem variant="destructive" onSelect={() => setVoidOpen(true)}>
                   Void the agreement
                 </DropdownMenuItem>
               ) : null}
-              {reservation ? (
+              {canManageSale && reservation ? (
                 <DropdownMenuItem variant="destructive" onSelect={() => setReleaseOpen(true)}>
                   Release the lot
                 </DropdownMenuItem>
               ) : null}
-              <DropdownMenuItem variant="destructive" onSelect={() => setLostOpen(true)}>
-                Mark lost
-              </DropdownMenuItem>
+              {canEditProspect ? <DropdownMenuItem variant="destructive" onSelect={() => setLostOpen(true)}>Mark lost</DropdownMenuItem> : null}
             </>
           )}
 
-          {isDeletable ? (
+          {canEditProspect && isDeletable ? (
             <DropdownMenuItem variant="destructive" onSelect={() => setDeleteOpen(true)}>
               Delete deal
             </DropdownMenuItem>
@@ -149,16 +153,16 @@ export function DealActionsMenu({
         </DropdownMenuContent>
       </DropdownMenu>
 
-      <EditDealSheet
+      {canEditProspect && !isLost && !isClosed ? <EditDealSheet
         deal={deal}
         teamMembers={teamMembers}
         communities={communities}
         open={editOpen}
         onOpenChange={setEditOpen}
-      />
-      <MarkLostDialog prospectId={deal.prospectId} open={lostOpen} onOpenChange={setLostOpen} />
+      /> : null}
+      {canEditProspect ? <MarkLostDialog prospectId={deal.prospectId} open={lostOpen} onOpenChange={setLostOpen} /> : null}
 
-      {reservation ? (
+      {canManageSale && reservation ? (
         <ReleaseReservationDialog
           target={{
             reservationId: reservation.id,
@@ -170,7 +174,7 @@ export function DealActionsMenu({
         />
       ) : null}
 
-      {agreement ? (
+      {canManageSale && agreement ? (
         <VoidAgreementDialog
           contractId={agreement.contractId}
           hasDeposit={agreement.hasDeposit}
@@ -179,7 +183,7 @@ export function DealActionsMenu({
         />
       ) : null}
 
-      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+      {canEditProspect && isDeletable ? <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <AlertDialogContent className="rounded-none">
           <AlertDialogHeader>
             <AlertDialogTitle>Delete {deal.fullName}?</AlertDialogTitle>
@@ -198,7 +202,7 @@ export function DealActionsMenu({
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
-      </AlertDialog>
+      </AlertDialog> : null}
     </>
   )
 }

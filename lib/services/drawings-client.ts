@@ -9,6 +9,9 @@
 
 import {
   MULTIPART_THRESHOLD,
+  uploadControlRequest,
+  clearMultipartResumeState,
+  type UploadControlOptions,
   runMultipartUpload,
   uploadBlobWithProgress,
   type UploadProgress,
@@ -21,7 +24,9 @@ type UploadUrlResponse = {
   provider: "r2"
 }
 
-export type DrawingUploadOptions = {
+export type DrawingUploadOptions = UploadControlOptions & {
+  operationId?: string
+  generation?: string
   onProgress?: (progress: UploadProgress) => void
   onStage?: (stage: UploadStage) => void
 }
@@ -37,11 +42,11 @@ export async function uploadDrawingFileToStorage(
   const useAppProxy =
     hostname === "localhost" || hostname === "127.0.0.1" || hostname.endsWith(".local")
 
-  if (useAppProxy) {
+  if (useAppProxy && !options.operationId) {
     return uploadViaAppProxy(file, projectId, options)
   }
 
-  if (file.size >= MULTIPART_THRESHOLD) {
+  if (options.operationId || file.size >= MULTIPART_THRESHOLD) {
     options.onStage?.("preparing")
     const storagePath = await runMultipartUpload({
       file,
@@ -49,15 +54,27 @@ export async function uploadDrawingFileToStorage(
       endpoints: {
         create: "/api/drawings/multipart/create",
         partUrl: "/api/drawings/multipart/part-url",
+        partUrls: "/api/drawings/multipart/part-urls",
+        status: "/api/drawings/multipart/status",
         complete: "/api/drawings/multipart/complete",
         abort: "/api/drawings/multipart/abort",
       },
       createBody: {
         projectId,
+        operationId: options.operationId,
+        generation: options.generation,
         fileName: file.name,
         contentType: file.type || "application/pdf",
       },
-      resumeKey: `arc-drawing-upload:${projectId}:${file.name}:${file.size}:${file.lastModified}`,
+      resumeKey: drawingUploadResumeKey(file, projectId, orgId, options.operationId, options.generation),
+      initialTransferId: options.initialTransferId,
+      initialSession: options.initialSession,
+      fingerprint: options.fingerprint,
+      signal: options.signal,
+      onState: options.onState,
+      controlTimeoutMs: options.controlTimeoutMs,
+      stallTimeoutMs: options.stallTimeoutMs,
+      retainCompleted: true,
       onProgress: options.onProgress,
       onStage: options.onStage,
     })
@@ -65,21 +82,10 @@ export async function uploadDrawingFileToStorage(
   }
 
   options.onStage?.("preparing")
-  const response = await fetch("/api/drawings/upload-url", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      projectId,
-      fileName: file.name,
-      contentType: file.type,
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error("Failed to prepare upload.")
-  }
-
-  const payload = (await response.json()) as UploadUrlResponse
+  const payload = await uploadControlRequest<UploadUrlResponse>("/api/drawings/upload-url", {
+    projectId, operationId: options.operationId, fileSize: file.size,
+    fileName: file.name, contentType: file.type || "application/pdf",
+  }, options.signal, options.controlTimeoutMs)
   const storagePath = payload?.storagePath
 
   if (!storagePath || !payload?.provider) {
@@ -97,7 +103,8 @@ export async function uploadDrawingFileToStorage(
       total: file.size,
       percent: file.size > 0 ? Math.round((loaded / file.size) * 100) : 100,
     })
-  })
+  }, options)
+  options.onState?.("completed")
 
   return { storagePath }
 }
@@ -113,22 +120,33 @@ function uploadViaAppProxy(
 ): Promise<{ storagePath: string }> {
   options.onStage?.("uploading")
   return new Promise((resolve, reject) => {
+    if (options.signal?.aborted) { reject(new DOMException("Upload paused", "AbortError")); return }
     const formData = new FormData()
     formData.append("projectId", projectId)
+    if (options.operationId) formData.append("operationId", options.operationId)
     formData.append("file", file)
 
     const xhr = new XMLHttpRequest()
     xhr.open("POST", "/api/drawings/upload-file")
+    const abort = () => xhr.abort()
+    const clear = () => { clearTimeout(timer); options.signal?.removeEventListener("abort", abort) }
+    let lastLoaded = 0
+    let timer: ReturnType<typeof setTimeout>
+    const arm = () => { clearTimeout(timer); timer = setTimeout(() => xhr.abort(), options.stallTimeoutMs ?? 60_000) }
+    options.signal?.addEventListener("abort", abort, { once: true })
+    arm()
     xhr.upload.onprogress = (event) => {
+      if (event.loaded > lastLoaded) { lastLoaded = event.loaded; arm() }
       if (event.lengthComputable) {
         options.onProgress?.({
           loaded: event.loaded,
           total: event.total,
-          percent: event.total > 0 ? Math.round((event.loaded / event.total) * 100) : 100,
+          percent: event.total > 0 ? Math.min(99, Math.round((event.loaded / event.total) * 100)) : 100,
         })
       }
     }
     xhr.onload = () => {
+      clear()
       if (xhr.status < 200 || xhr.status >= 300) {
         reject(new Error("Failed to upload file to storage."))
         return
@@ -144,8 +162,16 @@ function uploadViaAppProxy(
         reject(new Error("Invalid upload response."))
       }
     }
-    xhr.onerror = () => reject(new Error("Failed to upload file to storage."))
-    xhr.onabort = () => reject(new Error("Upload aborted"))
+    xhr.onerror = () => { clear(); reject(new Error("Failed to upload file to storage.")) }
+    xhr.onabort = () => { clear(); reject(new DOMException("Upload paused or cancelled", "AbortError")) }
     xhr.send(formData)
   })
+}
+
+export function drawingUploadResumeKey(file: File, projectId: string, orgId?: string, operationId?: string, generation?: string) {
+  return `arc-drawing-upload:v2:${orgId ?? "current"}:${projectId}:${operationId ?? `${file.name}:${file.size}:${file.lastModified}`}:${generation ?? "legacy"}`
+}
+/** Call only after durable registration acknowledges the completed transfer. */
+export function acknowledgeDrawingUpload(file: File, projectId: string, orgId?: string, operationId?: string, generation?: string) {
+  clearMultipartResumeState(drawingUploadResumeKey(file, projectId, orgId, operationId, generation))
 }

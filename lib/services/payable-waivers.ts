@@ -1,6 +1,8 @@
 import "server-only"
+import { templateMatches, templatePriority } from "@/lib/templates/waiver-engine"
 import { createHash, randomUUID } from "node:crypto"
 import { z } from "zod"
+import { additionalWaiverSignersSchema, customWaiverValuesSchema } from "@/lib/templates/waiver-document"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { requireOrgContext } from "@/lib/services/context"
 import { requireAuthorization, authorize } from "@/lib/services/authorization"
@@ -28,6 +30,8 @@ const allocationSchema = z.object({
 export const payableWaiverInputSchema = z
   .object({
     request_id: z.string().uuid(),
+    custom_values: customWaiverValuesSchema.optional(),
+    additional_signers: additionalWaiverSignersSchema.optional(),
     allocations: z.array(allocationSchema).min(1).max(100),
     template_id: z.string().uuid().optional(),
     source: z.enum(["template", "upload"]),
@@ -76,7 +80,7 @@ export const payableWaiverInputSchema = z
   })
 export type PayableWaiverInput = z.infer<typeof payableWaiverInputSchema>
 const billSelect =
-  "id,project_id,company_id,commitment_id,bill_number,total_cents,paid_cents,retainage_cents,retainage_released_cents,status,metadata,updated_at"
+  "id,project_id,company_id,commitment_id,bill_number,total_cents,paid_cents,retainage_cents,retainage_released_cents,lien_waiver_status,status,metadata,updated_at"
 function fingerprint(bill: Record<string, unknown>) {
   return createHash("sha256")
     .update(
@@ -210,7 +214,7 @@ export async function loadPayableWaivers(billId: string) {
     canWrite: write.allowed,
     canReview: review.allowed,
     templates: templates.filter(
-      (t) => !t.jurisdiction || t.jurisdiction === jurisdiction,
+      (t) => templateMatches(t, {direction:"incoming",jurisdiction,projectId:ctx.bill.project_id,customerName:org.name}),
     ),
     jurisdiction,
     coverage: waiverCoverage(
@@ -295,6 +299,7 @@ export async function preparePayableWaiver(raw: unknown, file?: File) {
   }
   let bytes: Buffer,
     templateSnapshot: unknown = null
+  let resolvedValues: Record<string,string> | undefined
   if (input.source === "upload") {
     if (!file || !file.size || file.size > 15 * 1024 * 1024)
       throw new Error("Upload the signed PDF (maximum 15 MB)")
@@ -310,32 +315,21 @@ export async function preparePayableWaiver(raw: unknown, file?: File) {
       direction: "incoming",
       jurisdiction: input.jurisdiction,
     })
-    const template = templates.find((t) => t.id === input.template_id)
+    const template = templates.find((t) => t.id === input.template_id && contexts.every(c => templateMatches(t, {direction:"incoming",jurisdiction:input.jurisdiction,projectId:c.bill.project_id,customerName:input.customer_name})))
     if (!template || template.waiverType !== input.waiver_type)
       throw new Error(
         "Choose a published incoming template matching the waiver type and property state",
       )
     templateSnapshot = template
-    const { renderToBuffer } = await import("@react-pdf/renderer")
-    const { WaiverTemplateDocument } =
-      await import("@/lib/pdfs/waiver-template")
-    const { editableWaiverValues } =
-      await import("@/lib/lien-waivers/preparation")
-    bytes = await renderToBuffer(
-      WaiverTemplateDocument({
-        draft: template,
-        values: editableWaiverValues({
-          ...input,
-          amount_cents: input.allocations.reduce(
-            (s, a) => s + a.amount_cents,
-            0,
-          ),
-        }),
-        invoiceNumber: contexts
-          .map((c) => c.bill.bill_number ?? c.bill.id)
-          .join(", "),
-      }),
-    )
+    const { renderCompanyWaiver } = await import("@/lib/services/waiver-rendering")
+    const { editableWaiverValues } = await import("@/lib/lien-waivers/preparation")
+    bytes = await renderCompanyWaiver({
+      onResolved:values=>{resolvedValues=values},
+      template, sourceFileId: template.sourceFileId, supabase: ctx.supabase, orgId: ctx.orgId,
+      values: {...editableWaiverValues({ ...input, amount_cents: input.allocations.reduce((s, a) => s + a.amount_cents, 0) }), covered_items:JSON.stringify(contexts.map((c,i)=>({item_number:c.bill.bill_number??c.bill.id,item_project:properties[i].name,item_property:typeof properties[i].location==="string"?properties[i].location:(properties[i].location as {address?:string}|null)?.address??"",item_amount:`$${(input.allocations[i].amount_cents/100).toFixed(2)}`,item_through:input.through_date})) )},
+      customValues: input.custom_values, additionalSigners: input.additional_signers,
+      invoiceNumber: contexts.map(c => c.bill.bill_number ?? c.bill.id).join(", "),
+    })
     // The explicit allocation schedule is part of the document presented to the signer.
     const { PDFDocument, StandardFonts } = await import("pdf-lib")
     const pdf = await PDFDocument.load(bytes),
@@ -409,6 +403,7 @@ export async function preparePayableWaiver(raw: unknown, file?: File) {
         metadata: {
           payable_waiver_request_id: input.request_id,
           draft_recipients: [
+            ...(input.additional_signers??[]).map(s=>({name:s.name,email:s.email,role:"signer",signer_role:s.role})),
             {
               name: input.signer_name,
               email: input.signer_email,
@@ -426,6 +421,7 @@ export async function preparePayableWaiver(raw: unknown, file?: File) {
       fields: await waiverSignatureFields(
         bytes,
         (template.body.match(/\{\{signed_date\}\}/g) ?? []).length,
+        template,
       ),
       orgId: ctx.orgId,
     })
@@ -458,6 +454,7 @@ export async function preparePayableWaiver(raw: unknown, file?: File) {
       waiver_kind: input.waiver_type,
       document_id: documentId,
       template: templateSnapshot,
+      resolved_values: resolvedValues,
       sha256: createHash("sha256").update(bytes).digest("hex"),
       bill_fingerprint: fingerprint(c.bill),
       coverage_basis: waiverCoverageBasis(c.bill),

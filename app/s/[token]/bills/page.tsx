@@ -1,3 +1,4 @@
+import { connection } from "next/server"
 import { notFound } from "next/navigation"
 import Link from "next/link"
 import { CheckCircle2, FileSignature } from "lucide-react"
@@ -23,6 +24,7 @@ function canSignWaiver(status: string, lienWaiverStatus?: string | null): boolea
 }
 
 export default async function SubBillsPage({ params }: SubBillsPageProps) {
+  await connection()
   const { token } = await params
   let access
   try {
@@ -37,22 +39,24 @@ export default async function SubBillsPage({ params }: SubBillsPageProps) {
   }
   if (!access.company_id) notFound()
 
-  const data = await loadSubPortalData({
-    orgId: access.org_id,
-    projectId: access.project_id,
-    companyId: access.company_id,
-    permissions: access.permissions,
-  })
+  const [data, shell] = await Promise.all([
+    loadSubPortalData({
+      orgId: access.org_id,
+      projectId: access.project_id,
+      companyId: access.company_id,
+      permissions: access.permissions,
+    }),
+    loadSubPortalShellContext({
+      orgId: access.org_id,
+      projectId: access.project_id,
+      companyId: access.company_id,
+      permissions: access.permissions,
+    }),
+  ])
 
   const invoiceableCommitments = data.commitments.filter(
     (commitment) => commitment.status === "approved" && commitment.remaining_cents > 0,
   )
-  const shell = await loadSubPortalShellContext({
-    orgId: access.org_id,
-    projectId: access.project_id,
-    companyId: access.company_id,
-    permissions: access.permissions,
-  })
   const complianceBlocked = shell.blocksPaymentOnCompliance && !shell.isCompliant
 
   return (

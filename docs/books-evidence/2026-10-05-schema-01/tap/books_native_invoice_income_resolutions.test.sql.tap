@@ -1,0 +1,11 @@
+1..10
+ok 1 - coding cancellation evidence is private
+ok 2 - server may append coding cancellations
+ok 3 - coding cancellations cannot be rewritten
+ok 4 - browser cannot invoke private income resolution
+ok 5 - server resolver retains invoker authority
+ok 6 - income cancellation has RLS enabled
+ok 7 - direct cancellation inserts enforce original scope and absent commit
+ok 8 - cancellation fence precedes source edits
+ok 9 - each income request has at most one permanent cancellation
+ok 10 - coding cancellation history is immutable

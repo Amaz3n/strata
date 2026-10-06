@@ -42,9 +42,15 @@ export type SafetyDeskData = {
   incidents: SafetyDeskIncident[]
   observations: SafetyDeskObservation[]
   inspections: SafetyDeskInspection[]
+  openIncidentCount: number
+  openObservationCount: number
+  failedInspectionCount: number
+  inspectionCount: number
+  pages: { incidents: number; observations: number; inspections: number }
+  pageSize: number
 }
 
-const DESK_CAP = 500
+const PAGE_SIZE = 50
 
 function projectName(project: { name?: string | null } | Array<{ name?: string | null }> | null): string {
   const row = Array.isArray(project) ? project[0] : project
@@ -52,37 +58,50 @@ function projectName(project: { name?: string | null } | Array<{ name?: string |
 }
 
 /** Cross-project, read-only operating view for an organization's safety team. */
-export async function getSafetyDesk(orgId?: string): Promise<SafetyDeskData> {
+export async function getSafetyDesk(orgId?: string, requestedPages: { incidents?: number; observations?: number; inspections?: number } = {}): Promise<SafetyDeskData> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("safety.read", { supabase, orgId: resolvedOrgId, userId })
 
-  const [incidentResult, observationResult, inspectionResult] = await Promise.all([
+  const normalizePage = (value = 1) => Number.isSafeInteger(value) && value > 0 ? value : 1
+  const pages = { incidents: normalizePage(requestedPages.incidents), observations: normalizePage(requestedPages.observations), inspections: normalizePage(requestedPages.inspections) }
+  const [incidentResult, observationResult, inspectionResult, failedResult] = await Promise.all([
     supabase
       .from("safety_incidents")
-      .select("id, project_id, incident_number, occurred_at, severity, description, status, is_osha_recordable, project:projects(name)")
+      .select("id, project_id, incident_number, occurred_at, severity, description, status, is_osha_recordable, project:projects(name)", { count: "exact" })
       .eq("org_id", resolvedOrgId)
-      .order("occurred_at", { ascending: false })
-      .limit(DESK_CAP),
+      .neq("status", "closed")
+      .order("occurred_at", { ascending: false }).order("id")
+      .range((pages.incidents - 1) * PAGE_SIZE, pages.incidents * PAGE_SIZE - 1),
     supabase
       .from("observations")
-      .select("id, project_id, observation_number, category, description, due_date, status, created_at, project:projects(name)")
+      .select("id, project_id, observation_number, category, description, due_date, status, created_at, project:projects(name)", { count: "exact" })
       .eq("org_id", resolvedOrgId)
-      .order("created_at", { ascending: false })
-      .limit(DESK_CAP),
+      .eq("status", "open")
+      .order("created_at", { ascending: false }).order("id")
+      .range((pages.observations - 1) * PAGE_SIZE, pages.observations * PAGE_SIZE - 1),
     supabase
       .from("inspections")
-      .select("id, project_id, inspection_number, title, kind, status, result, inspected_at, updated_at, project:projects(name)")
+      .select("id, project_id, inspection_number, title, kind, status, result, inspected_at, updated_at, project:projects(name)", { count: "exact" })
       .eq("org_id", resolvedOrgId)
       .eq("kind", "safety")
-      .order("updated_at", { ascending: false })
-      .limit(DESK_CAP),
+      .order("updated_at", { ascending: false }).order("id")
+      .range((pages.inspections - 1) * PAGE_SIZE, pages.inspections * PAGE_SIZE - 1),
+    supabase.from("inspections").select("id", { count: "exact", head: true })
+      .eq("org_id", resolvedOrgId).eq("kind", "safety").eq("result", "fail"),
   ])
 
   if (incidentResult.error) throw new Error(`Failed to load safety incidents: ${incidentResult.error.message}`)
   if (observationResult.error) throw new Error(`Failed to load safety observations: ${observationResult.error.message}`)
   if (inspectionResult.error) throw new Error(`Failed to load safety inspections: ${inspectionResult.error.message}`)
 
+  if (failedResult.error) throw new Error(`Failed to count failed inspections: ${failedResult.error.message}`)
+
   return {
+    pages, pageSize: PAGE_SIZE,
+    openIncidentCount: incidentResult.count ?? 0,
+    openObservationCount: observationResult.count ?? 0,
+    inspectionCount: inspectionResult.count ?? 0,
+    failedInspectionCount: failedResult.count ?? 0,
     incidents: (incidentResult.data ?? []).map(({ project, ...row }) => ({
       ...row,
       project_name: projectName(project),

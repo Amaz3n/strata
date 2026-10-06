@@ -9,6 +9,8 @@ import { requireBooksWorkspaceEnabled } from "@/lib/services/books/module"
 import { GL_ACCOUNT_SUBTYPES, GL_ACCOUNT_SUBTYPE_TYPES, normalBalanceForSubtype } from "@/lib/services/books/types"
 import { requireOrgContext } from "@/lib/services/context"
 
+import { assertAccountParent } from "@/lib/services/books/account-hierarchy"
+
 const accountTypeSchema = z.enum(["asset", "liability", "equity", "income", "cogs", "expense"])
 const normalBalanceSchema = z.enum(["debit", "credit"])
 const cashFlowSchema = z.enum(["operating", "investing", "financing", "cash"])
@@ -34,6 +36,7 @@ export async function createGlAccount(input: {
   accountType: string
   subtype: string
   normalBalance: string
+  parentId?: string | null
   cashFlowCategory?: string | null
 }, orgId?: string) {
   const context = await requireChartManager(orgId)
@@ -46,6 +49,7 @@ export async function createGlAccount(input: {
     // subtype would be silently orphaned from the balance sheet.
     subtype: z.enum(GL_ACCOUNT_SUBTYPES),
     normalBalance: normalBalanceSchema,
+    parentId: z.string().uuid().nullish(),
     cashFlowCategory: cashFlowSchema.nullish(),
   }).parse(input)
   if (GL_ACCOUNT_SUBTYPE_TYPES[parsed.subtype] !== parsed.accountType) {
@@ -55,6 +59,17 @@ export async function createGlAccount(input: {
     throw new Error(`${parsed.subtype.replaceAll("_", " ")} accounts use a ${normalBalanceForSubtype(parsed.subtype)} normal balance`)
   }
   const service = createServiceSupabaseClient()
+  if (parsed.parentId) {
+    const { data: parent, error: parentError } = await service.from("gl_accounts")
+      .select("org_id, account_type, active")
+      .eq("org_id", context.orgId)
+      .eq("id", parsed.parentId)
+      .maybeSingle()
+    if (parentError) throw new Error(`Failed to load parent account: ${parentError.message}`)
+    assertAccountParent(parent, context.orgId, parsed.accountType)
+  }
+  // Parent, code, and classification are assigned only at creation. Existing
+  // accounts cannot be reparented, so this path cannot introduce a cycle.
   const { data, error } = await service.from("gl_accounts").insert({
     org_id: context.orgId,
     code: parsed.code,
@@ -62,6 +77,7 @@ export async function createGlAccount(input: {
     account_type: parsed.accountType,
     subtype: parsed.subtype,
     normal_balance: parsed.normalBalance,
+    parent_id: parsed.parentId ?? null,
     cash_flow_category: parsed.cashFlowCategory ?? null,
     is_system: false,
     active: true,
