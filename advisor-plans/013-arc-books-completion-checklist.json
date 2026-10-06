@@ -7877,7 +7877,7 @@
         {
           "verified_at": "2026-10-06T17:06:05.887438+00:00",
           "implemented_paths": [
-            "supabase/migrations/20261006200000_books_projection_dependency_invalidation.sql",
+            "supabase/migrations/20261006175218_books_projection_dependency_invalidation.sql",
             "lib/services/books/projector.ts",
             "lib/services/books/period-close.ts",
             "lib/services/books/posting-status.ts",
