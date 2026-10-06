@@ -2529,6 +2529,35 @@
           ],
           "external_dependency": null,
           "reviewer": null
+        },
+        {
+          "verified_at": "2026-10-06T11:43:18.457798+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/bill-01.cjs",
+            "scripts/books-acceptance/expected/BILL-01.json",
+            "scripts/books-acceptance/scenarios/shared.cjs",
+            "lib/services/receivable-adjustments.ts"
+          ],
+          "test_scenario_ids": [
+            "BILL-01"
+          ],
+          "commands": [
+            "scenario-runner BILL-01"
+          ],
+          "observed_results": [
+            "BILL-01 PASSED (all 4 subcases) through the product's services: createInvoice with per-line Arc income accounts and an 8% jurisdiction tax (Dr 1100 1,080 / Cr 4110 600 / Cr 4120 400 / Cr 2250 80); recordMultiInvoicePayment x2, createReceivableAdjustment credit memo with tax, recordCustomerRefund — net 1010 922.00, 1100 50.00, 4110 -540.00, 4120 -360.00, 2250 -72.00, invoice partial 50.00, re-projection adds nothing; updateGlAccount rename leaves posted amounts/codes/classification unchanged; contract progress invoice 1100 900 / 1110 100 / 2350 1,000 with retainage row.",
+            "Fixed: createReceivableAdjustment/voidReceivableAdjustment recorded events without orgId/actorId, so they required a cookie session and failed under trusted service context.",
+            "Policy findings for B16.1: docs/books-revenue-recognition.md §4e says receipts debit 1000, implementation debits 1010 Undeposited funds; the doc does not cover general on-invoice billing; account codes/types are immutable (rename only) while accrual statements read the current chart."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/BILL-01.json sha256:3800cb6013488fcaacde522d830725b8d29ac5305768c9060632f2391aabb972"
+          ],
+          "schema_or_runtime_identity": "isolated arc-books-acceptance-26646c871959",
+          "remaining_criteria": [
+            "Native income allocations on the entity ledger path (not the active projector) remain separate"
+          ],
+          "external_dependency": null,
+          "reviewer": null
         }
       ],
       "remaining_criteria": [
@@ -3183,6 +3212,35 @@
             "Authenticated application and complete company recovery/golden acceptance",
             "Independent licensed CPA and actual builder parallel close; release authorization"
           ]
+        },
+        {
+          "verified_at": "2026-10-06T11:43:18.457798+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/bill-01.cjs",
+            "scripts/books-acceptance/expected/BILL-01.json",
+            "scripts/books-acceptance/scenarios/shared.cjs",
+            "lib/services/receivable-adjustments.ts"
+          ],
+          "test_scenario_ids": [
+            "BILL-01"
+          ],
+          "commands": [
+            "scenario-runner BILL-01"
+          ],
+          "observed_results": [
+            "BILL-01 PASSED (all 4 subcases) through the product's services: createInvoice with per-line Arc income accounts and an 8% jurisdiction tax (Dr 1100 1,080 / Cr 4110 600 / Cr 4120 400 / Cr 2250 80); recordMultiInvoicePayment x2, createReceivableAdjustment credit memo with tax, recordCustomerRefund — net 1010 922.00, 1100 50.00, 4110 -540.00, 4120 -360.00, 2250 -72.00, invoice partial 50.00, re-projection adds nothing; updateGlAccount rename leaves posted amounts/codes/classification unchanged; contract progress invoice 1100 900 / 1110 100 / 2350 1,000 with retainage row.",
+            "Fixed: createReceivableAdjustment/voidReceivableAdjustment recorded events without orgId/actorId, so they required a cookie session and failed under trusted service context.",
+            "Policy findings for B16.1: docs/books-revenue-recognition.md §4e says receipts debit 1000, implementation debits 1010 Undeposited funds; the doc does not cover general on-invoice billing; account codes/types are immutable (rename only) while accrual statements read the current chart."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/BILL-01.json sha256:3800cb6013488fcaacde522d830725b8d29ac5305768c9060632f2391aabb972"
+          ],
+          "schema_or_runtime_identity": "isolated arc-books-acceptance-26646c871959",
+          "remaining_criteria": [
+            "Native income allocations on the entity ledger path (not the active projector) remain separate"
+          ],
+          "external_dependency": null,
+          "reviewer": null
         }
       ],
       "remaining_criteria": [
@@ -3799,6 +3857,35 @@
             "Authenticated application and complete company recovery/golden acceptance",
             "Independent licensed CPA and actual builder parallel close; release authorization"
           ]
+        },
+        {
+          "verified_at": "2026-10-06T11:43:18.457798+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/bill-01.cjs",
+            "scripts/books-acceptance/expected/BILL-01.json",
+            "scripts/books-acceptance/scenarios/shared.cjs",
+            "lib/services/receivable-adjustments.ts"
+          ],
+          "test_scenario_ids": [
+            "BILL-01"
+          ],
+          "commands": [
+            "scenario-runner BILL-01"
+          ],
+          "observed_results": [
+            "BILL-01 PASSED (all 4 subcases) through the product's services: createInvoice with per-line Arc income accounts and an 8% jurisdiction tax (Dr 1100 1,080 / Cr 4110 600 / Cr 4120 400 / Cr 2250 80); recordMultiInvoicePayment x2, createReceivableAdjustment credit memo with tax, recordCustomerRefund — net 1010 922.00, 1100 50.00, 4110 -540.00, 4120 -360.00, 2250 -72.00, invoice partial 50.00, re-projection adds nothing; updateGlAccount rename leaves posted amounts/codes/classification unchanged; contract progress invoice 1100 900 / 1110 100 / 2350 1,000 with retainage row.",
+            "Fixed: createReceivableAdjustment/voidReceivableAdjustment recorded events without orgId/actorId, so they required a cookie session and failed under trusted service context.",
+            "Policy findings for B16.1: docs/books-revenue-recognition.md §4e says receipts debit 1000, implementation debits 1010 Undeposited funds; the doc does not cover general on-invoice billing; account codes/types are immutable (rename only) while accrual statements read the current chart."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/BILL-01.json sha256:3800cb6013488fcaacde522d830725b8d29ac5305768c9060632f2391aabb972"
+          ],
+          "schema_or_runtime_identity": "isolated arc-books-acceptance-26646c871959",
+          "remaining_criteria": [
+            "Native income allocations on the entity ledger path (not the active projector) remain separate"
+          ],
+          "external_dependency": null,
+          "reviewer": null
         }
       ],
       "remaining_criteria": [

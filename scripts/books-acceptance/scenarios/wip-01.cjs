@@ -3,37 +3,7 @@
 // projector, greenfield launch, period/WIP review and close.
 const { randomUUID } = require("node:crypto")
 
-const app = (path) => require(`../../../lib/services/${path}`)
-
-function monthBounds(period) {
-  const [year, month] = period.split("-").map(Number)
-  const last = new Date(Date.UTC(year, month, 0)).getUTCDate()
-  return { year, month, periodStart: `${period}-01`, periodEnd: `${period}-${String(last).padStart(2, "0")}` }
-}
-
-// A Books-only builder with one fixed-price contract job, launched greenfield.
-async function contractJob(kit, { name, contractCents, retainagePercent, periods }) {
-  const { CONSTRUCTION_CHART_TEMPLATE } = app("books/chart-of-accounts")
-  const { createAccountingPeriod } = app("books/period-close")
-  const { launchGreenfieldBooks, GREENFIELD_ATTESTATION } = app("books/greenfield")
-  const { q, sql } = kit
-  const org = kit.organization({ name, chart: CONSTRUCTION_CHART_TEMPLATE, reviewerRole: "org_accountant" })
-  const job = { ...org, projectId: randomUUID(), vendorId: randomUUID(), costCodeId: randomUUID(), contractId: randomUUID(), periods: {} }
-  sql(`begin;
-insert into public.projects(id,org_id,name,property_type,created_by) values(${q(job.projectId)},${q(job.orgId)},${q(`${name} — custom home`)},'residential',${q(job.owner.userId)});
-insert into public.project_financial_settings(org_id,project_id) values(${q(job.orgId)},${q(job.projectId)}) on conflict do nothing;
-insert into public.companies(id,org_id,name) values(${q(job.vendorId)},${q(job.orgId)},'Framing subcontractor');
-insert into public.cost_codes(id,org_id,code,name) values(${q(job.costCodeId)},${q(job.orgId)},'06-100','Rough carpentry');
-insert into public.contracts(id,org_id,project_id,title,status,total_cents,currency,contract_type,retainage_percent,effective_date)
-  values(${q(job.contractId)},${q(job.orgId)},${q(job.projectId)},'Fixed-price construction contract','active',${contractCents},'usd','fixed',${retainagePercent},'2026-07-01');
-commit;`)
-  for (const period of periods) {
-    const bounds = monthBounds(period)
-    job.periods[period] = { ...bounds, periodId: await kit.as(job.owner, () => createAccountingPeriod({ periodStart: bounds.periodStart, periodEnd: bounds.periodEnd, fiscalYear: bounds.year, fiscalPeriod: bounds.month })) }
-  }
-  await kit.as(job.owner, () => launchGreenfieldBooks({ launchedOn: job.periods[periods[0]].periodStart, openingPosition: "zero", attestation: GREENFIELD_ATTESTATION }))
-  return job
-}
+const { app, contractJob, project } = require("./shared.cjs")
 
 async function bill(kit, job, period, cents, label) {
   const { createProjectVendorBill, approveVendorBillsAtomic } = app("vendor-bills")
@@ -56,11 +26,6 @@ function invoice(kit, job, period, grossCents, retainageCents, label) {
   'product_posture','residential','subtotal_cents',${net},'tax_cents',0,'total_cents',${net},'balance_due_cents',${net},'token',${q(randomUUID())},
   'metadata',jsonb_build_object('retainage_amount_cents',${retainageCents},'source_contract_id',${q(job.contractId)})),
   jsonb_build_array(${lines.join(",")}));`)
-}
-
-async function project(kit, job) {
-  const { projectJournal } = app("books/projector")
-  await kit.service(() => projectJournal(job.orgId, { full: true }))
 }
 
 async function prepareAndReview(kit, job, period, { contractCents, eacCents, carryForward = false }) {

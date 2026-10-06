@@ -95,6 +95,8 @@ export async function createReceivableAdjustment(input: CreateReceivableAdjustme
   )
 
   await recordEvent({
+    orgId,
+    actorId: userId,
     eventType: "receivable_adjustment_posted",
     entityType: "invoice",
     entityId: parsed.invoiceId,
@@ -150,6 +152,8 @@ export async function voidReceivableAdjustment(adjustmentId: string) {
   )
 
   await recordEvent({
+    orgId,
+    actorId: userId,
     eventType: "receivable_adjustment_voided",
     entityType: "invoice",
     entityId: adjustment.invoice_id,

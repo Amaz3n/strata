@@ -5,7 +5,7 @@ const fs = require("node:fs"),
   path = require("node:path")
 const { createKit, recorder, loadExpected } = require("./scenario-kit.cjs")
 
-const SCENARIO_MODULES = { "WIP-01": "./scenarios/wip-01.cjs" }
+const SCENARIO_MODULES = { "BILL-01": "./scenarios/bill-01.cjs", "WIP-01": "./scenarios/wip-01.cjs" }
 
 async function runScenario(id, kit, fixtures = {}) {
   if (!fixtures.scenario && !SCENARIO_MODULES[id]) return { scenario: id, status: "NOT_IMPLEMENTED", subcases: [] }
@@ -25,7 +25,7 @@ async function runScenario(id, kit, fixtures = {}) {
       const failed = check.checks.filter((c) => !c.pass)
       subcases.push({ name, status: failed.length || !check.checks.length ? "FAILED" : "PASSED", identities, checks: check.checks, startedAt })
     } catch (error) {
-      subcases.push({ name, status: "FAILED", error: error.message, checks: check.checks, startedAt })
+      subcases.push({ name, status: "FAILED", error: error.message, stack: String(error.stack ?? "").split("\n").slice(1, 12).map((l) => l.trim()), checks: check.checks, startedAt })
     }
   }
   const status = subcases.every((s) => s.status === "PASSED") ? "PASSED" : subcases.some((s) => s.status === "FAILED") ? "FAILED" : "INCOMPLETE"

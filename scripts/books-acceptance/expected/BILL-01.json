@@ -1,0 +1,31 @@
+{
+  "scenario": "BILL-01",
+  "reviewedFrom": "Standard accrual practice for general (no-project) invoices recognised on invoice; progress billing per docs/books-revenue-recognition.md §4b. Customer receipts debit 1010 Undeposited funds until deposited (the policy document's §4e still says 1000 — reconcile in B16.1). Pending licensed-CPA review (B16.3). Amounts are integer cents.",
+  "subcases": {
+    "general-invoice-income-and-tax": {
+      "inputs": { "lines": [ { "account": "4110", "cents": 60000 }, { "account": "4120", "cents": 40000 } ], "taxRatePercent": 8, "issueDate": "2026-08-01" },
+      "expectedNetDebitCentsByAccount": { "1100": 108000, "2250": -8000, "4110": -60000, "4120": -40000 },
+      "expectedInvoice": { "status": "sent", "totalCents": 108000, "taxCents": 8000, "balanceDueCents": 108000 }
+    },
+    "installments-credit-refund-count-once": {
+      "inputs": {
+        "payments": [ { "date": "2026-08-10", "cents": 50000 }, { "date": "2026-08-20", "cents": 47200 } ],
+        "credit": { "date": "2026-08-15", "amountCents": 10800, "taxCents": 800 },
+        "refund": { "ofPayment": 2, "cents": 5000 }
+      },
+      "derivation": "Credit memo reduces income in proportion to the invoice's income lines (60/40 of 10,000) plus the 800 tax; the refund reopens 5,000 of receivable and leaves undeposited funds.",
+      "expectedNetDebitCentsByAccount": { "1010": 92200, "1100": 5000, "2250": -7200, "4110": -54000, "4120": -36000 },
+      "expectedInvoice": { "status": "partial", "balanceDueCents": 5000 },
+      "expectedReprojectionAddsNothing": true
+    },
+    "account-rename-preserves-posted-history": {
+      "inputs": { "account": "4110", "newName": "Design and preconstruction services" },
+      "derivation": "Account codes and types are immutable; a rename must not change any posted amount, code or frozen classification."
+    },
+    "progress-invoice-retainage": {
+      "inputs": { "contractCents": 5000000, "retainagePercent": 10, "grossCents": 100000, "issueDate": "2026-08-05" },
+      "expectedNetDebitCentsByAccount": { "1100": 90000, "1110": 10000, "2350": -100000 },
+      "expectedInvoice": { "totalCents": 90000, "retainageHeldCents": 10000 }
+    }
+  }
+}

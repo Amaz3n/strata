@@ -33,8 +33,11 @@ function createKit(stack) {
   const original = Module._load
   Module._load = function (request, ...args) {
     const real = original.call(this, request, ...args)
+    // Cache-lifetime hints only tune Next's cache; outside a Next server they are no-ops.
+    if (request === "next/cache") return { ...real, cacheLife: () => {}, cacheTag: () => {} }
     if (request !== "next/server") return real
-    return { ...real, after: (task) => deferred.push(Promise.resolve().then(typeof task === "function" ? task : () => task)) }
+    // `connection()` only marks a render dynamic; there is no render here.
+    return { ...real, connection: async () => {}, after: (task) => deferred.push(Promise.resolve().then(typeof task === "function" ? task : () => task)) }
   }
   const { createClient } = require("@supabase/supabase-js")
   const { runWithServiceOrgContext } = require("../../lib/services/context")

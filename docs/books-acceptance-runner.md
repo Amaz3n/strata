@@ -199,6 +199,6 @@ from the reviewed policy rather than the implementation. Every subcase the plan
 requires is listed; one still `NOT_IMPLEMENTED` keeps the scenario `INCOMPLETE`
 and the run non-zero. A subcase that throws or asserts nothing fails.
 
-Status (October 6): `WIP-01 / policy-worked-example` — the §5 worked example of
+Status (October 6): `BILL-01` passes in full; `WIP-01` passes 4 of 7 subcases (the §5 worked example of
 `docs/books-revenue-recognition.md` — passes to the cent; the other six WIP-01
-subcases and the remaining 23 scenarios are not yet implemented.
+subcases await B04.1 and the remaining 22 scenarios are not yet implemented.
