@@ -1379,8 +1379,8 @@
       "id": "B00.2",
       "workstream": "B00",
       "title": "Accept fresh and upgrade schema paths",
-      "status": "PARTIAL",
-      "status_basis": "Fresh replay + SCHEMA-01 (68 files/769 assertions) + zero Books plpgsql_check errors PASSED 2026-10-05; populated upgrade outstanding.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Fresh replay and populated upgrade from the reconciled production baseline both pass with all 777 pgTAP assertions and money invariants preserved (2026-10-05). Concurrency (RACE-01) and broader seed coverage remain.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "clean replay and baseline upgrade both exit 0",
@@ -1930,6 +1930,44 @@
           ],
           "external_dependency": null,
           "reviewer": "Agustin (approved application)"
+        },
+        {
+          "verified_at": "2026-10-06T02:31:43.762101+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/upgrade.cjs",
+            "scripts/books-acceptance/upgrade-seed.cjs",
+            "scripts/books-acceptance/bootstrap.cjs",
+            "scripts/bootstrap-books-acceptance.cjs",
+            "tests/books-acceptance-bootstrap.test.js",
+            "docs/books-evidence/2026-10-05-upgrade/production-baseline.txt"
+          ],
+          "test_scenario_ids": [
+            "SCHEMA-01",
+            "MIG-01 (partial: schema upgrade with money invariants)"
+          ],
+          "commands": [
+            "node scripts/bootstrap-books-acceptance.cjs --workspace W --db-port 55480 --baseline-file docs/books-evidence/2026-10-05-upgrade/production-baseline.txt [--run]",
+            "node scripts/books-acceptance/upgrade.cjs --workspace W",
+            "all supabase/tests/*.sql via psql on the upgraded database"
+          ],
+          "observed_results": [
+            "Baseline (408 files, catalog-verified against production: 190/204 buckets identical, remaining differences enumerated) replayed; seeded through the application's SQL functions (3 projects across postures, 3 invoices + 3 receipts, 3 approved bills + manual AP payment, 3 expenses, 2 journal entries + exact reversal).",
+            "UPGRADED: 160 remaining migrations applied cleanly on the populated baseline; money fingerprint (trial balance, every journal line, invoice/bill/payment/expense amounts and statuses) byte-identical before and after.",
+            "pgTAP on the upgraded populated database: 69 files, 777 assertions, 0 failures. Fresh replay + SCHEMA-01 on the merged tree: 777 assertions PASSED."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-05-upgrade/upgrade.json sha256:d4b37e7435dc40c1c2966dc5e4729539322538d42c3e532c9ff393603a27def0",
+            "docs/books-evidence/2026-10-05-upgrade/baseline-bootstrap.json sha256:c5a2cee3d92b1121dcebc0020deb0f35dc8ac483b03ed930aafc95c443053f87",
+            "docs/books-evidence/2026-10-05-upgrade/pgtap-summary.txt sha256:3f4106476f5d1eafc81ab1487d5bb807242149db9d54dee11f51ee00a32f24fb"
+          ],
+          "schema_or_runtime_identity": "Docker 29.8.2, Supabase CLI 2.117.0, postgres 17.6.1.167; isolated arc-books-acceptance-b9d931892fd2",
+          "remaining_criteria": [
+            "Concurrent-session transaction tests (RACE-01) incl. tax attachment mutex probe",
+            "Hosted security/performance advisors cannot run on an isolated replay; plpgsql_check has 0 Books errors",
+            "Seed breadth: bank feeds, retainage, opening balances, production land/lot flows not yet in the upgrade seed"
+          ],
+          "external_dependency": null,
+          "reviewer": null
         }
       ],
       "remaining_criteria": [

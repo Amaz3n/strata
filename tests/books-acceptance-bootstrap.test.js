@@ -289,3 +289,19 @@ test("baseline route stages only the listed migrations and re-derives the same s
     /unknown, duplicate or no migrations/,
   );
 });
+test("populated upgrade refuses anything but a replayed baseline acceptance workspace", (t) => {
+  const { upgrade } = require("../scripts/books-acceptance/upgrade.cjs")
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "books-upgrade-test-"))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const calls = []
+  const run = (...args) => { calls.push(args); return { status: 0, stdout: "" } }
+  for (const job of [
+    { status: "STAGED", route: "baseline", container: "supabase_db_arc-books-acceptance-unit" },
+    { status: "REPLAYED", route: "fresh", container: "supabase_db_arc-books-acceptance-unit" },
+    { status: "REPLAYED", route: "baseline", container: "supabase_db_arc-production" },
+  ]) {
+    fs.writeFileSync(path.join(dir, "bootstrap.json"), JSON.stringify(job))
+    assert.throws(() => upgrade(dir, { run }), /REPLAYED baseline acceptance workspace/)
+  }
+  assert.equal(calls.length, 0)
+})

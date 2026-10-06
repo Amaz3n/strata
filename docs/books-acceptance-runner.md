@@ -122,7 +122,14 @@ behind the earlier engine timeouts: the project ID is now `arc-books-acceptance-
 plus 12 hex digits, because Docker hostnames stop at 63 characters and the CLI
 names containers `supabase_<service>_<project>`; and the cron fence runs as
 `supabase_admin`, the only superuser on Supabase images. Populated upgrade from
-the production baseline is still outstanding.
+the production baseline now also passes: `--baseline-file
+docs/books-evidence/2026-10-05-upgrade/production-baseline.txt` replays the
+schema production actually has (reconciled by catalog comparison, since the
+ledger names alone cannot reproduce it), and `scripts/books-acceptance/upgrade.cjs
+--workspace <dir>` seeds synthetic data through the application's SQL
+functions, fingerprints the money, applies every remaining migration and
+requires an identical fingerprint. The October 5 run applied 160 migrations
+with money preserved and 777/777 pgTAP assertions on the upgraded database.
 
 Next infrastructure work is actual fresh replay/pgTAP and populated upgrade,
 then the 25 golden scenario journeys with independent expected entries. CI's
