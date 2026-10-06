@@ -72,6 +72,9 @@ async function lateAdjustment(kit, expected, check) {
   const org = await yearOrg(kit, "YEAR-01 late adjustment", input.opening, ["2026-03", "2026-04"])
   for (const entry of input.journals) await journal(kit, org, entry)
   await close(kit, org, "2026-03")
+  let accountantRefused = false
+  try { await kit.as(org.reviewer, () => app("books/period-close").reopenAccountingPeriod({ periodId: org.periods["2026-03"].periodId, reason: "Accountant without reopen permission" })) } catch { accountantRefused = true }
+  check.equal("an accountant without books.reopen is refused by the server", true, accountantRefused)
   await reopen(kit, org, "2026-03", "Late March software invoice found after year end")
   await journal(kit, org, input.lateAdjustment, "Late prior-year expense")
   await close(kit, org, "2026-03")

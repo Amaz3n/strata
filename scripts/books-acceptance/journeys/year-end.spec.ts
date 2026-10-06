@@ -41,3 +41,16 @@ test("year end: out-of-order reopen is explained, reopen and reclose leave one y
   expect(entries.n).toBe(1)
   noErrors()
 })
+
+test("year end: an accountant without reopen permission is not offered a reopen", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "Permission behaviour is viewport-independent")
+  const users = journey("year-end")
+  const noErrors = watchErrors(page)
+  await signIn(page, users.reviewer, users.password)
+  await page.goto(`/books/close/${users.periods["2026-03"]}`)
+  await expect(page.getByRole("heading", { name: "March 2026" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Reopen for a correction" })).toHaveCount(0)
+  const [march] = rows<{ status: string }>(`select status from public.accounting_periods where id='${users.periods["2026-03"]}'`)
+  expect(march.status).toBe("closed")
+  noErrors()
+})

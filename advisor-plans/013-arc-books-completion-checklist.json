@@ -2778,8 +2778,8 @@
       "id": "B01.2",
       "workstream": "B01",
       "title": "Correct year-end closing and ordered reopen/reclose",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All B01.2 criteria and the global DoD verified locally on the isolated acceptance stack (2026-10-06): YEAR-01 6/6, RACE-01 contention, authenticated browser journeys (desktop light + 390px dark, denial), reference doc. Awaits app acceptance in the QA org and CPA review.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "beginning RE + annual net income ± separately recorded equity movements ties ending RE",
@@ -2834,12 +2834,51 @@
           "artifact_paths_and_hashes": [
             "docs/books-evidence/2026-10-06-golden-scenarios/YEAR-01.json sha256:e4b7fef0138a0bc2d8e67dcf8df48dd979110bd52972f0ec59491dd91eee3c8f"
           ]
+        },
+        {
+          "verified_at": "2026-10-06T14:22:55.122214+00:00",
+          "implemented_paths": [
+            "lib/services/books/period-close.ts",
+            "components/books/close-workspace.tsx",
+            "docs/books-period-close.md",
+            "scripts/books-acceptance/journeys/year-end.spec.ts",
+            "scripts/books-acceptance/browser.cjs",
+            "scripts/books-acceptance/browser-seed.cjs"
+          ],
+          "test_scenario_ids": [
+            "YEAR-01",
+            "RACE-01",
+            "browser:year-end"
+          ],
+          "commands": [
+            "scenario-runner YEAR-01 (PASSED 6/6)",
+            "node scripts/books-acceptance/api.cjs --workspace W --auth",
+            "node scripts/books-acceptance/browser.cjs --workspace W --port 3210",
+            "node scripts/books-acceptance/browser-seed.cjs --workspace W --journey year-end",
+            "BOOKS_ACCEPTANCE_WORKSPACE=W npx playwright test -c scripts/books-acceptance/playwright.config.ts (3 passed, 1 skipped by design)"
+          ],
+          "observed_results": [
+            "Browser (owner, desktop light): closed February under a closed year end shows 'Periods reopen newest first' and no reopen button; March reopened with a reason, checks rerun, closed again; database shows March closed and exactly one year-end entry.",
+            "Browser (390px dark): guidance shown once, no sideways scroll, no content clipped at the viewport edge; no browser exceptions.",
+            "Denial: an org_accountant (books.close but not books.reopen) is offered no reopen in the browser, and the server refuses the reopen (YEAR-01).",
+            "Fixed during browser acceptance: at phone width the close screen's single grid column sized itself to the period strip, clipping the status badge and cards.",
+            "Documented: docs/books-period-close.md (close sequence, year-end entry set, newest-first reopen, closed-period sources)."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/YEAR-01.json sha256:5eda1bfd9369537f4c87a5c44f549fad8c0fea3a9baf3b58c75d9f0d55e3a059",
+            "docs/books-evidence/2026-10-06-golden-scenarios/RACE-01.json sha256:af51a74fc97621cb9e1f08fff19724876fa136c5bfbcd5b02ac7b32a7adf4582",
+            "docs/books-evidence/2026-10-06-browser/year-end-desktop-february-guidance.png sha256:6c076e6447dfdbec69998f3126a88d035debf9d18877c3bbc78456422b76e336",
+            "docs/books-evidence/2026-10-06-browser/year-end-desktop-march-reclosed.png sha256:faf8cef77e2d851967171214a27f0b05398373909081daed520cc2ed926d5437",
+            "docs/books-evidence/2026-10-06-browser/year-end-journeys.json sha256:cf626f6d480a4a68f4de11aa4a99fef930582fdf4a99a00c4a2e3983b73b68d2",
+            "docs/books-evidence/2026-10-06-browser/year-end-mobile-dark-february-guidance.png sha256:564d6d37eae7f05a82ee106ca1176ea69d1a4fbe76c10e861ac7816151cdda47"
+          ],
+          "schema_or_runtime_identity": "acceptance stack arc-books-acceptance-e1c88d89280b (Postgres 17.6.1.167, Supabase CLI 2.117.0, migrations through 20261006124637); app worktree at the committing HEAD; Next.js 16.3.8 dev; Playwright 1.62.1 chromium headless shell",
+          "remaining_criteria": [],
+          "external_dependency": null,
+          "reviewer": null
         }
       ],
-      "remaining_criteria": [
-        "authenticated browser journey: year-end close, refused out-of-order reopen, reopen/reclose (global DoD 5/6)",
-        "year-end entry set and reopen policy documented (global DoD 9)"
-      ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
       "verified_at": null

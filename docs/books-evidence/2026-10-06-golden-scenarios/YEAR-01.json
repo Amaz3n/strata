@@ -7,7 +7,7 @@
       "name": "noncalendar-year-closes-to-retained-earnings",
       "status": "PASSED",
       "identities": {
-        "orgId": "e79dfcf8-d475-4959-a8c8-199008145592"
+        "orgId": "ba186264-8c06-4b7a-bd32-144ce4dc543d"
       },
       "checks": [
         {
@@ -73,15 +73,21 @@
           "observed": 0
         }
       ],
-      "startedAt": "2026-10-06T14:04:53.018Z"
+      "startedAt": "2026-10-06T14:22:33.772Z"
     },
     {
       "name": "late-adjustment-reopen-reclose-and-next-year",
       "status": "PASSED",
       "identities": {
-        "orgId": "51155f47-9cbe-4eed-8ed6-5682576645af"
+        "orgId": "9358b63e-6b7b-4524-afc6-51c707baacc8"
       },
       "checks": [
+        {
+          "label": "an accountant without books.reopen is refused by the server",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
         {
           "label": "reclose posts only the residual change",
           "pass": true,
@@ -147,13 +153,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T14:04:54.774Z"
+      "startedAt": "2026-10-06T14:22:35.669Z"
     },
     {
       "name": "break-even-year",
       "status": "PASSED",
       "identities": {
-        "orgId": "c34720a9-ecd2-4502-8ccc-354acc07c31f"
+        "orgId": "89132d24-6368-46d4-8d13-ae42e68b5035"
       },
       "checks": [
         {
@@ -189,13 +195,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T14:04:55.277Z"
+      "startedAt": "2026-10-06T14:22:36.188Z"
     },
     {
       "name": "no-activity-year",
       "status": "PASSED",
       "identities": {
-        "orgId": "75ed7178-91bd-4a19-818f-a195c6e65922"
+        "orgId": "20d0a78e-1d57-4ca5-92ad-30d9b1b09984"
       },
       "checks": [
         {
@@ -219,13 +225,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T14:04:55.530Z"
+      "startedAt": "2026-10-06T14:22:36.451Z"
     },
     {
       "name": "late-adjustment-in-earlier-closed-period",
       "status": "PASSED",
       "identities": {
-        "orgId": "29f5f6c6-ff11-4a30-892f-1c7db76a1611"
+        "orgId": "c1e907f1-b889-4bd4-9ce9-07863dfa732a"
       },
       "checks": [
         {
@@ -261,13 +267,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T14:04:55.733Z"
+      "startedAt": "2026-10-06T14:22:36.651Z"
     },
     {
       "name": "same-intent-retry",
       "status": "PASSED",
       "identities": {
-        "orgId": "8ea4645a-e1e8-4529-93c0-33498e2f96d9"
+        "orgId": "e2248998-d158-420f-971b-6acacfbb1cee"
       },
       "checks": [
         {
@@ -297,9 +303,9 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T14:04:56.120Z"
+      "startedAt": "2026-10-06T14:22:37.059Z"
     }
   ],
   "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
-  "finishedAt": "2026-10-06T14:04:56.367Z"
+  "finishedAt": "2026-10-06T14:22:37.314Z"
 }
