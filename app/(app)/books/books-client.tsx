@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { MoreHorizontal } from "lucide-react";
 
 import { BankingWorkspace } from "@/components/books/banking-workspace";
+import { BankStatementDesk } from "@/components/books/bank-statement-desk";
 import {
   reconnectBankingAccountAction,
   refreshBankingFeedsAction,
@@ -523,6 +524,12 @@ export function BooksClient({
                     {workspace.capabilities.reconcile ? <Button size="sm" className="mt-4" onClick={connectPlaid} disabled={connecting || !plaidReady}>{connecting ? "Connecting…" : "Connect with Plaid"}</Button> : null}
                   </div>
                 )}
+                <BankStatementDesk
+                  bankAccounts={workspace.bankAccounts}
+                  statements={workspace.bankReconciliations}
+                  canReconcile={workspace.capabilities.reconcile}
+                  initialAccountId={reconciliationAccountId}
+                />
               </div>
           }
         />

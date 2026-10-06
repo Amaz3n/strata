@@ -44,6 +44,18 @@ const JOURNEYS = {
     await kit.as(org.owner, () => app("books/period-close").runBooksCloseChecklist(org.periods["2026-07"].periodId))
     return org
   },
+  // An operating account with check 301 written and voided in July; the bank
+  // never saw it.
+  async "bank-statement"(kit, password) {
+    const org = await greenfieldOrg(kit, { name: "Browser acceptance — bank statement", periods: ["2026-07"], password })
+    const gl = kit.rows(`select id from public.gl_accounts where org_id=${kit.q(org.orgId)} and code='1000'`)[0].id
+    const created = await kit.as(org.owner, () => app("books/bank-feeds").createManualBankAccount({ name: "Operating checking", accountType: "depository", glAccountId: gl }))
+    org.periods.bankAccount = { periodId: created.bankAccountId }
+    const check = await kit.as(org.reviewer, () => app("books/bookkeeping").createAdjustingJournal({ entryDate: "2026-07-05", memo: "Check 301 to framing supplier",
+      lines: [{ accountCode: "6900", debitCents: 100000, creditCents: 0 }, { accountCode: "1000", debitCents: 0, creditCents: 100000 }] }))
+    await kit.as(org.reviewer, () => app("books/ledger").reverseBooksJournalEntry({ entryId: check.id, reversalDate: "2026-07-08", reason: "Check 301 voided before it was presented" }))
+    return org
+  },
   // July's close died right after freezing the period, 31 minutes ago.
   async "abandoned-close"(kit, password) {
     const org = await greenfieldOrg(kit, { name: "Browser acceptance — abandoned close", periods: ["2026-07"], password })
