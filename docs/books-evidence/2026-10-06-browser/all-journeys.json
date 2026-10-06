@@ -104,12 +104,12 @@
                   "workerIndex": 0,
                   "parallelIndex": 0,
                   "status": "passed",
-                  "duration": 5509,
+                  "duration": 5417,
                   "errors": [],
                   "stdout": [],
                   "stderr": [],
                   "retry": 0,
-                  "startTime": "2026-10-06T16:26:12.336Z",
+                  "startTime": "2026-10-06T16:37:46.662Z",
                   "annotations": [],
                   "attachments": []
                 }
@@ -138,12 +138,12 @@
                   "workerIndex": 1,
                   "parallelIndex": 0,
                   "status": "passed",
-                  "duration": 6388,
+                  "duration": 6275,
                   "errors": [],
                   "stdout": [],
                   "stderr": [],
                   "retry": 0,
-                  "startTime": "2026-10-06T16:26:35.017Z",
+                  "startTime": "2026-10-06T16:38:10.026Z",
                   "annotations": [],
                   "attachments": []
                 }
@@ -154,6 +154,102 @@
           "id": "bbd166a8ddbdd19bf0de-614cb4ef62903850dc27",
           "file": "abandoned-close.spec.ts",
           "line": 6,
+          "column": 5
+        }
+      ]
+    },
+    {
+      "title": "bank-funding.spec.ts",
+      "file": "bank-funding.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "paid from: a bill payment records the chosen cash account",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [
+                {
+                  "type": "skip",
+                  "description": "Single-run mutation",
+                  "location": {
+                    "file": "/Users/agustinzenuto/Desktop/Projects/arc/scripts/books-acceptance/journeys/bank-funding.spec.ts",
+                    "line": 6,
+                    "column": 8
+                  }
+                }
+              ],
+              "expectedStatus": "skipped",
+              "projectId": "mobile-dark",
+              "projectName": "mobile-dark",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "skipped",
+                  "duration": 52,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-06T16:37:52.161Z",
+                  "annotations": [
+                    {
+                      "type": "skip",
+                      "description": "Single-run mutation",
+                      "location": {
+                        "file": "/Users/agustinzenuto/Desktop/Projects/arc/scripts/books-acceptance/journeys/bank-funding.spec.ts",
+                        "line": 6,
+                        "column": 8
+                      }
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "skipped"
+            }
+          ],
+          "id": "4e4d7bb982cd5cd1a310-04f00ca1183eba1e463e",
+          "file": "bank-funding.spec.ts",
+          "line": 5,
+          "column": 5
+        },
+        {
+          "title": "paid from: a bill payment records the chosen cash account",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "desktop",
+              "projectName": "desktop",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 8810,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-06T16:38:16.387Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "4e4d7bb982cd5cd1a310-656690803f9bdabd6e1c",
+          "file": "bank-funding.spec.ts",
+          "line": 5,
           "column": 5
         }
       ]
@@ -180,12 +276,12 @@
                   "workerIndex": 0,
                   "parallelIndex": 0,
                   "status": "passed",
-                  "duration": 5695,
+                  "duration": 5764,
                   "errors": [],
                   "stdout": [],
                   "stderr": [],
                   "retry": 0,
-                  "startTime": "2026-10-06T16:26:17.925Z",
+                  "startTime": "2026-10-06T16:37:52.218Z",
                   "annotations": [],
                   "attachments": []
                 }
@@ -224,12 +320,12 @@
                   "workerIndex": 0,
                   "parallelIndex": 0,
                   "status": "skipped",
-                  "duration": 51,
+                  "duration": 52,
                   "errors": [],
                   "stdout": [],
                   "stderr": [],
                   "retry": 0,
-                  "startTime": "2026-10-06T16:26:23.623Z",
+                  "startTime": "2026-10-06T16:37:57.986Z",
                   "annotations": [
                     {
                       "type": "skip",
@@ -268,12 +364,12 @@
                   "workerIndex": 1,
                   "parallelIndex": 0,
                   "status": "passed",
-                  "duration": 8371,
+                  "duration": 7917,
                   "errors": [],
                   "stdout": [],
                   "stderr": [],
                   "retry": 0,
-                  "startTime": "2026-10-06T16:26:41.491Z",
+                  "startTime": "2026-10-06T16:38:25.203Z",
                   "annotations": [],
                   "attachments": []
                 }
@@ -302,12 +398,12 @@
                   "workerIndex": 1,
                   "parallelIndex": 0,
                   "status": "passed",
-                  "duration": 6427,
+                  "duration": 5845,
                   "errors": [],
                   "stdout": [],
                   "stderr": [],
                   "retry": 0,
-                  "startTime": "2026-10-06T16:26:49.865Z",
+                  "startTime": "2026-10-06T16:38:33.124Z",
                   "annotations": [],
                   "attachments": []
                 }
@@ -344,12 +440,12 @@
                   "workerIndex": 0,
                   "parallelIndex": 0,
                   "status": "passed",
-                  "duration": 5402,
+                  "duration": 6183,
                   "errors": [],
                   "stdout": [],
                   "stderr": [],
                   "retry": 0,
-                  "startTime": "2026-10-06T16:26:23.679Z",
+                  "startTime": "2026-10-06T16:37:58.044Z",
                   "annotations": [],
                   "attachments": []
                 }
@@ -388,12 +484,12 @@
                   "workerIndex": 0,
                   "parallelIndex": 0,
                   "status": "skipped",
-                  "duration": 52,
+                  "duration": 53,
                   "errors": [],
                   "stdout": [],
                   "stderr": [],
                   "retry": 0,
-                  "startTime": "2026-10-06T16:26:29.085Z",
+                  "startTime": "2026-10-06T16:38:04.230Z",
                   "annotations": [
                     {
                       "type": "skip",
@@ -432,12 +528,12 @@
                   "workerIndex": 1,
                   "parallelIndex": 0,
                   "status": "passed",
-                  "duration": 6194,
+                  "duration": 6717,
                   "errors": [],
                   "stdout": [],
                   "stderr": [],
                   "retry": 0,
-                  "startTime": "2026-10-06T16:26:56.298Z",
+                  "startTime": "2026-10-06T16:38:38.976Z",
                   "annotations": [],
                   "attachments": []
                 }
@@ -466,12 +562,12 @@
                   "workerIndex": 1,
                   "parallelIndex": 0,
                   "status": "passed",
-                  "duration": 5179,
+                  "duration": 5250,
                   "errors": [],
                   "stdout": [],
                   "stderr": [],
                   "retry": 0,
-                  "startTime": "2026-10-06T16:27:02.496Z",
+                  "startTime": "2026-10-06T16:38:45.697Z",
                   "annotations": [],
                   "attachments": []
                 }
@@ -508,12 +604,12 @@
                   "workerIndex": 0,
                   "parallelIndex": 0,
                   "status": "passed",
-                  "duration": 5608,
+                  "duration": 5471,
                   "errors": [],
                   "stdout": [],
                   "stderr": [],
                   "retry": 0,
-                  "startTime": "2026-10-06T16:26:29.142Z",
+                  "startTime": "2026-10-06T16:38:04.289Z",
                   "annotations": [],
                   "attachments": []
                 }
@@ -552,12 +648,12 @@
                   "workerIndex": 0,
                   "parallelIndex": 0,
                   "status": "skipped",
-                  "duration": 51,
+                  "duration": 52,
                   "errors": [],
                   "stdout": [],
                   "stderr": [],
                   "retry": 0,
-                  "startTime": "2026-10-06T16:26:34.753Z",
+                  "startTime": "2026-10-06T16:38:09.764Z",
                   "annotations": [
                     {
                       "type": "skip",
@@ -596,12 +692,12 @@
                   "workerIndex": 1,
                   "parallelIndex": 0,
                   "status": "passed",
-                  "duration": 9015,
+                  "duration": 8932,
                   "errors": [],
                   "stdout": [],
                   "stderr": [],
                   "retry": 0,
-                  "startTime": "2026-10-06T16:27:07.681Z",
+                  "startTime": "2026-10-06T16:38:50.954Z",
                   "annotations": [],
                   "attachments": []
                 }
@@ -630,12 +726,12 @@
                   "workerIndex": 1,
                   "parallelIndex": 0,
                   "status": "passed",
-                  "duration": 5897,
+                  "duration": 5294,
                   "errors": [],
                   "stdout": [],
                   "stderr": [],
                   "retry": 0,
-                  "startTime": "2026-10-06T16:27:16.700Z",
+                  "startTime": "2026-10-06T16:38:59.890Z",
                   "annotations": [],
                   "attachments": []
                 }
@@ -653,10 +749,10 @@
   ],
   "errors": [],
   "stats": {
-    "startTime": "2026-10-06T16:26:12.127Z",
-    "duration": 70540.697,
-    "expected": 11,
-    "skipped": 3,
+    "startTime": "2026-10-06T16:37:46.492Z",
+    "duration": 78777.613,
+    "expected": 12,
+    "skipped": 4,
     "unexpected": 0,
     "flaky": 0
   }

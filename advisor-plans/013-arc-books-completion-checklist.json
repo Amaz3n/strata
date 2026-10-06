@@ -7707,8 +7707,8 @@
       "id": "B08.3",
       "workstream": "B08",
       "title": "Funding account, card and reimbursement truth",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All five B08.3 DoD criteria and the global DoD verified locally (2026-10-06): BANK-01 8/8, browser 'Paid from' journey, reference doc. Arc Pay (payment-run) funding-source mapping and joint-check remittance are not exercised here; they ride on the Arc Pay rail acceptance.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "two bank accounts and a card produce separate exact control balances",
@@ -7740,14 +7740,43 @@
           "artifact_paths_and_hashes": [
             "docs/books-evidence/2026-10-06-golden-scenarios/BANK-01.json sha256:4d0ad8fc3abda8c81c69c29b9d5957631f7ed6fd2390bb19cd9996d524ba280b"
           ]
+        },
+        {
+          "verified_at": "2026-10-06T16:39:25.750821+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/bank-01.cjs",
+            "scripts/books-acceptance/journeys/bank-funding.spec.ts",
+            "docs/books-bank-reconciliation.md",
+            "lib/pdf/worker.ts"
+          ],
+          "test_scenario_ids": [
+            "BANK-01",
+            "browser:bank-funding"
+          ],
+          "commands": [
+            "scenario-runner BANK-01 (PASSED 8/8)",
+            "BOOKS_ACCEPTANCE_WORKSPACE=W npx playwright test -c scripts/books-acceptance/playwright.config.ts (12 passed, 4 skipped by design)"
+          ],
+          "observed_results": [
+            "Two banks and a card keep separate exact control balances over two cycles (two-banks-and-card-two-cycles).",
+            "One 3,000 bill paid 1,000 by check from operating and 2,000 by ACH from payroll checking: each credits its own account, each statement ties on its own (operating -1,400 incl. reimbursement; payroll -2,000), bill paid.",
+            "No generic default: with two cash accounts a payment without an account is refused ('Choose the actual bank or card account before recording this payment').",
+            "Card repayment moves cash to the card liability without a second expense; a 400 job cost paid personally is owed to the employee (2220 -400) until the reimbursement settles it from operating and clears on the statement.",
+            "Browser: Record payment on the project payables workbench offers Paid from; choosing 1005 Payroll checking records the payment against 1005.",
+            "Fixed in passing: the project payables workbench threw 'DOMMatrix is not defined' on every server render (pdf.js evaluated through lib/pdf/worker.ts) and fell back to client rendering; also present on main."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/BANK-01.json sha256:95b3dc30b4f306fb3a5058617a1d2efee00da0ced13b0cbe346e5f1788b14edc",
+            "docs/books-evidence/2026-10-06-browser/bank-funding-payment-desktop.png sha256:933805746b6f721afec14e8aee02d64cb3de83449573db1748b26f34ead2b03e",
+            "docs/books-evidence/2026-10-06-browser/all-journeys.json sha256:8bbd0183a0d9d2b103ff63cade63ab68e3669dfe690fc1abf11a74a62f2dd2a0"
+          ],
+          "schema_or_runtime_identity": "acceptance stack arc-books-acceptance-e1c88d89280b",
+          "remaining_criteria": [],
+          "external_dependency": null,
+          "reviewer": null
         }
       ],
-      "remaining_criteria": [
-        "one payable paid across two accounts retains ownership",
-        "no generic default cash account hides an unmapped source (ambiguous funding test)",
-        "reimbursable employee costs retain employee payable until settlement",
-        "browser journeys for funding choice"
-      ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
       "verified_at": null

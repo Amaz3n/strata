@@ -400,6 +400,52 @@ async function voidedAfterPosting(kit, expected, check) {
   return { orgId: org.orgId }
 }
 
+async function fundingOwnership(kit, expected, check) {
+  const input = expected.inputs
+  const org = await contractJob(kit, { name: "BANK-01 funding ownership", contractCents: input.contractCents, retainagePercent: 0, periods: ["2026-07"], accounts: [PAYROLL_CHECKING] })
+  org.banks = { operating: await bankAccount(kit, org, "1000"), payroll: await bankAccount(kit, org, "1005", "payroll account") }
+  const { createProjectVendorBill, approveVendorBillsAtomic, updateVendorBillStatus } = app("vendor-bills")
+  const newBill = async (spec, label) => {
+    const created = await kit.as(org.owner, () => createProjectVendorBill({ projectId: org.projectId, input: { company_id: org.vendorId, bill_number: label, bill_date: spec.date, due_date: spec.date, total_cents: spec.cents,
+      actual_lines: [{ cost_code_id: org.costCodeId, description: "Framing", amount_cents: spec.cents, project_id: org.projectId }] } }))
+    await kit.as(org.owner, () => approveVendorBillsAtomic([{ id: created.id }]))
+    return created.id
+  }
+  const billId = await newBill(input.bill, "SPLIT-1")
+  const pay = (id, payment, status, key) => kit.as(org.owner, () => updateVendorBillStatus({ billId: id, input: { status, payment_amount_cents: payment.cents, payment_method: payment.method,
+    ...(payment.check ? { check_number: payment.check } : {}), payment_date: payment.date, ...(payment.account ? { books_payment_account_id: glId(kit, org, payment.account) } : {}), payment_idempotency_key: `${key}-${org.orgId}` } }))
+  await pay(billId, input.payments[0], "partial", "split-a")
+  await pay(billId, input.payments[1], "paid", "split-b")
+  const unpaid = await newBill(input.unpaidBill, "SPLIT-2")
+  const ambiguous = await refusalOf(() => pay(unpaid, { cents: input.unpaidBill.cents, method: "ach", date: "2026-07-20" }, "paid", "split-ambiguous"))
+  check.equal("with two cash accounts a payment must say where it was paid from", expected.expectedAmbiguousFundingRefused, /account/i.test(ambiguous ?? ""))
+  const { createProjectExpense, approveProjectExpense } = app("cost-plus")
+  const expense = await kit.as(org.owner, () => createProjectExpense({ projectId: org.projectId, costCodeId: org.costCodeId, expenseDate: input.reimbursable.date, description: "Lumber bought on a personal card",
+    vendorNameText: "Lumber yard", amountCents: input.reimbursable.cents, paymentMethod: "reimbursable_personal", isBillable: false }))
+  await kit.as(org.owner, () => approveProjectExpense(expense.id))
+  await kit.drainOutbox(org.orgId)
+  await project(kit, org)
+  check.equal("the employee is owed until reimbursed", expected.expectedEmployeePayableBeforeReimbursement, kit.postedNet(org.orgId)["2220"] ?? 0)
+  await kit.as(org.owner, () => app("books/payroll-settlement").recordPayrollSettlement({ clearingCode: "2220", cashAccountId: glId(kit, org, "1000"), date: input.reimbursement.date,
+    grossCents: input.reimbursable.cents, withheldCents: 0, reference: "Reimbursement to employee", evidenceUrl: "https://acceptance.example.test/reimbursement.pdf" }))
+  const lines = {
+    operating: [{ date: input.payments[0].clears, description: "Check 501", cents: -input.payments[0].cents }, { date: input.reimbursement.clears, description: "Employee reimbursement", cents: -input.reimbursable.cents }],
+    payroll: [{ date: input.payments[1].clears, description: "ACH framing supplier", cents: -input.payments[1].cents }],
+  }
+  for (const [bank, statement] of Object.entries(lines)) await importStatement(kit, org, bank, statement)
+  const { confirmBankMatch } = app("books/bank-reconciliation")
+  const match = (bank, line, code, extra) => kit.as(org.owner, () => confirmBankMatch({ bankTransactionId: bankTransaction(kit, org, bank, line), journalLineId: bookLine(kit, org, code, "credit", Math.abs(line.cents), extra), amountCents: Math.abs(line.cents), matchType: "exact" }))
+  await match("operating", lines.operating[0], "1000", "and e.source_type like '%payment%'")
+  await match("operating", lines.operating[1], "1000", "and e.source_type <> 'bill_payment'")
+  await match("payroll", lines.payroll[0], "1005", "and e.source_type like '%payment%'")
+  const statements = {}
+  for (const bank of ["operating", "payroll"]) statements[bank] = await closeStatement(kit, org, org.banks[bank].id, "2026-07", 0, lines[bank])
+  check.equal("each account's statement ties on its own", expected.expectedStatements, statements)
+  check.equal("the split bill is fully paid", expected.expectedBillStatus, kit.rows(`select status from public.vendor_bills where id=${kit.q(billId)}`)[0].status)
+  check.equal("ledger: each payment credits its own account; reimbursement clears the employee payable", expected.expectedNetDebitCentsByAccount, kit.postedNet(org.orgId))
+  return { orgId: org.orgId, ambiguousRefusal: ambiguous }
+}
+
 async function refusalOf(work) {
   try { await work(); return null } catch (error) { return error instanceof Error ? error.message : String(error) }
 }
@@ -414,5 +460,6 @@ module.exports = {
     "supplier-refund-and-vendor-credit": supplierRefundAndCredit,
     "voided-checks-offset": voidedChecksOffset,
     "voided-after-posting": voidedAfterPosting,
+    "funding-ownership": fundingOwnership,
   },
 }

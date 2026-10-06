@@ -5,7 +5,7 @@ const fs = require("node:fs"),
   path = require("node:path"),
   { randomBytes } = require("node:crypto")
 const { createKit } = require("./scenario-kit.cjs")
-const { app, greenfieldOrg } = require("./scenarios/shared.cjs")
+const { app, greenfieldOrg, contractJob } = require("./scenarios/shared.cjs")
 
 const JOURNEYS = {
   // Fiscal year April–March with February and March (the year end) closed.
@@ -56,6 +56,21 @@ const JOURNEYS = {
     await kit.as(org.reviewer, () => app("books/ledger").reverseBooksJournalEntry({ entryId: check.id, reversalDate: "2026-07-08", reason: "Check 301 voided before it was presented" }))
     // A bank line nobody has claimed yet.
     await kit.as(org.owner, () => app("books/bank-feeds").importBankStatement({ bankAccountId: created.bankAccountId, contents: "Date,Description,Amount,Id\n2026-08-04,Unidentified deposit,2500.00,aug-1", fileName: "august.csv" }))
+    return org
+  },
+  // Two cash accounts and an approved bill waiting to be paid.
+  async "bank-funding"(kit, password) {
+    const org = await contractJob(kit, { name: "Browser acceptance — paid from", contractCents: 5000000, retainagePercent: 0, periods: ["2026-07"], password,
+      accounts: [{ code: "1005", name: "Payroll checking", accountType: "asset", subtype: "cash", normalBalance: "debit" }] })
+    const gl = (code) => kit.rows(`select id from public.gl_accounts where org_id=${kit.q(org.orgId)} and code=${kit.q(code)}`)[0].id
+    for (const [code, name] of [["1000", "Operating checking"], ["1005", "Payroll checking"]])
+      await kit.as(org.owner, () => app("books/bank-feeds").createManualBankAccount({ name, accountType: "depository", glAccountId: gl(code) }))
+    const { createProjectVendorBill, approveVendorBillsAtomic } = app("vendor-bills")
+    const bill = await kit.as(org.owner, () => createProjectVendorBill({ projectId: org.projectId, input: { company_id: org.vendorId, bill_number: "FUND-1", bill_date: "2026-07-08", due_date: "2026-07-08", total_cents: 50000,
+      actual_lines: [{ cost_code_id: org.costCodeId, description: "Framing", amount_cents: 50000, project_id: org.projectId }] } }))
+    await kit.as(org.owner, () => approveVendorBillsAtomic([{ id: bill.id }]))
+    org.periods.bill = { periodId: bill.id }
+    org.periods.payrollAccount = { periodId: gl("1005") }
     return org
   },
   // July's close died right after freezing the period, 31 minutes ago.

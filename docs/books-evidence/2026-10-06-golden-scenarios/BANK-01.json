@@ -7,7 +7,7 @@
       "name": "two-banks-and-card-two-cycles",
       "status": "PASSED",
       "identities": {
-        "orgId": "94e98b39-2df7-48d1-867f-875d07b20db2"
+        "orgId": "c6da80fc-93bb-4dac-b649-8d75f22e98b5"
       },
       "checks": [
         {
@@ -161,13 +161,13 @@
           "observed": 0
         }
       ],
-      "startedAt": "2026-10-06T16:14:53.928Z"
+      "startedAt": "2026-10-06T16:29:37.400Z"
     },
     {
       "name": "reopen-order-and-frozen-evidence",
       "status": "PASSED",
       "identities": {
-        "orgId": "21ad0baf-19f3-43da-9dd7-97aae5c307a3"
+        "orgId": "7967395f-d5a1-48b9-b58d-95ed85812a65"
       },
       "checks": [
         {
@@ -195,13 +195,13 @@
           "observed": true
         }
       ],
-      "startedAt": "2026-10-06T16:15:00.089Z"
+      "startedAt": "2026-10-06T16:29:55.401Z"
     },
     {
       "name": "grouped-net-deposit-with-fees",
       "status": "PASSED",
       "identities": {
-        "orgId": "42f3b418-41de-4877-97f5-a62881a8e64c"
+        "orgId": "209ac186-bd8d-43b9-9cdb-a68e6b659089"
       },
       "checks": [
         {
@@ -245,13 +245,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T16:15:03.484Z"
+      "startedAt": "2026-10-06T16:30:04.525Z"
     },
     {
       "name": "imported-outstanding-items",
       "status": "PASSED",
       "identities": {
-        "orgId": "6242d9cb-b679-41dc-a43b-49130d420bca"
+        "orgId": "94e4088e-4748-4390-baad-8b849ba36b45"
       },
       "checks": [
         {
@@ -295,13 +295,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T16:15:04.123Z"
+      "startedAt": "2026-10-06T16:30:06.012Z"
     },
     {
       "name": "supplier-refund-and-vendor-credit",
       "status": "PASSED",
       "identities": {
-        "orgId": "9f15f7df-8d42-4cd9-9fad-7d0a9f28c705"
+        "orgId": "0f24b87a-1e96-4053-8323-692152a9b34e"
       },
       "checks": [
         {
@@ -343,14 +343,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T16:15:04.624Z"
+      "startedAt": "2026-10-06T16:30:07.347Z"
     },
     {
       "name": "voided-checks-offset",
       "status": "PASSED",
       "identities": {
-        "orgId": "2b09b747-7089-4314-90d4-d4efdb94eb12",
-        "reconciliationId": "c01fd0a9-57cc-4b2e-939d-c0780914370f"
+        "orgId": "6f9f6e5e-d4ec-4634-a009-fccd698e09a4",
+        "reconciliationId": "783f08a6-f0d5-43d9-8aae-03190b0d0ea4"
       },
       "checks": [
         {
@@ -418,13 +418,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T16:15:05.880Z"
+      "startedAt": "2026-10-06T16:30:11.287Z"
     },
     {
       "name": "voided-after-posting",
       "status": "PASSED",
       "identities": {
-        "orgId": "9121fa99-340c-45d8-8dd1-46763712d973"
+        "orgId": "e5267daf-2405-423c-96bf-ef679277229e"
       },
       "checks": [
         {
@@ -446,9 +446,82 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T16:15:06.633Z"
+      "startedAt": "2026-10-06T16:30:13.315Z"
+    },
+    {
+      "name": "funding-ownership",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "c42f8b55-e5a2-4d19-9242-3b9d9bde2974",
+        "ambiguousRefusal": "Failed to record bill payment: Choose the actual bank or card account before recording this payment"
+      },
+      "checks": [
+        {
+          "label": "with two cash accounts a payment must say where it was paid from",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "the employee is owed until reimbursed",
+          "pass": true,
+          "expected": -40000,
+          "observed": -40000
+        },
+        {
+          "label": "each account's statement ties on its own",
+          "pass": true,
+          "expected": {
+            "operating": {
+              "ending": -140000,
+              "outstanding": 0,
+              "book": -140000
+            },
+            "payroll": {
+              "ending": -200000,
+              "outstanding": 0,
+              "book": -200000
+            }
+          },
+          "observed": {
+            "operating": {
+              "ending": -140000,
+              "outstanding": 0,
+              "book": -140000
+            },
+            "payroll": {
+              "ending": -200000,
+              "outstanding": 0,
+              "book": -200000
+            }
+          }
+        },
+        {
+          "label": "the split bill is fully paid",
+          "pass": true,
+          "expected": "paid",
+          "observed": "paid"
+        },
+        {
+          "label": "ledger: each payment credits its own account; reimbursement clears the employee payable",
+          "pass": true,
+          "expected": {
+            "1000": -140000,
+            "1005": -200000,
+            "2000": -50000,
+            "5000": 390000
+          },
+          "observed": {
+            "1000": -140000,
+            "1005": -200000,
+            "2000": -50000,
+            "5000": 390000
+          }
+        }
+      ],
+      "startedAt": "2026-10-06T16:30:15.199Z"
     }
   ],
   "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
-  "finishedAt": "2026-10-06T16:15:07.285Z"
+  "finishedAt": "2026-10-06T16:30:18.740Z"
 }

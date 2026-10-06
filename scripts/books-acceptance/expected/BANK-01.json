@@ -519,6 +519,66 @@
         "5000": 50000
       },
       "expectedPaymentEntryStillPosted": true
+    },
+    "funding-ownership": {
+      "inputs": {
+        "contractCents": 5000000,
+        "bill": {
+          "date": "2026-07-08",
+          "cents": 300000
+        },
+        "payments": [
+          {
+            "account": "1000",
+            "cents": 100000,
+            "date": "2026-07-10",
+            "method": "check",
+            "check": "501",
+            "clears": "2026-07-12"
+          },
+          {
+            "account": "1005",
+            "cents": 200000,
+            "date": "2026-07-15",
+            "method": "ach",
+            "clears": "2026-07-15"
+          }
+        ],
+        "unpaidBill": {
+          "date": "2026-07-09",
+          "cents": 50000
+        },
+        "reimbursable": {
+          "date": "2026-07-12",
+          "cents": 40000
+        },
+        "reimbursement": {
+          "date": "2026-07-25",
+          "clears": "2026-07-26"
+        }
+      },
+      "derivation": "One 3,000 bill is paid 1,000 by check from operating and 2,000 by ACH from payroll checking: each payment credits its own account and clears on its own statement, and the bill is fully paid. With two cash accounts, a payment that does not say where it was paid from is refused rather than defaulted. A 400 job cost paid personally by an employee is owed to the employee (2220) until the reimbursement is paid from operating.",
+      "expectedAmbiguousFundingRefused": true,
+      "expectedEmployeePayableBeforeReimbursement": -40000,
+      "expectedBillStatus": "paid",
+      "expectedStatements": {
+        "operating": {
+          "ending": -140000,
+          "outstanding": 0,
+          "book": -140000
+        },
+        "payroll": {
+          "ending": -200000,
+          "outstanding": 0,
+          "book": -200000
+        }
+      },
+      "expectedNetDebitCentsByAccount": {
+        "1000": -140000,
+        "1005": -200000,
+        "2000": -50000,
+        "5000": 390000
+      }
     }
   }
 }

@@ -49,9 +49,19 @@ The statement screen lists outstanding items by date, memo and amount.
 | Bank fee, card purchase, owner capital, supplier refund, payroll tax | Categorized to an account (Dr/Cr the category, Cr/Dr the bank), matched automatically; job costs need a project |
 | Transfer between accounts, card repayment | Categorized on one side to the other account's control account, matched on the other side as a transfer |
 | Payroll net pay paid as several direct deposits | Each deposit matched for its part of one net-pay line |
+| Reimbursement of a cost an employee paid personally | The expense credits 2220 employee reimbursements; the reimbursement settles 2220 from the chosen cash account and is matched to the statement |
 
 A line nobody has owned stays in **Banking → For review** with vendor,
 category and project choices and a Post action.
+
+## Funding accounts
+
+A bill payment, expense or settlement credits the account the money actually
+left. When an organization has more than one eligible account (cash for checks
+and transfers, a credit-card liability for card payments), the payment must name
+it — **Paid from** on the payment — and recording one without it is refused
+rather than defaulted. One bill paid from two accounts credits each account for
+its part and clears on each account's own statement.
 
 ## Cutover outstanding items
 
