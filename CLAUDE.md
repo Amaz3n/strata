@@ -204,6 +204,21 @@ Judgment rules:
 - Multi-tenant: all tables `org_id`-scoped with RLS. Events → `events`,
   audit → `audit_log`, async work → `outbox`, cron telemetry → `job_runs`.
 
+## Writing tests
+
+Full standard: **`docs/testing.md`** — read it before adding a test. Most of
+`tests/` predates it and is being rewritten; **never copy a sibling test file
+as a pattern.**
+
+- Test through public exports. Never read source text to test it — no
+  `readFileSync` on `lib/`/`app/`/`supabase/`, no `ts.createSourceFile` to lift
+  a function out, no regex against code.
+- One suite per module; new cases go into the existing suite for that area.
+  No new file per feature, audit or invariant (`*-integrity`, `*-hardening`).
+- Harness code (fakes, builders, `Module._load` overrides) lives only in
+  `tests/support/`.
+- Fewer, sharper tests. A failing test is fixed or deleted in the same change.
+
 ## Verifying your work
 
 `pnpm lint` is **NOT type-aware** — the ESLint config has no `parserOptions.project`.

@@ -36,7 +36,8 @@ async function fixture(t,{existing=false,started=false}={}) {
     }
     try { await db.exec(`create table public."${table}"(${defs.join(',')})`) } catch(error) { throw Error(`Fixture ${table}: ${error.message}; ${defs.join(',')}`) }
   }
-  await db.exec(`create table lots(id uuid primary key,org_id uuid,community_id uuid,division_id uuid,project_id uuid,lot_number text,status text,updated_at timestamptz default now());`)
+  await db.exec(`create table lots(id uuid primary key,org_id uuid,community_id uuid,division_id uuid,project_id uuid,lot_number text,status text,updated_at timestamptz default now());
+    create table budgets(id uuid primary key,org_id uuid,project_id uuid);create table budget_lines(id uuid primary key,org_id uuid,budget_id uuid);`)
   const authority=fs.readFileSync('supabase/migrations/20261003232615_purchase_agreement_signing_ownership.sql','utf8')
   await db.exec(authority.slice(authority.indexOf('create function public.assert_agreement_signing_actor'),authority.indexOf('create function public.purchase_agreement_signing_input')))
   const invoice=fs.readFileSync('supabase/migrations/20260905004943_invoice_budget_mapping.sql','utf8')

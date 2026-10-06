@@ -9,7 +9,7 @@ async function setup(t){
  create table lots(id uuid primary key,org_id uuid,project_id uuid,community_id uuid,division_id uuid,books_acquisition_entry_id uuid);
  create table project_financial_settings(org_id uuid,project_id uuid,books_inventory_enabled boolean,books_inventory_effective_on date,books_inventory_completed_on date,books_inventory_sold_on date);
  create table books_settings(org_id uuid,active_policy_version integer);
- alter table job_cost_entries alter column id set default gen_random_uuid(),add column source_type text,add column source_id uuid,add column is_billable boolean,add column metadata jsonb;
+ alter table job_cost_entries alter column id set default gen_random_uuid(),add column source_type text,add column source_id text,add column is_billable boolean,add column metadata jsonb;
  `)
  // Generated artifact tables are unrelated fixtures needed to load the shared
  // scope helper migration; the accounting tables/RPC/guards are real SQL.

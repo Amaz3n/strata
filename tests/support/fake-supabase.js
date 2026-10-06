@@ -13,6 +13,8 @@
  * the lease and claim tests pass for the wrong reason.
  */
 
+const { randomUUID } = require("node:crypto")
+
 function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value))
 }
@@ -90,7 +92,8 @@ function matchesExpression(row, expression) {
 }
 
 class Query {
-  constructor(store, table) {
+  constructor(store, table, newId) {
+    this.newId = newId
     this.store = store
     this.table = table
     this.filters = []
@@ -156,6 +159,10 @@ class Query {
   range(from, to) { this.rangeValue = [from, to]; return this }
   single() { this.cardinality = "single"; return this }
   maybeSingle() { this.cardinality = "maybe"; return this }
+  /** Like PostgREST: an error rejects instead of resolving `{ error }`. */
+  throwOnError() { this.throwing = true; return this }
+  /** A type-only cast in PostgREST. */
+  returns() { return this }
 
   matched() {
     return this.rows().filter((row) => this.filters.every((predicate) => predicate(row)))
@@ -173,7 +180,7 @@ class Query {
           : undefined
         if (existing && this.upsertOptions?.ignoreDuplicates) { written.push(existing); continue }
         if (existing) { Object.assign(existing, clone(entry)); written.push(existing); continue }
-        const created = { id: entry.id ?? `${this.table}-${rows.length + 1}`, ...clone(entry) }
+        const created = { id: entry.id ?? this.newId(this.table, rows.length + 1), ...clone(entry) }
         rows.push(created)
         written.push(created)
       }
@@ -222,15 +229,26 @@ class Query {
   then(resolve, reject) {
     // Every operation yields first, so two workers driving the same store
     // interleave exactly where real awaits would let them.
-    return Promise.resolve().then(() => this.run()).then(resolve, reject)
+    return Promise.resolve()
+      .then(() => this.run())
+      .then((result) => {
+        if (this.throwing && result.error) throw Object.assign(new Error(result.error.message), result.error)
+        return result
+      })
+      .then(resolve, reject)
   }
 }
 
-function createFakeSupabase(tables = {}, rpcHandlers = {}) {
+/**
+ * `options.uuidIds` gives inserted rows real UUIDs, like a database default,
+ * for services that validate the ids they read back.
+ */
+function createFakeSupabase(tables = {}, rpcHandlers = {}, options = {}) {
+  const newId = options.uuidIds ? () => randomUUID() : (table, ordinal) => `${table}-${ordinal}`
   const store = clone(tables)
   return {
     store,
-    from(table) { return new Query(store, table) },
+    from(table) { return new Query(store, table, newId) },
     async rpc(name, args) {
       await Promise.resolve()
       const handler = rpcHandlers[name]

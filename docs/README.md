@@ -23,6 +23,7 @@ then the reference docs below.
 | [`reference/arc-trade.md`](reference/arc-trade.md) | Trade workspace behavior, pilot setup, access boundaries, and acceptance checklist. |
 | [`reference/document-transfers.md`](reference/document-transfers.md) | Documents transfer recovery, mutations, exports, verification and pending rollout requirements. |
 | [`design.md`](design.md) | The design standard. Read before building any new surface. |
+| [`testing.md`](testing.md) | The testing standard: tiers, rules, where tests live. Read before adding a test. |
 | [`database-overview.md`](database-overview.md) | Schema reference. Live schema via Supabase MCP `list_tables` always wins. |
 | [`production-org-playbook.md`](production-org-playbook.md) | Role/surface map: who lives on which desk and what they mutate. |
 | [`books-revenue-recognition.md`](books-revenue-recognition.md) | Arc Books' full contract-lifecycle entry set, traced from the posting rules, with a worked percentage-of-completion example. **Carries the construction-CPA sign-off block that gates any org leaving `shadow` mode.** Read before changing anything in `lib/services/books/posting-rules.ts`. |
