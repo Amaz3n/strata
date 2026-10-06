@@ -7979,8 +7979,8 @@
       "id": "B09.3",
       "workstream": "B09",
       "title": "Complete shared operational status and health",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All B09.3 criteria and the global DoD verified locally (2026-10-06): STATUS-01 8/8 (including access-and-empty), posting-status browser journey on phone/dark and desktop. No migration required.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "each supported source has an authorized status/cure path",
@@ -7995,18 +7995,46 @@
         "RACE-01",
         "STATUS-01"
       ],
-      "evidence": [],
-      "remaining_criteria": [
-        "each supported source has an authorized status/cure path",
-        "stale receipt never says current posted",
-        "resolving one source cannot hide another",
-        "error/loading/empty and scoped-denied states verified",
-        "status agrees with actual SQL after refresh, retry, correction and close",
-        "nonproject sources have explicit permission rules"
+      "evidence": [
+        {
+          "verified_at": "2026-10-06T23:30:56.481361+00:00",
+          "implemented_paths": [
+            "lib/services/books/posting-status.ts",
+            "components/books/source-posting-status.tsx",
+            "components/books/books-journals.tsx",
+            "lib/services/books/bookkeeping.ts",
+            "components/invoices/invoice-inspector.tsx",
+            "scripts/books-acceptance/scenarios/status-01.cjs",
+            "scripts/books-acceptance/journeys/posting-status.spec.ts"
+          ],
+          "test_scenario_ids": [
+            "STATUS-01"
+          ],
+          "commands": [
+            "scenario-runner STATUS-01",
+            "playwright -c scripts/books-acceptance/playwright.config.ts posting-status"
+          ],
+          "observed_results": [
+            "Every supported source family (invoice incl. retainage release, vendor bill, expense, payment incl. bill/invoice payments and deposits) reports posted / pending / blocked / failed / reversed from its persisted receipt and open findings; a posted state links to its journal, a blocked or failed one to its cure.",
+            "Stale receipts never read posted (STATUS-01 harmless/economic edits, dependency invalidation); scoped runs resolve only evaluated sources (partial-run-scoped-resolution); status agrees with SQL after correction, closed-period refusal, reopen retry and close.",
+            "Access: a project PM reads their job's bill and is refused another job's; the Books reviewer is refused a project bill; a bill with no project needs books.read (PM refused, reviewer and owner read it); a disabled Arc ledger returns no status rather than a false pending.",
+            "Browser: blocked bill shows its cure and 'Last journal' without the raw database error (phone/dark and desktop, no overflow); invoice payment and invoice both show their verified journal; the journal link opens the ledger filtered to that one entry; loading, unreachable-service error and Refresh recovery verified.",
+            "Fixed on the way: /books/ledger?entry=<id> was linked from four surfaces but ignored by the ledger; it now filters by id in the database (beyond the 1,000-entry scan window) and opens the entry. The invoice summary showed the email send date as 'Issued'; it now shows the invoice date the ledger posts."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/STATUS-01.json sha256:f43a9b0a790966cf68779b4664a239a122e04ddf11762d340458f81614d1bc6c",
+            "docs/books-evidence/2026-10-06-browser/posting-status-journeys.json sha256:19ea438b42b23fe5a61b5b074e7b5406bc640d7a01c3b8a1f32d5f4dc9731717",
+            "docs/books-evidence/2026-10-06-browser/posting-status-blocked-bill-desktop.png sha256:d927dcab55e6b2d25c30d23e1f08291a11a4d7c9498bf151e3431332ba3a0bff",
+            "docs/books-evidence/2026-10-06-browser/posting-status-blocked-bill-mobile-dark.png sha256:7fdbabd6941871a9dc7ad274747862a00518fd451870c4986b77d9286d074c5d",
+            "docs/books-evidence/2026-10-06-browser/posting-status-posted-invoice-desktop.png sha256:bbb399bf466d6904f1ae5e4e45252ca350bbe9cd0d331c292d71339d083a9c93",
+            "docs/books-evidence/2026-10-06-browser/posting-status-invoice-journal-desktop.png sha256:eb1e1a67d5a15c3f30666db399e611ca29d4a2085e5a04527b751048fdb5cbe9"
+          ]
+        }
       ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-06T23:30:56.481361+00:00"
     },
     {
       "id": "B10.1",

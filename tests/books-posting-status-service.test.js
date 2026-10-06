@@ -2,7 +2,7 @@ require('../scripts/register-ts-node-test');const test=require('node:test');cons
 test('posting status respects project scope, org-wide overhead access and current receipt evidence',async()=>{
  const id='00000000-0000-4000-8000-000000000001';let denied=false,projectId='project',failure=null,updated='2026-10-01T00:00:00Z';const permissions=[];const queried=[];
  const service={from(table){queried.push(table);const filters=[];const q={select(){return q},eq(k,v){filters.push([k,v]);return q},in(){return q},neq(){return q},order(){return q},limit(){return q},single(){return q},maybeSingle(){return q},then(resolve){assert.ok(filters.some(([k,v])=>k==='org_id'&&v==='org'));let data=null;
- if(table==='invoices'||table==='project_expenses')data={id,project_id:projectId,updated_at:updated};
+ if(table==='invoices'||table==='project_expenses')data={id,project_id:projectId,status:table==='invoices'?'sent':'approved',updated_at:updated};
  if(table==='books_settings')data={workspace_enabled:true,arc_ledger_mode:'official'};
  if(table==='books_projection_receipts')data={source_observed_at:'2026-10-01T00:00:00Z',checked_at:'2026-10-01T01:00:00Z',journal:{status:'posted',entry_date:'2026-09-30'}};
  if(table==='accounting_reconciliation_items')data=failure;
