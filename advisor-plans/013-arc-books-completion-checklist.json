@@ -2009,7 +2009,7 @@
       "workstream": "B00",
       "title": "Build the golden acceptance runner and durable evidence catalog",
       "status": "PARTIAL",
-      "status_basis": "Golden runner, kit, API route and first scenario subcase working end to end (2026-10-06); 23 scenarios + 6 WIP-01 subcases outstanding.",
+      "status_basis": "Golden runner, kit and API route working end to end. Passing: BILL-01 (4/4), YEAR-01 (5/5); WIP-01 4/7 (3 subcases need B04.1 contract-level WIP). 21 scenarios outstanding (2026-10-06).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "intentionally incorrect accounting causes a nonzero run",
@@ -2558,6 +2558,31 @@
           ],
           "external_dependency": null,
           "reviewer": null
+        },
+        {
+          "verified_at": "2026-10-06T11:57:53.050882+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/year-01.cjs",
+            "scripts/books-acceptance/expected/YEAR-01.json",
+            "scripts/books-acceptance/scenarios/shared.cjs",
+            "lib/services/books/period-close.ts",
+            "components/books/close-workspace.tsx"
+          ],
+          "test_scenario_ids": [
+            "YEAR-01"
+          ],
+          "commands": [
+            "scenario-runner YEAR-01"
+          ],
+          "observed_results": [
+            "YEAR-01 PASSED (5 subcases, 19 checks) on an April-March fiscal year with custom income/expense accounts and an owner+accountant approved opening batch (escrow 15,000 / contributions 5,000 / RE 10,000): closing periods 1-11 posts no year-end entry; period 12 posts exactly one, dated the fiscal year end, closing 4310/5040/6810 to 3100 (NI 3,800 -> RE 13,800); distributions stay open; closed-year P&L still reports 3,800; balance sheet balances.",
+            "Reopen/late adjustment: reclose posts only the 400 residual (Dr 3100 / Cr 6810); a no-change reopen/reclose posts nothing; next-year April income stays fiscal 2026 current earnings. Break-even year closes income and expense with no RE line; a no-activity year posts nothing.",
+            "Fixed: reopening an earlier period of a closed fiscal year and reclosing it left the correction in the income statement and RE overstated (observed 6810 = 700 left open, RE 15,000 vs 14,300). Periods now reopen newest first (service guard + close-screen guidance); the year end recloses and posts the residual.",
+            "Scope note: cash-side accounts use a non-control escrow asset; bank-controlled cash openings require a reconciled bank account each close (covered by BANK-01)."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/YEAR-01.json sha256:c66f64c2da26d86a95803298a0100c8e41cffbd2b1509041bf5a5e1e249da418"
+          ]
         }
       ],
       "remaining_criteria": [
