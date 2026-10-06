@@ -39,3 +39,11 @@ test('failed updates and concurrent stage changes do not create false activity',
   await assert.rejects(logProspectContact({ prospectId: 'lead', input: { kind: 'call' } }), /deal changed/)
   assert.equal(events.length, 0)
 })
+
+test('contact validation rejects empty notes, unsupported kinds and oversized content', () => {
+  const { logProspectContactInputSchema } = require('../lib/validation/prospects')
+  for (const input of [{ kind: 'note', note: ' ' }, { kind: 'unsupported' }, { kind: 'call', note: 'a'.repeat(2001) }]) {
+    assert.equal(logProspectContactInputSchema.safeParse(input).success, false)
+  }
+  assert.equal(logProspectContactInputSchema.safeParse({ kind: 'call' }).success, true)
+})

@@ -51,6 +51,7 @@ export function FolderShareDialog({ open, onOpenChange, target }: FolderShareDia
 
   const handleConfirm = useCallback(async () => {
     if (!target?.path) return
+    if (!projectId) return
     setIsSaving(true)
     try {
       unwrapAction(

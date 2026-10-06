@@ -3,7 +3,7 @@ import "server-only"
 import { z } from "zod"
 import { requireOrgContext } from "@/lib/services/context"
 import { prepareProjectDocumentUpload, UploadPreparationError } from "@/lib/services/files"
-import { requireProjectPermission } from "@/lib/services/permissions"
+import { requirePermission, requireProjectPermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { projectUploadRequestSchema } from "@/lib/validation/files"
 import {
@@ -22,7 +22,7 @@ const sessionSchema = z.object({
   storagePath: z.string().min(1), uploadId: z.string().optional(),
 })
 const transferSchema = z.object({
-  id: z.string().uuid(), org_id: z.string().uuid(), project_id: z.string().uuid(), created_by: z.string().uuid(),
+  id: z.string().uuid(), org_id: z.string().uuid(), project_id: z.string().uuid().nullable(), created_by: z.string().uuid(),
   identity: identitySchema, file_name: z.string(), content_type: z.string(), file_size: z.number(),
   storage_path: z.string(), mode: z.enum(["single", "multipart"]), upload_id: z.string().nullable(),
   part_size: z.number(), cancelled_at: z.string().nullable(), expires_at: z.string(),
@@ -31,6 +31,15 @@ type Transfer = z.infer<typeof transferSchema>
 type TransferContext = { transfer: Transfer; service: ReturnType<typeof createServiceSupabaseClient> }
 
 function conflict(message: string): never { throw new UploadTransferError(message, 409) }
+
+// Organization document library uploads have no project; they need the
+// organization-level permission instead of the project one.
+async function requireUploadPermission(
+  context: Awaited<ReturnType<typeof requireOrgContext>>, projectId: string | null,
+) {
+  if (projectId) await requireProjectPermission(context.userId, projectId, "docs.upload")
+  else await requirePermission("docs.upload", context)
+}
 export class UploadTransferError extends Error {
   constructor(message: string, readonly status: number) { super(message) }
 }
@@ -48,14 +57,14 @@ async function reserveTransfer(input: unknown, mode: Transfer["mode"]): Promise<
   const service = createServiceSupabaseClient()
   if (!parsed.identity.startsWith(`sha256-chain-v1:${parsed.fileSize}:`)) conflict("File size does not match identity")
   const { error } = await service.from("document_upload_transfers").upsert({
-    id: parsed.transferId, org_id: orgId, project_id: parsed.projectId, created_by: userId,
+    id: parsed.transferId, org_id: orgId, project_id: parsed.projectId ?? null, created_by: userId,
     identity: parsed.identity, file_name: parsed.fileName, content_type: prepared.contentType,
     file_size: parsed.fileSize, storage_path: prepared.storagePath, mode, part_size: PART_SIZE,
   }, { onConflict: "id", ignoreDuplicates: true })
   // Even a lost write response can have committed. A scoped read is authoritative.
   const transfer = await readTransfer(service, orgId, parsed.transferId)
   if (!transfer) throw new Error(error ? "Unable to reserve upload" : "Upload reservation not found")
-  if (transfer.created_by !== userId || transfer.project_id !== parsed.projectId || transfer.mode !== mode ||
+  if (transfer.created_by !== userId || transfer.project_id !== (parsed.projectId ?? null) || transfer.mode !== mode ||
       transfer.identity !== parsed.identity || transfer.file_size !== parsed.fileSize ||
       transfer.file_name !== parsed.fileName || transfer.content_type !== prepared.contentType) {
     conflict("Upload identity does not match its reservation")
@@ -67,11 +76,11 @@ async function reserveTransfer(input: unknown, mode: Transfer["mode"]): Promise<
 
 async function requireTransfer(input: unknown): Promise<TransferContext> {
   const parsed = sessionSchema.parse(input)
-  const { orgId, userId } = await requireOrgContext()
+  const context = await requireOrgContext()
   const service = createServiceSupabaseClient()
-  const transfer = await readTransfer(service, orgId, parsed.transferId)
-  if (!transfer || transfer.created_by !== userId) throw new UploadTransferError("Upload not found", 404)
-  await requireProjectPermission(userId, transfer.project_id, "docs.upload")
+  const transfer = await readTransfer(service, context.orgId, parsed.transferId)
+  if (!transfer || transfer.created_by !== context.userId) throw new UploadTransferError("Upload not found", 404)
+  await requireUploadPermission(context, transfer.project_id)
   if (transfer.storage_path !== parsed.storagePath || transfer.identity !== parsed.identity ||
       transfer.file_size !== parsed.fileSize || (transfer.mode === "multipart" && transfer.upload_id !== parsed.uploadId)) {
     conflict("Upload session does not match its reservation")
@@ -206,13 +215,13 @@ export function documentTransferError(error: unknown) {
 
 /** Cancel a persisted queue item without requiring the browser's lost part receipt. */
 export async function cancelDocumentTransferById(input: unknown) {
-  const parsed = z.object({ transferId: z.string().uuid(), projectId: z.string().uuid() }).parse(input)
-  const { orgId, userId } = await requireOrgContext()
+  const parsed = z.object({ transferId: z.string().uuid(), projectId: z.string().uuid().optional() }).parse(input)
+  const context = await requireOrgContext()
   const service = createServiceSupabaseClient()
-  const transfer = await readTransfer(service, orgId, parsed.transferId)
+  const transfer = await readTransfer(service, context.orgId, parsed.transferId)
   if (!transfer) return { ok: true }
-  if (transfer.created_by !== userId || transfer.project_id !== parsed.projectId) throw new UploadTransferError("Upload not found", 404)
-  await requireProjectPermission(userId, transfer.project_id, "docs.upload")
+  if (transfer.created_by !== context.userId || transfer.project_id !== (parsed.projectId ?? null)) throw new UploadTransferError("Upload not found", 404)
+  await requireUploadPermission(context, transfer.project_id)
   if (transfer.cancelled_at) return { ok: true }
   return abortDocumentTransfer({ transferId: transfer.id, identity: transfer.identity, fileSize: transfer.file_size,
     storagePath: transfer.storage_path, uploadId: transfer.upload_id ?? undefined })

@@ -20,7 +20,7 @@ export async function POST(request: Request) {
     }
 
     const input = projectUploadRequestSchema.parse({
-      projectId: formData.get("projectId"),
+      projectId: formData.get("projectId") || undefined,
       fileName: file.name,
       contentType: file.type || undefined,
       fileSize: file.size,

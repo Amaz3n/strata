@@ -16,6 +16,7 @@ function load(path, modules) {
     if (Object.hasOwn(modules, name)) return modules[name]
     if (name === 'server-only') return {}
     if (name === '@/lib/land/paging') return require('../lib/land/paging')
+    if (name === '@/lib/supabase/query-error') return { preserveQueryError: error => ({ data: null, error }) }
     if (name === '@/lib/validation/import-navigation') return require('../lib/validation/import-navigation')
     if (name === '@/components/layout/queue-pagination') return { QueuePagination: 'QueuePagination' }
     if (['react', 'react/jsx-runtime', 'zod'].includes(name)) return require(name)

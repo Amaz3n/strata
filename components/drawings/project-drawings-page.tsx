@@ -17,6 +17,7 @@ import {
 import { hasPermission } from "@/lib/services/permissions";
 import { getOrgProductTier } from "@/lib/services/context";
 import { getProjectPosture } from "@/lib/product-tier";
+import { isProjectModelEnabled } from "@/lib/project-model-access";
 import type { FloorplanTarget } from "@/lib/services/floorplan-models";
 
 type DrawingsProject = NonNullable<
@@ -151,16 +152,19 @@ async function ProjectDrawingsData({
   // lot's drawings ARE its plan's, so it never gets a second model.
   const planVersionId = prospectId ? undefined : query.planVersion;
   const production = getProjectPosture(project.property_type, orgTier) === "production";
-  const modelTarget: FloorplanTarget | null = planVersionId
-    ? { kind: "plan", housePlanVersionId: planVersionId }
-    : production
-      ? null
-      : { kind: "project", projectId: id };
+  const modelEnabled = isProjectModelEnabled(project.org_id);
+  const modelTarget: FloorplanTarget | null = !modelEnabled
+    ? null
+    : planVersionId
+      ? { kind: "plan", housePlanVersionId: planVersionId }
+      : production
+        ? null
+        : { kind: "project", projectId: id };
   const modelUnavailable =
-    !modelTarget && production
+    modelEnabled && !modelTarget && production
       ? { message: "This lot is built to a house plan, and the plan carries the one 3D model every lot shares.", href: "/plans", linkLabel: "Open plans" }
       : null;
-  const initialView = query.view === "3d" || query.view === "split" ? query.view : undefined;
+  const initialView = modelEnabled && (query.view === "3d" || query.view === "split") ? query.view : undefined;
 
   const initialSelectedSetId =
     query.set && sets.some((set) => set.id === query.set)

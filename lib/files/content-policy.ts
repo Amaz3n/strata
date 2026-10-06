@@ -75,7 +75,8 @@ export function shouldServeDocumentInline(fileName: string, contentType: string)
 }
 
 export function projectIdFromDocumentStoragePath(orgId: string, storagePath: string) {
-  const [pathOrgId, projectId, documentsSegment] = storagePath.split("/")
-  if (pathOrgId !== orgId || !projectId || documentsSegment !== "documents") return null
+  const [pathOrgId, projectId, documentsSegment, uploadsSegment, ...objectSegments] = storagePath.split("/")
+  if (pathOrgId !== orgId || !projectId || documentsSegment !== "documents" || uploadsSegment !== "uploads") return null
+  if (objectSegments.length === 0 || objectSegments.some((segment) => !segment || segment === "." || segment === "..")) return null
   return projectId
 }

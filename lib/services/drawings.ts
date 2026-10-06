@@ -2139,6 +2139,9 @@ export interface RevisionDiffSheet {
   current_sheet_title?: string | null
   current_discipline?: DrawingDiscipline | null
   verificationStatus: "pending" | "verified" | "needs_review"
+  /** Views of verificationStatus for the sheet review's filter and badges. */
+  needs_number_review: boolean
+  verification_pending: boolean
   rendered: boolean
   draft: RevisionVersionPreview
   current?: RevisionVersionPreview | null
@@ -2269,6 +2272,9 @@ export async function getRevisionDiff(revisionId: string, orgId?: string): Promi
     const detection=z.object({vision_pending:z.boolean().optional(),confidence:z.string().optional(),vision_error:z.unknown().optional()}).passthrough().safeParse(dv.detection)
     const verification=detection.success ? detection.data : {}
     const isNew = !sheet.current_revision_id
+    const verificationStatus: RevisionDiffSheet["verificationStatus"] = dv.identity_reviewed ? "verified"
+      : verification.vision_pending ? "pending"
+      : verification.confidence === "high" && !verification.vision_error ? "verified" : "needs_review"
     const entry: RevisionDiffSheet = {
       sheet_id: sheet.id,
       change: isNew ? "added" : "updated",
@@ -2277,7 +2283,9 @@ export async function getRevisionDiff(revisionId: string, orgId?: string): Promi
       sheet_title: proposed.sheet_title ?? sheet.sheet_title ?? null,
       discipline: (proposed.discipline ?? sheet.discipline ?? null) as DrawingDiscipline | null,
       rendered: Boolean(dv.tile_manifest?.Image?.Size?.Width && dv.tile_manifest?.Image?.Size?.Height && !dv.tile_manifest?.Partial),
-      verificationStatus: dv.identity_reviewed ? "verified" : verification.vision_pending ? "pending" : verification.confidence==="high" && !verification.vision_error ? "verified" : "needs_review",
+      verificationStatus,
+      needs_number_review: verificationStatus === "needs_review",
+      verification_pending: verificationStatus === "pending",
       draft: revisionPreviewFromVersionRow(dv),
     }
     if (isNew) {
@@ -2395,6 +2403,9 @@ async function publishRevisionTransaction(input: PublishRevisionInput, orgId?: s
   })
 
   if (publishError) {
+    if (publishError.code === "23505") {
+      throw new Error("A sheet number conflicts with another sheet already in this project. Review the sheet numbers before publishing. Your draft is still saved.")
+    }
     throw new Error(`Failed to publish revision: ${publishError.message}`)
   }
 

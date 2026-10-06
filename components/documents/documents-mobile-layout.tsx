@@ -614,7 +614,7 @@ function EmptyState({
         <p className="mt-0.5 text-sm text-muted-foreground">
           {hasFilters
             ? "Try adjusting your search or filters."
-            : preconstruction ? "Add scopes, quotes, permits, and project records." : "Upload drawings, contracts, photos, and more for this project."}
+            : preconstruction ? "Add scopes, quotes, permits, and project records." : "Upload drawings, contracts, photos, and more to this document library."}
         </p>
       </div>
       {!hasFilters ? (

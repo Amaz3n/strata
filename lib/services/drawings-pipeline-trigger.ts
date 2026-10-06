@@ -1,4 +1,5 @@
 import "server-only"
+import type { DrawingLane } from "@/lib/drawings/processing-lanes"
 
 /**
  * Fire-and-forget kick for the in-app drawings pipeline. The kick route
@@ -24,7 +25,7 @@ function resolveAppBaseUrl(): string | null {
   return null
 }
 
-export async function triggerDrawingsPipeline(): Promise<TriggerResult> {
+export async function triggerDrawingsPipeline(lane?: DrawingLane): Promise<TriggerResult> {
   const baseUrl = resolveAppBaseUrl()
   if (!baseUrl) {
     return { triggered: false, error: "Unable to resolve app base URL for pipeline trigger" }
@@ -34,7 +35,7 @@ export async function triggerDrawingsPipeline(): Promise<TriggerResult> {
   const timeout = setTimeout(() => controller.abort(), 5000)
 
   try {
-    const response = await fetch(`${baseUrl}/api/jobs/drawings-pipeline`, {
+    const response = await fetch(`${baseUrl}/api/jobs/drawings-pipeline${lane ? `?lane=${lane}` : ""}`, {
       method: "POST",
       headers: {
         "content-type": "application/json",

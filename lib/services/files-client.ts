@@ -12,7 +12,8 @@ import {
 } from "@/lib/services/multipart-upload-client"
 
 type TransferOptions = Pick<UploadControlOptions, "signal" | "onState"> & {
-  projectId: string
+  /** Omitted for the organization document library. */
+  projectId?: string
   transferId?: string
   onProgress?: (progress: UploadProgress) => void
   onStage?: (stage: UploadStage) => void
@@ -77,7 +78,7 @@ async function transferDocument<T>(file: File, options: TransferOptions, scope: 
 }) => Promise<T>): Promise<T> {
   const contentType = detectContentType(file)
   validateDocumentUpload({ fileName: file.name, contentType, sizeBytes: file.size })
-  const receiptKey = `arc-doc-transfer:${options.projectId}:${scope}:${options.transferId ?? `${file.name}:${file.size}:${file.lastModified}`}`
+  const receiptKey = `arc-doc-transfer:${options.projectId ?? "org"}:${scope}:${options.transferId ?? `${file.name}:${file.size}:${file.lastModified}`}`
   if (active.has(receiptKey)) throw new Error("This upload already has an active owner")
   active.add(receiptKey)
   let receipt: Receipt | null = null
@@ -171,6 +172,6 @@ export function uploadDocumentVersionDirect(file: File, options: DirectDocumentV
       fileName: file.name, mimeType, sizeBytes: file.size, label: options.label, notes: options.notes })))
 }
 
-export async function cancelDocumentTransfer(transferId: string, projectId: string): Promise<void> {
+export async function cancelDocumentTransfer(transferId: string, projectId: string | undefined): Promise<void> {
   await uploadControlRequest("/api/documents/multipart/cancel", { transferId, projectId })
 }

@@ -10,6 +10,7 @@ const { PDFDocument, StandardFonts } = require("pdf-lib")
 // Exercise the actual job handlers with an in-memory query client and mocked AI.
 // Production internals are exposed only in this isolated compiled test module.
 function loadPipeline(vision = async () => ({
+  number_evidence: { text: "A2", location: "bottom right", is_title_block: true },
   sheet_number: "A2", sheet_title: "FLOOR PLAN", discipline: "S", confidence: "high", notes: [], stated_scale: null,
 }), overrides = {}) {
   const images = [], prompts = []
@@ -19,6 +20,8 @@ function loadPipeline(vision = async () => ({
   mod.paths = module.paths
   mod.require = (id) => {
     if (id in overrides) return overrides[id]
+    if (id === "@/lib/services/mupdf-loader") return { loadMupdf: () => import("mupdf") }
+    if (id === "@/lib/services/drawings-pipeline-trigger") return { triggerDrawingsPipeline: async () => ({ triggered: true }) }
     if (id === "@/lib/services/ai/drawings-vision") return {
       drawingsVisionConfigured: async () => true,
       runDrawingsVisionObject: async args => { prompts.push(args); return vision(args) },
@@ -31,8 +34,8 @@ function loadPipeline(vision = async () => ({
     return require(id)
   }
   const source = fs.readFileSync(filename, "utf8") + `\nexport {
-    detectPageSheetMetadata, handleEnrichDrawingMetadata, handleProcessDrawingPage,
-    enqueueDrawingMetadata, finishMetadataProgress, finishPageProgress, drawingRenderRecipe
+    adoptDonorRender, splitChunkPages, drawingJobTypes, detectPageSheetMetadata, handleEnrichDrawingMetadata,
+    handleProcessDrawingPage, enqueueDrawingMetadata, finishMetadataProgress, finishPageProgress, drawingRenderRecipe
   };`
   mod._compile(ts.transpileModule(source, { compilerOptions: {
     target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS, esModuleInterop: true,
@@ -68,6 +71,12 @@ function fixture() {
       return {data:{id:"artifact",state:donor?"active":"building",storage_prefix:"org/artifacts/test",render_output:donor}}
     }
     if (["activate_drawing_artifact","renew_drawing_artifact_writer"].includes(name)) return {data:true}
+    if (name === "compare_exchange_drawing_metadata") {
+      const row = db.drawing_sheet_versions.find(r => r.id === args.p_version_id && r.org_id === args.p_org_id)
+      if (!row || JSON.stringify(row.extracted_metadata) !== JSON.stringify(args.p_expected)) return { data: false, error: null }
+      row.extracted_metadata = structuredClone(args.p_next)
+      return { data: true, error: null }
+    }
     throw Error(`Unexpected RPC ${name}`)
   }, from(table) {
     const filters = []
@@ -75,7 +84,9 @@ function fixture() {
     const q = {
       select: (_cols, options) => { count = !!options?.count; return q },
       eq: (k, v) => { filters.push(r => k.includes("->>") ? String(field(r, k)) === v : field(r, k) === v); return q },
+      in: (k, values) => { filters.push(r => values.includes(field(r, k))); return q },
       neq: (k, v) => { filters.push(r => field(r, k) !== v); return q },
+      gte: (k, v) => { filters.push(r => field(r, k) >= v); return q },
       lt: (k, v) => { filters.push(r => field(r, k) < v); return q },
       is: (k, v) => { filters.push(r => (field(r, k) ?? null) === v); return q },
       not: (k, _op, v) => { filters.push(r => (field(r, k) ?? null) !== v); return q },
@@ -88,8 +99,9 @@ function fixture() {
         let rows = db[table].filter(r => filters.every(f => f(r))).slice(0, limit)
         if (operation?.kind === "insert") {
           if (insertError) return { data: null, error: { message: insertError } }
-          const row = { id: `${table}-${db[table].length}`, ...structuredClone(operation.value) }
-          db[table].push(row); rows = [row]
+          rows = (Array.isArray(operation.value) ? operation.value : [operation.value]).map((value, i) =>
+            ({ id: `${table}-${db[table].length + i}`, ...structuredClone(value) }))
+          db[table].push(...rows)
         }
         if (operation?.kind === "update") rows.forEach(r => Object.assign(r, structuredClone(operation.value)))
         return { data: structuredClone(one ? rows[0] ?? null : rows), count: count ? rows.length : null, error: null }
@@ -134,23 +146,54 @@ test("rendered pages open review while enrichment corrects provisional identity"
   assert.equal(meta.proposed.sheet_title, "FLOOR PLAN")
   assert.equal(meta.proposed.discipline, "A")
   assert.equal(meta.sheet_detection.vision_pending, false)
+  assert.equal(meta.sheet_detection.needs_review, false)
+  assert.equal(meta.sheet_detection.verification_tier, "standard")
+  assert.equal(meta.sheet_detection.number_evidence.text, "A2")
   assert.equal(db.drawing_sheets[0].sheet_number, "A2")
   assert.equal(db.drawing_revisions[0].status, "draft")
   assert.equal(pipeline.images.length, 5)
   assert.doesNotMatch(pipeline.prompts[0].prompt, /SEE SHEET A5.1|Current text-based guess/)
 })
 
-test("a provider failure retries, then releases review with an explicit error", async () => {
+test("unsupported vision evidence gets a standard reread and remains flagged for review", async () => {
+  const { db, supabase, job } = fixture()
+  const pipeline = loadPipeline(async () => ({
+    sheet_number: "A2", sheet_title: "FLOOR PLAN", discipline: "A", confidence: "high",
+    number_evidence: { text: "A5.1", location: "detail bubble", is_title_block: false },
+    notes: [], stated_scale: null,
+  }))
+  await pipeline.handleEnrichDrawingMetadata(supabase, job)
+  const meta = db.drawing_sheet_versions[0].extracted_metadata
+  assert.deepEqual(pipeline.prompts.map(p => p.tier), ["fast", "standard"])
+  assert.equal(meta.sheet_detection.needs_review, true)
+  assert.equal(meta.sheet_detection.confidence, "low")
+  assert.equal(meta.sheet_detection.vision_pending, false)
+  assert.equal(meta.proposed.sheet_number, "A5.1")
+  assert.equal(db.drawing_revisions[0].status, "draft")
+})
+
+test("provider unavailability releases review immediately with an unresolved sheet", async () => {
   const { db, supabase, job } = fixture()
   const pipeline = loadPipeline(async () => null)
-  await assert.rejects(pipeline.handleEnrichDrawingMetadata(supabase, job), /no result/)
-  assert.equal(db.drawing_sheet_versions[0].extracted_metadata.sheet_detection.vision_pending, true)
-  assert.equal(db.drawing_revisions[0].status, "processing")
-  await assert.rejects(pipeline.handleEnrichDrawingMetadata(supabase, { ...job, retry_count: 2 }), /no result/)
+  await pipeline.handleEnrichDrawingMetadata(supabase, job)
   const detection = db.drawing_sheet_versions[0].extracted_metadata.sheet_detection
   assert.equal(detection.vision_pending, false)
-  assert.match(detection.vision_error, /no result/)
+  assert.equal(detection.needs_review, true)
+  assert.equal(detection.confidence, "low")
+  assert.match(detection.vision_notes[0], /unavailable/)
   assert.equal(db.drawing_revisions[0].status, "draft")
+})
+
+test("a failed verification attempt retries, then releases review with an explicit error", async () => {
+  const { db, supabase, job } = fixture()
+  const pipeline = loadPipeline(async () => { throw new Error("provider offline") })
+  await assert.rejects(pipeline.handleEnrichDrawingMetadata(supabase, job), /provider offline/)
+  assert.equal(db.drawing_sheet_versions[0].extracted_metadata.sheet_detection.vision_pending, true)
+  await assert.rejects(pipeline.handleEnrichDrawingMetadata(supabase, { ...job, retry_count: 2 }), /provider offline/)
+  const detection = db.drawing_sheet_versions[0].extracted_metadata.sheet_detection
+  assert.equal(detection.vision_pending, false)
+  assert.equal(detection.needs_review, true)
+  assert.match(detection.vision_error, /provider offline/)
 })
 
 test("published revisions and user-edited sheet rows are preserved", async () => {
@@ -163,7 +206,7 @@ test("published revisions and user-edited sheet rows are preserved", async () =>
   const before = structuredClone(db)
   await pipeline.handleEnrichDrawingMetadata(supabase, job)
   assert.deepEqual(db, before)
-  assert.equal(pipeline.prompts.length, 1)
+  assert.equal(pipeline.prompts.length, 2)
 })
 
 test("verification never changes an explicitly targeted revision's sheet number", async () => {
@@ -288,4 +331,124 @@ test('supported 300-page replacement executes 299 artifact adoptions and exactly
   }
  }finally{before.destroy();after.destroy()}
  assert.equal(reused,299);assert.equal(rendered,1);assert.equal(downloads,1);assert.equal(activations,1)
+})
+
+test("labels and readable previews finish before any full-resolution tiles exist", async () => {
+  const { db, supabase, job } = fixture()
+  const pdf = await PDFDocument.create()
+  pdf.addPage([1200, 800]).drawText("SHEET NUMBER A2", { x: 950, y: 40, size: 20 })
+  const objects = new Map([["org/split/0/page.pdf", Buffer.from(await pdf.save())]])
+  const pipeline = loadPipeline(undefined, {
+    "@/lib/storage/drawings-tiles-storage": {
+      downloadTilesObject: async ({ path }) => objects.get(path),
+      uploadTilesObject: async ({ path, bytes }) => objects.set(path, bytes),
+      deleteTilesObjects: async ({ paths }) => paths.forEach(path => objects.delete(path)),
+    },
+    "@/lib/storage/drawings-urls": { buildDrawingsTilesBaseUrl: p => `https://tiles.test/${p}` },
+  })
+  Object.assign(db.drawing_sheet_versions[0], { tile_manifest: null, tiles_base_path: null, image_width: null, image_height: null })
+  await pipeline.handleEnrichDrawingMetadata(supabase, { ...job, payload: { ...job.payload, pagePdfPath: "org/split/0/page.pdf" } })
+  const version = db.drawing_sheet_versions[0]
+  assert.equal(version.extracted_metadata.proposed.sheet_number, "A2")
+  assert.equal(version.thumbnail_url, "https://tiles.test/org/split/0/preview-label.jpg")
+  assert.equal(version.tile_manifest, null)
+  assert.equal(objects.has("org/split/0/page.pdf"), true, "render worker still needs the page PDF")
+  assert.equal(pipeline.images.length, 0, "no tile reconstruction for label images")
+  assert.equal(pipeline.prompts[0].images.length, 5)
+})
+
+test("parallel metadata writers preserve render information and verified labels", async () => {
+  const { db, supabase } = fixture()
+  const { updateDrawingMetadata } = require("../lib/drawings/metadata-update")
+  await Promise.all([
+    updateDrawingMetadata(supabase, "org", "version", current => ({ ...current, vector_stats: { segments: 100 } })),
+    updateDrawingMetadata(supabase, "org", "version", current => ({ ...current, proposed: { sheet_number: "A2" } })),
+  ])
+  assert.equal(db.drawing_sheet_versions[0].extracted_metadata.vector_stats.segments, 100)
+  assert.equal(db.drawing_sheet_versions[0].extracted_metadata.proposed.sheet_number, "A2")
+})
+
+test("every drawing job belongs to exactly one independent worker lane", () => {
+  const { DRAWING_LANES, DRAWING_LANE_JOBS, DRAWING_LANE_CONCURRENCY } = require("../lib/drawings/processing-lanes")
+  const pipeline = loadPipeline(undefined, { "@/lib/drawings/processing-lanes": require("../lib/drawings/processing-lanes") })
+  const jobs = DRAWING_LANES.flatMap(lane => pipeline.drawingJobTypes(lane))
+  assert.equal(new Set(jobs).size, jobs.length)
+  assert.deepEqual([...jobs].sort(), [...pipeline.DRAWING_PIPELINE_JOB_TYPES].sort())
+  assert.ok(DRAWING_LANE_CONCURRENCY.metadata > DRAWING_LANE_CONCURRENCY.render)
+  assert.deepEqual(DRAWING_LANE_JOBS.metadata, ["enrich_drawing_metadata"])
+})
+
+test("split starts labeling beside rendering and resumes without duplicate jobs", async () => {
+  const { db, supabase } = fixture()
+  const pdf = await PDFDocument.create()
+  for (let i = 0; i < 6; i++) pdf.addPage([600, 400]).drawText(`SHEET NUMBER A${i + 1}`, { x: 450, y: 30, size: 10 })
+  const template = db.drawing_sheet_versions[0]
+  db.drawing_sheet_versions = Array.from({ length: 6 }, (_, i) => ({
+    ...structuredClone(template), id: `v${i}`, drawing_sheet_id: `s${i}`, page_index: i, tile_manifest: null,
+  }))
+  Object.assign(db, { drawing_split_pages: [], drawing_deleted_pages: [] })
+  const emitted = new Set()
+  const originalRpc = supabase.rpc
+  supabase.rpc = async (name, args) => {
+    if (name === "register_drawing_split_batch") return { data: args.p_pages.map(p => ({
+      id: `intent-${p.pageIndex}`, pageIndex: p.pageIndex, state: emitted.has(p.pageIndex) ? "emitted" : "reserved",
+      storage_prefix: `org/split/${p.pageIndex}`, sheetId: `s${p.pageIndex}`, versionId: `v${p.pageIndex}`,
+    })) }
+    if (name === "emit_drawing_split_page") {
+      emitted.add(args.p_payload.pageIndex)
+      db.outbox.push({ id: `page-${args.p_payload.pageIndex}`, job_type: "process_drawing_page", payload: args.p_payload })
+      return { data: true }
+    }
+    return originalRpc(name, args)
+  }
+  const mupdf = await import("mupdf")
+  const doc = mupdf.Document.openDocument(await pdf.save(), "application/pdf")
+  const lanes = []
+  const pipeline = loadPipeline(undefined, {
+    "@/lib/services/drawings-pipeline-trigger": { triggerDrawingsPipeline: async lane => { lanes.push(lane); return { triggered: true } } },
+    "@/lib/storage/drawings-tiles-storage": { uploadTilesObject: async () => {} },
+  })
+  const input = { orgId: "org", projectId: "project", drawingSetId: "set", draftRevisionId: "revision",
+    sourceFileId: "file", sourceHash: "hash", pageCount: 6, setTitle: "House", targetSheet: null,
+    visionConfigured: true, chunkIndex: 0, chunkStart: 0, chunkEnd: 6, deadlineMs: Date.now() + 600_000, doc, mupdf }
+  try {
+    await pipeline.splitChunkPages(supabase, input)
+    assert.ok(lanes.includes("metadata"))
+    const labels = db.outbox.filter(j => j.job_type === "enrich_drawing_metadata")
+    assert.equal(labels.length, 6)
+    assert.ok(labels.every(j => j.payload.pagePdfPath === `org/split/${j.payload.pageNumber - 1}/page.pdf`))
+    assert.equal(db.outbox.filter(j => j.job_type === "process_drawing_page").length, 6)
+    await pipeline.splitChunkPages(supabase, input)
+    assert.equal(db.outbox.length, 12)
+  } finally { doc.destroy() }
+})
+
+test("a slow tile upload does not hold up the next queued tile", async () => {
+  const { parallelWork } = require("../lib/drawings/parallel-work")
+  let release
+  const blocked = new Promise(resolve => { release = resolve })
+  const finished = []
+  const all = parallelWork([0, 1, 2, 3], 2, async n => {
+    if (n === 0) await blocked
+    finished.push(n)
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(finished, [1, 2, 3])
+  release()
+  await all
+  assert.deepEqual(finished, [1, 2, 3, 0])
+})
+
+test("adopting a cached render preserves labels completed after the render job began", async () => {
+  const { db, supabase } = fixture()
+  db.drawing_sheet_versions[0].extracted_metadata.proposed.sheet_number = "A2"
+  db.drawing_sheet_versions[0].extracted_metadata.sheet_detection.vision_pending = false
+  await loadPipeline().adoptDonorRender(supabase, {
+    orgId: "org", versionId: "version", ownPageText: "",
+    donor: { tile_manifest: { Image: {} }, extracted_metadata: { vector_stats: { segments: 100 } } },
+  })
+  const meta = db.drawing_sheet_versions[0].extracted_metadata
+  assert.equal(meta.proposed.sheet_number, "A2")
+  assert.equal(meta.sheet_detection.vision_pending, false)
+  assert.equal(meta.vector_stats.segments, 100)
 })

@@ -116,12 +116,19 @@ test("publish uses one atomic RPC and does not enqueue jobs after commit", async
 
 test("metadata delivery is idempotent and a discarded revision cannot become reviewable", async (t) => {
   blockNetwork(t);
+  // Mirrors compare_exchange_drawing_metadata: swap only when unchanged since read.
   const fixture = database({
     outbox: [],
     drawing_revisions: [],
     drawing_sheet_versions: [
       { id: "version", org_id: "org", extracted_metadata: {} },
     ],
+  }, async (name, input) => {
+    assert.equal(name, "compare_exchange_drawing_metadata");
+    const row = fixture.tables.drawing_sheet_versions.find((r) => r.org_id === input.p_org_id && r.id === input.p_version_id);
+    if (!row || JSON.stringify(row.extracted_metadata) !== JSON.stringify(input.p_expected)) return { data: false, error: null };
+    row.extracted_metadata = input.p_next;
+    return { data: true, error: null };
   });
   const pipeline = loadHandler("lib/services/drawings-pipeline.ts", {}, [
     "enqueueDrawingMetadata",

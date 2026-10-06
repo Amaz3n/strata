@@ -2,7 +2,8 @@ import type { FileWithUrls, FileVersion, FileCategory } from "@/app/(app)/docume
 import type { TransferQueue } from "./transfer-queue"
 
 export interface DocumentTransferOptions {
-  projectId: string
+  /** Absent for organization document library uploads. */
+  projectId?: string
   folderPath?: string | null
   category?: FileCategory
   visibility?: "public" | "private"

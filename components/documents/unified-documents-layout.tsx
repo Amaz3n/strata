@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
+import dynamic from "next/dynamic";
 import {
   DndContext,
   DragOverlay,
@@ -56,7 +57,7 @@ import { FolderShareDialog, type FolderShareTarget } from "./dialogs/folder-shar
 import { MoveFilesDialog } from "./dialogs/move-files-dialog";
 import { RenameFileDialog } from "./dialogs/rename-file-dialog";
 import { VersionUploadDialog } from "./dialogs/version-upload-dialog";
-import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard";
+import type { EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard";
 import type { UnifiedDocumentsLayoutProps } from "./types";
 import { isBrowserRenderableImage, isWordPreviewable, type FileWithDetails } from "@/components/files/types";
 import {
@@ -79,6 +80,11 @@ import type {
 import { useDocumentTransfers } from "./transfer-provider";
 
 import { unwrapAction } from "@/lib/action-result"
+
+const EnvelopeWizard = dynamic(
+  () => import("@/components/esign/envelope-wizard").then((module) => module.EnvelopeWizard),
+  { ssr: false },
+);
 
 const EXPLORER_OPEN_STORAGE_KEY = "documents-explorer-open";
 
@@ -118,6 +124,9 @@ function UnifiedDocumentsLayoutInner({ preconstruction = false }: { preconstruct
     refreshFiles,
     beginOptimisticMove,
   } = useDocuments();
+  // The organization document library has no project to link back to.
+  const projectBase = preconBase ?? (projectId ? `/projects/${projectId}` : undefined);
+  const documentsBase = projectBase ? `${projectBase}/documents` : "/documents";
   const transfers = useDocumentTransfers();
   const { setBreadcrumbs } = usePageTitle();
   const requestedFileId = searchParams.get("fileId");
@@ -284,7 +293,7 @@ function UnifiedDocumentsLayoutInner({ preconstruction = false }: { preconstruct
   useEffect(() => {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const changed = (event: Event) => {
-      if ((event as CustomEvent<{ projectId: string }>).detail.projectId !== projectId) return;
+      if ((event as CustomEvent<{ projectId: string | undefined }>).detail.projectId !== projectId) return;
       clearTimeout(timeout);
       timeout = setTimeout(() => { void refreshFiles({ invalidateCache: true }); }, 250);
     };
@@ -967,10 +976,10 @@ function UnifiedDocumentsLayoutInner({ preconstruction = false }: { preconstruct
 
   useEffect(() => {
     const breadcrumbs: Array<{ label: string; href?: string; onClick?: () => void }> = [
-      { label: projectName, href: preconBase ?? `/projects/${projectId}` },
+      ...(projectBase ? [{ label: projectName, href: projectBase }] : []),
       {
         label: preconBase ? "Files" : "Documents",
-        href: `${preconBase ?? `/projects/${projectId}`}/documents`,
+        href: documentsBase,
         onClick: () => {
           setPropertiesFileId(null);
           setCurrentPath("");
@@ -986,7 +995,7 @@ function UnifiedDocumentsLayoutInner({ preconstruction = false }: { preconstruct
       const path = `/${segments.slice(0, index + 1).join("/")}`;
       breadcrumbs.push({
         label: segment,
-        href: `${preconBase ?? `/projects/${projectId}`}/documents?path=${encodeURIComponent(path)}`,
+        href: `${documentsBase}?path=${encodeURIComponent(path)}`,
         onClick: () => {
           setPropertiesFileId(null);
           setCurrentPath(path);
@@ -999,7 +1008,7 @@ function UnifiedDocumentsLayoutInner({ preconstruction = false }: { preconstruct
     }
 
     setBreadcrumbs(breadcrumbs);
-  }, [activeBreadcrumbPath, preconBase, projectId, projectName, propertiesFile, setBreadcrumbs, setCurrentPath]);
+  }, [activeBreadcrumbPath, documentsBase, preconBase, projectBase, projectName, propertiesFile, setBreadcrumbs, setCurrentPath]);
 
   const handleSendForSignature = useCallback(
     (fileId: string) => {
@@ -1010,7 +1019,7 @@ function UnifiedDocumentsLayoutInner({ preconstruction = false }: { preconstruct
       setEsignSource({
         type: "other",
         id: file.id,
-        project_id: projectId,
+        project_id: projectId ?? null,
         title: file.file_name,
         document_type: "other",
       });
@@ -1027,7 +1036,7 @@ function UnifiedDocumentsLayoutInner({ preconstruction = false }: { preconstruct
           onDownloadFile={handleDownloadById}
           onFolderClick={handleFolderClick}
           onRenameFolder={handleRenameFolder}
-          onShareFolder={handleShareFolder}
+          onShareFolder={projectId ? handleShareFolder : undefined}
           onDeleteFolder={handleDeleteFolder}
           onUploadClick={handleUploadClick}
           onUploadToFolder={handleUploadToFolder}
@@ -1107,7 +1116,7 @@ function UnifiedDocumentsLayoutInner({ preconstruction = false }: { preconstruct
       <div className={cn("relative z-20 shrink-0 border-b bg-background px-4 py-3", preconstruction && "border-border/60 bg-card px-5 py-4")}>
         <DocumentsToolbar
           preconstruction={preconstruction}
-          plansHref={`${preconBase ?? `/projects/${projectId}`}/drawings`}
+          plansHref={projectBase ? `${projectBase}/drawings` : undefined}
           onUploadClick={handleUploadClick}
           onCreateFolderClick={() => {
             setCreateFolderInitialPath(currentPath || "");
@@ -1170,7 +1179,7 @@ function UnifiedDocumentsLayoutInner({ preconstruction = false }: { preconstruct
             className={cn("h-full", preconstruction && "[&>div:first-child]:border-border/60 [&>div:first-child]:bg-transparent [&>div:first-child>p]:text-xs [&>div:first-child>p]:font-medium [&>div:first-child>p]:normal-case [&>div:first-child>p]:tracking-normal [&_button]:rounded-none")}
             onRenameFolder={handleRenameFolder}
             onDeleteFolder={handleDeleteFolder}
-            onShareFolder={handleShareFolder}
+            onShareFolder={projectId ? handleShareFolder : undefined}
           />
         </aside>
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">

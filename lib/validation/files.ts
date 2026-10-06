@@ -65,6 +65,7 @@ export type FileUpdate = z.infer<typeof fileUpdateSchema>
 
 // Schema for listing files with filters
 export const fileListFiltersSchema = z.object({
+  org_only: z.boolean().optional(),
   project_id: z.string().uuid().optional(),
   category: fileCategorySchema.optional(),
   folder_path: z.string().optional(),
@@ -91,7 +92,7 @@ export type FileListFilters = z.infer<typeof fileListFiltersSchema>
 // Schema for the browser-driven upload endpoints (presigned URL, direct POST,
 // multipart create). All three take the same request shape.
 export const projectUploadRequestSchema = z.object({
-  projectId: z.string().uuid(),
+  projectId: z.string().uuid().optional(),
   fileName: z.string().min(1).max(255),
   contentType: z.string().min(1).max(255).optional(),
   fileSize: z.number().int().nonnegative().optional(),

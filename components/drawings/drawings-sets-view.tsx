@@ -519,6 +519,15 @@ export function DrawingsSetsView({
     x: number
     y: number
   } | null>(null)
+  // Successful deletions must survive older in-flight reads and server props.
+  // IDs are globally unique, so keeping these until unmount is safe across projects.
+  const deletedSetIds = useRef(new Set<string>())
+  const deletedSheetIds = useRef(new Set<string>())
+  const visibleSheets = useCallback((sheets: DrawingSheet[]) =>
+    sheets.filter((sheet) =>
+      !deletedSheetIds.current.has(sheet.id) &&
+      !deletedSetIds.current.has(sheet.drawing_set_id)), [])
+
   const sheetOpenRequestIdRef = useRef(0)
   const initialSheetHandledRef = useRef(false)
   const conditionLandingHandledRef = useRef<string | null>(null)
@@ -526,7 +535,7 @@ export function DrawingsSetsView({
   const [conditionLandingRetry, setConditionLandingRetry] = useState(0)
 
   useEffect(() => {
-    setSets(initialSets)
+    setSets(initialSets.filter((set) => !deletedSetIds.current.has(set.id)))
   }, [initialSets])
 
   // Sheets processed before vector extraction existed get their takeoff snap
@@ -536,8 +545,8 @@ export function DrawingsSetsView({
   }, [])
 
   useEffect(() => {
-    setSheetsBySet(buildSheetsBySet(initialSheets))
-  }, [initialSheets])
+    setSheetsBySet(buildSheetsBySet(visibleSheets(initialSheets)))
+  }, [initialSheets, visibleSheets])
 
   useEffect(() => {
     setSelectedSetId(initialSelectedSetId ?? null)
@@ -549,11 +558,11 @@ export function DrawingsSetsView({
 
   // Reset cross-project state when the project changes.
   useEffect(() => {
-    setSheetsBySet(buildSheetsBySet(initialSheets))
+    setSheetsBySet(buildSheetsBySet(visibleSheets(initialSheets)))
     setExpandedDisciplines(new Set())
     setSelectedSetId(null)
     setSheetsLoading(false)
-  }, [initialSheets, selectedProjectId])
+  }, [initialSheets, selectedProjectId, visibleSheets])
 
   // Pick a default set once sets load. Prefer the newest ready set so a
   // background upload does not take over the table while it is processing.
@@ -582,13 +591,13 @@ export function DrawingsSetsView({
         project_id: selectedProjectId,
         limit: 500,
       })
-      setSheetsBySet(buildSheetsBySet(all))
+      setSheetsBySet(buildSheetsBySet(visibleSheets(all)))
     } catch (err) {
       console.error("Failed to load sheets:", err)
     } finally {
       setSheetsLoading(false)
     }
-  }, [selectedProjectId])
+  }, [selectedProjectId, visibleSheets])
 
   useEffect(() => {
     void loadProjectSheets()
@@ -607,7 +616,7 @@ export function DrawingsSetsView({
         project_id: selectedProjectId,
         limit: 100,
       })
-      setSets(data)
+      setSets(data.filter((set) => !deletedSetIds.current.has(set.id)))
     } catch (err) {
       console.error("Failed to refresh drawing sets:", err)
     }
@@ -914,6 +923,7 @@ export function DrawingsSetsView({
     setIsDeleting(true)
     try {
       unwrapAction(await deleteDrawingSetAction(setToDelete.id))
+      deletedSetIds.current.add(setToDelete.id)
       setSets((prev) => prev.filter((s) => s.id !== setToDelete.id))
       setSheetsBySet((prev) => {
         const next = new Map(prev)
@@ -936,6 +946,7 @@ export function DrawingsSetsView({
     setIsDeleting(true)
     try {
       unwrapAction(await deleteDrawingSheetAction(sheetToDelete.id))
+      deletedSheetIds.current.add(sheetToDelete.id)
       setSheetsBySet((prev) => {
         const next = new Map(prev)
         for (const [k, list] of next) {
@@ -1008,6 +1019,7 @@ export function DrawingsSetsView({
     try {
       unwrapAction(await deleteDrawingSheetsAction({ operationId: bulkDeletion.current.operationId, projectId: selectedProjectId, sheetIds }))
       bulkDeletion.current = null
+      for (const id of sheetIds) deletedSheetIds.current.add(id)
       setSheetsBySet((curr) => {
         const next = new Map(curr)
         for (const [setId, list] of next) {
@@ -2171,7 +2183,7 @@ export function DrawingsSetsView({
             )}
             {canonicalSet && projectSheetCount > 0 && (
               <div className="space-y-2">
-                <p className="microlabel">How this package lands</p>
+                <p className="text-xs font-medium text-muted-foreground">PACKAGE PURPOSE</p>
                 <RadioGroup
                   value={uploadMode}
                   onValueChange={handleUploadModeChange}
@@ -2188,13 +2200,10 @@ export function DrawingsSetsView({
                     />
                     <span className="min-w-0 space-y-1">
                       <span className="block text-sm font-medium">
-                        Add as a revision to {canonicalSet.title}
+                        Update existing drawings
                       </span>
                       <span className="block text-xs text-muted-foreground">
-                        Sheets whose numbers match one of the{" "}
-                        {projectSheetCount} sheets already in the register
-                        version up. Sheets not in this PDF stay exactly as they
-                        are.
+                        Matching sheet numbers receive a new version. Other sheets stay unchanged.
                       </span>
                     </span>
                   </Label>
@@ -2209,7 +2218,7 @@ export function DrawingsSetsView({
                     />
                     <span className="min-w-0 space-y-1">
                       <span className="block text-sm font-medium">
-                        Log as a new baseline package
+                        Issue a baseline set
                       </span>
                       <span className="block text-xs text-muted-foreground">
                         Recorded as a new plan package in {canonicalSet.title}. Matching sheet numbers create new versions so you can compare changes before updating quantities.

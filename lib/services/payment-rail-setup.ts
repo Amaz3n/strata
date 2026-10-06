@@ -610,7 +610,6 @@ export async function syncVendorRecipient(
   providerKey = DEFAULT_PROVIDER,
   auditSource = "stripe_webhook",
 ) {
-  const provider = getPaymentRailProvider(providerKey)
   const supabase = createServiceSupabaseClient()
   // The destination as Arc last knew it, read before the sync overwrites it. A
   // provider-side bank swap — a vendor's compromised Stripe login is the whole
@@ -627,6 +626,7 @@ export async function syncVendorRecipient(
   // Connect also sends updates for platform and receivables accounts. Only
   // retrieve bank details after confirming that Arc owns an AP recipient row.
   if (!priorRecipient) return null
+  const provider = getPaymentRailProvider(providerKey)
   const snapshot = await provider.retrieveRecipient(providerAccountId)
   const { data: recipient, error } = await supabase.from("payment_recipient_accounts").update({
     status: snapshot.status,

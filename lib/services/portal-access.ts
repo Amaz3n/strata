@@ -1,5 +1,6 @@
 import { compare, hash } from "bcryptjs"
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { connection } from "next/server"
 
 import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -427,6 +428,10 @@ export async function findExistingCompanyPortalToken({
 }
 
 export async function validatePortalToken(token: string) {
+  // A portal token is revocable, expiring request data. All portal entry
+  // points converge here, so establish request time once before Supabase can
+  // start a fetch that outlives a Cache Components prerender.
+  await connection()
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
     .from("portal_access_tokens")
@@ -1628,7 +1633,7 @@ async function loadClientPortalAboutDataWithClient(
       .single(),
     supabase
       .from("project_members")
-      .select("user_id, role_id, roles!inner(key), app_users(id, full_name, email, phone, avatar_url)")
+      .select("user_id, role_id, roles!inner(key), app_users(id, full_name, email, avatar_url)")
       .eq("org_id", orgId)
       .eq("project_id", projectId)
       .in("roles.key", ["pm", "project_manager"])
@@ -1666,7 +1671,6 @@ async function loadClientPortalAboutDataWithClient(
           id: pmUser.id,
           full_name: pmUser.full_name,
           email: pmUser.email ?? undefined,
-          phone: pmUser.phone ?? undefined,
           avatar_url: pmUser.avatar_url ?? undefined,
           role_label: "Project Manager",
         }
@@ -2516,7 +2520,7 @@ export async function loadReviewerPortalData({
       : Promise.resolve({ data: null }),
     supabase
       .from("project_members")
-      .select("user_id, role_id, roles!inner(key), app_users(id, full_name, email, phone, avatar_url)")
+      .select("user_id, role_id, roles!inner(key), app_users(id, full_name, email, avatar_url)")
       .eq("project_id", projectId)
       .in("roles.key", ["pm", "project_manager"])
       .order("created_at", { ascending: false })
@@ -2570,7 +2574,6 @@ export async function loadReviewerPortalData({
           id: pm.id,
           full_name: pm.full_name ?? "",
           email: pm.email ?? undefined,
-          phone: pm.phone ?? undefined,
           avatar_url: pm.avatar_url ?? undefined,
           role_label: "Project Manager",
         }

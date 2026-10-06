@@ -3,7 +3,8 @@
 create table public.document_upload_transfers (
   id uuid primary key,
   org_id uuid not null references public.orgs(id),
-  project_id uuid not null references public.projects(id),
+  -- Null for organization document library uploads.
+  project_id uuid references public.projects(id),
   created_by uuid not null references public.app_users(id),
   identity text not null check (identity ~ '^sha256-chain-v1:[0-9]+:[0-9a-f]{64}$'),
   file_name text not null,

@@ -88,7 +88,8 @@ test("sheet-number validation rejects prose and detail fractions", () => {
 const merge = (detected, vision) => mergeDetectedSheetMetadata(detected, vision)
 test("clear vision corrects even a legacy high-confidence wrong label", () => {
   const result = merge({ ...detect([], "SHEET: A5.1"), confidence: "high" }, {
-    sheetNumber: "A2", sheetTitle: "FLOOR PLAN", confidence: "high", discipline: "S",
+    sheetNumber: "A2", sheetTitle: "FLOOR PLAN", confidence: "high", discipline: "S", needsReview: false,
+    evidence: { text: "A2", location: "bottom right", is_title_block: true },
   })
   assert.equal(result.sheetNumber, "A2")
   assert.equal(result.discipline, "A")
@@ -98,7 +99,7 @@ test("clear vision corrects even a legacy high-confidence wrong label", () => {
 
 test("low-confidence vision cannot replace a number or title", () => {
   const initial = detect([], "SHEET: A2\nTITLE: FLOOR PLAN")
-  assert.deepEqual(merge(initial, { sheetNumber: "A5.1", sheetTitle: "DETAILS", confidence: "low" }), initial)
+  assert.deepEqual(merge(initial, { sheetNumber: "A5.1", sheetTitle: "DETAILS", confidence: "low" }), { ...initial, confidence: "low" })
 })
 
 test("conflicting medium-confidence vision flags uncertainty without mixing identities", () => {

@@ -79,6 +79,7 @@ function load(path, modules) {
   new Function('exports', 'require', code)(exports, name => {
     if (Object.hasOwn(modules, name)) return modules[name]
     if (name === 'server-only') return {}
+    if (name === '@/lib/supabase/query-error') return { preserveQueryError: error => ({ data: null, error }) }
     if (['react', 'react/jsx-runtime', 'zod'].includes(name)) return require(name)
     throw Error(`Unexpected dependency: ${name}`)
   })

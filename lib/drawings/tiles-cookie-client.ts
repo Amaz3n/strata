@@ -20,14 +20,19 @@ export const TILES_COOKIE_REFRESH_MS = 45 * 60 * 1000
  */
 export const TILES_COOKIE_FRESH_MS = 60 * 1000
 
-type TilesCookieState = { promise: Promise<void> | null; setAt: number }
+type TilesCookieState = { promise: Promise<void> | null; setAt: number; orgId: string }
 
 const tilesCookieStates = new Map<string, TilesCookieState>()
 
 export function getTilesCookieState(endpoint: string): TilesCookieState {
+  // Organization switching does not necessarily reload the client bundle.
+  // Never reuse the previous organization's still-fresh access promise.
+  const orgId = typeof document === "undefined"
+    ? ""
+    : document.cookie.match(/(?:^|; )org_id=([^;]+)/)?.[1] ?? ""
   let state = tilesCookieStates.get(endpoint)
-  if (!state) {
-    state = { promise: null, setAt: 0 }
+  if (!state || state.orgId !== orgId) {
+    state = { promise: null, setAt: 0, orgId }
     tilesCookieStates.set(endpoint, state)
   }
   return state
@@ -38,8 +43,10 @@ export function ensureTilesCookie(
   options?: { force?: boolean }
 ): Promise<void> {
   const state = getTilesCookieState(endpoint)
-  if (!options?.force && state.promise) return state.promise
+  if (!options?.force && state.promise &&
+      (state.setAt === 0 || Date.now() - state.setAt < TILES_COOKIE_REFRESH_MS)) return state.promise
 
+  state.setAt = 0
   const promise = fetch(endpoint, {
     method: "POST",
     credentials: "include",

@@ -21,15 +21,41 @@ test("the client portal team page uses its narrow read model", () => {
   assert.match(page, /loadClientPortalAboutPage/)
   assert.doesNotMatch(page, /loadClientPortalPage\(/)
   assert.match(loader, /loadClientPortalAboutData\(/)
+  assert.doesNotMatch(service, /app_users\([^)]*phone/)
 
   assert.match(aboutLoader, /Promise\.all\(\[/)
   assert.match(aboutLoader, /\.from\("orgs"\)/)
   assert.match(aboutLoader, /\.from\("projects"\)/)
   assert.match(aboutLoader, /\.from\("project_members"\)/)
+  assert.doesNotMatch(aboutLoader, /app_users\([^)]*phone/)
   assert.doesNotMatch(
     aboutLoader,
     /fetch(?:Invoices|Rfis|Submittals|Selections|PunchItems|PhotoTimeline|WarrantyRequests)/,
   )
+})
+
+test("client portal token validation starts only after request time", () => {
+  // Every portal entry point (layout gate, page loader, actions) validates the
+  // token through validatePortalToken, which owns the single request boundary.
+  const service = source("lib/services/portal-access.ts")
+  const validator = service.indexOf("export async function validatePortalToken")
+  const sharedBoundary = service.indexOf("await connection()", validator)
+  const sharedValidation = service.indexOf(".from(\"portal_access_tokens\")", sharedBoundary)
+
+  assert.notEqual(validator, -1)
+  assert.notEqual(sharedBoundary, -1)
+  assert.notEqual(sharedValidation, -1)
+  assert.ok(sharedBoundary < sharedValidation)
+})
+
+test("public invoice data starts only after request time", () => {
+  const page = source("app/i/[token]/page.tsx")
+  const boundary = page.indexOf("await connection()")
+  const invoiceRead = page.indexOf("await getInvoiceByToken(token)")
+
+  assert.notEqual(boundary, -1)
+  assert.notEqual(invoiceRead, -1)
+  assert.ok(boundary < invoiceRead)
 })
 
 test("the portal team view remains server-rendered and date-only safe", () => {

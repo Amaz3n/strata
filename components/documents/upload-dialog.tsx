@@ -15,7 +15,7 @@ interface UploadDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   initialFiles?: File[]
-  projectId: string
+  projectId?: string
   folderPath?: string
   onUploadComplete?: () => void
 }

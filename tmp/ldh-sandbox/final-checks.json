@@ -1,0 +1,16 @@
+{
+  "projects": 10,
+  "plans": 3,
+  "lots": 8,
+  "files": 32,
+  "active_trade_prices": 36,
+  "invalid_lot_versions": 0,
+  "unprocessed_sheets": 0,
+  "outbox_records": 3,
+  "outbox_note": "Three completed drawing-vector extraction jobs; no email/send jobs.",
+  "drawing_viewer": "Visually verified",
+  "known_ui_issues": [
+    "Warranty desk PGRST200 relationship error",
+    "Directory compliance status unavailable"
+  ]
+}

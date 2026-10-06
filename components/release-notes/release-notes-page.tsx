@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react"
 import Link from "next/link"
-import { format } from "date-fns"
 
 import { markReleaseNotesSeenAction } from "@/app/actions/release-notes"
 import {
@@ -52,11 +51,6 @@ function isDraft(note: FeedNote) {
   return "isPublished" in note && !note.isPublished
 }
 
-function parseDate(value: string) {
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? null : date
-}
-
 function ReleaseEntry({
   note,
   unseen,
@@ -70,7 +64,6 @@ function ReleaseEntry({
   onEdit: () => void
   onDelete: () => void
 }) {
-  const publishedOn = parseDate(note.publishedAt)
   const draft = isDraft(note)
 
   return (
@@ -78,41 +71,24 @@ function ReleaseEntry({
       data-release-id={note.id}
       className="group grid scroll-mt-6 gap-x-10 gap-y-4 border-t border-border py-10 first:border-t-0 first:pt-0 sm:grid-cols-[8rem_minmax(0,1fr)]"
     >
-      {/*
-        Date, version and area live in the gutter so the reading column starts with the title.
-        The gutter sticks while its release is on screen, which is what the month rail used to do.
-      */}
+      {/* Area and version stay in the gutter; publication timestamps are deliberately not shown. */}
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 self-start sm:sticky sm:top-6 sm:block">
         <div className="relative">
           {unseen && (
             <span
               aria-hidden
-              className="absolute -left-3.5 top-[0.45rem] size-1.5 bg-primary sm:-left-4"
+              className="absolute -left-3.5 top-1.5 size-1.5 bg-primary sm:-left-4"
             />
           )}
-          {publishedOn ? (
-            <time
-              dateTime={publishedOn.toISOString()}
-              className={cn(
-                "text-sm tabular-nums",
-                unseen ? "font-medium text-foreground" : "text-foreground/70",
-              )}
-            >
-              {format(publishedOn, "MMM d, yyyy")}
-            </time>
-          ) : (
-            <span className="text-sm text-muted-foreground">Unscheduled</span>
-          )}
+          <p className={cn("text-xs text-muted-foreground", unseen && "font-medium text-foreground")}>
+            {AREA_LABELS[note.area]}
+            {note.version && (
+              <span className="tabular-nums before:px-1.5 before:content-['·']">
+                {note.version}
+              </span>
+            )}
+          </p>
         </div>
-
-        <p className="text-xs text-muted-foreground sm:mt-1.5">
-          {AREA_LABELS[note.area]}
-          {note.version && (
-            <span className="tabular-nums before:px-1.5 before:content-['·']">
-              {note.version}
-            </span>
-          )}
-        </p>
 
         {(draft || unseen) && (
           <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground sm:mt-1.5">

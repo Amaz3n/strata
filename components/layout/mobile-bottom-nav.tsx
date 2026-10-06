@@ -10,6 +10,7 @@ import { OptimisticLink, useOptimisticHref, useOptimisticPathname } from "@/lib/
 import { signOutAction } from "@/app/(auth)/auth/actions"
 import {
   Building2,
+  FileText,
   CalendarDays,
   CircleHelp,
   ClipboardCheck,
@@ -248,6 +249,7 @@ export function MobileBottomNav({
             },
             { title: "Payables", url: "/payables", icon: CreditCard, requiredAny: ["bill.read", "payment.read"] },
             { title: "Schedule", url: "/schedule", icon: CalendarDays, requiredAny: ["schedule.read"] },
+            { title: "Documents", url: "/documents", icon: FileText, requiredAny: ["docs.read"] },
             { title: "Directory", url: "/directory", icon: Building2, requiredAny: ["directory.read", "directory.write"] },
           ],
         },
@@ -346,6 +348,7 @@ export function MobileBottomNav({
             isActive: pathname.startsWith("/schedule"),
             requiredAny: ["schedule.read"],
           },
+          { title: "Documents", url: "/documents", icon: FileText, requiredAny: ["docs.read"] },
           {
             title: "Directory",
             url: "/directory",

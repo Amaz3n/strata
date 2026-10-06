@@ -5,7 +5,7 @@ export default function ProjectsOverviewArticle() {
     <>
       <p>
         Projects are the main containers for job-specific work in Arc. Each project brings
-        together its team, documents, field operations, financials, and closeout records.
+        together its team, documents, correspondence, field operations, financials, and closeout records.
       </p>
       <h2>Open the project directory</h2>
       <p>
@@ -16,6 +16,12 @@ export default function ProjectsOverviewArticle() {
       <p>
         The Overview summarizes the job and provides project actions. The remaining tools
         are grouped under Plan, Build, Financials, and Close.
+      </p>
+      <h2>Keep the communication record with the job</h2>
+      <p>
+        Use <Link href="/help/projects/project-management/project-correspondence">Project Correspondence</Link>
+        {" "}to file and search project email alongside the records it relates to. The project inbox is for
+        work communication that should be available to the team, not a replacement for sensitive channels.
       </p>
       <h2>Project access</h2>
       <p>

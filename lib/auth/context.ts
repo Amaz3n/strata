@@ -4,6 +4,8 @@ import { cache } from "react"
 import { cacheLife } from "next/cache"
 import { cookies } from "next/headers"
 import { after, connection } from "next/server"
+import { unstable_rethrow } from "next/navigation"
+import { preserveQueryError } from "@/lib/supabase/query-error"
 import type { SupabaseClient, User } from "@supabase/supabase-js"
 import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server"
 import { isPlatformAdminUser } from "@/lib/auth/platform"
@@ -41,6 +43,7 @@ async function getPreferredOrgId(supabase: SupabaseClient, userId?: string | nul
     const serviceClient = createServiceSupabaseClient()
     return await fetchFirstMembershipOrg(serviceClient, userId)
   } catch (error) {
+    unstable_rethrow(error)
     console.error("Unable to resolve default org with service role", error)
     return null
   }
@@ -88,6 +91,8 @@ async function fetchFirstMembershipOrg(client: SupabaseClient, userId: string) {
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle()
+    .throwOnError()
+    .then(undefined, preserveQueryError)
 
   if (error) {
     console.error("Unable to resolve default org", error)
@@ -109,6 +114,8 @@ async function fetchMembership(
     .eq("user_id", userId)
     .eq("status", "active")
     .maybeSingle()
+    .throwOnError()
+    .then(undefined, preserveQueryError)
 
   if (error) {
     console.error("Failed to load membership", error)
@@ -139,6 +146,8 @@ async function fetchMembershipWithServiceRole(orgId: string, userId: string): Pr
     .eq("user_id", userId)
     .eq("status", "active")
     .maybeSingle()
+    .throwOnError()
+    .then(undefined, preserveQueryError)
 
   if (error || !data) return null
 
@@ -171,6 +180,8 @@ export const hasActivePlatformMembership = cache(async (userId: string) => {
       .or("expires_at.is.null,expires_at.gt.now")
       .limit(1)
       .maybeSingle()
+      .throwOnError()
+      .then(undefined, preserveQueryError)
 
     if (error) {
       console.error("Unable to resolve platform membership", error)
@@ -179,6 +190,7 @@ export const hasActivePlatformMembership = cache(async (userId: string) => {
 
     return Boolean(data?.id)
   } catch (error) {
+    unstable_rethrow(error)
     console.error("Unable to resolve platform membership", error)
     return false
   }

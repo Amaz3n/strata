@@ -26,7 +26,10 @@ for (const admin of [false, true]) test(`organization resolution works with read
     from(table) {
       let orgFilter
       const query = { select: () => query, eq: (key, value) => { if (key === "org_id") orgFilter = value; return query }, order: () => query, limit: () => query,
-        or: () => query, maybeSingle: async () => ({ data: table === 'memberships' ? (orgFilter && orgFilter !== 'org' ? null : membership) : table === 'orgs' ? { product_tier: 'full' } : null }) }
+        or: () => query, maybeSingle: () => {
+          const result = Promise.resolve({ data: table === 'memberships' ? (orgFilter && orgFilter !== 'org' ? null : membership) : table === 'orgs' ? { product_tier: 'full' } : null })
+          return Object.assign(result, { throwOnError: () => result })
+        } }
       return query
     },
   }
