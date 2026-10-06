@@ -2729,7 +2729,7 @@
       "workstream": "B01",
       "title": "Atomic or durably recoverable close orchestration",
       "status": "LOCALLY_VERIFIED",
-      "status_basis": "All B01.1 criteria and the global DoD verified locally (2026-10-06): CLOSE-01 failure injection at snapshot and lock, abandoned-close resume, RACE-01 double close, authenticated browser journeys. Recovery migration 20261006180000 is unapplied to production (needs approval).",
+      "status_basis": "All B01.1 criteria and the global DoD verified locally (2026-10-06): CLOSE-01 failure injection at snapshot and lock, abandoned-close resume, RACE-01 double close, authenticated browser journeys. Recovery migration 20261006155617 applied to production 2026-10-06.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "no failed attempt is shown closed",
@@ -2765,7 +2765,7 @@
         {
           "verified_at": "2026-10-06T14:28:45.004674+00:00",
           "implemented_paths": [
-            "supabase/migrations/20261006180000_books_period_close_recovery.sql",
+            "supabase/migrations/20261006155617_books_period_close_recovery.sql",
             "lib/services/books/period-close.ts",
             "lib/services/books/close-review.ts",
             "lib/services/books/workspace.ts",
@@ -2800,7 +2800,7 @@
             "docs/books-evidence/2026-10-06-browser/close-journeys.json sha256:eb43aed3830f848b549dff6495ab9cab31fff3327cf6a2c39539d2f2a2cc1234",
             "docs/books-evidence/2026-10-06-browser/year-end-desktop-march-reclosed.png sha256:faf8cef77e2d851967171214a27f0b05398373909081daed520cc2ed926d5437"
           ],
-          "schema_or_runtime_identity": "acceptance stack arc-books-acceptance-e1c88d89280b with 20261006180000 applied locally; app worktree at commit a873d338+",
+          "schema_or_runtime_identity": "acceptance stack arc-books-acceptance-e1c88d89280b with 20261006155617 applied (local and production); app worktree at commit a873d338+",
           "remaining_criteria": [],
           "external_dependency": null,
           "reviewer": null
