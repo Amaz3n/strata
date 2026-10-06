@@ -7817,7 +7817,7 @@
       "workstream": "B09",
       "title": "Complete economic dependency invalidation",
       "status": "PARTIAL",
-      "status_basis": "Dependency invalidation built and proven for bills, invoices, expenses and payments with incremental runs (STATUS-01 7/7, negative check confirms the test catches a missing trigger). Open: project dimensions (policy with B07), date-driven revenue-basis flips, deletions retire only nightly, and a test of a stopped org run surfacing as a finding.",
+      "status_basis": "Dependency invalidation built and proven with incremental runs (STATUS-01 9/9); deletions of posted sources are now refused, so no deletion waits for the nightly pass (migration 20261006210000 pending production with the deploy). Open: project dimensions (restatement policy with B07), date-driven revenue-basis flips without an edit, and proof that a stopped or unreached company run never reads clean (moves with the B09.2 cron time budget).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "table-driven mutation tests change each listed dependency and get stale/blocked/reprojected status correctly",
@@ -7909,13 +7909,36 @@
           ],
           "external_dependency": null,
           "reviewer": null
+        },
+        {
+          "verified_at": "2026-10-06T23:47:07.793028+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261006210000_books_posted_source_delete_guard.sql",
+            "lib/services/vendor-bills.ts",
+            "scripts/books-acceptance/scenarios/status-01.cjs"
+          ],
+          "test_scenario_ids": [
+            "STATUS-01"
+          ],
+          "commands": [
+            "scenario-runner STATUS-01",
+            "scenario-runner BILL-01 YEAR-01 BANK-01 CLOSE-01 RACE-01 WIP-01 (regression)",
+            "pnpm test:financials"
+          ],
+          "observed_results": [
+            "A posted bill's delete is refused by the database guard (bill, entry and 1,000.00 job cost intact); returned to pending it stays refused until the incremental run reverses it; then it deletes, its entry and reversal net to zero, and a full run opens no finding.",
+            "Fixed: deleteVendorBill voided the bill's job cost and billable costs before the delete, so any refused delete left an approved bill without project cost; it now refuses a posted bill before any cleanup.",
+            "Regression: all implemented subcases of BILL/YEAR/BANK/CLOSE/RACE/WIP pass; test:financials 2733 pass / 0 fail."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/STATUS-01.json sha256:30c153140e5150a4f85e7e6e8147deaa0d234dbd1c506b99a892d03a7a5a89bb"
+          ]
         }
       ],
       "remaining_criteria": [
-        "project dimension changes (division/community/lot/contract count) — restatement policy decided with B07",
-        "revenue basis that flips by date alone (contract effective_date reached) without any write",
-        "deleted sources retire only in the nightly full run",
-        "test that an organization whose projection stops is surfaced as a finding and blocks close"
+        "project dimension changes (restatement policy with B07)",
+        "date-driven revenue-basis flips re-evaluate without an edit",
+        "no skipped/capped/unreached run reports the company clean (with B09.2 cron budget)"
       ],
       "external_dependency": null,
       "reviewer": null,
@@ -8022,7 +8045,7 @@
             "Fixed on the way: /books/ledger?entry=<id> was linked from four surfaces but ignored by the ledger; it now filters by id in the database (beyond the 1,000-entry scan window) and opens the entry. The invoice summary showed the email send date as 'Issued'; it now shows the invoice date the ledger posts."
           ],
           "artifact_paths_and_hashes": [
-            "docs/books-evidence/2026-10-06-golden-scenarios/STATUS-01.json sha256:f43a9b0a790966cf68779b4664a239a122e04ddf11762d340458f81614d1bc6c",
+            "docs/books-evidence/2026-10-06-golden-scenarios/STATUS-01.json sha256:30c153140e5150a4f85e7e6e8147deaa0d234dbd1c506b99a892d03a7a5a89bb",
             "docs/books-evidence/2026-10-06-browser/posting-status-journeys.json sha256:19ea438b42b23fe5a61b5b074e7b5406bc640d7a01c3b8a1f32d5f4dc9731717",
             "docs/books-evidence/2026-10-06-browser/posting-status-blocked-bill-desktop.png sha256:d927dcab55e6b2d25c30d23e1f08291a11a4d7c9498bf151e3431332ba3a0bff",
             "docs/books-evidence/2026-10-06-browser/posting-status-blocked-bill-mobile-dark.png sha256:7fdbabd6941871a9dc7ad274747862a00518fd451870c4986b77d9286d074c5d",

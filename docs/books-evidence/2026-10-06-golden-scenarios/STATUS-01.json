@@ -7,8 +7,8 @@
       "name": "bill-harmless-edit",
       "status": "PASSED",
       "identities": {
-        "orgId": "44467506-a463-4d6b-a286-1b7fb12d35e7",
-        "billId": "50625992-9876-481e-bcd1-e4ca93c408ef"
+        "orgId": "e827fbc3-efe6-48ac-946d-b23d9ea870b6",
+        "billId": "4c061f7c-478f-408d-b313-c763934d5602"
       },
       "checks": [
         {
@@ -36,14 +36,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T23:28:10.998Z"
+      "startedAt": "2026-10-06T23:39:33.953Z"
     },
     {
       "name": "bill-economic-edits",
       "status": "PASSED",
       "identities": {
-        "orgId": "3b668517-fca2-4380-aee0-40554a6a346b",
-        "billId": "9ca57980-8c55-4a66-9604-778e80be51ae"
+        "orgId": "d83175f1-31d1-4c93-b8a5-5ec106e736c7",
+        "billId": "37f214ef-0340-4192-8358-0a3be4191fce"
       },
       "checks": [
         {
@@ -133,14 +133,14 @@
           "observed": 4
         }
       ],
-      "startedAt": "2026-10-06T23:28:14.200Z"
+      "startedAt": "2026-10-06T23:39:37.375Z"
     },
     {
       "name": "bill-closed-period-replacement-and-repair",
       "status": "PASSED",
       "identities": {
-        "orgId": "d2db071c-c869-4bc9-8ec7-97887a204c16",
-        "billId": "c74cc6a3-e822-4be0-8af3-97ba47b25773",
+        "orgId": "b02907ce-a110-48fb-8c69-cd5fc1c1e92f",
+        "billId": "77e3bf36-37ab-4944-9b5f-fb6173351e63",
         "editRefused": false,
         "blockedState": "blocked"
       },
@@ -194,14 +194,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T23:28:15.040Z"
+      "startedAt": "2026-10-06T23:39:38.375Z"
     },
     {
       "name": "expense-family",
       "status": "PASSED",
       "identities": {
-        "orgId": "e7781a23-6592-42fb-bf0a-c0e5796d9fa4",
-        "expenseId": "b57af602-36cb-40a6-ade6-b53c82b6d7ef"
+        "orgId": "133aa036-9db8-4795-a7f3-1997b19665ac",
+        "expenseId": "616735d2-fe2a-441e-b1ef-a9b78c9f28e6"
       },
       "checks": [
         {
@@ -247,15 +247,15 @@
           "observed": {}
         }
       ],
-      "startedAt": "2026-10-06T23:28:15.876Z"
+      "startedAt": "2026-10-06T23:39:39.295Z"
     },
     {
       "name": "invoice-view-and-revision",
       "status": "PASSED",
       "identities": {
-        "orgId": "d26cfced-2846-4fa3-8570-eb10e25f0068",
-        "originalId": "1bb45e3c-b52a-46cd-a512-f1b8b8d1a29b",
-        "replacementId": "f13cc4c0-54df-45a2-ac60-7e0cbf86599b",
+        "orgId": "329cc0a3-19f4-4a55-b12b-4e1e73fbf6a2",
+        "originalId": "dfa617c9-5969-40d1-a3fb-a5de59c75321",
+        "replacementId": "466406c7-1bf2-4ba1-a5d5-6e1b8502c5ea",
         "originalState": "reversed"
       },
       "checks": [
@@ -296,15 +296,15 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T23:28:16.357Z"
+      "startedAt": "2026-10-06T23:39:39.846Z"
     },
     {
       "name": "partial-run-scoped-resolution",
       "status": "PASSED",
       "identities": {
-        "orgId": "ad64c8c0-e084-4719-a64d-88556939bf76",
-        "billA": "ebe49b8d-1fc1-404d-84b5-84bc084d88a6",
-        "billB": "18e70935-993d-4af0-861d-6e0a1e9f76e0"
+        "orgId": "745d8f67-3e05-4205-bbc4-421e94df2c6a",
+        "billA": "6a1a5168-3e0f-4a26-aca1-8b870376a010",
+        "billB": "7e820df9-f54f-4a19-93c6-12801693549a"
       },
       "checks": [
         {
@@ -356,14 +356,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T23:28:17.154Z"
+      "startedAt": "2026-10-06T23:39:40.693Z"
     },
     {
       "name": "dependency-invalidation",
       "status": "PASSED",
       "identities": {
-        "orgId": "1381616d-93e0-4605-94e3-c9b9c9456368",
-        "reopenOrgId": "9fc7ca5f-7a28-46ae-a1fa-18cb50e3d568",
+        "orgId": "716a9631-0e7b-477f-9e76-6f47f34326ac",
+        "reopenOrgId": "e4a523fb-d0fe-480f-9f3e-6ddac8fd60ca",
         "deactivatedAfter": "posted"
       },
       "checks": [
@@ -444,13 +444,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T23:28:18.102Z"
+      "startedAt": "2026-10-06T23:39:41.735Z"
     },
     {
       "name": "access-and-empty",
       "status": "PASSED",
       "identities": {
-        "orgId": "e4bf9aa2-0af4-4386-a572-d637e93e906a"
+        "orgId": "4f6f81db-8798-4c0b-9cc7-fbf1707a546d"
       },
       "checks": [
         {
@@ -492,9 +492,75 @@
           }
         }
       ],
-      "startedAt": "2026-10-06T23:28:20.130Z"
+      "startedAt": "2026-10-06T23:39:43.857Z"
+    },
+    {
+      "name": "posted-source-deletion",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "5c34ec62-f1cc-4ea5-a5a8-d329113d9f02"
+      },
+      "checks": [
+        {
+          "label": "a posted bill cannot be deleted",
+          "pass": true,
+          "expected": {
+            "state": "posted",
+            "delete": "refused: posted",
+            "stillExists": true,
+            "entries": [
+              "posted"
+            ],
+            "jobCostCents": 100000
+          },
+          "observed": {
+            "state": "posted",
+            "delete": "refused: posted",
+            "stillExists": true,
+            "entries": [
+              "posted"
+            ],
+            "jobCostCents": 100000
+          }
+        },
+        {
+          "label": "returned to pending: refused until its journal is reversed",
+          "pass": true,
+          "expected": {
+            "delete": "refused: posted",
+            "stillExists": true
+          },
+          "observed": {
+            "delete": "refused: posted",
+            "stillExists": true
+          }
+        },
+        {
+          "label": "reversed: deletes, and the ledger keeps nothing for it",
+          "pass": true,
+          "expected": {
+            "entries": [
+              "reversed"
+            ],
+            "delete": "deleted",
+            "stillExists": false,
+            "ledgerNet": {},
+            "openFindings": 0
+          },
+          "observed": {
+            "entries": [
+              "reversed"
+            ],
+            "delete": "deleted",
+            "stillExists": false,
+            "ledgerNet": {},
+            "openFindings": 0
+          }
+        }
+      ],
+      "startedAt": "2026-10-06T23:39:44.506Z"
     }
   ],
   "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
-  "finishedAt": "2026-10-06T23:28:20.791Z"
+  "finishedAt": "2026-10-06T23:39:45.177Z"
 }
