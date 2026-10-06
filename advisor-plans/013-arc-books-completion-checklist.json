@@ -1362,6 +1362,28 @@
           ],
           "external_dependency": null,
           "reviewer": "Agustin (approved application)"
+        },
+        {
+          "verified_at": "2026-10-06T11:28:51.301551+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261006112831_vendor_bill_normalizer_execute.sql",
+            "supabase/migrations/20261006112832_seed_directory_types_on_org_create.sql",
+            "supabase/tests/generated_column_function_privileges.test.sql"
+          ],
+          "test_scenario_ids": [
+            "WIP-01"
+          ],
+          "commands": [
+            "Supabase MCP apply_migration x2 (user-approved 2026-10-06), read-only verification"
+          ],
+          "observed_results": [
+            "PRODUCTION: restored authenticated EXECUTE on normalize_vendor_invoice_number/normalize_vendor_name (in-app vendor bill creation had failed since 2026-09-02); added org-insert trigger seeding the 9 base directory relationship types and backfilled the one org missing them (Austral Electric now 9). Verified grants, trigger, seed function not callable by users, 0 orgs missing vendor type."
+          ],
+          "artifact_paths_and_hashes": [],
+          "schema_or_runtime_identity": "production gzlfiskfkvqgpzqldnwk",
+          "remaining_criteria": [],
+          "external_dependency": null,
+          "reviewer": "Agustin (approved application)"
         }
       ],
       "remaining_criteria": [
@@ -2468,7 +2490,7 @@
             "Golden scenario framework runs real services against an isolated full-schema stack (PostgREST+Kong only), real RLS via per-actor authenticated tokens, real outbox queue and projector; fresh org per run.",
             "WIP-01 policy-worked-example PASSED to the cent from a clean replay (July/August ledgers, recognition deltas 250,000.00 and 500,000.00, gross profit 150,000.00); scenario INCOMPLETE with 6 required subcases NOT_IMPLEMENTED.",
             "Runner semantics unit-tested: incorrect accounting fails with exact difference, missing subcase keeps scenario incomplete, silent/throwing subcase fails, unregistered scenarios report NOT_IMPLEMENTED.",
-            "Found and fixed while making it pass: ambiguous PostgREST embeds journal_lines<->gl_accounts/journal_entries after 20261004193127 composite keys (would break GL detail, close, recognition on deploy); coding_exceptions close check blocked disconnected (greenfield) ledgers; self-reference reversal embed unresolvable. Live production bugs: vendor bill creation denied to all app users since 2026-09-02 (normalizer EXECUTE revoked; fix 20261006033000), orgs created after 2026-08-19 lack directory vocabulary (fix 20261006034000). Both fixes unapplied pending approval."
+            "Found and fixed while making it pass: ambiguous PostgREST embeds journal_lines<->gl_accounts/journal_entries after 20261004193127 composite keys (would break GL detail, close, recognition on deploy); coding_exceptions close check blocked disconnected (greenfield) ledgers; self-reference reversal embed unresolvable. Live production bugs: vendor bill creation denied to all app users since 2026-09-02 (normalizer EXECUTE revoked; fix 20261006112831), orgs created after 2026-08-19 lack directory vocabulary (fix 20261006112832). Both fixes unapplied pending approval."
           ],
           "artifact_paths_and_hashes": [
             "docs/books-evidence/2026-10-06-golden-scenarios/WIP-01.json sha256:1c14298ecce933552987f208073e6ce86a9be5cd137f78e9c92100252672b856",
