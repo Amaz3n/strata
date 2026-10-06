@@ -1306,6 +1306,36 @@
           ],
           "external_dependency": null,
           "reviewer": null
+        },
+        {
+          "verified_at": "2026-10-06T02:21:04.268358+00:00",
+          "implemented_paths": [
+            "docs/books-evidence/2026-10-05-upgrade/baseline-classification.json",
+            "docs/books-evidence/2026-10-05-upgrade/production-baseline.txt",
+            "scripts/books-acceptance/bootstrap.cjs"
+          ],
+          "test_scenario_ids": [],
+          "commands": [
+            "git merge origin/main (commit d38230eb on books-readiness-sync, local only)",
+            "bootstrap --baseline-file production-baseline.txt",
+            "bucketed md5 catalog comparison isolated baseline vs production (read-only)"
+          ],
+          "observed_results": [
+            "Merged origin/main (17 commits) into the working tree on local branch books-readiness-sync; 29 conflicts resolved; tsc and lint clean; no new test failures vs pre-merge except 2 room-benchmark tests tied to a retired module (separate task). Fresh replay + SCHEMA-01 (777 assertions) + financials pass on the merge.",
+            "Baseline replay (repo migrations up to 20261002011734 minus files whose objects are absent in production) succeeds; 190/204 catalog buckets match production exactly.",
+            "Production lacks 19 repo migrations dated before its newest applied one, 7 of them on origin/main. Deployed closeout.ts uses closeout_packages.substantial_completion_date from unapplied 20260724120000_warranty_completion_coverage.sql (likely live failure). Payment money columns are still integer in production (widening migration unapplied).",
+            "accounting_d2_lossless_finalizer is applied in production but its file lives in supabase/pending-migrations.",
+            "12 functions still differ between baseline and production; unexplained so far."
+          ],
+          "artifact_paths_and_hashes": [],
+          "schema_or_runtime_identity": "production gzlfiskfkvqgpzqldnwk (read-only); baseline arc-books-acceptance-b1bfaf9373f9",
+          "remaining_criteria": [
+            "User decision: apply the 7 origin/main migrations missing from production (closeout one is user-facing)",
+            "Explain the 12 function differences",
+            "Reconcile accounting_d2_lossless_finalizer location"
+          ],
+          "external_dependency": null,
+          "reviewer": null
         }
       ],
       "remaining_criteria": [

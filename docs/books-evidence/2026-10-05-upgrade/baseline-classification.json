@@ -1,0 +1,93 @@
+{
+  "method": "repo files up to production newest applied (20261002011734), minus files whose created objects are absent in production (catalog check 2026-10-05)",
+  "excluded_not_applied": [
+    "20260724120000_warranty_completion_coverage.sql",
+    "20260731150000_desk_rollup_counts.sql",
+    "20260813040000_remove_dead_vendor_identity_lockout_columns.sql",
+    "20260827121000_project_optional_vendor_bills.sql",
+    "20260829120000_billing_lifecycle_and_command_permissions.sql",
+    "20260901120100_payment_money_widening_and_fk_indexes.sql",
+    "20260919235924_unified_reporting_access.sql",
+    "20260921123155_customer_billing_refunds.sql",
+    "20260924230342_accounting_d2_compatibility_mirror.sql",
+    "20260929011236_takeoff_estimating_continuity.sql",
+    "20261001121920_drawing_job_leases.sql",
+    "20261001122054_drawing_upload_operations.sql",
+    "20261001123000_drawing_page_artifacts.sql",
+    "20261001124849_drawing_storage_cleanup.sql",
+    "20261001124901_drawing_publication_receipts.sql",
+    "20261001124910_drawing_current_register.sql",
+    "20261001162622_drawing_artifact_guards.sql",
+    "20261001162632_drawing_split_manifest.sql",
+    "20261001164202_drawing_split_registration.sql"
+  ],
+  "applied_under_other_names": [
+    "20260530150000_precon_phase_e_estimate_execution.sql",
+    "20260604003000_add_project_cost_code_toggle.sql",
+    "20260616130000_search_overhaul.sql",
+    "20260624120000_project_excluded_from_reporting.sql",
+    "20260701123000_platform_bugs.sql",
+    "20260704203000_bid_management_workflow.sql",
+    "20260801020000_invoice_lines_budget_line_linkage.sql",
+    "20260807100000_vendor_bill_duplicate_trigger_and_waiver_vocab_cleanup.sql",
+    "20260808160000_compliance_documents_metadata.sql",
+    "20260808170000_books_balance_trigger_row_type_fix.sql",
+    "20260813030100_payment_ledger_balance_error_detail.sql",
+    "20260817120000_po_completion_line_overlap_guard.sql",
+    "20260817120100_po_generation_serialization.sql",
+    "20260817150000_warranty_operations_hardening.sql",
+    "20260817170000_backlog_report_spec_and_closing_fix.sql",
+    "20260818140000_prequalification_program.sql",
+    "20260819120000_compliance_system_hardening.sql",
+    "20260820120200_directory_relationship_labels_by_tier.sql",
+    "20260821130000_accounting_sync_attempts.sql",
+    "20260825120000_photo_records.sql"
+  ],
+  "unknown_no_detectable_objects": [
+    "20260605023000_fix_submittals_constraints.sql",
+    "20260611120000_remove_qbo_bill_payment_placeholders.sql",
+    "20260701160000_platform_bug_attachment_pdfs.sql",
+    "20260708120500_rbac_catalog_seed.sql",
+    "20260801093000_drop_plaintext_tokens.sql",
+    "20260813030000_payment_reconciliation_run_idempotency.sql",
+    "20260817120200_price_agreement_import_key_unique.sql",
+    "20260817120300_validate_bid_package_award_target.sql",
+    "20260818170000_prequalification_waiver.sql",
+    "20260820120100_directory_write_permission_grants.sql",
+    "20260901120000_payment_run_submit_execute_lockdown.sql",
+    "20260902141500_compliance_autopilot_deficient_reminders.sql"
+  ],
+  "ledger_rows_without_repo_file": [
+    "fix_greenfield_launch_pgcrypto_search_path",
+    "accounting_d2_lossless_finalizer (file lives in supabase/pending-migrations)"
+  ],
+  "column_level_evidence": {
+    "20260901120100_payment_money_widening_and_fk_indexes.sql": "production payments/payment_allocations/payment_reversals money columns are still integer",
+    "20260827121000_project_optional_vendor_bills.sql": "production vendor_bills.project_id is still NOT NULL",
+    "20260813040000_remove_dead_vendor_identity_lockout_columns.sql": "production vendor_portal_identities still has password_attempts/password_locked_until"
+  },
+  "on_origin_main_but_not_in_production": [
+    "20260724120000_warranty_completion_coverage.sql",
+    "20260731150000_desk_rollup_counts.sql",
+    "20260813040000_remove_dead_vendor_identity_lockout_columns.sql",
+    "20260827121000_project_optional_vendor_bills.sql",
+    "20260829120000_billing_lifecycle_and_command_permissions.sql",
+    "20260901120100_payment_money_widening_and_fk_indexes.sql",
+    "20260924230342_accounting_d2_compatibility_mirror.sql"
+  ],
+  "live_impact": "Deployed lib/services/closeout.ts selects and writes closeout_packages.substantial_completion_date, added only by the unapplied 20260724120000_warranty_completion_coverage.sql.",
+  "remaining_function_drift_to_explain": [
+    "apply_invoice_late_fee_atomic",
+    "can_manage_members",
+    "enforce_invoice_number_uniqueness",
+    "get_sales_deals",
+    "post_payment_ledger_transaction_atomic",
+    "record_ap_payment_reversal_atomic",
+    "record_bid_submission_benchmark",
+    "release_project_retainage_atomic",
+    "rescind_bid_award",
+    "restore_retainage_for_void_release_invoice",
+    "run_bid_award_conversion",
+    "sync_retainage_release_invoice_status"
+  ]
+}
