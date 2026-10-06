@@ -920,7 +920,8 @@ function InvoiceInspectorBody({
                   {appliedPayments.map((payment) => {
                     const reversed = reversedByPayment.get(payment.id) ?? 0
                     return (
-                      <div key={payment.id} className="flex items-center justify-between gap-4 px-3 py-2.5 text-sm">
+                      <div key={payment.id} className="px-3">
+                      <div className="flex items-center justify-between gap-4 py-2.5 text-sm">
                         <span className="min-w-0 truncate text-xs text-muted-foreground">
                           {payment.received_at ? format(new Date(payment.received_at), "MMM d, yyyy") : "No date"}
                           {payment.reference ? ` · ${payment.reference}` : ""}
@@ -936,6 +937,8 @@ function InvoiceInspectorBody({
                             </span>
                           ) : null}
                         </span>
+                      </div>
+                      <SourcePostingStatus sourceType="payment" sourceId={payment.id} revision={`${payment.amount_cents}:${reversed}`} />
                       </div>
                     )
                   })}

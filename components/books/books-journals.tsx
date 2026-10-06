@@ -23,6 +23,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useSearchParams } from "next/navigation";
 
 import {
   createRecurringTemplateAction,
@@ -258,7 +259,9 @@ function EntriesPane({
 }) {
   const requestId = useRef(0);
   const [filter, setFilter] = useState("all");
-  const [query, setQuery] = useState("");
+  // A posting-status link opens the ledger filtered to its document (?q=).
+  const searchParams = useSearchParams();
+  const [query, setQuery] = useState(() => searchParams.get("q") ?? "");
   const [accountId, setAccountId] = useState("all");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");

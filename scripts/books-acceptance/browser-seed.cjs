@@ -87,6 +87,33 @@ const JOURNEYS = {
     await kit.as(org.owner, () => app("books/bank-rules").categorizeBankTransaction({ bankTransactionId: fee, glAccountId: gl("6050"), memo: "Fee", learn: false }))
     return org
   },
+  // Posting status on real documents: a posted invoice and its receipt, and a
+  // July bill re-coded after July closed (blocked by the closed period).
+  async "posting-status"(kit, password) {
+    const { contractJob, project } = require("./scenarios/shared.cjs")
+    const { prepareAndReview } = require("./scenarios/wip-01.cjs").helpers
+    const org = await contractJob(kit, { name: "Browser acceptance — posting status", contractCents: 1000000, retainagePercent: 0, periods: ["2026-07"], password })
+    const gl = (code) => kit.rows(`select id from public.gl_accounts where org_id=${kit.q(org.orgId)} and code=${kit.q(code)}`)[0].id
+    const client = await kit.as(org.owner, () => app("contacts").createContact({ input: { full_name: "Status Client", role_key: "client", email: "status-client@acceptance.example.test" } }))
+    const invoice = await kit.as(org.owner, () => app("invoices").createInvoice({ input: { invoice_number: "PS-1", customer_id: client.id, title: "Consulting", issue: true, issue_date: "2026-07-05", due_date: "2026-07-05",
+      sent_to_emails: ["status-client@acceptance.example.test"], lines: [{ description: "Consulting", quantity: 1, unit_cost: 500, taxable: false, arc_books_gl_account_id: gl("4900") }] } }))
+    await kit.as(org.owner, () => app("payments").recordMultiInvoicePayment({ received_at: "2026-07-08T12:00:00Z", method: "check", idempotency_key: `ps-${org.orgId}`, allocations: [{ invoice_id: invoice.id, amount_cents: 50000 }] }))
+    const { createProjectVendorBill, approveVendorBillsAtomic, updateVendorBillStatus } = app("vendor-bills")
+    const bill = await kit.as(org.owner, () => createProjectVendorBill({ projectId: org.projectId, input: { company_id: org.vendorId, bill_number: "PS-BILL", bill_date: "2026-07-10", due_date: "2026-07-31", total_cents: 100000,
+      actual_lines: [{ cost_code_id: org.costCodeId, description: "Framing", amount_cents: 100000, project_id: org.projectId }] } }))
+    await kit.as(org.owner, () => approveVendorBillsAtomic([{ id: bill.id }]))
+    await kit.drainOutbox(org.orgId)
+    await project(kit, org)
+    await prepareAndReview(kit, org, "2026-07", { contractCents: 1000000, eacCents: 800000 })
+    await kit.as(org.owner, () => app("books/period-close").closeAccountingPeriod(org.periods["2026-07"].periodId))
+    await kit.as(org.owner, () => updateVendorBillStatus({ billId: bill.id, input: { status: "approved", actual_lines: [{ description: "Framing", amount_cents: 100000, cost_code_id: org.costCodeId, project_id: org.projectId, arc_books_gl_account_id: gl("5020") }] } }))
+    const result = await project(kit, org)
+    await kit.service(() => app("books/reconciliation").recordProjectionFailures([{ orgId: org.orgId, ...result }], { full: true }))
+    org.periods.invoice = { periodId: invoice.id }
+    org.periods.bill = { periodId: bill.id }
+    org.periods.project = { periodId: org.projectId }
+    return org
+  },
   // July's close died right after freezing the period, 31 minutes ago.
   async "abandoned-close"(kit, password) {
     const org = await greenfieldOrg(kit, { name: "Browser acceptance — abandoned close", periods: ["2026-07"], password })
