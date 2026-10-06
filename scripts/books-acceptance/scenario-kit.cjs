@@ -42,8 +42,10 @@ function createKit(stack) {
   const { createClient } = require("@supabase/supabase-js")
   const { runWithServiceOrgContext } = require("../../lib/services/context")
 
-  function sql(text) {
-    const r = spawnSync("docker", ["exec", "-i", stack.container, "psql", "-X", "-A", "-t", "-q", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres"], {
+  // `user` is postgres; supabase_admin (the stack superuser) only for harness
+  // objects that must open an independent session, such as RACE-01's injector.
+  function sql(text, user = "postgres") {
+    const r = spawnSync("docker", ["exec", "-i", stack.container, "psql", "-X", "-A", "-t", "-q", "-v", "ON_ERROR_STOP=1", "-U", user, "-d", "postgres"], {
       input: text, encoding: "utf8", timeout: 120000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
     })
     if (r.error || r.status !== 0) throw Error(`SQL failed: ${(r.stderr || r.error?.message || "").trim()}`)

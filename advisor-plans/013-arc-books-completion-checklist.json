@@ -2009,7 +2009,7 @@
       "workstream": "B00",
       "title": "Build the golden acceptance runner and durable evidence catalog",
       "status": "PARTIAL",
-      "status_basis": "Golden runner, kit and API route working end to end. Passing: BILL-01 (4/4), YEAR-01 (5/5), BANK-01 (5/5); STATUS-01 5/6 (expense family needs the expense workbench logic moved into a service); CLOSE-01 4/6; WIP-01 4/7 (3 need B04.1). 18 scenarios not started (2026-10-06).",
+      "status_basis": "Golden runner, kit and API route working end to end. Passing: BILL-01 (4/4), YEAR-01 (5/5), BANK-01 (5/5), STATUS-01 (6/6); RACE-01 7/8 (entity pair waits on B14.3); CLOSE-01 4/6; WIP-01 4/7 (3 need B04.1). 17 scenarios not started (2026-10-06).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "intentionally incorrect accounting causes a nonzero run",
@@ -2684,6 +2684,34 @@
           "artifact_paths_and_hashes": [
             "docs/books-evidence/2026-10-06-golden-scenarios/STATUS-01.json sha256:bfe507389ae9a6d90f0467f57e2927c5ddfabd263aa80581296475d1f022be49"
           ]
+        },
+        {
+          "verified_at": "2026-10-06T14:04:13.049828+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/race-01.cjs",
+            "scripts/books-acceptance/expected/RACE-01.json",
+            "scripts/books-acceptance/scenarios/status-01.cjs",
+            "scripts/books-acceptance/scenario-kit.cjs"
+          ],
+          "test_scenario_ids": [
+            "RACE-01",
+            "STATUS-01"
+          ],
+          "commands": [
+            "scenario-runner RACE-01 (7 passed, entity pair not implemented; 59 checks)",
+            "scenario-runner STATUS-01 (PASSED 6/6)"
+          ],
+          "observed_results": [
+            "RACE-01 runs contention through the product's services, whose RPCs execute in separate Postgres sessions (PostgREST); a superuser-owned harness trigger opens a further independent session via dblink. Double close (3 rounds): one wins, the other refuses 'close is already running'; one recognition entry; one statement per type; exact July ledger.",
+            "Close vs a late July bill in three orderings: before (close refuses: WIP reviewed without it), during (bill approved and projected while the close holds July in 'reviewing' — refused 'reviewing and cannot accept operational postings'; close completes), after (closed period refuses). Whenever closed, the saved balance sheet equals the ledger and nothing operational lands in July afterwards; repair converges to both bills.",
+            "Bank: one debit vs two checks and two debits vs one check race to exactly one match each ('Matches exceed bank transaction capacity'); no over-match. Deposit: two deposits claiming one receipt — one posts, the other refuses; cash counted once. Three concurrent projection runs over five bills post each bill once. Double approval of one proposal posts one entry (idempotent replay).",
+            "Late mutation committed by an independent session after the journal is written but before the receipt: status 'pending' (never posted on stale coding); next run reverses the stale entry and posts the new cost code.",
+            "STATUS-01 expense family: approved expense posts once; re-code pending then current; rejection reverses the entry and reads 'reversed' with no money left."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/RACE-01.json sha256:af51a74fc97621cb9e1f08fff19724876fa136c5bfbcd5b02ac7b32a7adf4582",
+            "docs/books-evidence/2026-10-06-golden-scenarios/STATUS-01.json sha256:5d65b81482c02f5ed1d359f84566f09e9aead09378b98a327ce9583bca573d9c"
+          ]
         }
       ],
       "remaining_criteria": [
@@ -2715,7 +2743,26 @@
         "RACE-01",
         "YEAR-01"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "verified_at": "2026-10-06T14:04:13.049828+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/race-01.cjs"
+          ],
+          "test_scenario_ids": [
+            "RACE-01"
+          ],
+          "commands": [
+            "scenario-runner RACE-01"
+          ],
+          "observed_results": [
+            "Independent-session contention on close, late source, bank match, deposit, projection, proposal review and a late mutation before receipt: only serial outcomes or explicit refusals; no partial or duplicate money; closed statements equal the ledger; repair converges."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/RACE-01.json sha256:af51a74fc97621cb9e1f08fff19724876fa136c5bfbcd5b02ac7b32a7adf4582"
+          ]
+        }
+      ],
       "remaining_criteria": [
         "no failed attempt is shown closed",
         "every injected failure rolls back or resumes deterministically to the identical final ledger",
@@ -2746,7 +2793,26 @@
         "RACE-01",
         "YEAR-01"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "verified_at": "2026-10-06T14:04:13.049828+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/race-01.cjs"
+          ],
+          "test_scenario_ids": [
+            "RACE-01"
+          ],
+          "commands": [
+            "scenario-runner RACE-01"
+          ],
+          "observed_results": [
+            "Independent-session contention on close, late source, bank match, deposit, projection, proposal review and a late mutation before receipt: only serial outcomes or explicit refusals; no partial or duplicate money; closed statements equal the ledger; repair converges."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/RACE-01.json sha256:af51a74fc97621cb9e1f08fff19724876fa136c5bfbcd5b02ac7b32a7adf4582"
+          ]
+        }
+      ],
       "remaining_criteria": [
         "beginning RE + annual net income ± separately recorded equity movements ties ending RE",
         "P&L resets correctly in the next year",
@@ -2800,6 +2866,24 @@
           "remaining_criteria": [],
           "external_dependency": null,
           "reviewer": null
+        },
+        {
+          "verified_at": "2026-10-06T14:04:13.049828+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/race-01.cjs"
+          ],
+          "test_scenario_ids": [
+            "RACE-01"
+          ],
+          "commands": [
+            "scenario-runner RACE-01"
+          ],
+          "observed_results": [
+            "Independent-session contention on close, late source, bank match, deposit, projection, proposal review and a late mutation before receipt: only serial outcomes or explicit refusals; no partial or duplicate money; closed statements equal the ledger; repair converges."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/RACE-01.json sha256:af51a74fc97621cb9e1f08fff19724876fa136c5bfbcd5b02ac7b32a7adf4582"
+          ]
         }
       ],
       "remaining_criteria": [
@@ -7422,6 +7506,24 @@
           "artifact_paths_and_hashes": [
             "docs/books-evidence/2026-10-06-golden-scenarios/BANK-01.json sha256:4d0ad8fc3abda8c81c69c29b9d5957631f7ed6fd2390bb19cd9996d524ba280b"
           ]
+        },
+        {
+          "verified_at": "2026-10-06T14:04:13.049828+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/race-01.cjs"
+          ],
+          "test_scenario_ids": [
+            "RACE-01"
+          ],
+          "commands": [
+            "scenario-runner RACE-01"
+          ],
+          "observed_results": [
+            "Independent-session contention on close, late source, bank match, deposit, projection, proposal review and a late mutation before receipt: only serial outcomes or explicit refusals; no partial or duplicate money; closed statements equal the ledger; repair converges."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/RACE-01.json sha256:af51a74fc97621cb9e1f08fff19724876fa136c5bfbcd5b02ac7b32a7adf4582"
+          ]
         }
       ],
       "remaining_criteria": [
@@ -7528,6 +7630,24 @@
           ],
           "artifact_paths_and_hashes": [
             "docs/books-evidence/2026-10-06-golden-scenarios/STATUS-01.json sha256:bfe507389ae9a6d90f0467f57e2927c5ddfabd263aa80581296475d1f022be49"
+          ]
+        },
+        {
+          "verified_at": "2026-10-06T14:04:13.049828+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/race-01.cjs"
+          ],
+          "test_scenario_ids": [
+            "RACE-01"
+          ],
+          "commands": [
+            "scenario-runner RACE-01"
+          ],
+          "observed_results": [
+            "Independent-session contention on close, late source, bank match, deposit, projection, proposal review and a late mutation before receipt: only serial outcomes or explicit refusals; no partial or duplicate money; closed statements equal the ledger; repair converges."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/RACE-01.json sha256:af51a74fc97621cb9e1f08fff19724876fa136c5bfbcd5b02ac7b32a7adf4582"
           ]
         }
       ],

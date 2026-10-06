@@ -171,6 +171,30 @@ async function partialRunScopedResolution(kit, expected, check) {
   return { orgId: org.orgId, ...bills }
 }
 
+async function expenseFamily(kit, expected, check) {
+  const input = expected.inputs
+  const org = await jobOrg(kit, "STATUS-01 expense", ["2026-07"])
+  const { createProjectExpense, approveProjectExpense, replaceProjectExpenseLines, rejectProjectExpense } = app("cost-plus")
+  const created = await kit.as(org.owner, () => createProjectExpense({ projectId: org.projectId, costCodeId: org.costCodeId, expenseDate: input.expenseDate, description: "Lumber yard run",
+    vendorNameText: "Lumber yard", amountCents: input.cents, paymentMethod: input.paymentMethod, booksPaymentAccountId: glId(kit, org, "1000"), isBillable: false }))
+  const expenseId = created.id
+  await kit.as(org.owner, () => approveProjectExpense(expenseId))
+  await kit.drainOutbox(org.orgId)
+  await projectionJob(kit, org)
+  const expenseState = () => kit.as(org.owner, () => app("books/posting-status").getBooksPostingStatus({ sourceType: "expense", sourceId: expenseId })).then((status) => status?.state)
+  check.equal("approved expense is current", expected.expectedStateAfterApproval, await expenseState())
+  check.equal("approved expense posts once", expected.expectedLedgerAfterApproval, kit.postedNet(org.orgId))
+  await kit.as(org.owner, () => replaceProjectExpenseLines({ expenseId, lines: [{ project_id: org.projectId, cost_code_id: org.secondCostCodeId, description: "Lumber yard run", amount_cents: input.cents }] }))
+  check.equal("a re-code is pending until reprojected", expected.expectedStateBeforeRecodeProjection, await expenseState())
+  await projectionJob(kit, org)
+  check.equal("the re-code is current once reprojected", expected.expectedStateAfterRecode, await expenseState())
+  await kit.as(org.owner, () => rejectProjectExpense(expenseId, { rejectionReason: "Personal purchase, not job cost" }))
+  await projectionJob(kit, org)
+  check.equal("a rejected expense reads reversed", expected.expectedStateAfterRejection, await expenseState())
+  check.equal("a rejected expense leaves no money", expected.expectedNetDebitCentsByAccount, kit.postedNet(org.orgId))
+  return { orgId: org.orgId, expenseId }
+}
+
 module.exports = {
   id: "STATUS-01",
   subcases: {
@@ -179,5 +203,6 @@ module.exports = {
     "bill-closed-period-replacement-and-repair": closedPeriodReplacement,
     "invoice-view-and-revision": invoiceViewAndRevision,
     "partial-run-scoped-resolution": partialRunScopedResolution,
+    "expense-family": expenseFamily,
   },
 }

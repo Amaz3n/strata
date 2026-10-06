@@ -60,8 +60,21 @@
       }
     },
     "expense-family": {
-      "status": "NOT_IMPLEMENTED",
-      "note": "Project expenses are written directly by app/(app)/projects/[id]/expenses/actions.ts rather than a service, so they cannot be driven headlessly; moving that logic into a service is a prerequisite."
+      "inputs": {
+        "expenseDate": "2026-07-12",
+        "cents": 50000,
+        "paymentMethod": "check"
+      },
+      "derivation": "A 500 job expense paid from operating cash posts Dr 5000 / Cr 1000 once approved. Re-coding its line to another cost code is pending until reprojected, then supersedes the entry. Rejecting it retires the posting: the entry is reversed, the ledger is empty and the expense reads 'reversed', never 'pending' or 'posted'.",
+      "expectedStateAfterApproval": "posted",
+      "expectedLedgerAfterApproval": {
+        "1000": -50000,
+        "5000": 50000
+      },
+      "expectedStateBeforeRecodeProjection": "pending",
+      "expectedStateAfterRecode": "posted",
+      "expectedStateAfterRejection": "reversed",
+      "expectedNetDebitCentsByAccount": {}
     },
     "invoice-view-and-revision": {
       "inputs": {
