@@ -34,5 +34,42 @@ test("contract WIP: shared costs and unassigned invoices are placed before each 
   await expect(page.getByRole("region", { name: "Contract ownership" })).toHaveCount(0)
   await expect(page.getByRole("option", { name: /Browser acceptance — contract WIP — custom home · Site work/ })).toHaveCount(1)
   await page.screenshot({ path: info.outputPath("ready-to-prepare.png"), fullPage: true })
+
+  // Each contract is prepared on its own, then approved together.
+  await page.getByText("Prepare or revise period-end WIP").click()
+  for (const [contract, original, eac] of [["Fixed-price construction contract", "1000000", "800000"], ["Site work", "200000", "180000"]]) {
+    await page.getByLabel("Project or contract").selectOption({ label: `Browser acceptance — contract WIP — custom home · ${contract}` })
+    await page.getByLabel("Original contract ($)").fill(original)
+    await page.getByLabel("Estimate at completion ($)").fill(eac)
+    await page.getByLabel("Basis for this period").fill("Contract value and estimate per this contract's own schedule.")
+    await page.getByRole("button", { name: "Prepare dated snapshot" }).click()
+    await expect(page.getByText("Period-end WIP prepared. Review the updated figures before approval.").last()).toBeVisible()
+  }
+  // The workspace reloads after each preparation; wait for the second contract's figures.
+  await expect(page.getByText("$22,222.22").first()).toBeVisible()
+  await page.waitForLoadState("networkidle")
+  await page.getByLabel("Review explanation").fill("Independent review of each contract's WIP position.")
+  await page.getByRole("button", { name: "Approve these WIP snapshots" }).click()
+  await expect(page.getByText("WIP review saved and close checklist refreshed")).toBeVisible()
+  // The check now passes, so it lists under All rather than Needs attention.
+  await page.getByRole("button", { name: /^All/ }).click()
+  await page.getByText("WIP and POC reviewed through period end").filter({ visible: true }).first().click()
+  await page.getByRole("button", { name: "Review period-end WIP" }).click()
+  const approval = page.getByRole("region", { name: "WIP approval" })
+  await expect(approval.getByText(/^Approved/)).toBeVisible()
+  await expect(approval.getByText("Independent review of each contract's WIP position.")).toBeVisible()
+  await page.screenshot({ path: info.outputPath("approved.png"), fullPage: true })
+  await page.keyboard.press("Escape")
+
+  // The WIP schedule has a row per contract and presents over- and under-billing apart.
+  await page.goto("/reports/wip-over-under?asOf=2026-07-31")
+  await page.waitForLoadState("networkidle")
+  await expect(page.getByText(/custom home · Site work/).filter({ visible: true }).first()).toBeVisible()
+  await expect(page.getByText(/custom home · Fixed-price construction contract/).filter({ visible: true }).first()).toBeVisible()
+  await expect(page.getByRole("columnheader", { name: /Billings in excess/ })).toBeVisible()
+  await expect(page.getByRole("columnheader", { name: /Costs in excess/ })).toBeVisible()
+  await expect(page.getByText("1 project · 2 positions").filter({ visible: true }).first()).toBeVisible()
+  await expectNoHorizontalOverflow(page)
+  await page.screenshot({ path: info.outputPath("wip-schedule.png"), fullPage: true })
   noErrors()
 })

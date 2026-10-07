@@ -545,6 +545,13 @@ function projectCell(scope: string, row: { project_id: string | null; project_na
 /* WIP / over-under                                                            */
 /* -------------------------------------------------------------------------- */
 
+/** "3 projects", or "2 projects · 3 contracts" when a job reports per contract. */
+function wipTotalLabel(rows: WipOverUnderRow[]) {
+  const projects = new Set(rows.map((row) => row.project_id)).size
+  const label = `${projects} project${projects === 1 ? "" : "s"}`
+  return rows.some((row) => row.contract_id) ? `${label} · ${rows.length} positions` : label
+}
+
 function wipRow(row: WipOverUnderRow, scope: string): ReportRow {
   const overUnder = row.over_under_billing_cents
   return {
@@ -560,17 +567,16 @@ function wipRow(row: WipOverUnderRow, scope: string): ReportRow {
       percent_complete: row.percent_complete,
       earned_revenue_cents: row.earned_revenue_cents,
       billed_to_date_cents: row.billed_to_date_cents,
-      over_under_billing_cents: {
-        value: overUnder,
-        label: formatMoneyCents(overUnder, { signed: overUnder !== 0 }),
-        tone: overUnder > 0 ? "positive" : overUnder < 0 ? "warning" : undefined,
-      },
+      over_under_billing_cents: overUnder,
+      over_billed_cents: row.over_billed_cents,
+      under_billed_cents: { value: row.under_billed_cents, label: formatMoneyCents(row.under_billed_cents), tone: row.under_billed_cents > 0 ? "warning" : undefined },
       balance_status: {
         value: row.balance_status,
         label: row.balance_status === "over_billed" ? "Over" : row.balance_status === "under_billed" ? "Under" : "Even",
         tone: row.balance_status === "over_billed" ? "positive" : row.balance_status === "under_billed" ? "warning" : "muted",
       },
       forecast_gross_margin_percent: row.forecast_gross_margin_percent,
+      loss_reserve_cents: row.loss_reserve_cents,
       issues: row.issues.join("; ") || null,
     },
   }
@@ -609,26 +615,34 @@ const wipOverUnder: ReportDefinition = {
         { key: "percent_complete", header: "% complete", type: "percent" },
         { key: "earned_revenue_cents", header: "Earned", type: "money" },
         { key: "billed_to_date_cents", header: "Billed", type: "money" },
-        { key: "over_under_billing_cents", header: "Over/(under)", type: "money" },
+        { key: "over_billed_cents", header: "Billings in excess", type: "money" },
+        { key: "under_billed_cents", header: "Costs in excess", type: "money" },
+        { key: "over_under_billing_cents", header: "Net over/(under)", type: "money", exportOnly: true },
         { key: "balance_status", header: "Position", type: "status" },
         { key: "forecast_gross_margin_percent", header: "Fcst margin", type: "percent" },
+        { key: "loss_reserve_cents", header: "Loss reserve", type: "money" },
         { key: "issues", header: "issues", exportOnly: true },
       ],
       rows: report.rows.map((row) => wipRow(row, ctx.scope)),
       totals: {
-        project_name: `${totals.project_count} project${totals.project_count === 1 ? "" : "s"}`,
+        project_name: wipTotalLabel(report.rows),
         revised_contract_cents: totals.revised_contract_cents,
         actual_cost_cents: totals.actual_cost_cents,
         eac_cents: totals.eac_cents,
         percent_complete: totals.percent_complete,
         earned_revenue_cents: totals.earned_revenue_cents,
         billed_to_date_cents: totals.billed_to_date_cents,
-        over_under_billing_cents: { value: net, label: formatMoneyCents(net, { signed: net !== 0 }) },
+        over_under_billing_cents: net,
+        over_billed_cents: totals.over_billed_cents,
+        under_billed_cents: totals.under_billed_cents,
         forecast_gross_margin_percent: totals.forecast_gross_margin_percent,
+        loss_reserve_cents: totals.loss_reserve_cents,
       },
       emptyMessage: "No projects with a contract value in this scope.",
     }
 
+    // Over- and under-billed positions are a liability and an asset of different
+    // contracts; they are presented apart, never netted into one figure.
     return {
       subtitle: `As of ${report.as_of}`,
       stats: [
@@ -636,13 +650,9 @@ const wipOverUnder: ReportDefinition = {
         { key: "complete", label: "% complete", value: formatPercent(totals.percent_complete) },
         { key: "earned", label: "Earned revenue", value: formatMoneyCents(totals.earned_revenue_cents) },
         { key: "billed", label: "Billed to date", value: formatMoneyCents(totals.billed_to_date_cents) },
-        {
-          key: "net",
-          label: "Net over/(under)",
-          value: formatMoneyCents(net, { signed: net !== 0 }),
-          detail: `${formatMoneyCents(totals.over_billed_cents)} over · ${formatMoneyCents(totals.under_billed_cents)} under`,
-          tone: net > 0 ? "positive" : net < 0 ? "warning" : undefined,
-        },
+        { key: "over", label: "Billings in excess (liability)", value: formatMoneyCents(totals.over_billed_cents), detail: `Net ${formatMoneyCents(net, { signed: net !== 0 })}` },
+        { key: "under", label: "Costs and earnings in excess (asset)", value: formatMoneyCents(totals.under_billed_cents), tone: totals.under_billed_cents > 0 ? "warning" : undefined },
+        ...(totals.loss_reserve_cents > 0 ? [{ key: "loss", label: "Expected loss reserve", value: formatMoneyCents(totals.loss_reserve_cents), tone: "negative" as const }] : []),
       ],
       tables: [table],
     }

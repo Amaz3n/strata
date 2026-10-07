@@ -121,6 +121,17 @@ another contract, and effective by the period end — never the first row return
 Revenue a project recognized before it had a second contract belongs to no
 contract; recognition then refuses rather than counting it twice.
 
+**Presentation.** Invoices and credit memos on a job with several contracts carry
+the contract they bill, so every 2350 line of that job names its contract. The
+balance sheet nets 2350 within each contract only and presents debit nets as
+1150 contract assets and credit nets as 2350 contract liabilities; the ledger
+itself keeps one 2350 control account. The WIP schedule has a row per contract
+with billings in excess (liability) and costs in excess (asset) as separate
+columns, and its totals are the balance sheet's contract assets and liabilities,
+the revenue in 4000 and the loss reserve in 2360. The schedule saved at close is
+the one the report shows for that date. The WIP review shows who approved, when
+and why, and which positions changed since.
+
 ### 4d. Revenue is earned — closing basis
 A production spec home books revenue at the sale, with no percentage-of-completion:
 

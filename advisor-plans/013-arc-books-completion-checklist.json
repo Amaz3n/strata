@@ -4715,8 +4715,8 @@
       "id": "B04.2",
       "workstream": "B04",
       "title": "Period evidence, estimates and late adjustments",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All B04.2 criteria verified locally (2026-10-07) by WIP-01 period-evidence-controls, estimate-reduction-and-reclassification, completed-job-final-reconciliation, late-bill-after-review-blocks-close, revised-and-reverted-eac and completed-job-carryforward. No code change was needed for these criteria; the evidence is new.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "repeated preparation/approval/recognition is idempotent",
@@ -4755,26 +4755,42 @@
           ],
           "external_dependency": null,
           "reviewer": null
+        },
+        {
+          "verified_at": "2026-10-07T13:30:42.169570+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/wip-01.cjs",
+            "scripts/books-acceptance/expected/WIP-01.json"
+          ],
+          "test_scenario_ids": [
+            "WIP-01"
+          ],
+          "commands": [
+            "scenario-runner WIP-01 and full regression"
+          ],
+          "observed_results": [
+            "Idempotent: preparing twice with the same inputs returns the same snapshot; reviewing twice and closing post one recognition entry (250,000.00); reopening and reclosing with nothing changed posts nothing more.",
+            "Changed source invalidates the exact review: a July billing found after reopening refuses close ('WIP and POC reviewed') until a new snapshot is prepared and reviewed; revenue unchanged at 250,000.00, billed 350,000.00. A late cost (late-bill part) does the same.",
+            "Historical: a July position prepared when an August-dated cost already exists carries July cost only (200,000.00).",
+            "Estimates conserve cents: an estimate increase reverses 100,000.00 of revenue (500,000.00 -> 400,000.00); a later allocation across 4000/4050 moves 160,000.00 with a zero-net entry and leaves 2350 at the 400,000.00 earned debit.",
+            "Completed job: 100% earned (1,000,000.00), cost 800,000.00, gross profit 200,000.00, 2350 zero, receivable 900,000.00 and retainage receivable 100,000.00 outstanding; still in August's reviewed WIP population with nothing recognized."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-07-wip-schedule/WIP-01.json sha256:b3e147b894bad14ef3b03a5681927e600b41f47b3bef008a97739a6b158d6d31"
+          ]
         }
       ],
-      "remaining_criteria": [
-        "repeated preparation/approval/recognition is idempotent",
-        "a changed source invalidates the exact review",
-        "late changes cannot reuse stale approval",
-        "estimate recovery/reduction and zero-net account reclassification conserve cents",
-        "a historical snapshot does not copy today's state into the past",
-        "completed jobs reconcile final revenue/cost/retainage without disappearing from close population"
-      ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-07T13:30:42.169570+00:00"
     },
     {
       "id": "B04.3",
       "workstream": "B04",
       "title": "Presentation, bonded WIP and operational review",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All B04.3 criteria verified locally (2026-10-07) by WIP-01 contract-positions-presented and the contract-wip journey. Bonded-WIP-specific presentation beyond contract assets/liabilities is not in the definition of done and is not built.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "underbilled and overbilled contracts display separately as required by policy",
@@ -4787,17 +4803,59 @@
         "LOSS-01",
         "WIP-01"
       ],
-      "evidence": [],
-      "remaining_criteria": [
-        "underbilled and overbilled contracts display separately as required by policy",
-        "no inappropriate cross-contract/entity netting",
-        "schedule totals reconcile to statements and recognition/loss journals",
-        "printable/exported immutable period evidence matches UI",
-        "approved-by/date/reason and changed evidence are visible"
+      "evidence": [
+        {
+          "verified_at": "2026-10-07T13:30:42.169570+00:00",
+          "implemented_paths": [
+            "lib/services/books/projector.ts",
+            "lib/services/reports/wip-over-under.ts",
+            "lib/reports/definitions/financial.ts",
+            "lib/services/books/wip-review.ts",
+            "components/books/wip-review.tsx",
+            "components/books/close-workspace.tsx",
+            "docs/books-revenue-recognition.md",
+            "scripts/books-acceptance/scenarios/wip-01.cjs",
+            "scripts/books-acceptance/expected/WIP-01.json",
+            "scripts/books-acceptance/journeys/contract-wip.spec.ts"
+          ],
+          "test_scenario_ids": [
+            "WIP-01"
+          ],
+          "commands": [
+            "scenario-runner WIP-01 and full regression",
+            "playwright contract-wip (desktop, mobile-dark)",
+            "pnpm test:financials"
+          ],
+          "observed_results": [
+            "Separate presentation: an over-billed contract (A, 50,000.00 liability) and an under-billed contract (B, 20,000.00 asset) on one job show as contract liabilities 50,000.00 and contract assets 20,000.00, not a netted 30,000.00; every 2350 line names its contract (no unallocated projects) because invoices and credit memos on multi-contract jobs now carry the contract they bill.",
+            "Schedule ties: under-billed total = balance-sheet contract assets; over-billed total = contract liabilities; earned total = 4000 revenue (380,000.00); loss reserve total = 2360 balance (30,000.00, B only).",
+            "The WIP schedule saved at close equals the report for July 31 row for row; the report shows billings in excess and costs in excess as separate columns with a row per contract.",
+            "Approval: the review shows reviewer, date and reason; after a late cost on A it stays on record marked stale for A only; the close page keeps the review available after the check passes so the approval can be read.",
+            "Regression: WIP-01 11/11, HIST-01, DIM-01, CAP-01, BILL-01, YEAR-01, BANK-01, STATUS-01 pass; CLOSE-01, RACE-01 pass every implemented subcase; test:financials 2734 pass / 0 fail; all journeys pass."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-07-wip-schedule/BANK-01.json sha256:2a57d0672d37c93ad0f473aee63fbb1f2d4ef00e3c14426b3419d616b79c837c",
+            "docs/books-evidence/2026-10-07-wip-schedule/BILL-01.json sha256:5b2e3cb04dafffcb978199d85889d014cf4335027084c0fef6f7c0a3dd832dc3",
+            "docs/books-evidence/2026-10-07-wip-schedule/CAP-01.json sha256:58fb52534cd69abbc8fb4b7ac6c35ad09fd2659551a94282d7513e4fdc988964",
+            "docs/books-evidence/2026-10-07-wip-schedule/CLOSE-01.json sha256:2c5095b829c52cb482554f98e553c331770c4d614e68190769a7c43d4b1e6d22",
+            "docs/books-evidence/2026-10-07-wip-schedule/DIM-01.json sha256:5a79ac9da5178ee901f04d8ef817fb28773135d8c8651ef027474ea985ccd2c3",
+            "docs/books-evidence/2026-10-07-wip-schedule/HIST-01.json sha256:424485e8be93687cad0e7505256193d97dc5daf35164b0c31f0c75f568f25dea",
+            "docs/books-evidence/2026-10-07-wip-schedule/RACE-01.json sha256:cc7e510317531cb522e734a9498eb77d5ef98760a8c35f97e82b64e6309c1eee",
+            "docs/books-evidence/2026-10-07-wip-schedule/STATUS-01.json sha256:75c74196ddb22f673d1e04e40a2ce7122a44cf899fd750b3329297c3d23e3d18",
+            "docs/books-evidence/2026-10-07-wip-schedule/WIP-01.json sha256:b3e147b894bad14ef3b03a5681927e600b41f47b3bef008a97739a6b158d6d31",
+            "docs/books-evidence/2026-10-07-wip-schedule/YEAR-01.json sha256:7a788dea197b302ff716ef9401ab5d7cd25940b0463fc173cd8c9862a0d020d8",
+            "docs/books-evidence/2026-10-07-wip-schedule/journey-desktop-approved.png sha256:99d938f2e8330b3a5d17b1b36b144924014aa7c76b31ccd3e3e3bbfd069e6df8",
+            "docs/books-evidence/2026-10-07-wip-schedule/journey-desktop-ownership.png sha256:08df6f45792b231698b727b0597c1eea1a272316449f46ddf70f9aa27d513956",
+            "docs/books-evidence/2026-10-07-wip-schedule/journey-desktop-ready-to-prepare.png sha256:2f9752e4a89d2b4b0f45c2c8b40fbd23e5283a6f2f4af443cf401c3e51d417db",
+            "docs/books-evidence/2026-10-07-wip-schedule/journey-desktop-wip-schedule.png sha256:34622ea3e5cde6f625e2c1fef31e7a579c0fca165916bfcaff5d615845e3df3e",
+            "docs/books-evidence/2026-10-07-wip-schedule/journey-mobile-dark-ownership.png sha256:f057b0806ecf110004950726f7fa119911d319f978771aa82a599e459a6c37c7"
+          ]
+        }
       ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-07T13:30:42.169570+00:00"
     },
     {
       "id": "B05.1",

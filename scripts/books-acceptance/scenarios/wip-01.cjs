@@ -313,6 +313,173 @@ async function populationsAgree(kit, expected, check) {
   return { orgId: job.orgId, projectId: job.projectId, legacyOrgId: legacy.orgId }
 }
 
+// ---- Period evidence and estimates (B04.2) ---------------------------------
+function entriesOf(kit, job, sourceType) {
+  return Number(kit.rows(`select count(*)::int n from public.journal_entries where org_id=${kit.q(job.orgId)} and source_type=${kit.q(sourceType)} and status in ('posted','reversed')`)[0].n)
+}
+function revenueThrough(kit, job, codes) {
+  const { q } = kit
+  return Object.fromEntries(codes.map((code) => [code, Number(kit.rows(`select coalesce(sum(l.credit_cents - l.debit_cents),0)::bigint n from public.journal_lines l
+    join public.journal_entries e on e.id=l.entry_id and e.org_id=l.org_id join public.gl_accounts a on a.id=l.account_id
+    where l.org_id=${q(job.orgId)} and a.code=${q(code)} and e.status in ('posted','reversed')`)[0].n)]))
+}
+
+// Preparing, reviewing and closing again change nothing; a reopened month
+// recloses without recognizing twice; a billing that lands after review needs a
+// fresh review; and a July position prepared in August never sees August's cost.
+async function periodEvidenceControls(kit, expected, check) {
+  const input = expected.inputs
+  const job = await contractJob(kit, { name: "WIP-01 period evidence", contractCents: input.contractCents, retainagePercent: 0, periods: ["2026-07", "2026-08"] })
+  const { prepareWipSnapshot } = app("books/wip-review")
+  const periodClose = app("books/period-close")
+  const july = job.periods["2026-07"].periodId
+  await bill(kit, job, "2026-07", input.julyCostCents, "EV-B1")
+  // An August cost is already recorded when July's WIP is prepared.
+  await bill(kit, job, "2026-08", input.augustCostCents, "EV-B2")
+  invoice(kit, job, "2026-07", input.julyBilledCents, 0, "EV-I1")
+  await project(kit, job)
+  const prepare = () => kit.as(job.owner, () => prepareWipSnapshot({ periodId: july, projectId: job.projectId, originalContractCents: input.contractCents, approvedChangeOrdersCents: 0, eacCents: input.eacCents, note: "Contract and estimate per the reviewed WIP-01 fixture." }))
+  const first = await prepare(), second = await prepare()
+  const julyCost = Number(kit.rows(`select cost_to_date_cents n from public.poc_snapshots where id=${kit.q(first.snapshotId)}`)[0].n)
+  await reviewAll(kit, job, "2026-07")
+  await reviewAll(kit, job, "2026-07")
+  await close(kit, job, "2026-07")
+  const afterClose = { entries: entriesOf(kit, job, "revenue_recognition"), revenue: revenueThrough(kit, job, ["4000"])["4000"] }
+  await kit.as(job.owner, () => periodClose.reopenAccountingPeriod({ periodId: july, reason: "Reopened to confirm the close is repeatable." }))
+  await close(kit, job, "2026-07")
+  const afterReclose = { entries: entriesOf(kit, job, "revenue_recognition"), revenue: revenueThrough(kit, job, ["4000"])["4000"] }
+  await kit.as(job.owner, () => periodClose.reopenAccountingPeriod({ periodId: july, reason: "A July billing was found after the WIP review." }))
+  invoice(kit, job, "2026-07", input.lateBilledCents, 0, "EV-I2")
+  await project(kit, job)
+  const staleReview = await refusal(() => close(kit, job, "2026-07"))
+  const revised = await prepare()
+  await reviewAll(kit, job, "2026-07")
+  await close(kit, job, "2026-07")
+  const billed = Number(kit.rows(`select billed_cents n from public.poc_snapshots where id=${kit.q(revised.snapshotId)}`)[0].n)
+  check.equal("repeated preparation, review and close are idempotent; late evidence needs a fresh review; the past is not today", expected.expected, {
+    samePreparation: first.snapshotId === second.snapshotId, julyCost, afterClose, afterReclose,
+    staleReview: /WIP and POC reviewed/.test(staleReview) ? "refused: WIP review out of date" : staleReview,
+    newSnapshotAfterLateBilling: revised.snapshotId !== first.snapshotId,
+    afterLateBilling: { billed, entries: entriesOf(kit, job, "revenue_recognition"), revenue: revenueThrough(kit, job, ["4000"])["4000"] },
+  })
+  return { orgId: job.orgId, projectId: job.projectId }
+}
+
+// A higher estimate earns less to date, so the next close reverses revenue; a
+// later split of the same earned revenue across income accounts moves revenue
+// between them with no change to the total or to contract liabilities.
+async function estimateReductionAndReclassification(kit, expected, check) {
+  const input = expected.inputs
+  const job = await contractJob(kit, { name: "WIP-01 estimate reduction", contractCents: input.contractCents, retainagePercent: 0, periods: ["2026-07", "2026-08", "2026-09"],
+    accounts: [{ code: "4050", name: "Change order revenue", accountType: "income", subtype: "construction_revenue", normalBalance: "credit" }] })
+  const { prepareWipSnapshot, allocateWipRevenue, getWipReviewWorkspace } = app("books/wip-review")
+  await bill(kit, job, "2026-07", input.costCents, "RED-B1")
+  await project(kit, job)
+  const steps = {}
+  for (const [period, eac] of [["2026-07", input.julyEacCents], ["2026-08", input.augustEacCents], ["2026-09", input.augustEacCents]]) {
+    const { periodId } = job.periods[period]
+    const prepared = await kit.as(job.owner, () => prepareWipSnapshot({ periodId, projectId: job.projectId, originalContractCents: input.contractCents, approvedChangeOrdersCents: 0, eacCents: eac, note: "Contract and estimate per the reviewed WIP-01 fixture." }))
+    if (period === "2026-09") {
+      const workspace = await kit.as(job.owner, () => getWipReviewWorkspace(periodId))
+      const account = (code) => workspace.incomeAccounts.find((row) => row.code === code).id
+      await kit.as(job.owner, () => allocateWipRevenue({ periodId, snapshotId: prepared.snapshotId, allocations: input.septemberSplit.map((row) => ({ account_id: account(row.code), contract_cents: row.contractCents })), note: "Change-order work is reported as its own revenue line." }))
+    }
+    await reviewAll(kit, job, period)
+    await close(kit, job, period)
+    const { periodStart, periodEnd } = job.periods[period]
+    steps[period] = Number(kit.rows(`select coalesce(sum(l.credit_cents - l.debit_cents),0)::bigint n from public.journal_lines l join public.journal_entries e on e.id=l.entry_id
+      join public.gl_accounts a on a.id=l.account_id where l.org_id=${kit.q(job.orgId)} and a.account_type='income' and e.source_type='revenue_recognition' and e.entry_date between ${kit.q(periodStart)} and ${kit.q(periodEnd)}`)[0].n)
+  }
+  const net = kit.postedNet(job.orgId)
+  check.equal("an estimate increase reverses earned revenue; a reclassification moves it between accounts and nets to zero", expected.expected, {
+    recognizedByPeriod: steps, revenueByAccount: revenueThrough(kit, job, ["4000", "4050"]), contractLiabilitiesDebit: net["2350"] ?? 0,
+  })
+  return { orgId: job.orgId, projectId: job.projectId }
+}
+
+// A finished job reconciles: all of its contract earned, its cost, billings that
+// equal what it earned, the retainage still owed, and it stays in each close's
+// WIP population until it has nothing left to report.
+async function completedJobFinalReconciliation(kit, expected, check) {
+  const input = expected.inputs
+  const job = await contractJob(kit, { name: "WIP-01 final reconciliation", contractCents: input.contractCents, retainagePercent: input.retainagePercent, periods: ["2026-07", "2026-08"] })
+  await bill(kit, job, "2026-07", input.costCents, "FIN-B1")
+  invoice(kit, job, "2026-07", input.contractCents, input.retainageCents, "FIN-I1")
+  await project(kit, job)
+  await prepareAndReview(kit, job, "2026-07", { contractCents: input.contractCents, eacCents: input.costCents })
+  await close(kit, job, "2026-07")
+  await kit.as(job.owner, () => app("projects").updateProject({ projectId: job.projectId, input: { status: "completed" } }))
+  await prepareAndReview(kit, job, "2026-08", { contractCents: input.contractCents, eacCents: input.costCents, carryForward: true })
+  await close(kit, job, "2026-08")
+  const reviewedAugust = kit.rows(`select e->>'projectId' project from public.books_close_items c, jsonb_array_elements(c.support_review->'snapshots') e
+    where c.org_id=${kit.q(job.orgId)} and c.period_id=${kit.q(job.periods["2026-08"].periodId)} and c.code='poc_snapshots'`).map((row) => row.project === job.projectId ? "this job" : row.project)
+  const net = kit.postedNet(job.orgId)
+  check.equal("a completed job's final revenue, cost and retainage reconcile and it stays in the close population", expected.expected, {
+    reviewedAugust, revenue: -(net["4000"] ?? 0), jobCost: net["5000"] ?? 0, grossProfit: -(net["4000"] ?? 0) - (net["5000"] ?? 0),
+    contractLiabilities: net["2350"] ?? 0, receivable: net["1100"] ?? 0, retainageReceivable: net["1110"] ?? 0,
+    augustRecognition: recognizedIn(kit, job, "2026-08"),
+  })
+  return { orgId: job.orgId, projectId: job.projectId }
+}
+
+// ---- Presentation and review (B04.3) ----------------------------------------
+// An over-billed contract and an under-billed contract on one job are a
+// liability and an asset, presented apart; the WIP schedule ties to the balance
+// sheet, revenue and the loss reserve; the period's saved schedule is the one
+// the report shows; and the approval says who, when and why, and what changed.
+async function contractPositionsPresented(kit, expected, check) {
+  const input = expected.inputs
+  const period = "2026-07"
+  const job = await contractJob(kit, { name: "WIP-01 presentation", contractCents: input.a.contractCents, retainagePercent: 0, periods: [period] })
+  sovLine(kit, job, job.contractId, job.costCodeId, "Framing")
+  const b = addContract(kit, job, { title: "Site work", type: "fixed", cents: input.b.contractCents, code: "31-000", codeName: "Earthwork" })
+  const names = { [job.contractId]: "A", [b.contractId]: "B" }
+  await billCode(kit, job, period, input.a.costCents, "PR-A", job.costCodeId)
+  await billCode(kit, job, period, input.b.costCents, "PR-B", b.costCodeId)
+  invoiceFor(kit, job, period, input.a.billedCents, "PR-IA", job.contractId)
+  invoiceFor(kit, job, period, input.b.billedCents, "PR-IB", b.contractId)
+  await project(kit, job)
+  const { getWipReviewWorkspace } = app("books/wip-review")
+  const { periodId } = job.periods[period]
+  const prepareBoth = async () => {
+    await prepareContract(kit, job, period, job.contractId, input.a.contractCents, input.a.eacCents)
+    await prepareContract(kit, job, period, b.contractId, input.b.contractCents, input.b.eacCents)
+  }
+  await prepareBoth()
+  await reviewAll(kit, job, period)
+  const approved = (await kit.as(job.owner, () => getWipReviewWorkspace(periodId))).lastReview
+  // A cost lands on A after approval: the approval stays on record, marked stale for A.
+  await billCode(kit, job, period, input.a.lateCostCents, "PR-A2", job.costCodeId)
+  await project(kit, job)
+  const stale = (await kit.as(job.owner, () => getWipReviewWorkspace(periodId))).lastReview
+  await prepareBoth()
+  await reviewAll(kit, job, period)
+  await close(kit, job, period)
+  const asOf = job.periods[period].periodEnd
+  const balanceSheet = await kit.service(() => app("books/statements").buildBalanceSheet(job.orgId, asOf))
+  const report = await kit.as(job.owner, () => app("reports/wip-over-under").getProjectWipOverUnderReport({ projectId: job.projectId, asOf }))
+  const saved = kit.rows(`select content from public.financial_statement_snapshots where org_id=${kit.q(job.orgId)} and period_id=${kit.q(periodId)} and statement_type='wip'`)[0].content
+  const net = kit.postedNet(job.orgId)
+  const row = (r) => ({ contract: names[r.contract_id] ?? "project", earned: r.earned_revenue_cents, billed: r.billed_to_date_cents, overBilled: r.over_billed_cents, underBilled: r.under_billed_cents, lossReserve: r.loss_reserve_cents })
+  const byContract = (rows) => rows.map(row).sort((x, y) => x.contract.localeCompare(y.contract))
+  const presented = (code) => balanceSheet.rows.find((r) => r.code === code)?.balanceCents ?? 0
+  check.equal("contract positions are presented apart and the WIP schedule ties to the statements and journals", expected.expected, {
+    balanceSheet: { contractAssets: presented("1150"), contractLiabilities: presented("2350"), unallocatedProjects: balanceSheet.unallocatedContractProjectIds.length,
+      positions: balanceSheet.contractPositions.filter((p) => p.projectId === job.projectId).map((p) => ({ contract: names[p.contractId] ?? "project", asset: p.assetCents, liability: p.liabilityCents })).sort((x, y) => x.contract.localeCompare(y.contract)) },
+    schedule: byContract(report.rows),
+    ties: {
+      underBilledIsContractAssets: report.totals.under_billed_cents === presented("1150"),
+      overBilledIsContractLiabilities: report.totals.over_billed_cents === presented("2350"),
+      earnedIsRevenue: report.totals.earned_revenue_cents === -(net["4000"] ?? 0),
+      lossReserveIsJournal: report.totals.loss_reserve_cents === -(net["2360"] ?? 0),
+    },
+    savedScheduleMatchesReport: JSON.stringify(byContract(saved.rows.filter((r) => r.project_id === job.projectId))) === JSON.stringify(byContract(report.rows)),
+    approval: { reviewerNamed: Boolean(approved?.reviewer), note: approved?.note, current: approved?.current },
+    afterLateCost: { current: stale?.current, changed: (stale?.changed ?? []).map((scope) => names[scope.contractId] ?? "project") },
+  })
+  return { orgId: job.orgId, projectId: job.projectId, contracts: names }
+}
+
 module.exports = {
   id: "WIP-01",
   subcases: {
@@ -323,6 +490,10 @@ module.exports = {
     "second-contract-separately-owned": secondContractSeparatelyOwned,
     "shared-cost-allocation": sharedCostAllocation,
     "wip-recognition-close-populations-agree": populationsAgree,
+    "period-evidence-controls": periodEvidenceControls,
+    "estimate-reduction-and-reclassification": estimateReductionAndReclassification,
+    "completed-job-final-reconciliation": completedJobFinalReconciliation,
+    "contract-positions-presented": contractPositionsPresented,
   },
 }
 

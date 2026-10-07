@@ -47,6 +47,11 @@ export function WipReview({ periodId }: { periodId: string }) {
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-4xl">
         <DialogHeader><DialogTitle>Review WIP through {workspace?.periodEnd}</DialogTitle><DialogDescription>Review estimates, contract changes, and costs for each job. Approval applies to these snapshots; new evidence requires another review.</DialogDescription></DialogHeader>
+        {workspace?.lastReview && <section aria-label="WIP approval" className="space-y-1 border p-3 text-sm">
+          <p><span className="font-medium">{workspace.lastReview.current ? "Approved" : "Last approved"}</span> by {workspace.lastReview.reviewer} on {new Date(workspace.lastReview.reviewedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</p>
+          <p className="whitespace-pre-wrap text-muted-foreground">{workspace.lastReview.note}</p>
+          {!workspace.lastReview.current && <p role="alert" className="text-warning">Evidence changed since this approval{workspace.lastReview.changed.length ? `: ${workspace.lastReview.changed.map(scope => wipScopeLabel(workspace, scope)).join(", ")}` : ""}. Review and approve again before closing.</p>}
+        </section>}
         {workspace && workspace.ownershipBlockers.length > 0 && <WipOwnership workspace={workspace} periodId={periodId} onSaved={reload} />}
         {workspace && <WipPreparation periodId={periodId} workspace={workspace} onPrepared={reload} />}
         {workspace && !workspace.sourcesCurrent && <p role="alert" className="text-sm text-destructive">Dated source evidence changed or has not been prepared. Prepare the affected period-end snapshots before approving.</p>}
@@ -55,8 +60,9 @@ export function WipReview({ periodId }: { periodId: string }) {
           const detail = detailsById.get(snapshot.snapshotId)
           const loss = detail && detail.eac_cents >= detail.cost_to_date_cents && detail.cost_to_date_cents >= 0 && detail.revised_contract_cents >= 0 && snapshot.earnedRevenueCents >= 0
             ? expectedContractLoss({ contractCents: detail.revised_contract_cents, eacCents: detail.eac_cents, costCents: detail.cost_to_date_cents, earnedCents: snapshot.earnedRevenueCents }) : null
+          const changedSinceApproval = workspace.lastReview?.changed.some(scope => scopeKey(scope) === scopeKey(snapshot))
           return <section key={scopeKey(snapshot)} className="space-y-2 rounded-md border p-3">
-            <Link className="font-medium underline" href={`/projects/${snapshot.projectId}/financials/budget`}>{wipScopeLabel(workspace, snapshot)}</Link>
+            <div className="flex flex-wrap items-center justify-between gap-2"><Link className="font-medium underline" href={`/projects/${snapshot.projectId}/financials/budget`}>{wipScopeLabel(workspace, snapshot)}</Link>{changedSinceApproval && <span className="text-xs text-warning">Changed since approval</span>}</div>
             <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
               {([["Contract value", detail?.revised_contract_cents], ["Cost to date", detail?.cost_to_date_cents], ["Estimate at completion", detail?.eac_cents], ["Earned revenue", snapshot.earnedRevenueCents], ["Billed", detail?.billed_cents], ["Forecast gross profit", detail?.forecast_gross_profit_cents]] as const).map(([label, value]) => <div key={label}><dt className="text-muted-foreground">{label}</dt><dd className="font-mono">{typeof value === "number" ? money(value) : "Unavailable"}</dd></div>)}
             </dl>

@@ -336,7 +336,8 @@ function PeriodReview({
               exceptions and run checks again.
             </p>
           ) : null}
-          {!closed && !reviewing && !isPassed ? (
+          {/* An approved WIP review stays open to read (who, when, why) and to revise. */}
+          {!closed && !reviewing && (!isPassed || check.code === "poc_snapshots") ? (
             <div className="flex flex-wrap gap-2">
               {check.code === "clearing_accounts" && capabilities.close ? (
                 <ClearingSupport periodId={period.id} />

@@ -9,6 +9,7 @@ import { getReportingExcludedProjectIds } from "@/lib/services/reporting-scope"
 import { todayIsoDateOnly } from "@/lib/services/reports/dates"
 import { computeProjectPoc, orderPocSnapshotsLatestFirst } from "@/lib/services/poc"
 import { primaryContractsInForce } from "@/lib/financials/project-revenue-basis"
+import { expectedContractLoss } from "@/lib/financials/expected-loss"
 import { wipScopeKey } from "@/lib/services/books/wip-period-rules"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import type { ProjectPocWarning } from "@/lib/financials/poc-rules"
@@ -55,6 +56,8 @@ export type WipOverUnderRow = {
   under_billed_cents: number
   forecast_gross_profit_cents: number
   forecast_gross_margin_percent: number | null
+  /** The expected-loss reserve this position carries (the loss not yet incurred). */
+  loss_reserve_cents: number
   balance_status: WipBalanceStatus
   issues: string[]
 }
@@ -75,6 +78,7 @@ export type WipOverUnderTotals = {
   under_billed_cents: number
   forecast_gross_profit_cents: number
   forecast_gross_margin_percent: number | null
+  loss_reserve_cents: number
 }
 
 export type WipOverUnderReport = {
@@ -123,6 +127,12 @@ function numberValue(value: unknown): number {
 function percent(numerator: number, denominator: number): number {
   if (denominator <= 0) return 0
   return Math.round((numerator / denominator) * 1000) / 10
+}
+
+/** The close's expected-loss reserve for a position; zero when its inputs cannot carry one. */
+function lossReserve(contractCents: number, eacCents: number, costCents: number, earnedCents: number) {
+  if (contractCents < 0 || eacCents < costCents || costCents < 0 || earnedCents < 0) return 0
+  return expectedContractLoss({ contractCents, eacCents, costCents, earnedCents }).reserveCents
 }
 
 function marginPercent(profitCents: number, revenueCents: number): number | null {
@@ -290,6 +300,7 @@ async function buildWipRow({
     under_billed_cents: Math.max(0, -poc.overUnderCents),
     forecast_gross_profit_cents: poc.forecastGrossProfitCents,
     forecast_gross_margin_percent: poc.forecastGrossMarginPercent,
+    loss_reserve_cents: lossReserve(revisedContractCents, eacCents, actualCostCents, poc.earnedRevenueCents),
     balance_status:
       poc.overUnderCents > 0
         ? "over_billed"
@@ -374,6 +385,7 @@ function snapshotRow(project: Project, snapshot: PocSnapshotRow, contract: Repor
     under_billed_cents: Math.max(0, -overUnderCents),
     forecast_gross_profit_cents: forecastGrossProfitCents,
     forecast_gross_margin_percent: marginPercent(forecastGrossProfitCents, revisedContractCents),
+    loss_reserve_cents: lossReserve(revisedContractCents, eacCents, actualCostCents, numberValue(snapshot.earned_revenue_cents)),
     balance_status: overUnderCents > 0 ? "over_billed" : overUnderCents < 0 ? "under_billed" : "in_balance",
     issues: Array.isArray(snapshot.warnings) ? snapshot.warnings.map(String) : [],
   }
@@ -457,6 +469,7 @@ function computeTotals(rows: WipOverUnderRow[]): WipOverUnderTotals {
       acc.over_billed_cents += row.over_billed_cents
       acc.under_billed_cents += row.under_billed_cents
       acc.forecast_gross_profit_cents += row.forecast_gross_profit_cents
+      acc.loss_reserve_cents += row.loss_reserve_cents
       return acc
     },
     {
@@ -475,6 +488,7 @@ function computeTotals(rows: WipOverUnderRow[]): WipOverUnderTotals {
       under_billed_cents: 0,
       forecast_gross_profit_cents: 0,
       forecast_gross_margin_percent: null as number | null,
+      loss_reserve_cents: 0,
     },
   )
 

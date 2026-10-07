@@ -7,7 +7,7 @@ import { requireBooksAuthorization } from "@/lib/services/books/access"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { loadWipScopesForPeriod } from "@/lib/services/books/wip-project-scope"
 import { loadPocPositionsAsOf } from "@/lib/services/poc"
-import { wipScopeKey, wipSnapshotEvidence, assertReviewedWipUnchanged, type WipScope, type WipSnapshotEvidence } from "@/lib/services/books/wip-period-rules"
+import { wipScopeKey, wipSnapshotEvidence, assertReviewedWipUnchanged, wipReviewMatches, wipReviewSchema, type WipScope, type WipSnapshotEvidence } from "@/lib/services/books/wip-period-rules"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { pocRevenueAllocationSchema } from "@/lib/services/books/poc-revenue-allocations"
@@ -83,6 +83,7 @@ export async function getWipReviewWorkspace(periodId: string) {
     ownershipBlockers(service, context.orgId, period.period_end, scopes),
   ])
   const blockedInvoiceIds = [...new Set(blockers.flatMap(row => row.invoiceIds))]
+  const lastReview = await loadLastReview(service, context.orgId, period.id, snapshots)
   const invoices = blockedInvoiceIds.length ? await collectBooksRows((from,to) => service.from("invoices").select("id,invoice_number,project_id,total_cents").eq("org_id",context.orgId).in("id",blockedInvoiceIds).order("id").range(from,to)) : []
   return {
     periodEnd: period.period_end, snapshots, missing, projectNames, details, incomeAccounts, costCodes,
@@ -90,9 +91,34 @@ export async function getWipReviewWorkspace(periodId: string) {
     scopes: scopes.map(({ projectId, contractId }) => ({ projectId, contractId })),
     projectIds: projectIds,
     completedProjectIds: [...new Set(scopes.filter(row => row.status === "completed").map(row => row.projectId))],
-    ownershipBlockers: blockers, unassignedInvoices: invoices,
+    ownershipBlockers: blockers, unassignedInvoices: invoices, lastReview,
     sourcesCurrent: await wipSourcesCurrent(service, context.orgId, snapshots.map(row => row.snapshotId)),
   }
+}
+
+/**
+ * The approval on record for this period: who approved, when and why, and which
+ * positions have different evidence now (a new snapshot, or none reviewed).
+ */
+async function loadLastReview(service: ReturnType<typeof createServiceSupabaseClient>, orgId: string, periodId: string, current: WipSnapshotEvidence[]) {
+  const { data, error } = await service.from("books_close_items").select("support_review").eq("org_id", orgId).eq("period_id", periodId).eq("code", "poc_snapshots").maybeSingle()
+  if (error) throw new Error(`Failed to load the WIP review: ${error.message}`)
+  const review = wipReviewSchema.safeParse(data?.support_review)
+  if (!review.success) return null
+  const { data: reviewer, error: reviewerError } = await service.from("app_users").select("full_name, email").eq("id", review.data.reviewerId).maybeSingle()
+  if (reviewerError) throw new Error(`Failed to load the WIP reviewer: ${reviewerError.message}`)
+  const approved = new Map(review.data.snapshots.map(row => [wipScopeKey(row), row]))
+  // A position changed when its snapshot is not the approved one, or when the
+  // costs and billings it was built from have moved since.
+  const sourcesMoved = new Set<string>()
+  if (!await wipSourcesCurrent(service, orgId, current.map(row => row.snapshotId))) {
+    for (const row of current) if (!await wipSourcesCurrent(service, orgId, [row.snapshotId])) sourcesMoved.add(row.snapshotId)
+  }
+  const changed = current.filter(row => {
+    const was = approved.get(wipScopeKey(row))
+    return !was || was.snapshotId !== row.snapshotId || was.inputsHash !== row.inputsHash || was.earnedRevenueCents !== row.earnedRevenueCents || sourcesMoved.has(row.snapshotId)
+  }).map(({ projectId, contractId }) => ({ projectId, contractId }))
+  return { reviewer: reviewer?.full_name || reviewer?.email || "A former member", reviewedAt: review.data.reviewedAt, note: review.data.note, current: changed.length === 0 && wipReviewMatches(data?.support_review, current), changed }
 }
 
 /**

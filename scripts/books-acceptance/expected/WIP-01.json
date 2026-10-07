@@ -273,6 +273,161 @@
         "projectScopedRecognition": 0,
         "legacyClose": "Revenue on WIP-01 legacy revenue — custom home was recognized before it had more than one contract, so it belongs to no contract. Reclassify that revenue to its contracts before recognizing each contract's revenue."
       }
+    },
+    "period-evidence-controls": {
+      "inputs": {
+        "contractCents": 100000000,
+        "eacCents": 80000000,
+        "julyCostCents": 20000000,
+        "augustCostCents": 10000000,
+        "julyBilledCents": 30000000,
+        "lateBilledCents": 5000000
+      },
+      "derivation": "July cost $200,000 against EAC $800,000: 25%, $250,000 earned. An August-dated $100,000 cost already exists when July is prepared and is not in July's cost. Preparing twice with the same inputs returns the same snapshot; reviewing twice and closing post one recognition entry. Reopening and reclosing July with nothing changed posts nothing more. A $50,000 July billing found after reopening changes the reviewed evidence, so close is refused until a new snapshot is prepared and reviewed; billing is not revenue, so revenue stays $250,000 with one recognition entry, and the snapshot shows $350,000 billed.",
+      "expected": {
+        "samePreparation": true,
+        "julyCost": 20000000,
+        "afterClose": {
+          "entries": 1,
+          "revenue": 25000000
+        },
+        "afterReclose": {
+          "entries": 1,
+          "revenue": 25000000
+        },
+        "staleReview": "refused: WIP review out of date",
+        "newSnapshotAfterLateBilling": true,
+        "afterLateBilling": {
+          "billed": 35000000,
+          "entries": 1,
+          "revenue": 25000000
+        }
+      }
+    },
+    "estimate-reduction-and-reclassification": {
+      "inputs": {
+        "contractCents": 100000000,
+        "costCents": 40000000,
+        "julyEacCents": 80000000,
+        "augustEacCents": 100000000,
+        "septemberSplit": [
+          {
+            "code": "4000",
+            "contractCents": 60000000
+          },
+          {
+            "code": "4050",
+            "contractCents": 40000000
+          }
+        ]
+      },
+      "derivation": "July: $400,000 of $800,000 = 50%, $500,000 earned. August: the estimate rises to $1,000,000 with no new cost, 40%, $400,000 earned, so August reverses $100,000 (Dr 4000, Cr 2350). September: same position, but the contract is split $600,000 to 4000 and $400,000 to 4050; earned stays $400,000, so 4000 holds $240,000 and 4050 $160,000. September moves $160,000 from 4000 to 4050 with a net of zero, and contract liabilities stay at the $400,000 debit earned (nothing billed).",
+      "expected": {
+        "recognizedByPeriod": {
+          "2026-07": 50000000,
+          "2026-08": -10000000,
+          "2026-09": 0
+        },
+        "revenueByAccount": {
+          "4000": 24000000,
+          "4050": 16000000
+        },
+        "contractLiabilitiesDebit": 40000000
+      }
+    },
+    "completed-job-final-reconciliation": {
+      "inputs": {
+        "contractCents": 100000000,
+        "retainagePercent": 10,
+        "costCents": 80000000,
+        "retainageCents": 10000000
+      },
+      "derivation": "A $1,000,000 contract finishes in July at its $800,000 estimate: 100% complete, the whole $1,000,000 earned, gross profit $200,000. It is billed in full with 10% ($100,000) retained: receivable $900,000, retainage receivable $100,000, and contract liabilities net to zero because billings equal earnings. The job is marked complete and August carries the final estimate forward: the job is still in August's reviewed WIP population and August recognizes nothing. Retainage stays receivable until it is billed for release.",
+      "expected": {
+        "reviewedAugust": [
+          "this job"
+        ],
+        "revenue": 100000000,
+        "jobCost": 80000000,
+        "grossProfit": 20000000,
+        "contractLiabilities": 0,
+        "receivable": 90000000,
+        "retainageReceivable": 10000000,
+        "augustRecognition": 0
+      }
+    },
+    "contract-positions-presented": {
+      "inputs": {
+        "a": {
+          "contractCents": 100000000,
+          "costCents": 20000000,
+          "lateCostCents": 4000000,
+          "eacCents": 80000000,
+          "billedCents": 35000000
+        },
+        "b": {
+          "contractCents": 20000000,
+          "costCents": 10000000,
+          "eacCents": 25000000,
+          "billedCents": 6000000
+        }
+      },
+      "derivation": "A: cost $200,000 plus a late $40,000 = $240,000 of an $800,000 estimate = 30%, $300,000 earned; billed $350,000, so $50,000 over-billed — a contract liability. B: $100,000 of $250,000 = 40%, $80,000 earned; billed $60,000, so $20,000 under-billed — a contract asset. B's loss reserve is the $50,000 expected loss less $20,000 already incurred = $30,000. Presented apart: contract assets $20,000 and contract liabilities $50,000, not a netted $30,000. The schedule's under-billed total is the balance sheet's contract assets, its over-billed total the contract liabilities, its earned total the revenue in 4000 ($380,000), and its loss reserve the 2360 balance. The schedule saved at close is the one the report shows for July 31. After the first review the approval names its reviewer and reason and is current; the late cost on A leaves it on record but stale for A only.",
+      "expected": {
+        "balanceSheet": {
+          "contractAssets": 2000000,
+          "contractLiabilities": 5000000,
+          "unallocatedProjects": 0,
+          "positions": [
+            {
+              "contract": "A",
+              "asset": 0,
+              "liability": 5000000
+            },
+            {
+              "contract": "B",
+              "asset": 2000000,
+              "liability": 0
+            }
+          ]
+        },
+        "schedule": [
+          {
+            "contract": "A",
+            "earned": 30000000,
+            "billed": 35000000,
+            "overBilled": 5000000,
+            "underBilled": 0,
+            "lossReserve": 0
+          },
+          {
+            "contract": "B",
+            "earned": 8000000,
+            "billed": 6000000,
+            "overBilled": 0,
+            "underBilled": 2000000,
+            "lossReserve": 3000000
+          }
+        ],
+        "ties": {
+          "underBilledIsContractAssets": true,
+          "overBilledIsContractLiabilities": true,
+          "earnedIsRevenue": true,
+          "lossReserveIsJournal": true
+        },
+        "savedScheduleMatchesReport": true,
+        "approval": {
+          "reviewerNamed": true,
+          "note": "Independent review of each contract's WIP position.",
+          "current": true
+        },
+        "afterLateCost": {
+          "current": false,
+          "changed": [
+            "A"
+          ]
+        }
+      }
     }
   }
 }

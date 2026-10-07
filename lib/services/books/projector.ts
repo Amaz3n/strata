@@ -46,7 +46,7 @@ import {
   reverseBooksJournalEntryForService,
 } from "@/lib/services/books/ledger";
 import { classifyPaymentPosting } from "@/lib/services/books/posting-rules";
-import { loadRevenueBasisByProject } from "@/lib/services/books/revenue-basis";
+import { loadProjectRevenueBases } from "@/lib/services/books/revenue-basis";
 import { recordEvent } from "@/lib/services/events";
 import { isoDateOnlyFromUtcMs, todayIsoDateOnly } from "@/lib/services/reports/dates";
 import {
@@ -640,7 +640,7 @@ async function projectionCandidates(
     projectDimensions,
     openingSources,
     inventoryPolicies,
-    basisByProject,
+    revenueBases,
     laborEntries,
     bills,
     invoices,
@@ -654,7 +654,7 @@ async function projectionCandidates(
     loadBooksProjectDimensions(orgId),
     loadOpeningOwnedSources(orgId),
     loadInventoryPolicies(orgId),
-    loadRevenueBasisByProject(orgId),
+    loadProjectRevenueBases(orgId),
     loadLaborCostEntries(orgId, watermarks.labor),
     // Every paged read below imposes a total order for the reason given on
     // `collectPages`: `.range()` without one skips and duplicates rows.
@@ -742,7 +742,18 @@ async function projectionCandidates(
   // A receipt or reversal is a customer deposit when its invoice is a deposit
   // request, whether or not that invoice changed in this run's window.
   const referencedInvoiceIds = [...payments, ...reversals].map((row) => row.invoice_id).filter((id): id is string => typeof id === "string");
-  const [costLinesByBill, costLinesByExpense, retainageByInvoice, releaseByInvoice, referencedDeposits] = await Promise.all([
+  const basisByProject = new Map(revenueBases.map((row) => [row.projectId, row.basis]));
+  // On a job with several contracts, what an invoice bills (and a credit memo
+  // credits) is that contract's position, so its lines carry the contract. With
+  // one contract the project tags already name it.
+  const multiContract = new Map(revenueBases.filter((row) => row.contractIds.length > 1).map((row) => [row.projectId, new Set(row.contractIds)]));
+  const billedContract = (projectId: unknown, metadata: unknown) => {
+    const contracts = typeof projectId === "string" ? multiContract.get(projectId) : undefined;
+    const contractId = metadata && typeof metadata === "object" ? Reflect.get(metadata, "source_contract_id") : null;
+    return contracts && typeof contractId === "string" && contracts.has(contractId) ? contractId : null;
+  };
+  const creditedInvoiceIds = adjustments.filter((row) => row.project_id && multiContract.has(String(row.project_id))).map((row) => String(row.invoice_id));
+  const [costLinesByBill, costLinesByExpense, retainageByInvoice, releaseByInvoice, referencedDeposits, creditedInvoices] = await Promise.all([
     loadBillCostLines(orgId, bills.map((row) => String(row.id))),
     loadExpenseCostLines(orgId, expenses.map((row) => String(row.id))),
     loadInvoiceRetainageCents({ supabase: service, orgId, invoiceIds }),
@@ -750,7 +761,10 @@ async function projectionCandidates(
     collectForIds(referencedInvoiceIds, (slice, from, to) => service.from("invoices").select("id")
       .eq("org_id", orgId).eq("metadata->>invoice_kind", "earnest_deposit").in("id", slice)
       .order("id", { ascending: true }).range(from, to), "deposit invoices"),
+    collectForIds(creditedInvoiceIds, (slice, from, to) => service.from("invoices").select("id, project_id, metadata")
+      .eq("org_id", orgId).in("id", slice).order("id", { ascending: true }).range(from, to), "credited invoices"),
   ]);
+  const creditedContract = new Map(creditedInvoices.map((row) => [String(row.id), billedContract(row.project_id, row.metadata)]));
 
   const candidates: ProjectionCandidate[] = [];
   const invoiceIncome = await loadInvoiceRevenueLines(orgId, [
@@ -924,6 +938,7 @@ async function projectionCandidates(
         project_id: row.project_id ?? null,
         revenue_basis: basis,
         revenue_lines: invoiceIncome.lines.get(String(row.id)) ?? [],
+        ...(billedContract(row.project_id, row.metadata) ? { dimensions: { contract_id: billedContract(row.project_id, row.metadata) } } : {}),
       },
     });
   }
@@ -1203,6 +1218,7 @@ async function projectionCandidates(
         invoice_id: row.invoice_id,
         revenue_basis: basis,
         ...(revenueLines?.length ? { revenue_lines: revenueLines } : {}),
+        ...(creditedContract.get(String(row.invoice_id)) ? { dimensions: { contract_id: creditedContract.get(String(row.invoice_id)) } } : {}),
       },
     });
   }
