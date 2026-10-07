@@ -21,18 +21,31 @@ type RevenueProject = {
 
 const EARNING_CONTRACT_STATUSES = new Set(["active", "amended", "completed", "terminated"])
 
+/**
+ * A project's primary contracts in force on a date: signed (not draft or
+ * superseded), not an amendment of another, and effective by then. Ordered by
+ * id so no caller depends on row order. More than one means WIP is per contract.
+ */
+export function primaryContractsInForce<T extends { id: string; status: string; project_id: string; parent_contract_id?: string | null; effective_date?: string | null }>(
+  projectId: string,
+  contracts: readonly T[],
+  asOf: string,
+): T[] {
+  return contracts.filter(contract =>
+    contract.project_id === projectId &&
+    contract.parent_contract_id == null &&
+    EARNING_CONTRACT_STATUSES.has(contract.status) &&
+    (!contract.effective_date || contract.effective_date <= asOf),
+  ).sort((a, b) => a.id.localeCompare(b.id))
+}
+
 /** Never let row order, draft negotiations or child amendments choose the ledger posture. */
 export function resolveProjectRevenueBasis(
   project: RevenueProject,
   contracts: readonly RevenueContract[],
   asOf: string,
 ): RevenueRecognitionBasis {
-  const primaryContracts = contracts.filter(contract =>
-    contract.project_id === project.id &&
-    contract.parent_contract_id == null &&
-    EARNING_CONTRACT_STATUSES.has(contract.status) &&
-    (!contract.effective_date || contract.effective_date <= asOf),
-  )
+  const primaryContracts = primaryContractsInForce(project.id, contracts, asOf)
   if (!primaryContracts.length && contracts.some(contract =>
     contract.project_id === project.id && contract.parent_contract_id == null &&
     contract.status === "superseded" && (!contract.effective_date || contract.effective_date <= asOf),

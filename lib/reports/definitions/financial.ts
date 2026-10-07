@@ -548,10 +548,10 @@ function projectCell(scope: string, row: { project_id: string | null; project_na
 function wipRow(row: WipOverUnderRow, scope: string): ReportRow {
   const overUnder = row.over_under_billing_cents
   return {
-    key: row.project_id,
+    key: row.contract_id ? `${row.project_id}:${row.contract_id}` : row.project_id,
     href: scope === "org" ? `/projects/${row.project_id}/financials` : undefined,
     cells: {
-      project_name: row.project_name,
+      project_name: row.contract_title ? `${row.project_name} · ${row.contract_title}` : row.project_name,
       project_id: row.project_id,
       billing_model: { value: row.billing_model, label: BILLING_MODEL_LABELS[row.billing_model] ?? row.billing_model },
       revised_contract_cents: row.revised_contract_cents,

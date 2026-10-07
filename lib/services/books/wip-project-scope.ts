@@ -5,14 +5,18 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { collectBooksRows } from "@/lib/services/books/paging"
 import { loadProjectRevenueBases } from "@/lib/services/books/revenue-basis"
 import { accountingCutoff, isInvoiceReceivableAsOf } from "@/lib/services/books/subledger-settlements"
+import type { WipScope } from "@/lib/services/books/wip-period-rules"
+
+export type WipPeriodScope = WipScope & { status: string | null }
 
 /**
- * Percentage-of-completion projects active by a period end: with posted cost, a
- * receivable invoice, or recognized revenue. Project lifecycle status cannot
- * erase a job from an earlier accounting period. Reads are limited to those
- * projects, and cost only needs to exist, not to be read line by line.
+ * The WIP positions a period end needs: one per percentage-of-completion project
+ * active by then (posted cost, a receivable invoice, or recognized revenue), or
+ * one per contract when the project has more than one in force. Project
+ * lifecycle status cannot erase a job from an earlier accounting period. Reads
+ * are limited to those projects, and cost only needs to exist, not to be read.
  */
-export async function loadPocProjectsForPeriod(orgId: string, periodEnd: string) {
+export async function loadWipScopesForPeriod(orgId: string, periodEnd: string): Promise<WipPeriodScope[]> {
   accountingCutoff(periodEnd)
   const service = createServiceSupabaseClient()
   const poc = (await loadProjectRevenueBases(orgId, periodEnd)).filter(project => project.basis === "percentage_of_completion")
@@ -32,5 +36,7 @@ export async function loadPocProjectsForPeriod(orgId: string, periodEnd: string)
     ...invoices.filter(row => isInvoiceReceivableAsOf(row, periodEnd)).map(row => row.project_id),
     ...recognized.map(row => row.source_id),
   ].filter((id): id is string => typeof id === "string"))
-  return poc.filter(project => ids.has(project.projectId))
+  return poc.filter(project => ids.has(project.projectId)).flatMap((project): WipPeriodScope[] => project.contractIds.length > 1
+    ? project.contractIds.map(contractId => ({ projectId: project.projectId, contractId, status: project.status }))
+    : [{ projectId: project.projectId, contractId: null, status: project.status }])
 }

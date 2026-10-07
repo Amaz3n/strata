@@ -43,12 +43,15 @@ the set in step 1, each O as described there.
 | Payment reversal | O | — | Project tags; `payment_id` and `invoice_id` or `bill_id` (R) |
 | AP fee charge | — | — | None |
 | Labor | R | — | Project tags; `cost_type` "labor" (R), `cost_code_id` (O); with labor evidence `labor_job_cost_id`, `labor_time_entry_id`, `labor_worker_id`, `labor_basis_hash` |
-| Revenue recognition | R | — | `wip_snapshot_id`, `wip_inputs_hash`, `wip_as_of` (R); revenue lines add `contract_id` and `cost_code_id` (O). Project tags are not added |
+| Revenue recognition | R | — | `wip_snapshot_id`, `wip_inputs_hash`, `wip_as_of` (R); `contract_id` on every line when the project has several contracts (R), otherwise revenue lines add `contract_id` and `cost_code_id` (O). Project tags are not added |
+| Expected-loss provision | R | — | `expected_loss_provision`, `wip_snapshot_id`, `wip_inputs_hash` and the loss amounts (R); `contract_id` when the project has several contracts (R) |
 | Adjusting journal | set by the author | set by the author | None from the app (the action accepts no dimensions); services may set them |
 | Deposit batch | — | — | None |
 
-Several contracts on one project leave `contract_id` off its lines until
-contract-level ownership (B04.1) assigns each document its contract.
+Several contracts on one project leave `contract_id` off the project tags: an
+operational document's contract comes from its own record, not the project.
+Recognition and loss provisions are per contract and always carry it
+(`books-revenue-recognition.md`, "Per contract").
 
 ## Rules
 

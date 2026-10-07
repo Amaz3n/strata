@@ -996,6 +996,8 @@ export function postRevenueRecognition(
     periodKey: string;
     dimensions?: Record<string, unknown>;
     revenueLines?: InvoiceRevenueLine[];
+    /** Set when the project has several contracts: the position is this contract's. */
+    contractId?: string | null;
   },
 ) {
   assertIntegerCents(input.deltaCents, "Revenue recognition delta");
@@ -1008,12 +1010,13 @@ export function postRevenueRecognition(
     );
   if (!input.projectId)
     throw new Error("Revenue recognition requires a project");
+  const scoped = input.contractId ? { ...input, dimensions: { ...input.dimensions, contract_id: input.contractId } } : input;
   return complete({
     entryDate: input.date,
     entryKind: "poc",
     memo: input.memo,
     postingKey: buildPostingKey(
-      `revenue_recognition:${input.projectId}:${input.periodKey}`,
+      `revenue_recognition:${input.projectId}:${input.contractId ? `${input.contractId}:` : ""}${input.periodKey}`,
       input,
     ),
     projectionVersion: input.projectionVersion,
@@ -1021,11 +1024,11 @@ export function postRevenueRecognition(
     sourceType: "revenue_recognition",
     sourceId: input.id,
     lines: compactLines([
-      ...(input.deltaCents >= 0 ? [signedLine(SYSTEM_ACCOUNT_CODES.contractLiability, input.deltaCents, "debit", input)] : []),
+      ...(input.deltaCents >= 0 ? [signedLine(SYSTEM_ACCOUNT_CODES.contractLiability, input.deltaCents, "debit", scoped)] : []),
       ...revenueLines.map(allocation => signedLine(allocation.account_code, allocation.amount_cents, "credit", {
-        ...input, dimensions: { ...allocation.dimensions, ...input.dimensions },
+        ...scoped, dimensions: { ...allocation.dimensions, ...scoped.dimensions },
       })),
-      ...(input.deltaCents < 0 ? [signedLine(SYSTEM_ACCOUNT_CODES.contractLiability, input.deltaCents, "debit", input)] : []),
+      ...(input.deltaCents < 0 ? [signedLine(SYSTEM_ACCOUNT_CODES.contractLiability, input.deltaCents, "debit", scoped)] : []),
     ]),
   });
 }

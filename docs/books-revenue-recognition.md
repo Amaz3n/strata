@@ -96,6 +96,31 @@ After this entry, the 2350 balance for a project is `billings − earned`:
 a **credit** balance is billings in excess of earned revenue; a **debit** balance is
 costs and earnings in excess of billings. See §6b.
 
+#### Per contract (B04.1)
+
+A project with **two or more primary contracts in force** at a period end has one
+WIP position per contract, never one netted position for the job: one contract's
+profit must not hide another's loss. Each contract's position uses only its own
+costs, billings and estimate:
+
+- **Costs** belong to a contract when their cost code is on that contract's
+  schedule of values and no other's. A cost code on several contracts' schedules,
+  or on none, belongs to a contract only through a reviewed split
+  (`books_wip_cost_allocations`, append-only, shares in basis points; cents are
+  divided by cumulative rounding so the shares add back exactly).
+- **Billings** belong to the contract the invoice bills (its pay application,
+  draw, or a one-time assignment).
+- Anything without an owner blocks preparing the contracts it could belong to,
+  with the cure named; other contracts and projects are unaffected.
+
+Recognition, the 2350 debit and the expected-loss provision carry `contract_id`,
+the posting key names the contract, and the loss reserve is computed and held per
+contract. A project with one contract (or none) keeps one project position,
+unchanged. "In force" means signed (not draft or superseded), not an amendment of
+another contract, and effective by the period end — never the first row returned.
+Revenue a project recognized before it had a second contract belongs to no
+contract; recognition then refuses rather than counting it twice.
+
 ### 4d. Revenue is earned — closing basis
 A production spec home books revenue at the sale, with no percentage-of-completion:
 

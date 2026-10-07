@@ -1,6 +1,6 @@
 import { wipSourcesCurrent } from "@/lib/services/books/wip-source-evidence";
 import { loadPocPositionsAsOf } from "@/lib/services/poc";
-import { wipSnapshotEvidence, wipReviewMatches } from "@/lib/services/books/wip-period-rules";
+import { wipScopeKey, wipSnapshotEvidence, wipReviewMatches } from "@/lib/services/books/wip-period-rules";
 import "server-only";
 
 import { z } from "zod";
@@ -28,7 +28,7 @@ import { fiscalYearRangeEndingOn } from "@/lib/services/books/fiscal-calendar";
 import { postBooksJournalEntry } from "@/lib/services/books/ledger";
 import { postYearEndClose } from "@/lib/services/books/posting-rules";
 import { resolveProjectionVersion } from "@/lib/services/books/projector";
-import { loadPocProjectsForPeriod } from "@/lib/services/books/wip-project-scope";
+import { loadWipScopesForPeriod } from "@/lib/services/books/wip-project-scope";
 import { recognizeRevenueForPeriod } from "@/lib/services/books/revenue-recognition";
 import { runLedgerTieOuts } from "@/lib/services/books/verifier";
 import { TIE_OUT_ITEM_CATEGORIES } from "@/lib/services/books/reconciliation-rules";
@@ -297,7 +297,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle(),
-    loadPocProjectsForPeriod(context.orgId, period.period_end),
+    loadWipScopesForPeriod(context.orgId, period.period_end),
     loadPocPositionsAsOf({ orgId: context.orgId, asOf: period.period_end }),
     // Bills are loaded for the coding check only, and only the uncoded ones:
     // AR/AP balances come from the tie-outs.
@@ -455,7 +455,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
   // requiring a snapshot for it would block the period forever.
   const pocProjects = pocProjectBases;
   const missingPoc = pocProjects.filter(
-    (project) => latestPoc.get(project.projectId)?.asOf !== period.period_end,
+    (scope) => latestPoc.get(wipScopeKey(scope))?.asOf !== period.period_end,
   );
   const unmatched = bankTransactions.filter((transaction) => {
     const matches = Array.isArray(transaction.bank_transaction_matches)
@@ -473,7 +473,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
   if (clearingItem.error) throw new Error(`Failed to load clearing support: ${clearingItem.error.message}`);
   const clearingBalances = clearingPosition.balances;
   if (wipItem.error) throw new Error(`Failed to load WIP review: ${wipItem.error.message}`);
-  const currentWipEvidence = wipSnapshotEvidence(pocSnapshots, pocProjects.map(row => row.projectId));
+  const currentWipEvidence = wipSnapshotEvidence(pocSnapshots, pocProjects);
   const wipSourcesUnchanged = await wipSourcesCurrent(service, context.orgId, currentWipEvidence.map(row => row.snapshotId));
   const wipReviewed = pocProjects.length === 0 || (wipSourcesUnchanged && wipReviewMatches(wipItem.data?.support_review, currentWipEvidence));
   const clearingReview = clearingReviewSchema.safeParse(clearingItem.data?.support_review);
@@ -598,7 +598,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       status: missingPoc.length || !wipReviewed ? "failed" : "passed",
       issueCount: missingPoc.length || (wipReviewed ? 0 : 1),
       href: "/reports/wip-over-under",
-      evidence: { project_ids: missingPoc.map((row) => row.projectId), snapshots: currentWipEvidence, reviewed: wipReviewed, sources_current: wipSourcesUnchanged },
+      evidence: { project_ids: [...new Set(missingPoc.map((row) => row.projectId))], missing_scopes: missingPoc.map(({ projectId, contractId }) => ({ projectId, contractId })), snapshots: currentWipEvidence, reviewed: wipReviewed, sources_current: wipSourcesUnchanged },
     },
     {
       code: "job_cost_control",
@@ -824,11 +824,11 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
     blockingFailures: checks.filter(
       (check) => check.blocking && check.status === "failed",
     ),
-    // The projects this checklist proved a period-end position for. Revenue
-    // recognition runs over the same set, and the caller compares the two rather
-    // than letting a project quietly recognize against a substituted position.
-    pocProjectIds: pocProjects.map((project) => project.projectId),
-    pocSnapshotEvidence: wipSnapshotEvidence(pocSnapshots, pocProjects.map(project => project.projectId)),
+    // The projects (and contracts) this checklist proved a period-end position
+    // for. Revenue recognition runs over the same set, and the caller compares the
+    // two rather than letting a scope quietly recognize against a substituted position.
+    pocScopes: pocProjects.map(({ projectId, contractId }) => ({ projectId, contractId })),
+    pocSnapshotEvidence: wipSnapshotEvidence(pocSnapshots, pocProjects),
   };
 }
 
@@ -873,18 +873,18 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
     const recognition = await recognizeRevenueForPeriod(
       context.orgId,
       period.period_end,
-      checklist.pocProjectIds,
+      checklist.pocScopes,
       checklist.pocSnapshotEvidence,
     );
     // The checklist has just proved a period-end position exists for every project in
-    // `pocProjectIds`. If recognition could not find one anyway, the two disagree, and
+    // `pocScopes`. If recognition could not find one anyway, the two disagree, and
     // recognizing against whatever position it did find would silently substitute a
     // number nobody checked.
     const withoutPosition = recognition.results.filter(
       (row) =>
         !row.posted &&
         row.skippedReason !== "no_delta" &&
-        checklist.pocProjectIds.includes(row.projectId),
+        checklist.pocScopes.some((scope) => wipScopeKey(scope) === wipScopeKey(row)),
     );
     if (withoutPosition.length > 0) {
       throw new Error(

@@ -114,8 +114,8 @@ test("recognition service reclassifies unchanged earned totals and ignores unrel
       if (name === "@/lib/supabase/server") return { createServiceSupabaseClient: () => client }
       if (name === "@/lib/services/books/wip-source-evidence") return { wipSourcesCurrent: async () => true }
       if (name === "@/lib/services/books/ledger") return { postBooksJournalEntryForService: async draft => posted.push(draft) }
-      if (name === "@/lib/services/books/wip-project-scope") return { loadPocProjectsForPeriod: async () => [{ projectId: id(3) }] }
-      if (name === "@/lib/services/poc") return { loadPocPositionsAsOf: async () => new Map([[id(3), { asOf: "2026-09-30", snapshotId: id(50), inputsHash: "allocated-hash", earnedRevenueCents: 5000, warnings: [], revenueAllocations: weights }]]) }
+      if (name === "@/lib/services/books/wip-project-scope") return { loadWipScopesForPeriod: async () => [{ projectId: id(3), contractId: null }] }
+      if (name === "@/lib/services/poc") return { loadPocPositionsAsOf: async () => new Map([[id(3), { asOf: "2026-09-30", contractId: null, snapshotId: id(50), inputsHash: "allocated-hash", earnedRevenueCents: 5000, warnings: [], revenueAllocations: weights }]]) }
       if (name === "@/lib/services/events") return { recordEvent: async () => {} }
       if (name === "@/lib/services/reports/dates") return { todayIsoDateOnly: () => "2026-09-30" }
       return original.call(this, name, ...args)

@@ -11,7 +11,9 @@ import {
   prepareWipSnapshot,
   carryForwardWipSnapshot,
   allocateWipRevenue,
+  recordWipCostAllocation,
 } from "@/lib/services/books/wip-review";
+import { assignInvoiceContract } from "@/lib/services/invoices";
 import {
   getClearingSupportWorkspace,
   reviewClearingSupport,
@@ -1433,6 +1435,16 @@ export async function allocateWipRevenueAction(
   input: Parameters<typeof allocateWipRevenue>[0],
 ) {
   return run(() => allocateWipRevenue(input));
+}
+
+export async function recordWipCostAllocationAction(
+  input: Parameters<typeof recordWipCostAllocation>[0],
+) {
+  return run(() => recordWipCostAllocation(input));
+}
+
+export async function assignInvoiceContractAction(input: { invoiceId: string; contractId: string }) {
+  return run(() => assignInvoiceContract(z.object({ invoiceId: z.string().uuid(), contractId: z.string().uuid() }).parse(input)));
 }
 
 export async function prepareTaxWorkpaperAction(

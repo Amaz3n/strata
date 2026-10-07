@@ -1,6 +1,6 @@
 {
   "scenario": "WIP-01",
-  "reviewedFrom": "docs/books-revenue-recognition.md \u00a74a, \u00a74b, \u00a74c and the \u00a75 worked example (cost-to-cost percentage of completion). Expected balances are independent of the implementation; amounts are integer cents. Pending licensed-CPA review (B16.3).",
+  "reviewedFrom": "docs/books-revenue-recognition.md §4a, §4b, §4c and the §5 worked example (cost-to-cost percentage of completion). Expected balances are independent of the implementation; amounts are integer cents. Pending licensed-CPA review (B16.3).",
   "subcases": {
     "policy-worked-example": {
       "inputs": {
@@ -47,10 +47,124 @@
       "expectedGrossProfitCentsAfterAugust": 15000000
     },
     "second-contract-separately-owned": {
-      "status": "NOT_IMPLEMENTED"
+      "inputs": {
+        "period": "2026-07",
+        "a": {
+          "contractCents": 100000000,
+          "costCents": 20000000,
+          "eacCents": 80000000,
+          "billedCents": 30000000
+        },
+        "b": {
+          "contractCents": 20000000,
+          "costCents": 10000000,
+          "eacCents": 25000000,
+          "billedCents": 8000000
+        }
+      },
+      "derivation": "Contract A (fixed price, $1,000,000, EAC $800,000) has $200,000 of its own cost: 25% complete, $250,000 earned, billed $300,000 so $50,000 over-billed. Contract B (time and materials, $200,000, EAC $250,000) has $100,000 of its own cost: 40% complete, $80,000 earned, billed $80,000 so even. B is a loss contract: total expected loss $50,000, of which $20,000 is already incurred (cost $100,000 less earned $80,000), so the reserve is $30,000, on B alone. A's profit does not absorb B's loss. A single project-wide position is refused. Ledger: revenue $330,000 = A + B; job cost $300,000; loss provision $30,000; 2350 nets billings $380,000 against earned $330,000 = $50,000 credit. Live contract value is both contracts together ($1,200,000), not whichever row comes first.",
+      "expected": {
+        "projectScopeRefused": "This project has more than one contract; prepare WIP for each contract",
+        "reviewedPositions": [
+          "A",
+          "B"
+        ],
+        "revenueByContract": {
+          "A": 25000000,
+          "B": 8000000
+        },
+        "lossReserveByContract": {
+          "B": 3000000
+        },
+        "ledger": {
+          "revenue": 33000000,
+          "jobCost": 30000000,
+          "lossProvision": 3000000,
+          "contractLiabilities": -5000000
+        },
+        "reportRows": [
+          {
+            "contract": "A",
+            "earned": 25000000,
+            "billed": 30000000,
+            "overUnder": 5000000
+          },
+          {
+            "contract": "B",
+            "earned": 8000000,
+            "billed": 8000000,
+            "overUnder": 0
+          }
+        ],
+        "reportEarnedEqualsLedger": true,
+        "liveContractValue": 120000000
+      }
     },
     "shared-cost-allocation": {
-      "status": "NOT_IMPLEMENTED"
+      "inputs": {
+        "period": "2026-07",
+        "a": {
+          "contractCents": 100000000,
+          "costCents": 20000000,
+          "eacCents": 80000000,
+          "billedCents": 30000000
+        },
+        "b": {
+          "contractCents": 20000000,
+          "costCents": 10000000,
+          "eacCents": 18000000
+        },
+        "c": {
+          "contractCents": 10000000,
+          "costCents": 1000000,
+          "eacCents": 8000000
+        },
+        "sharedCents": 5000000,
+        "unassignedBilledCents": 4000000,
+        "firstSplit": [
+          {
+            "contract": "A",
+            "basisPoints": 6000
+          },
+          {
+            "contract": "B",
+            "basisPoints": 4000
+          }
+        ],
+        "secondSplit": [
+          {
+            "contract": "A",
+            "basisPoints": 5000
+          },
+          {
+            "contract": "B",
+            "basisPoints": 5000
+          }
+        ]
+      },
+      "derivation": "Three contracts. Cost code 01-500 (general conditions, $50,000) is on both A's and B's schedule of values, so its cost belongs to neither until a reviewed split; it blocks A and B, not C. Invoice SH-IU names no contract, so every contract's billings are uncertain and it blocks all three. A split that does not total 100% is refused. Assigning SH-IU to B succeeds once; a second assignment is refused. Splits are append-only. A 60/40 split is prepared and reviewed; a later 50/50 split changes the evidence, so close is refused until re-prepared and re-reviewed. Final costs: A $200,000 + $25,000 = $225,000; B $100,000 + $25,000 = $125,000; C $10,000 — together exactly the $385,000 incurred. Earned: A 225,000/800,000 × 1,000,000 = $281,250; B 125,000/180,000 × 200,000 = $138,888.888… → $138,888.89; C 10,000/80,000 × 100,000 = $12,500.",
+      "expected": {
+        "beforeCure": {
+          "A": "Failed to prepare WIP: Costs under 01-500 do not belong to one contract: put each code on one contract's schedule of values, or record how its costs are shared. Invoices SH-IU do not say which contract they bill: assign each to its contract.",
+          "B": "Failed to prepare WIP: Costs under 01-500 do not belong to one contract: put each code on one contract's schedule of values, or record how its costs are shared. Invoices SH-IU do not say which contract they bill: assign each to its contract.",
+          "C": "Failed to prepare WIP: Invoices SH-IU do not say which contract they bill: assign each to its contract."
+        },
+        "badSplit": "Failed to record the cost allocation: The shares must add up to 100%",
+        "assignedTwice": "This invoice already names the contract it bills",
+        "immutable": "refused",
+        "closeAfterNewSplit": "refused: WIP review out of date",
+        "costByContract": {
+          "A": 22500000,
+          "B": 12500000,
+          "C": 1000000
+        },
+        "costConserved": true,
+        "revenueByContract": {
+          "A": 28125000,
+          "B": 13888889,
+          "C": 1250000
+        }
+      }
     },
     "late-bill-after-review-blocks-close": {
       "inputs": {
@@ -94,7 +208,7 @@
         "2026-08": 35000000,
         "2026-09": 15000000
       },
-      "derivation": "earned-to-date = cost-to-date / EAC x contract; delta = earned-to-date - prior recognized (docs/books-revenue-recognition.md \u00a74c). 200k/800k=25% -> 250k; 600k/1,000k=60% -> 600k (delta 350k); 600k/800k=75% -> 750k (delta 150k)."
+      "derivation": "earned-to-date = cost-to-date / EAC x contract; delta = earned-to-date - prior recognized (docs/books-revenue-recognition.md §4c). 200k/800k=25% -> 250k; 600k/1,000k=60% -> 600k (delta 350k); 600k/800k=75% -> 750k (delta 150k)."
     },
     "completed-job-carryforward": {
       "inputs": {
@@ -117,10 +231,48 @@
         "2026-07": 100000000,
         "2026-08": 0
       },
-      "derivation": "cost-to-date equals EAC -> 100% complete -> full contract recognized; a carried-forward period with no activity recognizes nothing (\u00a74c: a run with nothing to recognize posts nothing)."
+      "derivation": "cost-to-date equals EAC -> 100% complete -> full contract recognized; a carried-forward period with no activity recognizes nothing (§4c: a run with nothing to recognize posts nothing)."
     },
     "wip-recognition-close-populations-agree": {
-      "status": "NOT_IMPLEMENTED"
+      "inputs": {
+        "periods": [
+          "2026-07",
+          "2026-08"
+        ],
+        "a": {
+          "contractCents": 100000000,
+          "eacCents": 80000000,
+          "julyCostCents": 20000000
+        },
+        "b": {
+          "contractCents": 20000000,
+          "eacCents": 16000000,
+          "julyCostCents": 4000000,
+          "effective": "2026-07-15"
+        },
+        "legacyEffective": "2026-08-10"
+      },
+      "derivation": "July is prepared and reviewed for the single-contract job. A second contract effective July 15 then changes July's population to two contracts, so the WIP check fails naming both and close is refused. Each contract is prepared and reviewed; close recognizes A 200,000/800,000 × 1,000,000 = $250,000 and B 40,000/160,000 × 200,000 = $50,000, every recognition line carrying its contract. A second job closes July as a single-contract project ($250,000 recognized with no contract), then gains a contract effective August 10; August close is refused because that revenue belongs to no contract and splitting it silently would recognize it twice.",
+      "expected": {
+        "afterNewContract": {
+          "status": "failed",
+          "missing": [
+            "A",
+            "B"
+          ]
+        },
+        "julyCloseBeforeReview": "refused: WIP review out of date",
+        "reviewedJuly": [
+          "A",
+          "B"
+        ],
+        "julyRevenue": {
+          "A": 25000000,
+          "B": 5000000
+        },
+        "projectScopedRecognition": 0,
+        "legacyClose": "Revenue on WIP-01 legacy revenue — custom home was recognized before it had more than one contract, so it belongs to no contract. Reclassify that revenue to its contracts before recognizing each contract's revenue."
+      }
     }
   }
 }

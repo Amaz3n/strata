@@ -4,7 +4,7 @@ const assert = require("node:assert/strict")
 const Module = require("node:module")
 const { database } = require("./helpers/report-database")
 
-test("close and recognition scope follows dated activity, not today's project lifecycle", async () => {
+test("close and recognition scope follows dated activity and contracts in force, not today's project lifecycle", async () => {
   const db = database({
     job_cost_entries: [
       { id: "cost", org_id: "org", project_id: "completed", status: "posted", incurred_on: "2026-09-30" },
@@ -26,7 +26,7 @@ test("close and recognition scope follows dated activity, not today's project li
     assert.equal(args.p_as_of, "2026-09-30")
     return { data: args.p_project_ids.filter(id => id === "completed"), error: null }
   }
-  const projects = ["completed", "future", "planning", "other-org", "closing", "cancelled", "deposit", "archived"].map(projectId => ({ projectId, status: projectId, basis: projectId === "closing" ? "closing" : "percentage_of_completion" }))
+  const projects = ["completed", "future", "planning", "other-org", "closing", "cancelled", "deposit", "archived"].map(projectId => ({ projectId, status: projectId, basis: projectId === "closing" ? "closing" : "percentage_of_completion", contractIds: projectId === "completed" ? ["c-1", "c-2"] : [] }))
   const original = Module._load
   let loadScope
   try {
@@ -39,9 +39,11 @@ test("close and recognition scope follows dated activity, not today's project li
       } }
       return original.call(this, name, ...args)
     }
-    loadScope = require("../lib/services/books/wip-project-scope").loadPocProjectsForPeriod
+    loadScope = require("../lib/services/books/wip-project-scope").loadWipScopesForPeriod
   } finally { Module._load = original }
-  assert.deepEqual((await loadScope("org", "2026-09-30")).map(row => row.projectId), ["completed", "cancelled", "archived"])
+  // A project with two contracts in force needs a position for each.
+  assert.deepEqual((await loadScope("org", "2026-09-30")).map(row => [row.projectId, row.contractId]),
+    [["completed", "c-1"], ["completed", "c-2"], ["cancelled", null], ["archived", null]])
 })
 
 test("projects with posted cost: posted (not voided) cost, on or before the date, this company only", async (t) => {

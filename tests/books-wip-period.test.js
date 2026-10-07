@@ -39,7 +39,7 @@ test("recognition preflights the entire period before any journal is posted", as
       if (name === "@/lib/supabase/server") return { createServiceSupabaseClient: () => client }
       if (name === "@/lib/services/books/wip-source-evidence") return { wipSourcesCurrent: async () => sourceEvidenceCurrent }
       if (name === "@/lib/services/books/ledger") return { postBooksJournalEntryForService: async draft => posted.push(draft) }
-      if (name === "@/lib/services/books/wip-project-scope") return { loadPocProjectsForPeriod: async () => ["exact", "stale", "missing"].map(projectId => ({ projectId, status: "active", basis: "percentage_of_completion" })) }
+      if (name === "@/lib/services/books/wip-project-scope") return { loadWipScopesForPeriod: async () => ["exact", "stale", "missing"].map(projectId => ({ projectId, contractId: null, status: "active" })) }
       if (name === "@/lib/services/poc") return { loadPocPositionsAsOf: async () => positions }
       if (name === "@/lib/services/events") return { recordEvent: async () => {} }
       if (name === "@/lib/services/reports/dates") return { todayIsoDateOnly: () => "2026-09-30" }
@@ -53,27 +53,28 @@ test("recognition preflights the entire period before any journal is posted", as
   assert.deepEqual(result.projectsWithoutSnapshot, ["stale", "missing"])
   assert.equal(posted.length, 0)
   assert.equal(result.results.find(row => row.projectId === "exact").skippedReason, "period_evidence_incomplete")
-  await assert.rejects(recognize("org", "2026-09-30", ["exact"]), /population changed/)
+  const scopes = ["exact", "stale", "missing"].map(projectId => ({ projectId, contractId: null }))
+  await assert.rejects(recognize("org", "2026-09-30", [scopes[0]]), /population changed/)
   await assert.rejects(recognize("org", "2026-10-31"), /future period/)
   assert.equal(posted.length, 0)
   positions.set("stale", { asOf: "2026-09-30", earnedRevenueCents: 0, warnings: [] })
   positions.set("missing", { asOf: "2026-09-30", earnedRevenueCents: 0, warnings: [] })
-  for (const [projectId, position] of positions) Object.assign(position, { projectId, snapshotId: `snapshot-${projectId}`, inputsHash: `hash-${projectId}` })
-  const reviewed = wipSnapshotEvidence(positions, ["exact", "stale", "missing"])
+  for (const [projectId, position] of positions) Object.assign(position, { projectId, contractId: null, snapshotId: `snapshot-${projectId}`, inputsHash: `hash-${projectId}` })
+  const reviewed = wipSnapshotEvidence(positions, scopes)
   positions.get("exact").snapshotId = "newer-snapshot-same-value"
-  await assert.rejects(recognize("org", "2026-09-30", ["exact", "stale", "missing"], reviewed), /snapshot evidence changed/)
+  await assert.rejects(recognize("org", "2026-09-30", scopes, reviewed), /snapshot evidence changed/)
   assert.equal(posted.length, 0)
   positions.get("exact").snapshotId = "snapshot-exact"
   sourceEvidenceCurrent = false
-  await assert.rejects(recognize("org", "2026-09-30", ["exact", "stale", "missing"], reviewed), /source evidence changed/)
+  await assert.rejects(recognize("org", "2026-09-30", scopes, reviewed), /source evidence changed/)
   assert.equal(posted.length, 0)
   sourceEvidenceCurrent = true
   positions.get("exact").warnings = ["missing_eac"]
-  const invalidEstimate = await recognize("org", "2026-09-30", ["exact", "stale", "missing"])
+  const invalidEstimate = await recognize("org", "2026-09-30", scopes)
   assert.equal(invalidEstimate.results.find(row => row.projectId === "exact").skippedReason, "invalid_wip_inputs")
   assert.equal(posted.length, 0)
   positions.get("exact").warnings = []
-  const ready = await recognize("org", "2026-09-30", ["exact", "stale", "missing"], reviewed)
+  const ready = await recognize("org", "2026-09-30", scopes, reviewed)
   assert.equal(ready.postedCents, 12500)
   assert.equal(posted.length, 1)
   assert.equal(posted[0].sourceId, "exact")
@@ -81,18 +82,22 @@ test("recognition preflights the entire period before any journal is posted", as
 })
 
 
-test("WIP review pins snapshot identity, inputs and earned amount with deterministic ordering", () => {
+test("WIP review pins snapshot identity, inputs and earned amount per project or contract, with deterministic ordering", () => {
   const rows = new Map([
-    ["b", { projectId: "b", snapshotId: "s-b", inputsHash: "h-b", asOf: "2026-09-30", earnedRevenueCents: 50, warnings: ["b", "a"] }],
-    ["a", { projectId: "a", snapshotId: "s-a", inputsHash: "h-a", asOf: "2026-09-30", earnedRevenueCents: 100, warnings: [] }],
+    ["b", { projectId: "b", contractId: null, snapshotId: "s-b", inputsHash: "h-b", asOf: "2026-09-30", earnedRevenueCents: 50, warnings: ["b", "a"] }],
+    ["a", { projectId: "a", contractId: null, snapshotId: "s-a", inputsHash: "h-a", asOf: "2026-09-30", earnedRevenueCents: 100, warnings: [] }],
+    // One project with two contracts has a position for each.
+    ["c:k2", { projectId: "c", contractId: "k2", snapshotId: "s-c2", inputsHash: "h-c2", asOf: "2026-09-30", earnedRevenueCents: 20, warnings: [] }],
+    ["c:k1", { projectId: "c", contractId: "k1", snapshotId: "s-c1", inputsHash: "h-c1", asOf: "2026-09-30", earnedRevenueCents: 10, warnings: [] }],
   ])
-  const pinned = wipSnapshotEvidence(rows, ["b", "a", "a"])
-  assert.deepEqual(pinned.map(row => row.projectId), ["a", "b"])
+  const scope = (projectId, contractId = null) => ({ projectId, contractId })
+  const pinned = wipSnapshotEvidence(rows, [scope("b"), scope("a"), scope("a"), scope("c", "k2"), scope("c", "k1")])
+  assert.deepEqual(pinned.map(row => [row.projectId, row.contractId]), [["a", null], ["b", null], ["c", "k1"], ["c", "k2"]])
   assert.deepEqual(pinned[1].warnings, ["a", "b"])
-  assert.doesNotThrow(() => assertReviewedWipUnchanged(pinned, wipSnapshotEvidence(rows, ["a", "b"])))
-  for (const field of ["snapshotId", "inputsHash", "earnedRevenueCents", "asOf"]) {
+  assert.doesNotThrow(() => assertReviewedWipUnchanged(pinned, wipSnapshotEvidence(rows, [scope("a"), scope("b"), scope("c", "k1"), scope("c", "k2")])))
+  for (const field of ["snapshotId", "inputsHash", "earnedRevenueCents", "asOf", "contractId"]) {
     const changed = structuredClone(pinned)
-    changed[0][field] = field === "earnedRevenueCents" ? 101 : "changed"
+    changed[2][field] = field === "earnedRevenueCents" ? 101 : "changed"
     assert.throws(() => assertReviewedWipUnchanged(pinned, changed), /evidence changed/)
   }
 })

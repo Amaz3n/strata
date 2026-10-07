@@ -1,6 +1,6 @@
 import { hasInvalidWipInputs } from "@/lib/financials/wip-validation"
 import { wipSourcesCurrent } from "@/lib/services/books/wip-source-evidence"
-import { assertReviewedWipUnchanged, wipSnapshotEvidence, type WipSnapshotEvidence, exactPeriodPosition, requireRecognitionDate } from "@/lib/services/books/wip-period-rules"
+import { assertReviewedWipUnchanged, wipScopeKey, wipSnapshotEvidence, type WipScope, type WipSnapshotEvidence, exactPeriodPosition, requireRecognitionDate } from "@/lib/services/books/wip-period-rules"
 import "server-only"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -9,7 +9,7 @@ import { pocRevenueAllocationDeltas } from "@/lib/services/books/poc-revenue-all
 import type { InvoiceRevenueLine } from "@/lib/services/books/invoice-revenue-rules"
 import { postBooksJournalEntryForService } from "@/lib/services/books/ledger"
 import { postRevenueRecognition } from "@/lib/services/books/posting-rules"
-import { loadPocProjectsForPeriod } from "@/lib/services/books/wip-project-scope"
+import { loadWipScopesForPeriod } from "@/lib/services/books/wip-project-scope"
 import { loadPocPositionsAsOf } from "@/lib/services/poc"
 import { recordEvent } from "@/lib/services/events"
 import { todayIsoDateOnly } from "@/lib/services/reports/dates"
@@ -45,6 +45,7 @@ export type RevenueRecognitionSkipReason =
 
 export type RevenueRecognitionResult = {
   projectId: string
+  contractId: string | null
   earnedRevenueCents: number
   recognizedBeforeCents: number
   deltaCents: number
@@ -101,15 +102,15 @@ async function loadRecognizedRevenueByProject(orgId: string, asOf: string) {
   return byProject
 }
 
-/** How many recognition entries this project already has for this period. */
-async function countPeriodRecognitions(orgId: string, projectId: string, periodKey: string) {
+/** How many recognition entries this project (or contract) already has for this period. */
+async function countPeriodRecognitions(orgId: string, scope: WipScope, periodKey: string) {
   const service = createServiceSupabaseClient()
   const { count, error } = await service
     .from("journal_entries")
     .select("id", { count: "exact", head: true })
     .eq("org_id", orgId)
     .eq("source_type", "revenue_recognition")
-    .like("posting_key", `revenue_recognition:${projectId}:${periodKey}:%`)
+    .like("posting_key", `revenue_recognition:${scope.projectId}:${scope.contractId ? `${scope.contractId}:` : ""}${periodKey}:%`)
   if (error) throw new Error(`Failed to count revenue recognitions: ${error.message}`)
   return count ?? 0
 }
@@ -130,17 +131,32 @@ async function resolveVersions(orgId: string) {
 }
 
 /**
- * Recognizes revenue for every percentage-of-completion project in the
- * organization as of `periodEnd` (an ISO date, normally a month end).
+ * Revenue already recognized for one WIP scope: every POC line of the project,
+ * or, for a contract, the lines carrying that contract. A project that earned
+ * revenue before it had a second contract has lines no contract owns; adding them
+ * to neither would earn them twice, so recognition refuses with the cure.
+ */
+function recognizedLinesForScope(lines: InvoiceRevenueLine[], scope: WipScope, projectName: string) {
+  if (!scope.contractId) return lines
+  if (lines.some(line => !line.dimensions?.contract_id)) {
+    throw new Error(`Revenue on ${projectName} was recognized before it had more than one contract, so it belongs to no contract. Reclassify that revenue to its contracts before recognizing each contract's revenue.`)
+  }
+  return lines.filter(line => line.dimensions?.contract_id === scope.contractId)
+}
+
+/**
+ * Recognizes revenue for every percentage-of-completion position — each project,
+ * or each contract of a project with several — as of `periodEnd` (an ISO date,
+ * normally a month end).
  *
  * Contract for `books/period-close.ts`: call this with the period's
  * `period_end`, AFTER the blocking checklist has passed — the `poc_snapshots`
- * gate is what guarantees every POC project has a snapshot on that
- * date. `projectsWithoutSnapshot` is non-empty only when that guarantee was not
- * met, and those projects recognized nothing; treat it as a close-blocking
- * condition rather than as information.
+ * gate is what guarantees every scope has a snapshot on that date.
+ * `projectsWithoutSnapshot` is non-empty only when that guarantee was not met,
+ * and those scopes recognized nothing; treat it as a close-blocking condition
+ * rather than as information.
  */
-export async function recognizeRevenueForPeriod(orgId: string, periodEnd: string, expectedProjectIds?: string[], reviewedSnapshots?: WipSnapshotEvidence[]) {
+export async function recognizeRevenueForPeriod(orgId: string, periodEnd: string, expectedScopes?: WipScope[], reviewedSnapshots?: WipSnapshotEvidence[]) {
   const { enabled, policyVersion, projectionVersion } = await resolveVersions(orgId)
   requireRecognitionDate(periodEnd, todayIsoDateOnly())
   const basis = "snapshot" as const
@@ -149,40 +165,47 @@ export async function recognizeRevenueForPeriod(orgId: string, periodEnd: string
   }
 
   const periodKey = periodKeyFor(periodEnd)
-  const [pocProjects, recognizedLinesByProject] = await Promise.all([
-    loadPocProjectsForPeriod(orgId, periodEnd),
+  const [scopes, recognizedLinesByProject] = await Promise.all([
+    loadWipScopesForPeriod(orgId, periodEnd),
     loadRecognizedRevenueByProject(orgId, periodEnd),
   ])
-  const recognizedByProject = new Map([...recognizedLinesByProject].map(([projectId, rows]) => {
-    const total = Number(rows.reduce((sum, row) => sum + BigInt(row.amount_cents), BigInt(0)))
-    if (!Number.isSafeInteger(total)) throw new Error("Recognized POC revenue exceeds safe integer cents")
-    return [projectId, total] as const
-  }))
-  if (expectedProjectIds) {
-    const expected = [...new Set(expectedProjectIds)].sort()
-    const actual = pocProjects.map(project => project.projectId).sort()
+  if (expectedScopes) {
+    const expected = [...new Set(expectedScopes.map(wipScopeKey))].sort()
+    const actual = scopes.map(wipScopeKey).sort()
     if (JSON.stringify(expected) !== JSON.stringify(actual)) throw new Error("WIP project population changed after close review; rerun the checklist")
   }
-  const snapshots = await loadPocPositionsAsOf({ orgId, projectIds: pocProjects.map((row) => row.projectId), asOf: periodEnd })
+  const projectIds = [...new Set(scopes.map(scope => scope.projectId))]
+  const [snapshots, projectNames] = await Promise.all([
+    loadPocPositionsAsOf({ orgId, projectIds, asOf: periodEnd }),
+    loadProjectNames(orgId, scopes.filter(scope => scope.contractId).map(scope => scope.projectId)),
+  ])
+  const recognizedLines = new Map(scopes.map(scope => [wipScopeKey(scope), recognizedLinesForScope(recognizedLinesByProject.get(scope.projectId) ?? [], scope, projectNames.get(scope.projectId) ?? "a project")] as const))
+  const recognizedBefore = (scope: WipScope) => {
+    const total = Number((recognizedLines.get(wipScopeKey(scope)) ?? []).reduce((sum, row) => sum + BigInt(row.amount_cents), BigInt(0)))
+    if (!Number.isSafeInteger(total)) throw new Error("Recognized POC revenue exceeds safe integer cents")
+    return total
+  }
 
-  if (reviewedSnapshots) assertReviewedWipUnchanged(reviewedSnapshots, wipSnapshotEvidence(snapshots, pocProjects.map(project => project.projectId)))
+  if (reviewedSnapshots) assertReviewedWipUnchanged(reviewedSnapshots, wipSnapshotEvidence(snapshots, scopes))
 
   const results: RevenueRecognitionResult[] = []
   const projectsWithoutSnapshot: string[] = []
-  // Validate every project's evidence before posting any project's delta. A
-  // missing position must not leave a partly recognized failed close attempt.
-  const invalid = pocProjects.filter(project => {
-    const position = exactPeriodPosition(snapshots.get(project.projectId), periodEnd)
+  const positionOf = (scope: WipScope) => exactPeriodPosition(snapshots.get(wipScopeKey(scope)), periodEnd)
+  // Validate every scope's evidence before posting any delta. A missing position
+  // must not leave a partly recognized failed close attempt.
+  const invalid = scopes.filter(scope => {
+    const position = positionOf(scope)
     return !position || hasInvalidWipInputs(position.warnings)
   })
   if (invalid.length) {
-    for (const project of pocProjects) {
-      const position = exactPeriodPosition(snapshots.get(project.projectId), periodEnd)
-      if (!position) projectsWithoutSnapshot.push(project.projectId)
+    for (const scope of scopes) {
+      const position = positionOf(scope)
+      if (!position) projectsWithoutSnapshot.push(scope.projectId)
       results.push({
-        projectId: project.projectId,
+        projectId: scope.projectId,
+        contractId: scope.contractId,
         earnedRevenueCents: position?.earnedRevenueCents ?? 0,
-        recognizedBeforeCents: recognizedByProject.get(project.projectId) ?? 0,
+        recognizedBeforeCents: recognizedBefore(scope),
         deltaCents: 0,
         posted: false,
         skippedReason: !position ? "no_snapshot" : position.warnings.includes("missing_contract_value") ? "missing_contract_value" : hasInvalidWipInputs(position.warnings) ? "invalid_wip_inputs" : "period_evidence_incomplete",
@@ -190,41 +213,37 @@ export async function recognizeRevenueForPeriod(orgId: string, periodEnd: string
     }
     return { periodEnd, basis, recognized: 0, postedCents: 0, projectsWithoutSnapshot, results }
   }
-  if (!await wipSourcesCurrent(createServiceSupabaseClient(), orgId, pocProjects.map(project => snapshots.get(project.projectId)!.snapshotId))) throw new Error("WIP source evidence changed; prepare and review the period again")
-  const allocationsByProject = new Map(pocProjects.map(project => {
-    const snapshot = snapshots.get(project.projectId)!
-    if (!Number.isSafeInteger(snapshot.earnedRevenueCents - (recognizedByProject.get(project.projectId) ?? 0))) throw new Error("POC revenue delta exceeds safe integer cents")
-    return [project.projectId, pocRevenueAllocationDeltas(snapshot.earnedRevenueCents, snapshot.revenueAllocations ?? [], recognizedLinesByProject.get(project.projectId) ?? [])] as const
+  const positions = new Map(scopes.map(scope => [wipScopeKey(scope), positionOf(scope)!] as const))
+  if (!await wipSourcesCurrent(createServiceSupabaseClient(), orgId, [...positions.values()].map(position => position.snapshotId))) throw new Error("WIP source evidence changed; prepare and review the period again")
+  const allocationsByScope = new Map(scopes.map(scope => {
+    const snapshot = positions.get(wipScopeKey(scope))!
+    if (!Number.isSafeInteger(snapshot.earnedRevenueCents - recognizedBefore(scope))) throw new Error("POC revenue delta exceeds safe integer cents")
+    return [wipScopeKey(scope), pocRevenueAllocationDeltas(snapshot.earnedRevenueCents, snapshot.revenueAllocations ?? [], recognizedLines.get(wipScopeKey(scope)) ?? [], scope.contractId)] as const
   }))
   let postedCents = 0
-  for (const project of pocProjects) {
-    const snapshot = exactPeriodPosition(snapshots.get(project.projectId), periodEnd)
-    if (!snapshot) {
-      projectsWithoutSnapshot.push(project.projectId)
-      results.push({ projectId: project.projectId, earnedRevenueCents: 0, recognizedBeforeCents: recognizedByProject.get(project.projectId) ?? 0, deltaCents: 0, posted: false, skippedReason: "no_snapshot" })
+  for (const scope of scopes) {
+    const snapshot = positions.get(wipScopeKey(scope))!
+    const recognizedBeforeCents = recognizedBefore(scope)
+    if (snapshot.warnings.includes("missing_contract_value")) {
+      results.push({ projectId: scope.projectId, contractId: scope.contractId, earnedRevenueCents: snapshot.earnedRevenueCents, recognizedBeforeCents, deltaCents: 0, posted: false, skippedReason: "missing_contract_value" })
       continue
     }
-    const position = { earnedRevenueCents: snapshot.earnedRevenueCents, warnings: snapshot.warnings }
-    if (position.warnings.includes("missing_contract_value")) {
-      results.push({ projectId: project.projectId, earnedRevenueCents: position.earnedRevenueCents, recognizedBeforeCents: recognizedByProject.get(project.projectId) ?? 0, deltaCents: 0, posted: false, skippedReason: "missing_contract_value" })
-      continue
-    }
-    const recognizedBeforeCents = recognizedByProject.get(project.projectId) ?? 0
-    const deltaCents = position.earnedRevenueCents - recognizedBeforeCents
-    const revenueLines = allocationsByProject.get(project.projectId)!
+    const deltaCents = snapshot.earnedRevenueCents - recognizedBeforeCents
+    const revenueLines = allocationsByScope.get(wipScopeKey(scope))!
     if (revenueLines.length === 0) {
-      results.push({ projectId: project.projectId, earnedRevenueCents: position.earnedRevenueCents, recognizedBeforeCents, deltaCents: 0, posted: false, skippedReason: "no_delta" })
+      results.push({ projectId: scope.projectId, contractId: scope.contractId, earnedRevenueCents: snapshot.earnedRevenueCents, recognizedBeforeCents, deltaCents: 0, posted: false, skippedReason: "no_delta" })
       continue
     }
-    const revision = (await countPeriodRecognitions(orgId, project.projectId, periodKey)) + 1
+    const revision = (await countPeriodRecognitions(orgId, scope, periodKey)) + 1
     const draft = postRevenueRecognition({
-      id: project.projectId,
+      id: scope.projectId,
       date: periodEnd,
       memo: `Percentage-of-completion revenue through ${periodEnd}`,
       projectionVersion,
       sourceVersion: revision,
       policyVersion,
-      projectId: project.projectId,
+      projectId: scope.projectId,
+      contractId: scope.contractId,
       deltaCents,
       revenueLines,
       periodKey,
@@ -232,7 +251,7 @@ export async function recognizeRevenueForPeriod(orgId: string, periodEnd: string
     })
     await postBooksJournalEntryForService(draft, orgId)
     postedCents += deltaCents
-    results.push({ projectId: project.projectId, earnedRevenueCents: position.earnedRevenueCents, recognizedBeforeCents, deltaCents, posted: true })
+    results.push({ projectId: scope.projectId, contractId: scope.contractId, earnedRevenueCents: snapshot.earnedRevenueCents, recognizedBeforeCents, deltaCents, posted: true })
   }
 
   const recognized = results.filter((row) => row.posted).length
@@ -246,4 +265,11 @@ export async function recognizeRevenueForPeriod(orgId: string, periodEnd: string
     })
   }
   return { periodEnd, basis, recognized, postedCents, projectsWithoutSnapshot, results }
+}
+
+async function loadProjectNames(orgId: string, projectIds: string[]) {
+  if (projectIds.length === 0) return new Map<string, string>()
+  const { data, error } = await createServiceSupabaseClient().from("projects").select("id, name").eq("org_id", orgId).in("id", [...new Set(projectIds)])
+  if (error) throw new Error(`Failed to load project names: ${error.message}`)
+  return new Map((data ?? []).map(row => [String(row.id), String(row.name)]))
 }

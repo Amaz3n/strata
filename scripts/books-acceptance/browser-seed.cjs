@@ -149,6 +149,22 @@ commit;`, "supabase_admin")
     org.periods.client = { periodId: client.id }
     return org
   },
+  // A job with two contracts: a cost code on both schedules of values and an
+  // invoice that names no contract, so neither contract's WIP can be prepared yet.
+  async "contract-wip"(kit, password) {
+    const { addContract, sovLine, billCode, invoiceFor } = require("./scenarios/wip-01.cjs").helpers
+    const org = await contractJob(kit, { name: "Browser acceptance — contract WIP", contractCents: 100000000, retainagePercent: 0, periods: ["2026-07"], password })
+    sovLine(kit, org, org.contractId, org.costCodeId, "Framing")
+    const site = addContract(kit, org, { title: "Site work", type: "fixed", cents: 20000000, code: "31-000", codeName: "Earthwork" })
+    const shared = require("node:crypto").randomUUID()
+    kit.sql(`insert into public.cost_codes(id,org_id,code,name) values(${kit.q(shared)},${kit.q(org.orgId)},'01-500','General conditions');`)
+    sovLine(kit, org, org.contractId, shared, "General conditions")
+    sovLine(kit, org, site.contractId, shared, "General conditions")
+    await billCode(kit, org, "2026-07", 20000000, "CW-A", org.costCodeId)
+    await billCode(kit, org, "2026-07", 5000000, "CW-GC", shared)
+    invoiceFor(kit, org, "2026-07", 4000000, "CW-IU", null)
+    return org
+  },
   // July's close died right after freezing the period, 31 minutes ago.
   async "abandoned-close"(kit, password) {
     const org = await greenfieldOrg(kit, { name: "Browser acceptance — abandoned close", periods: ["2026-07"], password })

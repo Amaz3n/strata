@@ -29,6 +29,24 @@ function contractSnapshot(billingContract: PocBillingContract): Record<string, u
     : {}
 }
 
+/**
+ * The contract a project's live POC position is measured against: its one
+ * primary contract in force, or, with several, their sum (each contract's own
+ * position is the Books period-end WIP). Callers pass `primaryContractsInForce`.
+ */
+export function projectBillingContract(primaries: ReadonlyArray<{ total_cents?: unknown; snapshot?: unknown }>): PocBillingContract {
+  if (primaries.length <= 1) return primaries[0] ?? null
+  let revised = 0
+  let original = 0
+  for (const contract of primaries) {
+    revised += resolveRevisedContractCents({ billingContract: contract, totalContractValueCents: null })
+    const snapshot = contractSnapshot(contract)
+    const explicit = centsValue(snapshot.original_total_cents) || centsValue(snapshot.base_contract_cents) || centsValue(snapshot.contract_sum_cents)
+    original = explicit > 0 && original >= 0 ? original + explicit : -1
+  }
+  return { total_cents: revised, snapshot: { revised_total_cents: revised, ...(original > 0 ? { original_total_cents: original } : {}) } }
+}
+
 export function resolveRevisedContractCents(input: {
   billingContract: PocBillingContract
   totalContractValueCents: number | null

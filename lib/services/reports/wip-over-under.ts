@@ -8,10 +8,14 @@ import { listProjects } from "@/lib/services/projects"
 import { getReportingExcludedProjectIds } from "@/lib/services/reporting-scope"
 import { todayIsoDateOnly } from "@/lib/services/reports/dates"
 import { computeProjectPoc, orderPocSnapshotsLatestFirst } from "@/lib/services/poc"
+import { primaryContractsInForce } from "@/lib/financials/project-revenue-basis"
+import { wipScopeKey } from "@/lib/services/books/wip-period-rules"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import type { ProjectPocWarning } from "@/lib/financials/poc-rules"
 import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
 import {
+  projectBillingContract,
+  type PocBillingContract,
   resolveEacCents,
   resolveOriginalContractCents,
   resolveRevisedContractCents,
@@ -32,6 +36,9 @@ export type WipBalanceStatus = "over_billed" | "under_billed" | "in_balance"
 export type WipOverUnderRow = {
   project_id: string
   project_name: string
+  /** Set on a job with more than one contract: the row is that contract's WIP. */
+  contract_id: string | null
+  contract_title: string | null
   project_status: string | null
   billing_model: WipBillingModel
   original_contract_cents: number
@@ -89,6 +96,7 @@ export type WipOverUnderReport = {
 
 type PocSnapshotRow = {
   project_id: string
+  contract_id: string | null
   as_of: string
   original_contract_cents: number | null
   approved_change_orders_cents: number | null
@@ -122,11 +130,20 @@ function marginPercent(profitCents: number, revenueCents: number): number | null
   return Math.round((profitCents / revenueCents) * 1000) / 10
 }
 
-function resolveBillingModel(project: Project): WipBillingModel {
+type ReportContract = { id: string; project_id: string; title: string | null; status: string; parent_contract_id: string | null; effective_date: string | null; total_cents: number | null; snapshot: unknown }
+
+function snapshotBillingModel(contract: { snapshot?: unknown } | null) {
+  const snapshot = contract?.snapshot
+  if (!snapshot || typeof snapshot !== "object") return undefined
+  const model = Reflect.get(snapshot, "billing_model")
+  return typeof model === "string" ? model : undefined
+}
+
+function resolveBillingModel(project: Project, contract: { snapshot?: unknown } | null): WipBillingModel {
   const settingsModel = (project.financial_settings as ProjectFinancialSettings | null | undefined)?.billing_model
   if (settingsModel) return settingsModel
 
-  const snapshotModel = project.billing_contract?.snapshot?.billing_model
+  const snapshotModel = snapshotBillingModel(contract)
   if (
     snapshotModel === "fixed_price" ||
     snapshotModel === "cost_plus_percent" ||
@@ -202,10 +219,12 @@ async function buildWipRow({
   project,
   orgId,
   rollups,
+  billingContract,
 }: {
   project: Project
   orgId: string
   rollups: Rollups
+  billingContract: PocBillingContract
 }): Promise<WipOverUnderRow> {
   // Load failures are the report's own concern; every *input* judgement belongs
   // to the shared rules, and `computeProjectPoc` owns the rest of the warnings —
@@ -214,11 +233,11 @@ async function buildWipRow({
   const extraWarnings: ProjectPocWarning[] = []
   const approvedChangeOrdersCents = rollups.approvedChangeOrdersByProject.get(project.id) ?? 0
   const revisedContractCents = resolveRevisedContractCents({
-    billingContract: project.billing_contract ?? null,
+    billingContract,
     totalContractValueCents: project.total_contract_value_cents ?? null,
   })
   const originalContractCents = resolveOriginalContractCents({
-    billingContract: project.billing_contract ?? null,
+    billingContract,
     revisedContractCents,
     approvedChangeOrdersCents,
   })
@@ -253,8 +272,10 @@ async function buildWipRow({
   return {
     project_id: project.id,
     project_name: project.name,
+    contract_id: null,
+    contract_title: null,
     project_status: project.status ?? null,
-    billing_model: resolveBillingModel(project),
+    billing_model: resolveBillingModel(project, billingContract),
     original_contract_cents: originalContractCents,
     approved_change_orders_cents: approvedChangeOrdersCents,
     revised_contract_cents: revisedContractCents,
@@ -307,7 +328,7 @@ async function loadSnapshotsAsOf({
       service
         .from("poc_snapshots")
         .select(
-          "project_id, as_of, original_contract_cents, approved_change_orders_cents, revised_contract_cents, cost_to_date_cents, eac_cents, percent_complete, earned_revenue_cents, billed_cents, over_under_cents, forecast_gross_profit_cents, warnings",
+          "project_id, contract_id, as_of, original_contract_cents, approved_change_orders_cents, revised_contract_cents, cost_to_date_cents, eac_cents, percent_complete, earned_revenue_cents, billed_cents, over_under_cents, forecast_gross_profit_cents, warnings",
         )
         .eq("org_id", orgId)
         .in("project_id", projectIds)
@@ -316,16 +337,16 @@ async function loadSnapshotsAsOf({
     if (error) throw new Error(`Failed to load POC snapshots: ${error.message}`)
     const rows = data ?? []
     for (const row of rows) {
-      // Ordered newest-first, so the first row seen for a project wins.
-      const projectId = row.project_id as string
-      if (!latest.has(projectId)) latest.set(projectId, row as PocSnapshotRow)
+      // Ordered newest-first, so the first row seen for a project (or contract) wins.
+      const key = wipScopeKey({ projectId: String(row.project_id), contractId: row.contract_id ? String(row.contract_id) : null })
+      if (!latest.has(key)) latest.set(key, row as PocSnapshotRow)
     }
     if (rows.length < pageSize) break
   }
   return latest
 }
 
-function snapshotRow(project: Project, snapshot: PocSnapshotRow): WipOverUnderRow {
+function snapshotRow(project: Project, snapshot: PocSnapshotRow, contract: ReportContract | null, modelContract: ReportContract | null): WipOverUnderRow {
   const revisedContractCents = numberValue(snapshot.revised_contract_cents)
   const eacCents = numberValue(snapshot.eac_cents)
   const actualCostCents = numberValue(snapshot.cost_to_date_cents)
@@ -334,8 +355,10 @@ function snapshotRow(project: Project, snapshot: PocSnapshotRow): WipOverUnderRo
   return {
     project_id: project.id,
     project_name: project.name,
+    contract_id: contract?.id ?? null,
+    contract_title: contract ? contract.title ?? "Contract" : null,
     project_status: project.status ?? null,
-    billing_model: resolveBillingModel(project),
+    billing_model: resolveBillingModel(project, modelContract),
     original_contract_cents: numberValue(snapshot.original_contract_cents),
     approved_change_orders_cents: numberValue(snapshot.approved_change_orders_cents),
     revised_contract_cents: revisedContractCents,
@@ -354,6 +377,21 @@ function snapshotRow(project: Project, snapshot: PocSnapshotRow): WipOverUnderRo
     balance_status: overUnderCents > 0 ? "over_billed" : overUnderCents < 0 ? "under_billed" : "in_balance",
     issues: Array.isArray(snapshot.warnings) ? snapshot.warnings.map(String) : [],
   }
+}
+
+/** Primary contracts of these projects, through the service client like the snapshots. */
+async function loadReportContracts(orgId: string, projectIds: string[]): Promise<ReportContract[]> {
+  if (projectIds.length === 0) return []
+  const service = createServiceSupabaseClient()
+  const rows: ReportContract[] = []
+  for (let start = 0; start < projectIds.length; start += 200) {
+    const { data, error } = await service.from("contracts")
+      .select("id, project_id, title, status, parent_contract_id, effective_date, total_cents, snapshot")
+      .eq("org_id", orgId).in("project_id", projectIds.slice(start, start + 200)).is("parent_contract_id", null).order("id")
+    if (error) throw new Error(`Failed to load project contracts: ${error.message}`)
+    rows.push(...(data ?? []))
+  }
+  return rows
 }
 
 /**
@@ -376,30 +414,30 @@ async function buildReportRows({
   asOf: string
   historical: boolean
 }): Promise<{ rows: WipOverUnderRow[]; missing: string[] }> {
+  const projectIds = projects.map((project) => project.id)
+  const contracts = await loadReportContracts(orgId, projectIds)
   if (historical) {
-    const snapshots = await loadSnapshotsAsOf({
-      orgId,
-      projectIds: projects.map((project) => project.id),
-      asOf,
-    })
+    const snapshots = await loadSnapshotsAsOf({ orgId, projectIds, asOf })
     const rows: WipOverUnderRow[] = []
     const missing: string[] = []
     for (const project of projects) {
-      const snapshot = snapshots.get(project.id)
-      if (!snapshot) missing.push(project.id)
-      else rows.push(snapshotRow(project, snapshot))
+      // A job with more than one contract in force reports each contract's WIP;
+      // netting them would hide one contract's loss inside another's profit.
+      const primaries = primaryContractsInForce(project.id, contracts, asOf)
+      const scopes = primaries.length > 1 ? primaries : [null]
+      for (const contract of scopes) {
+        const snapshot = snapshots.get(wipScopeKey({ projectId: project.id, contractId: contract?.id ?? null }))
+        if (!snapshot) { if (!missing.includes(project.id)) missing.push(project.id) }
+        else rows.push(snapshotRow(project, snapshot, contract, contract ?? primaries[0] ?? null))
+      }
     }
     return { rows, missing }
   }
 
-  const rollups = await loadRollups({
-    supabase,
-    orgId,
-    projectIds: projects.map((project) => project.id),
-  })
+  const rollups = await loadRollups({ supabase, orgId, projectIds })
   const rows: WipOverUnderRow[] = []
   for (const project of projects) {
-    rows.push(await buildWipRow({ project, orgId, rollups }))
+    rows.push(await buildWipRow({ project, orgId, rollups, billingContract: projectBillingContract(primaryContractsInForce(project.id, contracts, asOf)) }))
   }
   return { rows, missing: [] }
 }

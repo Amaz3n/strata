@@ -4608,8 +4608,8 @@
       "id": "B04.1",
       "workstream": "B04",
       "title": "Contract and performance-obligation ownership",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All B04.1 criteria verified locally (2026-10-07) by WIP-01 second-contract-separately-owned, shared-cost-allocation and wip-recognition-close-populations-agree plus the contract-wip journey. Migration 20261007120000_books_contract_wip_scope pending production with the deploy. Known limit: revenue a project recognized before it gained a second contract is refused with a reclassification cure; there is no in-app reclass of that revenue to contracts yet.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "two contracts on one project with different bases produce correct independent revenue/WIP/loss and sum to project/GL",
@@ -4645,18 +4645,71 @@
           "remaining_criteria": [],
           "external_dependency": null,
           "reviewer": null
+        },
+        {
+          "verified_at": "2026-10-07T12:58:30.294188+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261007120000_books_contract_wip_scope.sql",
+            "lib/financials/project-revenue-basis.ts",
+            "lib/financials/poc-inputs.ts",
+            "lib/services/poc.ts",
+            "lib/services/books/wip-period-rules.ts",
+            "lib/services/books/wip-project-scope.ts",
+            "lib/services/books/revenue-basis.ts",
+            "lib/services/books/revenue-recognition.ts",
+            "lib/services/books/poc-revenue-allocations.ts",
+            "lib/services/books/posting-rules.ts",
+            "lib/services/books/wip-review.ts",
+            "lib/services/books/period-close.ts",
+            "lib/services/invoices.ts",
+            "lib/services/reports/wip-over-under.ts",
+            "lib/services/reports/project-profitability.ts",
+            "components/books/wip-ownership.tsx",
+            "components/books/wip-review.tsx",
+            "components/books/wip-revenue-allocation.tsx",
+            "scripts/books-acceptance/scenarios/wip-01.cjs",
+            "scripts/books-acceptance/journeys/contract-wip.spec.ts",
+            "docs/books-revenue-recognition.md",
+            "docs/books-dimensions.md"
+          ],
+          "test_scenario_ids": [
+            "WIP-01"
+          ],
+          "commands": [
+            "scenario-runner WIP-01 and full regression",
+            "playwright contract-wip (desktop, mobile-dark) and all journeys",
+            "pnpm test:financials",
+            "node --test tests/books-wip-period.test.js tests/books-wip-project-scope.test.js tests/books-poc-revenue-allocations.test.js tests/books-revenue-basis.test.js tests/arc-books.test.js"
+          ],
+          "observed_results": [
+            "Two contracts, different bases (fixed price and time-and-materials) on one job: a project-wide position is refused; each contract is prepared and reviewed; A earns 250,000.00 (25%), B earns 80,000.00 (40%) and alone carries a 30,000.00 loss reserve (50,000.00 expected less 20,000.00 incurred), not netted against A's profit; revenue 330,000.00 = A + B = ledger 4000; the WIP report shows one row per contract (A over-billed 50,000.00, B even) and its earned total equals the ledger; live contract value is both contracts (1,200,000.00), not row order.",
+            "Shared cost: a cost code on two contracts' schedules blocks only those two (a third contract is blocked only by an invoice naming no contract), each with the cure; an unbalanced split is refused; an invoice is assigned to its contract once; splits are append-only (update refused); a new split after review refuses close until re-prepared and re-reviewed; final costs 225,000.00 / 125,000.00 / 10,000.00 add back to exactly the 360,000.00 incurred; earned 281,250.00 / 138,888.89 / 12,500.00.",
+            "Populations: a contract effective mid-July after July's review fails the WIP check naming both contracts and close is refused; after per-contract review the close recognizes 250,000.00 and 50,000.00 with every recognition line tagged; a job that recognized revenue before gaining a second contract is refused with the reclassification cure rather than double counting.",
+            "Project-scope evidence is byte-identical to before for all 498 existing prepared snapshots (old vs new function compared in one transaction).",
+            "Also fixed: the nightly WIP snapshot job and the project profitability report selected projects.billing_contract, which is not a column (production job_runs: forecast-snapshots failed 81/81 projects daily); both now resolve the contract from the primary contracts in force.",
+            "Regression: WIP-01 (7/7), HIST-01, DIM-01, CAP-01, BILL-01, YEAR-01, BANK-01, STATUS-01 pass; CLOSE-01, RACE-01 pass every implemented subcase; test:financials 2734 pass / 0 fail; all browser journeys pass."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-07-contract-wip/BANK-01.json sha256:aaf45829fa275e5ce5527ea1db4a621c53d57f42925239c6bc12e8adf1929a61",
+            "docs/books-evidence/2026-10-07-contract-wip/BILL-01.json sha256:c107a6469e31c3ca089c0a7408878f1ce63381abf4d04cda87a8178d876c9a0f",
+            "docs/books-evidence/2026-10-07-contract-wip/CAP-01.json sha256:52bb7ec1d2e6d4a0f1f230183367d83b39acfccf948ef124c47cb54ae343942f",
+            "docs/books-evidence/2026-10-07-contract-wip/CLOSE-01.json sha256:4b54fd1ccbcf50313d15648a4c686a9617d77c4659a6e2d91120d09d1f73468c",
+            "docs/books-evidence/2026-10-07-contract-wip/DIM-01.json sha256:27be3c45239abb446090e094a8a2dbc1b654fd665b8002253c67aa891b4855f4",
+            "docs/books-evidence/2026-10-07-contract-wip/HIST-01.json sha256:122347f7d5971d9ffb3e7a3d9f6450e797f851d65d16e0ee169e82965f0f42d6",
+            "docs/books-evidence/2026-10-07-contract-wip/RACE-01.json sha256:8755b209f704d88cbcad9c0a6cf9ccd07a490efce846e0e7577d361492fb11ad",
+            "docs/books-evidence/2026-10-07-contract-wip/STATUS-01.json sha256:5d29fe45fd52509998507d6bbf1b3d7874b4230a57afcc12360a74eaa955aa55",
+            "docs/books-evidence/2026-10-07-contract-wip/WIP-01.json sha256:6687db4ce0a56fda0e290ad4ae54f0060e9e1297a7d13019ff1a4cca69403307",
+            "docs/books-evidence/2026-10-07-contract-wip/YEAR-01.json sha256:810ca53991f84021cfad8a446cf376eed4c827d0f73ea5c651a0689bf2ddbe94",
+            "docs/books-evidence/2026-10-07-contract-wip/journey-desktop-ownership.png sha256:8d41df58fdeeef45531540f7cc127b3861c1e535ea5c5670405d39b80df4677a",
+            "docs/books-evidence/2026-10-07-contract-wip/journey-desktop-ready-to-prepare.png sha256:45f36c05c067c577b0c93dfbf241dc8ee4747ed5440e89f6464a3baad5660aa4",
+            "docs/books-evidence/2026-10-07-contract-wip/journey-mobile-dark-ownership.png sha256:b04b3fbd0aecb9d951ccf5a1a86416820933f363692942c41083eedfc3f547f1"
+          ]
         }
       ],
-      "remaining_criteria": [
-        "two contracts on one project with different bases produce correct independent revenue/WIP/loss and sum to project/GL",
-        "shared costs require reviewed allocation",
-        "missing ownership blocks only affected scopes with a cure",
-        "no contract is selected by row order",
-        "policy and accounting-cutoff evidence remain immutable"
-      ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-07T12:58:30.294188+00:00"
     },
     {
       "id": "B04.2",

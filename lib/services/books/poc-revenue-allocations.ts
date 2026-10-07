@@ -20,13 +20,15 @@ export function pocRevenueAllocationDeltas(
   earnedCents: number,
   allocations: PocRevenueAllocation[],
   recognized: InvoiceRevenueLine[],
+  /** A contract-scoped position earns into its contract's bucket by default. */
+  contractId: string | null = null,
 ): InvoiceRevenueLine[] {
   if (!Number.isSafeInteger(earnedCents) || earnedCents < 0) throw new Error("POC earned revenue must be nonnegative safe integer cents")
   const weights = allocations.length ? z.array(pocRevenueAllocationSchema).parse(allocations).map(row => ({
     account_code: row.account_code,
     amount_cents: row.contract_cents,
     dimensions: { ...(row.contract_id ? { contract_id: row.contract_id } : {}), ...(row.cost_code_id ? { cost_code_id: row.cost_code_id } : {}) },
-  })) : [{ account_code: SYSTEM_ACCOUNT_CODES.constructionRevenue, amount_cents: 1 }]
+  })) : [{ account_code: SYSTEM_ACCOUNT_CODES.constructionRevenue, amount_cents: 1, ...(contractId ? { dimensions: { contract_id: contractId } } : {}) }]
   const target = allocateInvoiceRevenue(earnedCents, weights)
   const amounts = new Map<string, { line: InvoiceRevenueLine; cents: bigint }>()
   for (const [rows, sign] of [[target, BigInt(1)], [recognized, BigInt(-1)]] as const) {

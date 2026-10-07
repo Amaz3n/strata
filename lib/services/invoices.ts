@@ -2435,6 +2435,30 @@ export async function recordInvoiceVoidDate({ invoiceId, voidedOn, basis, orgId 
   return { invoiceId, projectId: existing.project_id as string | null, voidedOn }
 }
 
+/**
+ * Records which contract an invoice bills, for a project with more than one.
+ * Pay applications and draws already name theirs; an invoice raised outside them
+ * is assigned once, and an invoice that names its contract keeps it.
+ */
+export async function assignInvoiceContract({ invoiceId, contractId, orgId }: { invoiceId: string; contractId: string; orgId?: string }) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const { data: existing, error } = await supabase
+    .from("invoices")
+    .select("id, org_id, project_id, invoice_number, metadata")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", invoiceId)
+    .maybeSingle()
+  if (error || !existing) throw new Error(error?.message ?? "Invoice not found")
+  await requireInvoicePermission({ supabase, orgId: resolvedOrgId, userId, permission: "invoice.write", projectId: existing.project_id, invoiceId })
+  const { error: assignError } = await createServiceSupabaseClient().rpc("assign_books_invoice_contract", {
+    p_org_id: resolvedOrgId, p_invoice_id: invoiceId, p_contract_id: contractId, p_actor_id: userId,
+  })
+  if (assignError) throw new Error(assignError.message)
+  await recordEvent({ orgId: resolvedOrgId, eventType: "invoice_contract_assigned", entityType: "invoice", entityId: invoiceId, payload: { invoice_number: existing.invoice_number, project_id: existing.project_id, contract_id: contractId } })
+  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "invoice", entityId: invoiceId, before: { contract_id: null }, after: { contract_id: contractId } })
+  return { invoiceId, contractId, projectId: existing.project_id as string | null }
+}
+
 export async function deleteInvoice({ invoiceId, orgId }: { invoiceId: string; orgId?: string }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const { data: existing, error } = await supabase

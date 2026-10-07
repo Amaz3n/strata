@@ -80,7 +80,8 @@ test("paged revenue basis reads every primary contract and applies the accountin
     }
     load = require("../lib/services/books/revenue-basis").loadProjectRevenueBases
   } finally { Module._load = original }
-  assert.deepEqual(await load("org", "2026-09-30"), [{ projectId: "project", status: "active", basis: "closing" }])
+  // The one contract in force by the cutoff; later and draft contracts are not.
+  assert.deepEqual(await load("org", "2026-09-30"), [{ projectId: "project", status: "active", basis: "closing", contractIds: ["contract"] }])
   assert.deepEqual(pages, [0, 500, 1000])
   await assert.rejects(load("org", "2026-10-31"), /conflicting primary contract/)
 })

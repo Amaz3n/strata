@@ -22,12 +22,13 @@ export function WipRevenueAllocation({ periodId, detail, workspace, onSaved }: {
   const [note, setNote] = useState("")
   const [rows, setRows] = useState<AllocationRow[]>(() => detail.revenueAllocations.length
     ? detail.revenueAllocations.map((row, index) => ({ key: String(index), accountId: row.account_id, contractId: row.contract_id ?? "", costCodeId: row.cost_code_id ?? "", amount: moneyInput(row.contract_cents) }))
-    : [{ key: "default", accountId: workspace.incomeAccounts.find(row => row.code === "4000")?.id ?? "", contractId: "", costCodeId: "", amount: moneyInput(detail.revised_contract_cents) }])
+    : [{ key: "default", accountId: workspace.incomeAccounts.find(row => row.code === "4000")?.id ?? "", contractId: detail.contract_id ?? "", costCodeId: "", amount: moneyInput(detail.revised_contract_cents) }])
   const parsed = rows.map(row => ({ account_id: row.accountId, contract_cents: parseMoneyToCents(row.amount), contract_id: row.contractId || null, cost_code_id: row.costCodeId || null }))
   const valid = parsed.every(row => row.account_id && row.contract_cents != null && row.contract_cents > 0) &&
     parsed.reduce((sum, row) => sum + BigInt(row.contract_cents ?? 0), BigInt(0)) === BigInt(detail.revised_contract_cents)
   function update(key: string, patch: Partial<AllocationRow>) { setRows(current => current.map(row => row.key === key ? { ...row, ...patch } : row)) }
-  const contracts = workspace.contracts.filter(row => row.project_id === detail.project_id)
+  // A contract's own position allocates only within that contract.
+  const contracts = workspace.contracts.filter(row => row.project_id === detail.project_id && (!detail.contract_id || row.id === detail.contract_id))
   return <div className="space-y-2 border-t pt-3">
     <p className="text-sm font-medium">Earned revenue allocation</p>
     {detail.revenueAllocationRequired && <p role="alert" className="text-sm text-destructive">Contract value changed. Allocate the revised value before this snapshot can be approved or posted.</p>}
@@ -47,11 +48,11 @@ export function WipRevenueAllocation({ periodId, detail, workspace, onSaved }: {
           <legend className="px-1 text-sm">Allocation {index + 1}</legend>
           <div><Label htmlFor={`${prefix}-${row.key}-account`}>Income account</Label><select id={`${prefix}-${row.key}-account`} className="w-full rounded-md border bg-background p-2 text-sm" value={row.accountId} onChange={event => update(row.key, { accountId: event.target.value })}><option value="">Choose an account</option>{workspace.incomeAccounts.map(account => <option key={account.id} value={account.id}>{account.code} · {account.name}</option>)}</select></div>
           <div><Label htmlFor={`${prefix}-${row.key}-amount`}>Contract amount ($)</Label><Input id={`${prefix}-${row.key}-amount`} value={row.amount} inputMode="decimal" onChange={event => update(row.key, { amount: event.target.value })} /></div>
-          <div><Label htmlFor={`${prefix}-${row.key}-contract`}>Contract dimension</Label><select id={`${prefix}-${row.key}-contract`} className="w-full rounded-md border bg-background p-2 text-sm" value={row.contractId} onChange={event => update(row.key, { contractId: event.target.value })}><option value="">Project only</option>{contracts.map(contract => <option key={contract.id} value={contract.id}>{contract.title}</option>)}</select></div>
+          <div><Label htmlFor={`${prefix}-${row.key}-contract`}>Contract dimension</Label><select id={`${prefix}-${row.key}-contract`} className="w-full rounded-md border bg-background p-2 text-sm" value={row.contractId} onChange={event => update(row.key, { contractId: event.target.value })}>{!detail.contract_id && <option value="">Project only</option>}{contracts.map(contract => <option key={contract.id} value={contract.id}>{contract.title}</option>)}</select></div>
           <div><Label htmlFor={`${prefix}-${row.key}-code`}>Cost code dimension</Label><select id={`${prefix}-${row.key}-code`} className="w-full rounded-md border bg-background p-2 text-sm" value={row.costCodeId} onChange={event => update(row.key, { costCodeId: event.target.value })}><option value="">No cost code</option>{workspace.costCodes.map(code => <option key={code.id} value={code.id}>{code.code} · {code.name}</option>)}</select></div>
           {rows.length > 1 && <Button size="sm" variant="ghost" onClick={() => setRows(current => current.filter(item => item.key !== row.key))}>Remove allocation {index + 1}</Button>}
         </fieldset>)}
-        <Button size="sm" variant="outline" disabled={pending || rows.length >= 100} onClick={() => setRows(current => [...current, { key: crypto.randomUUID(), accountId: "", contractId: "", costCodeId: "", amount: "" }])}>Add allocation</Button>
+        <Button size="sm" variant="outline" disabled={pending || rows.length >= 100} onClick={() => setRows(current => [...current, { key: crypto.randomUUID(), accountId: "", contractId: detail.contract_id ?? "", costCodeId: "", amount: "" }])}>Add allocation</Button>
         {!valid && <p className="text-sm text-muted-foreground">Choose income accounts and positive amounts totaling the revised contract value.</p>}
         <div><Label htmlFor={`${prefix}-note`}>Allocation explanation</Label><Textarea id={`${prefix}-note`} maxLength={4000} value={note} onChange={event => setNote(event.target.value)} /></div>
         <Button size="sm" disabled={pending || !valid || note.trim().length < 10} onClick={() => startTransition(async () => {

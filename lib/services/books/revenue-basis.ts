@@ -1,7 +1,7 @@
 import "server-only"
 
 import { type RevenueRecognitionBasis } from "@/lib/financials/billing-model"
-import { resolveProjectRevenueBasis } from "@/lib/financials/project-revenue-basis"
+import { primaryContractsInForce, resolveProjectRevenueBasis } from "@/lib/financials/project-revenue-basis"
 import { todayIsoDateOnly } from "@/lib/services/reports/dates"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
@@ -26,6 +26,8 @@ export type ProjectRevenueBasis = {
   projectId: string
   status: string | null
   basis: RevenueRecognitionBasis
+  /** Primary contracts in force on the date; two or more means WIP per contract. */
+  contractIds: string[]
 }
 
 /**
@@ -81,6 +83,7 @@ export async function loadProjectRevenueBases(orgId: string, asOf = todayIsoDate
       projectId,
       status: project.status ? String(project.status) : null,
       basis,
+      contractIds: primaryContractsInForce(projectId, contractsByProject.get(projectId) ?? [], asOf).map(contract => contract.id),
     }
   })
 }

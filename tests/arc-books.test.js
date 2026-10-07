@@ -3729,17 +3729,17 @@ test("revenue recognition is as-of, and names the projects it could not answer f
   );
   assert.match(
     recognition,
-    /loadPocPositionsAsOf\(\{ orgId, projectIds: pocProjects\.map\(\(row\) => row\.projectId\), asOf: periodEnd \}\)/,
+    /loadPocPositionsAsOf\(\{ orgId, projectIds, asOf: periodEnd \}\)/,
   );
   // Posting uses period-end evidence even when the period ends today.
   assert.doesNotMatch(recognition, /computeProjectPocForProject/);
-  assert.match(recognition, /exactPeriodPosition\(snapshots.get\(project.projectId\), periodEnd\)/);
+  assert.match(recognition, /exactPeriodPosition\(snapshots.get\(wipScopeKey\(scope\)\), periodEnd\)/);
   // A project with no snapshot is named, not given today's position.
   assert.match(
     recognition,
-    /projectsWithoutSnapshot\.push\(project\.projectId\)/,
+    /projectsWithoutSnapshot\.push\(scope\.projectId\)/,
   );
-  assert.match(recognition, /skippedReason: "no_snapshot"/);
+  assert.match(recognition, /skippedReason: !position \? "no_snapshot"/);
   assert.match(
     recognition,
     /return \{ periodEnd, basis, recognized, postedCents, projectsWithoutSnapshot, results \}/,
@@ -4364,9 +4364,9 @@ test("a refused close leaves no journal entries behind, and posts under resolved
   // than recognizing against a substituted one.
   assert.match(
     close,
-    /recognizeRevenueForPeriod\(\s*context\.orgId,\s*period\.period_end,\s*checklist\.pocProjectIds,\s*checklist\.pocSnapshotEvidence,?\s*\)/,
+    /recognizeRevenueForPeriod\(\s*context\.orgId,\s*period\.period_end,\s*checklist\.pocScopes,\s*checklist\.pocSnapshotEvidence,?\s*\)/,
   );
-  assert.match(close, /checklist\.pocProjectIds\.includes\(row\.projectId\)/);
+  assert.match(close, /checklist\.pocScopes\.some\(\(scope\) => wipScopeKey\(scope\) === wipScopeKey\(row\)\)/);
 
   // The year-end closing entry resolves its versions like every other posting; a
   // hardcoded 1 cannot be re-derived by a re-projection under a new version.
