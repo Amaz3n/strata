@@ -497,4 +497,4 @@ module.exports = {
   },
 }
 
-module.exports.helpers = { bill, invoice, prepareAndReview, addContract, sovLine, billCode, invoiceFor }
+module.exports.helpers = { bill, invoice, prepareAndReview, addContract, sovLine, billCode, invoiceFor, prepareContract, reviewAll, byContract, close }

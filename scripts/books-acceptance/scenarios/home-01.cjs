@@ -31,10 +31,10 @@ function reliefByComponent(kit, org, projectId) {
 
 // A builder with one community, a development job holding shared site cost,
 // and homes each on its own lot under a purchase agreement with a buyer.
-async function builder(kit, name, homes) {
+async function builder(kit, name, homes, password) {
   const { q } = kit
   const ids = { communityId: randomUUID(), vendorId: randomUUID(), costCodeId: randomUUID(), developmentId: randomUUID(), developmentLotIds: [randomUUID(), randomUUID(), randomUUID()] }
-  const org = await greenfieldOrg(kit, { name, periods: ["2026-06", "2026-07", "2026-08"], setup: (org) => {
+  const org = await greenfieldOrg(kit, { name, password, periods: ["2026-06", "2026-07", "2026-08"], setup: (org) => {
     Object.assign(org, ids, { homes: homes.map((home, index) => ({ ...home, projectId: randomUUID(), lotId: randomUUID(), buyerId: randomUUID(), contractId: randomUUID(), lotNumber: String(index + 1) })) })
     kit.sql(`begin;
 insert into public.communities(id,org_id,name) values(${q(org.communityId)},${q(org.orgId)},'Cedar Ridge');
@@ -286,3 +286,4 @@ module.exports = {
     "closing-reversal": closingReversal,
   },
 }
+module.exports.helpers = { builder, bill, landAndStart, capitalizedInterest, settle, balances, reliefByComponent }

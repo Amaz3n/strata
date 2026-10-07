@@ -183,6 +183,17 @@ commit;`)
     kit.sql(`update public.contracts set contract_type='purchase_agreement' where id=${q(jobs[2].contractId)};`)
     return org
   },
+  // A completed home the builder owns that cost $265,000.
+  async "home-impairment"(kit, password) {
+    const home = require("./scenarios/home-01.cjs").helpers
+    const org = await home.builder(kit, "Browser acceptance — home impairment", [{ name: "Lot 3 — Cedar plan", priceCents: 26000000 }], password)
+    const lot = org.homes[0]
+    await home.landAndStart(kit, org, lot, { date: "2026-06-02", startDate: "2026-06-03", cents: 6000000 })
+    await home.bill(kit, org, lot.projectId, "2026-06-10", 20500000)
+    await kit.as(org.owner, () => app("books/inventory").completeProjectInventory({ projectId: lot.projectId, date: "2026-07-01", evidenceUrl: "https://evidence.acceptance.example.test/completion" }))
+    org.periods.home = { periodId: lot.projectId }
+    return org
+  },
   // Two jobs and a $1,000.01 insurance premium on no job, waiting to be allocated.
   async "cost-allocations"(kit, password) {
     const org = await greenfieldOrg(kit, { name: "Browser acceptance — cost allocations", periods: ["2026-07"], password })

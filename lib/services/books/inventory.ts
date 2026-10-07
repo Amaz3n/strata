@@ -8,6 +8,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { requireBooksAuthorization } from "@/lib/services/books/access"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
+import { authorize } from "@/lib/services/authorization"
 
 export async function loadInventoryPolicies(orgId: string) {
   const service = createServiceSupabaseClient()
@@ -145,4 +146,116 @@ export async function getInventoryAllocationWorkspace() {
   return { userId: context.userId, pending: (proposals ?? []).map(row => ({ id: String(row.id), projectId: String(row.project_id), reference: String(row.reference), basis: String(row.basis), totalCents: Number(row.total_cents), note: String(row.note), preparedBy: String(row.prepared_by),
     shares: z.array(z.object({ lot_id: z.string(), amount_cents: z.number() })).parse(row.shares).map(share => ({ lot: lotName.get(share.lot_id) ?? "Lot", cents: share.amount_cents })) })),
     lots: lots.map(row => ({ id: row.id, name: `Lot ${row.lot_number}` })), interest: interest.map(row => { const entry = Array.isArray(row.entry) ? row.entry[0] : row.entry; return { id: row.id, amountCents: Number(row.debit_cents), label: `${entry?.entry_date} · ${row.description ?? "Interest expense"}` } }) }
+}
+
+const impairmentSchema = z.object({
+  projectId: z.string().uuid(), asOf: z.string().date(),
+  sellingPriceCents: z.number().int().safe().nonnegative(), costToCompleteCents: z.number().int().safe().nonnegative(), costToSellCents: z.number().int().safe().nonnegative(),
+  evidenceUrl: z.string().url().startsWith("https://"), assumptions: z.string().trim().min(10).max(4000),
+})
+const impairmentRowSchema = z.object({
+  id: z.string().uuid(), as_of: z.string(), carrying_cents: z.number(), selling_price_cents: z.number(), cost_to_complete_cents: z.number(), cost_to_sell_cents: z.number(),
+  net_realizable_cents: z.number(), write_down_cents: z.number(), evidence_url: z.string(), assumptions: z.string(), status: z.enum(["proposed", "approved", "rejected"]),
+  prepared_by: z.string().uuid(), reviewed_by: z.string().uuid().nullable(), reviewed_at: z.string().nullable(), review_note: z.string().nullable(),
+})
+
+/** A home's impairment reviews, newest first, with what it carries today. */
+export async function getInventoryImpairmentWorkspace(projectId: string) {
+  const parsedId = z.string().uuid().parse(projectId)
+  const context = await inventoryContext("books.adjust")
+  const service = createServiceSupabaseClient()
+  const [carrying, reviews] = await Promise.all([
+    service.rpc("books_home_carrying_cents", { p_org_id: context.orgId, p_project_id: parsedId, p_as_of: new Date().toISOString().slice(0, 10) }),
+    service.from("books_inventory_impairments").select("id,as_of,carrying_cents,selling_price_cents,cost_to_complete_cents,cost_to_sell_cents,net_realizable_cents,write_down_cents,evidence_url,assumptions,status,prepared_by,reviewed_by,reviewed_at,review_note")
+      .eq("org_id", context.orgId).eq("project_id", parsedId).order("prepared_at", { ascending: false }).limit(50),
+  ])
+  if (carrying.error) throw new Error(`Failed to read the home's cost: ${carrying.error.message}`)
+  if (reviews.error) throw new Error(`Failed to load impairment reviews: ${reviews.error.message}`)
+  const rows = z.array(impairmentRowSchema).parse(reviews.data ?? [])
+  return { userId: context.userId, carryingCents: Number(carrying.data ?? 0), reviews: rows.map(row => ({
+    id: row.id, asOf: row.as_of, carryingCents: row.carrying_cents, sellingPriceCents: row.selling_price_cents, costToCompleteCents: row.cost_to_complete_cents, costToSellCents: row.cost_to_sell_cents,
+    netRealizableCents: row.net_realizable_cents, writeDownCents: row.write_down_cents, evidenceUrl: row.evidence_url, assumptions: row.assumptions, status: row.status,
+    preparedBy: row.prepared_by, reviewedAt: row.reviewed_at, reviewNote: row.review_note })) }
+}
+
+/**
+ * Prepares an impairment review of a home: its cost as of the date against net
+ * realizable value (expected price less cost to complete and cost to sell). The
+ * database refuses one where value covers cost; nothing posts until a different
+ * member approves it.
+ */
+export async function proposeInventoryImpairment(input: z.input<typeof impairmentSchema>) {
+  const parsed = impairmentSchema.parse(input)
+  const context = await inventoryContext("books.adjust")
+  const { data, error } = await createServiceSupabaseClient().rpc("propose_books_inventory_impairment", {
+    p_org_id: context.orgId, p_project_id: parsed.projectId, p_as_of: parsed.asOf, p_selling_price_cents: parsed.sellingPriceCents,
+    p_cost_to_complete_cents: parsed.costToCompleteCents, p_cost_to_sell_cents: parsed.costToSellCents, p_evidence_url: parsed.evidenceUrl, p_assumptions: parsed.assumptions, p_actor_id: context.userId,
+  })
+  if (error) throw new Error(error.message)
+  const id = z.string().uuid().parse(data)
+  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "books_inventory_impairment", entityId: id, after: parsed, source: "books.inventory_impairment" })
+  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "books.inventory_impairment_proposed", entityType: "project", entityId: parsed.projectId, payload: { impairment_id: id } })
+  return { id }
+}
+
+/** Approves (and posts the write-down) or rejects an impairment review. The preparer cannot approve it. */
+export async function reviewInventoryImpairment(input: { impairmentId: string; approve: boolean; note?: string }) {
+  const parsed = z.object({ impairmentId: z.string().uuid(), approve: z.boolean(), note: z.string().trim().max(4000).optional() }).parse(input)
+  const context = await inventoryContext("books.close")
+  const { data, error } = await createServiceSupabaseClient().rpc("review_books_inventory_impairment", { p_org_id: context.orgId, p_impairment_id: parsed.impairmentId, p_approve: parsed.approve, p_note: parsed.note ?? null, p_actor_id: context.userId })
+  if (error) throw new Error(error.message)
+  const result = z.object({ impairmentId: z.string().uuid(), projectId: z.string().uuid(), status: z.enum(["approved", "rejected"]), journalEntryId: z.string().uuid().nullable() }).parse(data)
+  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "books_inventory_impairment", entityId: parsed.impairmentId, after: result, source: "books.inventory_impairment" })
+  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: `books.inventory_impairment_${result.status}`, entityType: "project", entityId: result.projectId, payload: { impairment_id: parsed.impairmentId, journal_entry_id: result.journalEntryId } })
+  return result
+}
+
+/** Pending reviews listed on the desk; the desk says when it truncates. */
+const DESK_PENDING_LIMIT = 100
+
+/**
+ * The accountant's view of homes the builder owns: completed homes held for sale
+ * with their age and cost (spec aging, read from the ledger), and the write-downs
+ * and land allocations waiting for a second member. Reviews are decided here with
+ * the same actions as on the home; nothing else changes from this desk.
+ */
+export async function getOwnedInventoryDesk() {
+  const context = await requireOrgContext()
+  await requireBooksAuthorization({ permission: "books.read", userId: context.userId, orgId: context.orgId, supabase: context.supabase, logDecision: false })
+  const service = createServiceSupabaseClient()
+  const today = new Date().toISOString().slice(0, 10)
+  const [controls, impairments, allocations, canReview] = await Promise.all([
+    service.rpc("books_home_inventory_controls", { p_org_id: context.orgId, p_as_of: today }),
+    service.from("books_inventory_impairments").select("id,project_id,as_of,carrying_cents,selling_price_cents,cost_to_complete_cents,cost_to_sell_cents,net_realizable_cents,write_down_cents,assumptions,evidence_url,prepared_by", { count: "exact" })
+      .eq("org_id", context.orgId).eq("status", "proposed").order("prepared_at").limit(DESK_PENDING_LIMIT),
+    service.from("books_development_allocations").select("id,project_id,reference,basis,total_cents,shares,note,prepared_by", { count: "exact" })
+      .eq("org_id", context.orgId).eq("status", "proposed").order("prepared_at").limit(DESK_PENDING_LIMIT),
+    authorize({ permission: "books.close", userId: context.userId, orgId: context.orgId, supabase: context.supabase, logDecision: false }).then(decision => decision.allowed && decision.divisionScope !== "assigned"),
+  ])
+  if (controls.error) throw new Error(`Failed to read owned homes: ${controls.error.message}`)
+  if (impairments.error) throw new Error(`Failed to load impairment reviews: ${impairments.error.message}`)
+  if (allocations.error) throw new Error(`Failed to load land allocations: ${allocations.error.message}`)
+  const held = z.object({ completedHomes: z.object({ homes: z.array(z.object({ projectId: z.string().uuid(), completedOn: z.string(), ageDays: z.number(), cents: z.number() })) }) }).parse(controls.data).completedHomes.homes
+  const pendingImpairments = z.array(impairmentRowSchema.pick({ id: true, as_of: true, carrying_cents: true, selling_price_cents: true, cost_to_complete_cents: true, cost_to_sell_cents: true, net_realizable_cents: true, write_down_cents: true, assumptions: true, evidence_url: true, prepared_by: true }).extend({ project_id: z.string().uuid() })).parse(impairments.data ?? [])
+  const pendingAllocations = z.array(z.object({ id: z.string().uuid(), project_id: z.string().uuid(), reference: z.string(), basis: z.string(), total_cents: z.number(), shares: z.array(z.object({ lot_id: z.string(), amount_cents: z.number() })), note: z.string(), prepared_by: z.string().uuid() })).parse(allocations.data ?? [])
+  const projectIds = [...new Set([...held.map(row => row.projectId), ...pendingImpairments.map(row => row.project_id), ...pendingAllocations.map(row => row.project_id)])]
+  const lotIds = [...new Set(pendingAllocations.flatMap(row => row.shares.map(share => share.lot_id)))]
+  const [projects, lots] = await Promise.all([
+    projectIds.length ? service.from("projects").select("id,name").eq("org_id", context.orgId).in("id", projectIds) : Promise.resolve({ data: [], error: null }),
+    lotIds.length ? service.from("lots").select("id,lot_number").eq("org_id", context.orgId).in("id", lotIds) : Promise.resolve({ data: [], error: null }),
+  ])
+  if (projects.error) throw new Error(`Failed to load homes: ${projects.error.message}`)
+  if (lots.error) throw new Error(`Failed to load lots: ${lots.error.message}`)
+  const name = new Map((projects.data ?? []).map(row => [String(row.id), String(row.name)]))
+  const lotName = new Map((lots.data ?? []).map(row => [String(row.id), `Lot ${row.lot_number}`]))
+  return {
+    userId: context.userId, canReview,
+    held: held.map(row => ({ projectId: row.projectId, name: name.get(row.projectId) ?? "Home", completedOn: row.completedOn, ageDays: row.ageDays, cents: row.cents })).sort((a, b) => b.ageDays - a.ageDays),
+    impairments: pendingImpairments.map(row => ({ id: row.id, name: name.get(row.project_id) ?? "Home", asOf: row.as_of, carryingCents: row.carrying_cents,
+      sellingPriceCents: row.selling_price_cents, costToCompleteCents: row.cost_to_complete_cents, costToSellCents: row.cost_to_sell_cents, netRealizableCents: row.net_realizable_cents,
+      writeDownCents: row.write_down_cents, assumptions: row.assumptions, evidenceUrl: row.evidence_url, preparedBy: row.prepared_by })),
+    allocations: pendingAllocations.map(row => ({ id: row.id, name: name.get(row.project_id) ?? "Development", reference: row.reference, basis: row.basis, totalCents: row.total_cents, note: row.note, preparedBy: row.prepared_by,
+      shares: row.shares.map(share => ({ lot: lotName.get(share.lot_id) ?? "Lot", cents: share.amount_cents })) })),
+    truncated: (impairments.count ?? 0) > pendingImpairments.length || (allocations.count ?? 0) > pendingAllocations.length,
+  }
 }

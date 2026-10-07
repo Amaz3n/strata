@@ -43,7 +43,8 @@ export type LedgerTieOut = {
     | "accumulated_depreciation_control"
     | "land_inventory_control"
     | "completed_homes_control"
-    | "warranty_reserve_control";
+    | "warranty_reserve_control"
+    | "impairment_control";
   label: string;
   status: "passed" | "failed";
   differenceCents: number;
@@ -66,6 +67,13 @@ async function loadHomeInventoryControls(orgId: string, asOf: string) {
   const { data, error } = await createServiceSupabaseClient().rpc("books_home_inventory_controls", { p_org_id: orgId, p_as_of: asOf });
   if (error) throw new Error(`Failed to tie home inventory: ${error.message}`);
   return homeInventoryControlsSchema.parse(data);
+}
+
+/** Write-downs posted to 5070 against approved impairment reviews (`books_impairment_control`). */
+async function loadImpairmentControl(orgId: string, asOf: string) {
+  const { data, error } = await createServiceSupabaseClient().rpc("books_impairment_control", { p_org_id: orgId, p_as_of: asOf });
+  if (error) throw new Error(`Failed to tie inventory impairments: ${error.message}`);
+  return z.object({ ledgerCents: z.number(), subledgerCents: z.number() }).parse(data);
 }
 
 const PAGE_SIZE = 1000;
@@ -345,6 +353,7 @@ export async function runLedgerTieOuts(
     customerDepositsCents,
     registers,
     homeInventory,
+    impairment,
   ] = await Promise.all([
     buildTrialBalance(orgId, asOf, ledger),
     buildBalanceSheet(orgId, asOf, ledger),
@@ -354,6 +363,7 @@ export async function runLedgerTieOuts(
     loadCustomerDepositSubledgerCents(orgId, asOf),
     loadOperationalRegisterBalances(orgId, asOf),
     loadHomeInventoryControls(orgId, asOf),
+    loadImpairmentControl(orgId, asOf),
   ]);
   const glJobCost = glJobCostCents(ledger);
   const accountBalance = (code: string) =>
@@ -505,6 +515,14 @@ export async function runLedgerTieOuts(
       differenceCents: homeInventory.warrantyReserve.ledgerCents - homeInventory.warrantyReserve.subledgerCents,
       ledgerCents: homeInventory.warrantyReserve.ledgerCents,
       subledgerCents: homeInventory.warrantyReserve.subledgerCents,
+    },
+    {
+      code: "impairment_control",
+      label: "Inventory write-downs tie to approved impairment reviews",
+      status: impairment.ledgerCents === impairment.subledgerCents ? "passed" : "failed",
+      differenceCents: impairment.ledgerCents - impairment.subledgerCents,
+      ledgerCents: impairment.ledgerCents,
+      subledgerCents: impairment.subledgerCents,
     },
   ];
 }

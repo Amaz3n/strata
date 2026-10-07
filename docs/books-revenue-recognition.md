@@ -195,6 +195,16 @@ the revenue in 4000 and the loss reserve in 2360. The schedule saved at close is
 the one the report shows for that date. The WIP review shows who approved, when
 and why, and which positions changed since.
 
+**Expected contract loss (B12.1).** Each contract (or the project, with one) carries
+a reserve in 2360 equal to the reviewed expected loss (estimate at completion − contract
+value) less the part of that loss already in its margin (cost to date − revenue
+earned). The provision posts at close against the reviewed period-end WIP position
+as the difference from the ledger balance, so a retry or a re-close posts nothing
+twice; a recovering forecast releases only what is no longer needed, and completion
+leaves no reserve. One contract's profit never offsets another's loss. A project
+holding capitalized cost (an owned home) takes no provision: its loss is recognized
+through impairment instead, so it is recognized once.
+
 #### Cost-driven jobs (B11.2)
 
 Time-and-materials and cost-plus jobs bill their costs (with markup or fee) but
@@ -266,6 +276,16 @@ costs are an asset until the sale, not job cost:
   lot held as land at its recorded basis; 1170 equals the homes completed and not
   yet sold (with each home's age); 2260 consumption equals the reserve consumed on
   approved visits.
+- **Impairment (B12.2).** A home worth less than it cost is written down to net
+  realizable value (expected price − cost to complete − cost to sell), inventory
+  under ASC 330. One member prepares the review with its assumptions and evidence,
+  another approves it, and it posts Dr 5070 Inventory impairment / Cr 1160 or 1170.
+  A review prepared before the home's cost changed is refused. The write-down is the
+  home's new cost and is never written back up; a later review only writes down
+  further. At the sale it is its own (negative) cost-of-sales component, so cost of
+  sales plus write-downs is exactly what the home cost. A blocking close control ties
+  5070 (before year-end close) to the approved reviews. 5070 uses the `job_costs`
+  subtype until the next chart policy version adds a dedicated one.
 - **Reversal.** A recorded closing is reversed, not edited: the wire is refunded,
   each deposit application is reversed (Dr 1100 / Cr 2300, the deposit back to the
   buyer's liability), the sale is credited in full, each relieved component

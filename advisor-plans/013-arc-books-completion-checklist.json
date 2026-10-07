@@ -8956,8 +8956,8 @@
       "id": "B12.1",
       "workstream": "B12",
       "title": "Contract-specific forecast loss and provision lifecycle",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All B12.1 criteria verified locally (2026-10-07) by LOSS-01 contract-loss-lifecycle and contracts-not-netted (plus WIP-01 second-contract-separately-owned). The per-contract provision from B04.1 already met the policy; this adds the acceptance proof. No new migration.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "multiple contracts do not net one contract's profit against another's required loss",
@@ -8971,24 +8971,43 @@
         "HOME-01",
         "LOSS-01"
       ],
-      "evidence": [],
-      "remaining_criteria": [
-        "multiple contracts do not net one contract's profit against another's required loss",
-        "reserve + losses already recognized matches the reviewed obligation under policy",
-        "prior postings and reversals counted exactly once",
-        "forecast recovery releases only the permitted reserve",
-        "close/retry cannot double-post"
+      "evidence": [
+        {
+          "verified_at": "2026-10-07T18:45:28.254008+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/loss-01.cjs",
+            "docs/books-revenue-recognition.md"
+          ],
+          "test_scenario_ids": [
+            "LOSS-01",
+            "WIP-01"
+          ],
+          "commands": [
+            "scenario-runner LOSS-01 and full regression (CAP-01 excluded, known outbox backlog)",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "Lifecycle on a $100,000 contract: June reserve 6,363.64 with 3,636.36 already in margin (= the $10,000 expected loss); July worsens to $15,000 (reserve 5,869.57 + 9,130.43); August recovers to $8,000 and releases only the excess (2,074.07 + 5,925.93); September completes with no reserve and the full $8,000 in margin.",
+            "Re-closing September after a reopen posts no further provision and leaves the reserve unchanged.",
+            "Two contracts on one job: the losing contract carries its $5,000 reserve and the profitable one none, although the job forecasts a $10,000 profit overall.",
+            "Regression: BILL-01, WIP-01, YEAR-01, BANK-01, STATUS-01, DIM-01, HIST-01, REV-01, HOME-01 and LOSS-01 pass; CLOSE-01 and RACE-01 INCOMPLETE only for their unimplemented parts."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-07-losses-and-impairment"
+        }
       ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-07T18:45:28.254008+00:00"
     },
     {
       "id": "B12.2",
       "workstream": "B12",
       "title": "Impairment review before remaining loss provision",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All B12.2 criteria verified locally (2026-10-07) by LOSS-01 home-impairment and the home-impairment browser journey. Owned homes are written down to net realizable value (ASC 330) through an immutable, independently approved review; never written back up; a blocking close control ties 5070 to approved reviews; the write-down is its own sale-relief component. The Books Owned inventory desk lets the accountant (no project access) approve write-downs and land allocations. Migration 20261007235000 pending production; 20261007180000 edited in place (unapplied in production) for the impairment component.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "an ordinary supported capitalized-loss case can complete review and close",
@@ -9002,17 +9021,52 @@
         "HOME-01",
         "LOSS-01"
       ],
-      "evidence": [],
-      "remaining_criteria": [
-        "an ordinary supported capitalized-loss case can complete review and close",
-        "no double recognition across impairment and provision",
-        "original valuation and review history retained",
-        "unsupported reversal of a prior impairment remains governed by the approved policy",
-        "loss/impairment schedule and statements tie exactly"
+      "evidence": [
+        {
+          "verified_at": "2026-10-07T18:45:28.254008+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261007235000_books_inventory_impairment.sql",
+            "supabase/migrations/20261007180000_books_home_sale_relief.sql",
+            "lib/services/books/inventory.ts",
+            "lib/services/books/verifier.ts",
+            "lib/services/books/period-close.ts",
+            "lib/services/books/reconciliation-rules.ts",
+            "components/books/inventory-impairment.tsx",
+            "components/books/inventory-workspace.tsx",
+            "components/books/owned-inventory-desk.tsx",
+            "app/(app)/books/inventory/page.tsx",
+            "scripts/books-acceptance/scenarios/loss-01.cjs",
+            "scripts/books-acceptance/journeys/home-impairment.spec.ts",
+            "docs/books-revenue-recognition.md"
+          ],
+          "test_scenario_ids": [
+            "LOSS-01",
+            "HOME-01"
+          ],
+          "commands": [
+            "scenario-runner LOSS-01 and full regression (CAP-01 excluded, known outbox backlog)",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint",
+            "playwright journeys/home-impairment.spec.ts (mobile-dark + desktop)"
+          ],
+          "observed_results": [
+            "A review prepared before a late $5,000 bill is refused as stale ('cost changed since the review was prepared') and rejected; the current review (cost $265,000, price $250,000, $10,000 to sell, NRV $240,000) writes down $25,000 after a second member approves; the preparer is refused.",
+            "Recovery: a later $260,000 outlook is refused ('value covers cost') — nothing is written back.",
+            "June and July close; impairment_control passes with ledger 25,000.00 = approved reviews 25,000.00.",
+            "Sold in August at $260,000: relief by component land 60,000, construction 205,000, impairment −25,000; cost of sales plus write-down = 265,000, the home's cost, so the loss is recognized once.",
+            "Owned homes take no contract-loss provision (refused while capitalized cost exists), so impairment and provision never both recognize one loss.",
+            "Access gap found and closed: org_accountant has no project.read, so the project inventory page (impairment and B11.3 allocation approvals) was unreachable for the approver; the Books Owned inventory desk now lists held homes with age and cost and both pending reviews, approving through the same actions.",
+            "5070 uses the existing job_costs subtype: chart policy v1 is immutable, so a dedicated subtype waits for the next chart policy version.",
+            "Regression: BILL-01, WIP-01, YEAR-01, BANK-01, STATUS-01, DIM-01, HIST-01, REV-01, HOME-01 and LOSS-01 pass; CLOSE-01 and RACE-01 INCOMPLETE only for their unimplemented parts."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-07-losses-and-impairment"
+        }
       ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-07T18:45:28.254008+00:00"
     },
     {
       "id": "B13.1",

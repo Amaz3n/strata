@@ -1326,6 +1326,19 @@ export async function reviewDevelopmentAllocationAction(
 ) {
   return run(async () => (await import("@/lib/services/books/inventory")).reviewDevelopmentAllocation(input));
 }
+export async function loadInventoryImpairmentWorkspaceAction(projectId: string) {
+  return read(async () => (await import("@/lib/services/books/inventory")).getInventoryImpairmentWorkspace(projectId));
+}
+export async function proposeInventoryImpairmentAction(
+  input: Parameters<typeof import("@/lib/services/books/inventory").proposeInventoryImpairment>[0],
+) {
+  return run(async () => (await import("@/lib/services/books/inventory")).proposeInventoryImpairment(input));
+}
+export async function reviewInventoryImpairmentAction(
+  input: Parameters<typeof import("@/lib/services/books/inventory").reviewInventoryImpairment>[0],
+) {
+  return run(async () => (await import("@/lib/services/books/inventory")).reviewInventoryImpairment(input));
+}
 export async function capitalizeInventoryInterestAction(
   input: Parameters<
     typeof import("@/lib/services/books/inventory").capitalizeInventoryInterest

@@ -652,7 +652,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
         difference_cents: apTieOut.differenceCents,
       },
     },
-    ...(["land_inventory_control", "completed_homes_control", "warranty_reserve_control"] as const).map((code) => {
+    ...(["land_inventory_control", "completed_homes_control", "warranty_reserve_control", "impairment_control"] as const).map((code) => {
       const control = tieOut(code);
       return {
         code,

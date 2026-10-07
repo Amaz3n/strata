@@ -2,8 +2,9 @@
 -- came from, and a cost that arrives after the sale has an explicit policy.
 --
 -- * Relief is split by component: land and development (brought in when the
---   house started, `inventory_start`), capitalized interest (`inventory_interest`)
---   and construction (everything else). Each cost-of-sales line names its
+--   house started, `inventory_start`), capitalized interest (`inventory_interest`),
+--   any reviewed write-down (`inventory_impairment`, a negative component) and
+--   construction (everything else). Each cost-of-sales line names its
 --   component, so a sold home reconciles to its original cost ownership.
 -- * A late cost on a sold home (anything left in inventory after the sale was
 --   relieved, e.g. a bill dated before the sale but entered after it) is
@@ -57,7 +58,7 @@ begin
      -- earlier reliefs took for that component (unlabeled reliefs were construction).
      for v_component in
        with costs as (
-         select case e.source_type when 'inventory_start' then 'land_and_development' when 'inventory_interest' then 'capitalized_interest' else 'construction' end as component,
+         select case e.source_type when 'inventory_start' then 'land_and_development' when 'inventory_interest' then 'capitalized_interest' when 'inventory_impairment' then 'impairment' else 'construction' end as component,
            sum(l.debit_cents-l.credit_cents) as cents
          from public.journal_lines l join public.journal_entries e on e.id=l.entry_id and e.org_id=l.org_id
          where l.org_id=p_org_id and l.project_id=p_project_id and l.account_id in(cip,completed) and e.status in('posted','reversed') and e.entry_date<=v_entry_date
