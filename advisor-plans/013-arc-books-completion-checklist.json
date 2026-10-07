@@ -7543,8 +7543,8 @@
       "id": "B07.2",
       "workstream": "B07",
       "title": "Statements, comparative periods and source detail",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All B07.2 criteria and the global DoD verified locally (2026-10-06): DIM-01 7/7 (statements-by-tag, closed-month-as-closed, fiscal-comparisons), statements browser journey on phone/dark and desktop, fiscal preset tests, reference doc docs/books-dimensions.md, full regression. Entity-scoped statements continue under B14 (ENTITY-01).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "grouped results recombine to the unsliced total exactly",
@@ -7558,18 +7558,59 @@
         "DIM-01",
         "ENTITY-01"
       ],
-      "evidence": [],
-      "remaining_criteria": [
-        "grouped results recombine to the unsliced total exactly",
-        "comparative dates work across fiscal years",
-        "cost-code/contract/lot drilldowns reach original permitted workflow records",
-        "filter permissions cannot expose another entity/division or salary evidence",
-        "CSV/PDF and frozen UI run agree",
-        "unknown/unassigned dimensions are visible rather than omitted"
+      "evidence": [
+        {
+          "verified_at": "2026-10-07T03:18:16.620756+00:00",
+          "implemented_paths": [
+            "lib/services/books/statements.ts",
+            "lib/services/books/statement-detail.ts",
+            "lib/reports/statement-result.ts",
+            "lib/reports/params.ts",
+            "lib/services/report-workspace.ts",
+            "lib/reports/definitions/financial.ts",
+            "lib/services/books/worker-pay-privacy.ts",
+            "components/books/account-activity-sheet.tsx",
+            "components/reports/report-activity-report.tsx",
+            "docs/books-dimensions.md"
+          ],
+          "test_scenario_ids": [
+            "DIM-01"
+          ],
+          "commands": [
+            "scenario-runner DIM-01 (and full regression)",
+            "playwright statements",
+            "node --test tests/report-builder.test.js",
+            "pnpm test:financials"
+          ],
+          "observed_results": [
+            "Slices recombine exactly: a July P&L of -2,200.00 totals -2,200.00 under every slicing (division, community, lot, contract, cost code, cost type, organization, project); the total row is the sum of the slices and a mismatch refuses the statement. Untagged office costs show as Unassigned (-700.00); cost-code and contract slices are named, not ids.",
+            "Fiscal years: with an April fiscal year, fiscal 2026 shows 120.00 and its prior-year comparison is exactly fiscal 2025 (2025-04-01 to 2026-03-31, 30.00); a March-April range across the year-end shows 60.00. Books ytd/qtd/last-year presets follow the fiscal year (unit tests).",
+            "Drill-down: a slice opens per account and each account opens only the lines carrying that value (South slice of 5000: 1 of the account's 2 lines); in the browser, the cost-code slice drills to 'Transaction detail by account · 06-100 Rough carpentry' showing the framing bill; a payment line opens the invoice it settled.",
+            "Permissions: Books report definitions (general ledger, cash flow, cash basis, trial balance, P&L, balance sheet) now apply the Books access check — before, a member limited to assigned divisions could read company-wide Books through them; such a member is refused statements and the ledger. Worker pay: the owner sees two payroll lines (200.00, 300.00); a Books reviewer without private payroll access sees one merged 500.00 line.",
+            "Frozen and exports agree: a request for exactly a closed July serves the statements saved at close, headed 'as closed <date>', net income 250.00 on screen and in the CSV line 'Net income,25000', while a live rebuild with a stray journal planted in the closed month reads -750.00. Screen, CSV/PDF, saved runs and scheduled exports share evaluateReport.",
+            "Regression: DIM-01, CAP-01, BILL-01, YEAR-01, BANK-01, STATUS-01 pass; CLOSE-01, RACE-01, WIP-01 pass every implemented subcase; test:financials 2734 pass / 0 fail."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-statements/BANK-01.json sha256:17cdadd4c6f5f19808c1369557b9998ca244bcb8d4e4149b0fff5ea93fdac4e7",
+            "docs/books-evidence/2026-10-06-statements/BILL-01.json sha256:b2a2927324df730bcb77152b89935cabd98ce67879b6a59b078170f5ee798da4",
+            "docs/books-evidence/2026-10-06-statements/CAP-01.json sha256:ad5a3ae283c6fcb6e9db20e8f1d2af88a6b2439e22dc7948f634a64a59b8d629",
+            "docs/books-evidence/2026-10-06-statements/CLOSE-01.json sha256:d8b12913d45d3dac0e6b95de65aef41275465a9366de8fb930a447c412366350",
+            "docs/books-evidence/2026-10-06-statements/DIM-01.json sha256:d0f8b71b58f4ab2771914e1fd8ca812fa2ef0f3319170ea1bb94c5173fb3bf74",
+            "docs/books-evidence/2026-10-06-statements/RACE-01.json sha256:3a8a71428faac5bf5c0d25c35fdbc7e6c2801edd717a91e7aca2affebf76251d",
+            "docs/books-evidence/2026-10-06-statements/STATUS-01.json sha256:3d18ce37eb9c87116c3abb824e1fe97815377f4f8a82c768a7d4c57f2a14e688",
+            "docs/books-evidence/2026-10-06-statements/WIP-01.json sha256:d9a8abf61abf614c335da948fd96a2af18383a5b97b8af39c7d5f7ac2143a387",
+            "docs/books-evidence/2026-10-06-statements/YEAR-01.json sha256:a94a018414769140142dd9605fe4d4ad6e0006f5f750d262a10134ac1649a5dd",
+            "docs/books-evidence/2026-10-06-statements/closed-month-desktop.png sha256:c17e1ef2b35518390e2430e124fb5a1b9067b62fe8f04d38877bc840a1ec53cf",
+            "docs/books-evidence/2026-10-06-statements/closed-month-mobile-dark.png sha256:e9cb262178b7f4ffd47f9b49af088c44d29e97f4324ce72549def0f0b551031c",
+            "docs/books-evidence/2026-10-06-statements/cost-code-drill-desktop.png sha256:f55a12ec3e3a648282555938607c73e810180717df1d86e2e9ad255046aa9fb5",
+            "docs/books-evidence/2026-10-06-statements/statements-journeys.json sha256:7155b12e2cb644024f346332aff789e6ef47744042c64afa31e2f1feedec1623"
+          ]
+        }
       ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-07T03:18:16.620756+00:00"
     },
     {
       "id": "B08.1",
