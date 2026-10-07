@@ -1,0 +1,129 @@
+{
+  "scenario": "DIM-01",
+  "reviewedFrom": "B07.1 definition of done (advisor-plans/013) and the dimension matrix in docs/books-dimensions.md; tag policy decided 2026-10-06: reporting tags stay as posted.",
+  "subcases": {
+    "matrix-on-lines": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "paymentDate": "2026-07-25",
+        "cents": 100000,
+        "contractCents": 1000000
+      },
+      "derivation": "One job in the South division, on lot 14 of Cedar Ridge, with one fixed-price contract. A 1,000.00 framing bill coded to its cost code, a 1,000.00 progress invoice and its full payment post. Every line on a project carries the project's tags (organization, division, community, lot, contract; names beside ids). The bill's cost line adds cost_type and cost_code_id; its AP line carries the project tags only. The invoice (percentage of completion under the fixed contract) carries the project tags on both lines. The payment carries the project tags plus the payment and the invoice it settles on both lines.",
+      "expected": {
+        "vendorBill": {
+          "2000": [
+            "community_id",
+            "community_name",
+            "contract_id",
+            "division_id",
+            "division_name",
+            "lot_id",
+            "lot_name",
+            "organization_id"
+          ],
+          "5000": [
+            "community_id",
+            "community_name",
+            "contract_id",
+            "cost_code_id",
+            "cost_type",
+            "division_id",
+            "division_name",
+            "lot_id",
+            "lot_name",
+            "organization_id"
+          ]
+        },
+        "invoice": {
+          "1100": [
+            "community_id",
+            "community_name",
+            "contract_id",
+            "division_id",
+            "division_name",
+            "lot_id",
+            "lot_name",
+            "organization_id"
+          ],
+          "2350": [
+            "community_id",
+            "community_name",
+            "contract_id",
+            "division_id",
+            "division_name",
+            "lot_id",
+            "lot_name",
+            "organization_id"
+          ]
+        },
+        "invoicePayment": {
+          "1010": [
+            "community_id",
+            "community_name",
+            "contract_id",
+            "division_id",
+            "division_name",
+            "invoice_id",
+            "lot_id",
+            "lot_name",
+            "organization_id",
+            "payment_id"
+          ],
+          "1100": [
+            "community_id",
+            "community_name",
+            "contract_id",
+            "division_id",
+            "division_name",
+            "invoice_id",
+            "lot_id",
+            "lot_name",
+            "organization_id",
+            "payment_id"
+          ]
+        }
+      }
+    },
+    "foreign-dimension-refused": {
+      "inputs": {
+        "journalDate": "2026-07-15",
+        "cents": 5000,
+        "contractCents": 1000000
+      },
+      "derivation": "An adjusting journal tagging another company's cost code on the job is refused because the cost code is not in this company; so is one naming a cost code that does not exist. The same journal naming the company's own cost code posts.",
+      "expected": {
+        "foreign": "refused: not in this company",
+        "missing": "refused: not in this company",
+        "own": "posted"
+      }
+    },
+    "one-lot-per-project": {
+      "inputs": {
+        "contractCents": 1000000
+      },
+      "derivation": "A project's lot tag is never a guess because a project sits on at most one lot: putting the job on a second lot is refused by the database (lots_project_unique). Several contracts on one project leave contract_id off its lines until contract-level ownership (B04.1) assigns each document a contract.",
+      "expected": {
+        "secondLot": "refused: lots_project_unique"
+      }
+    },
+    "later-changes-and-reversal": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "cents": 100000,
+        "contractCents": 1000000
+      },
+      "derivation": "A bill posts in the South division. The community is renamed and the job moves to the North division; the ordinary run and the nightly pass leave the posted lines exactly as they were. Re-coding the bill to materials is a real revision: the original entry is reversed with its original dimensions line for line (South division), and the replacement posts in the North division.",
+      "expected": {
+        "postedLinesUnchanged": true,
+        "reversalMatchesOriginal": true,
+        "originalDivision": [
+          "South division"
+        ],
+        "replacementDivision": [
+          "North division"
+        ]
+      }
+    }
+  }
+}

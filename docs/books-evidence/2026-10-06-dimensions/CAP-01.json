@@ -1,0 +1,568 @@
+{
+  "scenario": "CAP-01",
+  "status": "PASSED",
+  "reviewedFrom": "B09.2 definition of done (advisor-plans/013): >1,000 records and repeated cursor ties exactly once; interruption/resume and concurrent workers without skips or duplicates; work scales with selected sources, not the ledger.",
+  "subcases": [
+    {
+      "name": "first-run-ties-idle-and-one-change",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "85fd2c79-531b-484d-99f0-387dd598e438",
+        "measurements": {
+          "first": {
+            "requests": 6072,
+            "rows": 6072,
+            "projections": 1200,
+            "receipts": 1200,
+            "tables": {
+              "gl_accounts": 2465,
+              "job_cost_entries": 1200,
+              "vendor_bills": 1200,
+              "bill_lines": 1200,
+              "projects": 4,
+              "project_financial_settings": 2,
+              "books_settings": 1
+            }
+          },
+          "idle": {
+            "requests": 34,
+            "rows": 73,
+            "projections": 0,
+            "receipts": 0,
+            "tables": {
+              "gl_accounts": 65,
+              "projects": 4,
+              "project_financial_settings": 2,
+              "books_settings": 1,
+              "books_projection_progress": 1
+            }
+          },
+          "change": {
+            "requests": 45,
+            "rows": 81,
+            "projections": 1,
+            "receipts": 1,
+            "tables": {
+              "gl_accounts": 67,
+              "projects": 4,
+              "project_financial_settings": 2,
+              "books_settings": 1,
+              "books_projection_progress": 1,
+              "vendor_bills": 1,
+              "job_cost_entries": 1,
+              "bill_lines": 1,
+              "books_projection_receipts": 1,
+              "accounting_facts": 1,
+              "journal_entries": 1
+            }
+          }
+        }
+      },
+      "checks": [
+        {
+          "label": "1200 tied bills post exactly once",
+          "pass": true,
+          "expected": {
+            "postedEntries": 1200,
+            "distinctBills": 1200,
+            "receipts": 1200,
+            "apCents": 120000000,
+            "expected": {
+              "bills": 1200,
+              "apCents": 120000000
+            },
+            "projections": 1200
+          },
+          "observed": {
+            "postedEntries": 1200,
+            "distinctBills": 1200,
+            "receipts": 1200,
+            "apCents": 120000000,
+            "expected": {
+              "bills": 1200,
+              "apCents": 120000000
+            },
+            "projections": 1200
+          }
+        },
+        {
+          "label": "an idle run reads only configuration and posts nothing",
+          "pass": true,
+          "expected": {
+            "rowsUnderBudget": true,
+            "projections": 0,
+            "receipts": 0
+          },
+          "observed": {
+            "rowsUnderBudget": true,
+            "projections": 0,
+            "receipts": 0
+          }
+        },
+        {
+          "label": "one changed bill: one projection, reads bounded by the change",
+          "pass": true,
+          "expected": {
+            "rowsUnderBudget": true,
+            "projections": 1
+          },
+          "observed": {
+            "rowsUnderBudget": true,
+            "projections": 1
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T01:51:52.758Z"
+    },
+    {
+      "name": "interrupted-run-resumes",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "850e7109-a550-4d33-9e0b-b17be2633f0b",
+        "receiptsAtKill": 307
+      },
+      "checks": [
+        {
+          "label": "after the kill, one ordinary run completes every bill exactly once",
+          "pass": true,
+          "expected": {
+            "killedPartway": true,
+            "postedEntries": 1200,
+            "distinctBills": 1200,
+            "receipts": 1200,
+            "apCents": 120000000,
+            "expected": {
+              "bills": 1200,
+              "apCents": 120000000
+            }
+          },
+          "observed": {
+            "killedPartway": true,
+            "postedEntries": 1200,
+            "distinctBills": 1200,
+            "receipts": 1200,
+            "apCents": 120000000,
+            "expected": {
+              "bills": 1200,
+              "apCents": 120000000
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T01:52:48.866Z"
+    },
+    {
+      "name": "concurrent-workers",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "64e46940-7172-479a-825a-880aeb7e9c01"
+      },
+      "checks": [
+        {
+          "label": "3 concurrent workers post each bill once",
+          "pass": true,
+          "expected": {
+            "workersFinished": 3,
+            "postedEntries": 1200,
+            "distinctBills": 1200,
+            "receipts": 1200,
+            "apCents": 120000000,
+            "expected": {
+              "bills": 1200,
+              "apCents": 120000000
+            }
+          },
+          "observed": {
+            "workersFinished": 3,
+            "postedEntries": 1200,
+            "distinctBills": 1200,
+            "receipts": 1200,
+            "apCents": 120000000,
+            "expected": {
+              "bills": 1200,
+              "apCents": 120000000
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T01:53:38.558Z"
+    },
+    {
+      "name": "late-commit",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "a5eabbe4-a49f-417d-a475-fe96041d15b2"
+      },
+      "checks": [
+        {
+          "label": "the late-committed change posts on the next ordinary run",
+          "pass": true,
+          "expected": {
+            "late": "2026-07-11",
+            "other": "2026-07-12"
+          },
+          "observed": {
+            "late": "2026-07-11",
+            "other": "2026-07-12"
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T01:53:56.288Z"
+    },
+    {
+      "name": "nightly-pass",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "f6852eef-5603-4626-8d60-bac2d22bae85",
+        "measurements": {
+          "unchanged": {
+            "requests": 66,
+            "rows": 8472,
+            "projections": 0,
+            "receipts": 0,
+            "tables": {
+              "accounting_facts": 2400,
+              "job_cost_entries": 1200,
+              "vendor_bills": 1200,
+              "bill_lines": 1200,
+              "books_projection_receipts": 1200,
+              "journal_entries": 1200,
+              "gl_accounts": 65,
+              "projects": 4,
+              "project_financial_settings": 2,
+              "books_settings": 1
+            }
+          },
+          "quiet": {
+            "requests": 34,
+            "rows": 74,
+            "projections": 0,
+            "receipts": 0,
+            "tables": {
+              "gl_accounts": 65,
+              "projects": 4,
+              "project_financial_settings": 2,
+              "books_settings": 1,
+              "books_projection_progress": 1,
+              "divisions": 1
+            }
+          },
+          "full": {
+            "requests": 66,
+            "rows": 8473,
+            "projections": 0,
+            "receipts": 0,
+            "tables": {
+              "accounting_facts": 2400,
+              "job_cost_entries": 1200,
+              "vendor_bills": 1200,
+              "bill_lines": 1200,
+              "books_projection_receipts": 1200,
+              "journal_entries": 1200,
+              "gl_accounts": 65,
+              "projects": 4,
+              "project_financial_settings": 2,
+              "books_settings": 1,
+              "divisions": 1
+            }
+          }
+        }
+      },
+      "checks": [
+        {
+          "label": "unchanged full pass makes no projection calls",
+          "pass": true,
+          "expected": {
+            "projections": 0,
+            "receipts": 0
+          },
+          "observed": {
+            "projections": 0,
+            "receipts": 0
+          }
+        },
+        {
+          "label": "a division change restates nothing posted; the next bill carries the new division",
+          "pass": true,
+          "expected": {
+            "incrementalProjections": 0,
+            "fullProjections": 0,
+            "postedBillTagged": false,
+            "nextBillTagged": true,
+            "revisedBillTagged": true
+          },
+          "observed": {
+            "incrementalProjections": 0,
+            "fullProjections": 0,
+            "postedBillTagged": false,
+            "nextBillTagged": true,
+            "revisedBillTagged": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T01:54:03.005Z"
+    },
+    {
+      "name": "time-budget",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "8e08b53b-4162-411f-9bbb-da4848706639",
+        "companies": 912,
+        "secondsForAllCompanies": 11,
+        "position": 14
+      },
+      "checks": [
+        {
+          "label": "an expired budget reaches no company and leaves each with an open finding that holds the close",
+          "pass": true,
+          "expected": {
+            "companiesReached": 0,
+            "findings": [
+              "projection_failed"
+            ],
+            "posted": 0,
+            "close": "held by open findings"
+          },
+          "observed": {
+            "companiesReached": 0,
+            "findings": [
+              "projection_failed"
+            ],
+            "posted": 0,
+            "close": "held by open findings"
+          }
+        },
+        {
+          "label": "the next run completes it and clears the finding",
+          "pass": true,
+          "expected": {
+            "reached": true,
+            "findings": [],
+            "posted": 1
+          },
+          "observed": {
+            "reached": true,
+            "findings": [],
+            "posted": 1
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T01:54:21.023Z"
+    },
+    {
+      "name": "failed-source-retries",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "cbaaa149-5350-4579-bd2b-3fbd5998a5e9"
+      },
+      "checks": [
+        {
+          "label": "the failed bill posts on the next ordinary run once the failure clears",
+          "pass": true,
+          "expected": {
+            "failed": {
+              "findings": [
+                "projection_failed"
+              ],
+              "posted": []
+            },
+            "afterCure": {
+              "findings": [],
+              "posted": [
+                "2026-07-10"
+              ]
+            }
+          },
+          "observed": {
+            "failed": {
+              "findings": [
+                "projection_failed"
+              ],
+              "posted": []
+            },
+            "afterCure": {
+              "findings": [],
+              "posted": [
+                "2026-07-10"
+              ]
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T01:54:35.565Z"
+    },
+    {
+      "name": "close-review-reads",
+      "status": "PASSED",
+      "identities": {
+        "small": {
+          "requests": 47,
+          "rows": 178,
+          "projections": 0,
+          "receipts": 0,
+          "tables": {
+            "vendor_bills": 120,
+            "gl_accounts": 51,
+            "project_financial_settings": 2,
+            "projects": 2,
+            "memberships": 1,
+            "accounting_periods": 1,
+            "books_settings": 1
+          }
+        },
+        "large": {
+          "requests": 63,
+          "rows": 1258,
+          "projections": 0,
+          "receipts": 0,
+          "tables": {
+            "vendor_bills": 1200,
+            "gl_accounts": 51,
+            "project_financial_settings": 2,
+            "projects": 2,
+            "memberships": 1,
+            "accounting_periods": 1,
+            "books_settings": 1
+          }
+        }
+      },
+      "checks": [
+        {
+          "label": "the close review reads about the same at ten times the volume, and its tie-outs pass at both",
+          "pass": true,
+          "expected": {
+            "small": {
+              "apControl": "passed",
+              "jobCostControl": "passed"
+            },
+            "large": {
+              "apControl": "passed",
+              "jobCostControl": "passed"
+            },
+            "journalHistoryRows": 0,
+            "billsReadOnce": true,
+            "rowsGrowWithinAllowance": true
+          },
+          "observed": {
+            "small": {
+              "apControl": "passed",
+              "jobCostControl": "passed"
+            },
+            "large": {
+              "apControl": "passed",
+              "jobCostControl": "passed"
+            },
+            "journalHistoryRows": 0,
+            "billsReadOnce": true,
+            "rowsGrowWithinAllowance": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T01:54:47.829Z"
+    },
+    {
+      "name": "narrowed-proof",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "064422b5-270f-446c-b289-77ee8ae48511",
+        "scopedReads": {
+          "requests": 34,
+          "rows": 152,
+          "projections": 0,
+          "receipts": 0,
+          "tables": {
+            "gl_accounts": 65,
+            "journal_entries": 30,
+            "job_cost_entries": 10,
+            "vendor_bills": 10,
+            "bill_lines": 10,
+            "books_projection_receipts": 10,
+            "accounting_facts": 10,
+            "projects": 4,
+            "project_financial_settings": 2,
+            "books_settings": 1
+          }
+        },
+        "recentReads": {
+          "requests": 36,
+          "rows": 85,
+          "projections": 0,
+          "receipts": 0,
+          "tables": {
+            "gl_accounts": 65,
+            "journal_entries": 5,
+            "projects": 4,
+            "project_financial_settings": 2,
+            "job_cost_entries": 2,
+            "vendor_bills": 2,
+            "bill_lines": 2,
+            "books_settings": 1,
+            "accounting_facts": 1,
+            "books_projection_receipts": 1
+          }
+        }
+      },
+      "checks": [
+        {
+          "label": "the narrowed proof matches the full drill and finds what the drill cannot; scoped proofs read only their sources",
+          "pass": true,
+          "expected": {
+            "drill": [
+              "journal_divergence:A",
+              "unexpected_journal:B"
+            ],
+            "proofOverAll": [
+              "journal_divergence:A",
+              "missing_fact:C",
+              "stale_fact:D",
+              "unexpected_journal:B"
+            ],
+            "proofOverTen": {
+              "found": [
+                "journal_divergence:A"
+              ],
+              "sourcesChecked": 10,
+              "rowsWithinBudget": true
+            },
+            "proofSinceDamage": {
+              "found": [
+                "missing_fact:C",
+                "unexpected_journal:B"
+              ],
+              "rowsWithinBudget": true
+            }
+          },
+          "observed": {
+            "drill": [
+              "journal_divergence:A",
+              "unexpected_journal:B"
+            ],
+            "proofOverAll": [
+              "journal_divergence:A",
+              "missing_fact:C",
+              "stale_fact:D",
+              "unexpected_journal:B"
+            ],
+            "proofOverTen": {
+              "found": [
+                "journal_divergence:A"
+              ],
+              "sourcesChecked": 10,
+              "rowsWithinBudget": true
+            },
+            "proofSinceDamage": {
+              "found": [
+                "missing_fact:C",
+                "unexpected_journal:B"
+              ],
+              "rowsWithinBudget": true
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T01:55:07.586Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-07T01:55:26.229Z"
+}
