@@ -112,3 +112,27 @@ source on its own date and resolves exactly that finding.
 - Every project not sold at closing is percentage-of-completion and needs its
   WIP position prepared and reviewed through period end; a cost approved after
   the review blocks close until WIP is re-reviewed.
+
+## Subledgers as of a past date
+
+- **One dated population.** AR and AP aging and the AR/AP tie-outs share the
+  rules in `subledger-settlements.ts`: a document counts from its own date,
+  receipts, payments, reversals and credits from theirs. A voided invoice, or a
+  bill returned to pending, counts until the ledger removed it
+  (`loadLedgerRemovalDates`): on its own date when its month was still open, so
+  it reads as never issued; otherwise on the reversal date. Documents that never
+  posted fall back to their recorded void time.
+- **Closed months stay closed.** Returning a bill to pending, or voiding or
+  revising an invoice, whose posting sits in a closed month is refused with the
+  cure: reopen that month, or record a vendor credit or credit memo in an open
+  month (`assertNotPostedInClosedPeriod`). Aging for a closed month's end is the
+  aging saved at close (heading "as closed"); the close saves it across every
+  project, including those excluded from reporting, because the ledger holds them.
+- **Restatement.** Reopening records the reason; reclosing saves new reports and
+  keeps the earlier close's saved reports, so both versions and why the month
+  reopened stay on record.
+- **Opening items.** Open invoices and bills at cutover come over as the
+  documents they are: their own number, date and customer or vendor. A missing
+  due date stays missing ("no due date" in aging). An opening batch missing any
+  of this is refused with every fix listed at once, and cutover blockers read as
+  fixes rather than codes.

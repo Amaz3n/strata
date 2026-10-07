@@ -4244,7 +4244,7 @@
       "workstream": "B03",
       "title": "Durable effective-dated source history",
       "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status_basis": "Closed months can no longer be changed under their saved reports and backdated corrections are auditable (HIST-01). Open: legacy voids with no recorded void time that never posted to Arc Books are still decided silently (needs an explicit unknown-evidence marker and reviewed attribution), and customer statements (financial-parties) still read current status rather than the shared dated population.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "a later approval/void/rejection/allocation/policy change cannot silently alter an older frozen report",
@@ -4359,13 +4359,53 @@
           ],
           "accepted_packages": 0,
           "accepted_release_gates": 0
+        },
+        {
+          "verified_at": "2026-10-07T11:53:41.875125+00:00",
+          "implemented_paths": [
+            "lib/services/books/subledger-settlements.ts",
+            "lib/services/books/closed-period-guard.ts",
+            "lib/services/books/closed-snapshots.ts",
+            "lib/services/reports/ar-aging.ts",
+            "lib/services/reports/ap-aging.ts",
+            "lib/services/books/verifier.ts",
+            "lib/services/books/opening-balances.ts",
+            "lib/services/books/cutover.ts",
+            "supabase/migrations/20261007010000_books_opening_items_as_documented.sql",
+            "scripts/books-acceptance/scenarios/hist-01.cjs",
+            "docs/books-period-close.md"
+          ],
+          "test_scenario_ids": [
+            "HIST-01"
+          ],
+          "commands": [
+            "scenario-runner HIST-01 (and full regression)",
+            "pnpm test:financials"
+          ],
+          "observed_results": [
+            "Later changes cannot alter a closed month: returning a closed-July bill to pending and voiding a closed-July invoice are refused with the cure (reopen July, or a vendor credit / credit memo in an open month); July's aging and both tie-outs are unchanged. A July-dated receipt recorded after close changes the live July 30 aging (600.00) but July 31 still reads as closed (1,000.00).",
+            "Backdated correction: reopening July with a reason, adding a late 250.00 invoice and reclosing leaves closed/reopened(reason)/closed on record, retains both saved AR aging versions, and July reads the reclose (1,250.00, as closed).",
+            "Same dated population for aging and close: aging and the AR/AP tie-outs read the ledger's removal date for voided/returned documents.",
+            "Regression: HIST-01, DIM-01, CAP-01, BILL-01, YEAR-01, BANK-01, STATUS-01 pass; CLOSE-01, RACE-01, WIP-01 pass every implemented subcase; test:financials 2734 pass / 0 fail."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-07-history/BANK-01.json sha256:18266aad3ea9527c94bb591fba87d307be539981dab11c3f6bb33d58cd3bef37",
+            "docs/books-evidence/2026-10-07-history/BILL-01.json sha256:0a838443b9dfdb843854875d226d51d7e9924f44de982415714264638f703fe7",
+            "docs/books-evidence/2026-10-07-history/CAP-01.json sha256:8c879bba87caff540b659a1d35709f2baed4f0cccb50b7fb62e1a30e5b248bdd",
+            "docs/books-evidence/2026-10-07-history/CLOSE-01.json sha256:56b59afa64ffa422faed7636e04987ccc29904b78ee0260229e5e4b26ed1cfd8",
+            "docs/books-evidence/2026-10-07-history/DIM-01.json sha256:ee8136b08e27f33b3b701b328473ac9771c939fd68c9e1646576b56cfefda96a",
+            "docs/books-evidence/2026-10-07-history/HIST-01-baseline-before-fix.json sha256:dbf6215fada92194217c768d334fb2d9a012622d0a328939cbe92f103148aeb1",
+            "docs/books-evidence/2026-10-07-history/HIST-01.json sha256:adf2278c2411e347b07a638f8df92b465e473c949ad346e8c82a84a7c2a10a74",
+            "docs/books-evidence/2026-10-07-history/RACE-01.json sha256:9716f68b47dfca1b15371a2214a152e2d078f8fd70a365fc22d3f29dd2abe9fa",
+            "docs/books-evidence/2026-10-07-history/STATUS-01.json sha256:f357e7f98e6a27633f8e14187d8bcfdd160f44b5f45962860311e4d74b53e353",
+            "docs/books-evidence/2026-10-07-history/WIP-01.json sha256:ce43aa41f28ab2e678a15e476490917f7ab6037aae02a94325290302ae27a38e",
+            "docs/books-evidence/2026-10-07-history/YEAR-01.json sha256:462c98aac5a593ce272dc3f13523dad88dc0a66bc1d95ac3c14c61632e971d09"
+          ]
         }
       ],
       "remaining_criteria": [
-        "a later approval/void/rejection/allocation/policy change cannot silently alter an older frozen report",
-        "a valid backdated correction creates an auditable restatement/reclose",
         "unknown legacy evidence is explicit and remediable through reviewed attribution",
-        "same dated source population drives aging, statements and close"
+        "same dated source population drives customer statements as well as aging and close"
       ],
       "external_dependency": null,
       "reviewer": null,
@@ -4375,8 +4415,8 @@
       "id": "B03.2",
       "workstream": "B03",
       "title": "Shared historical subledger engine",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All B03.2 criteria verified locally (2026-10-07): HIST-01 cutoffs, void-before-close, volume aging, frozen aging; existing aging unit suite. The live aging report omits projects excluded from reporting by design; the aging saved at close (the accounting record) includes them. Migration 20261007010000 pending production with the deploy.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "detail aging sums to control GL at every tested cutoff",
@@ -4391,25 +4431,64 @@
         "MIG-01",
         "RESTORE-01"
       ],
-      "evidence": [],
-      "remaining_criteria": [
-        "detail aging sums to control GL at every tested cutoff",
-        "due-date bands and negatives are correct",
-        "future documents/payments excluded",
-        "rejected/voided statuses reconstructed at cutoff",
-        "over 1,000 records and ties at page boundaries return exactly once",
-        "complete source detail survives chart/status changes"
+      "evidence": [
+        {
+          "verified_at": "2026-10-07T11:53:41.875125+00:00",
+          "implemented_paths": [
+            "lib/services/books/subledger-settlements.ts",
+            "lib/services/books/closed-period-guard.ts",
+            "lib/services/books/closed-snapshots.ts",
+            "lib/services/reports/ar-aging.ts",
+            "lib/services/reports/ap-aging.ts",
+            "lib/services/books/verifier.ts",
+            "lib/services/books/opening-balances.ts",
+            "lib/services/books/cutover.ts",
+            "supabase/migrations/20261007010000_books_opening_items_as_documented.sql",
+            "scripts/books-acceptance/scenarios/hist-01.cjs",
+            "docs/books-period-close.md"
+          ],
+          "test_scenario_ids": [
+            "HIST-01"
+          ],
+          "commands": [
+            "scenario-runner HIST-01 (and full regression)",
+            "pnpm test:financials",
+            "node --test tests/books-historical-aging.test.js"
+          ],
+          "observed_results": [
+            "Detail aging equals the control accounts at every tested cutoff: July 15 AR 1,000.00 / AP 500.00; July 31 AR 1,200.00 / AP 500.00; August 31 AR 1,900.00 / AP 800.00, each equal to 1100/2000 with both tie-outs passing and the buckets adding to the total (600.00 eleven days overdue at July 31; 1,300.00 in 1-30 at August 31).",
+            "Future documents and payments excluded (an August invoice absent at July 31; an August credit absent at July 31); credits and negatives covered by the aging unit suite.",
+            "Voided status reconstructed by the ledger's date: a July invoice voided in August before July closed is absent at July 31 in the ledger, the aging and the tie-out (on the old code the tie-out failed by 400.00).",
+            "1,200 bills sharing date, due date and update time age exactly once (1,200 rows, 1,200 distinct, 1,200,000.00 = ledger AP, tie-out passed).",
+            "Source detail survives status changes: a closed month's aging is the saved one.",
+            "Regression: HIST-01, DIM-01, CAP-01, BILL-01, YEAR-01, BANK-01, STATUS-01 pass; CLOSE-01, RACE-01, WIP-01 pass every implemented subcase; test:financials 2734 pass / 0 fail."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-07-history/BANK-01.json sha256:18266aad3ea9527c94bb591fba87d307be539981dab11c3f6bb33d58cd3bef37",
+            "docs/books-evidence/2026-10-07-history/BILL-01.json sha256:0a838443b9dfdb843854875d226d51d7e9924f44de982415714264638f703fe7",
+            "docs/books-evidence/2026-10-07-history/CAP-01.json sha256:8c879bba87caff540b659a1d35709f2baed4f0cccb50b7fb62e1a30e5b248bdd",
+            "docs/books-evidence/2026-10-07-history/CLOSE-01.json sha256:56b59afa64ffa422faed7636e04987ccc29904b78ee0260229e5e4b26ed1cfd8",
+            "docs/books-evidence/2026-10-07-history/DIM-01.json sha256:ee8136b08e27f33b3b701b328473ac9771c939fd68c9e1646576b56cfefda96a",
+            "docs/books-evidence/2026-10-07-history/HIST-01-baseline-before-fix.json sha256:dbf6215fada92194217c768d334fb2d9a012622d0a328939cbe92f103148aeb1",
+            "docs/books-evidence/2026-10-07-history/HIST-01.json sha256:adf2278c2411e347b07a638f8df92b465e473c949ad346e8c82a84a7c2a10a74",
+            "docs/books-evidence/2026-10-07-history/RACE-01.json sha256:9716f68b47dfca1b15371a2214a152e2d078f8fd70a365fc22d3f29dd2abe9fa",
+            "docs/books-evidence/2026-10-07-history/STATUS-01.json sha256:f357e7f98e6a27633f8e14187d8bcfdd160f44b5f45962860311e4d74b53e353",
+            "docs/books-evidence/2026-10-07-history/WIP-01.json sha256:ce43aa41f28ab2e678a15e476490917f7ab6037aae02a94325290302ae27a38e",
+            "docs/books-evidence/2026-10-07-history/YEAR-01.json sha256:462c98aac5a593ce272dc3f13523dad88dc0a66bc1d95ac3c14c61632e971d09"
+          ]
+        }
       ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-07T11:53:41.875125+00:00"
     },
     {
       "id": "B03.3",
       "workstream": "B03",
       "title": "Opening outstanding-item migration and reviewed legacy attribution",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All B03.3 criteria verified locally (2026-10-07): HIST-01 opening-items, BANK-01 imported outstanding bank items. Migration 20261007010000 pending production with the deploy.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "approved opening detail totals match the opening batch and bank statements",
@@ -4423,17 +4502,57 @@
         "MIG-01",
         "RESTORE-01"
       ],
-      "evidence": [],
-      "remaining_criteria": [
-        "approved opening detail totals match the opening batch and bank statements",
-        "first post-cutover collection/payment/release clears only the correct item",
-        "subsequent close ties",
-        "missing or contradictory evidence prevents cutover with a concrete remediation list",
-        "no fabricated date or owner"
+      "evidence": [
+        {
+          "verified_at": "2026-10-07T11:53:41.875125+00:00",
+          "implemented_paths": [
+            "lib/services/books/subledger-settlements.ts",
+            "lib/services/books/closed-period-guard.ts",
+            "lib/services/books/closed-snapshots.ts",
+            "lib/services/reports/ar-aging.ts",
+            "lib/services/reports/ap-aging.ts",
+            "lib/services/books/verifier.ts",
+            "lib/services/books/opening-balances.ts",
+            "lib/services/books/cutover.ts",
+            "supabase/migrations/20261007010000_books_opening_items_as_documented.sql",
+            "scripts/books-acceptance/scenarios/hist-01.cjs",
+            "docs/books-period-close.md"
+          ],
+          "test_scenario_ids": [
+            "HIST-01",
+            "BANK-01"
+          ],
+          "commands": [
+            "scenario-runner HIST-01 (and full regression)",
+            "pnpm test:financials"
+          ],
+          "observed_results": [
+            "Opening detail matches the batch: two open invoices (500.00, 300.00) and an open bill (200.00) come over as documents with their own numbers, dates and parties; at cutover AR aging 800.00 = ledger 1100, AP 200.00 = ledger 2000, both tie-outs pass; OLD-101 ages 21 days past due by its own due date. Bank outstanding items clear on the first statements (BANK-01 imported-outstanding-items).",
+            "The first collection clears only its item: collecting OLD-102 on July 20 leaves OLD-101 open at 500.00 (31-60) and OLD-102 paid.",
+            "The subsequent close ties: July closes with its undeposited receipt supported; AR and AP tie-outs pass at July 31.",
+            "Missing evidence is refused with a concrete list: a batch with an invoice line naming nothing and a bill line without vendor or job is refused with all 7 fixes listed; cutover blockers now read as fixes rather than codes.",
+            "No fabricated date or owner: the posting function no longer invents a document number, uses the cutover date as a document or due date, or takes the project's client as the customer; a missing due date ages as 'no due date'.",
+            "Regression: HIST-01, DIM-01, CAP-01, BILL-01, YEAR-01, BANK-01, STATUS-01 pass; CLOSE-01, RACE-01, WIP-01 pass every implemented subcase; test:financials 2734 pass / 0 fail."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-07-history/BANK-01.json sha256:18266aad3ea9527c94bb591fba87d307be539981dab11c3f6bb33d58cd3bef37",
+            "docs/books-evidence/2026-10-07-history/BILL-01.json sha256:0a838443b9dfdb843854875d226d51d7e9924f44de982415714264638f703fe7",
+            "docs/books-evidence/2026-10-07-history/CAP-01.json sha256:8c879bba87caff540b659a1d35709f2baed4f0cccb50b7fb62e1a30e5b248bdd",
+            "docs/books-evidence/2026-10-07-history/CLOSE-01.json sha256:56b59afa64ffa422faed7636e04987ccc29904b78ee0260229e5e4b26ed1cfd8",
+            "docs/books-evidence/2026-10-07-history/DIM-01.json sha256:ee8136b08e27f33b3b701b328473ac9771c939fd68c9e1646576b56cfefda96a",
+            "docs/books-evidence/2026-10-07-history/HIST-01-baseline-before-fix.json sha256:dbf6215fada92194217c768d334fb2d9a012622d0a328939cbe92f103148aeb1",
+            "docs/books-evidence/2026-10-07-history/HIST-01.json sha256:adf2278c2411e347b07a638f8df92b465e473c949ad346e8c82a84a7c2a10a74",
+            "docs/books-evidence/2026-10-07-history/RACE-01.json sha256:9716f68b47dfca1b15371a2214a152e2d078f8fd70a365fc22d3f29dd2abe9fa",
+            "docs/books-evidence/2026-10-07-history/STATUS-01.json sha256:f357e7f98e6a27633f8e14187d8bcfdd160f44b5f45962860311e4d74b53e353",
+            "docs/books-evidence/2026-10-07-history/WIP-01.json sha256:ce43aa41f28ab2e678a15e476490917f7ab6037aae02a94325290302ae27a38e",
+            "docs/books-evidence/2026-10-07-history/YEAR-01.json sha256:462c98aac5a593ce272dc3f13523dad88dc0a66bc1d95ac3c14c61632e971d09"
+          ]
+        }
       ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-07T11:53:41.875125+00:00"
     },
     {
       "id": "B04.1",
