@@ -275,9 +275,12 @@ async function billedCostCorrections(kit, expected, check) {
 }
 
 // Billing past the guaranteed maximum is refused unless someone overrides it on
-// record, and the savings settlement runs once even when asked twice at once.
+// record; an approved change order raising the GMP lifts the cap. At completion
+// the savings are the GMP less everything billed within it: settled once, only
+// after every cost inside the GMP is billed, with only the builder's share billed.
 async function gmpCapAndSettlement(kit, expected, check) {
   const input = expected.inputs
+  const { q } = kit
   const org = await greenfieldOrg(kit, { name: "REV-01 GMP", periods: ["2026-10"] })
   const job = costJob(kit, org, { name: "GMP clinic", billingModel: "cost_plus_gmp", markupPercent: input.markupPercent, gmpCents: input.gmpCents, ownerPct: 50, builderPct: 50 })
   await billableBill(kit, org, job, { number: "GMP-1", date: "2026-10-01", cents: input.firstCents })
@@ -285,16 +288,33 @@ async function gmpCapAndSettlement(kit, expected, check) {
   await billableBill(kit, org, job, { number: "GMP-2", date: "2026-10-02", cents: input.secondCents })
   const overCap = await refusal(() => billCosts(kit, org, job, { from: "2026-10-01", to: "2026-10-07" }))
   const overridden = await billCosts(kit, org, job, { from: "2026-10-01", to: "2026-10-07", overrideGmpCap: true })
-  const overrideEvents = Number(kit.rows(`select count(*)::int n from public.events where org_id=${kit.q(org.orgId)} and event_type='gmp_cap_overridden'`)[0].n)
-  // A smaller job finishes under its GMP and settles its savings; two requests race.
+  const overrideEvents = Number(kit.rows(`select count(*)::int n from public.events where org_id=${q(org.orgId)} and event_type='gmp_cap_overridden'`)[0].n)
+  // An approved change order raises the GMP; the next cost bills without an override.
+  const changeOrderId = randomUUID()
+  kit.sql(`begin;
+insert into public.change_orders(id,org_id,project_id,title,status,lifecycle,total_cents) values(${q(changeOrderId)},${q(org.orgId)},${q(job.projectId)},'Added exam room','approved','approved',${input.changeOrderGmpCents});
+insert into public.change_order_lines(org_id,change_order_id,description,gmp_classification,gmp_impact,gmp_delta_cents) values(${q(org.orgId)},${q(changeOrderId)},'Added exam room','inside_gmp','increase_gmp',${input.changeOrderGmpCents});
+commit;`)
+  await billableBill(kit, org, job, { number: "GMP-3", date: "2026-10-03", cents: input.thirdCents })
+  const afterChangeOrder = await refusal(() => billCosts(kit, org, job, { from: "2026-10-01", to: "2026-10-07" }))
+  const revisedGmp = (await kit.as(org.owner, () => app("gmp-control").getProjectGmpControlSummary(job.projectId))).revised_gmp_cents
+  // A smaller job finishes under its GMP and settles; two requests race.
   const small = costJob(kit, org, { name: "GMP fit-out", billingModel: "cost_plus_gmp", markupPercent: input.markupPercent, gmpCents: input.gmpCents, ownerPct: 50, builderPct: 50 })
-  kit.sql(`update public.projects set status='completed' where id=${kit.q(small.projectId)};`)
+  await billableBill(kit, org, small, { number: "FIT-1", date: "2026-10-01", cents: input.smallCents })
+  await billCosts(kit, org, small, { from: "2026-10-01", to: "2026-10-07" })
+  await billableBill(kit, org, small, { number: "FIT-2", date: "2026-10-02", cents: input.smallLateCents })
+  kit.sql(`update public.projects set status='completed' where id=${q(small.projectId)};`)
   const settle = () => refusal(() => kit.as(org.owner, () => app("gmp-control").settleGmpSavings(small.projectId)))
+  const withUnbilled = await settle()
+  await billCosts(kit, org, small, { from: "2026-10-01", to: "2026-10-07" })
   const outcomes = (await Promise.all([settle(), settle()])).map((outcome) => outcome === "allowed" ? "settled" : /already/.test(outcome) ? "refused: already settling or settled" : outcome).sort()
-  const settlementInvoices = Number(kit.rows(`select count(*)::int n from public.invoices where org_id=${kit.q(org.orgId)} and project_id=${kit.q(small.projectId)}`)[0].n)
-  check.equal("the GMP cap holds unless overridden on record, and savings settle once", expected.expected, {
+  const builderInvoices = kit.rows(`select total_cents::int n from public.invoices where org_id=${q(org.orgId)} and project_id=${q(small.projectId)} and title='Builder GMP savings share'`).map((row) => row.n)
+  const settlement = kit.rows(`select snapshot->'gmp_savings_settlement' s from public.contracts where id=${q(small.contractId)}`)[0].s
+  check.equal("the GMP cap holds unless overridden or raised by change order, and savings settle once on what was billed", expected.expected, {
     firstInvoice: first.totalBillableCents, overCap: /exceed the revised GMP/.test(overCap) ? "refused" : overCap,
-    overriddenInvoice: overridden.totalBillableCents, overrideEvents, settlement: outcomes, settlementInvoices,
+    overriddenInvoice: overridden.totalBillableCents, overrideEvents, revisedGmp, afterChangeOrder,
+    settleWithUnbilledCost: withUnbilled, settlement: outcomes, builderInvoices,
+    recorded: { billed: settlement.billed_inside_gmp_cents, savings: settlement.savings_cents, owner: settlement.owner_savings_cents, builder: settlement.builder_savings_cents },
   })
   return { orgId: org.orgId }
 }

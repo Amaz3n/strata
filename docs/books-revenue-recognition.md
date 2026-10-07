@@ -185,9 +185,14 @@ billing is never revenue twice:
   The credited original frees its source, so the corrected cost bills again.
   Voiding an invoice whose cost was already credited withdraws the unbilled credit,
   and is refused when that credit is on another invoice.
-- **GMP:** billing past the revised GMP is refused unless overridden, and the
-  override is recorded. Savings settlement claims itself before creating anything, so
-  it happens once even when requested twice.
+- **GMP:** the contract sum is cost plus fee, not to exceed the GMP (revised by
+  approved change orders). Billing past it is refused unless overridden, and the
+  override is recorded. At completion, savings are the GMP less everything billed
+  within it (inside-GMP costs with their markup, and earned fixed fee), so
+  settlement refuses while any inside-GMP cost is unbilled. The builder's share
+  is billed as one invoice. The owner's share needs none, because cost-plus never
+  billed it, and it is recorded on the contract. Settlement claims itself before
+  creating anything, so it happens once even when requested twice.
 - Payroll corrections keep billed T&M rates; other jobs stop for a billing
   review (payroll is not in the first release).
 

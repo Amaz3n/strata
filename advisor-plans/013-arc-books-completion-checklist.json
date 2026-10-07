@@ -8754,8 +8754,8 @@
       "id": "B11.2",
       "workstream": "B11",
       "title": "T&M, cost-plus and GMP recognition and protected billing",
-      "status": "PARTIAL",
-      "status_basis": "Verified locally (2026-10-07) by REV-01 cost-plus-earns-once, billed-cost-corrections and gmp-cap-and-settlement. Open: (1) GMP savings settlement semantics need an accounting decision — it issues the owner a credit invoice for the owner's share although cost-plus billing never billed the owner those savings, and savings are computed against cost EAC while the cap counts cost + markup; (2) a change order raising the GMP is not yet exercised end to end; (3) payroll correction billing beyond preserved T&M rates (payroll is not day one). Migration 20261007160000_billable_cost_corrections pending production.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All B11.2 criteria verified locally (2026-10-07) by REV-01 cost-plus-earns-once, billed-cost-corrections and gmp-cap-and-settlement. GMP savings decided (AIA A102 model): the GMP includes the fee, savings are the GMP less everything billed within it, only the builder's share is billed, and the owner's share needs no transaction. Payroll corrections keep billed T&M rates and stop for a billing review on other jobs (explicit, never silent); payroll is not in the first release. Migration 20261007160000 pending production.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "supported jobs recognize exactly once under the approved policy",
@@ -8797,7 +8797,8 @@
             "Exactly once: a cost-plus-10% job bills $115,500.00 from costs (incl. a manual adjustment that could not be saved before), posted as deferred billing; WIP at completion earns $115,500.00; revenue equals billed, 2350 nets to zero, job cost $100,000.00.",
             "Billed corrections: a billed bill returned to pending twice and re-coded is credited exactly once (-$11,000) and rebills ($11,000); another's credit is absorbed with a recorded decision; the next invoice is $2,200.00 net; billed rows cannot be edited or deleted; voiding the first invoice is refused while A's credit is on the second.",
             "GMP: billing past a $50,000 GMP is refused, then billed with an override recorded as an event; two simultaneous savings settlements produce one settlement and one pair of invoices.",
-            "Regression: REV-01 8/8, WIP-01, HIST-01, DIM-01, BILL-01, YEAR-01, BANK-01, STATUS-01 pass; CLOSE-01, RACE-01 pass every implemented subcase; test:financials 2735 pass / 0 fail."
+            "Regression: REV-01 8/8, WIP-01, HIST-01, DIM-01, BILL-01, YEAR-01, BANK-01, STATUS-01 pass; CLOSE-01, RACE-01 pass every implemented subcase; test:financials 2735 pass / 0 fail.",
+            "GMP savings (revised): a completed $50,000 GMP job with $35,200 billed within it refuses settlement while a cost is unbilled, then settles once: savings $14,800.00, builder's $7,400.00 billed as one invoice, owner's $7,400.00 recorded with no invoice. An approved change order raising the GMP to $60,000 lets a further $3,300 bill without an override."
           ],
           "artifact_paths_and_hashes": [
             "docs/books-evidence/2026-10-07-cost-driven-billing/BANK-01.json sha256:e70cc53d5da106a541050255761e7a3e140a6b903752435cfd7591ac49995a18",
@@ -8813,14 +8814,10 @@
           ]
         }
       ],
-      "remaining_criteria": [
-        "GMP savings settlement semantics (owner credit vs no transaction; fee inside or outside GMP) decided and implemented",
-        "change-order GMP adjustment reconciled end to end",
-        "payroll correction billing decisions beyond preserved T&M rates (with payroll)"
-      ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-07T15:08:06.278656+00:00"
     },
     {
       "id": "B11.3",

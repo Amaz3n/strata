@@ -169,19 +169,34 @@
         "markupPercent": 10,
         "gmpCents": 5000000,
         "firstCents": 4000000,
-        "secondCents": 1000000
+        "secondCents": 1000000,
+        "changeOrderGmpCents": 1000000,
+        "thirdCents": 300000,
+        "smallCents": 3000000,
+        "smallLateCents": 200000
       },
-      "derivation": "A $50,000.00 GMP job bills $40,000 at cost + 10% = $44,000.00. A further $10,000 cost ($11,000 billable) would bring billing to $55,000, over the GMP: refused, then billed with an explicit override that is recorded as an event. A completed GMP job with savings settles once even when two settlement requests race: one settles, the other is refused, and one owner credit and one builder share invoice exist.",
+      "derivation": "A $50,000.00 GMP (cost plus fee, not to exceed) bills $40,000 at cost + 10% = $44,000.00. A further $11,000 would reach $55,000: refused, then billed with an override recorded as an event. An approved change order raises the GMP by $10,000 to $60,000, so a further $3,300 ($58,300 billed) bills without an override. A second $50,000 GMP job bills $33,000 and then has a $2,200 cost still unbilled when it completes: settlement is refused until it is billed. Billed within the GMP is then $35,200, so savings are $14,800.00, split 50/50: the builder's $7,400.00 is billed once (one invoice even though two requests race); the owner's $7,400.00 was never billed and needs no invoice.",
       "expected": {
         "firstInvoice": 4400000,
         "overCap": "refused",
         "overriddenInvoice": 1100000,
         "overrideEvents": 1,
+        "revisedGmp": 6000000,
+        "afterChangeOrder": "allowed",
+        "settleWithUnbilledCost": "Bill the 1 remaining cost inside the GMP before settling savings.",
         "settlement": [
           "refused: already settling or settled",
           "settled"
         ],
-        "settlementInvoices": 2
+        "builderInvoices": [
+          740000
+        ],
+        "recorded": {
+          "billed": 3520000,
+          "savings": 1480000,
+          "owner": 740000,
+          "builder": 740000
+        }
       }
     }
   }

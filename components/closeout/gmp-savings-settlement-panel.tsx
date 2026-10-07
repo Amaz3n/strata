@@ -85,7 +85,7 @@ export function GmpSavingsSettlementPanel({
           </div>
           <h2 className="mt-3 text-xl font-semibold tracking-tight">GMP savings settlement</h2>
           <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-            Final savings are calculated from the GMP control summary and recorded back to the active contract.
+            Savings are the GMP less everything billed within it. The builder&apos;s share is billed; the owner&apos;s share was never billed, so it needs no invoice. Bill every remaining cost first.
           </p>
         </div>
         <Button type="button" onClick={handleSettle} disabled={!canSettle || isPending}>
@@ -96,7 +96,7 @@ export function GmpSavingsSettlementPanel({
 
       <div className="mt-4 grid gap-px border bg-border sm:grid-cols-4">
         <Metric label="Forecast savings" value={formatMoney(summary.savings_cents)} />
-        <Metric label="Owner credit" value={formatMoney(summary.owner_savings_cents)} />
+        <Metric label="Owner keeps" value={formatMoney(summary.owner_savings_cents)} />
         <Metric label="Builder share" value={formatMoney(summary.builder_savings_cents)} />
         <Metric label="Contingency left" value={formatMoney(summary.contingency_remaining_cents)} />
       </div>

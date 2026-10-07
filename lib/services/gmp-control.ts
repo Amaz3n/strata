@@ -11,6 +11,7 @@ import { recordEvent } from "@/lib/services/events"
 import { createInvoice } from "@/lib/services/invoices"
 import { getNextInvoiceNumber } from "@/lib/services/invoice-numbers"
 import { resolveAccountingTarget } from "@/lib/services/accounting-target"
+import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
 
 export type GmpClassification = "inside_gmp" | "outside_gmp"
 export type GmpImpact = "none" | "increase_gmp" | "decrease_gmp" | "outside_gmp"
@@ -51,7 +52,6 @@ export type ProjectGmpControlSummary = {
   builder_savings_cents: number
   savings_settled_at?: string | null
   savings_settlement_invoice_ids?: string[]
-  savings_settlement_credit_memo_id?: string | null
   savings_settlement_builder_invoice_id?: string | null
   percent_of_gmp: number | null
   status: "ok" | "watch" | "overrun" | "not_configured"
@@ -83,7 +83,6 @@ export type GmpContingencyEntry = {
 
 export type GmpSavingsSettlementResult = {
   summary: ProjectGmpControlSummary
-  owner_credit_invoice: Invoice | null
   builder_share_invoice: Invoice | null
   savings_settled_at: string
 }
@@ -385,8 +384,6 @@ function getSavingsSettlementSnapshot(contract: Contract | null) {
   return {
     savings_settled_at: typeof snapshot.savings_settled_at === "string" ? snapshot.savings_settled_at : null,
     savings_settlement_invoice_ids: invoiceIds,
-    savings_settlement_credit_memo_id:
-      typeof settlement.owner_credit_invoice_id === "string" ? settlement.owner_credit_invoice_id : null,
     savings_settlement_builder_invoice_id:
       typeof settlement.builder_share_invoice_id === "string" ? settlement.builder_share_invoice_id : null,
   }
@@ -448,7 +445,6 @@ export async function getProjectGmpControlSummary(
       builder_savings_cents: 0,
       savings_settled_at: null,
       savings_settlement_invoice_ids: [],
-      savings_settlement_credit_memo_id: null,
       savings_settlement_builder_invoice_id: null,
       percent_of_gmp: null,
       status: "not_configured",
@@ -729,14 +725,32 @@ export async function recordGmpContingencyDrawdown(input: unknown, orgId?: strin
   }
 }
 
+/**
+ * What the owner has been billed within the GMP: inside-GMP costs on invoices
+ * (with their markup, credits included) and earned fixed-fee lines on issued
+ * invoices; and how many inside-GMP costs are still unbilled.
+ */
+async function loadGmpBilledPosition({ supabase, orgId, projectId }: { supabase: SupabaseClient; orgId: string; projectId: string }) {
+  const [billed, open, feeLines] = await Promise.all([
+    supabase.from("billable_costs").select("billable_cents").eq("org_id", orgId).eq("project_id", projectId)
+      .eq("gmp_classification", "inside_gmp").eq("status", "billed"),
+    supabase.from("billable_costs").select("id", { count: "exact", head: true }).eq("org_id", orgId).eq("project_id", projectId)
+      .eq("gmp_classification", "inside_gmp").in("status", ["open", "locked"]),
+    supabase.from("invoice_lines").select("quantity, unit_price_cents, invoice:invoices!inner(project_id, status)").eq("org_id", orgId)
+      .eq("invoice.project_id", projectId).in("invoice.status", [...BILLED_INVOICE_STATUSES]).eq("metadata->>fee_line_kind", "fixed_fee_earned"),
+  ])
+  if (billed.error || open.error || feeLines.error) throw new Error(`Failed to load GMP billing: ${(billed.error ?? open.error ?? feeLines.error)?.message}`)
+  const costCents = (billed.data ?? []).reduce((sum, row) => sum + Number(row.billable_cents ?? 0), 0)
+  const feeCents = (feeLines.data ?? []).reduce((sum, row) => sum + Math.round(Number(row.quantity ?? 0) * Number(row.unit_price_cents ?? 0)), 0)
+  return { billedInsideGmpCents: costCents + feeCents, openInsideGmpCount: open.count ?? 0 }
+}
+
 async function createGmpSettlementInvoice(args: {
   orgId: string
   project: ProjectRow
   title: string
   description: string
-  unit: string
   amountCents: number
-  sourceType?: "manual" | "fee"
 }) {
   const nextNumber = await getNextInvoiceNumber(args.orgId, args.project.id)
   const today = new Date().toISOString().slice(0, 10)
@@ -752,7 +766,7 @@ async function createGmpSettlementInvoice(args: {
       issue_date: today,
       due_date: today,
       tax_rate: 0,
-      source_type: args.sourceType ?? "manual",
+      source_type: "fee",
       customer_name: args.project.qbo_customer_name ?? undefined,
       qbo_customer_id: args.project.qbo_customer_id ?? undefined,
       qbo_customer_name: args.project.qbo_customer_name ?? undefined,
@@ -760,8 +774,8 @@ async function createGmpSettlementInvoice(args: {
         {
           description: args.description,
           quantity: 1,
-          unit: args.unit,
-          unit_cost: args.amountCents < 0 ? -formatInvoiceMoney(args.amountCents) : formatInvoiceMoney(args.amountCents),
+          unit: "fee",
+          unit_cost: formatInvoiceMoney(args.amountCents),
           taxable: false,
         },
       ],
@@ -800,12 +814,18 @@ export async function settleGmpSavings(projectId: string, orgId?: string): Promi
   if (!summary.enabled) {
     throw new Error(summary.reason ?? "GMP savings settlement is only available on GMP projects.")
   }
-  if (summary.savings_cents <= 0) {
+  // The contract sum is cost plus fee, not to exceed the GMP. At completion the
+  // savings are the GMP less everything billed within it, so every cost inside
+  // the GMP must be billed first.
+  const final = await loadGmpBilledPosition({ supabase, orgId: resolvedOrgId, projectId })
+  if (final.openInsideGmpCount > 0) {
+    throw new Error(`Bill the ${final.openInsideGmpCount} remaining cost${final.openInsideGmpCount === 1 ? "" : "s"} inside the GMP before settling savings.`)
+  }
+  const savingsCents = Math.max(0, summary.revised_gmp_cents - final.billedInsideGmpCents)
+  if (savingsCents <= 0) {
     throw new Error("There are no GMP savings to settle.")
   }
-
-  const ownerShareCents = summary.owner_savings_cents
-  const builderShareCents = summary.builder_savings_cents
+  const { owner_savings_cents: ownerShareCents, builder_savings_cents: builderShareCents } = calculateSavingsSplit({ savingsCents, contract })
   if (ownerShareCents <= 0 && builderShareCents <= 0) {
     throw new Error("The active contract savings split does not allocate any savings to settle.")
   }
@@ -830,22 +850,10 @@ export async function settleGmpSavings(projectId: string, orgId?: string): Promi
     await supabase.from("contracts").update({ snapshot: contract.snapshot ?? {} })
       .eq("org_id", resolvedOrgId).eq("id", contract.id).eq("snapshot->>gmp_savings_settlement_claimed_at", claimedAt)
   }
-  let ownerCreditInvoice: Awaited<ReturnType<typeof createGmpSettlementInvoice>> | null
   let builderShareInvoice: Awaited<ReturnType<typeof createGmpSettlementInvoice>> | null
   try {
-    ownerCreditInvoice =
-      ownerShareCents > 0
-        ? await createGmpSettlementInvoice({
-            orgId: resolvedOrgId,
-            project,
-            title: "GMP savings credit",
-            description: "Owner GMP savings credit",
-            unit: "credit",
-            amountCents: -Math.abs(ownerShareCents),
-            sourceType: "manual",
-          })
-        : null
-
+    // The owner's share was never billed (cost-plus bills actual cost), so it
+    // needs no invoice; only the builder's share is billed.
     builderShareInvoice =
       builderShareCents > 0
         ? await createGmpSettlementInvoice({
@@ -853,9 +861,7 @@ export async function settleGmpSavings(projectId: string, orgId?: string): Promi
             project,
             title: "Builder GMP savings share",
             description: "Builder GMP savings share",
-            unit: "fee",
             amountCents: builderShareCents,
-            sourceType: "fee",
           })
         : null
   } catch (error) {
@@ -864,17 +870,18 @@ export async function settleGmpSavings(projectId: string, orgId?: string): Promi
   }
 
   const settledAt = new Date().toISOString()
-  const invoiceIds = [ownerCreditInvoice?.id, builderShareInvoice?.id].filter((value): value is string => Boolean(value))
+  const invoiceIds = builderShareInvoice?.id ? [builderShareInvoice.id] : []
   const before = contract as unknown as Record<string, unknown>
   const nextSnapshot = {
     ...claimedSnapshot,
     savings_settled_at: settledAt,
     gmp_savings_settlement: {
       settled_at: settledAt,
-      savings_cents: summary.savings_cents,
+      savings_cents: savingsCents,
+      billed_inside_gmp_cents: final.billedInsideGmpCents,
+      revised_gmp_cents: summary.revised_gmp_cents,
       owner_savings_cents: ownerShareCents,
       builder_savings_cents: builderShareCents,
-      owner_credit_invoice_id: ownerCreditInvoice?.id ?? null,
       builder_share_invoice_id: builderShareInvoice?.id ?? null,
       invoice_ids: invoiceIds,
     },
@@ -911,7 +918,7 @@ export async function settleGmpSavings(projectId: string, orgId?: string): Promi
     entityId: contract.id,
     payload: {
       project_id: projectId,
-      savings_cents: summary.savings_cents,
+      savings_cents: savingsCents,
       owner_savings_cents: ownerShareCents,
       builder_savings_cents: builderShareCents,
       invoice_ids: invoiceIds,
@@ -920,7 +927,6 @@ export async function settleGmpSavings(projectId: string, orgId?: string): Promi
 
   return {
     summary: await getProjectGmpControlSummary(projectId, resolvedOrgId),
-    owner_credit_invoice: ownerCreditInvoice,
     builder_share_invoice: builderShareInvoice,
     savings_settled_at: settledAt,
   }
