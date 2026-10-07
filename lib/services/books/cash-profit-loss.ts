@@ -12,10 +12,12 @@ const classificationSchema = z.object({ version: z.literal(1), normal_balance: z
 const entrySchema = z.object({ id: z.string(), status: z.string(), entry_date: z.string(), entry_kind: z.string(), source_type: z.string().nullable(), source_id: z.string().nullable(), reversal_of_entry_id: z.string().nullable() })
 const supported = new Set(["invoice", "invoice_payment", "vendor_bill", "bill_payment", "expense", "payment_reversal", "ap_fee_charge"])
 const noncashSources = new Set(["revenue_recognition", "year_end_close"])
+/** Sources a person enters directly against cash: a categorized bank line or a manual journal. */
+const directCashSources = new Set(["bank_transaction", "manual_adjustment"])
 function safe(value: bigint) { const result = Number(value); if (!Number.isSafeInteger(result)) throw new Error("Cash P&L exceeds safe integer cents"); return result }
 
 export type CashProfitLossEvidence = {
-  source: "invoice_income" | "paid_bill" | "direct_expense" | "settlement_ancillary"
+  source: "invoice_income" | "paid_bill" | "direct_expense" | "settlement_ancillary" | "direct_cash_entry"
   documentId: string; snapshotId: string; entryId: string | null;
   accountCode: string; kind: "income" | "cogs" | "expense" | "capitalized";
   amountCents: number; dimensions: Record<string, unknown>;
@@ -37,6 +39,7 @@ export function cashProfitAndLossFromSnapshot(orgId: string, startDate: string, 
   const lines = new Map<string, Record<string, unknown>[]>()
   for (const line of snapshot.tables.journal_lines) { const id = String(line.entry_id), list = lines.get(id) ?? []; list.push(line); lines.set(id, list) }
   const unsupported: string[] = []
+  const directCash: CashProfitLossEvidence[] = []
   let actualCashMovement = BigInt(0)
   // Earlier unsettled or clearing activity can affect today's cash attribution.
   // Checking only this period would hide unclassified opening history.
@@ -44,7 +47,8 @@ export function cashProfitAndLossFromSnapshot(orgId: string, startDate: string, 
     if (!["posted", "reversed"].includes(entry.status) || entry.entry_date > endDate) continue
     const original = entry.reversal_of_entry_id ? byId.get(entry.reversal_of_entry_id) : entry
     if (!original) throw new Error("Cash P&L correction has no original journal lineage")
-    let hasProfitLoss = false, hasCash = false
+    let hasProfitLoss = false, hasCash = false, onlyCashBalances = true
+    const profitLoss: Array<{ code: string; kind: "income" | "cogs" | "expense"; net: bigint; dimensions: Record<string, unknown>; projectId: unknown; lineNo: number }> = []
     const journalLines: Parameters<typeof assertBalancedJournalDraft>[0]["lines"] = []
     const lineNumbers = new Set<number>()
     if (!(lines.get(entry.id)?.length)) throw new Error("Cash P&L journal evidence is incomplete")
@@ -60,6 +64,10 @@ export function cashProfitAndLossFromSnapshot(orgId: string, startDate: string, 
       hasProfitLoss ||= ["income", "cogs", "expense"].includes(account.account_type)
       const cashAccount = account.account_type === "asset" && ["cash", "undeposited_funds"].includes(account.subtype)
       hasCash ||= cashAccount
+      if (["income", "cogs", "expense"].includes(account.account_type)) {
+        const net = BigInt(journalLines.at(-1)!.debitCents) - BigInt(journalLines.at(-1)!.creditCents)
+        profitLoss.push({ code: account.code, kind: account.account_type === "income" ? "income" : account.account_type === "cogs" ? "cogs" : "expense", net: account.account_type === "income" ? -net : net, dimensions, projectId: line.project_id, lineNo })
+      } else if (!cashAccount) onlyCashBalances = false
       if (cashAccount && entry.entry_date >= startDate && original.source_type !== "opening_balance") actualCashMovement += BigInt(journalLines.at(-1)!.debitCents) - BigInt(journalLines.at(-1)!.creditCents)
     }
     assertBalancedJournalDraft({ entryDate: entry.entry_date, entryKind: "operational", memo: "Cash P&L coverage", postingKey: entry.id, projectionVersion: 1, policyVersion: 1, lines: journalLines })
@@ -70,6 +78,15 @@ export function cashProfitAndLossFromSnapshot(orgId: string, startDate: string, 
     if (original.source_type === "cost_allocation" && original.entry_kind === "adjusting" && !hasCash) continue
     // Balance-only opening entries establish cutover balances, not new receipts.
     if (original.source_type === "opening_balance" && original.entry_kind === "opening" && !hasProfitLoss) continue
+    // A bank categorization or manual journal whose only balance-sheet side is cash
+    // is the same on either basis: its profit and loss counts on its date. One with
+    // any other balance-sheet leg (depreciation, accruals) needs reviewed treatment.
+    const directSource = original.source_type === null ? original.entry_kind === "adjusting" : directCashSources.has(original.source_type)
+    if (directSource && hasProfitLoss && hasCash && onlyCashBalances) {
+      if (entry.entry_date >= startDate) for (const row of profitLoss) directCash.push({ source: "direct_cash_entry", documentId: original.source_id ?? original.id, snapshotId: entry.id, entryId: entry.id,
+        accountCode: row.code, kind: row.kind, amountCents: safe(row.net), dimensions: { ...row.dimensions, ...(typeof row.projectId === "string" ? { project_id: row.projectId } : {}) } })
+      continue
+    }
     if (hasProfitLoss || hasCash) unsupported.push(`${original.source_type ?? "manual journal"}:${original.source_id ?? original.id}`)
   }
   if (unsupported.length) throw new Error(`Cash P&L requires reviewed cash treatment for ${Array.from(new Set(unsupported)).sort().join(", ")}`)
@@ -78,6 +95,7 @@ export function cashProfitAndLossFromSnapshot(orgId: string, startDate: string, 
     ...invoiceIncome.rows.filter(row => row.kind === "income").map(row => ({ source: "invoice_income" as const, documentId: row.documentId, snapshotId: row.snapshotId, entryId: null, accountCode: row.accountCode, kind: "income" as const, amountCents: row.amountCents, dimensions: row.dimensions ?? {} })),
     ...billCosts.rows.map(row => ({ source: "paid_bill" as const, documentId: row.documentId, snapshotId: row.snapshotId, entryId: null, accountCode: row.accountCode, kind: row.kind, amountCents: row.amountCents, dimensions: row.dimensions })),
     ...directExpenses.rows.map(row => ({ source: "direct_expense" as const, documentId: row.documentId, snapshotId: row.snapshotId, entryId: row.eventId, accountCode: row.accountCode, kind: row.kind, amountCents: row.amountCents, dimensions: row.dimensions })),
+    ...directCash,
     ...settlementAncillary.rows.map(row => ({ source: "settlement_ancillary" as const, documentId: row.sourceId, snapshotId: row.factId, entryId: row.entryId, accountCode: row.accountCode, kind: row.kind, amountCents: row.amountCents, dimensions: row.dimensions })),
   ]
   const grouped = new Map<string, { accountCode: string; kind: CashProfitLossEvidence["kind"]; dimensions: Record<string, unknown>; amount: bigint }>()

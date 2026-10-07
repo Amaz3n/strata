@@ -19,7 +19,11 @@ needed — please do not treat that list as exhaustive.
 
 **Scope of the first release:** accrual basis, single entity, USD. Payroll tax filing,
 inventory, consolidation, and multi-currency are out of scope. Cash-basis statements are
-a known gap (most small builders file cash-basis) and are tracked separately.
+a known gap (most small builders file cash-basis) and are tracked separately. The cash-basis
+P&L that exists counts income and cost from paid documents; a categorized bank line or
+manual journal whose only balance-sheet side is cash counts on its date by its
+accounts; anything else with a non-cash balance-sheet leg (depreciation, accruals) is
+refused until its cash treatment is reviewed, rather than guessed.
 
 ## 2. Two revenue bases, chosen per project
 

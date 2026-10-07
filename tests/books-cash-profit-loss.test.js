@@ -24,6 +24,12 @@ test('noncash revenue recognition is excluded only with complete balanced classi
  const mislabeled=fixture();unsupported(mislabeled,{source:'revenue_recognition',cash:false});mislabeled.tables.journal_entries.at(-1).entry_kind='adjustment';assert.throws(()=>run(mislabeled),/reviewed cash treatment/)
  const missing=fixture();unsupported(missing,{cash:false});delete missing.tables.journal_lines.at(-1).dimensions.books_account_classification;assert.throws(()=>run(missing),/historical account classification/)
 })
+test('a bank categorization or manual journal settled only in cash counts on its date; any other leg still needs review',()=>{
+ for(const source of ['bank_transaction','manual_adjustment']){const snapshot=fixture();unsupported(snapshot,{source});snapshot.tables.journal_entries.at(-1).entry_kind='adjusting'
+  const result=run(snapshot);assert.equal(result.revenueCents,100);assert.equal(result.netIncomeCents,97);assert.equal(result.evidence.at(-1).source,'direct_cash_entry')}
+ const accrual=fixture();unsupported(accrual,{source:'manual_adjustment',cash:false});accrual.tables.journal_entries.at(-1).entry_kind='adjusting';assert.throws(()=>run(accrual),/reviewed cash treatment/)
+ const earlier=fixture();unsupported(earlier,{source:'bank_transaction',date:'2026-08-01'});earlier.tables.journal_entries.at(-1).entry_kind='adjusting';assert.equal(run(earlier).revenueCents,0)
+})
 test('a cost allocation moves no cash, so cash basis keeps the cost where it was paid',()=>{
  const snapshot=fixture();unsupported(snapshot,{source:'cost_allocation',cash:false});snapshot.tables.journal_entries.at(-1).entry_kind='adjusting'
  assert.equal(run(snapshot).netIncomeCents,-3)
