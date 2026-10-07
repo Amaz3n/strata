@@ -1,6 +1,24 @@
 import type { StatementsForPeriod } from "@/lib/services/books/statement-detail";
+import { STATEMENT_DIMENSIONS } from "@/lib/services/books/statements";
 import type { ReportColumn, ReportResult, ReportRow } from "./types";
 import { formatMoneyCents } from "./format";
+
+/**
+ * The total row of a sliced P&L is the sum of its slices, and it must equal the
+ * unsliced statement: a slice that lost or doubled a line fails loudly rather
+ * than printing a total its rows do not add up to.
+ */
+function recombinedTotals(
+  entries: Array<{ revenueCents: number; cogsCents: number; expenseCents: number; netIncomeCents: number }>,
+  pnl: { revenueCents: number; cogsCents: number; expenseCents: number; netIncomeCents: number },
+) {
+  const sum = (key: "revenueCents" | "cogsCents" | "expenseCents" | "netIncomeCents") => entries.reduce((total, entry) => total + entry[key], 0)
+  const totals = { revenueCents: sum("revenueCents"), cogsCents: sum("cogsCents"), expenseCents: sum("expenseCents"), netIncomeCents: sum("netIncomeCents") }
+  for (const key of ["revenueCents", "cogsCents", "expenseCents", "netIncomeCents"] as const) {
+    if (totals[key] !== pnl[key]) throw new Error("The slices of this statement do not add up to its total. The statement was not shown; report this to Arc support.")
+  }
+  return { name: "Total", ...totals, grossProfitCents: totals.revenueCents - totals.cogsCents }
+}
 
 /** A single statement representation for the interactive canvas, snapshots and exports. */
 export function statementResult(
@@ -10,6 +28,8 @@ export function statementResult(
   monthly = false,
 ): ReportResult {
   const { profitLoss: pnl, balanceSheet: balance, trialBalance: trial } = data;
+  // A closed period is served as it was closed; the heading says so.
+  const asClosed = data.closedPeriod ? ` · as closed ${data.closedPeriod.closedAt.slice(0, 10)}` : "";
   const activity = (
     row: { accountId: string; code: string; name: string },
     startDate = data.startDate,
@@ -32,6 +52,7 @@ export function statementResult(
     cells: { name, amount },
   });
   if (slug === "books-profit-loss") {
+    const sliceDimension = STATEMENT_DIMENSIONS.find((key) => key === dimension);
     if (dimension !== "account") {
       const entries =
         dimension === "project"
@@ -42,7 +63,7 @@ export function statementResult(
             }))
           : (pnl.byDimension[dimension] ?? []);
       return {
-        subtitle: `${data.startDate} through ${data.endDate} · accrual`,
+        subtitle: `${data.startDate} through ${data.endDate} · accrual${asClosed}`,
         tables: [
           {
             key: "dimensions",
@@ -68,7 +89,7 @@ export function statementResult(
               })),
             ],
             rows: entries.map((p) => ({
-              key: p.key,
+              key: p.key || "unassigned",
               cells: {
                 name: p.label,
                 revenueCents: p.revenueCents,
@@ -77,15 +98,21 @@ export function statementResult(
                 expenseCents: p.expenseCents,
                 netIncomeCents: p.netIncomeCents,
               },
+              // Each slice opens per account, and each account opens the lines
+              // carrying this value (or none, for the unassigned slice).
+              children: sliceDimension && "accounts" in p ? p.accounts.map((account) => ({
+                key: `${p.key || "unassigned"}:${account.accountId}`,
+                activity: { ...activity(account), dimension: { key: sliceDimension, value: p.key === "" ? null : p.key, label: p.label } },
+                cells: {
+                  name: `${account.code}  ${account.name}`,
+                  revenueCents: account.accountType === "income" ? account.balanceCents : null,
+                  cogsCents: account.accountType === "cogs" ? account.balanceCents : null,
+                  expenseCents: account.accountType === "expense" ? account.balanceCents : null,
+                  netIncomeCents: account.accountType === "income" ? account.balanceCents : -account.balanceCents,
+                },
+              })) : undefined,
             })),
-            totals: {
-              name: "Total",
-              revenueCents: pnl.revenueCents,
-              cogsCents: pnl.cogsCents,
-              grossProfitCents: pnl.grossProfitCents,
-              expenseCents: pnl.expenseCents,
-              netIncomeCents: pnl.netIncomeCents,
-            },
+            totals: recombinedTotals(entries, pnl),
           },
         ],
       };
@@ -214,7 +241,7 @@ export function statementResult(
       }
     }
     return {
-      subtitle: `${data.startDate} through ${data.endDate} · accrual`,
+      subtitle: `${data.startDate} through ${data.endDate} · accrual${asClosed}`,
       stats: [
         {
           key: "revenue",
@@ -287,7 +314,7 @@ export function statementResult(
       rows.push(total(`total-${type}`, `Total ${label.toLowerCase()}`, amount));
     }
     return {
-      subtitle: `As of ${data.endDate}`,
+      subtitle: `As of ${data.endDate}${asClosed}`,
       notice: balance.differenceCents
         ? {
             tone: "warning",
@@ -335,7 +362,7 @@ export function statementResult(
     };
   }
   return {
-    subtitle: `As of ${data.endDate}`,
+    subtitle: `As of ${data.endDate}${asClosed}`,
     notice:
       trial.totalDebitCents !== trial.totalCreditCents
         ? { tone: "warning", message: "Debits and credits do not balance." }

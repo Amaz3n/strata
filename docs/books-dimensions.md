@@ -76,3 +76,29 @@ contract-level ownership (B04.1) assigns each document its contract.
 - **Reviewed ownership is append-only.** Legacy and project entity ownership
   proposals and reviews (`books_legacy_entity_*`, `books_project_entity_*`)
   cannot be changed or deleted; a review never relabels posted lines.
+
+## Statements by dimension
+
+- **Slices add back exactly.** A P&L sliced by division, community, lot, contract,
+  cost code, cost type, organization or project lists every line once; lines
+  without the classification form an **Unassigned** slice, shown last, never
+  dropped. The total row is the sum of the slices, and a statement whose slices
+  do not add to its unsliced total is refused rather than shown.
+- **Drill-down.** Each slice opens per account, and each account opens the lines
+  carrying that value (`getAccountActivity` with a `dimension`). A payment line
+  opens the invoice or bill it settled; other lines open their source document,
+  whose own page applies its permissions.
+- **Closed periods read as closed.** A request for exactly a closed period serves
+  the statements saved at close (heading "as closed <date>"); the screen, CSV,
+  PDF, saved runs and scheduled exports all go through the same evaluation, so
+  they agree. Any other range is built live.
+- **Fiscal years.** For Books reports "year to date", "quarter to date" and "last
+  year" follow the company's fiscal year (`fiscalPeriodRange`); the prior-year
+  comparison of a fiscal year is the prior fiscal year, and a range across the
+  fiscal year-end includes both sides (closing entries are not operating activity).
+- **Access.** Every Books statement and report requires organization-wide Books
+  read access; a member limited to assigned divisions is refused and uses
+  project financials. One worker's pay (`payroll_worker_id`, `labor_worker_id`)
+  is shown only to those who may read private payroll (`books.adjust`); other
+  readers see each entry's worker pay merged per account and project with the
+  worker removed, so totals are unchanged.

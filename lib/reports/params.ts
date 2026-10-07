@@ -57,6 +57,29 @@ export function periodRange(preset: string, now = new Date()): { from: string | 
   }
 }
 
+/**
+ * Year and quarter presets on the company's fiscal year, for Books reports: a
+ * company whose year starts in April means April by "year to date" and its prior
+ * April-to-March by "last year". `fytd` is the same as `ytd` here.
+ */
+export function fiscalPeriodRange(preset: string, fiscalStartMonth: number, now = new Date()): { from: string | null; to: string | null } {
+  const month = now.getUTCMonth() + 1
+  const startYear = now.getUTCFullYear() - (month < fiscalStartMonth ? 1 : 0)
+  switch (preset) {
+    case "ytd":
+    case "fytd":
+      return { from: iso(new Date(Date.UTC(startYear, fiscalStartMonth - 1, 1))), to: iso(now) }
+    case "lastyear":
+      return { from: iso(new Date(Date.UTC(startYear - 1, fiscalStartMonth - 1, 1))), to: iso(new Date(Date.UTC(startYear, fiscalStartMonth - 1, 0))) }
+    case "qtd": {
+      const monthsIntoQuarter = ((month - fiscalStartMonth + 12) % 12) % 3
+      return { from: iso(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - monthsIntoQuarter, 1))), to: iso(now) }
+    }
+    default:
+      return periodRange(preset, now)
+  }
+}
+
 export function periodLabel(preset: string) {
   return PERIOD_PRESETS.find((option) => option.value === preset)?.label ?? "All dates"
 }

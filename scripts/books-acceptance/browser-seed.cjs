@@ -120,6 +120,18 @@ const JOURNEYS = {
     org.periods.project = { periodId: org.projectId }
     return org
   },
+  // A contract job with a 1,000.00 framing bill in July, reviewed and closed:
+  // 1,250.00 of recognized revenue, net income 250.00 as closed.
+  async statements(kit, password) {
+    const { createBill, incrementalJob } = require("./scenarios/status-01.cjs").helpers
+    const { prepareAndReview } = require("./scenarios/wip-01.cjs").helpers
+    const org = await contractJob(kit, { name: "Browser acceptance — statements", contractCents: 1000000, retainagePercent: 0, periods: ["2026-07"], password })
+    await createBill(kit, org, "2026-07-10", 100000)
+    await incrementalJob(kit, org)
+    await prepareAndReview(kit, org, "2026-07", { contractCents: 1000000, eacCents: 800000 })
+    await kit.as(org.owner, () => app("books/period-close").closeAccountingPeriod(org.periods["2026-07"].periodId))
+    return org
+  },
   // July's close died right after freezing the period, 31 minutes ago.
   async "abandoned-close"(kit, password) {
     const org = await greenfieldOrg(kit, { name: "Browser acceptance — abandoned close", periods: ["2026-07"], password })

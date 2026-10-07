@@ -1,6 +1,6 @@
 {
   "scenario": "DIM-01",
-  "reviewedFrom": "B07.1 definition of done (advisor-plans/013) and the dimension matrix in docs/books-dimensions.md; tag policy decided 2026-10-06: reporting tags stay as posted.",
+  "reviewedFrom": "B07.1 definition of done (advisor-plans/013) and the dimension matrix in docs/books-dimensions.md; tag policy decided 2026-10-06: reporting tags stay as posted. B07.2 definition of done.",
   "subcases": {
     "matrix-on-lines": {
       "inputs": {
@@ -123,6 +123,98 @@
         "replacementDivision": [
           "North division"
         ]
+      }
+    },
+    "statements-by-tag": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "paymentDate": "2026-07-25",
+        "periodStart": "2026-07-01",
+        "periodEnd": "2026-07-31",
+        "cents": 100000,
+        "secondCents": 50000,
+        "overheadCents": 20000,
+        "payA": 30000,
+        "payB": 20000,
+        "contractCents": 1000000
+      },
+      "derivation": "July: framing of 1,000.00 on the South-division job (fixed contract, so its 1,000.00 invoice is a contract liability, not revenue), framing of 500.00 on a North-division job, office rent of 200.00 and office payroll of 500.00 (two workers, 300.00 and 200.00) with no job. Net income is -2,200.00 and every slicing (division, community, lot, contract, cost code, cost type, organization, project) totals exactly -2,200.00. By division: South -1,000.00, North -500.00, and the untagged office costs visible as Unassigned -700.00. The South framing slice drills to its one 1,000.00 line. The customer payment on the undeposited-funds register opens the invoice it settled. A bookkeeper limited to assigned divisions is refused the statements and the general ledger. The owner sees the two payroll lines (200.00 and 300.00); a Books reviewer without private payroll access sees one merged 500.00 line.",
+      "expected": {
+        "everySliceNetsTo": [
+          -220000
+        ],
+        "divisionRows": {
+          "North division": -50000,
+          "South division": -100000,
+          "Unassigned": -70000
+        },
+        "southCostDrill": {
+          "lines": 1,
+          "cents": 100000
+        },
+        "paymentOpensInvoice": true,
+        "divisionScopedStatements": true,
+        "divisionScopedLedger": true,
+        "payrollAsOwner": [
+          20000,
+          30000
+        ],
+        "payrollAsReviewer": [
+          50000
+        ]
+      }
+    },
+    "closed-month-as-closed": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "cents": 100000,
+        "contractCents": 1000000,
+        "eacCents": 800000
+      },
+      "derivation": "A 1,000.00 bill posts on a fixed-price job in July, the month's WIP review recognizes 1,250.00 of revenue and July closes. A copy of the bill's journal is then written into closed July straight to the database, around every guard. The July P&L is served as it was closed: its heading says 'as closed' with the close date, it shows net income of 250.00, and its CSV carries the same line, while a live rebuild of July reads -750.00.",
+      "expected": {
+        "headingSaysClosed": true,
+        "closedNetIncome": "$250.00",
+        "liveNetIncome": -75000,
+        "csvNetIncomeLine": "Net income,25000"
+      }
+    },
+    "fiscal-comparisons": {
+      "inputs": {
+        "periods": [
+          "2025-04",
+          "2026-03",
+          "2026-04"
+        ],
+        "expenses": [
+          [
+            "2025-05-10",
+            1000
+          ],
+          [
+            "2026-03-10",
+            2000
+          ],
+          [
+            "2026-04-10",
+            4000
+          ],
+          [
+            "2027-02-10",
+            8000
+          ]
+        ]
+      },
+      "derivation": "A company whose fiscal year starts in April records overhead of 10.00 (May 2025), 20.00 (March 2026), 40.00 (April 2026) and 80.00 (February 2027). Fiscal 2026 (April 2026 to March 2027) shows 120.00; its prior-year comparison is exactly fiscal 2025 (April 2025 to March 2026), 30.00; March to April 2026, across the fiscal year-end, shows 60.00.",
+      "expected": {
+        "fiscalYearExpense": 12000,
+        "comparisonRange": {
+          "start": "2025-04-01",
+          "end": "2026-03-31",
+          "label": "Prior year"
+        },
+        "priorFiscalYearExpense": 3000,
+        "acrossYearEndExpense": 6000
       }
     }
   }

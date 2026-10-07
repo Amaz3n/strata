@@ -22,6 +22,8 @@ import { getProjectProfitabilityReport, type ProfitabilitySection } from "@/lib/
 import { getProjectReconciliationReport } from "@/lib/services/reports/reconciliation"
 import { RECONCILIATION_QUEUE_LABELS } from "@/lib/services/reports/reconciliation-types"
 import { getVendor1099Report } from "@/lib/services/reports/vendor-1099"
+import { requireBooksAuthorization } from "@/lib/services/books/access"
+import { canReadWorkerPay, isWorkerPayLine, mergeWorkerPay, RESTRICTED_WORKER_PAY } from "@/lib/services/books/worker-pay-privacy"
 import { requireOrgContext } from "@/lib/services/context"
 import {
   buildBalanceSheet,
@@ -53,8 +55,15 @@ const BILLING_MODEL_LABELS: Record<string, string> = {
   unknown: "Unknown",
 }
 
+/**
+ * The company whose Books a report reads, after the same check the statements
+ * apply: Books read access, organization-wide (a division-scoped member reads
+ * project financials instead).
+ */
 async function booksOrgId() {
-  return (await requireOrgContext()).orgId
+  const context = await requireOrgContext()
+  await requireBooksAuthorization({ permission: "books.read", userId: context.userId, orgId: context.orgId, supabase: context.supabase, resourceType: "books_report", resourceId: context.orgId })
+  return context.orgId
 }
 
 const salesUseTax: ReportDefinition = {
@@ -416,7 +425,14 @@ const booksGeneralLedger: ReportDefinition = {
     const range = periodRange(ctx.params.period ?? "ytd")
     const start = range.from ?? "1900-01-01"
     const end = range.to ?? new Date().toISOString().slice(0, 10)
-    const report = await buildGeneralLedger(await booksOrgId(), start, end)
+    const context = await requireOrgContext()
+    const [report, workerPayVisible] = await Promise.all([buildGeneralLedger(await booksOrgId(), start, end), canReadWorkerPay(context)])
+    const rows = workerPayVisible ? report.rows : mergeWorkerPay(report.rows, {
+      isWorkerPay: (row) => isWorkerPayLine(row.dimensions),
+      groupKey: (row) => `${row.entry_id}:${row.account_id}:${row.project_id ?? ""}`,
+      merge: (into, row) => ({ ...into, debit_cents: into.debit_cents + row.debit_cents, credit_cents: into.credit_cents + row.credit_cents }),
+      redact: (row) => ({ ...row, description: RESTRICTED_WORKER_PAY, dimensions: {} }),
+    })
     return {
       subtitle: `${start} through ${end}`,
       tables: [
@@ -431,7 +447,7 @@ const booksGeneralLedger: ReportDefinition = {
             { key: "project_id", header: "project_id", exportOnly: true },
             { key: "company_id", header: "company_id", exportOnly: true },
           ],
-          rows: report.rows.map((row) => ({
+          rows: rows.map((row) => ({
             key: row.id,
             cells: {
               date: row.entry?.entry_date ?? null,

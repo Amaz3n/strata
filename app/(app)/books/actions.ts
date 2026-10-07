@@ -1,4 +1,5 @@
 "use server";
+import { STATEMENT_DIMENSIONS, type StatementDimension } from "@/lib/services/books/statements";
 
 import {
   getBooksFundingWorkspace,
@@ -621,6 +622,7 @@ export async function loadAccountActivityAction(input: {
   startDate: string;
   endDate: string;
   projectId?: string | null;
+  dimension?: { key: StatementDimension; value: string | null };
 }) {
   return read(() =>
     getAccountActivity(
@@ -632,6 +634,7 @@ export async function loadAccountActivityAction(input: {
           startDate: isoDate,
           endDate: isoDate,
           projectId: z.string().uuid().nullable().optional(),
+          dimension: z.object({ key: z.enum(STATEMENT_DIMENSIONS), value: z.string().max(200).nullable() }).optional(),
         })
         .parse(input),
     ),

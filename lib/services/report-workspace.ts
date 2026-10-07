@@ -1,7 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { customizeReport, parseLayout } from "@/lib/reports/builder";
-import { parseReportParams, periodRange } from "@/lib/reports/params";
+import { fiscalPeriodRange, parseReportParams, periodRange } from "@/lib/reports/params";
 import { getReportDefinition } from "@/lib/reports/registry";
 import { statementResult } from "@/lib/reports/statement-result";
 import type {
@@ -90,12 +90,11 @@ export async function evaluateReport(
     if (from > to) throw new Error("Start date must be before the end date.");
     execution.period = `range:${from}:${to}`;
   }
-  if (params.period === "fytd") {
-    const now = new Date(),
-      startMonth = settings?.settings?.fiscal_year_start_month ?? 1;
-    const year =
-      now.getUTCFullYear() - (now.getUTCMonth() + 1 < startMonth ? 1 : 0);
-    execution.period = `range:${year}-${String(startMonth).padStart(2, "0")}-01:${now.toISOString().slice(0, 10)}`;
+  // Books reports read years and quarters on the company's fiscal year; other
+  // reports keep calendar presets and offer fiscal year to date explicitly.
+  if (params.period === "fytd" || (definition.slug.startsWith("books-") && ["ytd", "qtd", "lastyear"].includes(params.period))) {
+    const range = fiscalPeriodRange(params.period, settings?.settings?.fiscal_year_start_month ?? 1);
+    execution.period = `range:${range.from}:${range.to}`;
   }
   if (params.asOf) date.parse(params.asOf);
   let base: ReportResult;

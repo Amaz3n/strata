@@ -5,6 +5,7 @@ import Link from "next/link"
 import { ArrowUpRight, X } from "lucide-react"
 
 import { loadAccountActivityAction } from "@/app/(app)/books/actions"
+import type { StatementDimension } from "@/lib/services/books/statements"
 import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent } from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -39,6 +40,8 @@ export type ActivityTarget = {
   name: string
   projectId?: string | null
   projectName?: string | null
+  /** One slice of a sliced statement: its lines carry this value (none when null). */
+  dimension?: { key: StatementDimension; value: string | null; label: string }
 }
 
 export function AccountActivitySheet({
@@ -69,6 +72,7 @@ export function AccountActivitySheet({
       startDate,
       endDate,
       projectId: target.projectId ?? null,
+      dimension: target.dimension ? { key: target.dimension.key, value: target.dimension.value } : undefined,
     })
       .then((result) => {
         if (cancelled) return
@@ -81,7 +85,7 @@ export function AccountActivitySheet({
       .finally(() => {
         if (!cancelled) setLoading(false)
       })
-    // Re-fetch when the account, the project lens, or the period changes.
+    // Re-fetch when the account, the project or dimension lens, or the period changes.
     return () => {
       cancelled = true
     }
@@ -106,6 +110,7 @@ export function AccountActivitySheet({
             <p className="mt-0.5 text-xs text-muted-foreground">
               {startDate} → {endDate}
               {target?.projectName ? <> · {target.projectName}</> : null}
+              {target?.dimension ? <> · {target.dimension.label}</> : null}
             </p>
           </div>
           <Button variant="ghost" size="icon" onClick={() => onOpenChange(false)} aria-label="Close">

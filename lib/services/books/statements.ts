@@ -149,6 +149,10 @@ function statementRows(ledger: LoadedLedger) {
   }))
 }
 
+/** The posting dimensions a P&L can be sliced by (see docs/books-dimensions.md). */
+export const STATEMENT_DIMENSIONS = ["division_id", "community_id", "lot_id", "contract_id", "cost_code_id", "cost_type", "organization_id"] as const;
+export type StatementDimension = (typeof STATEMENT_DIMENSIONS)[number];
+
 /** Lines carrying no project are real: org overhead is not job cost. */
 export const UNASSIGNED_PROJECT_LABEL = "Unassigned"
 
@@ -316,25 +320,49 @@ export async function buildProfitAndLoss(orgId: string, startDate: string, endDa
       left.projectId === null ? 1 : right.projectId === null ? -1 : right.netIncomeCents - left.netIncomeCents,
     )
 
-  const byDimension: Record<string, Array<{ key: string; label: string; revenueCents: number; cogsCents: number; expenseCents: number; netIncomeCents: number }>> = {};
-  for (const dimension of ["division_id", "community_id", "lot_id", "contract_id", "cost_code_id", "cost_type", "organization_id"]) {
-    const groups = new Map<string, { key: string; label: string; revenueCents: number; cogsCents: number; expenseCents: number; netIncomeCents: number }>();
+  type DimensionGroup = { key: string; label: string; revenueCents: number; cogsCents: number; expenseCents: number; netIncomeCents: number;
+    /** The group's amount per account, in statement sign, so each slice drills to its lines. */
+    accounts: Array<{ accountId: string; code: string; name: string; accountType: string; balanceCents: number }> };
+  const byDimension: Record<string, DimensionGroup[]> = {};
+  for (const dimension of STATEMENT_DIMENSIONS) {
+    const groups = new Map<string, DimensionGroup>();
     const accounts = new Map(ledger.accounts.map(account => [account.id, account]));
     for (const line of ledger.lines) {
       const account = accounts.get(line.account_id);
       if (!account || !["income", "cogs", "expense"].includes(account.account_type)) continue;
-      const key = typeof line.dimensions?.[dimension] === "string" ? String(line.dimensions[dimension]) : "Unassigned";
+      // "" is the unassigned bucket: a line without this classification is shown,
+      // never dropped, and cannot merge with a real value that reads "Unassigned".
+      const key = typeof line.dimensions?.[dimension] === "string" ? String(line.dimensions[dimension]) : "";
       const labelKey = dimension.replace(/_id$/, "_name");
-      const label = typeof line.dimensions?.[labelKey] === "string" ? String(line.dimensions[labelKey]) : key;
-      const group = groups.get(key) ?? { key, label, revenueCents: 0, cogsCents: 0, expenseCents: 0, netIncomeCents: 0 };
-      if (account.account_type === "income") group.revenueCents += line.credit_cents - line.debit_cents;
-      else if (account.account_type === "cogs") group.cogsCents += line.debit_cents - line.credit_cents;
-      else group.expenseCents += line.debit_cents - line.credit_cents;
+      const label = key === "" ? UNASSIGNED_PROJECT_LABEL : typeof line.dimensions?.[labelKey] === "string" ? String(line.dimensions[labelKey]) : key;
+      const group = groups.get(key) ?? { key, label, revenueCents: 0, cogsCents: 0, expenseCents: 0, netIncomeCents: 0, accounts: [] };
+      const signed = account.account_type === "income" ? line.credit_cents - line.debit_cents : line.debit_cents - line.credit_cents;
+      if (account.account_type === "income") group.revenueCents += signed;
+      else if (account.account_type === "cogs") group.cogsCents += signed;
+      else group.expenseCents += signed;
+      const byAccount = group.accounts.find((row) => row.accountId === account.id);
+      if (byAccount) byAccount.balanceCents += signed;
+      else group.accounts.push({ accountId: account.id, code: account.code, name: account.name, accountType: account.account_type, balanceCents: signed });
       group.netIncomeCents = group.revenueCents - group.cogsCents - group.expenseCents;
       groups.set(key, group);
     }
-    byDimension[dimension] = [...groups.values()];
+    byDimension[dimension] = [...groups.values()].sort((left, right) => Number(left.key === "") - Number(right.key === ""));
   }
+  // Cost codes and contracts carry no name on the line; a slice reads by its code
+  // and name or its contract title, never by a record id.
+  const idsOf = (dimension: StatementDimension) => byDimension[dimension].map((group) => group.key).filter((key) => /^[0-9a-f-]{36}$/i.test(key));
+  const service = createServiceSupabaseClient();
+  const [costCodes, contracts] = await Promise.all([
+    idsOf("cost_code_id").length ? service.from("cost_codes").select("id, code, name").eq("org_id", orgId).in("id", idsOf("cost_code_id")) : Promise.resolve({ data: [], error: null }),
+    idsOf("contract_id").length ? service.from("contracts").select("id, title").eq("org_id", orgId).in("id", idsOf("contract_id")) : Promise.resolve({ data: [], error: null }),
+  ]);
+  if (costCodes.error || contracts.error) throw new Error(`Failed to name statement slices: ${(costCodes.error ?? contracts.error)?.message}`);
+  const names = new Map<string, string>([
+    ...(costCodes.data ?? []).map((row): [string, string] => [String(row.id), `${row.code} ${row.name}`]),
+    ...(contracts.data ?? []).map((row): [string, string] => [String(row.id), String(row.title)]),
+  ]);
+  for (const dimension of ["cost_code_id", "contract_id"] as const)
+    for (const group of byDimension[dimension]) group.label = names.get(group.key) ?? group.label;
 
   return {
     statement: "profit_loss" as const,

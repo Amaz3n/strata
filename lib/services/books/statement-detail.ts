@@ -3,6 +3,8 @@ import "server-only"
 import { z } from "zod"
 
 import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access"
+import type { StatementDimension } from "@/lib/services/books/statements"
+import { canReadWorkerPay, isWorkerPayLine, mergeWorkerPay, RESTRICTED_WORKER_PAY } from "@/lib/services/books/worker-pay-privacy"
 import { requireOrgContext } from "@/lib/services/context"
 import {
   loadPostedLedger,
@@ -54,6 +56,7 @@ const activityLineSchema = z.object({
   credit_cents: z.number().int(),
   description: z.string().nullable(),
   line_no: z.number().int(),
+  dimensions: z.record(z.unknown()).nullable().optional(),
 })
 
 const activityEntrySchema = z.object({
@@ -123,6 +126,33 @@ async function requireStatementsAccess(orgId?: string) {
 }
 
 /**
+ * The statements saved when a period closed, when the request is exactly that
+ * closed period. A closed month reads as it was closed: later work cannot post
+ * into it, and the screen, CSV and PDF all serve the same frozen record.
+ */
+async function loadClosedPeriodStatements(orgId: string, startDate: string, endDate: string) {
+  const service = createServiceSupabaseClient()
+  const { data: period, error } = await service.from("accounting_periods").select("id, closed_at, close_snapshot_ids")
+    .eq("org_id", orgId).eq("status", "closed").eq("period_start", startDate).eq("period_end", endDate).maybeSingle()
+  if (error) throw new Error(`Failed to load the closed period: ${error.message}`)
+  const ids = z.array(z.string().uuid()).safeParse(period?.close_snapshot_ids)
+  if (!period || !ids.success || ids.data.length === 0) return null
+  const { data: snapshots, error: snapshotError } = await service.from("financial_statement_snapshots").select("statement_type, content, content_hash")
+    .eq("org_id", orgId).eq("period_id", period.id).in("id", ids.data)
+  if (snapshotError) throw new Error(`Failed to load the closed period's statements: ${snapshotError.message}`)
+  const content = (type: string) => snapshots?.find((row) => row.statement_type === type)?.content
+  const statement = <T>(type: string) => z.custom<T>((value) => typeof value === "object" && value !== null && Reflect.get(value, "statement") === type).parse(content(type))
+  return {
+    periodId: String(period.id),
+    closedAt: String(period.closed_at),
+    profitLoss: statement<Awaited<ReturnType<typeof buildProfitAndLoss>>>("profit_loss"),
+    balanceSheet: statement<Awaited<ReturnType<typeof buildBalanceSheet>>>("balance_sheet"),
+    trialBalance: statement<Awaited<ReturnType<typeof buildTrialBalance>>>("trial_balance"),
+    cashFlow: statement<Awaited<ReturnType<typeof buildCashFlowStatement>>>("cash_flow"),
+  }
+}
+
+/**
  * Every statement for one period, plus the same period a year earlier.
  *
  * The comparison is loaded here rather than by a second round trip from the
@@ -180,12 +210,12 @@ export async function getStatementsForPeriod(input: {
     }
   }
 
-  const snapshot = await loadPostedLedger(orgId, input.endDate)
+  const [snapshot, closed] = await Promise.all([loadPostedLedger(orgId, input.endDate), loadClosedPeriodStatements(orgId, input.startDate, input.endDate)])
   const [profitLoss, balanceSheet, trialBalance, cashFlow, cashBasis, priorProfitLoss, monthlyProfitLoss] = await Promise.all([
-    buildProfitAndLoss(orgId, input.startDate, input.endDate, snapshot),
-    buildBalanceSheet(orgId, input.endDate, snapshot),
-    buildTrialBalance(orgId, input.endDate, snapshot),
-    buildCashFlowStatement(orgId, input.startDate, input.endDate, snapshot),
+    closed?.profitLoss ?? buildProfitAndLoss(orgId, input.startDate, input.endDate, snapshot),
+    closed?.balanceSheet ?? buildBalanceSheet(orgId, input.endDate, snapshot),
+    closed?.trialBalance ?? buildTrialBalance(orgId, input.endDate, snapshot),
+    closed?.cashFlow ?? buildCashFlowStatement(orgId, input.startDate, input.endDate, snapshot),
     buildCashBasisStatement(orgId, input.startDate, input.endDate, snapshot),
     comparisonRange ? buildProfitAndLoss(orgId, comparisonRange.start, comparisonRange.end, snapshot) : Promise.resolve(null),
     Promise.all(monthRanges.map(async (range) => ({ ...range, profitLoss: await buildProfitAndLoss(orgId, range.startDate, range.endDate, snapshot) }))),
@@ -203,6 +233,8 @@ export async function getStatementsForPeriod(input: {
     comparisonLabel: comparisonRange?.label ?? null,
     comparisonRange,
     monthlyProfitLoss,
+    // Set when these are the statements saved at close rather than a live run.
+    closedPeriod: closed ? { periodId: closed.periodId, closedAt: closed.closedAt } : null,
   }
 }
 
@@ -232,17 +264,23 @@ function resolveSource(
   sourceType: string | null,
   sourceId: string | null,
   projectId: string | null,
+  dimensions?: Record<string, unknown> | null,
 ): LedgerSourceLink | null {
   if (!sourceType) return null
   const label = SOURCE_LABELS[sourceType] ?? sourceType.replace(/_/g, " ")
-  const entityType = SOURCE_ENTITY_TYPES[sourceType]
+  // A payment opens the document it settled, on that document's own page.
+  const settled = typeof dimensions?.invoice_id === "string" ? { type: "invoice" as const, id: dimensions.invoice_id }
+    : typeof dimensions?.bill_id === "string" ? { type: "payable" as const, id: dimensions.bill_id } : null
+  const isPayment = SOURCE_ENTITY_TYPES[sourceType] === "payment"
+  const entityType = isPayment && settled ? settled.type : SOURCE_ENTITY_TYPES[sourceType]
+  const targetId = isPayment && settled ? settled.id : sourceId
   const template = entityType ? SEARCH_CONFIGS[entityType]?.hrefTemplate : undefined
-  if (!template || !sourceId) return { type: sourceType, label, href: null }
+  if (!template || !targetId) return { type: sourceType, label, href: null }
   // Every project-scoped template needs a project id. Substituting an empty one
   // yields `/projects//...`, which 404s — better to render no link at all.
   if (template.includes("{project_id}") && !projectId) return { type: sourceType, label, href: null }
   const href = template
-    .replace("{id}", sourceId)
+    .replace("{id}", targetId)
     .replace("{project_id}", projectId ?? "")
   return { type: sourceType, label, href }
 }
@@ -294,8 +332,11 @@ export async function getAccountActivity(input: {
   startDate: string
   endDate: string
   projectId?: string | null
+  /** One slice of a sliced P&L: lines carrying this value, or none when null. */
+  dimension?: { key: StatementDimension; value: string | null }
   orgId?: string
 }) {
+  if (input.dimension && !input.operatingOnly) throw new Error("Dimension activity is a statement-period view")
   const context = await requireStatementsAccess(input.orgId)
   const orgId = context.orgId
   const service = createServiceSupabaseClient()
@@ -322,7 +363,7 @@ export async function getAccountActivity(input: {
   const signed = (debitCents: number, creditCents: number) =>
     account.normal_balance === "debit" ? debitCents - creditCents : creditCents - debitCents
 
-  const [{ openingDebit, openingCredit }, activity] = await Promise.all([
+  const [{ openingDebit, openingCredit }, activity, workerPayVisible] = await Promise.all([
     input.operatingOnly ? Promise.resolve({ openingDebit: 0, openingCredit: 0 }) : loadOpeningBalanceCents({ orgId, accountId: input.accountId, startDate: input.startDate, projectId: input.projectId }),
     // Queried entry-first, not line-first. PostgREST orders a parent only by its
     // OWN columns, and `journal_lines` has no date — ordering by an embedded
@@ -335,7 +376,7 @@ export async function getAccountActivity(input: {
         .from("journal_entries")
         .select(
           "id, entry_date, entry_kind, memo, source_type, source_id, " +
-            "lines:journal_lines!journal_lines_entry_owner_fk!inner(id, account_id, project_id, company_id, debit_cents, credit_cents, description, line_no)",
+            "lines:journal_lines!journal_lines_entry_owner_fk!inner(id, account_id, project_id, company_id, debit_cents, credit_cents, description, line_no, dimensions)",
         )
         .eq("org_id", orgId)
         .in("status", ["posted", "reversed"])
@@ -352,10 +393,14 @@ export async function getAccountActivity(input: {
       }
       if (input.unassignedOnly) query = query.is("lines.project_id", null)
       else if (input.projectId) query = query.eq("lines.project_id", input.projectId)
+      if (input.dimension) query = input.dimension.value === null
+        ? query.is(`lines.dimensions->>${input.dimension.key}`, null)
+        : query.eq(`lines.dimensions->>${input.dimension.key}`, input.dimension.value)
       const { data, error } = await query
       if (error) throw new Error(`Failed to load account activity: ${error.message}`)
       return z.array(activityEntrySchema).parse(data ?? [])
     })(),
+    canReadWorkerPay(context),
   ])
 
   const truncated = activity.length > ACTIVITY_ROW_CAP
@@ -363,11 +408,17 @@ export async function getAccountActivity(input: {
 
   // One entry can post to the same account more than once. Flatten to lines and
   // keep `line_no` order inside each entry so the register reads as it was written.
-  const page = entries.flatMap((entry) =>
+  const lines = entries.flatMap((entry) =>
     [...entry.lines]
       .sort((left, right) => left.line_no - right.line_no)
       .map((line) => ({ entry, line })),
   )
+  const page = workerPayVisible ? lines : mergeWorkerPay(lines, {
+    isWorkerPay: ({ line }) => isWorkerPayLine(line.dimensions),
+    groupKey: ({ entry, line }) => `${entry.id}:${line.account_id}:${line.project_id ?? ""}`,
+    merge: (into, { line }) => ({ ...into, line: { ...into.line, debit_cents: into.line.debit_cents + line.debit_cents, credit_cents: into.line.credit_cents + line.credit_cents } }),
+    redact: ({ entry, line }) => ({ entry, line: { ...line, description: RESTRICTED_WORKER_PAY, dimensions: null } }),
+  })
 
   const projectIds = Array.from(new Set(page.map(({ line }) => line.project_id).filter((id): id is string => Boolean(id))))
   const companyIds = Array.from(new Set(page.map(({ line }) => line.company_id).filter((id): id is string => Boolean(id))))
@@ -409,7 +460,7 @@ export async function getAccountActivity(input: {
       projectName: projectId ? projectNames.get(projectId) ?? null : null,
       companyId,
       companyName: companyId ? companyNames.get(companyId) ?? null : null,
-      source: resolveSource(entry.source_type, entry.source_id, projectId),
+      source: resolveSource(entry.source_type, entry.source_id, projectId, line.dimensions),
     }
   })
 

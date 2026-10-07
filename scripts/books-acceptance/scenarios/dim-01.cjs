@@ -2,7 +2,8 @@
 // that they name only the company's own records and never an ambiguous one, and
 // that they stay as posted through later changes and reversals.
 const { randomUUID } = require("node:crypto")
-const { app } = require("./shared.cjs")
+const { app, greenfieldOrg, contractJob } = require("./shared.cjs")
+const { prepareAndReview } = require("./wip-01.cjs").helpers
 const { jobOrg, createBill, editBill, incrementalJob, projectionJob, glId } = require("./status-01.cjs").helpers
 
 // One job fully tagged: a division, a community with one lot, one fixed-price
@@ -116,6 +117,121 @@ commit;`)
   return { orgId: org.orgId, bill }
 }
 
+// A member of the company with one org role, optionally limited to assigned divisions.
+function member(kit, org, role, divisionScope = "all") {
+  const actor = { userId: randomUUID(), orgId: org.orgId, productTier: "residential", role }
+  const { q } = kit
+  kit.sql(`begin;
+insert into auth.users(id,instance_id,aud,role,email,created_at,updated_at) values(${q(actor.userId)},'00000000-0000-0000-0000-000000000000','authenticated','authenticated',${q(`${actor.userId}@acceptance.example.test`)},now(),now());
+insert into public.app_users(id,email,full_name) values(${q(actor.userId)},${q(`${actor.userId}@acceptance.example.test`)},${q(role)});
+insert into public.memberships(org_id,user_id,role_id,status,division_scope) select ${q(org.orgId)},${q(actor.userId)},id,'active',${q(divisionScope)} from public.roles where key=${q(role)};
+commit;`)
+  return actor
+}
+const report = (kit, actor, slug, params) => kit.as(actor, async () => {
+  const { evaluateReport } = app("report-workspace")
+  const definition = require("../../../lib/reports/registry").getReportDefinition(slug)
+  return (await evaluateReport(definition, { scope: "org", scopeLabel: "Organization", posture: "residential", params })).result
+})
+const refusalOf = async (work) => { try { await work(); return "allowed" } catch (error) { return error.message } }
+
+// Sliced statements add back to the unsliced total exactly, keep what carries no
+// tag visible, and drill from a slice to its lines and from a payment to the
+// document it settled. Division-scoped members cannot read company Books, and
+// one worker's pay is visible only to those who may read private payroll.
+async function statementsByTag(kit, expected, check) {
+  const input = expected.inputs
+  const org = await taggedJob(kit, "DIM-01 statements", input)
+  const { q } = kit
+  kit.sql(`insert into public.divisions(org_id,name) values(${q(org.orgId)},'North division');
+update public.projects set division_id=(select id from public.divisions where org_id=${q(org.orgId)} and name='North division') where id=${q(org.secondProjectId)};`)
+  await createBill(kit, org, input.billDate, input.cents)
+  await createBill(kit, { ...org, projectId: org.secondProjectId }, input.billDate, input.secondCents)
+  const invoice = projectInvoice(kit, org, "DIM-S1", input.cents, input.billDate)
+  await kit.as(org.reviewer, () => app("books/bookkeeping").createAdjustingJournal({ entryDate: input.billDate, memo: "Office rent accrual",
+    lines: [{ accountCode: "6900", debitCents: input.overheadCents, creditCents: 0 }, { accountCode: "3010", debitCents: 0, creditCents: input.overheadCents }] }))
+  await kit.as(org.reviewer, () => app("books/bookkeeping").createAdjustingJournal({ entryDate: input.billDate, memo: "Office payroll from the provider",
+    lines: [{ accountCode: "6900", debitCents: input.payA, creditCents: 0, dimensions: { payroll_worker_id: randomUUID() } }, { accountCode: "6900", debitCents: input.payB, creditCents: 0, dimensions: { payroll_worker_id: randomUUID() } }, { accountCode: "1000", debitCents: 0, creditCents: input.payA + input.payB }] }))
+  await incrementalJob(kit, org)
+  await kit.as(org.owner, () => app("payments").recordMultiInvoicePayment({ received_at: `${input.paymentDate}T12:00:00Z`, method: "check", idempotency_key: randomUUID(), allocations: [{ invoice_id: invoice, amount_cents: input.cents }] }))
+  await kit.drainOutbox(org.orgId)
+  await incrementalJob(kit, org)
+  const period = { period: "custom", _from: input.periodStart, _to: input.periodEnd }
+  const sliced = {}
+  for (const dimension of ["division_id", "community_id", "lot_id", "contract_id", "cost_code_id", "cost_type", "organization_id", "project"]) {
+    const result = await report(kit, org.owner, "books-profit-loss", { ...period, dimension, comparison: "none" })
+    sliced[dimension] = result.tables[0].totals.netIncomeCents
+  }
+  const byDivision = await report(kit, org.owner, "books-profit-loss", { ...period, dimension: "division_id", comparison: "none" })
+  const divisionRows = Object.fromEntries(byDivision.tables[0].rows.map((row) => [row.cells.name, row.cells.netIncomeCents]).sort(([a], [b]) => a.localeCompare(b)))
+  const south = byDivision.tables[0].rows.find((row) => row.cells.name === "South division")
+  const southCost = south.children.find((child) => child.cells.cogsCents)
+  const { getAccountActivity } = app("books/statement-detail")
+  const drilled = await kit.as(org.owner, () => getAccountActivity({ ...southCost.activity, dimension: { key: southCost.activity.dimension.key, value: southCost.activity.dimension.value } }))
+  const undeposited = await kit.as(org.owner, () => getAccountActivity({ accountId: glId(kit, org, "1010"), startDate: input.periodStart, endDate: input.periodEnd }))
+  const paymentLink = undeposited.rows.find((row) => row.source?.type === "invoice_payment")?.source?.href ?? null
+  const scoped = member(kit, org, "org_bookkeeper", "assigned")
+  const reviewer = member(kit, org, "org_books_reviewer")
+  const payrollLines = async (actor) => (await report(kit, actor, "books-general-ledger", period)).tables[0].rows.filter((row) => row.cells.account?.startsWith("6900") && row.cells.memo !== "Office rent accrual" && row.cells.debit > 0).map((row) => row.cells.debit).sort((a, b) => a - b)
+  check.equal("slices add back exactly, untagged amounts show, drill-downs reach their lines and documents, and access holds", expected.expected, {
+    everySliceNetsTo: [...new Set(Object.values(sliced))],
+    divisionRows,
+    southCostDrill: { lines: drilled.rows.length, cents: drilled.rows.reduce((sum, row) => sum + row.debitCents - row.creditCents, 0) },
+    paymentOpensInvoice: Boolean(paymentLink && paymentLink.includes(`invoice=${invoice}`)),
+    divisionScopedStatements: /organization-wide accounting access/.test(await refusalOf(() => report(kit, scoped, "books-profit-loss", period))),
+    divisionScopedLedger: /organization-wide accounting access/.test(await refusalOf(() => report(kit, scoped, "books-general-ledger", period))),
+    payrollAsOwner: await payrollLines(org.owner),
+    payrollAsReviewer: await payrollLines(reviewer),
+  })
+  return { orgId: org.orgId }
+}
+
+// A closed month is served as it was closed. Damage written into the closed month
+// around every guard changes a live rebuild, not the statements read for it.
+async function closedMonthAsClosed(kit, expected, check) {
+  const input = expected.inputs
+  const org = await contractJob(kit, { name: "DIM-01 closed month", contractCents: input.contractCents, retainagePercent: 0, periods: ["2026-07"] })
+  await createBill(kit, org, input.billDate, input.cents)
+  await incrementalJob(kit, org)
+  await prepareAndReview(kit, org, "2026-07", { contractCents: input.contractCents, eacCents: input.eacCents })
+  const july = org.periods["2026-07"].periodId
+  await kit.as(org.owner, () => app("books/period-close").closeAccountingPeriod(july))
+  const { q } = kit
+  const entry = kit.rows(`select id from public.journal_entries where org_id=${q(org.orgId)} and source_type='vendor_bill' and status='posted'`)[0].id
+  kit.sql(`begin; set local session_replication_role = replica;
+create temp table stray on commit drop as select gen_random_uuid() id;
+insert into public.journal_entries select (jsonb_populate_record(null::public.journal_entries, to_jsonb(e) || jsonb_build_object('id',(select id from stray),'fact_id',null,'source_id',null,'posting_key','dim-stray:'||e.id))).* from public.journal_entries e where e.id=${q(entry)};
+insert into public.journal_lines select (jsonb_populate_record(null::public.journal_lines, to_jsonb(l) || jsonb_build_object('id',gen_random_uuid(),'entry_id',(select id from stray)))).* from public.journal_lines l where l.entry_id=${q(entry)};
+commit;`, "supabase_admin")
+  const closed = await report(kit, org.owner, "books-profit-loss", { period: "custom", _from: "2026-07-01", _to: "2026-07-31", comparison: "none" })
+  const live = await kit.as(org.owner, () => app("books/statements").buildProfitAndLoss(org.orgId, "2026-07-01", "2026-07-31"))
+  const { reportToCsv } = require("../../../lib/reports/export-csv")
+  check.equal("the closed month reads as closed on screen and in its CSV; a live rebuild would differ", expected.expected, {
+    headingSaysClosed: / · as closed \d{4}-\d{2}-\d{2}$/.test(closed.subtitle ?? ""),
+    closedNetIncome: closed.stats?.find((stat) => stat.key === "net")?.value ?? null,
+    liveNetIncome: live.netIncomeCents,
+    csvNetIncomeLine: reportToCsv(closed).split("\n").find((line) => line.startsWith("Net income,")) ?? null,
+  })
+  return { orgId: org.orgId }
+}
+
+// Comparisons and ranges work on a fiscal year that starts in April: the prior
+// year of a fiscal year is the prior fiscal year, and a range across the
+// fiscal year-end adds both sides.
+async function fiscalComparisons(kit, expected, check) {
+  const input = expected.inputs
+  const org = await greenfieldOrg(kit, { name: "DIM-01 fiscal", periods: input.periods, fiscalYearStartMonth: 4 })
+  for (const [date, cents] of input.expenses)
+    await kit.as(org.reviewer, () => app("books/bookkeeping").createAdjustingJournal({ entryDate: date, memo: "Monthly overhead", lines: [{ accountCode: "6900", debitCents: cents, creditCents: 0 }, { accountCode: "3010", debitCents: 0, creditCents: cents }] }))
+  const { getStatementsForPeriod } = app("books/statement-detail")
+  const fiscal = await kit.as(org.owner, () => getStatementsForPeriod({ startDate: "2026-04-01", endDate: "2027-03-31", comparison: "prior_year" }))
+  const across = await kit.as(org.owner, () => getStatementsForPeriod({ startDate: "2026-03-01", endDate: "2026-04-30", comparison: "none" }))
+  check.equal("prior fiscal year and a range across the fiscal year-end", expected.expected, {
+    fiscalYearExpense: fiscal.profitLoss.expenseCents, comparisonRange: fiscal.comparisonRange, priorFiscalYearExpense: fiscal.priorProfitLoss.expenseCents, acrossYearEndExpense: across.profitLoss.expenseCents,
+  })
+  return { orgId: org.orgId }
+}
+
 module.exports = {
   id: "DIM-01",
   subcases: {
@@ -123,5 +239,8 @@ module.exports = {
     "foreign-dimension-refused": foreignDimension,
     "one-lot-per-project": oneLotPerProject,
     "later-changes-and-reversal": laterChangesAndReversal,
+    "statements-by-tag": statementsByTag,
+    "closed-month-as-closed": closedMonthAsClosed,
+    "fiscal-comparisons": fiscalComparisons,
   },
 }

@@ -1,3 +1,4 @@
+import type { StatementDimension } from "@/lib/services/books/statements"
 import type { ProjectPosture } from "@/lib/product-tier"
 
 /**
@@ -60,6 +61,8 @@ export interface ReportActivity {
   name: string
   projectId?: string | null
   projectName?: string | null
+  /** One slice of a sliced statement: lines carrying this value, or none when null. */
+  dimension?: { key: StatementDimension; value: string | null; label: string }
   startDate: string
   endDate: string
 }
