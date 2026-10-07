@@ -80,7 +80,7 @@ export function ReportActivityReport({
   function download() {
     if (!result) return;
     const blob = new Blob(
-      [reportToCsv({ ...result, subtitle: `${title} · ${result.subtitle}` })],
+      [reportToCsv({ ...result, subtitle: `${title}${target.dimension ? ` · ${target.dimension.label}` : ""} · ${result.subtitle}` })],
       { type: "text/csv;charset=utf-8" },
     );
     const url = URL.createObjectURL(blob);
@@ -143,6 +143,7 @@ export function ReportActivityReport({
                   : target.unassignedOnly
                     ? " · Unassigned project"
                     : ""}
+                {target.dimension ? ` · ${target.dimension.label}` : ""}
               </p>
             </header>
             {loading && (

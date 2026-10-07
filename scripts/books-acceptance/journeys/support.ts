@@ -65,6 +65,8 @@ export async function expectNoHorizontalOverflow(page: Page) {
     return [...document.querySelectorAll("main *")].filter((element) => {
       const box = element.getBoundingClientRect()
       if (box.width === 0 || box.right <= width + 1) return false
+      // A closed panel kept in the page (aria-hidden and inert) shows nothing.
+      if (element.closest('[aria-hidden="true"], [inert]')) return false
       for (let parent = element.parentElement; parent; parent = parent.parentElement) {
         const style = getComputedStyle(parent)
         if (/(auto|scroll)/.test(style.overflowX) && parent.scrollWidth > parent.clientWidth) return false
