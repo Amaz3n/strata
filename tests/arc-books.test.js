@@ -3696,7 +3696,7 @@ test("an accounting date comes from the timestamp, not from the first ten charac
   // One date convention, the codebase's own: UTC-anchored date-only.
   assert.match(
     projector,
-    /import \{ isoDateOnlyFromUtcMs \} from "@\/lib\/services\/reports\/dates"/,
+    /import \{[^}]*\bisoDateOnlyFromUtcMs\b[^}]*\} from "@\/lib\/services\/reports\/dates"/,
   );
   assert.equal(
     isoDateOnlyFromUtcMs(Date.parse("2026-06-30T23:30:00-05:00")),
