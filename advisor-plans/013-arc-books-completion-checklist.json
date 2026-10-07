@@ -7482,8 +7482,8 @@
       "id": "B07.1",
       "workstream": "B07",
       "title": "Authoritative posted dimension contract",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All B07.1 criteria and the global DoD verified locally (2026-10-06): DIM-01 4/4, existing entity-ownership suites, reference doc docs/books-dimensions.md, full regression. Cross-entity journal postings for entity-native ledgers continue under B14 (ENTITY-01). Migration 20261006250000 pending production with the deploy.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "each source family has a documented applicable/required/optional dimension matrix",
@@ -7496,17 +7496,48 @@
         "DIM-01",
         "ENTITY-01"
       ],
-      "evidence": [],
-      "remaining_criteria": [
-        "each source family has a documented applicable/required/optional dimension matrix",
-        "foreign/cross-entity and ambiguous required dimensions reject posting with a source cure",
-        "later project/community/account changes do not relabel historical journals",
-        "reversals inherit original dimensions",
-        "reviewed legacy mappings remain auditable"
+      "evidence": [
+        {
+          "verified_at": "2026-10-07T01:57:08.402116+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261006250000_books_line_dimension_scope.sql",
+            "docs/books-dimensions.md",
+            "scripts/books-acceptance/scenarios/dim-01.cjs"
+          ],
+          "test_scenario_ids": [
+            "DIM-01"
+          ],
+          "commands": [
+            "scenario-runner DIM-01 CAP-01 BILL-01 YEAR-01 BANK-01 STATUS-01 CLOSE-01 RACE-01 WIP-01",
+            "pnpm test:financials",
+            "node --test tests/books-project-entity-ownership.test.js tests/books-legacy-entity-ownership.test.js"
+          ],
+          "observed_results": [
+            "Matrix documented per source family (docs/books-dimensions.md) and observed on posted lines: a bill's cost line carries the project tags plus cost_type and cost_code_id, its AP line the project tags; a project invoice the project tags on both lines; its payment the project tags plus payment_id and invoice_id on both lines.",
+            "Foreign or missing records refused with the cure: an adjusting journal naming another company's cost code, or a cost code that does not exist, is refused ('names a record that is not in this company; correct the source document'); the company's own posts. Foreign projects/companies/accounts were already refused by journal_lines_validate_scope; cross-entity legacy posting is refused for reviewed entity-owned projects (books_project_legal_ownership).",
+            "Never ambiguous: a second lot for a project is refused by lots_project_unique; contract_id is tagged only for a single contract until B04.1.",
+            "Later changes relabel nothing: a community rename and a division move leave posted lines identical through the ordinary run and the nightly pass (account renames: BILL-01). A real revision reverses the original entry with its original dimensions line for line and re-posts with today's division.",
+            "Reviewed legacy and project ownership records are append-only: changing or deleting them is refused (tests/books-legacy-entity-ownership.test.js, tests/books-project-entity-ownership.test.js, 15 pass).",
+            "Production check (read-only): no existing journal line names another company's record in its dimensions; no project sits on more than one lot.",
+            "Regression: DIM-01, CAP-01, BILL-01, YEAR-01, BANK-01, STATUS-01 pass; CLOSE-01, RACE-01, WIP-01 pass every implemented subcase; test:financials 2734 pass / 0 fail."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-dimensions/DIM-01.json sha256:6027422700e74d5cf4bc1754050777c5d9c7535b344f8a6493bac4515c057a33",
+            "docs/books-evidence/2026-10-06-dimensions/CAP-01.json sha256:daafbc07840baf3b4d93b48cee24b120f342d490da286c6a5bdc107646c1432f",
+            "docs/books-evidence/2026-10-06-dimensions/BILL-01.json sha256:f08cab5acb9307428d5590601c29f373488a7c28e31b7644504f5d8d0743e14e",
+            "docs/books-evidence/2026-10-06-dimensions/YEAR-01.json sha256:b8c2be1a896fcb527c3d44310df6265b88a406bd6672239e071f65513b4eea74",
+            "docs/books-evidence/2026-10-06-dimensions/BANK-01.json sha256:3c590d1807f95e9df4369be5434a2e4581dbaf74612051a1b6a8008c4e6a0e3c",
+            "docs/books-evidence/2026-10-06-dimensions/STATUS-01.json sha256:b92b9bf35d8aefad0e909963cc63ac5e050897ecc58e70e71b27c91eebbd1a97",
+            "docs/books-evidence/2026-10-06-dimensions/CLOSE-01.json sha256:73f7e4514a819d225ea16002d4376c63c1072273de871649a7f5f3582d6838e1",
+            "docs/books-evidence/2026-10-06-dimensions/RACE-01.json sha256:4200a24e6401ce66de39f2de9c3a00347b63af2bd0da131aee01bdc12f182c3f",
+            "docs/books-evidence/2026-10-06-dimensions/WIP-01.json sha256:60fdf29f336e92e8bc8f2075f786426d0593317125d3e432e89722c94d388464"
+          ]
+        }
       ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-07T01:57:08.402116+00:00"
     },
     {
       "id": "B07.2",
