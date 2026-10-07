@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireAuthorization } from "@/lib/services/authorization"
+import { chunk } from "@/lib/utils"
 
 /**
  * Both loaders below page with `.range()`, so both impose a total order.
@@ -41,51 +42,53 @@ const RETAINAGE_PAGE_SIZE = 1000
 export async function loadRetainageReleaseInvoiceCents(args: {
   supabase: SupabaseClient
   orgId: string
+  /** Only these invoices; the projector reads what it is about to post, not the ledger. */
+  invoiceIds?: string[]
 }): Promise<Map<string, number>> {
-  const byInvoice = new Map<string, number>()
-  for (let page = 0; ; page += 1) {
-    const from = page * RETAINAGE_PAGE_SIZE
-    const { data, error } = await args.supabase
-      .from("retainage")
-      .select("release_invoice_id, amount_cents")
-      .eq("org_id", args.orgId)
-      .not("release_invoice_id", "is", null)
-      .order("created_at", { ascending: true })
-      .order("id", { ascending: true })
-      .range(from, from + RETAINAGE_PAGE_SIZE - 1)
-
-    if (error) throw new Error(`Failed to load retainage release invoices: ${error.message}`)
-    for (const row of data ?? []) {
-      const invoiceId = String(row.release_invoice_id)
-      byInvoice.set(invoiceId, (byInvoice.get(invoiceId) ?? 0) + Number(row.amount_cents ?? 0))
-    }
-    if ((data ?? []).length < RETAINAGE_PAGE_SIZE) return byInvoice
-  }
+  return sumRetainageByInvoice(args, "release_invoice_id", "retainage release invoices")
 }
 
 export async function loadInvoiceRetainageCents(args: {
   supabase: SupabaseClient
   orgId: string
+  invoiceIds?: string[]
 }): Promise<Map<string, number>> {
-  const byInvoice = new Map<string, number>()
-  for (let page = 0; ; page += 1) {
-    const from = page * RETAINAGE_PAGE_SIZE
-    const { data, error } = await args.supabase
-      .from("retainage")
-      .select("invoice_id, amount_cents")
-      .eq("org_id", args.orgId)
-      .not("invoice_id", "is", null)
-      .order("created_at", { ascending: true })
-      .order("id", { ascending: true })
-      .range(from, from + RETAINAGE_PAGE_SIZE - 1)
+  return sumRetainageByInvoice(args, "invoice_id", "invoice retainage")
+}
 
-    if (error) throw new Error(`Failed to load invoice retainage: ${error.message}`)
-    for (const row of data ?? []) {
-      const invoiceId = String(row.invoice_id)
-      byInvoice.set(invoiceId, (byInvoice.get(invoiceId) ?? 0) + Number(row.amount_cents ?? 0))
+// A URL carries about 200 uuids comfortably; larger selections are read in slices.
+const RETAINAGE_ID_CHUNK = 200
+
+async function sumRetainageByInvoice(
+  args: { supabase: SupabaseClient; orgId: string; invoiceIds?: string[] },
+  column: "invoice_id" | "release_invoice_id",
+  label: string,
+): Promise<Map<string, number>> {
+  const byInvoice = new Map<string, number>()
+  const slices: Array<string[] | null> = args.invoiceIds ? chunk(args.invoiceIds, RETAINAGE_ID_CHUNK) : [null]
+  for (const slice of slices) {
+    for (let page = 0; ; page += 1) {
+      const from = page * RETAINAGE_PAGE_SIZE
+      let query = args.supabase
+        .from("retainage")
+        .select(`${column}, amount_cents`)
+        .eq("org_id", args.orgId)
+        .not(column, "is", null)
+      if (slice) query = query.in(column, slice)
+      const { data, error } = await query
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, from + RETAINAGE_PAGE_SIZE - 1)
+
+      if (error) throw new Error(`Failed to load ${label}: ${error.message}`)
+      for (const row of (data ?? []) as Array<Record<string, unknown>>) {
+        const invoiceId = String(row[column])
+        byInvoice.set(invoiceId, (byInvoice.get(invoiceId) ?? 0) + Number(row.amount_cents ?? 0))
+      }
+      if ((data ?? []).length < RETAINAGE_PAGE_SIZE) break
     }
-    if ((data ?? []).length < RETAINAGE_PAGE_SIZE) return byInvoice
   }
+  return byInvoice
 }
 
 export async function createRetainageRecord({

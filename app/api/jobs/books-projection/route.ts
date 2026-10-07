@@ -14,7 +14,9 @@ async function handler(request: NextRequest) {
   // recovering facts whose journal entry failed to post (see the repair sweep in
   // `books-maintenance`, which runs the same pass nightly).
   const full = ["1", "true"].includes((request.nextUrl.searchParams.get("full") ?? "").toLowerCase())
-  const result = await runBooksProjection({ full })
+  // A minute short of maxDuration, so the run records which companies it did not
+  // reach instead of being killed mid-company with nothing recorded.
+  const result = await runBooksProjection({ full, deadline: Date.now() + 240_000 })
   const surfaced = await recordProjectionFailures(result.results, { full })
   const failures = result.results.reduce((sum, item) => sum + item.failures.length, 0)
   return NextResponse.json({ ok: failures === 0, failures, surfaced, ...result }, { status: failures === 0 ? 200 : 207 })

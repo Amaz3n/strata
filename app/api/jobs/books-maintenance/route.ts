@@ -21,7 +21,8 @@ async function handler(request: NextRequest) {
   const [recurring, credentials, repair] = await Promise.all([
     processRecurringPostings(),
     finalizeExpiredCutoverCredentials(),
-    runBooksProjection({ full: true }),
+    // Leaves time for the rebuild drills below inside maxDuration.
+    runBooksProjection({ full: true, deadline: Date.now() + 200_000 }),
   ])
   // Each unprojectable source becomes a reconciliation item with an owner and a
   // cure. Some of them — a bill edited after its period closed — fail identically

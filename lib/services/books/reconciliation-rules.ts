@@ -6,6 +6,9 @@
  * are testable only if they do not need a database.
  */
 
+/** Findings about a company's projection run as a whole, rather than one source. */
+export const PROJECTION_RUN_SOURCE_TYPE = "books_projection_run"
+
 /**
  * Categories emitted by the ledger tie-outs.
  *

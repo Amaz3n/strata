@@ -15,6 +15,8 @@ import { loadInventoryPolicies, transitionInventoryForService } from "@/lib/serv
 import { inventoryCostAccount } from "@/lib/services/books/inventory-rules";
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
+import { chunk } from "@/lib/utils";
+import { PROJECTION_RUN_SOURCE_TYPE } from "@/lib/services/books/reconciliation-rules";
 import {
   BILLED_INVOICE_STATUSES,
   PAYABLE_VENDOR_BILL_STATUSES,
@@ -81,6 +83,18 @@ const PROJECTION_PAGE_SIZE = 500;
  * failure, never a silent truncation.
  */
 const PROJECTION_MAX_ROWS = 250_000;
+
+/** Ids per `.in()` filter: about 200 uuids keep a request URL comfortably short. */
+const PROJECTION_ID_CHUNK = 200;
+
+/**
+ * How far before its cursor each ordinary run re-reads. `updated_at` is stamped
+ * with the writing transaction's start time, so a write that commits after a
+ * newer one has already been projected carries a timestamp behind the cursor.
+ * Re-reading this window finds it; anything unchanged in it is skipped without
+ * a database call. Longer-running writes wait for the nightly pass.
+ */
+const LATE_COMMIT_WINDOW_MS = 5 * 60 * 1000;
 
 /** Source types the projector owns end to end, and may therefore retire. */
 const PROJECTED_SOURCE_TYPES = [
@@ -150,6 +164,43 @@ async function collectPages<T>(
 }
 
 /**
+ * Reads every row of a query in primary-key order, each page starting after the
+ * last id seen. Unlike offset paging, a row deleted or updated while the read is
+ * in flight cannot shift a later row out of the result.
+ */
+async function collectByKey<T extends { id: unknown }>(
+  loadPage: (afterId: string | null) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+  label: string,
+): Promise<T[]> {
+  const rows: T[] = [];
+  let afterId: string | null = null;
+  for (;;) {
+    const { data, error } = await loadPage(afterId);
+    if (error) throw new Error(`Failed to load ${label}: ${error.message}`);
+    const batch = data ?? [];
+    rows.push(...batch);
+    if (batch.length < PROJECTION_PAGE_SIZE) return rows;
+    if (rows.length >= PROJECTION_MAX_ROWS) {
+      throw new Error(`Refusing to project a truncated read: ${label} exceeded ${PROJECTION_MAX_ROWS} rows`);
+    }
+    afterId = String(batch[batch.length - 1].id);
+  }
+}
+
+/** Every page of a query for each slice of ids, e.g. the lines of the bills being projected. */
+async function collectForIds<T>(
+  ids: string[],
+  loadPage: (slice: string[], from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+  label: string,
+): Promise<T[]> {
+  const rows: T[] = [];
+  for (const slice of chunk([...new Set(ids)], PROJECTION_ID_CHUNK)) {
+    rows.push(...(await collectPages((from, to) => loadPage(slice, from, to), label)));
+  }
+  return rows;
+}
+
+/**
  * The accounting date of a timestamp column.
  *
  * Slicing the first ten characters off the stored string dates the row by
@@ -165,16 +216,68 @@ function accountingDateFromTimestamp(value: unknown): string | null {
   return Number.isFinite(ms) ? isoDateOnlyFromUtcMs(ms) : null;
 }
 
-type ProjectionWatermarks = {
-  bills: string | null;
-  invoices: string | null;
-  payments: string | null;
-  feeCharges: string | null;
-  expenses: string | null;
-  reversals: string | null;
-  adjustments: string | null;
-  labor: string | null;
+type ByFamily<T> = {
+  bills: T;
+  invoices: T;
+  payments: T;
+  feeCharges: T;
+  expenses: T;
+  reversals: T;
+  adjustments: T;
+  labor: T;
 };
+
+/**
+ * Where a family's read starts, at a timestamp or strictly after it, plus sources
+ * that failed to post and are read again whatever their timestamp.
+ */
+type ReadFrom = { at: string; inclusive: boolean; retryIds: string[] } | null;
+
+/** The PostgREST `or` filter for a family's read. */
+function readFromFilter(from: NonNullable<ReadFrom>) {
+  const bound = `updated_at.${from.inclusive ? "gte" : "gt"}."${from.at}"`;
+  return from.retryIds.length ? `${bound},id.in.(${from.retryIds.join(",")})` : bound;
+}
+
+/** A failed source's finding names it by projection source type; this is the table family it is read from. */
+const RETRY_FAMILIES: Record<string, Array<keyof ByFamily<unknown>>> = {
+  vendor_bill: ["bills"],
+  invoice: ["invoices"],
+  retainage_release: ["bills", "invoices"],
+  bill_payment: ["payments"],
+  invoice_payment: ["payments"],
+  customer_deposit_receipt: ["payments"],
+  customer_deposit_application: ["payments"],
+  ap_fee_charge: ["feeCharges"],
+  expense: ["expenses"],
+  payment_reversal: ["reversals"],
+  customer_deposit_reversal: ["reversals"],
+  receivable_adjustment: ["adjustments"],
+  labor_cost: ["labor"],
+};
+
+/** Sources an earlier run failed to post, by family, oldest first and at most 200 each. */
+async function loadRetryIds(orgId: string): Promise<ByFamily<string[]>> {
+  const { data, error } = await createServiceSupabaseClient()
+    .from("accounting_reconciliation_items")
+    .select("entity_type, entity_id")
+    .eq("org_id", orgId)
+    .eq("category", "projection_failed")
+    .neq("status", "resolved")
+    .order("created_at", { ascending: true })
+    .limit(1000);
+  if (error) throw new Error(`Failed to load sources to retry: ${error.message}`);
+  const retry: ByFamily<string[]> = { bills: [], invoices: [], payments: [], feeCharges: [], expenses: [], reversals: [], adjustments: [], labor: [] };
+  for (const row of data ?? []) {
+    const id = z.string().uuid().safeParse(row.entity_id);
+    if (!id.success) continue;
+    for (const family of RETRY_FAMILIES[String(row.entity_type)] ?? []) {
+      if (retry[family].length < PROJECTION_ID_CHUNK) retry[family].push(id.data);
+    }
+  }
+  return retry;
+}
+type ProjectionWatermarks = ByFamily<ReadFrom>;
 
 async function latestFactTimestamp(orgId: string, sourceType: string) {
   const service = createServiceSupabaseClient();
@@ -201,13 +304,38 @@ function earliestTimestamp(values: Array<string | null>) {
 }
 
 /**
- * One cursor per upstream source family.
+ * Where an ordinary run starts, per source family (one cursor per family, so a
+ * newer bill never carries the cursor past an older invoice).
  *
- * A global max lets a newer bill advance beyond an older invoice forever. The
- * family cursor keeps unrelated tables independent; `gte` still deliberately
- * replays the boundary row so a fact inserted before its journal can heal.
+ * Everything up to the saved cursor was read by an earlier run, except writes
+ * still in flight while that run read: their transaction began before it, so
+ * their updated_at falls inside the late-commit window before the run started.
+ * The read therefore starts at that window when it reaches back past the cursor,
+ * and strictly after the cursor otherwise, so a settled company reads nothing.
+ * A company with no saved progress starts from its latest facts, replaying the
+ * boundary row.
  */
 async function resolveWatermarks(orgId: string): Promise<ProjectionWatermarks> {
+  const [{ data, error }, retry] = await Promise.all([
+    createServiceSupabaseClient().from("books_projection_progress").select("cursors, read_started_at").eq("org_id", orgId).maybeSingle(),
+    loadRetryIds(orgId),
+  ]);
+  if (error) throw new Error(`Failed to load projection progress: ${error.message}`);
+  if (!data) return factWatermarks(orgId, retry);
+  const cursors = z.record(z.string()).parse(data.cursors);
+  const window = data.read_started_at ? new Date(Date.parse(String(data.read_started_at)) - LATE_COMMIT_WINDOW_MS).toISOString() : null;
+  const from = (cursor: string | undefined, retryIds: string[]): ReadFrom => {
+    if (!cursor) return null;
+    return window && !isAtOrAfter(window, cursor) ? { at: window, inclusive: true, retryIds } : { at: cursor, inclusive: false, retryIds };
+  };
+  return {
+    bills: from(cursors.bills, retry.bills), invoices: from(cursors.invoices, retry.invoices), payments: from(cursors.payments, retry.payments),
+    feeCharges: from(cursors.feeCharges, retry.feeCharges), expenses: from(cursors.expenses, retry.expenses), reversals: from(cursors.reversals, retry.reversals),
+    adjustments: from(cursors.adjustments, retry.adjustments), labor: from(cursors.labor, retry.labor),
+  };
+}
+
+async function factWatermarks(orgId: string, retry: ByFamily<string[]>): Promise<ProjectionWatermarks> {
   const [
     vendorBill,
     invoice,
@@ -237,20 +365,21 @@ async function resolveWatermarks(orgId: string): Promise<ProjectionWatermarks> {
     latestFactTimestamp(orgId, "receivable_adjustment"),
     latestFactTimestamp(orgId, "labor_cost"),
   ]);
+  const at = (value: string | null, retryIds: string[]): ReadFrom => (value ? { at: value, inclusive: true, retryIds } : null);
   return {
-    bills: earliestTimestamp([vendorBill, retainage]),
-    invoices: earliestTimestamp([invoice, retainage]),
-    payments: earliestTimestamp([
+    bills: at(earliestTimestamp([vendorBill, retainage]), retry.bills),
+    invoices: at(earliestTimestamp([invoice, retainage]), retry.invoices),
+    payments: at(earliestTimestamp([
       billPayment,
       invoicePayment,
       customerDepositReceipt,
       customerDepositApplication,
-    ]),
-    feeCharges: feeCharge,
-    expenses: expense,
-    reversals: earliestTimestamp([reversal, customerDepositReversal]),
-    adjustments: receivableAdjustment,
-    labor,
+    ]), retry.payments),
+    feeCharges: at(feeCharge, retry.feeCharges),
+    expenses: at(expense, retry.expenses),
+    reversals: at(earliestTimestamp([reversal, customerDepositReversal]), retry.reversals),
+    adjustments: at(receivableAdjustment, retry.adjustments),
+    labor: at(labor, retry.labor),
   };
 }
 
@@ -262,29 +391,20 @@ async function resolveWatermarks(orgId: string): Promise<ProjectionWatermarks> {
  * allocated to a different project than its bill's primary project, which is
  * exactly the detail the GL loses when it posts from bill headers.
  */
-async function loadBillCostLines(orgId: string) {
+async function loadBillCostLines(orgId: string, billIds: string[]) {
   const service = createServiceSupabaseClient();
-  const [entries, billLines, accounts] = await Promise.all([
-    collectPages(
-      (from, to) =>
-        service
-          .from("job_cost_entries")
-          .select("source_id, project_id, cost_cents, cost_code_id, metadata")
-          .eq("org_id", orgId)
-          .eq("status", "posted")
-          .eq("source_type", "vendor_bill_line")
-          .order("created_at", { ascending: true })
-          .order("id", { ascending: true })
-          .range(from, to),
-      "job cost entries",
-    ),
-    collectPages(
+  // Only the bills being projected: an ordinary run must not read the ledger's
+  // whole job-cost history to post the handful of bills that changed.
+  const [billLines, accounts] = await Promise.all([
+    collectForIds(
+      billIds,
       // `bill_lines` has no `created_at`; its primary key is the whole total order.
-      (from, to) =>
+      (slice, from, to) =>
         service
           .from("bill_lines")
           .select("id, bill_id, description, metadata")
           .eq("org_id", orgId)
+          .in("bill_id", slice)
           .order("id", { ascending: true })
           .range(from, to),
       "bill lines",
@@ -302,6 +422,21 @@ async function loadBillCostLines(orgId: string) {
       "Arc Books accounts",
     ),
   ]);
+  const entries = await collectForIds(
+    billLines.map((row) => String(row.id)),
+    (slice, from, to) =>
+      service
+        .from("job_cost_entries")
+        .select("source_id, project_id, cost_cents, cost_code_id, metadata")
+        .eq("org_id", orgId)
+        .eq("status", "posted")
+        .eq("source_type", "vendor_bill_line")
+        .in("source_id", slice)
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to),
+    "job cost entries",
+  );
   const accountCodeById = new Map(
     accounts.map((account) => [String(account.id), String(account.code)]),
   );
@@ -352,28 +487,17 @@ async function loadBillCostLines(orgId: string) {
 }
 
 /** Expense cost lines, including cross-project splits, from the same subledger. */
-async function loadExpenseCostLines(orgId: string) {
+async function loadExpenseCostLines(orgId: string, expenseIds: string[]) {
   const service = createServiceSupabaseClient();
-  const [entries, expenseLines, accounts] = await Promise.all([
-    collectPages(
-      (from, to) =>
-        service
-          .from("job_cost_entries")
-          .select("source_type, source_id, project_id, cost_cents, cost_code_id, metadata")
-          .eq("org_id", orgId)
-          .eq("status", "posted")
-          .in("source_type", ["project_expense", "project_expense_line"])
-          .order("created_at", { ascending: true })
-          .order("id", { ascending: true })
-          .range(from, to),
-      "expense job cost entries",
-    ),
-    collectPages(
-      (from, to) =>
+  const [expenseLines, accounts] = await Promise.all([
+    collectForIds(
+      expenseIds,
+      (slice, from, to) =>
         service
           .from("project_expense_lines")
           .select("id, expense_id, description, metadata")
           .eq("org_id", orgId)
+          .in("expense_id", slice)
           .order("id", { ascending: true })
           .range(from, to),
       "project expense lines",
@@ -391,6 +515,22 @@ async function loadExpenseCostLines(orgId: string) {
       "Arc Books job-cost accounts",
     ),
   ]);
+  // A cost row points at the expense itself or at one of its lines.
+  const entries = await collectForIds(
+    [...expenseIds, ...expenseLines.map((row) => String(row.id))],
+    (slice, from, to) =>
+      service
+        .from("job_cost_entries")
+        .select("source_type, source_id, project_id, cost_cents, cost_code_id, metadata")
+        .eq("org_id", orgId)
+        .eq("status", "posted")
+        .in("source_type", ["project_expense", "project_expense_line"])
+        .in("source_id", slice)
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to),
+    "expense job cost entries",
+  );
   const accountCodeById = new Map(
     accounts.map((account) => [String(account.id), String(account.code)]),
   );
@@ -443,19 +583,17 @@ async function loadExpenseCostLines(orgId: string) {
  * Field labor from the time subledger. Time entries have no other route into the
  * GL, so without this the job-cost tie-out can never balance.
  */
-async function loadLaborCostEntries(orgId: string, since: string | null) {
+async function loadLaborCostEntries(orgId: string, since: ReadFrom) {
   const service = createServiceSupabaseClient();
-  return collectPages((from, to) => {
+  return collectByKey((afterId) => {
     let query = service
       .from("job_cost_entries")
       .select("id, org_id, source_type, source_id, project_id, cost_cents, incurred_on, updated_at, status, cost_code_id, metadata")
       .eq("org_id", orgId)
       .eq("source_type", "time_entry");
-    if (since) query = query.gte("updated_at", since);
-    return query
-      .order("created_at", { ascending: true })
-      .order("id", { ascending: true })
-      .range(from, to);
+    if (since) query = query.or(readFromFilter(since));
+    if (afterId) query = query.gt("id", afterId);
+    return query.order("id", { ascending: true }).limit(PROJECTION_PAGE_SIZE);
   }, "labor job cost entries");
 }
 
@@ -470,11 +608,7 @@ async function projectionCandidates(
     openingSources,
     inventoryPolicies,
     basisByProject,
-    costLinesByBill,
-    costLinesByExpense,
     laborEntries,
-    retainageByInvoice,
-    releaseByInvoice,
     bills,
     invoices,
     payments,
@@ -488,110 +622,95 @@ async function projectionCandidates(
     loadOpeningOwnedSources(orgId),
     loadInventoryPolicies(orgId),
     loadRevenueBasisByProject(orgId),
-    loadBillCostLines(orgId),
-    loadExpenseCostLines(orgId),
     loadLaborCostEntries(orgId, watermarks.labor),
-    // AR retainage lives in the `retainage` table, never on the invoice row. Loaded
-    // whole rather than watermarked: a release can attach retainage to an invoice
-    // that itself has not changed since the last run.
-    loadInvoiceRetainageCents({ supabase: service, orgId }),
-    loadRetainageReleaseInvoiceCents({ supabase: service, orgId }),
     // Every paged read below imposes a total order for the reason given on
     // `collectPages`: `.range()` without one skips and duplicates rows.
-    collectPages((from, to) => {
+    collectByKey((afterId) => {
       let query = service
         .from("vendor_bills")
         .select(
           "id, project_id, company_id, bill_number, bill_date, total_cents, retainage_cents, use_tax_accrued_cents, metadata, updated_at, status",
         )
         .eq("org_id", orgId);
-      if (watermarks.bills) query = query.gte("updated_at", watermarks.bills);
-      return query
-        .order("created_at", { ascending: true })
-        .order("id", { ascending: true })
-        .range(from, to);
+      if (watermarks.bills) query = query.or(readFromFilter(watermarks.bills));
+      if (afterId) query = query.gt("id", afterId);
+      return query.order("id", { ascending: true }).limit(PROJECTION_PAGE_SIZE);
     }, "vendor bills"),
-    collectPages((from, to) => {
+    collectByKey((afterId) => {
       let query = service
         .from("invoices")
         .select(
           "id, project_id, title, invoice_number, issue_date, total_cents, tax_cents, metadata, updated_at, status",
         )
         .eq("org_id", orgId);
-      if (watermarks.invoices)
-        query = query.gte("updated_at", watermarks.invoices);
-      return query
-        .order("created_at", { ascending: true })
-        .order("id", { ascending: true })
-        .range(from, to);
+      if (watermarks.invoices) query = query.or(readFromFilter(watermarks.invoices));
+      if (afterId) query = query.gt("id", afterId);
+      return query.order("id", { ascending: true }).limit(PROJECTION_PAGE_SIZE);
     }, "invoices"),
-    collectPages((from, to) => {
+    collectByKey((afterId) => {
       let query = service
         .from("payments")
         .select(
           "id, project_id, invoice_id, bill_id, amount_cents, gross_cents, fee_cents, processor_fee_cents, platform_fee_cents, method, metadata, received_at, updated_at, status",
         )
         .eq("org_id", orgId);
-      if (watermarks.payments)
-        query = query.gte("updated_at", watermarks.payments);
-      return query
-        .order("created_at", { ascending: true })
-        .order("id", { ascending: true })
-        .range(from, to);
+      if (watermarks.payments) query = query.or(readFromFilter(watermarks.payments));
+      if (afterId) query = query.gt("id", afterId);
+      return query.order("id", { ascending: true }).limit(PROJECTION_PAGE_SIZE);
     }, "payments"),
-    collectPages((from, to) => {
+    collectByKey((afterId) => {
       let query = service
         .from("payment_run_fee_charges")
         .select("id, amount_cents, funding_source_id, settled_at, updated_at, status")
         .eq("org_id", orgId);
-      if (watermarks.feeCharges) query = query.gte("updated_at", watermarks.feeCharges);
-      return query
-        .order("created_at", { ascending: true })
-        .order("id", { ascending: true })
-        .range(from, to);
+      if (watermarks.feeCharges) query = query.or(readFromFilter(watermarks.feeCharges));
+      if (afterId) query = query.gt("id", afterId);
+      return query.order("id", { ascending: true }).limit(PROJECTION_PAGE_SIZE);
     }, "payment run fee charges"),
-    collectPages((from, to) => {
+    collectByKey((afterId) => {
       let query = service
         .from("project_expenses")
         .select(
           "id, project_id, vendor_company_id, expense_date, amount_cents, tax_cents, description, payment_method, accounting_coding, metadata, updated_at, status",
         )
         .eq("org_id", orgId);
-      if (watermarks.expenses)
-        query = query.gte("updated_at", watermarks.expenses);
-      return query
-        .order("created_at", { ascending: true })
-        .order("id", { ascending: true })
-        .range(from, to);
+      if (watermarks.expenses) query = query.or(readFromFilter(watermarks.expenses));
+      if (afterId) query = query.gt("id", afterId);
+      return query.order("id", { ascending: true }).limit(PROJECTION_PAGE_SIZE);
     }, "project expenses"),
-    collectPages((from, to) => {
+    collectByKey((afterId) => {
       let query = service
         .from("payment_reversals")
         .select(
           "id, project_id, invoice_id, bill_id, payment_id, amount_cents, occurred_at, updated_at, status",
         )
         .eq("org_id", orgId);
-      if (watermarks.reversals)
-        query = query.gte("updated_at", watermarks.reversals);
-      return query
-        .order("created_at", { ascending: true })
-        .order("id", { ascending: true })
-        .range(from, to);
+      if (watermarks.reversals) query = query.or(readFromFilter(watermarks.reversals));
+      if (afterId) query = query.gt("id", afterId);
+      return query.order("id", { ascending: true }).limit(PROJECTION_PAGE_SIZE);
     }, "payment reversals"),
-    collectPages((from, to) => {
+    collectByKey((afterId) => {
       let query = service
         .from("receivable_adjustments")
         .select(
           "id, project_id, invoice_id, adjustment_type, status, amount_cents, tax_cents, effective_date, reason, updated_at",
         )
         .eq("org_id", orgId);
-      if (watermarks.adjustments)
-        query = query.gte("updated_at", watermarks.adjustments);
-      return query
-        .order("created_at", { ascending: true })
-        .order("id", { ascending: true })
-        .range(from, to);
+      if (watermarks.adjustments) query = query.or(readFromFilter(watermarks.adjustments));
+      if (afterId) query = query.gt("id", afterId);
+      return query.order("id", { ascending: true }).limit(PROJECTION_PAGE_SIZE);
     }, "receivable adjustments"),
+  ]);
+
+  // What the selected documents need, read for those documents only. AR retainage
+  // lives in the `retainage` table, never on the invoice row; a change to it
+  // touches its invoices, so the invoices selected here are the ones it affects.
+  const invoiceIds = invoices.map((row) => String(row.id));
+  const [costLinesByBill, costLinesByExpense, retainageByInvoice, releaseByInvoice] = await Promise.all([
+    loadBillCostLines(orgId, bills.map((row) => String(row.id))),
+    loadExpenseCostLines(orgId, expenses.map((row) => String(row.id))),
+    loadInvoiceRetainageCents({ supabase: service, orgId, invoiceIds }),
+    loadRetainageReleaseInvoiceCents({ supabase: service, orgId, invoiceIds }),
   ]);
 
   const candidates: ProjectionCandidate[] = [];
@@ -1083,7 +1202,16 @@ async function projectionCandidates(
     const captured = Object.fromEntries([...ids].filter(id => projectDimensions.has(id)).map(id => [id, projectDimensions.get(id)]));
     if (Object.keys(captured).length) candidate.payload.project_dimensions = captured;
   }
-  return { candidates, failures, retirementSourceKeys, liveSourceKeys };
+  // How far this run read, per family: the next run's cursor.
+  const latest = (rows: Array<{ updated_at?: unknown }>) => rows.reduce<string | null>((max, row) => {
+    const at = row.updated_at == null ? null : String(row.updated_at);
+    return at && (max === null || !isAtOrAfter(max, at)) ? at : max;
+  }, null);
+  const observed: ByFamily<string | null> = {
+    bills: latest(bills), invoices: latest(invoices), payments: latest(payments), feeCharges: latest(feeCharges),
+    expenses: latest(expenses), reversals: latest(reversals), adjustments: latest(adjustments), labor: latest(laborEntries),
+  };
+  return { candidates, failures, retirementSourceKeys, liveSourceKeys, observed };
 }
 
 const factRowSchema = z.object({
@@ -1093,6 +1221,57 @@ const factRowSchema = z.object({
   accounting_date: z.string(),
   source_version: z.number().int(),
 });
+
+type PriorProjection = {
+  fact: z.infer<typeof factRowSchema> | null;
+  /** The posted journal of `fact`, if it still stands. */
+  journalId: string | null;
+  receipt: { factId: string; observedAt: string } | null;
+};
+
+/**
+ * What the ledger already holds for the selected sources, read in bulk: each
+ * source's latest fact, whether that fact's journal is still posted, and its
+ * receipt. An unchanged source with a standing journal then costs no call.
+ */
+async function loadPriorProjections(orgId: string, candidates: ProjectionCandidate[]) {
+  const service = createServiceSupabaseClient();
+  const sourceTypes = [...new Set(candidates.map((candidate) => candidate.sourceType))];
+  const sourceIds = candidates.map((candidate) => candidate.sourceId);
+  const [facts, receipts] = await Promise.all([
+    collectForIds(sourceIds, (slice, from, to) => service.from("accounting_facts")
+      .select("id, source_type, source_id, payload_hash, payload, accounting_date, source_version")
+      .eq("org_id", orgId).in("source_type", sourceTypes).in("source_id", slice)
+      .order("id", { ascending: true }).range(from, to), "accounting facts"),
+    collectForIds(sourceIds, (slice, from, to) => service.from("books_projection_receipts")
+      .select("id, source_type, source_id, fact_id, source_observed_at")
+      .eq("org_id", orgId).in("source_type", sourceTypes).in("source_id", slice)
+      .order("id", { ascending: true }).range(from, to), "projection receipts"),
+  ]);
+  const latest = new Map<string, z.infer<typeof factRowSchema>>();
+  for (const row of facts) {
+    const key = factSourceKey(String(row.source_type), String(row.source_id));
+    const fact = factRowSchema.parse(row);
+    const current = latest.get(key);
+    if (!current || fact.source_version > current.source_version) latest.set(key, fact);
+  }
+  const journals = await collectForIds([...latest.values()].map((fact) => fact.id), (slice, from, to) => service.from("journal_entries")
+    .select("id, fact_id").eq("org_id", orgId).eq("status", "posted").in("fact_id", slice)
+    .order("id", { ascending: true }).range(from, to), "posted journals");
+  const journalByFact = new Map(journals.map((row) => [String(row.fact_id), String(row.id)]));
+  const receiptByKey = new Map(receipts.map((row) => [factSourceKey(String(row.source_type), String(row.source_id)), { factId: String(row.fact_id), observedAt: String(row.source_observed_at) }]));
+  return new Map<string, PriorProjection>(candidates.map((candidate) => {
+    const key = factSourceKey(candidate.sourceType, candidate.sourceId);
+    const fact = latest.get(key) ?? null;
+    return [key, { fact, journalId: fact ? journalByFact.get(fact.id) ?? null : null, receipt: receiptByKey.get(key) ?? null }];
+  }));
+}
+
+/** True when `later` is the same instant as `earlier` or after it, to the microsecond. */
+function isAtOrAfter(later: string, earlier: string) {
+  const a = timestampMicros(later), b = timestampMicros(earlier);
+  return a !== null && b !== null && a >= b;
+}
 
 /**
  * Project one source transition as a single database transaction. The RPC owns
@@ -1104,22 +1283,13 @@ async function projectCandidateAtomically(
   candidate: ProjectionCandidate,
   policyVersion: number,
   projectionVersion: number,
-) {
-  const service = createServiceSupabaseClient();
-  const { data: existingRow, error: existingError } = await service
-    .from("accounting_facts")
-    .select("id, payload_hash, payload, source_version, accounting_date")
-    .eq("org_id", orgId)
-    .eq("source_type", candidate.sourceType)
-    .eq("source_id", candidate.sourceId)
-    .order("source_version", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (existingError)
-    throw new Error(
-      `Failed to inspect accounting fact: ${existingError.message}`,
-    );
-  const existing = existingRow ? factRowSchema.parse(existingRow) : null;
+  prior: PriorProjection,
+): Promise<
+  | { kind: "current" }
+  | { kind: "receipt"; factId: string; journalId: string }
+  | ({ kind: "projected" } & Awaited<ReturnType<typeof projectBooksFactAndJournalForService>>)
+> {
+  const existing = prior.fact;
   candidate = {...candidate,payload:preserveLegacyLaborPayload(candidate.sourceType,candidate.accountingDate,candidate.payload,existing)};
   candidate = { ...candidate, payload: preserveLegacyDimensionPayload(candidate.sourceType, candidate.accountingDate, preserveLegacySettlementPayload(candidate.sourceType, candidate.accountingDate, preserveLegacyInvoiceIncomePayload(candidate.sourceType, candidate.accountingDate, candidate.payload, existing), existing), existing) };
   const { sourceVersion, payloadHash, idempotencyKey } = factTransitionIdentity({
@@ -1137,7 +1307,14 @@ async function projectCandidateAtomically(
     policyVersion,
   });
   if (!draft) throw new Error(`No posting rule covers ${candidate.sourceType}`);
-  return projectBooksFactAndJournalForService({
+  // The same economics with its journal still standing is exactly what the RPC
+  // would leave alone; only the receipt may need to follow the newer revision.
+  if (existing && payloadHash === existing.payload_hash && prior.journalId) {
+    return prior.receipt?.factId === existing.id && isAtOrAfter(prior.receipt.observedAt, candidate.occurredAt)
+      ? { kind: "current" }
+      : { kind: "receipt", factId: existing.id, journalId: prior.journalId };
+  }
+  const projection = await projectBooksFactAndJournalForService({
     orgId,
     expectedFactId: existing?.id ?? null,
     fact: {
@@ -1155,6 +1332,7 @@ async function projectCandidateAtomically(
     draft,
     reversalReason: `${candidate.sourceType} was revised after posting`,
   });
+  return { kind: "projected", ...projection };
 }
 
 const retirableFactRowSchema = z.object({
@@ -1341,7 +1519,7 @@ export async function resolveProjectionVersion(orgId: string) {
 
 export async function projectJournal(
   orgId: string,
-  options: { since?: string; full?: boolean; sourceKeys?: string[] } = {},
+  options: { full?: boolean; sourceKeys?: string[] } = {},
 ) {
   const service = createServiceSupabaseClient();
   const { data: settings, error } = await service
@@ -1364,47 +1542,41 @@ export async function projectJournal(
 
   const policyVersion = Number(settings.active_policy_version);
   const projectionVersion = await resolveProjectionVersion(orgId);
-  const allFrom = (value: string | null): ProjectionWatermarks => ({
-    bills: value,
-    invoices: value,
-    payments: value,
-    feeCharges: value,
-    expenses: value,
-    reversals: value,
-    adjustments: value,
-    labor: value,
-  });
-  const watermarks = options.full || options.sourceKeys
-    ? allFrom(null)
-    : options.since
-      ? allFrom(options.since)
-      : await resolveWatermarks(orgId);
-  const { candidates, failures: candidateFailures, retirementSourceKeys, liveSourceKeys } =
+  // When this run began reading: the next run's late-commit window ends here.
+  const readStartedAt = new Date().toISOString();
+  const everything: ProjectionWatermarks = { bills: null, invoices: null, payments: null, feeCharges: null, expenses: null, reversals: null, adjustments: null, labor: null };
+  const watermarks = options.full || options.sourceKeys ? everything : await resolveWatermarks(orgId);
+  const { candidates, failures: candidateFailures, retirementSourceKeys, liveSourceKeys, observed } =
     await projectionCandidates(orgId, watermarks);
 
   const requestedKeys = options.sourceKeys ? new Set(options.sourceKeys) : null;
   const failures = candidateFailures.filter((row) => !requestedKeys || requestedKeys.has(factSourceKey(row.sourceType, row.sourceId)));
   const evaluatedSourceKeys = new Set<string>(failures.map(row => factSourceKey(row.sourceType, row.sourceId)));
+  const selected = requestedKeys ? candidates.filter((candidate) => requestedKeys.has(factSourceKey(candidate.sourceType, candidate.sourceId))) : candidates;
+  const priors = await loadPriorProjections(orgId, selected);
   let projected = 0;
   let skipped = 0;
   let revised = 0;
-  for (const candidate of candidates) {
-    if (requestedKeys && !requestedKeys.has(factSourceKey(candidate.sourceType, candidate.sourceId))) continue;
-    evaluatedSourceKeys.add(factSourceKey(candidate.sourceType, candidate.sourceId));
+  for (const candidate of selected) {
+    const key = factSourceKey(candidate.sourceType, candidate.sourceId);
+    evaluatedSourceKeys.add(key);
     try {
-      const projection = await projectCandidateAtomically(
+      const outcome = await projectCandidateAtomically(
         orgId,
         candidate,
         policyVersion,
         projectionVersion,
+        priors.get(key) ?? { fact: null, journalId: null, receipt: null },
       );
-      const { error: receiptError } = await service.rpc("record_books_projection_receipt", {
-        p_org_id: orgId, p_source_type: candidate.sourceType, p_source_id: candidate.sourceId,
-        p_source_observed_at: candidate.occurredAt, p_fact_id: projection.factId, p_journal_id: projection.journalId,
-      });
-      if (receiptError) throw new Error(`Journal recorded but posting verification could not be saved: ${receiptError.message}`);
-      if (projection.superseded) revised += 1;
-      if (projection.created || projection.journalCreated) projected += 1;
+      if (outcome.kind !== "current") {
+        const { error: receiptError } = await service.rpc("record_books_projection_receipt", {
+          p_org_id: orgId, p_source_type: candidate.sourceType, p_source_id: candidate.sourceId,
+          p_source_observed_at: candidate.occurredAt, p_fact_id: outcome.factId, p_journal_id: outcome.journalId,
+        });
+        if (receiptError) throw new Error(`Journal recorded but posting verification could not be saved: ${receiptError.message}`);
+      }
+      if (outcome.kind === "projected" && outcome.superseded) revised += 1;
+      if (outcome.kind === "projected" && (outcome.created || outcome.journalCreated)) projected += 1;
       else skipped += 1;
     } catch (projectionError) {
       failures.push({
@@ -1462,29 +1634,67 @@ export async function projectJournal(
   }
   failures.push(...await reconcileWarrantyRecoveriesForService(orgId, requestedProjects));
   for (const failure of failures) evaluatedSourceKeys.add(factSourceKey(failure.sourceType, failure.sourceId));
+  // A run over every changed source moves the cursor to what it read. A run for
+  // chosen sources leaves it: it did not read the rest.
+  if (!requestedKeys) {
+    const { error: progressError } = await service.rpc("complete_books_projection_run", {
+      p_org_id: orgId, p_cursors: Object.fromEntries(Object.entries(observed).filter(([, at]) => at !== null)), p_full: options.full === true, p_read_started_at: readStartedAt,
+    });
+    if (progressError) throw new Error(`Failed to record projection progress: ${progressError.message}`);
+  }
   return { projected, skipped, revised, retired, failures, evaluatedSourceKeys: [...evaluatedSourceKeys], fullScanCompleted: options.full === true && !requestedKeys };
 }
 
-export async function runBooksProjection(options: { full?: boolean } = {}) {
+/**
+ * Every Books company, least recently completed first, until `deadline`.
+ *
+ * A company the run does not reach, or whose run stops, is reported as a finding
+ * on the company itself, never left looking clean; it is first in line next
+ * time, and its next completed run resolves the finding. One company's failure
+ * (a row cap, an unreadable source) never stops the companies after it.
+ */
+export async function runBooksProjection(options: { full?: boolean; deadline?: number } = {}) {
   const service = createServiceSupabaseClient();
-  const data = await collectPages((from, to) => service
-    .from("books_settings")
-    .select("org_id")
-    .eq("workspace_enabled", true)
-    .neq("arc_ledger_mode", "disabled")
-    .order("org_id")
-    .range(from, to), "Books organizations");
+  const [enabled, progress] = await Promise.all([
+    collectPages((from, to) => service
+      .from("books_settings")
+      .select("org_id")
+      .eq("workspace_enabled", true)
+      .neq("arc_ledger_mode", "disabled")
+      .order("org_id")
+      .range(from, to), "Books organizations"),
+    collectPages((from, to) => service
+      .from("books_projection_progress")
+      .select("org_id, incremental_completed_at, full_completed_at")
+      .order("org_id")
+      .range(from, to), "projection progress"),
+  ]);
+  const completedAt = new Map(progress.map((row) => {
+    const at = options.full ? row.full_completed_at : row.incremental_completed_at;
+    return [String(row.org_id), at ? String(at) : null];
+  }));
+  const orgIds = enabled.map((row) => String(row.org_id)).sort((left, right) => {
+    const a = completedAt.get(left) ?? null, b = completedAt.get(right) ?? null;
+    if (a === b) return left < right ? -1 : 1;
+    if (a === null) return -1;
+    if (b === null) return 1;
+    return isAtOrAfter(a, b) ? 1 : -1;
+  });
+  const runFailure = (orgId: string, error: string) => ({
+    orgId, projected: 0, skipped: 0, revised: 0, retired: 0, evaluatedSourceKeys: [] as string[], fullScanCompleted: false,
+    failures: [{ sourceType: PROJECTION_RUN_SOURCE_TYPE, sourceId: orgId, error }],
+  });
   const results = [];
-  // One organization's failure (a row cap, an unresolvable revenue basis) must
-  // not stop every later organization; it is surfaced as that org's failure.
-  for (const row of data ?? []) {
+  for (const orgId of orgIds) {
+    if (options.deadline !== undefined && Date.now() >= options.deadline) {
+      results.push(runFailure(orgId, "Books projection did not reach this company before the run's time limit"));
+      continue;
+    }
     try {
-      results.push({ orgId: row.org_id, ...(await projectJournal(row.org_id, { full: options.full })) });
+      const result = await projectJournal(orgId, { full: options.full });
+      results.push({ orgId, ...result, evaluatedSourceKeys: [...result.evaluatedSourceKeys, factSourceKey(PROJECTION_RUN_SOURCE_TYPE, orgId)] });
     } catch (error) {
-      results.push({
-        orgId: row.org_id, projected: 0, skipped: 0, revised: 0, retired: 0, evaluatedSourceKeys: [], fullScanCompleted: false,
-        failures: [{ sourceType: "organization", sourceId: String(row.org_id), error: `Books projection stopped: ${error instanceof Error ? error.message : String(error)}` }],
-      });
+      results.push(runFailure(orgId, `Books projection stopped: ${error instanceof Error ? error.message : String(error)}`));
     }
   }
   return { organizations: results.length, results };

@@ -3673,16 +3673,12 @@ test("source supersede reversal, fact, and replacement post are atomic", () => {
       migration.lastIndexOf("public.post_books_journal_entry"),
   );
 
-  // The watermark remains inclusive after transient RPC/concurrency failures.
-  assert.match(projector, /query\.gte\("updated_at", watermarks\./);
-  assert.doesNotMatch(projector, /\.gt\("updated_at", watermarks\./);
-
   // The nightly repair sweep still proves every current source, not just deltas.
   const maintenance = fs.readFileSync(
     path.join(__dirname, "../app/api/jobs/books-maintenance/route.ts"),
     "utf8",
   );
-  assert.match(maintenance, /runBooksProjection\(\{ full: true \}\)/);
+  assert.match(maintenance, /runBooksProjection\(\{ full: true,/);
 });
 
 test("an accounting date comes from the timestamp, not from the first ten characters of it", () => {

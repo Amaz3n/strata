@@ -1,9 +1,10 @@
-import { projectionFindingWasEvaluated } from "@/lib/services/books/reconciliation-rules"
+import { PROJECTION_RUN_SOURCE_TYPE, projectionFindingWasEvaluated } from "@/lib/services/books/reconciliation-rules"
 import "server-only"
 
 import { z } from "zod"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { chunk } from "@/lib/utils"
 import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
@@ -559,11 +560,6 @@ function itemRow(orgId: string, runId: string, finding: ReconciliationFinding, s
 
 const WRITE_CHUNK = 500
 
-function chunk<T>(rows: T[], size: number) {
-  const chunks: T[][] = []
-  for (let index = 0; index < rows.length; index += size) chunks.push(rows.slice(index, index + size))
-  return chunks
-}
 
 /**
  * Apply one sweep's findings to the persisted item set.
@@ -913,9 +909,11 @@ export async function recordProjectionFailures(
         severity: "critical",
         error: failure.error,
         cure:
-          classifyProjectionFailure(failure.error) === "projection_blocked_by_closed_period"
-            ? "The source record changed after its accounting period closed. Post an adjusting entry, or reopen the period, then re-run the projection."
-            : "Re-run the Books projection after correcting the source record.",
+          failure.sourceType === PROJECTION_RUN_SOURCE_TYPE
+            ? "Postings for this company may be behind. The next pass starts with it and clears this once it completes; if this stays open, contact Arc support."
+            : classifyProjectionFailure(failure.error) === "projection_blocked_by_closed_period"
+              ? "The source record changed after its accounting period closed. Post an adjusting entry, or reopen the period, then re-run the projection."
+              : "Re-run the Books projection after correcting the source record.",
         href: "/books/close",
       },
     }))

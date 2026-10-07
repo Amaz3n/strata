@@ -5,7 +5,7 @@ const fs = require("node:fs"),
   path = require("node:path")
 const { createKit, recorder, loadExpected } = require("./scenario-kit.cjs")
 
-const SCENARIO_MODULES = { "BILL-01": "./scenarios/bill-01.cjs", "WIP-01": "./scenarios/wip-01.cjs", "YEAR-01": "./scenarios/year-01.cjs", "CLOSE-01": "./scenarios/close-01.cjs", "BANK-01": "./scenarios/bank-01.cjs", "STATUS-01": "./scenarios/status-01.cjs", "RACE-01": "./scenarios/race-01.cjs" }
+const SCENARIO_MODULES = { "BILL-01": "./scenarios/bill-01.cjs", "WIP-01": "./scenarios/wip-01.cjs", "YEAR-01": "./scenarios/year-01.cjs", "CLOSE-01": "./scenarios/close-01.cjs", "BANK-01": "./scenarios/bank-01.cjs", "STATUS-01": "./scenarios/status-01.cjs", "RACE-01": "./scenarios/race-01.cjs", "CAP-01": "./scenarios/cap-01.cjs" }
 
 async function runScenario(id, kit, fixtures = {}) {
   if (!fixtures.scenario && !SCENARIO_MODULES[id]) return { scenario: id, status: "NOT_IMPLEMENTED", subcases: [] }

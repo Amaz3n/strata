@@ -76,7 +76,10 @@ function createKit(stack) {
   // An isolated stack has no email provider, so notification delivery is the
   // one job family allowed to fail; it is reported, not hidden.
   const NO_PROVIDER_JOBS = ["deliver_notification"]
-  async function drainOutbox(orgId, attempts = 10) {
+  // The queue is global and processes 50 jobs a pass; notifications the stack can
+  // never deliver keep retrying ahead of an org's own jobs, so a busy stack (one
+  // that has run CAP-01's every-company pass) needs dozens of passes to reach them.
+  async function drainOutbox(orgId, attempts = 60) {
     const { NextRequest } = require("next/server")
     const { POST } = require("../../app/api/jobs/process-outbox/route")
     const relevant = `org_id=${q(orgId)} and run_at <= now() and job_type not in (${NO_PROVIDER_JOBS.map(q).join(",")})`
@@ -126,7 +129,7 @@ function createKit(stack) {
     return result
   }
 
-  return { sql, rows, q, as, service, settle, organization, postedNet, drainOutbox, localJwt }
+  return { container: stack.container, apiUrl: stack.apiUrl, sql, rows, q, as, service, settle, organization, postedNet, drainOutbox, localJwt }
 }
 
 // Expected-versus-observed recorder. A subcase passes only if every check passes.
