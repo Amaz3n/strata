@@ -5,7 +5,7 @@ const fs = require("node:fs"),
   path = require("node:path")
 const { createKit, recorder, loadExpected } = require("./scenario-kit.cjs")
 
-const SCENARIO_MODULES = { "BILL-01": "./scenarios/bill-01.cjs", "WIP-01": "./scenarios/wip-01.cjs", "YEAR-01": "./scenarios/year-01.cjs", "CLOSE-01": "./scenarios/close-01.cjs", "BANK-01": "./scenarios/bank-01.cjs", "STATUS-01": "./scenarios/status-01.cjs", "RACE-01": "./scenarios/race-01.cjs", "CAP-01": "./scenarios/cap-01.cjs", "DIM-01": "./scenarios/dim-01.cjs", "HIST-01": "./scenarios/hist-01.cjs" }
+const SCENARIO_MODULES = { "BILL-01": "./scenarios/bill-01.cjs", "WIP-01": "./scenarios/wip-01.cjs", "YEAR-01": "./scenarios/year-01.cjs", "CLOSE-01": "./scenarios/close-01.cjs", "BANK-01": "./scenarios/bank-01.cjs", "STATUS-01": "./scenarios/status-01.cjs", "RACE-01": "./scenarios/race-01.cjs", "CAP-01": "./scenarios/cap-01.cjs", "DIM-01": "./scenarios/dim-01.cjs", "HIST-01": "./scenarios/hist-01.cjs", "REV-01": "./scenarios/rev-01.cjs" }
 
 // `only` runs the named subcases for iteration; the rest report SKIPPED, so such a
 // run can never read PASSED.

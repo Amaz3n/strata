@@ -29,6 +29,7 @@ import { postBooksJournalEntry } from "@/lib/services/books/ledger";
 import { postYearEndClose } from "@/lib/services/books/posting-rules";
 import { resolveProjectionVersion } from "@/lib/services/books/projector";
 import { loadWipScopesForPeriod } from "@/lib/services/books/wip-project-scope";
+import { loadUnreviewedRevenuePolicies } from "@/lib/services/books/revenue-policies";
 import { recognizeRevenueForPeriod } from "@/lib/services/books/revenue-recognition";
 import { runLedgerTieOuts } from "@/lib/services/books/verifier";
 import { TIE_OUT_ITEM_CATEGORIES } from "@/lib/services/books/reconciliation-rules";
@@ -215,6 +216,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
     latestReconciliationRun,
     pocProjectBases,
     pocSnapshots,
+    unreviewedPolicies,
     openBills,
     taxVendors,
     taxIdentities,
@@ -299,6 +301,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       .maybeSingle(),
     loadWipScopesForPeriod(context.orgId, period.period_end),
     loadPocPositionsAsOf({ orgId: context.orgId, asOf: period.period_end }),
+    loadUnreviewedRevenuePolicies(context.orgId, period.period_end),
     // Bills are loaded for the coding check only, and only the uncoded ones:
     // AR/AP balances come from the tie-outs.
     collectPages(
@@ -599,6 +602,16 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       issueCount: missingPoc.length || (wipReviewed ? 0 : 1),
       href: "/reports/wip-over-under",
       evidence: { project_ids: [...new Set(missingPoc.map((row) => row.projectId))], missing_scopes: missingPoc.map(({ projectId, contractId }) => ({ projectId, contractId })), snapshots: currentWipEvidence, reviewed: wipReviewed, sources_current: wipSourcesUnchanged },
+    },
+    {
+      code: "revenue_policies",
+      label: "Revenue policies reviewed",
+      category: "construction",
+      blocking: false,
+      status: unreviewedPolicies.length ? "warning" : "passed",
+      issueCount: unreviewedPolicies.length,
+      href: "/books/revenue-policies",
+      evidence: { unreviewed: unreviewedPolicies },
     },
     {
       code: "job_cost_control",

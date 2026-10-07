@@ -14,6 +14,7 @@ import {
   recordWipCostAllocation,
 } from "@/lib/services/books/wip-review";
 import { assignInvoiceContract } from "@/lib/services/invoices";
+import { proposeRevenuePolicy, reviewRevenuePolicy } from "@/lib/services/books/revenue-policies";
 import {
   getClearingSupportWorkspace,
   reviewClearingSupport,
@@ -1441,6 +1442,14 @@ export async function recordWipCostAllocationAction(
   input: Parameters<typeof recordWipCostAllocation>[0],
 ) {
   return run(() => recordWipCostAllocation(input));
+}
+
+export async function proposeRevenuePolicyAction(input: Parameters<typeof proposeRevenuePolicy>[0]) {
+  return run(() => proposeRevenuePolicy(input));
+}
+
+export async function reviewRevenuePolicyAction(input: Parameters<typeof reviewRevenuePolicy>[0]) {
+  return run(() => reviewRevenuePolicy(input));
 }
 
 export async function assignInvoiceContractAction(input: { invoiceId: string; contractId: string }) {

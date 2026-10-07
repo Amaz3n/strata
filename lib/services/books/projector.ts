@@ -46,7 +46,7 @@ import {
   reverseBooksJournalEntryForService,
 } from "@/lib/services/books/ledger";
 import { classifyPaymentPosting } from "@/lib/services/books/posting-rules";
-import { loadProjectRevenueBases } from "@/lib/services/books/revenue-basis";
+import { loadRevenuePolicyResolver, recordInferredRevenuePolicies } from "@/lib/services/books/revenue-basis";
 import { recordEvent } from "@/lib/services/events";
 import { isoDateOnlyFromUtcMs, todayIsoDateOnly } from "@/lib/services/reports/dates";
 import {
@@ -640,7 +640,7 @@ async function projectionCandidates(
     projectDimensions,
     openingSources,
     inventoryPolicies,
-    revenueBases,
+    revenuePolicies,
     laborEntries,
     bills,
     invoices,
@@ -654,7 +654,7 @@ async function projectionCandidates(
     loadBooksProjectDimensions(orgId),
     loadOpeningOwnedSources(orgId),
     loadInventoryPolicies(orgId),
-    loadProjectRevenueBases(orgId),
+    loadRevenuePolicyResolver(orgId),
     loadLaborCostEntries(orgId, watermarks.labor),
     // Every paged read below imposes a total order for the reason given on
     // `collectPages`: `.range()` without one skips and duplicates rows.
@@ -742,11 +742,19 @@ async function projectionCandidates(
   // A receipt or reversal is a customer deposit when its invoice is a deposit
   // request, whether or not that invoice changed in this run's window.
   const referencedInvoiceIds = [...payments, ...reversals].map((row) => row.invoice_id).filter((id): id is string => typeof id === "string");
-  const basisByProject = new Map(revenueBases.map((row) => [row.projectId, row.basis]));
   // On a job with several contracts, what an invoice bills (and a credit memo
   // credits) is that contract's position, so its lines carry the contract. With
   // one contract the project tags already name it.
-  const multiContract = new Map(revenueBases.filter((row) => row.contractIds.length > 1).map((row) => [row.projectId, new Set(row.contractIds)]));
+  const today = todayIsoDateOnly();
+  const documentProjects = new Set([...invoices, ...adjustments].map((row) => row.project_id).filter((id): id is string => typeof id === "string"));
+  const multiContract = new Map([...documentProjects].flatMap((projectId) => {
+    try {
+      const resolved = revenuePolicies.resolve(projectId, today);
+      return resolved.contractIds.length > 1 ? [[projectId, new Set(resolved.contractIds)] as const] : [];
+    } catch {
+      return []; // The job's documents report the policy conflict themselves.
+    }
+  }));
   const billedContract = (projectId: unknown, metadata: unknown) => {
     const contracts = typeof projectId === "string" ? multiContract.get(projectId) : undefined;
     const contractId = metadata && typeof metadata === "object" ? Reflect.get(metadata, "source_contract_id") : null;
@@ -765,13 +773,33 @@ async function projectionCandidates(
       .eq("org_id", orgId).in("id", slice).order("id", { ascending: true }).range(from, to), "credited invoices"),
   ]);
   const creditedContract = new Map(creditedInvoices.map((row) => [String(row.id), billedContract(row.project_id, row.metadata)]));
+  const quietDocumentBasis = (projectId: unknown, contractId: string | null, date: string) => {
+    if (typeof projectId !== "string") return invoiceRevenueBasis(null);
+    try { return invoiceRevenueBasis(projectId, revenuePolicies.forDocument(projectId, contractId, date).method); } catch { return null; }
+  };
 
   const candidates: ProjectionCandidate[] = [];
   const invoiceIncome = await loadInvoiceRevenueLines(orgId, [
     ...invoices.map(row => String(row.id)),
-    ...adjustments.filter(row => row.status === "posted" && row.adjustment_type === "credit_memo" && invoiceRevenueBasis(row.project_id, row.project_id ? basisByProject.get(row.project_id) : undefined) !== "percentage_of_completion").map(row => String(row.invoice_id)),
+    ...adjustments.filter(row => row.status === "posted" && row.adjustment_type === "credit_memo" && quietDocumentBasis(row.project_id, creditedContract.get(String(row.invoice_id)) ?? null, String(row.effective_date)) !== "percentage_of_completion").map(row => String(row.invoice_id)),
   ]);
   const failures: ProjectionFailure[] = [];
+  /**
+   * How one invoice or credit earns revenue: the job's recorded policy on the
+   * document's own date (a later change of billing settings cannot reach back),
+   * or on invoice when it has no project. A policy that cannot be decided is a
+   * finding on that document.
+   */
+  const documentPolicy = (sourceType: string, sourceId: string, projectId: unknown, contractId: string | null, date: string) => {
+    if (typeof projectId !== "string") return { basis: invoiceRevenueBasis(null), policyId: null };
+    try {
+      const policy = revenuePolicies.forDocument(projectId, contractId, date);
+      return { basis: invoiceRevenueBasis(projectId, policy.method), policyId: policy.source === "approved" ? policy.policyId : null };
+    } catch (error) {
+      failures.push({ sourceType, sourceId, error: error instanceof Error ? error.message : String(error) });
+      return null;
+    }
+  };
   const fundingCode = (sourceType: string, sourceId: string, resolve: () => string) => {
     try { return resolve(); } catch (error) {
       failures.push({ sourceType, sourceId, error: error instanceof Error ? error.message : String(error) });
@@ -892,7 +920,9 @@ async function projectionCandidates(
     )
       continue;
     const totalCents = Number(row.total_cents ?? 0);
-    if (sourceType === "retainage_release" ? totalCents === 0 : !invoiceHasAccountingPrincipal(totalCents, retainageByInvoice.get(String(row.id)) ?? 0, invoiceRevenueBasis(row.project_id, row.project_id ? basisByProject.get(row.project_id) : undefined))) continue;
+    const policy = sourceType === "invoice" ? documentPolicy("invoice", String(row.id), row.project_id, billedContract(row.project_id, row.metadata), String(row.issue_date)) : null;
+    if (sourceType === "invoice" && !policy) { liveSourceKeys.add(sourceKey); continue; }
+    if (sourceType === "retainage_release" ? totalCents === 0 : !invoiceHasAccountingPrincipal(totalCents, retainageByInvoice.get(String(row.id)) ?? 0, policy?.basis ?? "percentage_of_completion")) continue;
     liveSourceKeys.add(sourceKey);
     // A release invoice collects retainage billed on an earlier invoice. The amount
     // posted is the invoice's own total so AR keeps tying to invoice balances; any
@@ -913,8 +943,8 @@ async function projectionCandidates(
       });
       continue;
     }
-    const projectId = row.project_id ? String(row.project_id) : null;
-    const basis = invoiceRevenueBasis(projectId, projectId ? basisByProject.get(projectId) : undefined);
+    if (!policy) continue;
+    const basis = policy.basis;
     if (invoiceIncome.errors.has(String(row.id))) {
       failures.push({ sourceType: "invoice", sourceId: String(row.id), error: invoiceIncome.errors.get(String(row.id))! });
       continue;
@@ -937,6 +967,7 @@ async function projectionCandidates(
         retainage_cents: retainageByInvoice.get(String(row.id)) ?? 0,
         project_id: row.project_id ?? null,
         revenue_basis: basis,
+        ...(policy.policyId ? { revenue_policy_id: policy.policyId } : {}),
         revenue_lines: invoiceIncome.lines.get(String(row.id)) ?? [],
         ...(billedContract(row.project_id, row.metadata) ? { dimensions: { contract_id: billedContract(row.project_id, row.metadata) } } : {}),
       },
@@ -1191,8 +1222,9 @@ async function projectionCandidates(
     const amountCents = Number(row.amount_cents ?? 0);
     if (amountCents <= 0) continue;
     liveSourceKeys.add(sourceKey);
-    const projectId = row.project_id ? String(row.project_id) : null;
-    const basis = invoiceRevenueBasis(projectId, projectId ? basisByProject.get(projectId) : undefined);
+    const adjustmentPolicy = documentPolicy("receivable_adjustment", String(row.id), row.project_id, creditedContract.get(String(row.invoice_id)) ?? null, String(row.effective_date));
+    if (!adjustmentPolicy) continue;
+    const basis = adjustmentPolicy.basis;
     let revenueLines: ReturnType<typeof allocateInvoiceRevenue> | undefined;
     if (basis !== "percentage_of_completion" && row.adjustment_type === "credit_memo") {
       try {
@@ -1217,6 +1249,7 @@ async function projectionCandidates(
         project_id: row.project_id ?? null,
         invoice_id: row.invoice_id,
         revenue_basis: basis,
+        ...(adjustmentPolicy.policyId ? { revenue_policy_id: adjustmentPolicy.policyId } : {}),
         ...(revenueLines?.length ? { revenue_lines: revenueLines } : {}),
         ...(creditedContract.get(String(row.invoice_id)) ? { dimensions: { contract_id: creditedContract.get(String(row.invoice_id)) } } : {}),
       },
@@ -1267,7 +1300,7 @@ async function projectionCandidates(
     bills: latest(bills), invoices: latest(invoices), payments: latest(payments), feeCharges: latest(feeCharges),
     expenses: latest(expenses), reversals: latest(reversals), adjustments: latest(adjustments), labor: latest(laborEntries),
   };
-  return { candidates, failures, retirementSourceKeys, liveSourceKeys, observed };
+  return { candidates, failures, retirementSourceKeys, liveSourceKeys, observed, unrecordedPolicies: revenuePolicies.unrecorded() };
 }
 
 const factRowSchema = z.object({
@@ -1336,8 +1369,12 @@ function isAtOrAfter(later: string, earlier: string) {
  * concurrency, prior-entry reversal, immutable fact insertion and replacement
  * posting; a worker crash can no longer expose a half-revised official ledger.
  */
-/** Project reporting tags: where a job sits in the org, not what it costs or earns. */
-const REPORTING_TAG_KEYS = ["division_id", "division_name", "community_id", "community_name", "lot_id", "lot_name"];
+/**
+ * Project tags kept as posted: where a job sits in the org, and the contract it
+ * had when the document posted. A later second contract does not unbill an
+ * earlier invoice from the only contract it could have billed.
+ */
+const REPORTING_TAG_KEYS = ["division_id", "division_name", "community_id", "community_name", "lot_id", "lot_name", "contract_id"];
 
 /** The payload with each project's reporting tags as the posted fact recorded them. */
 function withPostedReportingTags(payload: Record<string, unknown>, posted: Record<string, unknown>) {
@@ -1649,8 +1686,11 @@ export async function projectJournal(
   const readStartedAt = new Date().toISOString();
   const everything: ProjectionWatermarks = { bills: null, invoices: null, payments: null, feeCharges: null, expenses: null, reversals: null, adjustments: null, labor: null };
   const watermarks = options.full ? everything : options.sourceKeys ? watermarksForSources(options.sourceKeys) : await resolveWatermarks(orgId);
-  const { candidates, failures: candidateFailures, retirementSourceKeys, liveSourceKeys, observed } =
+  const { candidates, failures: candidateFailures, retirementSourceKeys, liveSourceKeys, observed, unrecordedPolicies } =
     await projectionCandidates(orgId, watermarks);
+  // The revenue policy each job was posted under is recorded the first time,
+  // so a later change of its billing settings cannot rewrite how it earned.
+  await recordInferredRevenuePolicies(orgId, unrecordedPolicies);
 
   const requestedKeys = options.sourceKeys ? new Set(options.sourceKeys) : null;
   const failures = candidateFailures.filter((row) => !requestedKeys || requestedKeys.has(factSourceKey(row.sourceType, row.sourceId)));

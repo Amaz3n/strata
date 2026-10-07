@@ -34,6 +34,38 @@ runs both.
 The choke point is `resolveRevenueRecognitionBasis()`. A closing-basis project never
 receives a percentage-of-completion entry.
 
+### Revenue policies are records (B11.1)
+
+Which method a job earns under is a dated record in `books_revenue_policies`,
+read through `loadRevenuePolicyResolver()` (`lib/services/books/revenue-basis.ts`)
+and `policyInForce()` (`lib/financials/revenue-policy.ts`), never the billing
+settings as they are today:
+
+- **Billing method and recognition method are separate.** Fixed price, time and
+  materials, and all three cost-plus models earn over time (cost to cost); a home
+  sold under a purchase agreement earns at closing; an invoice with no project (a
+  standalone service) earns when invoiced (`DEFAULT_REVENUE_METHOD`).
+- **Inferred, then recorded.** The first time a job posts, Arc records the method
+  its billing settings imply as an `inferred` policy "from the start". From then
+  on the record decides; changing the billing settings later is flagged on
+  Books → Revenue policies ("billing settings now say …") and changes nothing.
+- **Governed change.** A different method is proposed (books.manage) with an
+  effective date and rationale, and approved by someone else (books.close).
+  Documents dated before the effective date keep the policy they were posted
+  under, and a change dated into a closed month must confirm that month's method
+  (reopen it otherwise). Policies are never edited or deleted; an approved one is
+  recorded on each document it governs (`revenue_policy_id`).
+- **Precedence on a date:** an approved policy for the contract, then for the
+  project, then the inferred baseline for the contract, then for the project.
+- **Contracts that earn differently** on one job (a construction contract and a
+  lot sale) are allowed only when each contract's policy is approved; until then
+  their documents are findings with that cure. Each invoice then earns under the
+  policy of the contract it bills, and only over-time contracts have WIP.
+- **Superseded contracts stay reconstructible**: the recorded policy outlives the
+  contract. A job with no record whose only evidence for a date is a superseded
+  contract is a finding until a policy is attributed and approved.
+- The close reports jobs still on an unreviewed inferred policy (non-blocking).
+
 ## 3. Accounts used
 
 | Code | Name | Type |

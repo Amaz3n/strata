@@ -28,7 +28,7 @@ export interface ProjectFinancialFeatureConfig {
   lockBudgetLinesAfterBaseline: boolean
 }
 
-type BillingContractSource = Partial<
+export type BillingContractSource = Partial<
   Pick<
     Contract,
     | "contract_type"

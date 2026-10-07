@@ -336,9 +336,10 @@ async function postedSourceDeletion(kit, expected, check) {
   return { orgId: org.orgId }
 }
 
-// A contract dated in the future changes its project's revenue basis on the day
-// it takes effect, with nobody editing anything. The first ordinary run after
-// that day re-posts the project's invoice under the contract.
+// A contract dated in the future comes into force with nobody editing anything.
+// The first ordinary run after that day re-reads the job, but an invoice dated
+// before the contract keeps the revenue policy it posted under (B11.1); the
+// changed settings are flagged on the revenue policy register for review.
 async function contractTakesEffect(kit, expected, check) {
   const input = expected.inputs
   const org = await jobOrg(kit, "STATUS-01 contract takes effect", ["2026-07"])
@@ -366,8 +367,10 @@ update public.invoices set updated_at = now() - interval '2 days' where id = ${q
 update public.books_projection_progress set read_started_at = now() - interval '1 day' where org_id = ${q(org.orgId)};
 commit;`, "supabase_admin")
   await incrementalJob(kit, org)
-  check.equal("the invoice re-posts under the contract on the first run after it takes effect", expected.expected, {
+  const listed = (await kit.as(org.owner, () => app("books/revenue-policies").getRevenuePolicyRegister())).rows.find((row) => row.projectId === org.projectId)
+  check.equal("a contract taking effect later leaves an earlier invoice under its posted policy and flags the change", expected.expected, {
     noContract, beforeEffective, afterEffective: credited(), status: await status(),
+    register: { method: listed.inForce.method, source: listed.inForce.source, drift: listed.drift, settingsSay: listed.settingsSay.method },
   })
   return { orgId: org.orgId, invoiceId }
 }

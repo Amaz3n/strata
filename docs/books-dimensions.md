@@ -69,7 +69,9 @@ Recognition and loss provisions are per contract and always carry it
 - **Entity ownership.** A project with a reviewed legal-entity owner refuses
   legacy facts, entries and lines; its documents post through the entity ledger.
 - **Tags stay as posted.** Later changes to a project's division, community or
-  lot, or to a community's or account's name, relabel nothing already posted. A
+  lot, or to a community's or account's name, relabel nothing already posted;
+  nor does a project gaining a second contract take the first contract off the
+  documents that billed it. A
   new document, or a real revision of an old one, posts with today's tags (see
   `books-posting.md`).
 - **Reversals inherit.** A reversal line copies its original line's dimensions

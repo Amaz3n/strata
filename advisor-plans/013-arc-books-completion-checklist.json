@@ -8668,8 +8668,8 @@
       "id": "B11.1",
       "workstream": "B11",
       "title": "Effective-dated policy and contract history",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All B11.1 criteria verified locally (2026-10-07) by REV-01 (5/5) and the revenue-policies journey. Migration 20261007140000_books_revenue_policies pending production with the deploy. STATUS-01 contract-takes-effect expectation revised to B11.1 semantics. CAP-01 failed-source-retries fails only in the full CAP-01 run on the accumulated acceptance outbox backlog (184 stuck project_vendor_bill_approval jobs, the known outbox defect); it fails identically at the pre-B11.1 commit and passes alone.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "standalone services, fixed-price construction, T&M, cost-plus, GMP and home closings have explicit applicable policy",
@@ -8684,17 +8684,71 @@
         "PAY-01",
         "REV-01"
       ],
-      "evidence": [],
-      "remaining_criteria": [
-        "standalone services, fixed-price construction, T&M, cost-plus, GMP and home closings have explicit applicable policy",
-        "later model/status changes cannot rewrite old results",
-        "superseded contracts remain reconstructible",
-        "conflicting policies are resolved through reviewed scope/ownership",
-        "unknown legacy policy has an attribution path"
+      "evidence": [
+        {
+          "verified_at": "2026-10-07T14:19:50.384883+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261007140000_books_revenue_policies.sql",
+            "lib/financials/revenue-policy.ts",
+            "lib/financials/billing-model.ts",
+            "lib/services/books/revenue-basis.ts",
+            "lib/services/books/revenue-policies.ts",
+            "lib/services/books/projector.ts",
+            "lib/services/books/wip-project-scope.ts",
+            "lib/services/books/period-close.ts",
+            "components/books/revenue-policy-register.tsx",
+            "app/(app)/books/revenue-policies/page.tsx",
+            "components/layout/books-nav-items.ts",
+            "app/(app)/books/actions.ts",
+            "scripts/books-acceptance/scenarios/rev-01.cjs",
+            "scripts/books-acceptance/journeys/revenue-policies.spec.ts",
+            "docs/books-revenue-recognition.md",
+            "docs/books-dimensions.md",
+            "tests/books-revenue-basis.test.js"
+          ],
+          "test_scenario_ids": [
+            "REV-01",
+            "STATUS-01"
+          ],
+          "commands": [
+            "scenario-runner REV-01 and full regression",
+            "playwright revenue-policies (desktop, mobile-dark) and all journeys",
+            "pnpm test:financials",
+            "node --test tests/books-revenue-basis.test.js tests/books-wip-project-scope.test.js"
+          ],
+          "observed_results": [
+            "Explicit policy by kind: fixed price, T&M, cost-plus %, cost-plus fee and GMP jobs post under a recorded 'percentage of completion' policy (billing deferred in 2350); a purchase-agreement home posts 'at closing' (revenue when invoiced); a standalone service invoice is revenue when invoiced; each recorded policy is labeled inferred, not reviewed.",
+            "Later changes cannot rewrite: re-typing a job's contract after it posted adds no entries; July and August invoices stay deferred; the register flags 'billing settings now say at closing'. STATUS-01: a purchase agreement taking effect in October no longer re-posts a July invoice (the earlier expectation encoded that rewrite).",
+            "Governed change: a change dated into closed July is refused with the cure; the proposer cannot approve; the accountant approves a change from Aug 1; the July invoice stays deferred and the August invoice earns at closing and names the policy; the approved row cannot be edited; history shows approved over inferred.",
+            "Superseded contracts reconstructible: a sale whose agreement is later superseded re-projects with no new entries; a legacy sale with only superseded evidence and no record is a finding naming the missing policy, and posts once a policy 'from the start' is proposed and approved (attribution path).",
+            "Conflicting policies: a construction contract and a lot sale on one job are findings ('earn revenue differently … approve a revenue policy for each contract') until each is approved; then construction is deferred, the lot sale earned when invoiced, and only construction has a WIP position.",
+            "Also: a project gaining a second contract no longer strips the contract tag from invoices that billed the first (contract_id kept as posted).",
+            "Regression: REV-01 5/5, WIP-01 11/11, HIST-01, DIM-01, BILL-01, YEAR-01, BANK-01, STATUS-01 pass; CLOSE-01, RACE-01 pass every implemented subcase; CAP-01 all parts pass except failed-source-retries in the full run (outbox backlog, pre-existing; passes alone); test:financials 2735 pass / 0 fail."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-07-revenue-policies/BANK-01.json sha256:d77f2ef2e01e0951fdb932d56b4b3a952bd9c301c2e2f50e4a84f363b4c00018",
+            "docs/books-evidence/2026-10-07-revenue-policies/BILL-01.json sha256:a8c621e538e49c8b1f58d3f4f6438cbfeff30297b502350dab83573ecb7ce79f",
+            "docs/books-evidence/2026-10-07-revenue-policies/CAP-01-failed-source-retries-alone.json sha256:0b2c6aad1d692117d9040f0da370e0da664d2cf89204a5b693a4c08995497be3",
+            "docs/books-evidence/2026-10-07-revenue-policies/CAP-01.json sha256:0974974e7c651ce81b38434c61271d3e4aa3f754fc94f27bbf954e2206e4ac45",
+            "docs/books-evidence/2026-10-07-revenue-policies/CLOSE-01.json sha256:96b9744f99ddd5a8dad58752389144ec643d13fd6d70a0091b2fa49ccc5a3b55",
+            "docs/books-evidence/2026-10-07-revenue-policies/DIM-01.json sha256:8576a685d657ffea6692897de50f66c82b09946c040f3cca5583091d63d37f9b",
+            "docs/books-evidence/2026-10-07-revenue-policies/HIST-01.json sha256:e6f642f4b5d1f021cd5ce027157a5a3da0d7c4fb805825faa114c97614323eb8",
+            "docs/books-evidence/2026-10-07-revenue-policies/RACE-01.json sha256:ca3150ae8053f3d9a92c4a768616296e5e721afec119732547b75e62e13c3c00",
+            "docs/books-evidence/2026-10-07-revenue-policies/REV-01.json sha256:7924c4ea071478589707dfa7f43a5024ed84d480275ac6cf0aba6b9bebaefcbf",
+            "docs/books-evidence/2026-10-07-revenue-policies/STATUS-01.json sha256:5d68738a2e65f36198cc83db3b76079df3f492986ea47673dd4dd1c046877d74",
+            "docs/books-evidence/2026-10-07-revenue-policies/WIP-01.json sha256:4b679cc5187862c91962ea263fc659f05f52292d3ceebeb3d59716c139c94d0a",
+            "docs/books-evidence/2026-10-07-revenue-policies/YEAR-01.json sha256:a98145ad414431d65b8e4679d82f6a1871dbdb5d320e249c40ea47a68ee6a0b7",
+            "docs/books-evidence/2026-10-07-revenue-policies/journey-desktop-approved.png sha256:ce6ce9e6d749b4790156ec92354f70a135ee0744531918698dc9ada94efa2282",
+            "docs/books-evidence/2026-10-07-revenue-policies/journey-desktop-proposed.png sha256:74be67a6ee022e07000d9ffe8830608d796cec868cfbb6a1f70d990434a7e7aa",
+            "docs/books-evidence/2026-10-07-revenue-policies/journey-desktop-register.png sha256:af7861c0976276da88ec31ffc279988934c4ce3db2c3a634e266d0213d3dd181",
+            "docs/books-evidence/2026-10-07-revenue-policies/journey-mobile-dark-register.png sha256:5b5705c47aa58b7ef33cd6e4b070591eb4248690571048bd80ae19c4a2658d16"
+          ]
+        }
       ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-07T14:19:50.384883+00:00"
     },
     {
       "id": "B11.2",

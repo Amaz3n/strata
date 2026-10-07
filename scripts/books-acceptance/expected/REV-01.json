@@ -1,0 +1,119 @@
+{
+  "scenario": "REV-01",
+  "reviewedFrom": "B11.1 definition of done (advisor-plans/013) and docs/books-revenue-recognition.md §2/§4b/§4d.",
+  "subcases": {
+    "explicit-policy-by-kind": {
+      "derivation": "Fixed-price, time-and-materials and all three cost-plus jobs earn over time (cost-to-cost), so their billing is deferred in 2350 until earned; a home sold under a purchase agreement earns at closing, so its invoice is revenue when invoiced; a standalone service invoice (no project) is revenue when invoiced. Each job's policy is recorded when it first posts, inferred from its billing settings and labeled as not reviewed.",
+      "expected": {
+        "policies": {
+          "Fixed price": {
+            "method": "percentage_of_completion",
+            "billingMethod": "fixed_price",
+            "source": "inferred"
+          },
+          "Time and materials": {
+            "method": "percentage_of_completion",
+            "billingMethod": "time_and_materials",
+            "source": "inferred"
+          },
+          "Cost plus percentage": {
+            "method": "percentage_of_completion",
+            "billingMethod": "cost_plus_percent",
+            "source": "inferred"
+          },
+          "Cost plus fixed fee": {
+            "method": "percentage_of_completion",
+            "billingMethod": "cost_plus_fixed_fee",
+            "source": "inferred"
+          },
+          "Cost plus GMP": {
+            "method": "percentage_of_completion",
+            "billingMethod": "cost_plus_gmp",
+            "source": "inferred"
+          },
+          "Home closing": {
+            "method": "closing",
+            "billingMethod": "purchase_agreement",
+            "source": "inferred"
+          }
+        },
+        "postings": {
+          "Fixed price": "deferred until earned",
+          "Time and materials": "deferred until earned",
+          "Cost plus percentage": "deferred until earned",
+          "Cost plus fixed fee": "deferred until earned",
+          "Cost plus GMP": "deferred until earned",
+          "Home closing": "earned when invoiced",
+          "Standalone service": "earned when invoiced"
+        }
+      }
+    },
+    "settings-change-cannot-rewrite": {
+      "derivation": "A fixed-price job posts a July invoice as deferred billing and its policy is recorded. Its contract is then re-typed as a purchase agreement. Re-projecting posts nothing new for July, and an August invoice is still deferred: the recorded policy governs. The register flags that the settings now say 'at closing'.",
+      "expected": {
+        "julyInvoice": "deferred until earned",
+        "augustInvoice": "deferred until earned",
+        "entriesAddedByReprojection": 0,
+        "register": {
+          "method": "percentage_of_completion",
+          "source": "inferred",
+          "drift": true,
+          "settingsSay": "closing"
+        }
+      }
+    },
+    "approved-change-from-its-date": {
+      "inputs": {
+        "effectiveFrom": "2026-08-01"
+      },
+      "derivation": "July closes with the job earning over time. A change to 'at closing' dated July 20 is refused because July is closed under the current method. The same change dated August 1 is proposed by the owner, cannot be approved by the owner, and is approved by the accountant. The July invoice stays deferred; an August invoice earns when invoiced and names the policy. The approved policy cannot be edited. The register shows the approved policy from Aug 1 with the inferred baseline before it.",
+      "expected": {
+        "intoClosedMonth": "July 2026 is closed under the current method. Date the change after 2026-07-31, or reopen July 2026 first.",
+        "selfApproval": "A revenue policy is approved by someone other than the person who proposed it",
+        "julyInvoice": "deferred until earned",
+        "augustInvoice": "earned when invoiced",
+        "augustNamesPolicy": true,
+        "rewrite": "refused",
+        "register": {
+          "method": "closing",
+          "source": "approved",
+          "effectiveFrom": "2026-08-01",
+          "history": [
+            "approved",
+            "inferred"
+          ]
+        }
+      }
+    },
+    "superseded-contracts-reconstructible": {
+      "derivation": "A sale posts in July and its policy (at closing) is recorded; its agreement is later superseded by one effective in October. Re-projection posts nothing new: the recorded policy still decides July. A legacy sale whose only July-era agreement was already superseded, with no recorded policy, cannot be decided: its invoice is a finding naming the missing historical policy. Once a policy from the start is proposed and approved, it posts, earned when invoiced.",
+      "expected": {
+        "recordedJob": {
+          "posted": "earned when invoiced",
+          "entriesAdded": 0
+        },
+        "legacyBefore": {
+          "posted": "not posted",
+          "finding": true
+        },
+        "legacyAfter": "earned when invoiced"
+      }
+    },
+    "mixed-contracts-reviewed": {
+      "derivation": "A job with a construction contract (earns over time) and a lot-sale purchase agreement (earns at closing) in force together is refused until each contract has an approved policy; its invoices are findings with that cure. After approval, the construction invoice is deferred, the lot-sale invoice is earned when invoiced, and only the construction contract has a WIP position.",
+      "expected": {
+        "beforeReview": {
+          "build": "not posted",
+          "refusedWithCure": true
+        },
+        "afterReview": {
+          "build": "deferred until earned",
+          "sale": "earned when invoiced"
+        },
+        "wipScopes": [
+          "Construction"
+        ]
+      }
+    }
+  }
+}

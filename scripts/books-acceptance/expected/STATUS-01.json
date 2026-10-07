@@ -217,7 +217,7 @@
         "cents": 100000,
         "contractCents": 1000000
       },
-      "derivation": "A residential project invoice of 1,000.00 posts with no contract under percentage of completion: Dr 1100 / Cr 2350 contract liabilities. A purchase agreement dated tomorrow is added; the next run leaves the posting unchanged because it is not yet in effect. The day passes with no edit (its date arrives; the last run read yesterday). The first ordinary run afterwards re-posts the invoice under the closing basis the purchase agreement sets, crediting revenue (4000) instead of 2350, and the invoice reads posted.",
+      "derivation": "A residential project invoice of 1,000.00 dated July 20 posts with no contract under percentage of completion: Dr 1100 / Cr 2350, and the job's revenue policy is recorded (inferred). A purchase agreement dated tomorrow is added; the next run leaves the posting unchanged. The day passes with no edit and the first ordinary run afterwards re-reads the job. Revised for B11.1 (2026-10-07): the July invoice was dated before the agreement and keeps the policy it posted under, so it still credits 2350; the register flags that the billing settings now say 'at closing' until a policy change is proposed and approved. (Before B11.1 the run re-posted the July invoice under the October agreement, crediting 4000 — a later change rewriting an earlier result.)",
       "expected": {
         "noContract": [
           "2350"
@@ -226,9 +226,15 @@
           "2350"
         ],
         "afterEffective": [
-          "4000"
+          "2350"
         ],
-        "status": "posted"
+        "status": "posted",
+        "register": {
+          "method": "percentage_of_completion",
+          "source": "inferred",
+          "drift": true,
+          "settingsSay": "closing"
+        }
       }
     }
   }

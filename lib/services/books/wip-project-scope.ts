@@ -19,7 +19,11 @@ export type WipPeriodScope = WipScope & { status: string | null }
 export async function loadWipScopesForPeriod(orgId: string, periodEnd: string): Promise<WipPeriodScope[]> {
   accountingCutoff(periodEnd)
   const service = createServiceSupabaseClient()
-  const poc = (await loadProjectRevenueBases(orgId, periodEnd)).filter(project => project.basis === "percentage_of_completion")
+  const earnsOverTime = (policy: { method: string } | undefined) => policy?.method === "percentage_of_completion"
+  // A job whose contracts earn differently (approved per contract) has WIP for its percentage-of-completion contracts only.
+  const poc = (await loadProjectRevenueBases(orgId, periodEnd))
+    .map(project => project.contractIds.length > 1 ? { ...project, contractIds: project.contractIds.filter(id => earnsOverTime(project.policies[id])) } : project)
+    .filter(project => project.basis === "percentage_of_completion" || (project.basis === null && project.contractIds.length > 0))
   const pocIds = poc.map(project => project.projectId)
   if (pocIds.length === 0) return []
   const [costed, invoices, recognized] = await Promise.all([
@@ -36,7 +40,7 @@ export async function loadWipScopesForPeriod(orgId: string, periodEnd: string): 
     ...invoices.filter(row => isInvoiceReceivableAsOf(row, periodEnd)).map(row => row.project_id),
     ...recognized.map(row => row.source_id),
   ].filter((id): id is string => typeof id === "string"))
-  return poc.filter(project => ids.has(project.projectId)).flatMap((project): WipPeriodScope[] => project.contractIds.length > 1
+  return poc.filter(project => ids.has(project.projectId)).flatMap((project): WipPeriodScope[] => project.contractIds.length > 1 || project.basis === null
     ? project.contractIds.map(contractId => ({ projectId: project.projectId, contractId, status: project.status }))
     : [{ projectId: project.projectId, contractId: null, status: project.status }])
 }

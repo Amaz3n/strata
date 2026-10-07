@@ -165,6 +165,24 @@ commit;`, "supabase_admin")
     invoiceFor(kit, org, "2026-07", 4000000, "CW-IU", null)
     return org
   },
+  // Three posted jobs on inferred policies, one whose contract was re-typed since.
+  async "revenue-policies"(kit, password) {
+    const org = await greenfieldOrg(kit, { name: "Browser acceptance — revenue policies", periods: ["2026-07"], password })
+    const { q } = kit
+    const jobs = [["Custom home", "fixed"], ["Spec home sale", "purchase_agreement"], ["Re-typed job", "fixed"]].map(([name, type]) => ({ name, type, projectId: require("node:crypto").randomUUID(), contractId: require("node:crypto").randomUUID() }))
+    for (const [index, row] of jobs.entries()) {
+      kit.sql(`begin;
+insert into public.projects(id,org_id,name,property_type,created_by) values(${q(row.projectId)},${q(org.orgId)},${q(row.name)},'residential',${q(org.owner.userId)});
+insert into public.project_financial_settings(org_id,project_id) values(${q(org.orgId)},${q(row.projectId)}) on conflict do nothing;
+insert into public.contracts(id,org_id,project_id,title,status,total_cents,currency,contract_type,retainage_percent,effective_date) values(${q(row.contractId)},${q(org.orgId)},${q(row.projectId)},'Contract','active',100000000,'usd',${q(row.type)},0,'2026-01-01');
+select public.create_invoice_atomic(${q(org.orgId)},jsonb_build_object('project_id',${q(row.projectId)},'invoice_number',${q(`RP-${index + 1}`)},'title','Billing','issue_date','2026-07-15','due_date','2026-07-15','client_visible',true,'approval_status','approved','product_posture','residential','subtotal_cents',1000000,'tax_cents',0,'total_cents',1000000,'balance_due_cents',1000000,'token',${q(require("node:crypto").randomUUID())},'metadata','{}'::jsonb),
+  jsonb_build_array(jsonb_build_object('description','Work','quantity',1,'unit_price_cents',1000000,'amount_cents',1000000)));
+commit;`)
+    }
+    await kit.service(() => app("books/projector").projectJournal(org.orgId, { full: true }))
+    kit.sql(`update public.contracts set contract_type='purchase_agreement' where id=${q(jobs[2].contractId)};`)
+    return org
+  },
   // July's close died right after freezing the period, 31 minutes ago.
   async "abandoned-close"(kit, password) {
     const org = await greenfieldOrg(kit, { name: "Browser acceptance — abandoned close", periods: ["2026-07"], password })

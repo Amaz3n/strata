@@ -26,7 +26,8 @@ test("close and recognition scope follows dated activity and contracts in force,
     assert.equal(args.p_as_of, "2026-09-30")
     return { data: args.p_project_ids.filter(id => id === "completed"), error: null }
   }
-  const projects = ["completed", "future", "planning", "other-org", "closing", "cancelled", "deposit", "archived"].map(projectId => ({ projectId, status: projectId, basis: projectId === "closing" ? "closing" : "percentage_of_completion", contractIds: projectId === "completed" ? ["c-1", "c-2"] : [] }))
+  const projects = ["completed", "future", "planning", "other-org", "closing", "cancelled", "deposit", "archived"].map(projectId => ({ projectId, status: projectId, basis: projectId === "closing" ? "closing" : "percentage_of_completion", contractIds: projectId === "completed" ? ["c-1", "c-2"] : [],
+    policies: projectId === "completed" ? { "c-1": { method: "percentage_of_completion" }, "c-2": { method: "percentage_of_completion" } } : { "": { method: projectId === "closing" ? "closing" : "percentage_of_completion" } } }))
   const original = Module._load
   let loadScope
   try {
