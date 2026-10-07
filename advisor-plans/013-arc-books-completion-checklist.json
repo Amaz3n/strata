@@ -7816,8 +7816,8 @@
       "id": "B09.1",
       "workstream": "B09",
       "title": "Complete economic dependency invalidation",
-      "status": "PARTIAL",
-      "status_basis": "Dependency invalidation proven with incremental runs (STATUS-01 10/10), including a contract taking effect with no edit; posted deletions refused; stopped or unreached runs open a finding. Only open item: whether a change to a project's reporting tags (division, community, lot) restates its posted entries, a policy decision with B07. Migrations 20261006210000 and 20261006240000 pending production with the deploy.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All B09.1 criteria and the global DoD verified locally (2026-10-06): STATUS-01 10/10 (dependency invalidation, contract taking effect, posted-deletion guard, scoped resolution), CAP-01 9/9 (stopped/unreached runs, reporting-tag policy), reference doc docs/books-posting.md. Reporting-tag policy decided with the product owner: tags stay as posted. Migrations 20261006210000, 20261006220000 and 20261006240000 pending production with the deploy.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "table-driven mutation tests change each listed dependency and get stale/blocked/reprojected status correctly",
@@ -7957,14 +7957,43 @@
             "docs/books-evidence/2026-10-06-golden-scenarios/STATUS-01-contract-takes-effect.json sha256:15541f7730c67b02e34cffbff27f44490e1bab34aee45d5bcc247f823d8a31df",
             "docs/books-evidence/2026-10-06-golden-scenarios/STATUS-01-negative-no-effective-date-touch.json sha256:e4be819a30d0f26131dbaf20e294d6eb90aba79d71df8766c543be0b2ad4b376"
           ]
+        },
+        {
+          "verified_at": "2026-10-07T01:43:32.713028+00:00",
+          "implemented_paths": [
+            "lib/services/books/projector.ts",
+            "docs/books-posting.md",
+            "scripts/books-acceptance/scenarios/cap-01.cjs"
+          ],
+          "test_scenario_ids": [
+            "CAP-01",
+            "STATUS-01"
+          ],
+          "commands": [
+            "scenario-runner CAP-01 BILL-01 YEAR-01 BANK-01 STATUS-01 CLOSE-01 RACE-01 WIP-01",
+            "pnpm test:financials"
+          ],
+          "observed_results": [
+            "Policy (product owner, 2026-10-06): a project's reporting tags stay as posted. Moving the project to a new division re-posts 0 of 1,200 bills on the ordinary run and on the nightly pass; posted bills keep their tags; the next bill on the project and a re-coded bill post with the new division.",
+            "Implemented without changing the economic fingerprint, so no existing posting re-posts on deploy.",
+            "Regression: CAP-01, BILL-01, YEAR-01, BANK-01, STATUS-01 pass; CLOSE-01, RACE-01, WIP-01 pass every implemented subcase; test:financials 2734 pass / 0 fail."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-reporting-tags/CAP-01.json sha256:db6e868d5bc5b024aef8d39fc6ea57f01ddb5fd01d06a07d62efb41a294fc4e5",
+            "docs/books-evidence/2026-10-06-reporting-tags/BILL-01.json sha256:03bb2b03a0ebe01eaac13a090fd4753b22469ff9d00302590f92a203886b2c46",
+            "docs/books-evidence/2026-10-06-reporting-tags/YEAR-01.json sha256:6981c251dba79b7b93cc160e8a5d2e59b0813dee1c2e2898628564e4f6b5859e",
+            "docs/books-evidence/2026-10-06-reporting-tags/BANK-01.json sha256:37b7ac9b9c3bc3b62b291f0edcd149756d7af5e7533aa221ab0ee4a67d220845",
+            "docs/books-evidence/2026-10-06-reporting-tags/STATUS-01.json sha256:db95a60d1a7158369858ffc5890e626fa425847e6d938c0b549b27ddfe942192",
+            "docs/books-evidence/2026-10-06-reporting-tags/CLOSE-01.json sha256:068220387cd18d8e331b6783e5c1860c15c151040e5c811b8b01cbda22cadaec",
+            "docs/books-evidence/2026-10-06-reporting-tags/RACE-01.json sha256:dbb3ccbc06f1e6009c5dfac978f64588443e7545e4629c78ce846c2295ff57d5",
+            "docs/books-evidence/2026-10-06-reporting-tags/WIP-01.json sha256:270ba975a03b3cef36e55344121cfe2d0d423697611fa7e6d2fd71dc1e417479"
+          ]
         }
       ],
-      "remaining_criteria": [
-        "project reporting-tag changes: restate posted entries or keep tags as posted (policy with B07)"
-      ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-07T01:43:32.713028+00:00"
     },
     {
       "id": "B09.2",
