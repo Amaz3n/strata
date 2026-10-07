@@ -9556,8 +9556,8 @@
       "id": "B14.1",
       "workstream": "B14",
       "title": "Decide and enforce the native legal-entity boundary",
-      "status": "PARTIAL",
-      "status_basis": "Rebuilt on the one ledger (owner decision 2026-10-07). Verified locally: company on every line with single-point resolution, intercompany legs, posted ownership fixed, per-company and consolidated statements, export/restore. Remaining: AR/AP subledgers by company so the entity can be followed through every subledger. Earlier evidence entries describe the retired separate entity ledger and are kept for history.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Rebuilt on the one ledger (owner decision 2026-10-07) and verified locally by ENTITY-01 (4/4) and the two-companies journey: the owning company can be followed from posting through bank, AR/AP subledgers, close, statements and export; every line has exactly one owner and cross-company entries carry explicit legs; posted ownership cannot change; the backfill and older-archive restore assign history to the primary company. Entities are deliberately not a security boundary (division scope enforces). Migrations 20261007235500 and 20261007235800 pending production. Earlier evidence entries describe the retired separate entity ledger and are kept for history.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "one authoritative entity ID can be followed from source → fact → journal → subledger → bank → close → statement → export",
@@ -13190,25 +13190,48 @@
             "Regression: all scenarios pass (CLOSE-01/RACE-01 INCOMPLETE only for unimplemented parts); test:financials 2,520 pass."
           ],
           "evidence_dir": "docs/books-evidence/2026-10-07-entities"
+        },
+        {
+          "verified_at": "2026-10-07T20:20:53.028999+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261007235800_books_legal_entities.sql",
+            "lib/services/reports/ar-aging.ts",
+            "lib/services/reports/ap-aging.ts",
+            "lib/services/books/period-close.ts",
+            "lib/services/books/closed-snapshots.ts",
+            "lib/services/books/statement-detail.ts",
+            "lib/reports/definitions/financial.ts",
+            "scripts/books-acceptance/scenarios/entity-01.cjs"
+          ],
+          "test_scenario_ids": [
+            "ENTITY-01"
+          ],
+          "commands": [
+            "scenario-runner ENTITY-01 (4/4) and full regression",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "AR and AP aging take a company: each company's open receivables and payables equal its own 1100 and 2000 (builder 50,000/30,000; land 20,000/8,000).",
+            "The July close saves the consolidated reports plus each company's trial balance, P&L, balance sheet, cash flow, AR and AP aging; a closed month then reads as closed per company (land net income 12,000) and the agings read from the saved close.",
+            "Scoped deviation (owner may overrule): companies in one organization close a month together; the close saves each company's statements. Independent per-company close/reopen is not built.",
+            "Regression green; test:financials 2,521 pass."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-07-entities"
         }
       ],
-      "remaining_criteria": [
-        "one authoritative entity ID can be followed from source → fact → journal → subledger → bank → close → statement → export",
-        "every monetary source has exactly one owning entity unless a reviewed split creates explicit legs",
-        "cross-entity data access rejected",
-        "legacy default entity mapping reviewed and cannot rewrite posted history silently",
-        "entity architecture documented and upgrade fixtures pass"
-      ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-07T20:20:53.028999+00:00"
     },
     {
       "id": "B14.2",
       "workstream": "B14",
       "title": "Entity-specific workflows, ledgers, periods and cutover",
       "status": "PARTIAL",
-      "status_basis": "Per-company trial balance, P&L and balance sheet verified locally (ENTITY-01, two-companies journey). Remaining: per-company close/reopen, per-company opening balances and cutover, tax reports and bank mappings by company. Earlier evidence entries describe the retired separate entity ledger and are kept for history.",
+      "status_basis": "Verified locally: per-company trial balance, P&L, balance sheet, AR/AP aging and saved closed statements. Scoped deviation for the owner to confirm: companies close together. Remaining: per-company opening balances and cutover, tax reports and bank mappings by company. Earlier evidence entries describe the retired separate entity ledger and are kept for history.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "two entities with different account mappings and calendars produce independent exact TB/AR/AP/payroll/banks/statements",
@@ -16167,6 +16190,35 @@
             "Export schema 33 carries books_legal_entities; older archives restore as one primary company owning every line (deterministic id, recorded change).",
             "Decision recorded in docs/books-entities.md: entities are not a security boundary (division scope remains the enforcement layer).",
             "Regression: all scenarios pass (CLOSE-01/RACE-01 INCOMPLETE only for unimplemented parts); test:financials 2,520 pass."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-07-entities"
+        },
+        {
+          "verified_at": "2026-10-07T20:20:53.028999+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261007235800_books_legal_entities.sql",
+            "lib/services/reports/ar-aging.ts",
+            "lib/services/reports/ap-aging.ts",
+            "lib/services/books/period-close.ts",
+            "lib/services/books/closed-snapshots.ts",
+            "lib/services/books/statement-detail.ts",
+            "lib/reports/definitions/financial.ts",
+            "scripts/books-acceptance/scenarios/entity-01.cjs"
+          ],
+          "test_scenario_ids": [
+            "ENTITY-01"
+          ],
+          "commands": [
+            "scenario-runner ENTITY-01 (4/4) and full regression",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "AR and AP aging take a company: each company's open receivables and payables equal its own 1100 and 2000 (builder 50,000/30,000; land 20,000/8,000).",
+            "The July close saves the consolidated reports plus each company's trial balance, P&L, balance sheet, cash flow, AR and AP aging; a closed month then reads as closed per company (land net income 12,000) and the agings read from the saved close.",
+            "Scoped deviation (owner may overrule): companies in one organization close a month together; the close saves each company's statements. Independent per-company close/reopen is not built.",
+            "Regression green; test:financials 2,521 pass."
           ],
           "evidence_dir": "docs/books-evidence/2026-10-07-entities"
         }

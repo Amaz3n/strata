@@ -1,5 +1,6 @@
 import { accountingCutoff, loadSubledgerSettlements, AS_OF_BILL_STATUSES, isBillPayableAsOf, loadLedgerRemovalDates } from "@/lib/services/books/subledger-settlements"
 import { loadClosedPeriodSnapshots } from "@/lib/services/books/closed-snapshots"
+import { companyOwnership } from "@/lib/services/books/legal-entities"
 import { collectBooksRows } from "@/lib/services/books/paging"
 import { isPayableVendorBillStatus } from "@/lib/financials/ledger-status"
 import { requireOrgContext } from "@/lib/services/context"
@@ -40,22 +41,25 @@ export async function getApAgingReport({
   asOf,
   orgId,
   includeExcludedProjects = false,
+  legalEntityId = null,
 }: {
   projectId?: string
   asOf?: string
   orgId?: string
   /** The accounting record (saved at close) covers every project, as the ledger does. */
   includeExcludedProjects?: boolean
+  /** One company's payables: bills on its jobs, and company-level ones for the primary company. */
+  legalEntityId?: string | null
 }): Promise<APAgingReport> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("report.read", { supabase, orgId: resolvedOrgId, userId })
   const asOfDate = asOf ?? todayIsoDateOnly()
   accountingCutoff(asOfDate)
-  // The end of a closed month reads as it was closed, company-wide.
+  // The end of a closed month reads as it was closed, for the group or the company.
   if (!projectId) {
     const closed = await loadClosedPeriodSnapshots(resolvedOrgId, { end: asOfDate })
-    if (closed) {
-      const { statement: _statement, ...saved } = closed.report<APAgingReport & { statement: "ap_aging" }>("ap_aging")
+    if (closed && closed.has("ap_aging", legalEntityId)) {
+      const { statement: _statement, ...saved } = closed.report<APAgingReport & { statement: "ap_aging" }>("ap_aging", legalEntityId)
       return { ...saved, as_closed: closed.closedAt }
     }
   }
@@ -63,7 +67,7 @@ export async function getApAgingReport({
   let query = supabase
     .from("vendor_bills")
     .select(
-      "id, org_id, project_id, bill_number, status, bill_date, due_date, total_cents, retainage_cents, paid_cents, currency, metadata, project:projects(name), commitment:commitments(id, title)",
+      "id, org_id, project_id, bill_number, status, bill_date, due_date, total_cents, retainage_cents, paid_cents, currency, metadata, project:projects(name, legal_entity_id), commitment:commitments(id, title)",
     )
     .eq("org_id", resolvedOrgId)
     // Pending and rejected bills are read only to find those that were payable at
@@ -81,7 +85,9 @@ export async function getApAgingReport({
     query = applyReportingExclusion(query, excludedProjectIds)
   }
 
-  const loaded = await collectBooksRows((from, to) => query.range(from, to))
+  const owner = legalEntityId ? await companyOwnership(resolvedOrgId) : null
+  const loaded = (await collectBooksRows((from, to) => query.range(from, to)))
+    .filter(row => !owner || owner((Array.isArray(row.project) ? row.project[0] : row.project)?.legal_entity_id) === legalEntityId)
   const removedOn = await loadLedgerRemovalDates(resolvedOrgId, loaded.filter(row => !isPayableVendorBillStatus(row.status)).map(row => String(row.id)))
   const data = loaded.filter(row => isBillPayableAsOf(row, asOfDate, removedOn))
   const settlements = await loadSubledgerSettlements(supabase, resolvedOrgId, "payable", data.map(row => row.id), asOfDate)

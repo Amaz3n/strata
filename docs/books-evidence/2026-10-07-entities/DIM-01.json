@@ -7,30 +7,30 @@
       "name": "matrix-on-lines",
       "status": "PASSED",
       "identities": {
-        "orgId": "176efca8-871d-4cac-b792-0eef513c90fe",
+        "orgId": "1c864066-250f-4ba7-a865-017d79dc0127",
         "payment": {
           "group": {
-            "id": "ef584dc8-591b-42a8-8504-58f35283be69",
+            "id": "7f10541d-0dd5-4938-8d34-f0c6a461b138",
             "total_cents": 100000,
             "method": "check",
-            "org_id": "176efca8-871d-4cac-b792-0eef513c90fe",
+            "org_id": "1c864066-250f-4ba7-a865-017d79dc0127",
             "currency": "usd",
             "metadata": {},
             "party_id": null,
             "provider": "manual",
             "reference": null,
-            "created_at": "2026-10-07T20:02:08.216231+00:00",
-            "created_by": "7068f0b2-cc56-49f4-a058-36c6291b3f34",
+            "created_at": "2026-10-07T20:19:18.126407+00:00",
+            "created_by": "7bc39f1f-1bd5-4368-b97d-471212f1dda2",
             "party_type": null,
             "received_at": "2026-07-25T12:00:00+00:00",
-            "idempotency_key": "8f986666-c417-456d-bd07-fc2047af379a"
+            "idempotency_key": "e6a98349-6472-4af7-94a9-c1dbae014dcd"
           },
           "items": [
             {
-              "payment_id": "bfb16e74-d6f4-43ea-ad43-a4b408169e15",
-              "invoice_id": "9730b2e4-ec39-4d46-b9fb-980f6753a4e4",
+              "payment_id": "ee23eb5f-d083-4822-b39d-896fe77efd1d",
+              "invoice_id": "5336a98d-50e8-4089-ac1b-046bc9c3e3d5",
               "amount_cents": 100000,
-              "project_id": "af120a24-376a-4be9-90fb-a7f5bab516a9"
+              "project_id": "ab2fc165-73b5-4a96-a876-740d64216ef5"
             }
           ],
           "duplicate": false
@@ -190,13 +190,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:02:04.575Z"
+      "startedAt": "2026-10-07T20:19:14.863Z"
     },
     {
       "name": "foreign-dimension-refused",
       "status": "PASSED",
       "identities": {
-        "orgId": "679b8a12-f8bb-481c-a996-aa9680173bab"
+        "orgId": "2e82295b-a3b8-4c30-89e7-94dd889b1870"
       },
       "checks": [
         {
@@ -214,13 +214,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:02:08.502Z"
+      "startedAt": "2026-10-07T20:19:18.416Z"
     },
     {
       "name": "one-lot-per-project",
       "status": "PASSED",
       "identities": {
-        "orgId": "46cc1619-ee9b-4d00-a177-3f1f0552696c"
+        "orgId": "0e6ede4e-eae0-4a35-9df1-fbf4e2e94472"
       },
       "checks": [
         {
@@ -234,14 +234,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:02:08.817Z"
+      "startedAt": "2026-10-07T20:19:18.719Z"
     },
     {
       "name": "later-changes-and-reversal",
       "status": "PASSED",
       "identities": {
-        "orgId": "43d3ac78-1864-4e95-bba5-91a4531fe93a",
-        "bill": "f2ae51d7-b3a8-428f-90fc-0d7488db1a52"
+        "orgId": "bcb46b6f-dfdc-4b4b-9fc9-4aae91a30da9",
+        "bill": "8d09fe5c-9d98-415c-9386-3da263d95c41"
       },
       "checks": [
         {
@@ -269,13 +269,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:02:08.983Z"
+      "startedAt": "2026-10-07T20:19:18.881Z"
     },
     {
       "name": "statements-by-tag",
       "status": "PASSED",
       "identities": {
-        "orgId": "be99c321-355e-4d7f-8eb1-03d6e80329ad"
+        "orgId": "4c38766c-f332-4659-a2ba-be5c1a297763"
       },
       "checks": [
         {
@@ -331,13 +331,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:02:09.874Z"
+      "startedAt": "2026-10-07T20:19:19.734Z"
     },
     {
       "name": "closed-month-as-closed",
       "status": "PASSED",
       "identities": {
-        "orgId": "d4dee32b-e8de-4363-be4d-8ad7b51650e6"
+        "orgId": "5a531a08-358d-4467-9595-4a6b73f4505a"
       },
       "checks": [
         {
@@ -357,13 +357,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:02:11.421Z"
+      "startedAt": "2026-10-07T20:19:21.262Z"
     },
     {
       "name": "fiscal-comparisons",
       "status": "PASSED",
       "identities": {
-        "orgId": "6585d189-27c7-4607-8288-25f953efe21b"
+        "orgId": "a4b02f72-08d5-4c95-9ae8-d29a4d6d1a7f"
       },
       "checks": [
         {
@@ -391,9 +391,9 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:02:12.018Z"
+      "startedAt": "2026-10-07T20:19:21.824Z"
     }
   ],
   "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
-  "finishedAt": "2026-10-07T20:02:12.127Z"
+  "finishedAt": "2026-10-07T20:19:21.932Z"
 }

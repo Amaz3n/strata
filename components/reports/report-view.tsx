@@ -31,7 +31,7 @@ export async function ReportView({
     getAmbientDeskContext(),
     definition.slug === "report-packet" && !snapshot ? listSavedReportConfigs() : Promise.resolve([]),
     reportFingerprint(result),
-    definition.params?.some((spec) => spec.kind === "legal_entity") ? listLegalEntityChoices() : Promise.resolve([]),
+    context.scope === "org" && definition.params?.some((spec) => spec.kind === "legal_entity") ? listLegalEntityChoices() : Promise.resolve([]),
   ]);
   // A company choice is a select of this organization's companies; with only one
   // company there is nothing to choose and the control is not shown.

@@ -18,15 +18,19 @@ export async function loadClosedPeriodSnapshots(orgId: string, period: { start?:
   if (error) throw new Error(`Failed to load the closed period: ${error.message}`)
   const ids = z.array(z.string().uuid()).safeParse(found?.close_snapshot_ids)
   if (!found || !ids.success || ids.data.length === 0) return null
-  const { data: snapshots, error: snapshotError } = await service.from("financial_statement_snapshots").select("statement_type, content")
+  const { data: snapshots, error: snapshotError } = await service.from("financial_statement_snapshots").select("statement_type, legal_entity_id, content")
     .eq("org_id", orgId).eq("period_id", found.id).in("id", ids.data)
   if (snapshotError) throw new Error(`Failed to load the closed period's reports: ${snapshotError.message}`)
   return {
     periodId: String(found.id),
     closedAt: String(found.closed_at),
-    /** The saved report of this type, checked to be one. */
-    report<T>(type: string) {
-      const content = snapshots?.find((row) => row.statement_type === type)?.content
+    /** Whether a report of this type was saved for the company (null: consolidated). */
+    has(type: string, legalEntityId: string | null = null) {
+      return Boolean(snapshots?.some((row) => row.statement_type === type && (row.legal_entity_id ?? null) === legalEntityId))
+    },
+    /** The saved report of this type for the company (null: consolidated), checked to be one. */
+    report<T>(type: string, legalEntityId: string | null = null) {
+      const content = snapshots?.find((row) => row.statement_type === type && (row.legal_entity_id ?? null) === legalEntityId)?.content
       return z.custom<T>((value) => typeof value === "object" && value !== null && Reflect.get(value, "statement") === type).parse(content)
     },
   }

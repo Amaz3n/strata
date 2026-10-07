@@ -1,5 +1,6 @@
 import { accountingCutoff, isInvoiceReceivableAsOf, isUndatedVoid, loadLedgerRemovalDates, loadSubledgerSettlements } from "@/lib/services/books/subledger-settlements"
 import { loadClosedPeriodSnapshots } from "@/lib/services/books/closed-snapshots"
+import { companyOwnership } from "@/lib/services/books/legal-entities"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
 import { applyReportingExclusion, getReportingExcludedProjectIds } from "@/lib/services/reporting-scope"
@@ -65,22 +66,25 @@ export async function getArAgingReport({
   asOf,
   orgId,
   includeExcludedProjects = false,
+  legalEntityId = null,
 }: {
   projectId?: string
   asOf?: string
   orgId?: string
   /** The accounting record (saved at close) covers every project, as the ledger does. */
   includeExcludedProjects?: boolean
+  /** One company's receivables: invoices on its jobs, and company-level ones for the primary company. */
+  legalEntityId?: string | null
 }): Promise<ARAgingReport> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("report.read", { supabase, orgId: resolvedOrgId, userId })
   const asOfDate = asOf ?? todayIsoDateOnly()
   accountingCutoff(asOfDate)
-  // The end of a closed month reads as it was closed, company-wide.
+  // The end of a closed month reads as it was closed, for the group or the company.
   if (!projectId) {
     const closed = await loadClosedPeriodSnapshots(resolvedOrgId, { end: asOfDate })
-    if (closed) {
-      const { statement: _statement, ...saved } = closed.report<ARAgingReport & { statement: "ar_aging" }>("ar_aging")
+    if (closed && closed.has("ar_aging", legalEntityId)) {
+      const { statement: _statement, ...saved } = closed.report<ARAgingReport & { statement: "ar_aging" }>("ar_aging", legalEntityId)
       // The balances are as closed; which voids still lack a date is today's fact.
       const { data: voids, error: voidError } = await supabase.from("invoices").select("id, project_id, invoice_number, issue_date, total_cents, status, metadata")
         .eq("org_id", resolvedOrgId).eq("status", "void").is("metadata->>voided_at", null).lte("issue_date", asOfDate).order("id").limit(500)
@@ -91,7 +95,7 @@ export async function getArAgingReport({
 
   let query = supabase
     .from("invoices")
-    .select("id, org_id, project_id, invoice_number, title, status, issue_date, due_date, sent_at, total_cents, balance_due_cents, metadata, project:projects(name)")
+    .select("id, org_id, project_id, invoice_number, title, status, issue_date, due_date, sent_at, total_cents, balance_due_cents, metadata, project:projects(name, legal_entity_id)")
     .eq("org_id", resolvedOrgId)
     // Load all invoices issued by the cutoff. Current status alone is not an
     // as-of fact: an invoice paid or voided later was still open historically.
@@ -107,7 +111,9 @@ export async function getArAgingReport({
   }
 
   query = query.lte("issue_date", asOfDate)
-  const data = await loadAll<any>((from, to) => query.range(from, to), "invoices for AR aging")
+  const loaded = await loadAll<any>((from, to) => query.range(from, to), "invoices for AR aging")
+  const owner = legalEntityId ? await companyOwnership(resolvedOrgId) : null
+  const data = owner ? loaded.filter((row: any) => owner(row.project?.legal_entity_id) === legalEntityId) : loaded
 
   const removedOn = await loadLedgerRemovalDates(resolvedOrgId, data.filter((row: any) => row.status === "void").map((row: any) => String(row.id)))
   const invoiceRows = data.filter(row => isInvoiceReceivableAsOf(row, asOfDate, removedOn))

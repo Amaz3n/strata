@@ -27,6 +27,16 @@ async function primaryEntity(orgId: string) {
 }
 
 /**
+ * Which company a document belongs to, given its job's owner: the job's company,
+ * or the primary company when the job names none or there is no job. The same
+ * rule the posting function applies to the document's lines.
+ */
+export async function companyOwnership(orgId: string) {
+  const primary = await primaryEntity(orgId)
+  return (projectEntityId: string | null | undefined) => projectEntityId ?? primary
+}
+
+/**
  * The companies the organization keeps books for, and what each owns: cash
  * accounts and jobs. Anything not assigned belongs to the primary company.
  */
@@ -105,9 +115,11 @@ export async function setLegalEntityOwner(input: z.input<typeof ownerSchema>) {
   return { id: parsed.id }
 }
 
-/** The active companies, for choosing one on a statement. */
+/** The active companies, for choosing one on a statement; none for someone who cannot read Books. */
 export async function listLegalEntityChoices() {
-  const context = await entityContext("books.read")
+  const context = await requireOrgContext()
+  const decision = await authorize({ permission: "books.read", userId: context.userId, orgId: context.orgId, supabase: context.supabase, logDecision: false })
+  if (!decision.allowed) return []
   const { data, error } = await createServiceSupabaseClient().from("books_legal_entities").select("id, name")
     .eq("org_id", context.orgId).eq("status", "active").order("is_primary", { ascending: false }).order("name")
   if (error) throw new Error(`Failed to load companies: ${error.message}`)

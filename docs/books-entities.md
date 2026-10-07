@@ -11,9 +11,10 @@ companies already owe each other before adding new balances, ownership fixed onc
 posted, per-company trial balance / P&L / balance sheet (Reports → Company),
 consolidated statements that eliminate due-from/due-to, Books → Companies, and
 companies in the export (schema 33; older archives restore as one primary company).
-Not yet: per-company close and subledgers (AR/AP aging by company), the
-intercompany reconciliation, and eliminating intercompany sales (e.g. a land
-company selling a lot to the building company).
+AR/AP aging by company, and a close that saves each company's statements and
+agings beside the consolidated ones. Not yet: the intercompany reconciliation,
+eliminating intercompany sales (e.g. a land company selling a lot to the building
+company), and per-company opening balances.
 
 A separate per-entity ledger (`books_native_*`, per-entity charts and calendars)
 was built in October 2026 but never shipped. It is retired: every transaction type
@@ -71,6 +72,9 @@ matching cost. Eliminations are computed, never posted to an entity's books.
 
 ## Close
 
-The close runs per entity for the shared period: closing or reopening one entity's
-month does not freeze or unfreeze another's. Controls (job cost, AR, AP, deposits,
-inventory, warranty, impairment) tie per entity.
+Companies in one organization close a month together (a deliberate first-release
+scope: affiliated builder companies share one bookkeeper and calendar). The close
+saves the consolidated statements and, when there is more than one company, each
+company's trial balance, P&L, balance sheet, cash flow and AR/AP aging, so a closed
+month reads as it was closed for every company. Independent per-company close and
+reopen are not built.

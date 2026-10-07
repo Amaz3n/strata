@@ -5,6 +5,7 @@
 // is fixed once posted; a reversal keeps each line's company.
 const { randomUUID } = require("node:crypto")
 const { app, contractJob, project } = require("./shared.cjs")
+const { prepareAndReview } = require("./wip-01.cjs").helpers
 
 const LAND_CHECKING = { code: "1005", name: "Land company checking", accountType: "asset", subtype: "cash", normalBalance: "debit" }
 const glId = (kit, org, code) => kit.rows(`select id from public.gl_accounts where org_id=${kit.q(org.orgId)} and code=${kit.q(code)}`)[0]?.id ?? null
@@ -111,11 +112,70 @@ async function singleCompanyUnchanged(kit, expected, check) {
   return { orgId: org.orgId }
 }
 
+// Each company's receivables and payables tie to its own ledger, and a closed
+// month keeps each company's statements as they were closed.
+async function companySubledgersAndClose(kit, expected, check) {
+  const input = expected.inputs
+  const org = await twoCompanies(kit, "ENTITY-01 subledgers and close", input)
+  const { q } = kit
+  const landJob = randomUUID()
+  kit.sql(`begin;
+insert into public.projects(id,org_id,name,property_type,created_by,legal_entity_id) values(${q(landJob)},${q(org.orgId)},'Cedar Ridge lot sales','production',${q(org.owner.userId)},${q(org.land)});
+insert into public.project_financial_settings(org_id,project_id) values(${q(org.orgId)},${q(landJob)}) on conflict do nothing;
+insert into public.contracts(id,org_id,project_id,title,status,total_cents,currency,contract_type,retainage_percent,effective_date) values(${q(randomUUID())},${q(org.orgId)},${q(landJob)},'Lot sale','active',${input.landInvoiceCents},'usd','purchase_agreement',0,'2026-07-01');
+commit;`)
+  const invoice = (projectId, number, cents) => kit.sql(`select public.create_invoice_atomic(${q(org.orgId)},jsonb_build_object('project_id',${q(projectId)},'invoice_number',${q(number)},
+  'title','Billing','issue_date','2026-07-20','due_date','2026-07-30','client_visible',true,'approval_status','approved','product_posture','residential','subtotal_cents',${cents},'tax_cents',0,'total_cents',${cents},'balance_due_cents',${cents},'token',${q(randomUUID())},'metadata','{}'::jsonb),
+  jsonb_build_array(jsonb_build_object('description','Work','quantity',1,'unit_price_cents',${cents},'amount_cents',${cents})));`)
+  invoice(org.projectId, "B-1", input.builderInvoiceCents)
+  invoice(landJob, "L-1", input.landInvoiceCents)
+  const { createProjectVendorBill, approveVendorBillsAtomic } = app("vendor-bills")
+  for (const [projectId, cents, number] of [[org.projectId, input.builderBillCents, "BB-1"], [landJob, input.landBillCents, "LB-1"]]) {
+    const created = await kit.as(org.owner, () => createProjectVendorBill({ projectId, input: { company_id: org.vendorId, bill_number: number, bill_date: "2026-07-12", due_date: "2026-08-12", total_cents: cents,
+      actual_lines: [{ cost_code_id: org.costCodeId, description: "Work", amount_cents: cents, project_id: projectId }] } }))
+    await kit.as(org.owner, () => approveVendorBillsAtomic([{ id: created.id }]))
+  }
+  await kit.drainOutbox(org.orgId)
+  await project(kit, org)
+  const aging = async (legalEntityId) => {
+    const [ar, ap] = await Promise.all([
+      kit.as(org.owner, () => app("reports/ar-aging").getArAgingReport({ asOf: "2026-07-31", legalEntityId })),
+      kit.as(org.owner, () => app("reports/ap-aging").getApAgingReport({ asOf: "2026-07-31", legalEntityId })),
+    ])
+    return { receivable: ar.totals.total_open_cents, payable: ap.totals.total_open_cents, readAsClosed: Boolean(ar.as_closed) }
+  }
+  const tie = async (legalEntityId) => {
+    const books = await trialBalance(kit, org, legalEntityId)
+    const sub = await aging(legalEntityId)
+    return { receivable: sub.receivable, ledgerReceivable: books.accounts["1100"] ?? 0, payable: sub.payable, ledgerPayable: books.accounts["2000"] ?? 0 }
+  }
+  const before = { builder: await tie(org.builder), land: await tie(org.land) }
+  await prepareAndReview(kit, org, "2026-07", { contractCents: input.contractCents, eacCents: input.eacCents })
+  // The land company's checking had no activity; its July statement still reconciles.
+  const { createBankReconciliation, closeBankReconciliation } = app("books/bank-reconciliation")
+  const bankId = kit.rows(`select id from public.bank_accounts where org_id=${q(org.orgId)} and gl_account_id=${q(glId(kit, org, "1005"))}`)[0].id
+  const reconciliation = await kit.as(org.owner, () => createBankReconciliation({ bankAccountId: bankId, statementStart: "2026-07-01", statementEnd: "2026-07-31", beginningBalanceCents: 0, endingBalanceCents: 0 }))
+  await kit.as(org.owner, () => closeBankReconciliation(reconciliation))
+  await kit.as(org.owner, () => app("books/period-close").closeAccountingPeriod(org.periods["2026-07"].periodId))
+  const saved = Object.fromEntries(kit.rows(`select case when legal_entity_id=${q(org.land)} then 'land' when legal_entity_id is null then 'consolidated' else 'builder' end company, count(*)::int n
+    from public.financial_statement_snapshots where period_id=${q(org.periods["2026-07"].periodId)} group by 1`).map((row) => [row.company, Number(row.n)]))
+  const closedLand = await kit.as(org.owner, () => app("books/statement-detail").getStatementsForPeriod({ startDate: "2026-07-01", endDate: "2026-07-31", comparison: "none", legalEntityId: org.land }))
+  check.equal("each company's aging ties to its own ledger, and its statements are kept as closed", expected.expected, {
+    before,
+    savedAtClose: saved,
+    landReadsAsClosed: Boolean(closedLand.closedPeriod),
+    landNetIncome: closedLand.profitLoss.netIncomeCents,
+    landAgingAfterClose: await aging(org.land),
+  })
+  return { orgId: org.orgId, landJob }
+}
+
 module.exports = {
   subcases: {
     "payment-across-companies": paymentAcrossCompanies,
     "ownership-fixed-and-reversal": ownershipFixedAndReversal,
     "single-company-unchanged": singleCompanyUnchanged,
+    "company-subledgers-and-close": companySubledgersAndClose,
   },
 }
 module.exports.helpers = { twoCompanies, paidBill }

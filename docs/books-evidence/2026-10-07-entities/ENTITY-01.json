@@ -7,9 +7,9 @@
       "name": "payment-across-companies",
       "status": "PASSED",
       "identities": {
-        "orgId": "77bdba32-56bf-4e5d-b7bf-52e8c4bc819f",
-        "land": "28e208cf-23c1-4047-bb4c-6b0fca6fbd4b",
-        "builder": "006c61a0-ca99-4ff9-bc67-434c4f7be45f"
+        "orgId": "19e4e46b-6989-424e-a567-3417f97c9919",
+        "land": "840a6649-7cac-4371-912c-d2d50dbdaeda",
+        "builder": "081b5226-364a-46a7-9ae8-65abcc2254ae"
       },
       "checks": [
         {
@@ -123,13 +123,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:03:18.629Z"
+      "startedAt": "2026-10-07T20:20:27.875Z"
     },
     {
       "name": "ownership-fixed-and-reversal",
       "status": "PASSED",
       "identities": {
-        "orgId": "c38c0f30-6acb-4533-81b4-bb3e5051b7b7"
+        "orgId": "3a180967-fdf3-4150-a999-913c1628b596"
       },
       "checks": [
         {
@@ -179,13 +179,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:03:21.981Z"
+      "startedAt": "2026-10-07T20:20:31.300Z"
     },
     {
       "name": "single-company-unchanged",
       "status": "PASSED",
       "identities": {
-        "orgId": "5ef72611-7dd9-4ab6-89c3-b3d9255762b2"
+        "orgId": "b9003d7e-6b4b-44a2-accc-2f29a82ce172"
       },
       "checks": [
         {
@@ -205,9 +205,80 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:03:22.897Z"
+      "startedAt": "2026-10-07T20:20:32.233Z"
+    },
+    {
+      "name": "company-subledgers-and-close",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "04e14cb6-ca98-4d6a-8fea-32d7bfc10479",
+        "landJob": "a38e52ec-4775-4cb0-839e-d470e87ecede"
+      },
+      "checks": [
+        {
+          "label": "each company's aging ties to its own ledger, and its statements are kept as closed",
+          "pass": true,
+          "expected": {
+            "before": {
+              "builder": {
+                "receivable": 5000000,
+                "ledgerReceivable": 5000000,
+                "payable": 3000000,
+                "ledgerPayable": 3000000
+              },
+              "land": {
+                "receivable": 2000000,
+                "ledgerReceivable": 2000000,
+                "payable": 800000,
+                "ledgerPayable": 800000
+              }
+            },
+            "savedAtClose": {
+              "land": 6,
+              "builder": 6,
+              "consolidated": 8
+            },
+            "landReadsAsClosed": true,
+            "landNetIncome": 1200000,
+            "landAgingAfterClose": {
+              "receivable": 2000000,
+              "payable": 800000,
+              "readAsClosed": true
+            }
+          },
+          "observed": {
+            "before": {
+              "builder": {
+                "receivable": 5000000,
+                "ledgerReceivable": 5000000,
+                "payable": 3000000,
+                "ledgerPayable": 3000000
+              },
+              "land": {
+                "receivable": 2000000,
+                "ledgerReceivable": 2000000,
+                "payable": 800000,
+                "ledgerPayable": 800000
+              }
+            },
+            "savedAtClose": {
+              "land": 6,
+              "builder": 6,
+              "consolidated": 8
+            },
+            "landReadsAsClosed": true,
+            "landNetIncome": 1200000,
+            "landAgingAfterClose": {
+              "receivable": 2000000,
+              "payable": 800000,
+              "readAsClosed": true
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:20:32.682Z"
     }
   ],
   "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
-  "finishedAt": "2026-10-07T20:03:23.329Z"
+  "finishedAt": "2026-10-07T20:20:33.652Z"
 }

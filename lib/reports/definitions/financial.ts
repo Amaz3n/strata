@@ -681,9 +681,9 @@ const arAging: ReportDefinition = {
   group: "financial",
   scopes: ["org", "project"],
   permissions: ["report.read"],
-  params: [{ key: "asOf", kind: "date", label: "As of" }, { key: "view", kind: "select", label: "View", options: [{value:"client",label:"By client"},{value:"project",label:"By project"},{value:"invoices",label:"Invoice detail"}] }],
+  params: [{ key: "asOf", kind: "date", label: "As of" }, { key: "view", kind: "select", label: "View", options: [{value:"client",label:"By client"},{value:"project",label:"By project"},{value:"invoices",label:"Invoice detail"}] }, { key: "company", kind: "legal_entity", label: "Company" }],
   run: async (ctx) => {
-    const report = await getArAgingReport({ projectId: ctx.projectId, asOf: ctx.params.asOf })
+    const report = await getArAgingReport({ projectId: ctx.projectId, asOf: ctx.params.asOf, legalEntityId: ctx.projectId ? null : ctx.params.company || null })
     const notice = undatedVoidNotice(report)
     if (ctx.params.view !== "invoices") return { ...arAgingSummary(report, ctx.params.view === "project" ? "project" : "client"), ...(notice ? { notice } : {}) }
     const openRows = report.rows.filter(row => row.open_balance_cents > 0)
@@ -753,9 +753,9 @@ const apAging: ReportDefinition = {
   group: "financial",
   scopes: ["org", "project"],
   permissions: ["report.read"],
-  params: [{ key: "asOf", kind: "date", label: "As of" }],
+  params: [{ key: "asOf", kind: "date", label: "As of" }, { key: "company", kind: "legal_entity", label: "Company" }],
   run: async (ctx) => {
-    const report = await getApAgingReport({ projectId: ctx.projectId, asOf: ctx.params.asOf })
+    const report = await getApAgingReport({ projectId: ctx.projectId, asOf: ctx.params.asOf, legalEntityId: ctx.projectId ? null : ctx.params.company || null })
     const buckets: AgingBucket[] = ["current", "1_30", "31_60", "61_90", "90_plus"]
 
     return {

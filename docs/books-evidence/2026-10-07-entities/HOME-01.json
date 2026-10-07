@@ -7,8 +7,8 @@
       "name": "sale-relief-by-component",
       "status": "PASSED",
       "identities": {
-        "orgId": "a221d6c2-0cd1-459f-ab34-d44177e8fcf8",
-        "closingId": "eea4717e-715a-42c2-90b3-95e6535aac08"
+        "orgId": "6a9c67b1-2f83-47ef-a9af-64c29e2bbc7d",
+        "closingId": "715bfe8a-458e-48fd-8e88-7c8c2080b466"
       },
       "checks": [
         {
@@ -64,13 +64,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:02:58.250Z"
+      "startedAt": "2026-10-07T20:20:07.600Z"
     },
     {
       "name": "costs-after-the-sale",
       "status": "PASSED",
       "identities": {
-        "orgId": "8645a056-f48d-4b96-a230-e209a4ccb2f7"
+        "orgId": "54ea14c3-1e7b-48da-a01f-3fa8be00872a"
       },
       "checks": [
         {
@@ -114,14 +114,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:03:03.165Z"
+      "startedAt": "2026-10-07T20:20:12.528Z"
     },
     {
       "name": "reviewed-development-allocation",
       "status": "PASSED",
       "identities": {
-        "orgId": "adf9f79e-e697-4c2c-b09c-e952fc1fc3f7",
-        "allocationId": "ea6846d3-a3b6-4ea2-88ad-83f107f2733c"
+        "orgId": "5ffebc48-315c-492a-9fac-d030dcc17f00",
+        "allocationId": "1901e8d8-f57e-4dc5-8c9d-5e1189f760c5"
       },
       "checks": [
         {
@@ -173,14 +173,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:03:06.035Z"
+      "startedAt": "2026-10-07T20:20:15.361Z"
     },
     {
       "name": "warranty-consumption",
       "status": "PASSED",
       "identities": {
-        "orgId": "29257516-9e59-4e97-9692-7615b523a038",
-        "visitId": "008ab1ec-220f-4e35-862c-50eb29101738"
+        "orgId": "7856c628-21c2-4877-b759-10dc46e1003e",
+        "visitId": "f062230d-f712-4bbf-8ba0-0d2f868e0f87"
       },
       "checks": [
         {
@@ -218,14 +218,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:03:06.687Z"
+      "startedAt": "2026-10-07T20:20:16.015Z"
     },
     {
       "name": "closing-reversal",
       "status": "PASSED",
       "identities": {
-        "orgId": "05b0b231-ece9-4fd3-abc3-6098e534e109",
-        "closingId": "1c8dacc0-9b20-42c1-b969-cd836ea6ad34"
+        "orgId": "65ce0a76-9c45-45e5-b291-7577715ef224",
+        "closingId": "e97c2ab6-03a6-47f4-b634-c861edd8a1f8"
       },
       "checks": [
         {
@@ -283,9 +283,9 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:03:08.846Z"
+      "startedAt": "2026-10-07T20:20:18.158Z"
     }
   ],
   "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
-  "finishedAt": "2026-10-07T20:03:10.954Z"
+  "finishedAt": "2026-10-07T20:20:20.262Z"
 }

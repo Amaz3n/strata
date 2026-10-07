@@ -430,3 +430,13 @@ end;
 $$;
 revoke all on function public.capture_books_export_snapshot(uuid) from public, anon, authenticated;
 grant execute on function public.capture_books_export_snapshot(uuid) to service_role;
+
+-- A close saves each company's statements beside the consolidated ones (empty
+-- company), so a closed month reads as it was closed for each company too.
+alter table public.financial_statement_snapshots add column legal_entity_id uuid;
+alter table public.financial_statement_snapshots add constraint financial_statement_snapshots_legal_entity_fkey
+  foreign key (org_id, legal_entity_id) references public.books_legal_entities(org_id, id);
+alter table public.financial_statement_snapshots drop constraint financial_statement_snapshots_period_id_statement_type_basi_key;
+alter table public.financial_statement_snapshots add constraint financial_statement_snapshots_identity_key
+  unique nulls not distinct (period_id, statement_type, basis, legal_entity_id, content_hash);
+create index financial_statement_snapshots_legal_entity_idx on public.financial_statement_snapshots (org_id, legal_entity_id) where legal_entity_id is not null;

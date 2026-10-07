@@ -986,25 +986,64 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
       { statement: "ap_aging" as const, ...apAging },
       { statement: "wip" as const, ...wip },
     ];
+    // With more than one company, each company's statements are saved too, so a
+    // closed month reads as it was closed for every company as well as the group.
+    const { data: companyRows, error: companyError } = await service
+      .from("books_legal_entities")
+      .select("id")
+      .eq("org_id", context.orgId)
+      .eq("status", "active")
+      .order("id");
+    if (companyError)
+      throw new Error(`Failed to load companies: ${companyError.message}`);
+    const companies = (companyRows ?? []).map((row) => String(row.id));
+    const companyStatements =
+      companies.length > 1
+        ? (
+            await Promise.all(
+              companies.map(async (legalEntityId) => {
+                const [companyAr, companyAp] = await Promise.all([
+                  getArAgingReport({ asOf: period.period_end, orgId: context.orgId, includeExcludedProjects: true, legalEntityId }),
+                  getApAgingReport({ asOf: period.period_end, orgId: context.orgId, includeExcludedProjects: true, legalEntityId }),
+                ]);
+                const statements = [
+                  await buildTrialBalance(context.orgId, period.period_end, forLegalEntity(balances, legalEntityId)),
+                  await buildProfitAndLoss(context.orgId, period.period_start, period.period_end, forLegalEntity(posted, legalEntityId)),
+                  await buildBalanceSheet(context.orgId, period.period_end, forLegalEntity(balances, legalEntityId)),
+                  await buildCashFlowStatement(context.orgId, period.period_start, period.period_end, forLegalEntity(posted, legalEntityId)),
+                  { statement: "ar_aging" as const, ...companyAr },
+                  { statement: "ap_aging" as const, ...companyAp },
+                ];
+                return statements.map((statement) => ({ legalEntityId, statement: { ...statement, legalEntityId } }));
+              }),
+            )
+          ).flat()
+        : [];
+    const savedStatements = [
+      ...officialStatements.map((statement) => ({ legalEntityId: null as string | null, statement })),
+      ...companyStatements,
+    ];
     const digest = booksDigest({
       period,
       checklist: checklist.checks,
       statements: officialStatements,
+      ...(companyStatements.length ? { companyStatements: companyStatements.map((row) => row.statement) } : {}),
     });
     const { error: snapshotError } = await service
       .from("financial_statement_snapshots")
       .upsert(
-        officialStatements.map((statement) => ({
+        savedStatements.map(({ legalEntityId, statement }) => ({
           org_id: context.orgId,
           period_id: period.id,
           statement_type: statement.statement,
           basis: "accrual",
+          legal_entity_id: legalEntityId,
           content: statement,
           content_hash: booksDigest(statement),
           generated_by: context.userId,
         })),
         {
-          onConflict: "period_id,statement_type,basis,content_hash",
+          onConflict: "period_id,statement_type,basis,legal_entity_id,content_hash",
           ignoreDuplicates: true,
         },
       );
@@ -1022,7 +1061,7 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
       .eq("basis", "accrual")
       .in(
         "content_hash",
-        officialStatements.map((statement) => booksDigest(statement)),
+        savedStatements.map(({ statement }) => booksDigest(statement)),
       );
     if (snapshotReadError)
       throw new Error(
@@ -1030,7 +1069,7 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
       );
     const snapshotIds = z
       .array(z.object({ id: z.string().uuid() }))
-      .length(officialStatements.length)
+      .length(savedStatements.length)
       .parse(snapshotRows)
       .map((row) => row.id);
     const { error: closeError } = await service

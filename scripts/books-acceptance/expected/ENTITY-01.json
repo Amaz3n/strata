@@ -108,6 +108,45 @@
         "intercompanyAccounts": 0,
         "sameAsCompany": true
       }
+    },
+    "company-subledgers-and-close": {
+      "derivation": "The builder's contract job is invoiced $50,000 and billed $30,000; the land company's lot-sale job (purchase agreement, earned at invoicing) is invoiced $20,000 and billed $8,000. Each company's receivables and payables aging equals its own 1100 and 2000. July then closes (the land company's idle checking reconciled at zero): the close saves the 8 consolidated reports plus trial balance, P&L, balance sheet, cash flow, AR and AP aging for each company. The land company's July statements and aging then read as closed; its net income is $20,000 − $8,000 = $12,000.",
+      "inputs": {
+        "contractCents": 10000000,
+        "eacCents": 8000000,
+        "builderInvoiceCents": 5000000,
+        "builderBillCents": 3000000,
+        "landInvoiceCents": 2000000,
+        "landBillCents": 800000
+      },
+      "expected": {
+        "before": {
+          "builder": {
+            "receivable": 5000000,
+            "ledgerReceivable": 5000000,
+            "payable": 3000000,
+            "ledgerPayable": 3000000
+          },
+          "land": {
+            "receivable": 2000000,
+            "ledgerReceivable": 2000000,
+            "payable": 800000,
+            "ledgerPayable": 800000
+          }
+        },
+        "savedAtClose": {
+          "land": 6,
+          "builder": 6,
+          "consolidated": 8
+        },
+        "landReadsAsClosed": true,
+        "landNetIncome": 1200000,
+        "landAgingAfterClose": {
+          "receivable": 2000000,
+          "payable": 800000,
+          "readAsClosed": true
+        }
+      }
     }
   }
 }

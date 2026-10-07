@@ -7,7 +7,7 @@
       "name": "explicit-policy-by-kind",
       "status": "PASSED",
       "identities": {
-        "orgId": "21f3c6b7-a1b0-4c06-a564-cefcbb5fc5ed"
+        "orgId": "1f7a6b86-4a3d-4e42-b1e8-410442b483b3"
       },
       "checks": [
         {
@@ -101,13 +101,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:02:44.839Z"
+      "startedAt": "2026-10-07T20:19:54.206Z"
     },
     {
       "name": "settings-change-cannot-rewrite",
       "status": "PASSED",
       "identities": {
-        "orgId": "f311d16f-190b-4e0b-94bc-46ccb9f98428"
+        "orgId": "59e21374-c29b-4d17-b1ce-1da770ed5129"
       },
       "checks": [
         {
@@ -137,13 +137,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:02:46.688Z"
+      "startedAt": "2026-10-07T20:19:56.105Z"
     },
     {
       "name": "approved-change-from-its-date",
       "status": "PASSED",
       "identities": {
-        "orgId": "2755b9bf-a8a6-4fe5-9122-31e5c9f5075b"
+        "orgId": "97061f2f-afde-423a-b962-04c6fc9fc013"
       },
       "checks": [
         {
@@ -185,13 +185,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:02:47.155Z"
+      "startedAt": "2026-10-07T20:19:56.568Z"
     },
     {
       "name": "superseded-contracts-reconstructible",
       "status": "PASSED",
       "identities": {
-        "orgId": "bc454bfe-9fad-4797-8f23-c56235404280"
+        "orgId": "b3745ef6-86b9-4b80-be14-e7c92e3c35f4"
       },
       "checks": [
         {
@@ -221,13 +221,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:02:47.705Z"
+      "startedAt": "2026-10-07T20:19:57.115Z"
     },
     {
       "name": "mixed-contracts-reviewed",
       "status": "PASSED",
       "identities": {
-        "orgId": "eaa70965-902d-45be-bb59-b480b450649c"
+        "orgId": "cd62ee29-7b56-4dc8-910a-ce0d9d169fdd"
       },
       "checks": [
         {
@@ -261,14 +261,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:02:48.318Z"
+      "startedAt": "2026-10-07T20:19:57.737Z"
     },
     {
       "name": "cost-plus-earns-once",
       "status": "PASSED",
       "identities": {
-        "orgId": "d41025cc-4362-47f7-9914-9daa84ea2515",
-        "projectId": "9cace513-8cd6-4d96-bbd8-e2c977a52068"
+        "orgId": "cf2aac2f-1a5c-47de-a212-bc21bb9ea831",
+        "projectId": "6476ece4-b9b8-4c09-af91-a3ad36a8bea8"
       },
       "checks": [
         {
@@ -292,14 +292,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:02:48.757Z"
+      "startedAt": "2026-10-07T20:19:58.173Z"
     },
     {
       "name": "billed-cost-corrections",
       "status": "PASSED",
       "identities": {
-        "orgId": "58054ba8-3003-474a-a64e-14ae92fd0071",
-        "projectId": "da753208-1ebe-42af-8905-f9728365977f"
+        "orgId": "d8e04007-e249-4391-87bb-da5edba08d9d",
+        "projectId": "b8694304-dd55-41bc-b005-a3f0b91c11f5"
       },
       "checks": [
         {
@@ -347,13 +347,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:02:51.510Z"
+      "startedAt": "2026-10-07T20:20:00.910Z"
     },
     {
       "name": "gmp-cap-and-settlement",
       "status": "PASSED",
       "identities": {
-        "orgId": "99c218f1-037a-4db2-91c9-e0dd782cedb0"
+        "orgId": "edd4b724-e119-40d2-8729-1cc664a80279"
       },
       "checks": [
         {
@@ -405,14 +405,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:02:53.498Z"
+      "startedAt": "2026-10-07T20:20:02.914Z"
     },
     {
       "name": "shared-cost-allocated-once",
       "status": "PASSED",
       "identities": {
-        "orgId": "1d4f004b-2cd9-4fbf-a5a6-25d022961f98",
-        "allocationId": "389c9c65-b636-43da-bd1d-6d9c748e4c05"
+        "orgId": "ed7a2f4c-04aa-4901-b418-21cc3cc0db62",
+        "allocationId": "c8b51a36-6fcb-4026-b3f6-75c5e7f2610c"
       },
       "checks": [
         {
@@ -514,15 +514,15 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:02:56.115Z"
+      "startedAt": "2026-10-07T20:20:05.501Z"
     },
     {
       "name": "reallocation-keeps-both-legs",
       "status": "PASSED",
       "identities": {
-        "orgId": "2ea4c44f-0fc9-4be7-aa89-0228ba63cc63",
-        "original": "59c8d378-7abe-4f09-a6b2-f4e318554297",
-        "correction": "173e0658-db2b-4139-a9d9-80d23835cf1d"
+        "orgId": "ee30e875-890b-49c0-b864-9a097fe3402f",
+        "original": "789ef6e4-2f1d-4205-9236-f133c6a47c51",
+        "correction": "785f32ee-25b3-4041-90aa-e9af372d0c7d"
       },
       "checks": [
         {
@@ -618,14 +618,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:02:56.857Z"
+      "startedAt": "2026-10-07T20:20:06.217Z"
     },
     {
       "name": "allocation-treatments-agree",
       "status": "PASSED",
       "identities": {
-        "orgId": "1420f9ca-ec0f-4f0c-ba98-1218e93a664f",
-        "allocationId": "4b61edef-9bc9-4470-880f-2b4a0c776555"
+        "orgId": "97d9f317-f964-4248-a50a-64692995d15e",
+        "allocationId": "6cee242e-b8fd-4c4e-b263-73fcb9c95bb5"
       },
       "checks": [
         {
@@ -659,9 +659,9 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:02:57.529Z"
+      "startedAt": "2026-10-07T20:20:06.886Z"
     }
   ],
   "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
-  "finishedAt": "2026-10-07T20:02:58.042Z"
+  "finishedAt": "2026-10-07T20:20:07.390Z"
 }

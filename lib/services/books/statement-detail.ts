@@ -132,16 +132,17 @@ async function requireStatementsAccess(orgId?: string) {
  * closed period. A closed month reads as it was closed: later work cannot post
  * into it, and the screen, CSV and PDF all serve the same frozen record.
  */
-async function loadClosedPeriodStatements(orgId: string, startDate: string, endDate: string) {
+async function loadClosedPeriodStatements(orgId: string, startDate: string, endDate: string, legalEntityId: string | null) {
   const closed = await loadClosedPeriodSnapshots(orgId, { start: startDate, end: endDate })
-  if (!closed) return null
+  // A company's statements were saved only once the organization had more than one.
+  if (!closed || !closed.has("trial_balance", legalEntityId)) return null
   return {
     periodId: closed.periodId,
     closedAt: closed.closedAt,
-    profitLoss: closed.report<Awaited<ReturnType<typeof buildProfitAndLoss>>>("profit_loss"),
-    balanceSheet: closed.report<Awaited<ReturnType<typeof buildBalanceSheet>>>("balance_sheet"),
-    trialBalance: closed.report<Awaited<ReturnType<typeof buildTrialBalance>>>("trial_balance"),
-    cashFlow: closed.report<Awaited<ReturnType<typeof buildCashFlowStatement>>>("cash_flow"),
+    profitLoss: closed.report<Awaited<ReturnType<typeof buildProfitAndLoss>>>("profit_loss", legalEntityId),
+    balanceSheet: closed.report<Awaited<ReturnType<typeof buildBalanceSheet>>>("balance_sheet", legalEntityId),
+    trialBalance: closed.report<Awaited<ReturnType<typeof buildTrialBalance>>>("trial_balance", legalEntityId),
+    cashFlow: closed.report<Awaited<ReturnType<typeof buildCashFlowStatement>>>("cash_flow", legalEntityId),
   }
 }
 
@@ -205,9 +206,8 @@ export async function getStatementsForPeriod(input: {
     }
   }
 
-  // The statements saved at close are consolidated; one company's are read live.
   const legalEntityId = input.legalEntityId ?? null
-  const [posted, closed] = await Promise.all([loadPostedLedger(orgId, input.endDate), legalEntityId ? Promise.resolve(null) : loadClosedPeriodStatements(orgId, input.startDate, input.endDate)])
+  const [posted, closed] = await Promise.all([loadPostedLedger(orgId, input.endDate), loadClosedPeriodStatements(orgId, input.startDate, input.endDate, legalEntityId)])
   const snapshot = forLegalEntity(posted, legalEntityId)
   const [profitLoss, balanceSheet, trialBalance, cashFlow, cashBasis, priorProfitLoss, monthlyProfitLoss] = await Promise.all([
     closed?.profitLoss ?? buildProfitAndLoss(orgId, input.startDate, input.endDate, snapshot),
