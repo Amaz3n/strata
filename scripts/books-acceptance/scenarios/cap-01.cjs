@@ -8,7 +8,7 @@ const { jobOrg, createBill, editBill, incrementalJob, projectionJob, glId } = re
 
 // Counts every PostgREST request the projector makes while a measurement is
 // open: rows returned by reads, and calls per RPC.
-const meter = { on: false, requests: 0, rows: 0, rpc: {} }
+const meter = { on: false, requests: 0, rows: 0, rpc: {}, tables: {} }
 const realFetch = globalThis.fetch
 globalThis.fetch = async (input, init) => {
   const response = await realFetch(input, init)
@@ -20,14 +20,19 @@ globalThis.fetch = async (input, init) => {
   if (rpc) meter.rpc[rpc[1]] = (meter.rpc[rpc[1]] ?? 0) + 1
   else if ((init?.method ?? "GET") === "GET") {
     const body = await response.clone().json().catch(() => null)
-    meter.rows += Array.isArray(body) ? body.length : body ? 1 : 0
+    const count = Array.isArray(body) ? body.length : body ? 1 : 0
+    const table = /\/rest\/v1\/([a-z0-9_]+)/.exec(url)?.[1] ?? "?"
+    meter.rows += count
+    meter.tables[table] = (meter.tables[table] ?? 0) + count
   }
   return response
 }
 async function metered(work) {
-  Object.assign(meter, { on: true, requests: 0, rows: 0, rpc: {} })
+  Object.assign(meter, { on: true, requests: 0, rows: 0, rpc: {}, tables: {} })
   try { await work() } finally { meter.on = false }
-  return { requests: meter.requests, rows: meter.rows, projections: meter.rpc.project_books_fact_and_journal_atomic ?? 0, receipts: meter.rpc.record_books_projection_receipt ?? 0 }
+  // Tables that returned rows, largest first: where a run's reads went.
+  const tables = Object.fromEntries(Object.entries(meter.tables).filter(([, rows]) => rows > 0).sort((a, b) => b[1] - a[1]))
+  return { requests: meter.requests, rows: meter.rows, projections: meter.rpc.project_books_fact_and_journal_atomic ?? 0, receipts: meter.rpc.record_books_projection_receipt ?? 0, tables }
 }
 
 // One bill made through the product, then cloned (header, line, job cost) to the
@@ -200,6 +205,78 @@ create trigger ${trigger} before insert on public.accounting_facts for each row 
   return { orgId: org.orgId }
 }
 
+// The month-end review reads the chart, the period and each payable document once
+// (the AP subledger it proves), never the journal history: ledger totals, job
+// cost and clearing positions are summed in the database.
+async function closeReviewReads(kit, expected, check) {
+  const input = expected.inputs
+  const reviewOf = async (bills) => {
+    const { org } = await volumeOrg(kit, `CAP-01 close review ${bills}`, { ...input, bills })
+    await incrementalJob(kit, org)
+    const { runBooksCloseChecklist } = app("books/period-close")
+    let checklist = null
+    const reads = await metered(async () => { checklist = await kit.as(org.owner, () => runBooksCloseChecklist(org.periods["2026-07"].periodId)) })
+    const tieOut = (code) => checklist.checks.find((item) => item.code === code)?.status
+    return { reads, apControl: tieOut("ap_control"), jobCostControl: tieOut("job_cost_control") }
+  }
+  const small = await reviewOf(input.smallBills)
+  const large = await reviewOf(input.largeBills)
+  check.equal("the close review reads about the same at ten times the volume, and its tie-outs pass at both", expected.expected, {
+    small: { apControl: small.apControl, jobCostControl: small.jobCostControl },
+    large: { apControl: large.apControl, jobCostControl: large.jobCostControl },
+    journalHistoryRows: (large.reads.tables.journal_lines ?? 0) + (large.reads.tables.journal_entries ?? 0) + (large.reads.tables.job_cost_entries ?? 0),
+    billsReadOnce: large.reads.tables.vendor_bills === input.largeBills,
+    rowsGrowWithinAllowance: large.reads.rows - small.reads.rows <= input.largeBills - input.smallBills + input.rowAllowance,
+  })
+  return { small: small.reads, large: large.reads }
+}
+
+// The narrowed proof agrees with the full rebuild drill on everything the drill
+// can see, finds what it cannot (a source never posted, a source changed behind
+// its fact), and over ten chosen bills reads only those bills.
+async function narrowedProof(kit, expected, check) {
+  const input = expected.inputs
+  const { org } = await volumeOrg(kit, "CAP-01 narrowed proof", input)
+  await incrementalJob(kit, org)
+  const { q } = kit
+  const billIds = kit.rows(`select id from public.vendor_bills where org_id = ${q(org.orgId)} order by id`).map((row) => row.id)
+  const [tampered, orphaned, redated] = billIds
+  const label = { [tampered]: "A", [orphaned]: "B", [redated]: "D" }
+  const entryOf = (billId) => kit.rows(`select id from public.journal_entries where org_id = ${q(org.orgId)} and source_id = ${q(billId)} and status = 'posted'`)[0].id
+  // Damage written straight to the database, as a defect or a bypass would: one
+  // journal's amounts, a stray operational journal with no fact, a bill re-dated
+  // without its timestamp moving. Replica mode skips the guards that refuse it.
+  const changedSince = kit.rows("select clock_timestamp() at")[0].at
+  kit.sql(`begin; set local session_replication_role = replica;
+update public.journal_lines set debit_cents = debit_cents + case when debit_cents > 0 then 1 else 0 end, credit_cents = credit_cents + case when credit_cents > 0 then 1 else 0 end where entry_id = ${q(entryOf(tampered))};
+create temp table cap_orphan on commit drop as select gen_random_uuid() id;
+insert into public.journal_entries select (jsonb_populate_record(null::public.journal_entries, to_jsonb(e) || jsonb_build_object('id', (select id from cap_orphan), 'fact_id', null, 'posting_key', 'cap-orphan:' || e.id, 'source_id', ${q(orphaned)}, 'created_at', clock_timestamp()))).* from public.journal_entries e where e.id = ${q(entryOf(orphaned))};
+insert into public.journal_lines select (jsonb_populate_record(null::public.journal_lines, to_jsonb(l) || jsonb_build_object('id', gen_random_uuid(), 'entry_id', (select id from cap_orphan)))).* from public.journal_lines l where l.entry_id = ${q(entryOf(orphaned))};
+update public.vendor_bills set bill_date = '2026-07-20' where id = ${q(redated)};
+commit;`, "supabase_admin")
+  const neverPosted = await createBill(kit, org, input.billDate, input.cents)
+  label[neverPosted] = "C"
+  const factSource = new Map(kit.rows(`select id, source_id from public.accounting_facts where org_id = ${q(org.orgId)}`).map((row) => [row.id, row.source_id]))
+  const entrySource = new Map(kit.rows(`select id, source_id from public.journal_entries where org_id = ${q(org.orgId)}`).map((row) => [row.id, row.source_id]))
+  const named = (differences) => [...new Set(differences.map((item) => `${item.type}:${label[item.source_id ?? factSource.get(item.fact_id) ?? entrySource.get(item.entry_id)] ?? "other"}`))].sort()
+  const drill = await kit.service(() => app("books/rebuild").runLedgerRebuildDrillForOrg(org.orgId))
+  const { proveProjectedSources } = app("books/projector")
+  const allKeys = [...billIds, neverPosted].map((id) => `vendor_bill:${id}`)
+  const everything = await kit.service(() => proveProjectedSources(org.orgId, { sourceKeys: allKeys }))
+  const tenKeys = [tampered, ...billIds.slice(-9)].map((id) => `vendor_bill:${id}`)
+  let scoped = null
+  const scopedReads = await metered(async () => { scoped = await kit.service(() => proveProjectedSources(org.orgId, { sourceKeys: tenKeys })) })
+  let recent = null
+  const recentReads = await metered(async () => { recent = await kit.service(() => proveProjectedSources(org.orgId, { changedSince })) })
+  check.equal("the narrowed proof matches the full drill and finds what the drill cannot; scoped proofs read only their sources", expected.expected, {
+    drill: named(drill.differences),
+    proofOverAll: named(everything.differences),
+    proofOverTen: { found: named(scoped.differences), sourcesChecked: scoped.sourcesChecked, rowsWithinBudget: scopedReads.rows <= input.scopedRowBudget },
+    proofSinceDamage: { found: named(recent.differences), rowsWithinBudget: recentReads.rows <= input.scopedRowBudget },
+  })
+  return { orgId: org.orgId, scopedReads, recentReads }
+}
+
 module.exports = {
   id: "CAP-01",
   subcases: {
@@ -210,5 +287,7 @@ module.exports = {
     "nightly-pass": nightlyPass,
     "time-budget": timeBudget,
     "failed-source-retries": failedSourceRetries,
+    "close-review-reads": closeReviewReads,
+    "narrowed-proof": narrowedProof,
   },
 }

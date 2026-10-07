@@ -3609,7 +3609,7 @@ test("a source that leaves the projectable set is retired, and retirement is ide
   // Retirement facts produce no draft; the rebuild drill must recognize that
   // rather than reporting an unsupported fact kind for every retired source.
   const rebuild = fs.readFileSync(
-    path.join(__dirname, "../lib/services/books/rebuild.ts"),
+    path.join(__dirname, "../lib/services/books/fact-journal-check.ts"),
     "utf8",
   );
   assert.match(rebuild, /isRetiredFactKind\(fact\.fact_kind\)/);

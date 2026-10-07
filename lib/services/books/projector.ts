@@ -16,6 +16,7 @@ import { inventoryCostAccount } from "@/lib/services/books/inventory-rules";
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { chunk } from "@/lib/utils";
+import { checkFactJournals, factCheckSchema, FACT_CHECK_COLUMNS, type LedgerDifference } from "@/lib/services/books/fact-journal-check";
 import { PROJECTION_RUN_SOURCE_TYPE } from "@/lib/services/books/reconciliation-rules";
 import {
   BILLED_INVOICE_STATUSES,
@@ -228,15 +229,37 @@ type ByFamily<T> = {
 };
 
 /**
- * Where a family's read starts, at a timestamp or strictly after it, plus sources
- * that failed to post and are read again whatever their timestamp.
+ * What a family's read selects: rows from a timestamp (or strictly after it) plus
+ * sources that failed to post and are read again whatever their timestamp; or
+ * exactly the listed ids; or, when null, every row.
  */
-type ReadFrom = { at: string; inclusive: boolean; retryIds: string[] } | null;
+type ReadFrom = { at: string; inclusive: boolean; retryIds: string[] } | { ids: string[] } | null;
 
 /** The PostgREST `or` filter for a family's read. */
 function readFromFilter(from: NonNullable<ReadFrom>) {
+  if ("ids" in from) return `id.in.(${from.ids.join(",")})`;
   const bound = `updated_at.${from.inclusive ? "gte" : "gt"}."${from.at}"`;
   return from.retryIds.length ? `${bound},id.in.(${from.retryIds.join(",")})` : bound;
+}
+
+/**
+ * A run for chosen sources reads exactly those rows. A family asked for more ids
+ * than one filter carries is read whole, and the run still evaluates only the
+ * chosen sources.
+ */
+function watermarksForSources(sourceKeys: string[]): ProjectionWatermarks {
+  const ids: ByFamily<string[]> = { bills: [], invoices: [], payments: [], feeCharges: [], expenses: [], reversals: [], adjustments: [], labor: [] };
+  for (const key of sourceKeys) {
+    const separator = key.indexOf(":");
+    const id = z.string().uuid().safeParse(key.slice(separator + 1));
+    if (!id.success) continue;
+    for (const family of RETRY_FAMILIES[key.slice(0, separator)] ?? []) ids[family].push(id.data);
+  }
+  const read = (family: string[]): ReadFrom => (family.length > PROJECTION_ID_CHUNK ? null : { ids: family });
+  return {
+    bills: read(ids.bills), invoices: read(ids.invoices), payments: read(ids.payments), feeCharges: read(ids.feeCharges),
+    expenses: read(ids.expenses), reversals: read(ids.reversals), adjustments: read(ids.adjustments), labor: read(ids.labor),
+  };
 }
 
 /** A failed source's finding names it by projection source type; this is the table family it is read from. */
@@ -244,6 +267,7 @@ const RETRY_FAMILIES: Record<string, Array<keyof ByFamily<unknown>>> = {
   vendor_bill: ["bills"],
   invoice: ["invoices"],
   retainage_release: ["bills", "invoices"],
+  payment: ["payments"],
   bill_payment: ["payments"],
   invoice_payment: ["payments"],
   customer_deposit_receipt: ["payments"],
@@ -706,11 +730,17 @@ async function projectionCandidates(
   // lives in the `retainage` table, never on the invoice row; a change to it
   // touches its invoices, so the invoices selected here are the ones it affects.
   const invoiceIds = invoices.map((row) => String(row.id));
-  const [costLinesByBill, costLinesByExpense, retainageByInvoice, releaseByInvoice] = await Promise.all([
+  // A receipt or reversal is a customer deposit when its invoice is a deposit
+  // request, whether or not that invoice changed in this run's window.
+  const referencedInvoiceIds = [...payments, ...reversals].map((row) => row.invoice_id).filter((id): id is string => typeof id === "string");
+  const [costLinesByBill, costLinesByExpense, retainageByInvoice, releaseByInvoice, referencedDeposits] = await Promise.all([
     loadBillCostLines(orgId, bills.map((row) => String(row.id))),
     loadExpenseCostLines(orgId, expenses.map((row) => String(row.id))),
     loadInvoiceRetainageCents({ supabase: service, orgId, invoiceIds }),
     loadRetainageReleaseInvoiceCents({ supabase: service, orgId, invoiceIds }),
+    collectForIds(referencedInvoiceIds, (slice, from, to) => service.from("invoices").select("id")
+      .eq("org_id", orgId).eq("metadata->>invoice_kind", "earnest_deposit").in("id", slice)
+      .order("id", { ascending: true }).range(from, to), "deposit invoices"),
   ]);
 
   const candidates: ProjectionCandidate[] = [];
@@ -727,15 +757,16 @@ async function projectionCandidates(
   };
   const touchedSourceKeys = new Set<string>();
   const liveSourceKeys = new Set<string>();
-  const depositInvoiceIds = new Set(
-    invoices
+  const depositInvoiceIds = new Set([
+    ...invoices
       .filter(
         (row) =>
           (row.metadata as { invoice_kind?: unknown } | null)?.invoice_kind ===
           "earnest_deposit",
       )
       .map((row) => String(row.id)),
-  );
+    ...referencedDeposits.map((row) => String(row.id)),
+  ]);
 
   // Only a zero-amount source is skipped. A negative one is a credit — a vendor
   // credit, an expense credit — that the cost subledger already carries signed,
@@ -1222,8 +1253,10 @@ const factRowSchema = z.object({
   source_version: z.number().int(),
 });
 
+const priorFactSchema = factCheckSchema.extend({ payload_hash: z.string() });
+
 type PriorProjection = {
-  fact: z.infer<typeof factRowSchema> | null;
+  fact: z.infer<typeof priorFactSchema> | null;
   /** The posted journal of `fact`, if it still stands. */
   journalId: string | null;
   receipt: { factId: string; observedAt: string } | null;
@@ -1240,7 +1273,7 @@ async function loadPriorProjections(orgId: string, candidates: ProjectionCandida
   const sourceIds = candidates.map((candidate) => candidate.sourceId);
   const [facts, receipts] = await Promise.all([
     collectForIds(sourceIds, (slice, from, to) => service.from("accounting_facts")
-      .select("id, source_type, source_id, payload_hash, payload, accounting_date, source_version")
+      .select(`${FACT_CHECK_COLUMNS}, payload_hash`)
       .eq("org_id", orgId).in("source_type", sourceTypes).in("source_id", slice)
       .order("id", { ascending: true }).range(from, to), "accounting facts"),
     collectForIds(sourceIds, (slice, from, to) => service.from("books_projection_receipts")
@@ -1248,10 +1281,10 @@ async function loadPriorProjections(orgId: string, candidates: ProjectionCandida
       .eq("org_id", orgId).in("source_type", sourceTypes).in("source_id", slice)
       .order("id", { ascending: true }).range(from, to), "projection receipts"),
   ]);
-  const latest = new Map<string, z.infer<typeof factRowSchema>>();
+  const latest = new Map<string, z.infer<typeof priorFactSchema>>();
   for (const row of facts) {
-    const key = factSourceKey(String(row.source_type), String(row.source_id));
-    const fact = factRowSchema.parse(row);
+    const fact = priorFactSchema.parse(row);
+    const key = factSourceKey(fact.source_type, fact.source_id);
     const current = latest.get(key);
     if (!current || fact.source_version > current.source_version) latest.set(key, fact);
   }
@@ -1278,6 +1311,32 @@ function isAtOrAfter(later: string, earlier: string) {
  * concurrency, prior-entry reversal, immutable fact insertion and replacement
  * posting; a worker crash can no longer expose a half-revised official ledger.
  */
+/**
+ * What the ledger should hold for a source given its latest fact: the payload
+ * (legacy facts keep the shape they were posted with), its revision identity and
+ * the journal draft. Pure, so posting and the narrowed proof decide alike.
+ */
+function prepareCandidate(orgId: string, candidate: ProjectionCandidate, policyVersion: number, projectionVersion: number, existing: z.infer<typeof factRowSchema> | null) {
+  let payload = preserveLegacyLaborPayload(candidate.sourceType, candidate.accountingDate, candidate.payload, existing);
+  payload = preserveLegacyDimensionPayload(candidate.sourceType, candidate.accountingDate, preserveLegacySettlementPayload(candidate.sourceType, candidate.accountingDate, preserveLegacyInvoiceIncomePayload(candidate.sourceType, candidate.accountingDate, payload, existing), existing), existing);
+  const { sourceVersion, payloadHash, idempotencyKey } = factTransitionIdentity({
+    orgId, sourceType: candidate.sourceType, sourceId: candidate.sourceId,
+    accountingDate: candidate.accountingDate,
+    payload: hashableFactPayload(candidate.sourceType, payload), previous: existing,
+  });
+  const journal = draftFromFact({
+    sourceType: candidate.sourceType,
+    sourceId: candidate.sourceId,
+    accountingDate: candidate.accountingDate,
+    payload,
+    sourceVersion,
+    projectionVersion,
+    policyVersion,
+  });
+  if (!journal) throw new Error(`No posting rule covers ${candidate.sourceType}`);
+  return { sourceVersion, payloadHash, idempotencyKey, payload, draft: journal };
+}
+
 async function projectCandidateAtomically(
   orgId: string,
   candidate: ProjectionCandidate,
@@ -1290,23 +1349,8 @@ async function projectCandidateAtomically(
   | ({ kind: "projected" } & Awaited<ReturnType<typeof projectBooksFactAndJournalForService>>)
 > {
   const existing = prior.fact;
-  candidate = {...candidate,payload:preserveLegacyLaborPayload(candidate.sourceType,candidate.accountingDate,candidate.payload,existing)};
-  candidate = { ...candidate, payload: preserveLegacyDimensionPayload(candidate.sourceType, candidate.accountingDate, preserveLegacySettlementPayload(candidate.sourceType, candidate.accountingDate, preserveLegacyInvoiceIncomePayload(candidate.sourceType, candidate.accountingDate, candidate.payload, existing), existing), existing) };
-  const { sourceVersion, payloadHash, idempotencyKey } = factTransitionIdentity({
-    orgId, sourceType: candidate.sourceType, sourceId: candidate.sourceId,
-    accountingDate: candidate.accountingDate,
-    payload: hashableFactPayload(candidate.sourceType, candidate.payload), previous: existing,
-  });
-  const draft = draftFromFact({
-    sourceType: candidate.sourceType,
-    sourceId: candidate.sourceId,
-    accountingDate: candidate.accountingDate,
-    payload: candidate.payload,
-    sourceVersion,
-    projectionVersion,
-    policyVersion,
-  });
-  if (!draft) throw new Error(`No posting rule covers ${candidate.sourceType}`);
+  const { sourceVersion, payloadHash, idempotencyKey, payload, draft } = prepareCandidate(orgId, candidate, policyVersion, projectionVersion, existing);
+  candidate = { ...candidate, payload };
   // The same economics with its journal still standing is exactly what the RPC
   // would leave alone; only the receipt may need to follow the newer revision.
   if (existing && payloadHash === existing.payload_hash && prior.journalId) {
@@ -1545,7 +1589,7 @@ export async function projectJournal(
   // When this run began reading: the next run's late-commit window ends here.
   const readStartedAt = new Date().toISOString();
   const everything: ProjectionWatermarks = { bills: null, invoices: null, payments: null, feeCharges: null, expenses: null, reversals: null, adjustments: null, labor: null };
-  const watermarks = options.full || options.sourceKeys ? everything : await resolveWatermarks(orgId);
+  const watermarks = options.full ? everything : options.sourceKeys ? watermarksForSources(options.sourceKeys) : await resolveWatermarks(orgId);
   const { candidates, failures: candidateFailures, retirementSourceKeys, liveSourceKeys, observed } =
     await projectionCandidates(orgId, watermarks);
 
@@ -1643,6 +1687,100 @@ export async function projectJournal(
     if (progressError) throw new Error(`Failed to record projection progress: ${progressError.message}`);
   }
   return { projected, skipped, revised, retired, failures, evaluatedSourceKeys: [...evaluatedSourceKeys], fullScanCompleted: options.full === true && !requestedKeys };
+}
+
+/**
+ * A read-only proof that the ledger holds what chosen sources say it should,
+ * without reading the rest of the ledger.
+ *
+ * For each source it rebuilds the fact the projector would write and checks: a
+ * fact exists (`missing_fact`), it matches the source now (`stale_fact`), its
+ * journal stands (`missing_journal`) and equals the journal rebuilt from the fact
+ * (`journal_divergence`, by the same check as the full rebuild drill). It also
+ * finds journals that should not stand: one posted with no fact behind it
+ * (`unexpected_journal`), one from a superseded fact (`superseded_journal`), and
+ * one left behind by a source that no longer qualifies (`retained_journal`).
+ *
+ * Scope is either chosen source keys, or every source whose row, fact or journal
+ * changed since a time — the nightly proof between full drills.
+ */
+export async function proveProjectedSources(orgId: string, scope: { sourceKeys: string[] } | { changedSince: string }) {
+  const service = createServiceSupabaseClient();
+  const { data: settings, error } = await service.from("books_settings").select("workspace_enabled, arc_ledger_mode, active_policy_version").eq("org_id", orgId).single();
+  if (error) throw new Error(`Failed to load Books settings: ${error.message}`);
+  if (!settings.workspace_enabled || settings.arc_ledger_mode === "disabled") return { sourcesChecked: 0, differences: [] as LedgerDifference[] };
+  const policyVersion = Number(settings.active_policy_version);
+  const projectionVersion = await resolveProjectionVersion(orgId);
+
+  let watermarks: ProjectionWatermarks;
+  let scopeKeys: Set<string>;
+  if ("sourceKeys" in scope) {
+    scopeKeys = new Set(scope.sourceKeys);
+    watermarks = watermarksForSources(scope.sourceKeys);
+  } else {
+    // A fact or journal can change without its source row: a late projection, a
+    // reversal. Those sources are read by id beside every row changed since.
+    const [facts, entries] = await Promise.all([
+      collectByKey((afterId) => {
+        let query = service.from("accounting_facts").select("id, source_type, source_id").eq("org_id", orgId).gte("created_at", scope.changedSince);
+        if (afterId) query = query.gt("id", afterId);
+        return query.order("id", { ascending: true }).limit(PROJECTION_PAGE_SIZE);
+      }, "changed facts"),
+      // Journals are immutable; a reversal is a new entry pointing at the one it reverses.
+      collectByKey((afterId) => {
+        let query = service.from("journal_entries").select("id, source_type, source_id, reversal_of_entry_id").eq("org_id", orgId).gte("created_at", scope.changedSince);
+        if (afterId) query = query.gt("id", afterId);
+        return query.order("id", { ascending: true }).limit(PROJECTION_PAGE_SIZE);
+      }, "new journals"),
+    ]);
+    const reversed = await collectForIds(entries.filter((row) => !row.source_id && row.reversal_of_entry_id).map((row) => String(row.reversal_of_entry_id)), (slice, from, to) => service.from("journal_entries")
+      .select("id, source_type, source_id").eq("org_id", orgId).not("source_id", "is", null).in("id", slice).order("id", { ascending: true }).range(from, to), "reversed journals");
+    scopeKeys = new Set([...facts, ...entries.filter((row) => row.source_id), ...reversed].map((row) => factSourceKey(String(row.source_type), String(row.source_id))));
+    const byId = watermarksForSources([...scopeKeys]);
+    const since = (family: ReadFrom): ReadFrom => (family && "ids" in family ? { at: scope.changedSince, inclusive: true, retryIds: family.ids } : null);
+    watermarks = {
+      bills: since(byId.bills), invoices: since(byId.invoices), payments: since(byId.payments), feeCharges: since(byId.feeCharges),
+      expenses: since(byId.expenses), reversals: since(byId.reversals), adjustments: since(byId.adjustments), labor: since(byId.labor),
+    };
+  }
+
+  const { candidates, failures, retirementSourceKeys } = await projectionCandidates(orgId, watermarks);
+  const inScope = (key: string) => !("sourceKeys" in scope) || scopeKeys.has(key);
+  const selected = candidates.filter((candidate) => inScope(factSourceKey(candidate.sourceType, candidate.sourceId)));
+  const liveKeys = new Set(selected.map((candidate) => factSourceKey(candidate.sourceType, candidate.sourceId)));
+  if (!("sourceKeys" in scope)) for (const key of retirementSourceKeys) scopeKeys.add(key);
+  for (const candidate of selected) scopeKeys.add(factSourceKey(candidate.sourceType, candidate.sourceId));
+
+  const differences: LedgerDifference[] = failures
+    .filter((failure) => inScope(factSourceKey(failure.sourceType, failure.sourceId)))
+    .map((failure) => ({ type: "unprojectable", source_type: failure.sourceType, source_id: failure.sourceId, message: failure.error }));
+  const priors = await loadPriorProjections(orgId, selected);
+  const standing: z.infer<typeof factCheckSchema>[] = [];
+  for (const candidate of selected) {
+    const prior = priors.get(factSourceKey(candidate.sourceType, candidate.sourceId));
+    const where = { source_type: candidate.sourceType, source_id: candidate.sourceId };
+    if (!prior?.fact) { differences.push({ type: "missing_fact", ...where }); continue; }
+    if (prepareCandidate(orgId, candidate, policyVersion, projectionVersion, prior.fact).payloadHash !== prior.fact.payload_hash) { differences.push({ type: "stale_fact", fact_id: prior.fact.id, ...where }); continue; }
+    if (!prior.journalId) { differences.push({ type: "missing_journal", fact_id: prior.fact.id, ...where }); continue; }
+    standing.push(prior.fact);
+  }
+  for (const slice of chunk(standing, PROJECTION_ID_CHUNK)) differences.push(...(await checkFactJournals(orgId, slice, projectionVersion)).differences);
+
+  // Every posted journal that names a source in scope must be its latest fact's.
+  const latestFact = new Map([...priors].map(([key, prior]) => [key, prior.fact?.id ?? null]));
+  const scopedIds = [...new Set([...scopeKeys].map((key) => key.slice(key.indexOf(":") + 1)))];
+  const posted = await collectForIds(scopedIds, (slice, from, to) => service.from("journal_entries")
+    .select("id, source_type, source_id, fact_id, entry_kind").eq("org_id", orgId).eq("status", "posted").in("source_id", slice)
+    .order("id", { ascending: true }).range(from, to), "posted journals in scope");
+  for (const entry of posted) {
+    const key = factSourceKey(String(entry.source_type), String(entry.source_id));
+    if (!scopeKeys.has(key)) continue;
+    const where = { entry_id: entry.id, source_type: entry.source_type, source_id: entry.source_id };
+    if (!entry.fact_id) { if (entry.entry_kind === "operational") differences.push({ type: "unexpected_journal", ...where }); continue; }
+    if (!liveKeys.has(key)) differences.push({ type: "retained_journal", ...where });
+    else if (latestFact.get(key) !== entry.fact_id) differences.push({ type: "superseded_journal", ...where });
+  }
+  return { sourcesChecked: scopeKeys.size, differences };
 }
 
 /**

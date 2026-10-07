@@ -76,12 +76,15 @@ function createKit(stack) {
   // An isolated stack has no email provider, so notification delivery is the
   // one job family allowed to fail; it is reported, not hidden.
   const NO_PROVIDER_JOBS = ["deliver_notification"]
-  // The queue is global and processes 50 jobs a pass; notifications the stack can
-  // never deliver keep retrying ahead of an org's own jobs, so a busy stack (one
-  // that has run CAP-01's every-company pass) needs dozens of passes to reach them.
   async function drainOutbox(orgId, attempts = 60) {
     const { NextRequest } = require("next/server")
     const { POST } = require("../../app/api/jobs/process-outbox/route")
+    // The queue claims oldest-created first, so notifications this stack can never
+    // deliver would retry at the head of the queue and starve every org's own jobs.
+    // Once a delivery has failed here, it is retired rather than retried; a burst of
+    // fresh ones (CAP-01 notifies every company) still takes a pass each per 50.
+    sql(`update public.outbox set status = 'failed', last_error = coalesce(last_error, '') || ' (no email provider on the acceptance stack)'
+      where status = 'pending' and retry_count > 0 and job_type in (${NO_PROVIDER_JOBS.map(q).join(",")})`)
     const relevant = `org_id=${q(orgId)} and run_at <= now() and job_type not in (${NO_PROVIDER_JOBS.map(q).join(",")})`
     for (let attempt = 0; attempt < attempts; attempt++) {
       if (!rows(`select id from public.outbox where ${relevant} and status in ('pending','processing')`).length) break

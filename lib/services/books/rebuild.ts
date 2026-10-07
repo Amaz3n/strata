@@ -5,10 +5,10 @@ import { z } from "zod"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access"
-import { draftFromFact, isRetiredFactKind } from "@/lib/services/books/fact-drafts"
+import { checkFactJournals, factCheckSchema, FACT_CHECK_COLUMNS, type LedgerDifference } from "@/lib/services/books/fact-journal-check"
 import { booksDigest } from "@/lib/services/books/hash"
-import { resolveProjectionVersion } from "@/lib/services/books/projector"
-import type { JournalEntryDraft } from "@/lib/services/books/types"
+import { proveProjectedSources, resolveProjectionVersion } from "@/lib/services/books/projector"
+import { collectBooksRows } from "@/lib/services/books/paging"
 import { requireOrgContext } from "@/lib/services/context"
 
 /**
@@ -20,89 +20,26 @@ import { requireOrgContext } from "@/lib/services/context"
 const ORPHAN_SCAN_PAGE_SIZE = 500
 const ORPHAN_SCAN_LIMIT = 5000
 
-const factSchema = z.object({
-  id: z.string().uuid(),
-  source_type: z.string(),
-  source_id: z.string().uuid(),
-  source_version: z.number().int(),
-  fact_kind: z.string(),
-  accounting_date: z.string(),
-  policy_version: z.number().int(),
-  payload: z.record(z.unknown()),
-})
-
-function normalizedDraft(draft: JournalEntryDraft) {
-  return {
-    entryDate: draft.entryDate,
-    entryKind: draft.entryKind,
-    memo: draft.memo,
-    postingKey: draft.postingKey,
-    policyVersion: draft.policyVersion,
-    lines: draft.lines.map((line) => ({ accountCode: line.accountCode, projectId: line.projectId ?? null, companyId: line.companyId ?? null, debitCents: line.debitCents, creditCents: line.creditCents, description: line.description ?? null, dimensions: line.dimensions ?? {} })),
-  }
-}
-
 export async function runLedgerRebuildDrillForOrg(orgId: string) {
   const service = createServiceSupabaseClient()
   const projectionVersion = await resolveProjectionVersion(orgId)
   const { data: run, error: runError } = await service.from("ledger_rebuild_runs").insert({ org_id: orgId, status: "running" }).select("id").single()
   if (runError) throw new Error(`Failed to start ledger rebuild drill: ${runError.message}`)
   const runId = z.object({ id: z.string().uuid() }).parse(run).id
-  const differences: Array<Record<string, unknown>> = []
+  const differences: LedgerDifference[] = []
   let sourceFactCount = 0
   let rebuiltEntryCount = 0
   const rebuilt: unknown[] = []
   try {
     for (let from = 0; ; from += 250) {
-      const { data, error } = await service.from("accounting_facts").select("id, source_type, source_id, source_version, fact_kind, accounting_date, policy_version, payload").eq("org_id", orgId).order("created_at").order("id").range(from, from + 249)
+      const { data, error } = await service.from("accounting_facts").select(FACT_CHECK_COLUMNS).eq("org_id", orgId).order("created_at").order("id").range(from, from + 249)
       if (error) throw new Error(error.message)
-      const page = z.array(factSchema).parse(data ?? [])
+      const page = z.array(factCheckSchema).parse(data ?? [])
       sourceFactCount += page.length
-      // A retirement fact records that a source left the projectable set. Its
-      // entry was already reversed, so producing no draft is the right answer,
-      // not an unsupported fact kind.
-      const facts = page.filter((fact) => !isRetiredFactKind(fact.fact_kind))
-      const ids = facts.map((fact) => fact.id)
-      const { data: entries, error: entryError } = ids.length > 0
-        ? await service.from("journal_entries").select("id, fact_id, entry_date, entry_kind, memo, posting_key, projection_version, policy_version, lines:journal_lines!journal_lines_entry_owner_fk(line_no, project_id, company_id, debit_cents, credit_cents, description, dimensions, account:gl_accounts!journal_lines_account_owner_fk(code))").eq("org_id", orgId).in("fact_id", ids).in("status", ["posted", "reversed"])
-        : { data: [], error: null }
-      if (entryError) throw new Error(entryError.message)
-      const entryByFact = new Map((entries ?? []).map((entry) => [entry.fact_id, entry]))
-      for (const fact of facts) {
-        let expected: JournalEntryDraft | null = null
-        try {
-          expected = draftFromFact({
-            sourceType: fact.source_type,
-            sourceId: fact.source_id,
-            accountingDate: fact.accounting_date,
-            payload: fact.payload,
-            sourceVersion: fact.source_version,
-            projectionVersion: Number(entryByFact.get(fact.id)?.projection_version ?? projectionVersion),
-            policyVersion: fact.policy_version,
-          })
-        } catch (error) {
-          differences.push({ fact_id: fact.id, type: "invalid_fact", message: error instanceof Error ? error.message : String(error) })
-          continue
-        }
-        if (!expected) {
-          differences.push({ fact_id: fact.id, type: "unsupported_fact_kind", source_type: fact.source_type })
-          continue
-        }
-        const actual = entryByFact.get(fact.id)
-        if (!actual) {
-          differences.push({ fact_id: fact.id, type: "missing_journal" })
-          continue
-        }
-        const actualLines = (actual.lines ?? []).sort((left, right) => left.line_no - right.line_no).map((line) => {
-          const account = Array.isArray(line.account) ? line.account[0] : line.account
-          return { accountCode: account?.code, projectId: line.project_id ?? null, companyId: line.company_id ?? null, debitCents: Number(line.debit_cents), creditCents: Number(line.credit_cents), description: line.description ?? null, dimensions: line.dimensions ?? {} }
-        })
-        const actualNormalized = { entryDate: actual.entry_date, entryKind: actual.entry_kind, memo: actual.memo, postingKey: actual.posting_key, policyVersion: actual.policy_version, lines: actualLines }
-        const expectedNormalized = normalizedDraft(expected)
-        rebuilt.push(expectedNormalized)
-        rebuiltEntryCount += 1
-        if (booksDigest(actualNormalized) !== booksDigest(expectedNormalized)) differences.push({ fact_id: fact.id, type: "journal_divergence", expected: expectedNormalized, actual: actualNormalized })
-      }
+      const checked = await checkFactJournals(orgId, page, projectionVersion)
+      differences.push(...checked.differences)
+      rebuilt.push(...checked.rebuilt)
+      rebuiltEntryCount += checked.rebuilt.length
       if (page.length < 250) break
     }
     // The drill also has to look the other way. Iterating facts alone can only
@@ -172,14 +109,65 @@ export async function requestLedgerRebuildDrill(orgId?: string) {
   return runLedgerRebuildDrillForOrg(context.orgId)
 }
 
-export async function runScheduledLedgerRebuildDrills() {
+/** A full drill at least this often; nightly runs between prove only what changed. */
+const FULL_DRILL_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000
+
+/**
+ * The narrowed proof of every source changed since `since`, recorded as a run.
+ * Damage written around the application's timestamps is the full drill's job.
+ */
+export async function runLedgerProofSinceForOrg(orgId: string, since: string) {
+  const service = createServiceSupabaseClient()
+  const { data: run, error: runError } = await service.from("ledger_rebuild_runs").insert({ org_id: orgId, status: "running", scope: "changed_since", changed_since: since }).select("id").single()
+  if (runError) throw new Error(`Failed to start ledger proof: ${runError.message}`)
+  const runId = z.object({ id: z.string().uuid() }).parse(run).id
+  try {
+    const proof = await proveProjectedSources(orgId, { changedSince: since })
+    const status = proof.differences.length === 0 ? "passed" : "failed"
+    const { error } = await service.from("ledger_rebuild_runs").update({ status, source_fact_count: proof.sourcesChecked, rebuilt_entry_count: 0, differences: proof.differences.slice(0, 200), completed_at: new Date().toISOString() }).eq("org_id", orgId).eq("id", runId)
+    if (error) throw new Error(error.message)
+    return { runId, scope: "changed_since" as const, status, differences: proof.differences }
+  } catch (error) {
+    await service.from("ledger_rebuild_runs").update({ status: "failed", differences: [{ type: "run_error", message: error instanceof Error ? error.message : String(error) }], completed_at: new Date().toISOString() }).eq("org_id", orgId).eq("id", runId)
+    throw error
+  }
+}
+
+/**
+ * The nightly ledger proof for every Books company, least recently proven first,
+ * until `deadline`: the full rebuild drill when the last one is a week old, and
+ * otherwise the narrowed proof of what changed since the last proof began. A
+ * company not reached is reported, never counted as proven.
+ */
+export async function runScheduledLedgerRebuildDrills(options: { deadline?: number } = {}) {
   const service = createServiceSupabaseClient()
   // Shadow-mode organizations are drilled too. Restricting this to parallel and
   // official meant the determinism check never ran for anyone during the phase
   // where the ledger is least trusted and most likely to be wrong.
-  const { data, error } = await service.from("books_settings").select("org_id").eq("workspace_enabled", true).in("arc_ledger_mode", ["shadow", "parallel", "official"]).order("org_id")
+  const [{ data, error }, latestRuns] = await Promise.all([
+    service.from("books_settings").select("org_id").eq("workspace_enabled", true).in("arc_ledger_mode", ["shadow", "parallel", "official"]).order("org_id"),
+    collectBooksRows((from, to) => service.from("ledger_rebuild_runs").select("org_id, scope, started_at")
+      .in("status", ["passed", "failed"]).gte("started_at", new Date(Date.now() - FULL_DRILL_INTERVAL_MS).toISOString())
+      .order("started_at", { ascending: false }).order("id").range(from, to)),
+  ])
   if (error) throw new Error(`Failed to load Books rebuild organizations: ${error.message}`)
+  const lastProof = new Map<string, string>()
+  const lastFull = new Map<string, string>()
+  for (const row of latestRuns) {
+    const orgId = String(row.org_id)
+    if (!lastProof.has(orgId)) lastProof.set(orgId, String(row.started_at))
+    if (row.scope === "full" && !lastFull.has(orgId)) lastFull.set(orgId, String(row.started_at))
+  }
+  const orgIds = (data ?? []).map((row) => String(row.org_id))
+    .sort((left, right) => (lastProof.get(left) ?? "").localeCompare(lastProof.get(right) ?? "") || left.localeCompare(right))
   const results = []
-  for (const row of data ?? []) results.push(await runLedgerRebuildDrillForOrg(row.org_id))
-  return { attempted: data?.length ?? 0, results }
+  const unreached: string[] = []
+  for (const orgId of orgIds) {
+    if (options.deadline !== undefined && Date.now() >= options.deadline) { unreached.push(orgId); continue }
+    const since = lastProof.get(orgId)
+    results.push(lastFull.has(orgId) && since
+      ? await runLedgerProofSinceForOrg(orgId, since)
+      : { ...(await runLedgerRebuildDrillForOrg(orgId)), scope: "full" as const })
+  }
+  return { attempted: orgIds.length, results, unreached }
 }

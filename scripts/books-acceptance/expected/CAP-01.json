@@ -151,6 +151,64 @@
           ]
         }
       }
+    },
+    "close-review-reads": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "cents": 100000,
+        "smallBills": 120,
+        "largeBills": 1200,
+        "rowAllowance": 200
+      },
+      "derivation": "Two companies, identical except for volume: 120 and 1,200 posted July bills. The July close checklist runs for each and its tie-outs pass at both sizes (AP ties to the AP subledger, GL job cost ties to the job-cost subledger). The larger review reads no journal lines, journal entries or job-cost lines (ledger totals, job cost, clearing positions and WIP activity are summed in the database), reads each of its 1,200 payable bills exactly once (the AP and AP-retainage subledger it proves), and otherwise reads at most 200 more rows than the smaller one.",
+      "expected": {
+        "small": {
+          "apControl": "passed",
+          "jobCostControl": "passed"
+        },
+        "large": {
+          "apControl": "passed",
+          "jobCostControl": "passed"
+        },
+        "journalHistoryRows": 0,
+        "billsReadOnce": true,
+        "rowsGrowWithinAllowance": true
+      }
+    },
+    "narrowed-proof": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "cents": 100000,
+        "bills": 1200,
+        "scopedRowBudget": 300
+      },
+      "derivation": "1,200 posted bills, then damage written straight to the database: bill A's journal amounts raised by one cent per side; a copy of bill B's journal posted with no fact behind it; bill D re-dated to July 20 without its updated_at moving. Bill C is then approved through the product and never projected. The full rebuild drill sees A (journal_divergence) and B (unexpected_journal) and cannot see C or D. The narrowed proof over every bill finds the same two plus C (missing_fact) and D (stale_fact). Over ten chosen bills including A it finds only A, checks ten sources and reads at most 300 rows. Over everything changed since the damage it finds C, and B's stray journal (inserted now); A and D bypassed their timestamps, which is what the weekly full drill is for.",
+      "expected": {
+        "drill": [
+          "journal_divergence:A",
+          "unexpected_journal:B"
+        ],
+        "proofOverAll": [
+          "journal_divergence:A",
+          "missing_fact:C",
+          "stale_fact:D",
+          "unexpected_journal:B"
+        ],
+        "proofOverTen": {
+          "found": [
+            "journal_divergence:A"
+          ],
+          "sourcesChecked": 10,
+          "rowsWithinBudget": true
+        },
+        "proofSinceDamage": {
+          "found": [
+            "missing_fact:C",
+            "unexpected_journal:B"
+          ],
+          "rowsWithinBudget": true
+        }
+      }
     }
   }
 }

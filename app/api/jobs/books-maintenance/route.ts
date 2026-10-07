@@ -28,12 +28,13 @@ async function handler(request: NextRequest) {
   // cure. Some of them — a bill edited after its period closed — fail identically
   // on every pass, so retrying is not a fix and a person has to decide.
   const surfaced = await recordProjectionFailures(repair.results, { full: true })
-  const rebuilds = await runScheduledLedgerRebuildDrills()
+  // Proofs share what is left of maxDuration; a company not reached is reported.
+  const rebuilds = await runScheduledLedgerRebuildDrills({ deadline: Date.now() + 60_000 })
   // The repair path exists BECAUSE failures were once invisible. Reporting `ok`
   // over a sweep that could not repair what it found is the same defect again, so
   // this reports exactly the way `books-projection` does.
   const failures = repair.results.reduce((sum, item) => sum + item.failures.length, 0)
-    + rebuilds.results.filter((run) => run.status !== "passed").length
+    + rebuilds.results.filter((run) => run.status !== "passed").length + rebuilds.unreached.length
   return NextResponse.json(
     { ok: failures === 0, failures, recurring, credentials, rebuilds, repair, surfaced },
     { status: failures === 0 ? 200 : 207 },

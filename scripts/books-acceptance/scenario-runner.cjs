@@ -7,13 +7,19 @@ const { createKit, recorder, loadExpected } = require("./scenario-kit.cjs")
 
 const SCENARIO_MODULES = { "BILL-01": "./scenarios/bill-01.cjs", "WIP-01": "./scenarios/wip-01.cjs", "YEAR-01": "./scenarios/year-01.cjs", "CLOSE-01": "./scenarios/close-01.cjs", "BANK-01": "./scenarios/bank-01.cjs", "STATUS-01": "./scenarios/status-01.cjs", "RACE-01": "./scenarios/race-01.cjs", "CAP-01": "./scenarios/cap-01.cjs" }
 
-async function runScenario(id, kit, fixtures = {}) {
+// `only` runs the named subcases for iteration; the rest report SKIPPED, so such a
+// run can never read PASSED.
+async function runScenario(id, kit, fixtures = {}, only = null) {
   if (!fixtures.scenario && !SCENARIO_MODULES[id]) return { scenario: id, status: "NOT_IMPLEMENTED", subcases: [] }
   const scenario = fixtures.scenario ?? require(SCENARIO_MODULES[id]),
     expected = fixtures.expected ?? loadExpected(id)
   const subcases = []
   for (const [name, spec] of Object.entries(expected.subcases)) {
     const run = scenario.subcases[name]
+    if (only && !only.includes(name)) {
+      subcases.push({ name, status: "SKIPPED", checks: [] })
+      continue
+    }
     if (!run || spec.status === "NOT_IMPLEMENTED") {
       subcases.push({ name, status: "NOT_IMPLEMENTED", checks: [] })
       continue
@@ -44,7 +50,8 @@ if (require.main === module) {
     if (!container || !apiUrl || !scenario || !evidenceDir || fs.existsSync(evidenceDir))
       throw Error("Use --container NAME --api-url http://127.0.0.1:PORT --scenario ID --evidence-dir NEW_DIRECTORY")
     const kit = createKit({ container, apiUrl })
-    const result = { ...(await runScenario(scenario, kit)), container, finishedAt: new Date().toISOString() }
+    const only = process.argv.includes("--only") ? arg("--only").split(",") : null
+    const result = { ...(await runScenario(scenario, kit, {}, only)), container, finishedAt: new Date().toISOString() }
     fs.mkdirSync(evidenceDir, { recursive: true, mode: 0o700 })
     fs.writeFileSync(path.join(evidenceDir, `${scenario}.json`), JSON.stringify(result, null, 2) + "\n", { mode: 0o600 })
     for (const s of result.subcases) console.log(`${s.status.padEnd(15)} ${s.name}${s.error ? ` — ${s.error}` : ""}${s.checks?.some((c) => !c.pass) ? ` — ${s.checks.filter((c) => !c.pass).map((c) => c.label).join("; ")}` : ""}`)

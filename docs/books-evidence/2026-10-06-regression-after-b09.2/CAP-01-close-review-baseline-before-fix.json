@@ -1,0 +1,115 @@
+{
+  "scenario": "CAP-01",
+  "status": "FAILED",
+  "reviewedFrom": "B09.2 definition of done (advisor-plans/013): >1,000 records and repeated cursor ties exactly once; interruption/resume and concurrent workers without skips or duplicates; work scales with selected sources, not the ledger.",
+  "subcases": [
+    {
+      "name": "first-run-ties-idle-and-one-change",
+      "status": "SKIPPED",
+      "checks": []
+    },
+    {
+      "name": "interrupted-run-resumes",
+      "status": "SKIPPED",
+      "checks": []
+    },
+    {
+      "name": "concurrent-workers",
+      "status": "SKIPPED",
+      "checks": []
+    },
+    {
+      "name": "late-commit",
+      "status": "SKIPPED",
+      "checks": []
+    },
+    {
+      "name": "nightly-pass",
+      "status": "SKIPPED",
+      "checks": []
+    },
+    {
+      "name": "time-budget",
+      "status": "SKIPPED",
+      "checks": []
+    },
+    {
+      "name": "failed-source-retries",
+      "status": "SKIPPED",
+      "checks": []
+    },
+    {
+      "name": "close-review-reads",
+      "status": "FAILED",
+      "identities": {
+        "small": {
+          "requests": 55,
+          "rows": 1960,
+          "projections": 0,
+          "receipts": 0,
+          "tables": {
+            "journal_lines": 840,
+            "journal_entries": 360,
+            "vendor_bills": 360,
+            "job_cost_entries": 240,
+            "gl_accounts": 153,
+            "projects": 2,
+            "project_financial_settings": 2,
+            "memberships": 1,
+            "accounting_periods": 1,
+            "books_settings": 1
+          }
+        },
+        "large": {
+          "requests": 94,
+          "rows": 18160,
+          "projections": 0,
+          "receipts": 0,
+          "tables": {
+            "journal_lines": 8400,
+            "journal_entries": 3600,
+            "vendor_bills": 3600,
+            "job_cost_entries": 2400,
+            "gl_accounts": 153,
+            "projects": 2,
+            "project_financial_settings": 2,
+            "memberships": 1,
+            "accounting_periods": 1,
+            "books_settings": 1
+          }
+        }
+      },
+      "checks": [
+        {
+          "label": "the close review reads about the same at ten times the volume, and its tie-outs pass at both",
+          "pass": false,
+          "expected": {
+            "small": {
+              "apControl": "passed",
+              "jobCostControl": "passed"
+            },
+            "large": {
+              "apControl": "passed",
+              "jobCostControl": "passed"
+            },
+            "rowsGrowWithinAllowance": true
+          },
+          "observed": {
+            "small": {
+              "apControl": "passed",
+              "jobCostControl": "passed"
+            },
+            "large": {
+              "apControl": "passed",
+              "jobCostControl": "passed"
+            },
+            "rowsGrowWithinAllowance": false
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T00:42:45.290Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-07T00:43:04.386Z"
+}

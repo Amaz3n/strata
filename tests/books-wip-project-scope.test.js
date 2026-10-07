@@ -19,6 +19,13 @@ test("close and recognition scope follows dated activity, not today's project li
     ],
     journal_entries: [{ id: "prior", org_id: "org", source_id: "archived", source_type: "revenue_recognition", status: "reversed", entry_date: "2026-08-31" }],
   })
+  // Which projects carry posted cost is answered by the database; its rules are
+  // proven against the real function below.
+  db.rpc = async (name, args) => {
+    assert.equal(name, "books_projects_with_posted_cost")
+    assert.equal(args.p_as_of, "2026-09-30")
+    return { data: args.p_project_ids.filter(id => id === "completed"), error: null }
+  }
   const projects = ["completed", "future", "planning", "other-org", "closing", "cancelled", "deposit", "archived"].map(projectId => ({ projectId, status: projectId, basis: projectId === "closing" ? "closing" : "percentage_of_completion" }))
   const original = Module._load
   let loadScope
@@ -35,4 +42,23 @@ test("close and recognition scope follows dated activity, not today's project li
     loadScope = require("../lib/services/books/wip-project-scope").loadPocProjectsForPeriod
   } finally { Module._load = original }
   assert.deepEqual((await loadScope("org", "2026-09-30")).map(row => row.projectId), ["completed", "cancelled", "archived"])
+})
+
+test("projects with posted cost: posted (not voided) cost, on or before the date, this company only", async (t) => {
+  const { createDatabase, insert, rpc, seedMember } = require("./support/pglite")
+  const db = await createDatabase(t)
+  const owner = await seedMember(db)
+  const other = await seedMember(db)
+  const project = async (orgId, name) => (await insert(db, "projects", { org_id: orgId, name })).id
+  const [costed, future, voided, idle] = await Promise.all(["Costed", "Future", "Voided", "Idle"].map(name => project(owner.orgId, name)))
+  const elsewhere = await project(other.orgId, "Other company")
+  const cost = (orgId, projectId, status, incurredOn, sourceId) => insert(db, "job_cost_entries", {
+    org_id: orgId, project_id: projectId, status, incurred_on: incurredOn, cost_cents: 1000, source_type: "project_expense", source_id: sourceId,
+  })
+  await cost(owner.orgId, costed, "posted", "2026-09-30", "a")
+  await cost(owner.orgId, future, "posted", "2026-10-01", "b")
+  await cost(owner.orgId, voided, "voided", "2026-09-30", "c")
+  await cost(other.orgId, elsewhere, "posted", "2026-09-30", "d")
+  const found = await rpc(db, "books_projects_with_posted_cost", { p_org_id: owner.orgId, p_as_of: "2026-09-30", p_project_ids: [costed, future, voided, idle, elsewhere] })
+  assert.deepEqual(found.map(row => Object.values(row)[0]), [costed])
 })

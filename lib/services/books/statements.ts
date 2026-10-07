@@ -1,4 +1,5 @@
 import "server-only"
+import { randomUUID } from "node:crypto"
 
 import { z } from "zod"
 import { collectBooksRows } from "@/lib/services/books/paging"
@@ -91,6 +92,40 @@ export async function loadPostedLedger(orgId: string, endDate: string, startDate
     .eq("org_id", orgId).order("code").order("id").range(from, to))
   return { accounts: z.array(accountSchema).parse(accountsData), entries, lines }
 
+}
+
+/**
+ * The ledger as of a date, summed in the database: one line per account, project,
+ * contract and warranty-reserve flag under a single synthetic entry dated `asOf`.
+ *
+ * As-of statements (trial balance, balance sheet) and the close tie-outs need
+ * only these totals, and loading every entry and line since the company began
+ * made each review grow with the whole history. Anything that needs real
+ * entries — dates inside a window, closing entries, memos — loads the ledger.
+ */
+export async function loadLedgerBalances(orgId: string, asOf: string): Promise<LoadedLedger> {
+  const service = createServiceSupabaseClient()
+  const [balances, accountsData] = await Promise.all([
+    service.rpc("books_ledger_balances", { p_org_id: orgId, p_as_of: asOf }),
+    collectBooksRows((from, to) => service.from("gl_accounts")
+      .select("id, code, name, account_type, subtype, normal_balance, cash_flow_category")
+      .eq("org_id", orgId).order("code").order("id").range(from, to)),
+  ])
+  if (balances.error) throw new Error(`Failed to load ledger balances: ${balances.error.message}`)
+  const rows = z.array(z.object({
+    account_id: z.string().uuid(), project_id: z.string().uuid().nullable(), contract_id: z.string().nullable(),
+    warranty_reserve_adjustment: z.boolean(), debit_cents: z.coerce.number().int(), credit_cents: z.coerce.number().int(),
+  })).parse(balances.data ?? [])
+  const entryId = randomUUID()
+  return {
+    accounts: z.array(accountSchema).parse(accountsData),
+    entries: [{ id: entryId, entry_date: asOf, memo: "Ledger balances", entry_kind: "operational", source_type: null, reversal_of_entry_id: null }],
+    lines: rows.map((row) => ({
+      id: randomUUID(), entry_id: entryId, account_id: row.account_id, project_id: row.project_id, company_id: null,
+      debit_cents: row.debit_cents, credit_cents: row.credit_cents, description: null,
+      dimensions: { ...(row.contract_id ? { contract_id: row.contract_id } : {}), ...(row.warranty_reserve_adjustment ? { warranty_reserve_adjustment: true } : {}) },
+    })),
+  }
 }
 
 /** Closing and its reversing entry transfer earnings; neither is operating activity. */
@@ -189,7 +224,7 @@ function accountRows(ledger: LoadedLedger) {
 }
 
 export async function buildTrialBalance(orgId: string, asOf: string, snapshot?: LoadedLedger) {
-  const ledger = ledgerWindow(snapshot ?? await loadPostedLedger(orgId, asOf), asOf)
+  const ledger = ledgerWindow(snapshot ?? await loadLedgerBalances(orgId, asOf), asOf)
   const rows = accountRows(ledger)
   return {
     statement: "trial_balance" as const,
@@ -317,7 +352,7 @@ export async function buildProfitAndLoss(orgId: string, startDate: string, endDa
 }
 
 export async function buildBalanceSheet(orgId: string, asOf: string, snapshot?: LoadedLedger) {
-  const ledger = ledgerWindow(snapshot ?? await loadPostedLedger(orgId, asOf), asOf)
+  const ledger = ledgerWindow(snapshot ?? await loadLedgerBalances(orgId, asOf), asOf)
   const rows = statementRows(ledger).filter((row) => new Set(["asset", "liability", "equity"]).has(row.accountType))
   // The control ledger stays intact. Presentation nets each contract/project's
   // asset and liability, then sums debit positions separately from credit positions.

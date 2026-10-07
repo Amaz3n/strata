@@ -299,7 +299,8 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
       .maybeSingle(),
     loadPocProjectsForPeriod(context.orgId, period.period_end),
     loadPocPositionsAsOf({ orgId: context.orgId, asOf: period.period_end }),
-    // Bills are loaded for the coding check only; AR/AP balances come from the tie-outs.
+    // Bills are loaded for the coding check only, and only the uncoded ones:
+    // AR/AP balances come from the tie-outs.
     collectPages(
       (from, to) =>
         service
@@ -308,6 +309,7 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
           .eq("org_id", context.orgId)
           .lte("bill_date", period.period_end)
           .in("status", [...PAYABLE_VENDOR_BILL_STATUSES])
+          .or("accounting_coding.is.null,accounting_coding.eq.{}")
           .order("created_at", { ascending: true })
           .order("id", { ascending: true })
           .range(from, to),

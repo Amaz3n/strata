@@ -77,8 +77,10 @@ test("clearing schedules must support every cent and ledger changes invalidate t
   assert.equal(clearingSupportMatches(balance, [evidence], "2026-01-31"), true);
   assert.equal(clearingSupportMatches(balance, [{ ...evidence, amountCents: 9999 }], "2026-01-31"), false);
   assert.equal(clearingSupportMatches(balance, [{ ...evidence, expectedSettlementDate: "2026-01-30" }], "2026-01-31"), false);
-  const rows = [{ id: "line", entry_id: "entry", account_id: "account", debit_cents: 0, credit_cents: 10000 }];
-  assert.notEqual(clearingLedgerDigest(rows), clearingLedgerDigest([...rows, { ...rows[0], id: "new", credit_cents: 100 }]));
+  const positions = [{ code: "2200", debitCents: 0, creditCents: 10000, lineCount: 1, linesDigest: "a" }];
+  assert.notEqual(clearingLedgerDigest(positions), clearingLedgerDigest([{ ...positions[0], creditCents: 10100, lineCount: 2, linesDigest: "b" }]));
+  // A line replaced by another of the same amount still changes the fingerprint.
+  assert.notEqual(clearingLedgerDigest(positions), clearingLedgerDigest([{ ...positions[0], linesDigest: "c" }]));
 });
 const { hashableFactPayload } = require("../lib/services/books/fact-drafts");
 test("native funding recoding changes economic identity for payments, fees, expenses and reversals", () => {

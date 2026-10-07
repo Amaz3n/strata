@@ -10,6 +10,8 @@ import { SYSTEM_ACCOUNT_CODES } from "@/lib/services/books/chart-of-accounts";
 import {
   buildBalanceSheet,
   buildTrialBalance,
+  loadLedgerBalances,
+  type LoadedLedger,
 } from "@/lib/services/books/statements";
 
 /**
@@ -68,58 +70,36 @@ async function collectPages<T>(
 }
 
 /** Job cost recognized in the GL: cost-of-goods lines carrying a project. */
-async function loadGlJobCostCents(orgId: string, asOf: string) {
-  const service = createServiceSupabaseClient();
-  const rows = await collectPages(
-    (from, to) =>
-      service
-        .from("journal_lines")
-        .select(
-          "debit_cents, credit_cents, dimensions, entry:journal_entries!journal_lines_entry_owner_fk!inner(status, entry_date), account:gl_accounts!journal_lines_account_owner_fk!inner(account_type,code)",
-        )
-        .eq("org_id", orgId)
-        .in("entry.status", ["posted", "reversed"])
-        .lte("entry.entry_date", asOf)
-        .or("account_type.eq.cogs,code.in.(1160,1170)", { referencedTable: "account" })
-        .not("project_id", "is", null)
-        .neq("account.code", SYSTEM_ACCOUNT_CODES.expectedLossExpense)
-        .range(from, to),
-    "GL job cost lines",
-  );
-  return rows.filter(row => !(row.dimensions && typeof row.dimensions === "object" && Reflect.get(row.dimensions, "warranty_reserve_adjustment") === true)).reduce(
-    (sum, row) =>
-      sum + Number(row.debit_cents ?? 0) - Number(row.credit_cents ?? 0),
-    0,
-  );
+function glJobCostCents(ledger: LoadedLedger) {
+  const jobCostAccounts = new Set(ledger.accounts
+    .filter((account) => (account.account_type === "cogs" || ["1160", "1170"].includes(account.code)) && account.code !== SYSTEM_ACCOUNT_CODES.expectedLossExpense)
+    .map((account) => account.id));
+  return ledger.lines
+    .filter((line) => line.project_id !== null && jobCostAccounts.has(line.account_id) && line.dimensions?.warranty_reserve_adjustment !== true)
+    .reduce((sum, line) => sum + line.debit_cents - line.credit_cents, 0);
 }
 
 async function loadSubledgerJobCostCents(orgId: string, asOf: string) {
-  const service = createServiceSupabaseClient();
-  const rows = await collectPages(
-    (from, to) =>
-      service
-        .from("job_cost_entries")
-        .select("cost_cents")
-        .eq("org_id", orgId)
-        .eq("status", "posted")
-        .lte("incurred_on", asOf)
-        .range(from, to),
-    "job cost subledger",
-  );
-  return rows.reduce((sum, row) => sum + Number(row.cost_cents ?? 0), 0);
+  const { data, error } = await createServiceSupabaseClient().rpc("books_job_cost_subledger_cents", { p_org_id: orgId, p_as_of: asOf });
+  if (error) throw new Error(`Failed to load job cost subledger: ${error.message}`);
+  return Number(data ?? 0);
 }
 
-async function loadArApSubledgerCents(orgId: string, asOf: string) {
+/** Payable bills dated by `asOf`, read once for both the AP and the AP retainage tie-outs. */
+async function loadPayableBills(orgId: string, asOf: string) {
   const service = createServiceSupabaseClient();
-  const [invoiceRows, bills] = await Promise.all([
-    collectPages((from, to) => service.from("invoices")
-      .select("id,total_cents,status,metadata").eq("org_id", orgId)
-      .lte("issue_date", asOf).order("id").range(from, to), "AR subledger"),
-    collectPages((from, to) => service.from("vendor_bills")
-      .select("id,total_cents,retainage_cents").eq("org_id", orgId)
-      .lte("bill_date", asOf).in("status", [...PAYABLE_VENDOR_BILL_STATUSES])
-      .order("id").range(from, to), "AP subledger"),
-  ]);
+  return collectPages((from, to) => service.from("vendor_bills")
+    .select("id,status,bill_date,total_cents,retainage_cents,metadata")
+    .eq("org_id", orgId).lte("bill_date", asOf)
+    .in("status", [...PAYABLE_VENDOR_BILL_STATUSES]).order("id").range(from, to), "AP subledger");
+}
+type PayableBill = Awaited<ReturnType<typeof loadPayableBills>>[number];
+
+async function loadArApSubledgerCents(orgId: string, asOf: string, bills: PayableBill[]) {
+  const service = createServiceSupabaseClient();
+  const invoiceRows = await collectPages((from, to) => service.from("invoices")
+    .select("id,total_cents,status,metadata").eq("org_id", orgId)
+    .lte("issue_date", asOf).order("id").range(from, to), "AR subledger");
   const invoices = invoiceRows.filter(row => isInvoiceReceivableAsOf(row, asOf));
   const [arSettlements, apSettlements] = await Promise.all([
     loadSubledgerSettlements(service, orgId, "receivable", invoices.map(row => row.id), asOf),
@@ -139,20 +119,14 @@ async function loadArApSubledgerCents(orgId: string, asOf: string) {
  * check noticing. AR retainage lives in the `retainage` table (its authoritative home);
  * AP retainage lives in the vendor-bill columns, net of what has been released.
  */
-async function loadRetainageSubledgerCents(orgId: string, asOf: string) {
+async function loadRetainageSubledgerCents(orgId: string, asOf: string, bills: PayableBill[]) {
   const service = createServiceSupabaseClient();
-  const [holds, bills] = await Promise.all([
-    collectPages((from, to) => service.from("retainage")
-      // Disambiguate both invoice FKs. Release state is evaluated at its accounting
-      // date, never from today's hold status or lifetime released amount.
-      .select("id,amount_cents,invoice:invoices!invoice_id!inner(status,issue_date,metadata),release:invoices!release_invoice_id(status,issue_date,metadata)")
-      .eq("org_id", orgId).lte("invoice.issue_date", asOf)
-      .order("id").range(from, to), "AR retainage history"),
-    collectPages((from, to) => service.from("vendor_bills")
-      .select("id,status,bill_date,total_cents,retainage_cents,metadata")
-      .eq("org_id", orgId).lte("bill_date", asOf)
-      .in("status", [...PAYABLE_VENDOR_BILL_STATUSES]).order("id").range(from, to), "AP retainage history"),
-  ]);
+  const holds = await collectPages((from, to) => service.from("retainage")
+    // Disambiguate both invoice FKs. Release state is evaluated at its accounting
+    // date, never from today's hold status or lifetime released amount.
+    .select("id,amount_cents,invoice:invoices!invoice_id!inner(status,issue_date,metadata),release:invoices!release_invoice_id(status,issue_date,metadata)")
+    .eq("org_id", orgId).lte("invoice.issue_date", asOf)
+    .order("id").range(from, to), "AR retainage history");
   return {
     receivableCents: receivableRetainageAsOf(holds, asOf),
     payableCents: payableRetainageAsOf(bills, asOf),
@@ -325,30 +299,31 @@ export async function runLedgerTieOuts(
   orgId: string,
   asOf: string,
 ): Promise<LedgerTieOut[]> {
+  // The ledger and the payable bills are each read once and shared by every check.
+  const [ledger, bills] = await Promise.all([loadLedgerBalances(orgId, asOf), loadPayableBills(orgId, asOf)]);
   const [
     trialBalance,
     balanceSheet,
-    glJobCostCents,
     subledgerJobCostCents,
     arAp,
     retainage,
     customerDepositsCents,
     registers,
   ] = await Promise.all([
-    buildTrialBalance(orgId, asOf),
-    buildBalanceSheet(orgId, asOf),
-    loadGlJobCostCents(orgId, asOf),
+    buildTrialBalance(orgId, asOf, ledger),
+    buildBalanceSheet(orgId, asOf, ledger),
     loadSubledgerJobCostCents(orgId, asOf),
-    loadArApSubledgerCents(orgId, asOf),
-    loadRetainageSubledgerCents(orgId, asOf),
+    loadArApSubledgerCents(orgId, asOf, bills),
+    loadRetainageSubledgerCents(orgId, asOf, bills),
     loadCustomerDepositSubledgerCents(orgId, asOf),
     loadOperationalRegisterBalances(orgId, asOf),
   ]);
+  const glJobCost = glJobCostCents(ledger);
   const accountBalance = (code: string) =>
     trialBalance.rows.find((row) => row.code === code)?.balanceCents ?? 0;
   const trialDifference =
     trialBalance.totalDebitCents - trialBalance.totalCreditCents;
-  const jobCostDifference = glJobCostCents - subledgerJobCostCents;
+  const jobCostDifference = glJobCost - subledgerJobCostCents;
   const arDifference =
     accountBalance(SYSTEM_ACCOUNT_CODES.accountsReceivable) - arAp.arCents;
   const apDifference =
@@ -394,7 +369,7 @@ export async function runLedgerTieOuts(
       label: "GL job cost ties to the job-cost subledger",
       status: jobCostDifference === 0 ? "passed" : "failed",
       differenceCents: jobCostDifference,
-      ledgerCents: glJobCostCents,
+      ledgerCents: glJobCost,
       subledgerCents: subledgerJobCostCents,
     },
     {
