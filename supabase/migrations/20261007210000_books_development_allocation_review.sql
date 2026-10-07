@@ -54,17 +54,18 @@ create trigger books_development_allocations_guard before update or delete on pu
   for each row execute function public.books_guard_development_allocation();
 
 -- Exact shares by largest remainder: floor of each weighted share, then one more
--- cent to the largest remainders (ties by lot id) until the total is reached.
+-- cent to the largest remainders (ties by key) until the total is reached. Every
+-- reviewed allocation (development to lots, shared cost to jobs) splits through it.
 create or replace function public.books_allocation_shares(p_total bigint, p_weights jsonb)
 returns jsonb language sql immutable set search_path = public as $$
   with w as (
-    select value->>'lot_id' as lot_id, (value->>'weight')::numeric as weight from jsonb_array_elements(p_weights)
+    select value->>'key' as key, (value->>'weight')::numeric as weight from jsonb_array_elements(p_weights)
   ), t as (select sum(weight) as total_weight from w), raw as (
-    select w.lot_id, w.weight, floor(p_total * w.weight / t.total_weight)::bigint as base, (p_total * w.weight / t.total_weight) - floor(p_total * w.weight / t.total_weight) as remainder from w, t
+    select w.key, w.weight, floor(p_total * w.weight / t.total_weight)::bigint as base, (p_total * w.weight / t.total_weight) - floor(p_total * w.weight / t.total_weight) as remainder from w, t
   ), ranked as (
-    select raw.*, row_number() over (order by remainder desc, lot_id) as rank, p_total - sum(base) over () as leftover from raw
+    select raw.*, row_number() over (order by remainder desc, key) as rank, p_total - sum(base) over () as leftover from raw
   )
-  select coalesce(jsonb_agg(jsonb_build_object('lot_id', lot_id, 'weight', weight, 'amount_cents', base + case when rank <= leftover then 1 else 0 end) order by lot_id), '[]'::jsonb) from ranked;
+  select coalesce(jsonb_agg(jsonb_build_object('key', key, 'weight', weight, 'amount_cents', base + case when rank <= leftover then 1 else 0 end) order by key), '[]'::jsonb) from ranked;
 $$;
 
 create or replace function public.propose_books_development_allocation(
@@ -82,7 +83,9 @@ begin
     if coalesce((v_row->>'weight')::numeric, 0) <= 0 then raise exception 'Each lot''s basis must be positive'; end if;
     if not exists(select 1 from public.lots where org_id = p_org_id and id = (v_row->>'lot_id')::uuid) then raise exception 'A receiving lot is outside this organization'; end if;
   end loop;
-  v_shares := public.books_allocation_shares(p_total_cents, p_weights);
+  select jsonb_agg(jsonb_build_object('lot_id', s->>'key', 'weight', s->'weight', 'amount_cents', s->'amount_cents') order by s->>'key') into v_shares
+    from jsonb_array_elements(public.books_allocation_shares(p_total_cents,
+      (select jsonb_agg(jsonb_build_object('key', w->>'lot_id', 'weight', w->'weight')) from jsonb_array_elements(p_weights) w))) s;
   if (select sum((value->>'amount_cents')::bigint) from jsonb_array_elements(v_shares)) <> p_total_cents then raise exception 'Allocation shares must add to the total'; end if;
   insert into public.books_development_allocations(org_id, project_id, allocation_date, reference, basis, total_cents, shares, evidence_url, note, prepared_by)
   values (p_org_id, p_project_id, p_date, btrim(p_reference), p_basis, p_total_cents, v_shares, p_evidence_url, trim(p_note), p_actor_id)

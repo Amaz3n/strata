@@ -319,6 +319,122 @@ commit;`)
   return { orgId: org.orgId }
 }
 
+
+// ---- B11.4: shared construction cost reaches jobs through a reviewed allocation ----
+const glOf = (kit, org, code) => kit.rows(`select id from public.gl_accounts where org_id=${kit.q(org.orgId)} and code=${kit.q(code)}`)[0].id
+const allocations = () => app("books/cost-allocations")
+// Per job: the cents on its cost account lines (5000 or inventory) and its job-cost rows.
+function jobCost(kit, org, projectId) {
+  const ledger = kit.rows(`select coalesce(sum(l.debit_cents-l.credit_cents),0)::bigint n from public.journal_lines l join public.journal_entries e on e.id=l.entry_id join public.gl_accounts a on a.id=l.account_id
+    where l.org_id=${kit.q(org.orgId)} and l.project_id=${kit.q(projectId)} and e.status in ('posted','reversed') and (a.account_type='cogs' or a.code in ('1160','1170'))`)[0].n
+  const rows = kit.rows(`select cost_cents from public.job_cost_entries where org_id=${kit.q(org.orgId)} and project_id=${kit.q(projectId)} and source_type='cost_allocation' and status='posted' order by created_at, cost_cents desc`).map((row) => Number(row.cost_cents))
+  return { ledger: Number(ledger), rows }
+}
+const poolCents = (kit, org, code) => Number(kit.rows(`select public.books_cost_pool_cents(${kit.q(org.orgId)}, ${kit.q(glOf(kit, org, code))}, '2026-07-31') n`)[0].n)
+const tieOutStatus = async (kit, org, code) => (await kit.service(() => app("books/verifier").runLedgerTieOuts(org.orgId, "2026-07-31"))).find((row) => row.code === code)?.status
+
+// Two contract jobs and a home the builder owns, an insurance pool paid in July,
+// and a premium already charged to one job (which is not in the pool).
+async function sharedCostOrg(kit, name, input) {
+  const org = await greenfieldOrg(kit, { name, periods: ["2026-07"] })
+  org.jobA = job(kit, org, { name: "Riverside clinic", billingModel: "fixed_price", contracts: [{ type: "fixed" }] })
+  org.jobB = job(kit, org, { name: "Harbor offices", billingModel: "fixed_price", contracts: [{ type: "fixed" }] })
+  org.home = job(kit, org, { name: "Lot 7 spec home", contracts: [{ type: "purchase_agreement" }] })
+  org.costCodeId = randomUUID()
+  kit.sql(`insert into public.cost_codes(id,org_id,code,name) values(${kit.q(org.costCodeId)},${kit.q(org.orgId)},'01-500','General conditions')`)
+  await kit.as(org.owner, () => app("books/inventory").enableProjectInventory({ projectId: org.home.projectId, effectiveOn: "2026-07-01", evidenceUrl: "https://evidence.acceptance.example.test/rev-01/ownership" }))
+  const { createAdjustingJournal } = app("books/bookkeeping")
+  await kit.as(org.reviewer, () => createAdjustingJournal({ entryDate: "2026-07-02", memo: "Builder's risk and liability premium", lines: [
+    { accountCode: "6010", debitCents: input.poolCents, creditCents: 0 }, { accountCode: "1000", debitCents: 0, creditCents: input.poolCents }] }))
+  await kit.as(org.reviewer, () => createAdjustingJournal({ entryDate: "2026-07-02", memo: "Project-specific bond premium", lines: [
+    { accountCode: "6010", debitCents: input.chargedCents, creditCents: 0, projectId: org.jobA.projectId }, { accountCode: "1000", debitCents: 0, creditCents: input.chargedCents }] }))
+  return org
+}
+const proposal = (org, input, weights, extra = {}) => ({ date: "2026-07-31", reference: extra.reference ?? "July insurance", pool: "insurance", basis: "labor_hours", sourceAccountId: extra.accountId,
+  costCodeId: org.costCodeId, totalCents: input.poolCents, weights, evidenceUrl: "https://evidence.acceptance.example.test/rev-01/labor-hours.pdf",
+  note: "Insurance follows the field labor hours on each job this month.", correctsId: extra.correctsId ?? null })
+
+// A pool spreads only after independent review, splits to the cent, stays out of
+// a job's cost until approved and cannot be spent twice; the home's share is
+// capitalized into its inventory.
+async function sharedCostAllocatedOnce(kit, expected, check) {
+  const input = expected.inputs
+  const org = await sharedCostOrg(kit, "REV-01 shared cost", input)
+  const accountId = glOf(kit, org, "6010")
+  const poolBefore = poolCents(kit, org, "6010")
+  const { id } = await kit.as(org.owner, () => allocations().proposeCostAllocation(proposal(org, input, [
+    { projectId: org.jobA.projectId, weight: 50 }, { projectId: org.jobB.projectId, weight: 30 }, { projectId: org.home.projectId, weight: 15 }, { projectId: null, weight: 5 }], { accountId })))
+  const beforeReview = jobCost(kit, org, org.jobA.projectId)
+  const selfApproval = await refusal(() => kit.as(org.owner, () => allocations().reviewCostAllocation({ allocationId: id, approve: true })))
+  await kit.as(org.reviewer, () => allocations().reviewCostAllocation({ allocationId: id, approve: true }))
+  const register = await kit.as(org.owner, () => allocations().getCostAllocationRegister())
+  const twice = await refusal(() => kit.as(org.owner, () => allocations().proposeCostAllocation({ ...proposal(org, input, [{ projectId: org.jobB.projectId, weight: 1 }], { accountId, reference: "July insurance again" }), totalCents: input.secondCents })))
+  const homeInventory = kit.rows(`select coalesce(sum(l.debit_cents-l.credit_cents),0)::bigint n from public.journal_lines l join public.gl_accounts a on a.id=l.account_id where l.org_id=${kit.q(org.orgId)} and l.project_id=${kit.q(org.home.projectId)} and a.code='1160'`)[0].n
+  check.equal("the pool is spread once, after review, in exact cents, and the home's share is capitalized", expected.expected, {
+    poolBefore,
+    jobCostBeforeReview: beforeReview.rows.length,
+    selfApproval: /someone other than/.test(selfApproval) ? "refused: approved by someone other than the proposer" : selfApproval,
+    shares: register.allocations[0].shares.map((share) => ({ to: share.projectId ? "job" : "retained", cents: share.cents })).sort((a, b) => b.cents - a.cents),
+    jobs: { "Riverside clinic": jobCost(kit, org, org.jobA.projectId), "Harbor offices": jobCost(kit, org, org.jobB.projectId), "Lot 7 spec home": jobCost(kit, org, org.home.projectId) },
+    homeInventory: Number(homeInventory),
+    poolAfter: poolCents(kit, org, "6010"),
+    allocatingTwice: /exceeds the unallocated pool/.test(twice) ? "refused: exceeds the unallocated pool" : twice,
+    jobCostControl: await tieOutStatus(kit, org, "job_cost_control"),
+  })
+  return { orgId: org.orgId, allocationId: id }
+}
+
+// A reallocation reverses the original and posts the new split in one step:
+// the original entry, its exact reversal and the negative job-cost rows all stay.
+async function reallocationKeepsBothLegs(kit, expected, check) {
+  const input = expected.inputs
+  const org = await sharedCostOrg(kit, "REV-01 reallocation", input)
+  const accountId = glOf(kit, org, "6010")
+  const { id: original } = await kit.as(org.owner, () => allocations().proposeCostAllocation(proposal(org, input, [
+    { projectId: org.jobA.projectId, weight: 50 }, { projectId: org.jobB.projectId, weight: 30 }, { projectId: org.home.projectId, weight: 20 }], { accountId })))
+  await kit.as(org.reviewer, () => allocations().reviewCostAllocation({ allocationId: original, approve: true }))
+  const { id: correction } = await kit.as(org.owner, () => allocations().proposeCostAllocation(proposal(org, input, [
+    { projectId: org.jobA.projectId, weight: 60 }, { projectId: org.jobB.projectId, weight: 40 }], { accountId, reference: "July insurance corrected", correctsId: original })))
+  await kit.as(org.reviewer, () => allocations().reviewCostAllocation({ allocationId: correction, approve: true }))
+  const again = await refusal(() => kit.as(org.owner, () => allocations().proposeCostAllocation(proposal(org, input, [{ projectId: org.jobB.projectId, weight: 1 }], { accountId, reference: "July insurance third", correctsId: original }))))
+  const rows = kit.rows(`select reference, status, journal_entry_id, reversal_entry_id from public.books_cost_allocations where org_id=${kit.q(org.orgId)} order by prepared_at`)
+  const entry = (entryId) => entryId ? kit.rows(`select status, entry_kind from public.journal_entries where id=${kit.q(entryId)}`)[0] : null
+  check.equal("the correction keeps the original, its reversal and the new split, and each job ends on the new share", expected.expected, {
+    allocations: rows.map((row) => ({ reference: row.reference, status: row.status, entry: entry(row.journal_entry_id)?.status ?? null, reversal: entry(row.reversal_entry_id)?.entry_kind ?? null })),
+    jobs: { "Riverside clinic": jobCost(kit, org, org.jobA.projectId), "Harbor offices": jobCost(kit, org, org.jobB.projectId), "Lot 7 spec home": jobCost(kit, org, org.home.projectId) },
+    poolAfter: poolCents(kit, org, "6010"),
+    reallocatingAgain: /Only an approved allocation can be reallocated/.test(again) ? "refused: only an approved allocation can be reallocated" : again,
+    jobCostControl: await tieOutStatus(kit, org, "job_cost_control"),
+  })
+  return { orgId: org.orgId, original, correction }
+}
+
+// Job cost, budget (by cost code), WIP and the statements read the same cents.
+async function allocationTreatmentsAgree(kit, expected, check) {
+  const input = expected.inputs
+  const org = await sharedCostOrg(kit, "REV-01 allocation treatments", input)
+  const accountId = glOf(kit, org, "6010")
+  const { id } = await kit.as(org.owner, () => allocations().proposeCostAllocation(proposal(org, input, [
+    { projectId: org.jobA.projectId, weight: 2 }, { projectId: org.jobB.projectId, weight: 1 }], { accountId })))
+  await kit.as(org.reviewer, () => allocations().reviewCostAllocation({ allocationId: id, approve: true }))
+  // WIP is reviewed for every contract job at once: prepare Harbor, then prepare Riverside and review both.
+  await kit.as(org.owner, () => app("books/wip-review").prepareWipSnapshot({ periodId: org.periods["2026-07"].periodId, projectId: org.jobB.projectId,
+    originalContractCents: input.contractCents, approvedChangeOrdersCents: 0, eacCents: input.eacCents, note: "Contract and estimate per the reviewed fixture." }))
+  await prepareAndReview(kit, { ...org, projectId: org.jobA.projectId }, "2026-07", { contractCents: input.contractCents, eacCents: input.eacCents })
+  const wipCost = Number(kit.rows(`select cost_to_date_cents from public.poc_snapshots where org_id=${kit.q(org.orgId)} and project_id=${kit.q(org.jobA.projectId)} order by created_at desc limit 1`)[0].cost_to_date_cents)
+  const byCostCode = kit.rows(`select c.code, sum(j.cost_cents)::bigint n from public.job_cost_entries j join public.cost_codes c on c.id=j.cost_code_id where j.org_id=${kit.q(org.orgId)} and j.source_type='cost_allocation' group by 1`)
+  const statement = (code) => Number(kit.postedNet(org.orgId)[code] ?? 0)
+  check.equal("job cost, the budget's cost code, WIP and the ledger agree on the allocation", expected.expected, {
+    jobA: jobCost(kit, org, org.jobA.projectId).ledger,
+    wipCostToDate: wipCost,
+    byCostCode: Object.fromEntries(byCostCode.map((row) => [row.code, Number(row.n)])),
+    ledger: { "6010": statement("6010"), "5000": statement("5000") },
+    jobCostControl: await tieOutStatus(kit, org, "job_cost_control"),
+    trialBalance: await tieOutStatus(kit, org, "trial_balance"),
+  })
+  return { orgId: org.orgId, allocationId: id }
+}
+
 module.exports = {
   id: "REV-01",
   subcases: {
@@ -330,5 +446,8 @@ module.exports = {
     "cost-plus-earns-once": costPlusEarnsOnce,
     "billed-cost-corrections": billedCostCorrections,
     "gmp-cap-and-settlement": gmpCapAndSettlement,
+    "shared-cost-allocated-once": sharedCostAllocatedOnce,
+    "reallocation-keeps-both-legs": reallocationKeepsBothLegs,
+    "allocation-treatments-agree": allocationTreatmentsAgree,
   },
 }

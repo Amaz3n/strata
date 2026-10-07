@@ -33,6 +33,7 @@ export function buildBooksNavItems(pathname: string) {
         pathname.startsWith("/books/taxes"),
     },
     { title: "Revenue policies", url: "/books/revenue-policies", isActive: pathname.startsWith("/books/revenue-policies"), requiredAny: ["books.read"] },
+    { title: "Cost allocations", url: "/books/cost-allocations", isActive: pathname.startsWith("/books/cost-allocations"), requiredAny: ["books.read"] },
     { title: "Legal entities", url: "/books/entities", isActive: pathname.startsWith("/books/entities"), requiredAny: ["books.read"] },
   ];
 }

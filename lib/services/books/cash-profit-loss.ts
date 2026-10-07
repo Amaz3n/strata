@@ -65,6 +65,9 @@ export function cashProfitAndLossFromSnapshot(orgId: string, startDate: string, 
     assertBalancedJournalDraft({ entryDate: entry.entry_date, entryKind: "operational", memo: "Cash P&L coverage", postingKey: entry.id, projectionVersion: 1, policyVersion: 1, lines: journalLines })
     if (supported.has(original.source_type ?? "")) continue
     if (noncashSources.has(original.source_type ?? "") && !hasCash && original.entry_kind === (original.source_type === "year_end_close" ? "closing" : "poc")) continue
+    // A cost allocation moves accrual cost between the pool and jobs and moves no
+    // cash: cash basis reports the cost once, when paid, under its original account.
+    if (original.source_type === "cost_allocation" && original.entry_kind === "adjusting" && !hasCash) continue
     // Balance-only opening entries establish cutover balances, not new receipts.
     if (original.source_type === "opening_balance" && original.entry_kind === "opening" && !hasProfitLoss) continue
     if (hasProfitLoss || hasCash) unsupported.push(`${original.source_type ?? "manual journal"}:${original.source_id ?? original.id}`)

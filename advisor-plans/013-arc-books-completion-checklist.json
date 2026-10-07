@@ -8893,8 +8893,8 @@
       "id": "B11.4",
       "workstream": "B11",
       "title": "Complete construction cost allocation policies",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All B11.4 criteria verified locally (2026-10-07) by REV-01 shared-cost-allocated-once, reallocation-keeps-both-legs and allocation-treatments-agree, the cost-allocations browser journey and a cash-basis unit case. Shared equipment/overhead/insurance/supervision cost reaches jobs only through an independently reviewed allocation drawn from a pool (the expense account's balance on no job), split to the cent; reallocation reverses and reposts with both legs kept. Migration 20261007230000 pending production; 20261007210000 edited in place (unapplied in production) to share the split function.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "independently reviewed allocation basis/explanation",
@@ -8909,17 +8909,48 @@
         "PAY-01",
         "REV-01"
       ],
-      "evidence": [],
-      "remaining_criteria": [
-        "independently reviewed allocation basis/explanation",
-        "exact cents conserved across destination jobs/lots and overhead",
-        "reallocation corrections keep both legs",
-        "no duplicate native time or depreciation cost",
-        "statements and budget/job cost/WIP/cash treatment agree"
+      "evidence": [
+        {
+          "verified_at": "2026-10-07T18:01:20.541873+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261007230000_books_cost_allocations.sql",
+            "supabase/migrations/20261007210000_books_development_allocation_review.sql",
+            "lib/services/books/cost-allocations.ts",
+            "lib/services/books/cash-profit-loss.ts",
+            "app/(app)/books/cost-allocations/page.tsx",
+            "components/books/cost-allocation-register.tsx",
+            "components/layout/books-nav-items.ts",
+            "app/(app)/books/actions.ts",
+            "scripts/books-acceptance/scenarios/rev-01.cjs",
+            "scripts/books-acceptance/journeys/cost-allocations.spec.ts",
+            "docs/books-revenue-recognition.md"
+          ],
+          "test_scenario_ids": [
+            "REV-01"
+          ],
+          "commands": [
+            "scenario-runner REV-01 and full regression (CAP-01 excluded, known outbox backlog)",
+            "playwright journeys/cost-allocations.spec.ts (mobile-dark + desktop)",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "Reviewed and exact: a $1,000.01 insurance pool spread 50/30/15 with 5 retained gives 50,001/30,000/15,000 and 5,000 retained; nothing reaches a job before review; the proposer's approval is refused; the owned home's share goes to 1160.",
+            "No duplicate cost: a premium already charged to a job is not in the pool; after the allocation only the retained 5,000 remains, so a further 10,000 allocation is refused.",
+            "Reallocation keeps both legs: the original entry stays (reversed) beside its exact reversal; each job keeps its original row, the negative row and the new row (Riverside 50,001 / 60,001 / -50,001) and ends on its new share; the home ends at zero; the original cannot be reallocated twice.",
+            "Treatments agree: Riverside's WIP cost to date equals its allocated 66,667; the job-cost rows carry the chosen cost code; 6010 keeps only the job-charged 400.00 and 5000 holds 1,000.01; job cost and trial balance tie. Cash basis sets an allocation aside (it moves no cash) and still refuses one with a cash leg.",
+            "Browser: the register lists the pool, a proposal shows 'Another member approves it' to its preparer, and the reviewer's approval posts $500.01/$500.00 and empties the pool; mobile-dark and desktop pass.",
+            "Regression: BILL-01, WIP-01, YEAR-01, BANK-01, STATUS-01, DIM-01, HIST-01, REV-01 (11/11) and HOME-01 pass; CLOSE-01 and RACE-01 INCOMPLETE only for their unimplemented parts.",
+            "Known gap outside B11.4: company overhead enters Arc only through bank categorization or manual journals, which cash-basis P&L already refuses; cash basis for overhead remains with the cash-basis workstream."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-07-cost-allocations"
+        }
       ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-07T18:01:20.541873+00:00"
     },
     {
       "id": "B12.1",

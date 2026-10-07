@@ -198,6 +198,140 @@
           "builder": 740000
         }
       }
+    },
+    "shared-cost-allocated-once": {
+      "derivation": "A $1,000.01 July insurance pool (a $400 premium already charged to Riverside is on that job, not in the pool) is spread by labor hours 50/30/15 with 5 retained as company overhead: 500.005/300.003/150.0015/50.0005 dollars floor to 50000/30000/15000/5000 cents and the leftover cent goes to the largest remainder (Riverside). Nothing reaches a job until a second member approves; the proposer is refused. The spec home is owned inventory, so its share goes to 1160. $50 retained stays in the pool, so a further $100 allocation is refused. Job cost ties to the ledger.",
+      "inputs": {
+        "poolCents": 100001,
+        "chargedCents": 40000,
+        "secondCents": 10000,
+        "contractCents": 100000000,
+        "eacCents": 80000000
+      },
+      "expected": {
+        "poolBefore": 100001,
+        "jobCostBeforeReview": 0,
+        "selfApproval": "refused: approved by someone other than the proposer",
+        "shares": [
+          {
+            "to": "job",
+            "cents": 50001
+          },
+          {
+            "to": "job",
+            "cents": 30000
+          },
+          {
+            "to": "job",
+            "cents": 15000
+          },
+          {
+            "to": "retained",
+            "cents": 5000
+          }
+        ],
+        "jobs": {
+          "Riverside clinic": {
+            "ledger": 50001,
+            "rows": [
+              50001
+            ]
+          },
+          "Harbor offices": {
+            "ledger": 30000,
+            "rows": [
+              30000
+            ]
+          },
+          "Lot 7 spec home": {
+            "ledger": 15000,
+            "rows": [
+              15000
+            ]
+          }
+        },
+        "homeInventory": 15000,
+        "poolAfter": 5000,
+        "allocatingTwice": "refused: exceeds the unallocated pool",
+        "jobCostControl": "passed"
+      }
+    },
+    "reallocation-keeps-both-legs": {
+      "derivation": "The pool is first spread 50/30/20 (50001/30000/20000), then reallocated 60/40 to the two contract jobs (60001/40000). Approval reverses the original entry exactly (it stays, marked reversed, beside its reversal) and posts the new split; each job keeps its original row, the negative row and the new row, and ends on its new share; the home ends at zero. The original cannot be reallocated a second time.",
+      "inputs": {
+        "poolCents": 100001,
+        "chargedCents": 40000,
+        "secondCents": 10000,
+        "contractCents": 100000000,
+        "eacCents": 80000000
+      },
+      "expected": {
+        "allocations": [
+          {
+            "reference": "July insurance",
+            "status": "reallocated",
+            "entry": "reversed",
+            "reversal": "reversal"
+          },
+          {
+            "reference": "July insurance corrected",
+            "status": "approved",
+            "entry": "posted",
+            "reversal": null
+          }
+        ],
+        "jobs": {
+          "Riverside clinic": {
+            "ledger": 60001,
+            "rows": [
+              50001,
+              60001,
+              -50001
+            ]
+          },
+          "Harbor offices": {
+            "ledger": 40000,
+            "rows": [
+              30000,
+              40000,
+              -30000
+            ]
+          },
+          "Lot 7 spec home": {
+            "ledger": 0,
+            "rows": [
+              20000,
+              -20000
+            ]
+          }
+        },
+        "poolAfter": 0,
+        "reallocatingAgain": "refused: only an approved allocation can be reallocated",
+        "jobCostControl": "passed"
+      }
+    },
+    "allocation-treatments-agree": {
+      "derivation": "Spread 2:1, Riverside receives 66667 and Harbor 33334 (the leftover cent to the larger remainder). Riverside's July WIP cost to date is exactly its allocated cost; the allocation's job-cost rows carry the chosen cost code (01-500) so budget-versus-actual groups it; 6010 keeps only the $400 charged directly to a job while 5000 holds the full $1,000.01; job cost and the trial balance tie. Cash basis keeps the cost where it was paid (unit-tested in books-cash-profit-loss).",
+      "inputs": {
+        "poolCents": 100001,
+        "chargedCents": 40000,
+        "secondCents": 10000,
+        "contractCents": 100000000,
+        "eacCents": 80000000
+      },
+      "expected": {
+        "jobA": 66667,
+        "wipCostToDate": 66667,
+        "byCostCode": {
+          "01-500": 100001
+        },
+        "ledger": {
+          "6010": 40000,
+          "5000": 100001
+        },
+        "jobCostControl": "passed",
+        "trialBalance": "passed"
+      }
     }
   }
 }

@@ -183,6 +183,15 @@ commit;`)
     kit.sql(`update public.contracts set contract_type='purchase_agreement' where id=${q(jobs[2].contractId)};`)
     return org
   },
+  // Two jobs and a $1,000.01 insurance premium on no job, waiting to be allocated.
+  async "cost-allocations"(kit, password) {
+    const org = await greenfieldOrg(kit, { name: "Browser acceptance — cost allocations", periods: ["2026-07"], password })
+    const { q } = kit
+    for (const name of ["Riverside clinic", "Harbor offices"]) kit.sql(`insert into public.projects(id,org_id,name,property_type,created_by) values(${q(require("node:crypto").randomUUID())},${q(org.orgId)},${q(name)},'commercial',${q(org.owner.userId)});`)
+    await kit.as(org.reviewer, () => app("books/bookkeeping").createAdjustingJournal({ entryDate: "2026-07-02", memo: "Builder's risk premium", lines: [
+      { accountCode: "6010", debitCents: 100001, creditCents: 0 }, { accountCode: "1000", debitCents: 0, creditCents: 100001 }] }))
+    return org
+  },
   // July's close died right after freezing the period, 31 minutes ago.
   async "abandoned-close"(kit, password) {
     const org = await greenfieldOrg(kit, { name: "Browser acceptance — abandoned close", periods: ["2026-07"], password })

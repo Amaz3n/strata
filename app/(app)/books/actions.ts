@@ -15,6 +15,7 @@ import {
 } from "@/lib/services/books/wip-review";
 import { assignInvoiceContract } from "@/lib/services/invoices";
 import { proposeRevenuePolicy, reviewRevenuePolicy } from "@/lib/services/books/revenue-policies";
+import { proposeCostAllocation, reviewCostAllocation } from "@/lib/services/books/cost-allocations";
 import {
   getClearingSupportWorkspace,
   reviewClearingSupport,
@@ -1789,4 +1790,12 @@ export async function resolveBooksNativeProjectInvoiceRequestAction(
     revalidatePath(`/projects/${projectId}`, "layout");
     return result;
   });
+}
+
+export async function proposeCostAllocationAction(input: Parameters<typeof proposeCostAllocation>[0]) {
+  return run(() => proposeCostAllocation(input));
+}
+
+export async function reviewCostAllocationAction(input: Parameters<typeof reviewCostAllocation>[0]) {
+  return run(() => reviewCostAllocation(input));
 }

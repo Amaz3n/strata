@@ -100,6 +100,29 @@ Dr  5000  Job costs                     X
 Job cost is taken from the `job_cost_entries` subledger at **line** grain, not from the
 bill header, so a bill split across projects posts to each.
 
+**Shared cost (B11.4).** Equipment, overhead, insurance and supervision cost that
+was booked to a company expense account with no job is a *pool*. It reaches jobs only
+through a reviewed allocation (Books → Cost allocations): the preparer states the
+pool, the basis (equal, labor hours, direct cost, equipment hours or a custom
+schedule) and each job's weight, optionally keeping a share as company overhead;
+Arc splits the total to the cent (largest remainder) and a different member approves
+it. Approval posts one entry and one job-cost row per destination line:
+
+```
+Dr  5000  Job costs (per job; 1160/1170 for a home the builder owns)   share
+    Cr  6xxx  Pool expense account (no job)                                  Σ shares
+```
+
+An allocation can move no more than the pool holds on its date, so the same
+depreciation or premium cannot be allocated twice, and cost already charged to a job
+(time entries, bills, payroll) is never in a pool. A reallocation reverses the
+original exactly and posts the new split in one step; the original entry, its
+reversal, the negative job-cost rows and the new rows all stay. Because the rows sit
+in `job_cost_entries`, job cost, budget-versus-actual (by the chosen cost code) and
+WIP cost to date include the allocation. Allocated cost is not billable to a
+cost-plus client. Cash-basis statements show the cost once, when paid, under its
+original account; an allocation moves no cash and is set aside there.
+
 ### 4b. The customer is billed — invoice
 Gross billing $B with retainage $R withheld. **Billing is not revenue.**
 

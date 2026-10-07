@@ -24,6 +24,11 @@ test('noncash revenue recognition is excluded only with complete balanced classi
  const mislabeled=fixture();unsupported(mislabeled,{source:'revenue_recognition',cash:false});mislabeled.tables.journal_entries.at(-1).entry_kind='adjustment';assert.throws(()=>run(mislabeled),/reviewed cash treatment/)
  const missing=fixture();unsupported(missing,{cash:false});delete missing.tables.journal_lines.at(-1).dimensions.books_account_classification;assert.throws(()=>run(missing),/historical account classification/)
 })
+test('a cost allocation moves no cash, so cash basis keeps the cost where it was paid',()=>{
+ const snapshot=fixture();unsupported(snapshot,{source:'cost_allocation',cash:false});snapshot.tables.journal_entries.at(-1).entry_kind='adjusting'
+ assert.equal(run(snapshot).netIncomeCents,-3)
+ const withCash=fixture();unsupported(withCash,{source:'cost_allocation',cash:true});withCash.tables.journal_entries.at(-1).entry_kind='adjusting';assert.throws(()=>run(withCash),/reviewed cash treatment/)
+})
 test('an unexpected cash leg under an accrual source cannot bypass the cash movement reconciliation',()=>{
  const snapshot=fixture();unsupported(snapshot,{source:'invoice',cash:true});assert.throws(()=>run(snapshot),/does not reconcile to posted cash movements/)
 })
