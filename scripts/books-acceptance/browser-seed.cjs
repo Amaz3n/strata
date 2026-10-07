@@ -132,6 +132,23 @@ const JOURNEYS = {
     await kit.as(org.owner, () => app("books/period-close").closeAccountingPeriod(org.periods["2026-07"].periodId))
     return org
   },
+  // A customer with a kept July invoice and a legacy void Arc never dated.
+  async "receivables-history"(kit, password) {
+    const org = await greenfieldOrg(kit, { name: "Browser acceptance — receivables history", periods: ["2026-07"], password })
+    const gl = kit.rows(`select id from public.gl_accounts where org_id=${kit.q(org.orgId)} and code='4900'`)[0].id
+    const client = await kit.as(org.owner, () => app("contacts").createContact({ input: { full_name: "History Client", role_key: "client", email: "history-client@acceptance.example.test" } }))
+    const invoice = (number, dollars) => kit.as(org.owner, () => app("invoices").createInvoice({ input: { invoice_number: number, customer_id: client.id, title: "Consulting", issue: true, issue_date: "2026-07-10", due_date: "2026-08-09",
+      sent_to_emails: ["history-client@acceptance.example.test"], lines: [{ description: "Consulting", quantity: 1, unit_cost: dollars, taxable: false, arc_books_gl_account_id: gl }] } }))
+    await invoice("RH-KEEP", 500)
+    const legacy = await invoice("RH-OLD", 1000)
+    await kit.drainOutbox(org.orgId)
+    kit.sql(`begin; set local session_replication_role = replica;
+update public.invoices set status = 'void', metadata = metadata - 'voided_at' where id = ${kit.q(legacy.id)};
+commit;`, "supabase_admin")
+    org.periods.invoice = { periodId: legacy.id }
+    org.periods.client = { periodId: client.id }
+    return org
+  },
   // July's close died right after freezing the period, 31 minutes ago.
   async "abandoned-close"(kit, password) {
     const org = await greenfieldOrg(kit, { name: "Browser acceptance — abandoned close", periods: ["2026-07"], password })

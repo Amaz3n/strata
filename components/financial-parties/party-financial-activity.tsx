@@ -6,13 +6,25 @@ import { Button } from "@/components/ui/button"
 import type { PartyReceivablesSummary } from "@/lib/services/financial-parties"
 import { cn, formatMoneyCentsExact } from "@/lib/utils"
 
+/** Today, then the last three month-ends: the dates a customer statement is usually sent as of. */
+function statementDates() {
+  const today = new Date()
+  const monthEnds = [1, 2, 3].map((back) => {
+    const end = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - back + 1, 0))
+    return { asOf: end.toISOString().slice(0, 10), label: `As of ${end.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}` }
+  })
+  return [{ asOf: null, label: "As of today" }, ...monthEnds]
+}
+
 export function PartyFinancialActivity({ summary, className }: { summary: PartyReceivablesSummary; className?: string }) {
   return (
     <section className={cn("border bg-background", className)}>
       <div className="flex items-center justify-between gap-3 border-b bg-muted/30 px-4 py-3">
         <div><h2 className="text-sm font-semibold">Account activity</h2><p className="text-xs text-muted-foreground">Project and general invoices, payments, refunds, credits, and write-offs.</p>{summary.available_deposit_cents > 0 ? <p className="mt-1 text-xs text-muted-foreground">Available deposits {formatMoneyCentsExact(summary.available_deposit_cents)}</p> : null}</div>
         <div className="flex flex-wrap gap-2">
-        {summary.can_view_invoices ? <Button asChild size="sm" variant="ghost"><a href={`/directory/${summary.party_id}/statement`} target="_blank" rel="noopener noreferrer">Statement</a></Button> : null}
+        {summary.can_view_invoices ? <DropdownMenu><DropdownMenuTrigger asChild><Button size="sm" variant="ghost">Statement</Button></DropdownMenuTrigger><DropdownMenuContent align="end">
+          {statementDates().map(({ asOf, label }) => <DropdownMenuItem key={label} asChild><a href={`/directory/${summary.party_id}/statement${asOf ? `?as_of=${asOf}` : ""}`} target="_blank" rel="noopener noreferrer">{label}</a></DropdownMenuItem>)}
+        </DropdownMenuContent></DropdownMenu> : null}
         {summary.can_view_invoices ? <DropdownMenu><DropdownMenuTrigger asChild><Button size="sm">New invoice</Button></DropdownMenuTrigger><DropdownMenuContent align="end">
           {summary.projects.map(project => <DropdownMenuItem key={project.project_id} asChild><Link href={newInvoiceHref(project.project_id, { customerId: project.client_contact_id })}>{project.project_name}</Link></DropdownMenuItem>)}
           {summary.projects.length ? <DropdownMenuSeparator /> : null}

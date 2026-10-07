@@ -1,5 +1,6 @@
 import { after } from "next/server"
 import { assertNotPostedInClosedPeriod } from "@/lib/services/books/closed-period-guard"
+import { isUndatedVoid, loadLedgerRemovalDates } from "@/lib/services/books/subledger-settlements"
 import { randomUUID } from "crypto"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
@@ -2367,6 +2368,71 @@ export async function voidInvoice({ invoiceId, orgId }: { invoiceId: string; org
   }
 
   return mapInvoiceRow(data as InvoiceRow, existingAccountingState)
+}
+
+/**
+ * The reviewed date of a void Arc never recorded (`isUndatedVoid`). Until it is
+ * on record the invoice is left out of receivables at every past date; the date
+ * a person attests puts it back until then. A date that would put the invoice
+ * into a closed month's receivables is refused: that month's saved aging left
+ * it out, so the month is reopened first.
+ */
+export async function recordInvoiceVoidDate({ invoiceId, voidedOn, basis, orgId }: { invoiceId: string; voidedOn: string; basis: string; orgId?: string }) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const { data: existing, error } = await supabase
+    .from("invoices")
+    .select("id, org_id, project_id, invoice_number, status, issue_date, updated_at, metadata")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", invoiceId)
+    .maybeSingle()
+  if (error || !existing) throw new Error(error?.message ?? "Invoice not found")
+  await requireInvoicePermission({ supabase, orgId: resolvedOrgId, userId, permission: "invoice.write", projectId: existing.project_id, invoiceId })
+  const removedOn = await loadLedgerRemovalDates(resolvedOrgId, [invoiceId])
+  if (!isUndatedVoid(existing, removedOn)) {
+    throw new Error(existing.status === "void" ? "This invoice's void date is already on record." : "Only a voided invoice has a void date.")
+  }
+  const lastChanged = String(existing.updated_at).slice(0, 10)
+  if (existing.issue_date && voidedOn < existing.issue_date) throw new Error(`The invoice was issued on ${existing.issue_date}, so it was voided on or after that day.`)
+  if (voidedOn > lastChanged) throw new Error(`The invoice was last changed on ${lastChanged}, so it was voided by then.`)
+
+  const service = createServiceSupabaseClient()
+  let closedQuery = service.from("accounting_periods").select("period_start, period_end")
+    .eq("org_id", resolvedOrgId).eq("status", "closed").lt("period_end", voidedOn)
+  if (existing.issue_date) closedQuery = closedQuery.gte("period_end", existing.issue_date)
+  const { data: closed, error: closedError } = await closedQuery.order("period_end").limit(1).maybeSingle()
+  if (closedError) throw new Error(`Unable to check closed periods: ${closedError.message}`)
+  if (closed) {
+    const month = new Date(`${closed.period_start}T00:00:00Z`).toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" })
+    throw new Error(`${month} is closed without this invoice in its receivables. Date the void on or before ${closed.period_end}, or reopen ${month} first.`)
+  }
+
+  const metadata = { ...(existing.metadata as Record<string, unknown> | null) }
+  const after = {
+    ...metadata,
+    voided_at: `${voidedOn}T00:00:00.000Z`,
+    void_date_review: { voided_on: voidedOn, basis, reviewed_by: userId, reviewed_at: new Date().toISOString() },
+  }
+  // The request client proved invoice.write above; invoice rows are written by the service.
+  const { data: updated, error: updateError } = await service
+    .from("invoices")
+    .update({ metadata: after })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", invoiceId)
+    .eq("updated_at", existing.updated_at)
+    .select("id, org_id, project_id, invoice_number, status, issue_date, updated_at, metadata")
+    .maybeSingle()
+  if (updateError) throw new Error(`Failed to record the void date: ${updateError.message}`)
+  if (!updated) throw new Error("The invoice changed while the void date was being recorded. Reload it and try again.")
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "invoice_void_dated",
+    entityType: "invoice",
+    entityId: invoiceId,
+    payload: { invoice_number: existing.invoice_number, project_id: existing.project_id, voided_on: voidedOn },
+  })
+  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "invoice", entityId: invoiceId, before: existing, after: updated })
+  return { invoiceId, projectId: existing.project_id as string | null, voidedOn }
 }
 
 export async function deleteInvoice({ invoiceId, orgId }: { invoiceId: string; orgId?: string }) {

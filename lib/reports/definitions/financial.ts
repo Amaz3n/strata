@@ -668,11 +668,13 @@ const arAging: ReportDefinition = {
   params: [{ key: "asOf", kind: "date", label: "As of" }, { key: "view", kind: "select", label: "View", options: [{value:"client",label:"By client"},{value:"project",label:"By project"},{value:"invoices",label:"Invoice detail"}] }],
   run: async (ctx) => {
     const report = await getArAgingReport({ projectId: ctx.projectId, asOf: ctx.params.asOf })
-    if (ctx.params.view !== "invoices") return arAgingSummary(report, ctx.params.view === "project" ? "project" : "client")
+    const notice = undatedVoidNotice(report)
+    if (ctx.params.view !== "invoices") return { ...arAgingSummary(report, ctx.params.view === "project" ? "project" : "client"), ...(notice ? { notice } : {}) }
     const openRows = report.rows.filter(row => row.open_balance_cents > 0)
     const buckets: AgingBucket[] = ["current", "1_30", "31_60", "61_90", "90_plus"]
 
     return {
+      ...(notice ? { notice } : {}),
       subtitle: `As of ${report.as_of}${report.as_closed ? ` · as closed ${report.as_closed.slice(0, 10)}` : ""}`,
       stats: [
         { key: "open", label: "Total open", value: formatMoneyCents(report.totals.total_open_cents) },
@@ -1686,6 +1688,17 @@ function taxYearOptions() {
     const year = currentYear - offset
     return { value: String(year), label: String(year) }
   })
+}
+
+/** Undated voids are left out of the aging; say so, and say what puts them back. */
+function undatedVoidNotice(report: Awaited<ReturnType<typeof getArAgingReport>>) {
+  const undated = report.undated_voids ?? []
+  if (!undated.length) return undefined
+  const numbers = undated.slice(0, 5).map((row) => row.invoice_number ?? "unnumbered").join(", ")
+  return {
+    tone: "warning" as const,
+    message: `${undated.length} voided invoice${undated.length === 1 ? " has" : "s have"} no record of when ${undated.length === 1 ? "it was" : "they were"} voided (${numbers}${undated.length > 5 ? ", …" : ""}) and ${undated.length === 1 ? "is" : "are"} left out of this aging. Open each invoice and record its void date.`,
+  }
 }
 
 export const FINANCIAL_REPORTS: ReportDefinition[] = [

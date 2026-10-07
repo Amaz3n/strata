@@ -21,6 +21,7 @@ import {
   reviseInvoice,
   updateInvoice,
   voidInvoice,
+  recordInvoiceVoidDate,
   type ListInvoicesOptions,
 } from "@/lib/services/invoices"
 import { isIssuedInvoiceStatus } from "@/lib/financials/invoice-lifecycle"
@@ -36,7 +37,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { receivablesWriter } from "@/lib/services/receivables-writer"
 import { requireOrgContext } from "@/lib/services/context"
 import { requireAuthorization } from "@/lib/services/authorization"
-import { invoiceInputSchema } from "@/lib/validation/invoices"
+import { invoiceInputSchema, invoiceVoidDateSchema } from "@/lib/validation/invoices"
 import { sendReminderEmail } from "@/lib/services/mailer"
 import { listChangeOrders } from "@/lib/services/change-orders"
 import { getProjectFinancialFeatureConfig, isCostDrivenBillingModel } from "@/lib/financials/billing-model"
@@ -255,6 +256,16 @@ export async function voidInvoiceAction(invoiceId: string) {
       revalidatePath(`/projects/${invoice.project_id}/financials/billing`)
     }
     return invoice
+  })
+}
+
+export async function recordInvoiceVoidDateAction(input: { invoiceId: string; voidedOn: string; basis: string }) {
+  return run(async () => {
+    const result = await recordInvoiceVoidDate(invoiceVoidDateSchema.parse(input))
+    revalidatePath("/invoices")
+    revalidatePath("/billing")
+    if (result.projectId) revalidatePath(`/projects/${result.projectId}/financials/billing`)
+    return result
   })
 }
 

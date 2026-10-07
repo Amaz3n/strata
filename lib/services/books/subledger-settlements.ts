@@ -58,7 +58,6 @@ export async function loadSubledgerSettlements(client: Client, orgId: string, si
   return totals
 }
 
-/** A later void must not erase a receivable from an earlier accounting date. */
 /**
  * Whether an invoice was receivable at a past date. A voided invoice counts
  * until it was removed: the ledger's date for that (`removedOn`, from
@@ -73,6 +72,18 @@ export function isInvoiceReceivableAsOf(row: { id?: unknown; status: string | nu
   const ledgerDate = removedOn?.get(String(row.id))
   if (ledgerDate) return ledgerDate > asOf
   return typeof metadata.voided_at === "string" && metadata.voided_at >= accountingCutoff(asOf)
+}
+
+/**
+ * A voided invoice with no evidence of when it was voided: never posted to Arc
+ * Books and voided before Arc recorded void times. It is left out of every past
+ * date's receivables, so reports list it until someone records the reviewed date
+ * (`recordInvoiceVoidDate`).
+ */
+export function isUndatedVoid(row: { id?: unknown; status: string | null; metadata?: unknown }, removedOn?: ReadonlyMap<string, string>) {
+  if (row.status !== "void" || removedOn?.has(String(row.id))) return false
+  const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata as Record<string, unknown> : {}
+  return metadata.invoice_kind !== "earnest_deposit" && typeof metadata.voided_at !== "string"
 }
 
 /** Bill statuses a payable can be read from at a past date: payable now, or returned to pending or rejected since. */

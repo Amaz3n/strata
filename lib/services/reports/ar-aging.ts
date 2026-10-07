@@ -1,4 +1,4 @@
-import { accountingCutoff, isInvoiceReceivableAsOf, loadLedgerRemovalDates, loadSubledgerSettlements } from "@/lib/services/books/subledger-settlements"
+import { accountingCutoff, isInvoiceReceivableAsOf, isUndatedVoid, loadLedgerRemovalDates, loadSubledgerSettlements } from "@/lib/services/books/subledger-settlements"
 import { loadClosedPeriodSnapshots } from "@/lib/services/books/closed-snapshots"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
@@ -33,6 +33,8 @@ export type ARAgingReport = {
   as_closed?: string | null
   rows: ARAgingRow[]
   totals: ARAgingTotals
+  /** Voided invoices with no record of when (`isUndatedVoid`): left out of the totals until a void date is recorded. */
+  undated_voids?: Array<{ invoice_id: string; project_id: string | null; invoice_number: string | null; issue_date: string | null; total_cents: number }>
 }
 
 async function loadAll<T>(load: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: any }>, label: string) {
@@ -46,6 +48,16 @@ async function loadAll<T>(load: (from: number, to: number) => PromiseLike<{ data
     if (page.length < pageSize) return rows
     if (rows.length >= 250_000) throw new Error(`${label} exceeded the report safety limit`)
   }
+}
+
+type VoidRow = { id: string; project_id: string | null; invoice_number: string | null; issue_date: string | null; total_cents: number | null; status: string | null; metadata?: unknown }
+
+async function undatedVoids(orgId: string, rows: VoidRow[], removedOn?: ReadonlyMap<string, string>): Promise<NonNullable<ARAgingReport["undated_voids"]>> {
+  const voids = rows.filter((row) => row.status === "void")
+  const removed = removedOn ?? await loadLedgerRemovalDates(orgId, voids.map((row) => String(row.id)))
+  return voids.filter((row) => isUndatedVoid(row, removed)).map((row) => ({
+    invoice_id: String(row.id), project_id: row.project_id ?? null, invoice_number: row.invoice_number ?? null, issue_date: row.issue_date ?? null, total_cents: Number(row.total_cents ?? 0),
+  }))
 }
 
 export async function getArAgingReport({
@@ -69,7 +81,11 @@ export async function getArAgingReport({
     const closed = await loadClosedPeriodSnapshots(resolvedOrgId, { end: asOfDate })
     if (closed) {
       const { statement: _statement, ...saved } = closed.report<ARAgingReport & { statement: "ar_aging" }>("ar_aging")
-      return { ...saved, as_closed: closed.closedAt }
+      // The balances are as closed; which voids still lack a date is today's fact.
+      const { data: voids, error: voidError } = await supabase.from("invoices").select("id, project_id, invoice_number, issue_date, total_cents, status, metadata")
+        .eq("org_id", resolvedOrgId).eq("status", "void").is("metadata->>voided_at", null).lte("issue_date", asOfDate).order("id").limit(500)
+      if (voidError) throw new Error(`Failed to load voided invoices: ${voidError.message}`)
+      return { ...saved, as_closed: closed.closedAt, undated_voids: await undatedVoids(resolvedOrgId, voids ?? []) }
     }
   }
 
@@ -150,5 +166,6 @@ export async function getArAgingReport({
     project_id: projectId,
     rows,
     totals,
+    undated_voids: await undatedVoids(resolvedOrgId, data, removedOn),
   }
 }

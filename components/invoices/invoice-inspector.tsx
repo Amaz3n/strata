@@ -48,6 +48,7 @@ import { DEFAULT_ACCOUNTING_PROVIDER_LABEL } from "@/components/accounting/provi
 import type { AttachedFile } from "@/components/files"
 import { InvoiceAttachmentsField } from "./invoice-attachments-field"
 import { InvoiceWaiverCard } from "./invoice-waiver-card"
+import { InvoiceVoidDateCard } from "./invoice-void-date-card"
 import { isInvoiceAttachment } from "@/lib/invoices/attachment-roles"
 import { useProductTerminology } from "@/components/layout/use-product-terminology"
 import { Button } from "@/components/ui/button"
@@ -1058,6 +1059,9 @@ function InvoiceInspectorBody({
         {section === "accounting" ? (
           <div className="space-y-6 p-4">
             <p className="text-xs text-muted-foreground">{labels.description}</p>
+            {status === "void" && typeof invoice.metadata?.voided_at !== "string" && invoice.metadata?.invoice_kind !== "earnest_deposit" ? (
+              <InvoiceVoidDateCard invoice={invoice} onChanged={onChanged} />
+            ) : null}
             <SourcePostingStatus key={`${invoice.id}:${invoice.updated_at}`} sourceType="invoice" sourceId={invoice.id} revision={invoice.updated_at} />
             <NativeInvoiceAccounting key={`native:${invoice.id}`} invoiceId={invoice.id} revision={invoice.updated_at} />
             {labels.showExternalSync ? (

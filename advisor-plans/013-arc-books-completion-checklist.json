@@ -4243,8 +4243,8 @@
       "id": "B03.1",
       "workstream": "B03",
       "title": "Durable effective-dated source history",
-      "status": "PARTIAL",
-      "status_basis": "Closed months can no longer be changed under their saved reports and backdated corrections are auditable (HIST-01). Open: legacy voids with no recorded void time that never posted to Arc Books are still decided silently (needs an explicit unknown-evidence marker and reviewed attribution), and customer statements (financial-parties) still read current status rather than the shared dated population.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All B03.1 criteria verified locally (2026-10-07): closed months cannot change under their saved reports and backdated corrections restate on record (HIST-01); undated legacy voids are listed in aging and dated only by a reviewed attribution that cannot rewrite a closed month (HIST-01 undated-void, receivables-history journey); customer statements read aging's dated population, closed month-ends as closed (HIST-01 customer-statement). Production has 5 such voids in 2 orgs awaiting review. Migration 20261007010000 pending production with the deploy; this change adds none.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "a later approval/void/rejection/allocation/policy change cannot silently alter an older frozen report",
@@ -4401,15 +4401,65 @@
             "docs/books-evidence/2026-10-07-history/WIP-01.json sha256:ce43aa41f28ab2e678a15e476490917f7ab6037aae02a94325290302ae27a38e",
             "docs/books-evidence/2026-10-07-history/YEAR-01.json sha256:462c98aac5a593ce272dc3f13523dad88dc0a66bc1d95ac3c14c61632e971d09"
           ]
+        },
+        {
+          "verified_at": "2026-10-07T12:14:55.844490+00:00",
+          "implemented_paths": [
+            "lib/services/books/subledger-settlements.ts",
+            "lib/services/invoices.ts",
+            "lib/services/reports/ar-aging.ts",
+            "lib/reports/definitions/financial.ts",
+            "lib/services/financial-parties.ts",
+            "lib/pdfs/customer-statement.tsx",
+            "app/(app)/directory/[id]/statement/route.ts",
+            "app/(app)/invoices/actions.ts",
+            "lib/validation/invoices.ts",
+            "components/invoices/invoice-void-date-card.tsx",
+            "components/invoices/invoice-inspector.tsx",
+            "components/financial-parties/party-financial-activity.tsx",
+            "scripts/books-acceptance/scenarios/hist-01.cjs",
+            "scripts/books-acceptance/journeys/receivables-history.spec.ts",
+            "docs/books-period-close.md"
+          ],
+          "test_scenario_ids": [
+            "HIST-01"
+          ],
+          "commands": [
+            "scenario-runner HIST-01 and full regression",
+            "playwright receivables-history (desktop, mobile-dark) and all journeys",
+            "pnpm test:financials",
+            "node --test tests/financial-parties.test.js"
+          ],
+          "observed_results": [
+            "Undated legacy void: an invoice voided with no recorded time and no journal is left out of July 31 aging (500.00) and named in the report notice instead of dropped silently. A void date before issue is refused; after July closed, dating it August 5 is refused ('July 2026 is closed without this invoice in its receivables...'); July 20 is recorded with basis, reviewer and an invoice_void_dated event, once. July 19 then reads 1,500.00, July 20 500.00, and July 31 is the saved close at 500.00 with nothing undated.",
+            "Customer statements: one customer's statement at a closed July 31 is the saved aging (700.00, as closed); July 30 is live (500.00 after a late July 30 receipt); a void inside open July is never on it; at every date its rows equal aging's rows for that customer's invoices. Statements can be dated (today or the last three month-ends) and an impossible date is refused (400).",
+            "Browser: aging notice, void-date panel (desktop and mobile dark), recording the date, aging after, statement menu and PDF verified by the receivables-history journey; all other journeys pass.",
+            "Regression: HIST-01 (9/9), DIM-01, CAP-01, BILL-01, YEAR-01, BANK-01, STATUS-01 pass; CLOSE-01, RACE-01, WIP-01 pass every implemented subcase; test:financials 2734 pass / 0 fail."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-07-receivables-history/BANK-01.json sha256:1b55bc187c45273447c1d9514bd28bc497bb8cc08188381b0ef2ed72bc93796f",
+            "docs/books-evidence/2026-10-07-receivables-history/BILL-01.json sha256:82834b61c934bdfb920df66514d68c4ff78d3d4ac3c98633859e7795e8ef93df",
+            "docs/books-evidence/2026-10-07-receivables-history/CAP-01.json sha256:c6ec1a4d7e74fe9fe8772b50f52ffb3168947cdfee1bc9dfb7d14890fa4394ec",
+            "docs/books-evidence/2026-10-07-receivables-history/CLOSE-01.json sha256:749a8e9967845982378cd55d5787ac067fc08f70c67c087c35dcd2fdce225bc7",
+            "docs/books-evidence/2026-10-07-receivables-history/DIM-01.json sha256:3ac47957fb81d5d857a6fa0fa2bf3ddc51da95123f4e38a9c984dd1ddd3c61f3",
+            "docs/books-evidence/2026-10-07-receivables-history/HIST-01.json sha256:d8c648adca7e89fd492fbae1d1e45af7edc7dcc2790f192e9e45a76fbca37a5f",
+            "docs/books-evidence/2026-10-07-receivables-history/RACE-01.json sha256:c111b4d2635303943f23476ec24725ffbb0ccecbbaef9e0832ec1fb390fb7bed",
+            "docs/books-evidence/2026-10-07-receivables-history/STATUS-01.json sha256:10c0cfcde88cfbb42e22cd097c5d276065047d5435687a668ebd0c36ef610a5d",
+            "docs/books-evidence/2026-10-07-receivables-history/WIP-01.json sha256:21e77bea4f790d9a897ca09301ebc6d20ed3022d34438449dede1a1f80ff0efb",
+            "docs/books-evidence/2026-10-07-receivables-history/YEAR-01.json sha256:0585d55108a3dedbfd335152d98fe5c2dc56281bd2eff4ed56ee0b8933993f43",
+            "docs/books-evidence/2026-10-07-receivables-history/journey-desktop-aging-dated.png sha256:0385cfacaff8b499933d72eb6a65f4df6a5ec73a3f91347467fe23cb7f65c94d",
+            "docs/books-evidence/2026-10-07-receivables-history/journey-desktop-aging-undated.png sha256:a10b6d885f617e29b4935e37398c88171896b94718d91cd87c4275d25838b1c0",
+            "docs/books-evidence/2026-10-07-receivables-history/journey-desktop-statement-menu.png sha256:0baf0038ce90302afc461c4a7745a9b154067285740946227e40e5abb897a376",
+            "docs/books-evidence/2026-10-07-receivables-history/journey-desktop-void-date-card.png sha256:ff66335b7763f29ed8ce5409bad11aae532ab8122e91905fc0c20940e1356ac5",
+            "docs/books-evidence/2026-10-07-receivables-history/journey-mobile-dark-aging-undated.png sha256:ada38c084322ec5f3ff36cd7f855bbb5bbffe8405a2856848eccda5f1d1e2903",
+            "docs/books-evidence/2026-10-07-receivables-history/journey-mobile-dark-void-date-card.png sha256:cfd72650b91bde67068c8b680e79b8fe693d0f6d413953b8d8843eaf8924aacd"
+          ]
         }
       ],
-      "remaining_criteria": [
-        "unknown legacy evidence is explicit and remediable through reviewed attribution",
-        "same dated source population drives customer statements as well as aging and close"
-      ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-07T12:14:55.844490+00:00"
     },
     {
       "id": "B03.2",

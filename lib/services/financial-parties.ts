@@ -8,6 +8,10 @@ import { listInvoicePage, type ListInvoicesOptions } from "@/lib/services/invoic
 import { requireAnyPermission } from "@/lib/services/permissions"
 import { listProjects } from "@/lib/services/projects"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { loadClosedPeriodSnapshots } from "@/lib/services/books/closed-snapshots"
+import { accountingCutoff, isInvoiceReceivableAsOf, loadLedgerRemovalDates, loadSubledgerSettlements } from "@/lib/services/books/subledger-settlements"
+import { getAgingBucket, type AgingBucket } from "@/lib/services/reports/aging"
+import type { ARAgingReport } from "@/lib/services/reports/ar-aging"
 
 export type FinancialPartyType = "contact" | "company"
 
@@ -35,7 +39,6 @@ export interface PartyReceivablesSummary {
   invoice_count: number
   can_view_invoices: boolean
   can_view_books: boolean
-  open_invoices: Array<{ id: string; number: string; project_name: string; issue_date: string | null; due_date: string | null; total_cents: number; balance_cents: number }>
   available_deposit_cents: number
   general_billing: { invoiced_cents: number; collected_cents: number; outstanding_cents: number; invoice_count: number }
   projects: PartyReceivableProject[]
@@ -124,21 +127,10 @@ async function resolvePartyContactIds(input: {
   )
 }
 
-/**
- * One receivable attribution contract for both people and companies.
- *
- * Projects own the client relationship through `projects.client_id`; invoices
- * inherit that relationship through their project. A company includes the union
- * of its linked contacts, de-duplicated before any project is counted. This is
- * deliberately not an invoice-metadata union: doing both would count the same
- * invoice once under its project contact and again under a company label.
- */
-export async function getFinancialPartyReceivables(input: {
-  partyType: FinancialPartyType
-  partyId: string
-  orgId?: string
-}): Promise<PartyReceivablesSummary> {
-  const context = await requireOrgContext(input.orgId)
+type PartyContext = Awaited<ReturnType<typeof requireOrgContext>>
+
+/** The party's client projects and every invoice the caller may read on them, plus its general billing. */
+async function loadPartyInvoices(context: PartyContext, input: { partyType: FinancialPartyType; partyId: string }) {
   await requireAnyPermission(["org.member", "org.read", "directory.read", "directory.write"], {
     supabase: context.supabase,
     orgId: context.orgId,
@@ -168,6 +160,25 @@ export async function getFinancialPartyReceivables(input: {
   // invoices continue to belong to its client, even if their bill-to text differs.
   const generalResult = await listPartyInvoices({ orgId: context.orgId, generalCustomerIds: contactIds })
     .then(invoices => ({ invoices, canViewInvoices: true }), () => ({ invoices: [], canViewInvoices: false }))
+  return { contactIds, visibleProjects, invoiceResults, generalResult }
+}
+
+/**
+ * One receivable attribution contract for both people and companies.
+ *
+ * Projects own the client relationship through `projects.client_id`; invoices
+ * inherit that relationship through their project. A company includes the union
+ * of its linked contacts, de-duplicated before any project is counted. This is
+ * deliberately not an invoice-metadata union: doing both would count the same
+ * invoice once under its project contact and again under a company label.
+ */
+export async function getFinancialPartyReceivables(input: {
+  partyType: FinancialPartyType
+  partyId: string
+  orgId?: string
+}): Promise<PartyReceivablesSummary> {
+  const context = await requireOrgContext(input.orgId)
+  const { contactIds, visibleProjects, invoiceResults, generalResult } = await loadPartyInvoices(context, input)
   const readableInvoices = [...invoiceResults.flatMap((result) => result.invoices), ...generalResult.invoices]
   const invoiceIds = readableInvoices.map((invoice) => invoice.id)
   const canViewBooks = (await authorize({ permission: "books.read", userId: context.userId, orgId: context.orgId, supabase: context.supabase, logDecision: false })).allowed
@@ -281,9 +292,62 @@ export async function getFinancialPartyReceivables(input: {
       outstanding_cents: generalBilled.reduce((sum, invoice) => sum + Number(invoice.balance_due_cents ?? (invoice.status === "paid" ? 0 : invoice.total_cents ?? 0)), 0),
       invoice_count: generalBilled.length,
     },
-    open_invoices: readableInvoices.filter(invoice => billed.has(String(invoice.status)) && invoice.metadata?.invoice_kind !== "earnest_deposit" && Number(invoice.balance_due_cents ?? 0) > 0)
-      .map(invoice => ({ id: invoice.id, number: invoice.invoice_number ?? "Invoice", project_name: projectById.get(String(invoice.project_id))?.name ?? "General billing", issue_date: invoice.issue_date ?? null, due_date: invoice.due_date ?? null, total_cents: Number(invoice.total_cents ?? 0), balance_cents: Number(invoice.balance_due_cents ?? 0) })),
     projects,
     activity,
   }
+}
+
+export interface CustomerStatement {
+  as_of: string
+  /** Set when `as_of` ends a closed period: the balances saved at that close. */
+  as_closed: string | null
+  can_view_invoices: boolean
+  invoices: Array<{ id: string; number: string; project_name: string; issue_date: string | null; due_date: string | null; total_cents: number; balance_cents: number; bucket: AgingBucket }>
+  aging: Record<Exclude<AgingBucket, "paid">, number>
+  balance_cents: number
+}
+
+/**
+ * A customer's open invoices on a date, read exactly as receivables aging reads
+ * them: issued by the date, voids removed on the ledger's date, payments and
+ * credits dated by when they happened. The end of a closed period reads the
+ * aging saved at close, so a statement can never disagree with a closed month.
+ */
+export async function getCustomerStatement(input: { partyType: FinancialPartyType; partyId: string; asOf: string; orgId?: string }): Promise<CustomerStatement> {
+  const context = await requireOrgContext(input.orgId)
+  accountingCutoff(input.asOf)
+  const { visibleProjects, invoiceResults, generalResult } = await loadPartyInvoices(context, input)
+  const canViewInvoices = generalResult.canViewInvoices && invoiceResults.every((result) => result.canViewInvoices)
+  const projectName = new Map(visibleProjects.map((project) => [project.id, project.name]))
+  const invoices = [...invoiceResults.flatMap((result) => result.invoices), ...generalResult.invoices]
+    .filter((invoice) => invoice.issue_date && invoice.issue_date <= input.asOf)
+  const aging: CustomerStatement["aging"] = { current: 0, "1_30": 0, "31_60": 0, "61_90": 0, "90_plus": 0, no_due_date: 0 }
+  const statement = (rows: CustomerStatement["invoices"], asClosed: string | null): CustomerStatement => {
+    const open = rows.filter((row) => row.balance_cents !== 0 && row.bucket !== "paid")
+      .sort((left, right) => (left.due_date ?? "9999").localeCompare(right.due_date ?? "9999") || left.number.localeCompare(right.number))
+    for (const row of open) if (row.bucket !== "paid") aging[row.bucket] += row.balance_cents
+    return { as_of: input.asOf, as_closed: asClosed, can_view_invoices: canViewInvoices, invoices: open, aging, balance_cents: open.reduce((sum, row) => sum + row.balance_cents, 0) }
+  }
+
+  const closed = await loadClosedPeriodSnapshots(context.orgId, { end: input.asOf })
+  if (closed) {
+    const ids = new Set(invoices.map((invoice) => invoice.id))
+    const saved = closed.report<ARAgingReport & { statement: "ar_aging" }>("ar_aging")
+    return statement(saved.rows.filter((row) => ids.has(row.invoice_id)).map((row) => ({
+      id: row.invoice_id, number: row.invoice_number ?? "Invoice", project_name: row.project_name ?? "General billing", issue_date: row.issue_date, due_date: row.due_date, total_cents: row.total_cents, balance_cents: row.open_balance_cents, bucket: row.bucket,
+    })), closed.closedAt)
+  }
+
+  const service = createServiceSupabaseClient()
+  const removedOn = await loadLedgerRemovalDates(context.orgId, invoices.filter((invoice) => invoice.status === "void").map((invoice) => invoice.id))
+  const receivable = invoices.filter((invoice) => isInvoiceReceivableAsOf(invoice, input.asOf, removedOn))
+  const settled = await loadSubledgerSettlements(service, context.orgId, "receivable", receivable.map((invoice) => invoice.id), input.asOf)
+  return statement(receivable.map((invoice) => {
+    const total = Number(invoice.total_cents ?? 0)
+    const balance = total - (settled.get(invoice.id) ?? 0)
+    return {
+      id: invoice.id, number: invoice.invoice_number ?? "Invoice", project_name: projectName.get(String(invoice.project_id)) ?? "General billing", issue_date: invoice.issue_date ?? null, due_date: invoice.due_date ?? null, total_cents: total, balance_cents: balance,
+      bucket: getAgingBucket({ dueDate: invoice.due_date, asOf: input.asOf, isPaid: balance === 0 }).bucket,
+    }
+  }), null)
 }

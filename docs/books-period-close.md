@@ -122,6 +122,18 @@ source on its own date and resolves exactly that finding.
   (`loadLedgerRemovalDates`): on its own date when its month was still open, so
   it reads as never issued; otherwise on the reversal date. Documents that never
   posted fall back to their recorded void time.
+- **Undated voids are listed, never decided silently.** An invoice voided before
+  Arc recorded void times, and never posted, has no evidence of when it left
+  receivables (`isUndatedVoid`). Aging leaves it out and says so, naming it; the
+  invoice's Accounting tab asks for the void date and what it rests on
+  (`recordInvoiceVoidDate`, `invoice.write`). The date must fall between the
+  issue date and the invoice's last change, is kept with its reviewer and basis
+  (`metadata.void_date_review`), and is recorded once. A date that would put the
+  invoice into a closed month's receivables is refused: that month's saved aging
+  left it out, so the month is reopened first.
+- **Customer statements read the same population.** A statement as of any date
+  (`getCustomerStatement`) is that customer's slice of aging on that date; the
+  end of a closed month is the saved aging.
 - **Closed months stay closed.** Returning a bill to pending, or voiding or
   revising an invoice, whose posting sits in a closed month is refused with the
   cure: reopen that month, or record a vendor credit or credit memo in an open

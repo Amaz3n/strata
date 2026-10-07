@@ -1,0 +1,174 @@
+{
+  "scenario": "WIP-01",
+  "status": "INCOMPLETE",
+  "reviewedFrom": "docs/books-revenue-recognition.md §4a, §4b, §4c and the §5 worked example (cost-to-cost percentage of completion). Expected balances are independent of the implementation; amounts are integer cents. Pending licensed-CPA review (B16.3).",
+  "subcases": [
+    {
+      "name": "policy-worked-example",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "14667e42-26f8-430c-b75e-7209ea7cd276",
+        "projectId": "e3f7dbf3-924d-4160-8449-c5a1f40b3b97"
+      },
+      "checks": [
+        {
+          "label": "2026-07 ledger matches the policy entry set",
+          "pass": true,
+          "expected": {
+            "1100": 27000000,
+            "1110": 3000000,
+            "2000": -20000000,
+            "2350": -5000000,
+            "4000": -25000000,
+            "5000": 20000000
+          },
+          "observed": {
+            "1100": 27000000,
+            "1110": 3000000,
+            "2000": -20000000,
+            "2350": -5000000,
+            "4000": -25000000,
+            "5000": 20000000
+          }
+        },
+        {
+          "label": "2026-07 recognition delta",
+          "pass": true,
+          "expected": 25000000,
+          "observed": 25000000
+        },
+        {
+          "label": "2026-08 ledger matches the policy entry set",
+          "pass": true,
+          "expected": {
+            "1100": 54000000,
+            "1110": 6000000,
+            "2000": -60000000,
+            "2350": 15000000,
+            "4000": -75000000,
+            "5000": 60000000
+          },
+          "observed": {
+            "1100": 54000000,
+            "1110": 6000000,
+            "2000": -60000000,
+            "2350": 15000000,
+            "4000": -75000000,
+            "5000": 60000000
+          }
+        },
+        {
+          "label": "2026-08 recognition delta",
+          "pass": true,
+          "expected": 50000000,
+          "observed": 50000000
+        },
+        {
+          "label": "gross profit after August",
+          "pass": true,
+          "expected": 15000000,
+          "observed": 15000000
+        }
+      ],
+      "startedAt": "2026-10-07T12:14:23.847Z"
+    },
+    {
+      "name": "second-contract-separately-owned",
+      "status": "NOT_IMPLEMENTED",
+      "checks": []
+    },
+    {
+      "name": "shared-cost-allocation",
+      "status": "NOT_IMPLEMENTED",
+      "checks": []
+    },
+    {
+      "name": "late-bill-after-review-blocks-close",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "f64a4d65-c239-42ea-9a90-ec6b6a2b4724",
+        "projectId": "fe12d03a-27f8-4a34-802e-2a8937d08d89"
+      },
+      "checks": [
+        {
+          "label": "close refuses after a cost lands behind the WIP review",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "nothing recognized by the refused close",
+          "pass": true,
+          "expected": 0,
+          "observed": 0
+        },
+        {
+          "label": "2026-07 recognition after re-review",
+          "pass": true,
+          "expected": 50000000,
+          "observed": 50000000
+        }
+      ],
+      "startedAt": "2026-10-07T12:14:27.893Z"
+    },
+    {
+      "name": "revised-and-reverted-eac",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "8993c943-a133-4001-b169-58b91f7c4053",
+        "projectId": "e32b3b5b-f744-4c27-8b03-187207365ca0"
+      },
+      "checks": [
+        {
+          "label": "2026-07 recognition delta after EAC 80000000",
+          "pass": true,
+          "expected": 25000000,
+          "observed": 25000000
+        },
+        {
+          "label": "2026-08 recognition delta after EAC 100000000",
+          "pass": true,
+          "expected": 35000000,
+          "observed": 35000000
+        },
+        {
+          "label": "2026-09 recognition delta after EAC 80000000",
+          "pass": true,
+          "expected": 15000000,
+          "observed": 15000000
+        }
+      ],
+      "startedAt": "2026-10-07T12:14:28.751Z"
+    },
+    {
+      "name": "completed-job-carryforward",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "029477bb-785d-4a1a-8dae-70856283bec6",
+        "projectId": "31484dd2-aeac-485e-bc68-2fa0fd92300f"
+      },
+      "checks": [
+        {
+          "label": "2026-07 recognition",
+          "pass": true,
+          "expected": 100000000,
+          "observed": 100000000
+        },
+        {
+          "label": "2026-08 recognition",
+          "pass": true,
+          "expected": 0,
+          "observed": 0
+        }
+      ],
+      "startedAt": "2026-10-07T12:14:29.776Z"
+    },
+    {
+      "name": "wip-recognition-close-populations-agree",
+      "status": "NOT_IMPLEMENTED",
+      "checks": []
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-07T12:14:30.404Z"
+}

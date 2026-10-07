@@ -258,6 +258,97 @@
           "namesVendor": true
         }
       }
+    },
+    "customer-statement": {
+      "inputs": {
+        "issueDate": "2026-07-10",
+        "dueDate": "2026-07-20",
+        "secondDueDate": "2026-08-14",
+        "cutoff": "2026-07-31",
+        "julyReceiptDate": "2026-07-25",
+        "lateReceiptDate": "2026-07-30",
+        "today": "2026-10-07",
+        "keptCents": 100000,
+        "voidedCents": 50000,
+        "julyReceiptCents": 30000,
+        "lateReceiptCents": 20000
+      },
+      "derivation": "One customer, two July invoices: HS-1 1,000.00 due July 20 and HS-2 500.00. 300.00 is received on HS-1 on July 25. HS-2 is voided while July is open, so the ledger removes it on its own date and it is never on a July statement. July closes with HS-1 open at 700.00, 11 days past due (1-30). A 200.00 receipt dated July 30 is then recorded. The July 31 statement is the saved aging: 700.00, as closed. July 30 is a live date: 1,000 - 300 - 200 = 500.00. Today (October 7, 79 days past due, 61-90) is also 500.00. At each date the statement's rows are aging's rows for this customer's invoices.",
+      "expected": {
+        "closedMonthEnd": {
+          "balance": 70000,
+          "numbers": [
+            "HS-1"
+          ],
+          "asClosed": true,
+          "matchesAging": true
+        },
+        "dayBefore": {
+          "balance": 50000,
+          "numbers": [
+            "HS-1"
+          ],
+          "asClosed": false,
+          "matchesAging": true
+        },
+        "today": {
+          "balance": 50000,
+          "numbers": [
+            "HS-1"
+          ],
+          "asClosed": false,
+          "matchesAging": true
+        }
+      }
+    },
+    "undated-void": {
+      "inputs": {
+        "issueDate": "2026-07-10",
+        "dueDate": "2026-08-09",
+        "cutoff": "2026-07-31",
+        "beforeIssue": "2026-07-05",
+        "afterClose": "2026-08-05",
+        "voidedOn": "2026-07-20",
+        "dayBeforeVoid": "2026-07-19",
+        "keptCents": 50000,
+        "legacyCents": 100000
+      },
+      "derivation": "HU-KEEP (500.00) and HU-OLD (1,000.00) are issued July 10. HU-OLD is then made a legacy void: status void with no recorded void time and no journal. The July 31 aging is 500.00 and lists HU-OLD as undated rather than dropping it silently. A void date before the issue date is refused. July closes with HU-OLD left out, so dating the void August 5 (which would put it in July's receivables) is refused with the cure. Dating it July 20 is recorded with its basis and reviewer and an event; recording again is refused. July 19 (a live date) now reads 1,500.00 with nothing undated; July 20 reads 500.00; July 31 is the saved close at 500.00.",
+      "expected": {
+        "journals": 0,
+        "before": {
+          "open": 50000,
+          "undated": [
+            "HU-OLD"
+          ],
+          "asClosed": false
+        },
+        "beforeIssue": "The invoice was issued on 2026-07-10, so it was voided on or after that day.",
+        "afterClosedMonth": "July 2026 is closed without this invoice in its receivables. Date the void on or before 2026-07-31, or reopen July 2026 first.",
+        "recorded": "allowed",
+        "again": "This invoice's void date is already on record.",
+        "review": {
+          "voided_on": "2026-07-20",
+          "basis": "Void record in the previous accounting system",
+          "reviewed": true
+        },
+        "audited": 1,
+        "afterDayBeforeVoid": {
+          "open": 150000,
+          "undated": [],
+          "asClosed": false
+        },
+        "afterVoidDay": {
+          "open": 50000,
+          "undated": [],
+          "asClosed": false
+        },
+        "afterClosedMonthEnd": {
+          "open": 50000,
+          "undated": [],
+          "asClosed": true
+        }
+      }
     }
   }
 }

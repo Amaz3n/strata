@@ -216,6 +216,85 @@ commit;`)
   return { orgId: org.orgId }
 }
 
+// A customer statement reads the same dated population as aging: the end of a
+// closed month is the saved aging, a void in an open month is gone from July,
+// and a receipt counts from its date.
+async function customerStatement(kit, expected, check) {
+  const input = expected.inputs
+  const org = await greenfieldOrg(kit, { name: "HIST-01 customer statement", periods: ["2026-07"] })
+  const customer = await kit.as(org.owner, () => app("contacts").createContact({ input: { full_name: "Statement Client", role_key: "client", email: "statement-client@acceptance.example.test" } }))
+  const invoice = async (number, cents, issueDate, dueDate) => {
+    const created = await kit.as(org.owner, () => app("invoices").createInvoice({ input: {
+      invoice_number: number, customer_id: customer.id, title: "Consulting", issue: true, issue_date: issueDate, due_date: dueDate,
+      sent_to_emails: ["statement-client@acceptance.example.test"],
+      lines: [{ description: "Consulting", quantity: 1, unit_cost: cents / 100, taxable: false, arc_books_gl_account_id: glId(kit, org, "4900") }] } }))
+    await kit.drainOutbox(org.orgId)
+    return created.id
+  }
+  const receipt = async (invoiceId, cents, date) => {
+    await kit.as(org.owner, () => app("payments").recordMultiInvoicePayment({ received_at: `${date}T12:00:00Z`, method: "check", idempotency_key: randomUUID(), allocations: [{ invoice_id: invoiceId, amount_cents: cents }] }))
+    await kit.drainOutbox(org.orgId)
+  }
+  const kept = await invoice("HS-1", input.keptCents, input.issueDate, input.dueDate)
+  const voided = await invoice("HS-2", input.voidedCents, input.issueDate, input.secondDueDate)
+  await receipt(kept, input.julyReceiptCents, input.julyReceiptDate)
+  await incrementalJob(kit, org)
+  await kit.as(org.owner, () => app("invoices").voidInvoice({ invoiceId: voided }))
+  await incrementalJob(kit, org)
+  const july = org.periods["2026-07"].periodId
+  const clearing = await kit.as(org.owner, () => app("books/clearing-support").getClearingSupportWorkspace(july))
+  await kit.as(org.owner, () => app("books/clearing-support").reviewClearingSupport({ periodId: july, ledgerDigest: clearing.ledgerDigest, items: [{ code: "1010", amountCents: input.julyReceiptCents, expectedSettlementDate: "2026-08-03",
+    explanation: "Client check of July 25 deposited August 3", evidenceUrl: "https://acceptance.example.test/deposit-slip-0803.pdf" }] }))
+  await kit.as(org.owner, () => app("books/period-close").closeAccountingPeriod(july))
+  await receipt(kept, input.lateReceiptCents, input.lateReceiptDate)
+  const statement = (asOf) => kit.as(org.owner, () => app("financial-parties").getCustomerStatement({ partyType: "contact", partyId: customer.id, asOf, orgId: org.orgId }))
+  const agingFor = async (asOf) => (await arAging(kit, org, asOf)).rows.filter((row) => [kept, voided].includes(row.invoice_id) && row.open_balance_cents !== 0)
+    .map((row) => ({ id: row.invoice_id, balance: row.open_balance_cents, bucket: row.bucket }))
+  const read = async (asOf) => {
+    const found = await statement(asOf)
+    const rows = found.invoices.map((row) => ({ id: row.id, balance: row.balance_cents, bucket: row.bucket }))
+    return { balance: found.balance_cents, numbers: found.invoices.map((row) => row.number), asClosed: Boolean(found.as_closed), matchesAging: JSON.stringify(rows) === JSON.stringify(await agingFor(asOf)) }
+  }
+  check.equal("customer statements read aging's dated population at a closed month-end, a live past date and today", expected.expected, {
+    closedMonthEnd: await read(input.cutoff), dayBefore: await read(input.lateReceiptDate), today: await read(input.today),
+  })
+  return { orgId: org.orgId, kept, voided, customer: customer.id }
+}
+
+// A void from before Arc recorded void times, never posted to Arc Books, is not
+// decided silently: aging lists it as undated. A person records the reviewed
+// date; a date that would change a closed month is refused.
+async function undatedVoid(kit, expected, check) {
+  const input = expected.inputs
+  const org = await greenfieldOrg(kit, { name: "HIST-01 undated void", periods: ["2026-07"] })
+  const kept = await customerInvoice(kit, org, "HU-KEEP", input.keptCents, input.issueDate, input.dueDate)
+  const legacy = await customerInvoice(kit, org, "HU-OLD", input.legacyCents, input.issueDate, input.dueDate)
+  // The legacy void: status only, no void time, nothing in the ledger.
+  kit.sql(`begin; set local session_replication_role = replica;
+update public.invoices set status = 'void', metadata = metadata - 'voided_at' where id = ${kit.q(legacy)};
+commit;`, "supabase_admin")
+  await incrementalJob(kit, org)
+  const journals = Number(kit.rows(`select count(*)::int n from public.journal_entries where source_id = ${kit.q(legacy)}`)[0].n)
+  const aging = async (asOf) => {
+    const report = await arAging(kit, org, asOf)
+    return { open: report.totals.total_open_cents, undated: (report.undated_voids ?? []).map((row) => row.invoice_number), asClosed: Boolean(report.as_closed) }
+  }
+  const before = await aging(input.cutoff)
+  const record = (voidedOn) => refusal(() => kit.as(org.owner, () => app("invoices").recordInvoiceVoidDate({ invoiceId: legacy, voidedOn, basis: "Void record in the previous accounting system" })))
+  const beforeIssue = await record(input.beforeIssue)
+  await kit.as(org.owner, () => app("books/period-close").closeAccountingPeriod(org.periods["2026-07"].periodId))
+  const afterClosedMonth = await record(input.afterClose)
+  const recorded = await record(input.voidedOn)
+  const again = await record(input.voidedOn)
+  const review = kit.rows(`select metadata->'void_date_review'->>'voided_on' voided_on, metadata->'void_date_review'->>'basis' basis, (metadata->'void_date_review'->>'reviewed_by') is not null reviewed from public.invoices where id = ${kit.q(legacy)}`)[0]
+  const audited = Number(kit.rows(`select count(*)::int n from public.events where entity_id = ${kit.q(legacy)} and event_type = 'invoice_void_dated'`)[0].n)
+  check.equal("an undated legacy void is listed, not decided silently; its reviewed date is recorded once and never rewrites a closed month", expected.expected, {
+    journals, before, beforeIssue, afterClosedMonth, recorded, again, review, audited,
+    afterDayBeforeVoid: await aging(input.dayBeforeVoid), afterVoidDay: await aging(input.voidedOn), afterClosedMonthEnd: await aging(input.cutoff),
+  })
+  return { orgId: org.orgId, kept, legacy }
+}
+
 module.exports = {
   id: "HIST-01",
   subcases: {
@@ -226,5 +305,7 @@ module.exports = {
     "restatement": restatement,
     "volume-aging": volumeAging,
     "opening-items": openingItems,
+    "customer-statement": customerStatement,
+    "undated-void": undatedVoid,
   },
 }
