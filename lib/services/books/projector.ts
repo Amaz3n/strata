@@ -48,7 +48,7 @@ import {
 import { classifyPaymentPosting } from "@/lib/services/books/posting-rules";
 import { loadRevenueBasisByProject } from "@/lib/services/books/revenue-basis";
 import { recordEvent } from "@/lib/services/events";
-import { isoDateOnlyFromUtcMs } from "@/lib/services/reports/dates";
+import { isoDateOnlyFromUtcMs, todayIsoDateOnly } from "@/lib/services/reports/dates";
 import {
   loadInvoiceRetainageCents,
   loadRetainageReleaseInvoiceCents,
@@ -346,6 +346,15 @@ async function resolveWatermarks(orgId: string): Promise<ProjectionWatermarks> {
   ]);
   if (error) throw new Error(`Failed to load projection progress: ${error.message}`);
   if (!data) return factWatermarks(orgId, retry);
+  // A contract whose effective date arrived since the last read changes its
+  // project's revenue basis with no edit; touching those sources puts them in
+  // this run's read.
+  if (data.read_started_at) {
+    const { error: touchError } = await createServiceSupabaseClient().rpc("books_touch_sources_for_effective_contracts", {
+      p_org_id: orgId, p_after: isoDateOnlyFromUtcMs(Date.parse(String(data.read_started_at))), p_through: todayIsoDateOnly(),
+    });
+    if (touchError) throw new Error(`Failed to refresh sources for contracts taking effect: ${touchError.message}`);
+  }
   const cursors = z.record(z.string()).parse(data.cursors);
   const window = data.read_started_at ? new Date(Date.parse(String(data.read_started_at)) - LATE_COMMIT_WINDOW_MS).toISOString() : null;
   const from = (cursor: string | undefined, retryIds: string[]): ReadFrom => {

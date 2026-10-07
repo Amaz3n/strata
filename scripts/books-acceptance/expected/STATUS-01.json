@@ -210,6 +210,26 @@
           "openFindings": 0
         }
       }
+    },
+    "contract-takes-effect": {
+      "inputs": {
+        "issueDate": "2026-07-20",
+        "cents": 100000,
+        "contractCents": 1000000
+      },
+      "derivation": "A residential project invoice of 1,000.00 posts with no contract under percentage of completion: Dr 1100 / Cr 2350 contract liabilities. A purchase agreement dated tomorrow is added; the next run leaves the posting unchanged because it is not yet in effect. The day passes with no edit (its date arrives; the last run read yesterday). The first ordinary run afterwards re-posts the invoice under the closing basis the purchase agreement sets, crediting revenue (4000) instead of 2350, and the invoice reads posted.",
+      "expected": {
+        "noContract": [
+          "2350"
+        ],
+        "beforeEffective": [
+          "2350"
+        ],
+        "afterEffective": [
+          "4000"
+        ],
+        "status": "posted"
+      }
     }
   }
 }

@@ -336,6 +336,42 @@ async function postedSourceDeletion(kit, expected, check) {
   return { orgId: org.orgId }
 }
 
+// A contract dated in the future changes its project's revenue basis on the day
+// it takes effect, with nobody editing anything. The first ordinary run after
+// that day re-posts the project's invoice under the contract.
+async function contractTakesEffect(kit, expected, check) {
+  const input = expected.inputs
+  const org = await jobOrg(kit, "STATUS-01 contract takes effect", ["2026-07"])
+  const { q } = kit
+  kit.sql(`select public.create_invoice_atomic(${q(org.orgId)},jsonb_build_object('project_id',${q(org.projectId)},'invoice_number','STE-1',
+  'title','Progress billing','issue_date',${q(input.issueDate)},'due_date',${q(input.issueDate)},'client_visible',true,'approval_status','approved',
+  'product_posture','residential','subtotal_cents',${input.cents},'tax_cents',0,'total_cents',${input.cents},'balance_due_cents',${input.cents},'token',${q(randomUUID())}),
+  jsonb_build_array(jsonb_build_object('description','Work completed','quantity',1,'unit_price_cents',${input.cents},'amount_cents',${input.cents})));`)
+  const invoiceId = kit.rows(`select id from public.invoices where org_id = ${q(org.orgId)} and invoice_number = 'STE-1'`)[0].id
+  await incrementalJob(kit, org)
+  const credited = () => kit.rows(`select a.code from public.journal_lines l join public.journal_entries e on e.id = l.entry_id join public.gl_accounts a on a.id = l.account_id
+    where e.org_id = ${q(org.orgId)} and e.source_id = ${q(invoiceId)} and e.status = 'posted' and l.credit_cents > 0 order by a.code`).map((row) => row.code)
+  const status = () => kit.as(org.owner, () => app("books/posting-status").getBooksPostingStatus({ sourceType: "invoice", sourceId: invoiceId })).then((result) => result?.state)
+  const noContract = credited()
+  const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10)
+  kit.sql(`insert into public.contracts(org_id,project_id,title,status,total_cents,currency,contract_type,retainage_percent,effective_date)
+  values(${q(org.orgId)},${q(org.projectId)},'Purchase agreement','active',${input.contractCents},'usd','purchase_agreement',0,${q(tomorrow)})`)
+  await incrementalJob(kit, org)
+  const beforeEffective = credited()
+  // The day passes: the agreement is now in effect and nothing was edited. The last
+  // run read yesterday, and the invoice last changed before that.
+  kit.sql(`begin; set local session_replication_role = replica;
+update public.contracts set effective_date = current_date where org_id = ${q(org.orgId)};
+update public.invoices set updated_at = now() - interval '2 days' where id = ${q(invoiceId)};
+update public.books_projection_progress set read_started_at = now() - interval '1 day' where org_id = ${q(org.orgId)};
+commit;`, "supabase_admin")
+  await incrementalJob(kit, org)
+  check.equal("the invoice re-posts under the contract on the first run after it takes effect", expected.expected, {
+    noContract, beforeEffective, afterEffective: credited(), status: await status(),
+  })
+  return { orgId: org.orgId, invoiceId }
+}
+
 module.exports = {
   id: "STATUS-01",
   subcases: {
@@ -348,6 +384,7 @@ module.exports = {
     "dependency-invalidation": dependencyInvalidation,
     "access-and-empty": accessAndEmpty,
     "posted-source-deletion": postedSourceDeletion,
+    "contract-takes-effect": contractTakesEffect,
   },
 }
 
