@@ -7817,7 +7817,7 @@
       "workstream": "B09",
       "title": "Complete economic dependency invalidation",
       "status": "PARTIAL",
-      "status_basis": "Dependency invalidation built and proven with incremental runs (STATUS-01 9/9); deletions of posted sources are now refused, so no deletion waits for the nightly pass (migration 20261006210000 pending production with the deploy). Open: project dimensions (restatement policy with B07), date-driven revenue-basis flips without an edit (a stopped or unreached company run now opens a finding that holds its close: CAP-01 time-budget).",
+      "status_basis": "Dependency invalidation proven with incremental runs (STATUS-01 10/10), including a contract taking effect with no edit; posted deletions refused; stopped or unreached runs open a finding. Only open item: whether a change to a project's reporting tags (division, community, lot) restates its posted entries, a policy decision with B07. Migrations 20261006210000 and 20261006240000 pending production with the deploy.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "table-driven mutation tests change each listed dependency and get stale/blocked/reprojected status correctly",
@@ -7933,11 +7933,34 @@
           "artifact_paths_and_hashes": [
             "docs/books-evidence/2026-10-06-golden-scenarios/STATUS-01.json sha256:30c153140e5150a4f85e7e6e8147deaa0d234dbd1c506b99a892d03a7a5a89bb"
           ]
+        },
+        {
+          "verified_at": "2026-10-07T01:30:54.123238+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261006240000_books_contract_effective_date_invalidation.sql",
+            "lib/services/books/projector.ts",
+            "scripts/books-acceptance/scenarios/status-01.cjs"
+          ],
+          "test_scenario_ids": [
+            "STATUS-01"
+          ],
+          "commands": [
+            "scenario-runner STATUS-01",
+            "pnpm test:financials"
+          ],
+          "observed_results": [
+            "A residential project invoice posts to 2350 under percentage of completion; a purchase agreement dated tomorrow leaves it unchanged; the day the agreement takes effect, with no edit, the first ordinary run re-posts the invoice to 4000 under the closing basis and it reads posted.",
+            "Negative check (the effective-date touch disabled): the invoice stays on 2350 and still reads posted until the nightly pass.",
+            "STATUS-01 10/10; test:financials 2734 pass / 0 fail."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/STATUS-01-contract-takes-effect.json sha256:15541f7730c67b02e34cffbff27f44490e1bab34aee45d5bcc247f823d8a31df",
+            "docs/books-evidence/2026-10-06-golden-scenarios/STATUS-01-negative-no-effective-date-touch.json sha256:e4be819a30d0f26131dbaf20e294d6eb90aba79d71df8766c543be0b2ad4b376"
+          ]
         }
       ],
       "remaining_criteria": [
-        "project dimension changes (restatement policy with B07)",
-        "date-driven revenue-basis flips re-evaluate without an edit"
+        "project reporting-tag changes: restate posted entries or keep tags as posted (policy with B07)"
       ],
       "external_dependency": null,
       "reviewer": null,
