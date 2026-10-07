@@ -78,7 +78,7 @@ export function arAgingSummary(
       0,
     );
   return {
-    subtitle: `As of ${report.as_of}`,
+    subtitle: `As of ${report.as_of}${report.as_closed ? ` · as closed ${report.as_closed.slice(0, 10)}` : ""}`,
     tables: [
       {
         key: `aging-${by}`,

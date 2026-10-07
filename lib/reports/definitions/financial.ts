@@ -673,7 +673,7 @@ const arAging: ReportDefinition = {
     const buckets: AgingBucket[] = ["current", "1_30", "31_60", "61_90", "90_plus"]
 
     return {
-      subtitle: `As of ${report.as_of}`,
+      subtitle: `As of ${report.as_of}${report.as_closed ? ` · as closed ${report.as_closed.slice(0, 10)}` : ""}`,
       stats: [
         { key: "open", label: "Total open", value: formatMoneyCents(report.totals.total_open_cents) },
         ...buckets.map((bucket) => ({
@@ -741,7 +741,7 @@ const apAging: ReportDefinition = {
     const buckets: AgingBucket[] = ["current", "1_30", "31_60", "61_90", "90_plus"]
 
     return {
-      subtitle: `As of ${report.as_of}`,
+      subtitle: `As of ${report.as_of}${report.as_closed ? ` · as closed ${report.as_closed.slice(0, 10)}` : ""}`,
       stats: [
         { key: "open", label: "Total open", value: formatMoneyCents(report.totals.total_open_cents) },
         ...buckets.map((bucket) => ({

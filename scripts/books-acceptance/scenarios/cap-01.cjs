@@ -300,3 +300,4 @@ module.exports = {
     "narrowed-proof": narrowedProof,
   },
 }
+module.exports.helpers = { volumeOrg }

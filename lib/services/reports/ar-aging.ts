@@ -1,4 +1,5 @@
-import { accountingCutoff, isInvoiceReceivableAsOf, loadSubledgerSettlements } from "@/lib/services/books/subledger-settlements"
+import { accountingCutoff, isInvoiceReceivableAsOf, loadLedgerRemovalDates, loadSubledgerSettlements } from "@/lib/services/books/subledger-settlements"
+import { loadClosedPeriodSnapshots } from "@/lib/services/books/closed-snapshots"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
 import { applyReportingExclusion, getReportingExcludedProjectIds } from "@/lib/services/reporting-scope"
@@ -28,6 +29,8 @@ export type ARAgingTotals = Record<AgingBucket, number> & { total_open_cents: nu
 export type ARAgingReport = {
   as_of: string
   project_id?: string
+  /** When set, this is the aging saved when the period ending `as_of` closed. */
+  as_closed?: string | null
   rows: ARAgingRow[]
   totals: ARAgingTotals
 }
@@ -49,15 +52,26 @@ export async function getArAgingReport({
   projectId,
   asOf,
   orgId,
+  includeExcludedProjects = false,
 }: {
   projectId?: string
   asOf?: string
   orgId?: string
+  /** The accounting record (saved at close) covers every project, as the ledger does. */
+  includeExcludedProjects?: boolean
 }): Promise<ARAgingReport> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("report.read", { supabase, orgId: resolvedOrgId, userId })
   const asOfDate = asOf ?? todayIsoDateOnly()
   accountingCutoff(asOfDate)
+  // The end of a closed month reads as it was closed, company-wide.
+  if (!projectId) {
+    const closed = await loadClosedPeriodSnapshots(resolvedOrgId, { end: asOfDate })
+    if (closed) {
+      const { statement: _statement, ...saved } = closed.report<ARAgingReport & { statement: "ar_aging" }>("ar_aging")
+      return { ...saved, as_closed: closed.closedAt }
+    }
+  }
 
   let query = supabase
     .from("invoices")
@@ -71,7 +85,7 @@ export async function getArAgingReport({
 
   if (projectId) {
     query = query.eq("project_id", projectId)
-  } else {
+  } else if (!includeExcludedProjects) {
     const excludedProjectIds = await getReportingExcludedProjectIds(supabase, resolvedOrgId)
     query = applyReportingExclusion(query, excludedProjectIds)
   }
@@ -79,7 +93,8 @@ export async function getArAgingReport({
   query = query.lte("issue_date", asOfDate)
   const data = await loadAll<any>((from, to) => query.range(from, to), "invoices for AR aging")
 
-  const invoiceRows = data.filter(row => isInvoiceReceivableAsOf(row, asOfDate))
+  const removedOn = await loadLedgerRemovalDates(resolvedOrgId, data.filter((row: any) => row.status === "void").map((row: any) => String(row.id)))
+  const invoiceRows = data.filter(row => isInvoiceReceivableAsOf(row, asOfDate, removedOn))
   const invoiceIds = invoiceRows.map((row: any) => String(row.id))
   const paidByInvoice = await loadSubledgerSettlements(supabase, resolvedOrgId, "receivable", invoiceIds, asOfDate)
 

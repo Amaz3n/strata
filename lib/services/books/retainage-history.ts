@@ -18,9 +18,12 @@ export function receivableRetainageAsOf(rows: Array<{ amount_cents: number | nul
   }, 0)
 }
 
-export function payableRetainageAsOf(rows: Array<{ status: string | null; bill_date: string | null; total_cents: number | null; retainage_cents: number | null; metadata?: unknown }>, asOf: string) {
+/** `isPayable` decides membership at `asOf` (default: the current status). */
+export function payableRetainageAsOf<Row extends { status: string | null; bill_date: string | null; total_cents: number | null; retainage_cents: number | null; metadata?: unknown }>(
+  rows: Row[], asOf: string, isPayable: (row: Row) => boolean = (row) => isPayableVendorBillStatus(row.status),
+) {
   return rows.reduce((sum, row) => {
-    if (!row.bill_date || row.bill_date > asOf || !isPayableVendorBillStatus(row.status)) return sum
+    if (!row.bill_date || row.bill_date > asOf || !isPayable(row)) return sum
     const isRelease = row.metadata && typeof row.metadata === "object" && Reflect.get(row.metadata, "source") === "retainage_release"
     return sum + (isRelease ? -Number(row.total_cents ?? 0) : Number(row.retainage_cents ?? 0))
   }, 0)

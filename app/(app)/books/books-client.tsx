@@ -843,7 +843,7 @@ export function BooksClient({
                           toast.success(
                             result.data.status === "ready"
                               ? "Cutover ready for dual approval"
-                              : `Cutover blocked: ${result.data.blockers.join(", ")}`,
+                              : `Cutover blocked. ${result.data.remediation.join(" ")}`,
                           );
                           router.refresh();
                         }

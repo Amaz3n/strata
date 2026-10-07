@@ -48,75 +48,63 @@ async function requireOpeningPermission(
   return context;
 }
 
+/**
+ * Every problem with an opening batch, as a list of fixes: an opening that is
+ * missing evidence is refused with all of it named at once, never a first error
+ * that hides the rest, and never made up.
+ */
 function validateLines(lines: OpeningBalanceLineInput[], cutoverDate: string) {
-  if (lines.length < 2)
-    throw new Error("Opening balances require at least two lines");
+  const issues: string[] = [];
+  if (lines.length < 2) issues.push("Add at least two lines; an opening journal needs a debit and a credit.");
   let debitTotalCents = 0;
   let creditTotalCents = 0;
+  const requiredSubledger: Record<string, OpeningBalanceLineInput["subledgerType"]> = {
+    "1000": "bank", "1100": "ar", "1110": "ar", "2010": "ap", "2300": "deposit", "2000": "ap", "2100": "credit_card", "2400": "loan", "2500": "loan",
+  };
   for (const [index, line] of lines.entries()) {
-    if (
-      !Number.isSafeInteger(line.debitCents) ||
-      !Number.isSafeInteger(line.creditCents)
-    ) {
-      throw new Error(`Opening line ${index + 1} must use integer cents`);
+    const at = `Line ${index + 1}`;
+    if (!Number.isSafeInteger(line.debitCents) || !Number.isSafeInteger(line.creditCents)) {
+      issues.push(`${at}: enter amounts in whole cents.`);
+      continue;
     }
-    const valid =
-      (line.debitCents > 0 && line.creditCents === 0) ||
-      (line.creditCents > 0 && line.debitCents === 0);
-    if (!valid)
-      throw new Error(
-        `Opening line ${index + 1} requires exactly one positive debit or credit`,
-      );
-    const requiredSubledger: Record<
-      string,
-      OpeningBalanceLineInput["subledgerType"]
-    > = {
-      "1000": "bank",
-      "1100": "ar",
-      "1110": "ar",
-      "2010": "ap",
-      "2300": "deposit",
-      "2000": "ap",
-      "2100": "credit_card",
-      "2400": "loan",
-      "2500": "loan",
-    };
+    if (!((line.debitCents > 0 && line.creditCents === 0) || (line.creditCents > 0 && line.debitCents === 0)))
+      issues.push(`${at}: enter one positive debit or credit, not both.`);
     const expected = requiredSubledger[line.accountCode];
-    if (expected && line.subledgerType !== expected) {
-      throw new Error(
-        `Opening line ${index + 1} for account ${line.accountCode} requires subledgerType "${expected}"`,
-      );
-    }
-    if (
-      expected &&
-      !line.sourceEntityType &&
-      !line.sourceEntityId &&
-      !line.companyId &&
-      !line.projectId &&
-      !line.details?.existing_entity_id &&
-      !line.details?.customer_id &&
-      !line.details?.cash_account_id
-    ) {
-      throw new Error(
-        `Opening line ${index + 1} for control account ${line.accountCode} requires source detail`,
-      );
+    if (expected && line.subledgerType !== expected)
+      issues.push(`${at}: account ${line.accountCode} is a ${expected} control account; mark the line as ${expected}.`);
+    if (expected && !line.sourceEntityType && !line.sourceEntityId && !line.companyId && !line.projectId &&
+      !line.details?.existing_entity_id && !line.details?.customer_id && !line.details?.cash_account_id)
+      issues.push(`${at}: say which customer, vendor, account or document this control-account balance belongs to.`);
+    // An open invoice, bill or deposit comes over as the document it is: its own
+    // number, date and party. A missing due date stays missing.
+    if (["ar", "ap", "deposit"].includes(line.subledgerType ?? "") && !line.details?.existing_entity_id) {
+      const party = line.subledgerType === "ap" ? "vendor" : "customer";
+      if (!(typeof line.details?.document_number === "string" && line.details.document_number.trim()) && !line.sourceEntityId)
+        issues.push(`${at}: give the original ${line.subledgerType === "ap" ? "bill" : "invoice"} number.`);
+      const documentDate = line.details?.document_date;
+      if (typeof documentDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(documentDate)) issues.push(`${at}: give the original document date.`);
+      else if (documentDate > cutoverDate) issues.push(`${at}: the document is dated after cutover; it belongs after the opening.`);
+      if (line.subledgerType === "ap" ? !line.companyId : !line.details?.customer_id) issues.push(`${at}: name the ${party}.`);
+      if (line.subledgerType === "ap" && !line.projectId) issues.push(`${at}: name the job this bill belongs to.`);
     }
     // A check or deposit the bank had not cleared at cutover is its own opening
     // line, so the first statements can clear exactly that item.
     if (line.details?.bank_opening_role !== undefined) {
       const { bank_opening_role: role, reference, document_date: documentDate } = line.details;
       if (role !== "outstanding_item" || (line.subledgerType !== "bank" && line.subledgerType !== "credit_card"))
-        throw new Error(`Opening line ${index + 1}: only bank and card accounts carry outstanding items`);
+        issues.push(`${at}: only bank and card accounts carry outstanding items.`);
       if (typeof reference !== "string" || reference.trim().length === 0)
-        throw new Error(`Opening line ${index + 1}: an outstanding item needs its check or deposit reference`);
+        issues.push(`${at}: give the outstanding check or deposit its reference.`);
       if (typeof documentDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(documentDate) || documentDate > cutoverDate)
-        throw new Error(`Opening line ${index + 1}: an outstanding item needs its original date on or before cutover`);
+        issues.push(`${at}: give the outstanding item its original date, on or before cutover.`);
     }
     debitTotalCents += line.debitCents;
     creditTotalCents += line.creditCents;
   }
   if (debitTotalCents !== creditTotalCents)
-    throw new Error("Opening balance batch does not balance");
+    issues.push(`The batch does not balance: debits ${debitTotalCents} cents, credits ${creditTotalCents} cents.`);
+  if (issues.length)
+    throw new Error(`The opening balances need ${issues.length === 1 ? "this fix" : `these ${issues.length} fixes`} before they can be saved:\n${issues.map((issue) => `• ${issue}`).join("\n")}`);
   return { debitTotalCents, creditTotalCents };
 }
 

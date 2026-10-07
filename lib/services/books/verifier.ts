@@ -1,11 +1,9 @@
 import { receivableRetainageAsOf, payableRetainageAsOf } from "@/lib/services/books/retainage-history";
-import { isInvoiceReceivableAsOf, loadSubledgerSettlements } from "@/lib/services/books/subledger-settlements";
+import { AS_OF_BILL_STATUSES, isBillPayableAsOf, isInvoiceReceivableAsOf, loadLedgerRemovalDates, loadSubledgerSettlements } from "@/lib/services/books/subledger-settlements";
 import "server-only";
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
-import {
-  PAYABLE_VENDOR_BILL_STATUSES,
-} from "@/lib/financials/ledger-status";
+import { isPayableVendorBillStatus } from "@/lib/financials/ledger-status";
 import { SYSTEM_ACCOUNT_CODES } from "@/lib/services/books/chart-of-accounts";
 import {
   buildBalanceSheet,
@@ -91,16 +89,24 @@ async function loadPayableBills(orgId: string, asOf: string) {
   return collectPages((from, to) => service.from("vendor_bills")
     .select("id,status,bill_date,total_cents,retainage_cents,metadata")
     .eq("org_id", orgId).lte("bill_date", asOf)
-    .in("status", [...PAYABLE_VENDOR_BILL_STATUSES]).order("id").range(from, to), "AP subledger");
+    .in("status", [...AS_OF_BILL_STATUSES]).order("id").range(from, to), "AP subledger");
+}
+
+/** The bills payable at `asOf`, by their ledger dates where they posted. */
+async function payableAsOf(orgId: string, asOf: string, bills: PayableBill[]) {
+  const removedOn = await loadLedgerRemovalDates(orgId, bills.filter((bill) => !isPayableVendorBillStatus(bill.status)).map((bill) => String(bill.id)));
+  return (bill: PayableBill) => isBillPayableAsOf(bill, asOf, removedOn);
 }
 type PayableBill = Awaited<ReturnType<typeof loadPayableBills>>[number];
 
-async function loadArApSubledgerCents(orgId: string, asOf: string, bills: PayableBill[]) {
+async function loadArApSubledgerCents(orgId: string, asOf: string, allBills: PayableBill[], isPayable: (bill: PayableBill) => boolean) {
+  const bills = allBills.filter(isPayable);
   const service = createServiceSupabaseClient();
   const invoiceRows = await collectPages((from, to) => service.from("invoices")
     .select("id,total_cents,status,metadata").eq("org_id", orgId)
     .lte("issue_date", asOf).order("id").range(from, to), "AR subledger");
-  const invoices = invoiceRows.filter(row => isInvoiceReceivableAsOf(row, asOf));
+  const removedOn = await loadLedgerRemovalDates(orgId, invoiceRows.filter(row => row.status === "void").map(row => String(row.id)));
+  const invoices = invoiceRows.filter(row => isInvoiceReceivableAsOf(row, asOf, removedOn));
   const [arSettlements, apSettlements] = await Promise.all([
     loadSubledgerSettlements(service, orgId, "receivable", invoices.map(row => row.id), asOf),
     loadSubledgerSettlements(service, orgId, "payable", bills.map(row => row.id), asOf),
@@ -119,7 +125,7 @@ async function loadArApSubledgerCents(orgId: string, asOf: string, bills: Payabl
  * check noticing. AR retainage lives in the `retainage` table (its authoritative home);
  * AP retainage lives in the vendor-bill columns, net of what has been released.
  */
-async function loadRetainageSubledgerCents(orgId: string, asOf: string, bills: PayableBill[]) {
+async function loadRetainageSubledgerCents(orgId: string, asOf: string, bills: PayableBill[], isPayable: (bill: PayableBill) => boolean) {
   const service = createServiceSupabaseClient();
   const holds = await collectPages((from, to) => service.from("retainage")
     // Disambiguate both invoice FKs. Release state is evaluated at its accounting
@@ -129,7 +135,7 @@ async function loadRetainageSubledgerCents(orgId: string, asOf: string, bills: P
     .order("id").range(from, to), "AR retainage history");
   return {
     receivableCents: receivableRetainageAsOf(holds, asOf),
-    payableCents: payableRetainageAsOf(bills, asOf),
+    payableCents: payableRetainageAsOf(bills, asOf, isPayable),
   };
 }
 
@@ -301,6 +307,7 @@ export async function runLedgerTieOuts(
 ): Promise<LedgerTieOut[]> {
   // The ledger and the payable bills are each read once and shared by every check.
   const [ledger, bills] = await Promise.all([loadLedgerBalances(orgId, asOf), loadPayableBills(orgId, asOf)]);
+  const isPayable = await payableAsOf(orgId, asOf, bills);
   const [
     trialBalance,
     balanceSheet,
@@ -313,8 +320,8 @@ export async function runLedgerTieOuts(
     buildTrialBalance(orgId, asOf, ledger),
     buildBalanceSheet(orgId, asOf, ledger),
     loadSubledgerJobCostCents(orgId, asOf),
-    loadArApSubledgerCents(orgId, asOf, bills),
-    loadRetainageSubledgerCents(orgId, asOf, bills),
+    loadArApSubledgerCents(orgId, asOf, bills, isPayable),
+    loadRetainageSubledgerCents(orgId, asOf, bills, isPayable),
     loadCustomerDepositSubledgerCents(orgId, asOf),
     loadOperationalRegisterBalances(orgId, asOf),
   ]);

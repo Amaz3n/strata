@@ -31,6 +31,19 @@ async function requireCutoverContext(
   return context;
 }
 
+/** The fix for each cutover prerequisite that is not met. */
+const CUTOVER_REMEDIATION: Record<string, string> = {
+  parallel_mode: "Run Arc Books in parallel with the connected accounting system before cutting over.",
+  three_approved_comparisons: "Approve three period comparisons with the connected system, each with no unexplained variance.",
+  quarter_of_silent_correctness: "Keep comparing until the approved comparisons cover a full quarter.",
+  opening_balances_posted: "Import, approve and post the opening balances, with each open invoice, bill and uncleared bank item as its own line.",
+  bank_accounts_reconciled: "Reconcile every bank and card account to a statement.",
+  sync_queue_drained: "Clear the accounting sync queue: retry or resolve every pending or failed record.",
+  no_draft_journals: "Post or discard the draft journals.",
+  complete_export_downloaded: "Download a complete Books export to keep as the record before cutover.",
+  mirror_provider_supported: "Choose a connected system that accepts journal entries, or cut over without mirroring.",
+};
+
 export async function prepareBooksCutover(input: {
   connectionId: string;
   cutoverDate: string;
@@ -170,6 +183,7 @@ export async function prepareBooksCutover(input: {
   const blockers = Object.entries(prerequisites)
     .filter(([, passed]) => !passed)
     .map(([key]) => key);
+  const remediation = blockers.map((key) => CUTOVER_REMEDIATION[key as keyof typeof prerequisites]);
   const digest = booksDigest({
     orgId: context.orgId,
     connectionId: input.connectionId,
@@ -235,6 +249,8 @@ export async function prepareBooksCutover(input: {
     cutoverRunId,
     status: blockers.length === 0 ? ("ready" as const) : ("blocked" as const),
     blockers,
+    /** What to do about each blocker, in the order the blockers are listed. */
+    remediation,
     digest,
     prerequisites,
   };

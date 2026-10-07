@@ -48,6 +48,7 @@ import { readBillScheduleAssessment, type BillScheduleAssessment } from "@/lib/f
 import { sendManualPaymentRemittanceAdvice } from "@/lib/services/vendor-remittance"
 import { assertPayableApprovalPeriodOpen, notifyPayableApprovalDecision } from "@/lib/services/payable-approval-gate"
 import { createCompany, getCompany, saveCompanyAccountingVendorLink } from "@/lib/services/companies"
+import { assertNotPostedInClosedPeriod } from "@/lib/services/books/closed-period-guard"
 
 export type VendorBillStatus = "pending" | "approved" | "partial" | "paid" | "rejected"
 
@@ -1773,6 +1774,7 @@ export async function updateVendorBillStatus({
     if ((settledPayments ?? 0) > 0) {
       throw new Error("This payable has recorded payments, so it cannot be returned to pending. Reverse the payment first.")
     }
+    await assertNotPostedInClosedPeriod({ orgId: resolvedOrgId, sourceId: billId, document: "bill", action: "return it to pending" })
   }
 
   if (parsed.status === "rejected") {

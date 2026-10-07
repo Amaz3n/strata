@@ -27,6 +27,7 @@ test("historical aging ignores today's paid totals, keeps credits, excludes futu
     Module._load = function(name, ...args) {
       if (name === "@/lib/services/context") return { requireOrgContext: async () => ({ supabase: db, orgId: "org", userId: "user" }) }
       if (name === "@/lib/services/permissions") return { requirePermission: async () => {} }
+      if (name === "@/lib/supabase/server") return { createServiceSupabaseClient: () => db }
       if (name === "@/lib/services/reporting-scope") return { getReportingExcludedProjectIds: async () => [], applyReportingExclusion: query => query }
       return original.call(this, name, ...args)
     }

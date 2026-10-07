@@ -1,4 +1,5 @@
 import { after } from "next/server"
+import { assertNotPostedInClosedPeriod } from "@/lib/services/books/closed-period-guard"
 import { randomUUID } from "crypto"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
@@ -2314,6 +2315,7 @@ export async function voidInvoice({ invoiceId, orgId }: { invoiceId: string; org
   if (existing.status === "paid" || existing.status === "partial") {
     throw new Error("Paid or partially paid invoices cannot be voided.")
   }
+  await assertNotPostedInClosedPeriod({ orgId: resolvedOrgId, sourceId: invoiceId, document: "invoice", action: "void it" })
 
   const sourcePayApplicationId = (existing.metadata as Record<string, any> | null)?.source_pay_application_id
   if (typeof sourcePayApplicationId === "string" && sourcePayApplicationId.length > 0) {
@@ -2591,6 +2593,7 @@ export async function reviseInvoice({ invoiceId, orgId }: { invoiceId: string; o
   if (original.status === "void") {
     throw new Error("This invoice has already been voided.")
   }
+  await assertNotPostedInClosedPeriod({ orgId: resolvedOrgId, sourceId: invoiceId, document: "invoice", action: "revise it" })
 
   const next = await getNextInvoiceNumber(resolvedOrgId, original.project_id)
   try {

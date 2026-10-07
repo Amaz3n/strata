@@ -4,6 +4,7 @@ import { z } from "zod"
 
 import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access"
 import type { StatementDimension } from "@/lib/services/books/statements"
+import { loadClosedPeriodSnapshots } from "@/lib/services/books/closed-snapshots"
 import { canReadWorkerPay, isWorkerPayLine, mergeWorkerPay, RESTRICTED_WORKER_PAY } from "@/lib/services/books/worker-pay-privacy"
 import { requireOrgContext } from "@/lib/services/context"
 import {
@@ -131,24 +132,15 @@ async function requireStatementsAccess(orgId?: string) {
  * into it, and the screen, CSV and PDF all serve the same frozen record.
  */
 async function loadClosedPeriodStatements(orgId: string, startDate: string, endDate: string) {
-  const service = createServiceSupabaseClient()
-  const { data: period, error } = await service.from("accounting_periods").select("id, closed_at, close_snapshot_ids")
-    .eq("org_id", orgId).eq("status", "closed").eq("period_start", startDate).eq("period_end", endDate).maybeSingle()
-  if (error) throw new Error(`Failed to load the closed period: ${error.message}`)
-  const ids = z.array(z.string().uuid()).safeParse(period?.close_snapshot_ids)
-  if (!period || !ids.success || ids.data.length === 0) return null
-  const { data: snapshots, error: snapshotError } = await service.from("financial_statement_snapshots").select("statement_type, content, content_hash")
-    .eq("org_id", orgId).eq("period_id", period.id).in("id", ids.data)
-  if (snapshotError) throw new Error(`Failed to load the closed period's statements: ${snapshotError.message}`)
-  const content = (type: string) => snapshots?.find((row) => row.statement_type === type)?.content
-  const statement = <T>(type: string) => z.custom<T>((value) => typeof value === "object" && value !== null && Reflect.get(value, "statement") === type).parse(content(type))
+  const closed = await loadClosedPeriodSnapshots(orgId, { start: startDate, end: endDate })
+  if (!closed) return null
   return {
-    periodId: String(period.id),
-    closedAt: String(period.closed_at),
-    profitLoss: statement<Awaited<ReturnType<typeof buildProfitAndLoss>>>("profit_loss"),
-    balanceSheet: statement<Awaited<ReturnType<typeof buildBalanceSheet>>>("balance_sheet"),
-    trialBalance: statement<Awaited<ReturnType<typeof buildTrialBalance>>>("trial_balance"),
-    cashFlow: statement<Awaited<ReturnType<typeof buildCashFlowStatement>>>("cash_flow"),
+    periodId: closed.periodId,
+    closedAt: closed.closedAt,
+    profitLoss: closed.report<Awaited<ReturnType<typeof buildProfitAndLoss>>>("profit_loss"),
+    balanceSheet: closed.report<Awaited<ReturnType<typeof buildBalanceSheet>>>("balance_sheet"),
+    trialBalance: closed.report<Awaited<ReturnType<typeof buildTrialBalance>>>("trial_balance"),
+    cashFlow: closed.report<Awaited<ReturnType<typeof buildCashFlowStatement>>>("cash_flow"),
   }
 }
 

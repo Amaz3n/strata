@@ -922,8 +922,8 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
         period.period_end,
       ),
       buildGeneralLedger(context.orgId, period.period_start, period.period_end),
-      getArAgingReport({ asOf: period.period_end, orgId: context.orgId }),
-      getApAgingReport({ asOf: period.period_end, orgId: context.orgId }),
+      getArAgingReport({ asOf: period.period_end, orgId: context.orgId, includeExcludedProjects: true }),
+      getApAgingReport({ asOf: period.period_end, orgId: context.orgId, includeExcludedProjects: true }),
       getOrgWipOverUnderReport({
         asOf: period.period_end,
         orgId: context.orgId,

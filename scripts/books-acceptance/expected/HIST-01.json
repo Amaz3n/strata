@@ -1,0 +1,263 @@
+{
+  "scenario": "HIST-01",
+  "reviewedFrom": "B03.1-B03.3 definition of done (advisor-plans/013).",
+  "subcases": {
+    "void-before-close": {
+      "inputs": {
+        "issueDate": "2026-07-20",
+        "dueDate": "2026-08-19",
+        "cutoff": "2026-07-31",
+        "keptCents": 100000,
+        "voidedCents": 40000
+      },
+      "derivation": "Two July invoices, 1,000.00 and 400.00. The 400.00 invoice is voided after July ends while July is still open: the ledger reverses it on its own date, as if never issued. At July 31 the ledger AR is 1,000.00, the AR aging totals 1,000.00 and the AR tie-out passes with no difference.",
+      "expected": {
+        "ledgerAr": 100000,
+        "agingTotal": 100000,
+        "tieOut": {
+          "status": "passed",
+          "differenceCents": 0
+        }
+      }
+    },
+    "removal-after-close-refused": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "cutoff": "2026-07-31",
+        "cents": 100000,
+        "contractCents": 1000000,
+        "eacCents": 800000
+      },
+      "derivation": "A July bill and a July invoice post and July closes. Returning the bill to pending, or voiding the invoice, would remove a posting that cannot be reversed inside closed July; each is refused with its cure (reopen July, or record a vendor credit / credit memo in an open month). July's AP and AR aging are unchanged and both tie-outs pass.",
+      "expected": {
+        "unapprove": "This bill is posted in July 2026, which is closed. Reopen July 2026 to return it to pending, or record a vendor credit in an open month.",
+        "voided": "This invoice is posted in July 2026, which is closed. Reopen July 2026 to void it, or record a credit memo in an open month.",
+        "agingUnchanged": true,
+        "apTieOut": "passed",
+        "arTieOut": "passed"
+      }
+    },
+    "frozen-aging": {
+      "inputs": {
+        "issueDate": "2026-07-10",
+        "dueDate": "2026-08-09",
+        "cutoff": "2026-07-31",
+        "lateReceiptDate": "2026-07-30",
+        "cents": 100000,
+        "receiptCents": 40000
+      },
+      "derivation": "A 1,000.00 July invoice is open when July closes, so the July 31 aging is saved at 1,000.00. A 400.00 receipt dated July 30 is then recorded (its posting into closed July is held as a finding). The July 31 aging is still read as closed at 1,000.00; July 30 is not a closed month-end, so its live aging shows 600.00.",
+      "expected": {
+        "closedOpen": 100000,
+        "servedAsClosed": true,
+        "rereadOpen": 100000,
+        "liveDayBeforeOpen": 60000
+      }
+    },
+    "ties-at-cutoffs": {
+      "inputs": {
+        "invoices": [
+          {
+            "number": "HC-1",
+            "cents": 100000,
+            "issueDate": "2026-07-05",
+            "dueDate": "2026-07-20"
+          },
+          {
+            "number": "HC-2",
+            "cents": 60000,
+            "issueDate": "2026-07-25",
+            "dueDate": "2026-08-24"
+          },
+          {
+            "number": "HC-3",
+            "cents": 80000,
+            "issueDate": "2026-08-10",
+            "dueDate": "2026-08-20"
+          }
+        ],
+        "bills": [
+          {
+            "billDate": "2026-07-08",
+            "cents": 50000
+          },
+          {
+            "billDate": "2026-08-12",
+            "cents": 30000
+          }
+        ],
+        "receipts": [
+          {
+            "invoice": "HC-1",
+            "date": "2026-07-28",
+            "cents": 40000
+          }
+        ],
+        "credits": [
+          {
+            "invoice": "HC-2",
+            "date": "2026-08-05",
+            "cents": 10000
+          }
+        ],
+        "cutoffs": [
+          "2026-07-15",
+          "2026-07-31",
+          "2026-08-31"
+        ]
+      },
+      "derivation": "Invoices of 1,000.00 (July 5, due July 20), 600.00 (July 25, due August 24) and 800.00 (August 10, due August 20); bills of 500.00 (July 8) and 300.00 (August 12); a 400.00 receipt on the first invoice July 28; a 100.00 credit on the second effective August 5. July 15: AR 1,000.00, AP 500.00. July 31: AR 600.00 + 600.00 = 1,200.00 (600.00 eleven days overdue), AP 500.00. August 31: AR 600.00 + 500.00 + 800.00 = 1,900.00 (all past due: 600.00 at 42 days and 800.00 at 11 days, 500.00 at 7 days), AP 800.00. At each cutoff the aging equals the ledger (1100, 2000), both tie-outs pass and the buckets add to the total.",
+      "expected": {
+        "2026-07-15": {
+          "ar": 100000,
+          "ledgerAr": 100000,
+          "arTieOut": "passed",
+          "arBucketsAdd": true,
+          "ap": 50000,
+          "ledgerAp": 50000,
+          "apTieOut": "passed",
+          "arOverdue1to30": 0
+        },
+        "2026-07-31": {
+          "ar": 120000,
+          "ledgerAr": 120000,
+          "arTieOut": "passed",
+          "arBucketsAdd": true,
+          "ap": 50000,
+          "ledgerAp": 50000,
+          "apTieOut": "passed",
+          "arOverdue1to30": 60000
+        },
+        "2026-08-31": {
+          "ar": 190000,
+          "ledgerAr": 190000,
+          "arTieOut": "passed",
+          "arBucketsAdd": true,
+          "ap": 80000,
+          "ledgerAp": 80000,
+          "apTieOut": "passed",
+          "arOverdue1to30": 130000
+        }
+      }
+    },
+    "restatement": {
+      "inputs": {
+        "issueDate": "2026-07-10",
+        "dueDate": "2026-08-09",
+        "cutoff": "2026-07-31",
+        "cents": 100000,
+        "correctionCents": 25000,
+        "reason": "Late July invoice found after close"
+      },
+      "derivation": "July closes with a 1,000.00 invoice. It is reopened with a stated reason, a 250.00 July invoice found late is added, and July closes again. Both closes and the reopen are on record (closed, reopened with its reason, closed); the period's saved reports are replaced by the reclose's while both versions of the saved AR aging are retained; July now reads as reclosed with 1,250.00 open.",
+      "expected": {
+        "events": [
+          "books.period_closed",
+          "books.period_reopened",
+          "books.period_closed"
+        ],
+        "reopenReason": "Late July invoice found after close",
+        "snapshotsReplaced": true,
+        "arAgingVersionsRetained": 2,
+        "julyAgingAsReclosed": {
+          "open": 125000,
+          "asClosed": true
+        }
+      }
+    },
+    "volume-aging": {
+      "inputs": {
+        "billDate": "2026-07-10",
+        "cents": 100000,
+        "bills": 1200,
+        "cutoff": "2026-07-31"
+      },
+      "derivation": "1,200 approved bills of 1,000.00 with the same date, due date and update time, so only their ids order them across pages. The AP aging at July 31 has 1,200 rows, each bill once, open 1,200,000.00, equal to the ledger's AP, and the AP tie-out passes.",
+      "expected": {
+        "rows": 1200,
+        "distinct": 1200,
+        "open": 120000000,
+        "ledgerAp": 120000000,
+        "apTieOut": "passed"
+      }
+    },
+    "opening-items": {
+      "inputs": {
+        "cutover": "2026-06-30",
+        "receivables": [
+          {
+            "number": "OLD-101",
+            "cents": 50000,
+            "date": "2026-05-10",
+            "due": "2026-06-09"
+          },
+          {
+            "number": "OLD-102",
+            "cents": 30000,
+            "date": "2026-06-15",
+            "due": "2026-07-15"
+          }
+        ],
+        "payables": [
+          {
+            "number": "V-88",
+            "cents": 20000,
+            "date": "2026-06-20",
+            "due": "2026-07-20"
+          }
+        ],
+        "equityCents": 60000,
+        "collection": {
+          "number": "OLD-102",
+          "date": "2026-07-20",
+          "cents": 30000
+        }
+      },
+      "derivation": "Opening at June 30: two open customer invoices (OLD-101, 500.00 dated May 10 due June 9; OLD-102, 300.00 dated June 15 due July 15) and one open vendor bill (V-88, 200.00) come over as documents with their own numbers, dates and parties, against retained earnings of 600.00. At cutover the AR aging is 800.00 (OLD-101 21 days past due in 1-30, OLD-102 current), equal to the ledger, the AP aging 200.00, and both tie-outs pass. OLD-102 is collected on July 20; at July 31 only OLD-101 remains open (500.00, 52 days past due in 31-60) and OLD-102 reads paid; AP still 200.00. July closes with its undeposited receipt supported and both tie-outs pass. An opening batch with an invoice line naming nothing and a bill line with no vendor or job is refused with all 7 fixes listed, including naming the customer on line 1 and the vendor on line 2.",
+      "expected": {
+        "atCutover": {
+          "ar": 80000,
+          "ledgerAr": 80000,
+          "arTieOut": "passed",
+          "ap": 20000,
+          "ledgerAp": 20000,
+          "apTieOut": "passed",
+          "byDocument": {
+            "OLD-101": {
+              "open": 50000,
+              "bucket": "1_30"
+            },
+            "OLD-102": {
+              "open": 30000,
+              "bucket": "current"
+            }
+          }
+        },
+        "afterClose": {
+          "ar": 50000,
+          "ledgerAr": 50000,
+          "arTieOut": "passed",
+          "ap": 20000,
+          "ledgerAp": 20000,
+          "apTieOut": "passed",
+          "byDocument": {
+            "OLD-101": {
+              "open": 50000,
+              "bucket": "31_60"
+            },
+            "OLD-102": {
+              "open": 0,
+              "bucket": "paid"
+            }
+          }
+        },
+        "missingEvidence": {
+          "heading": "The opening balances need these 7 fixes before they can be saved:",
+          "fixes": 7,
+          "namesCustomer": true,
+          "namesVendor": true
+        }
+      }
+    }
+  }
+}

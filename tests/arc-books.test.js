@@ -1753,17 +1753,22 @@ test("AR and AP have one status definition, and it is the one the GL posts from"
     path.join(__dirname, "../lib/services/reports/ap-aging.ts"),
     "utf8",
   );
-  assert.match(arAging, /isInvoiceReceivableAsOf\(row, asOfDate\)/);
+  assert.match(arAging, /isInvoiceReceivableAsOf\(row, asOfDate, removedOn\)/);
   const { isInvoiceReceivableAsOf } = require("../lib/services/books/subledger-settlements");
   for (const status of BILLED_INVOICE_STATUSES) assert.equal(isInvoiceReceivableAsOf({ status }, "2026-09-30"), true);
   for (const status of ["draft", "saved"]) assert.equal(isInvoiceReceivableAsOf({ status }, "2026-09-30"), false);
   assert.equal(isInvoiceReceivableAsOf({ status: "void", metadata: { voided_at: "2026-10-01T00:00:00Z" } }, "2026-09-30"), true);
   assert.equal(isInvoiceReceivableAsOf({ status: "void", metadata: { voided_at: "2026-09-30T00:00:00Z" } }, "2026-09-30"), false);
   assert.equal(isInvoiceReceivableAsOf({ status: "sent", metadata: { invoice_kind: "earnest_deposit" } }, "2026-09-30"), false);
-  assert.match(
-    apAging,
-    /\.in\("status", \[\.\.\.PAYABLE_VENDOR_BILL_STATUSES\]\)/,
-  );
+  // Where a void posted, the ledger's removal date decides, not the void time.
+  const removedOn = new Map([["erased", "2026-07-20"], ["later", "2026-10-07"]]);
+  assert.equal(isInvoiceReceivableAsOf({ id: "erased", status: "void", metadata: { voided_at: "2026-10-01T00:00:00Z" } }, "2026-07-31", removedOn), false);
+  assert.equal(isInvoiceReceivableAsOf({ id: "later", status: "void", metadata: { voided_at: "2026-10-07T00:00:00Z" } }, "2026-07-31", removedOn), true);
+  const { isBillPayableAsOf } = require("../lib/services/books/subledger-settlements");
+  assert.equal(isBillPayableAsOf({ id: "later", status: "pending" }, "2026-07-31", removedOn), true);
+  assert.equal(isBillPayableAsOf({ id: "never", status: "pending" }, "2026-07-31", removedOn), false);
+  assert.equal(isBillPayableAsOf({ id: "never", status: "approved" }, "2026-07-31", removedOn), true);
+  assert.match(apAging, /isBillPayableAsOf\(row, asOfDate, removedOn\)/);
 
   // Retainage reaches 1110 only through an invoice, so the held-retainage
   // subledger has to join the invoice rather than trust `held_at`.

@@ -3,6 +3,7 @@ function database(tables) {
   const value = (row, key) => key.split(".").reduce((v, part) => v?.[part], row)
   return { from(table) {
     let rows = [...(tables[table] ?? [])]
+    let single = false
     const query = {
       select() { return query },
       eq(key, v) { rows = rows.filter(row => value(row, key) === v); return query },
@@ -15,7 +16,8 @@ function database(tables) {
       or() { return query },
       order(key) { rows.sort((a,b) => String(value(a,key)).localeCompare(String(value(b,key)))); return query },
       range(from, to) { rows = rows.slice(from, to + 1); return query },
-      then(resolve, reject) { return Promise.resolve({ data: rows.slice(0,1000), error: null }).then(resolve, reject) },
+      maybeSingle() { single = true; return query },
+      then(resolve, reject) { return Promise.resolve({ data: single ? rows[0] ?? null : rows.slice(0,1000), error: null }).then(resolve, reject) },
     }
     return query
   } }
