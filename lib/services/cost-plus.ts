@@ -1,5 +1,6 @@
 import { checkVarianceAlerts } from "@/lib/services/budgets";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { z } from "zod";
 import { createHash, randomBytes, randomUUID } from "crypto";
 
 import {
@@ -122,6 +123,10 @@ export interface BillableCost {
   late_to_billing_period_id?: string | null;
   billed_at?: string | null;
   status: "open" | "locked" | "billed" | "excluded" | "voided";
+  /** Set on a credit for a cost already billed: the cost it credits. */
+  correction_of?: string | null;
+  billing_decision?: "credit_customer" | "absorb" | null;
+  billing_decision_note?: string | null;
   metadata?: Record<string, any>;
   created_at?: string;
   updated_at?: string;
@@ -296,6 +301,9 @@ function mapBillableCost(row: any): BillableCost {
     late_to_billing_period_id: row.late_to_billing_period_id ?? null,
     billed_at: row.billed_at ?? null,
     status: row.status ?? "open",
+    correction_of: row.correction_of ?? null,
+    billing_decision: row.billing_decision ?? null,
+    billing_decision_note: row.billing_decision_note ?? null,
     metadata: row.metadata ?? {},
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -886,6 +894,7 @@ async function insertOrReturnBillableCost(
     .eq("source_type", payload.source_type)
     .eq("source_id", payload.source_id)
     .neq("status", "voided")
+    .is("credited_at", null)
     .maybeSingle();
 
   if (existingError || !existing)
@@ -1319,7 +1328,6 @@ export async function upsertBillableCostFromTimeEntry(args: {
       cost_cents: costCents,
       markup_percent_resolved: markup.percent,
       markup_cents: markupCents,
-      billable_cents: billableCents,
       is_billable: isBillable,
       gmp_classification: gmpClassification,
       status: isBillable ? "open" : "excluded",
@@ -3121,16 +3129,19 @@ export async function voidBillableCostsForVendorBill({
     permission: "bill.approve",
   });
 
+  // Credited originals already have their correction; they are history now.
   const { data: costs, error } = await supabase
     .from("billable_costs")
     .select("*")
     .eq("org_id", resolvedOrgId)
     .eq("source_type", "vendor_bill_line")
     .eq("metadata->>bill_id", billId)
-    .neq("status", "voided");
+    .neq("status", "voided")
+    .is("credited_at", null);
 
   if (error)
     throw new Error(`Failed to load billable costs for bill: ${error.message}`);
+  const service = createServiceSupabaseClient();
   for (const cost of costs ?? []) {
     if (cost.status === "locked") {
       throw new Error(
@@ -3138,41 +3149,16 @@ export async function voidBillableCostsForVendorBill({
       );
     }
     if (cost.status === "billed") {
-      const creditPayload = {
-        org_id: resolvedOrgId,
-        project_id: cost.project_id,
-        cost_code_id: cost.cost_code_id ?? null,
-        budget_line_id: cost.budget_line_id ?? null,
-        source_type: "manual_adjustment",
-        source_id: randomUUID(),
-        source_company_id: cost.source_company_id ?? null,
-        occurred_on: toDateOnly(new Date()),
-        description: `Credit for voided bill cost: ${cost.description ?? "Vendor bill"}`,
-        cost_cents: -Math.abs(cost.cost_cents ?? 0),
-        markup_percent_resolved: cost.markup_percent_resolved ?? 0,
-        markup_cents: -Math.abs(cost.markup_cents ?? 0),
-        is_billable: true,
-        gmp_classification:
-          cost.gmp_classification ??
-          cost.metadata?.gmp_classification ??
-          "inside_gmp",
-        status: "open",
-        metadata: {
-          gmp_classification:
-            cost.gmp_classification ??
-            cost.metadata?.gmp_classification ??
-            "inside_gmp",
-          adjustment_reason: "vendor_bill_voided_after_billing",
-          original_billable_cost_id: cost.id,
-          original_bill_id: billId,
-        },
-      };
-      await insertOrReturnBillableCost(
-        supabase,
-        resolvedOrgId,
-        creditPayload,
-        "manual_adjustment",
-      );
+      // Billed to the customer: the invoice is not rewritten. One correction
+      // credits it on the next invoice unless someone decides to absorb it.
+      const { error: creditError } = await service.rpc("credit_billed_cost", {
+        p_org_id: resolvedOrgId,
+        p_billable_cost_id: cost.id,
+        p_reason: "vendor_bill_changed_after_billing",
+        p_actor_id: userId,
+      });
+      if (creditError)
+        throw new Error(`Failed to credit billed cost: ${creditError.message}`);
     } else {
       const { error: voidError } = await supabase
         .from("billable_costs")
@@ -3248,7 +3234,6 @@ export async function createManualBillableAdjustment(
     cost_cents: parsed.amountCents,
     markup_percent_resolved: markup.percent,
     markup_cents: markupCents,
-    billable_cents: parsed.amountCents + markupCents,
     is_billable: true,
     gmp_classification: classification,
     status: "open",
@@ -3631,7 +3616,6 @@ export async function generateInvoiceFromCosts(
         .update({
           markup_percent_resolved: markup.percent,
           markup_cents: markupCents,
-          billable_cents: billableCents,
           metadata: refreshedMetadata,
         })
         .eq("org_id", resolvedOrgId)
@@ -3802,7 +3786,7 @@ export async function generateInvoiceFromCosts(
     preview,
     idempotencyKey: parsed.idempotencyKey ?? null,
     reservationId: invoiceNumber.reservation_id ?? null,
-    status: "saved",
+    status: "draft",
     clientVisible: false,
     metadata: {
       source_type: "from_costs",
@@ -3941,4 +3925,24 @@ export async function generateInvoiceFromCosts(
     invoicePreview: finalPreview,
     totalBillableCents: finalPreview.totals.billable_cents,
   };
+}
+
+/**
+ * The billing decision on a correction to a cost already billed: credit the
+ * customer on the next invoice (the default), or absorb it, keeping what was
+ * billed. Either way the decision, who made it and why are on the row.
+ */
+export async function decideBillingCorrection(input: { billableCostId: string; decision: "credit_customer" | "absorb"; note: string; orgId?: string }) {
+  const parsed = z.object({ billableCostId: z.string().uuid(), decision: z.enum(["credit_customer", "absorb"]), note: z.string().trim().min(10).max(2000) }).parse(input);
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(input.orgId);
+  const { data: cost, error } = await supabase.from("billable_costs").select("id, project_id, correction_of").eq("org_id", resolvedOrgId).eq("id", parsed.billableCostId).maybeSingle();
+  if (error || !cost?.correction_of) throw new Error("Billing correction not found");
+  await requireProjectFinancialAccess({ supabase, orgId: resolvedOrgId, userId, projectId: cost.project_id, permission: "invoice.write" });
+  const { data, error: decideError } = await createServiceSupabaseClient().rpc("decide_billable_correction", {
+    p_org_id: resolvedOrgId, p_billable_cost_id: parsed.billableCostId, p_decision: parsed.decision, p_note: parsed.note, p_actor_id: userId,
+  });
+  if (decideError) throw new Error(decideError.message);
+  await recordEvent({ orgId: resolvedOrgId, eventType: "billing_correction_decided", entityType: "project", entityId: cost.project_id, payload: { billable_cost_id: parsed.billableCostId, decision: parsed.decision } });
+  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "billable_cost", entityId: parsed.billableCostId, after: { billing_decision: parsed.decision, note: parsed.note } });
+  return z.object({ billableCostId: z.string(), projectId: z.string(), decision: z.enum(["credit_customer", "absorb"]) }).parse(data);
 }

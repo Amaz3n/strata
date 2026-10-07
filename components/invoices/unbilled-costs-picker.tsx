@@ -33,6 +33,9 @@ export type UnbilledCost = {
   markupCents: number
   markupPercent: number
   billableCents: number
+  /** Set on a credit for a cost already billed to the customer. */
+  correctionOf?: string | null
+  billingDecision?: "credit_customer" | "absorb" | null
 }
 
 export type CostSelection = {

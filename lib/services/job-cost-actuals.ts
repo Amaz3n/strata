@@ -101,6 +101,8 @@ async function findBillableCostForSource(args: {
     .eq("source_type", args.sourceType)
     .eq("source_id", args.sourceId)
     .neq("status", "voided")
+    // A credited row is billing history; the source's live row is the one not credited.
+    .is("credited_at", null)
     .maybeSingle();
 
   if (error) {

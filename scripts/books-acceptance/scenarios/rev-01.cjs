@@ -177,6 +177,128 @@ async function mixedContractsReviewed(kit, expected, check) {
   return { orgId: org.orgId }
 }
 
+// ---- Cost-driven billing (B11.2) --------------------------------------------
+// A cost-plus job with a vendor, a cost code and a contract carrying its markup.
+function costJob(kit, org, { name, billingModel, markupPercent, gmpCents = null, ownerPct = 0, builderPct = 0 }) {
+  const { q } = kit
+  const ids = { projectId: randomUUID(), contractId: randomUUID(), vendorId: randomUUID(), costCodeId: randomUUID() }
+  kit.sql(`begin;
+insert into public.projects(id,org_id,name,property_type,created_by) values(${q(ids.projectId)},${q(org.orgId)},${q(name)},'residential',${q(org.owner.userId)});
+insert into public.project_financial_settings(org_id,project_id) values(${q(org.orgId)},${q(ids.projectId)}) on conflict do nothing;
+update public.project_financial_settings set billing_model=${q(billingModel)} where org_id=${q(org.orgId)} and project_id=${q(ids.projectId)};
+insert into public.companies(id,org_id,name) values(${q(ids.vendorId)},${q(org.orgId)},${q(`${name} framer`)});
+insert into public.cost_codes(id,org_id,code,name) values(${q(ids.costCodeId)},${q(org.orgId)},${q(`06-${ids.costCodeId.slice(0, 4)}`)},'Rough carpentry');
+insert into public.contracts(id,org_id,project_id,title,status,total_cents,currency,contract_type,retainage_percent,effective_date,markup_percent,gmp_cents,savings_split_owner_pct,savings_split_builder_pct)
+  values(${q(ids.contractId)},${q(org.orgId)},${q(ids.projectId)},'Cost-plus agreement','active',0,'usd','cost_plus',0,'2026-01-01',${markupPercent},${gmpCents === null ? "null" : gmpCents},${ownerPct},${builderPct});
+commit;`)
+  return ids
+}
+async function billableBill(kit, org, job, { number, date, cents }) {
+  const { createProjectVendorBill, approveVendorBillsAtomic } = app("vendor-bills")
+  const bill = await kit.as(org.owner, () => createProjectVendorBill({ projectId: job.projectId, input: {
+    company_id: job.vendorId, bill_number: number, bill_date: date, due_date: date, total_cents: cents,
+    actual_lines: [{ cost_code_id: job.costCodeId, description: number, amount_cents: cents, project_id: job.projectId, billable_to_customer: true }] } }))
+  await kit.as(org.owner, () => approveVendorBillsAtomic([{ id: bill.id }]))
+  await kit.drainOutbox(org.orgId)
+  return bill.id
+}
+async function billCosts(kit, org, job, { from, to, issueOn = null, overrideGmpCap = false }) {
+  const result = await kit.as(org.owner, () => app("cost-plus").generateInvoiceFromCosts({ projectId: job.projectId, dateRange: { from, to }, overrideGmpCap, idempotencyKey: randomUUID() }))
+  if (issueOn) kit.sql(`update public.invoices set issue_date = ${kit.q(issueOn)}, due_date = ${kit.q(issueOn)} where id = ${kit.q(result.invoiceId)} and status = 'draft';`)
+  await kit.as(org.owner, () => app("invoices").issueInvoice({ invoiceId: result.invoiceId, recipients: ["client@acceptance.example.test"] }))
+  await kit.drainOutbox(org.orgId)
+  return result
+}
+const costRows = (kit, org, job) => kit.rows(`select source_type, status, cost_cents::int, markup_cents::int, billable_cents::int, correction_of is not null as credit, billing_decision, credited_at is not null as credited
+  from public.billable_costs where org_id=${kit.q(org.orgId)} and project_id=${kit.q(job.projectId)} order by created_at, id`)
+
+// A cost-plus job earns what it bills, once: the invoice built from costs is
+// deferred billing (2350), and percentage of completion against the expected
+// total billable earns it, so revenue equals what was billed when the job is done.
+async function costPlusEarnsOnce(kit, expected, check) {
+  const input = expected.inputs
+  const org = await greenfieldOrg(kit, { name: "REV-01 cost plus", periods: ["2026-09"] })
+  const job = costJob(kit, org, { name: "Cost-plus remodel", billingModel: "cost_plus_percent", markupPercent: input.markupPercent })
+  await billableBill(kit, org, job, { number: "CP-1", date: "2026-09-10", cents: input.vendorCents })
+  // A manual billable adjustment (it could not be saved before: it wrote a computed column).
+  const adjustment = await refusal(() => kit.as(org.owner, () => app("cost-plus").createManualBillableAdjustment({ projectId: job.projectId, costCodeId: job.costCodeId, occurredOn: "2026-09-20", description: "Permit expediting", reason: "Owner-requested expediting", amountCents: input.adjustmentCents })))
+  const invoice = await billCosts(kit, org, job, { from: "2026-09-01", to: "2026-09-30", issueOn: "2026-09-30" })
+  await project(kit, org)
+  const billed = Number(kit.rows(`select total_cents n from public.invoices where id=${kit.q(invoice.invoiceId)}`)[0].n)
+  await prepareAndReview(kit, { ...org, projectId: job.projectId }, "2026-09", { contractCents: billed, eacCents: input.vendorCents })
+  await kit.as(org.owner, () => app("books/period-close").closeAccountingPeriod(org.periods["2026-09"].periodId))
+  const net = kit.postedNet(org.orgId)
+  check.equal("a cost-plus job's billing is deferred and earned once, equal to what was billed", expected.expected, {
+    adjustmentSaved: adjustment === "allowed", invoicePosting: postedAs(kit, org, invoice.invoiceId), billed,
+    revenue: -(net["4000"] ?? 0), contractLiabilities: net["2350"] ?? 0, jobCost: net["5000"] ?? 0,
+  })
+  return { orgId: org.orgId, projectId: job.projectId }
+}
+
+// A cost already billed is never rewritten. Changing its bill credits it once on
+// the next invoice (or the company absorbs it, on record), the corrected cost bills
+// again, billed rows cannot be edited, and a voided invoice cannot leave a credit
+// orphaned.
+async function billedCostCorrections(kit, expected, check) {
+  const input = expected.inputs
+  const org = await greenfieldOrg(kit, { name: "REV-01 billed corrections", periods: ["2026-10"] })
+  const job = costJob(kit, org, { name: "Cost-plus addition", billingModel: "cost_plus_percent", markupPercent: input.markupPercent })
+  const { updateVendorBillStatus } = app("vendor-bills")
+  const billA = await billableBill(kit, org, job, { number: "BC-A", date: "2026-10-01", cents: input.billACents })
+  const billB = await billableBill(kit, org, job, { number: "BC-B", date: "2026-10-02", cents: input.billBCents })
+  const first = await billCosts(kit, org, job, { from: "2026-10-01", to: "2026-10-07" })
+  // A is returned to pending twice and corrected; B is returned and stays pending.
+  await kit.as(org.owner, () => updateVendorBillStatus({ billId: billA, input: { status: "pending" } }))
+  await kit.as(org.owner, () => updateVendorBillStatus({ billId: billA, input: { status: "approved" } }))
+  await kit.drainOutbox(org.orgId)
+  await kit.as(org.owner, () => updateVendorBillStatus({ billId: billA, input: { status: "pending" } }))
+  // Corrected: the same total split into two lines.
+  await kit.as(org.owner, () => updateVendorBillStatus({ billId: billA, input: { status: "approved", actual_lines: input.correctedALines.map((cents, index) => ({ cost_code_id: job.costCodeId, description: `BC-A corrected ${index + 1}`, amount_cents: cents, project_id: job.projectId, billable_to_customer: true })) } }))
+  await kit.drainOutbox(org.orgId)
+  await billableBill(kit, org, job, { number: "BC-C", date: "2026-10-03", cents: input.billCCents })
+  await kit.as(org.owner, () => updateVendorBillStatus({ billId: billB, input: { status: "pending" } }))
+  const creditB = kit.rows(`select id from public.billable_costs where org_id=${kit.q(org.orgId)} and project_id=${kit.q(job.projectId)} and correction_of in (select id from public.billable_costs where metadata->>'bill_id'=${kit.q(billB)}) and status <> 'voided'`)[0].id
+  const absorbed = await kit.as(org.owner, () => app("cost-plus").decideBillingCorrection({ billableCostId: creditB, decision: "absorb", note: "The owner agreed to keep the original price for this work." }))
+  const second = await billCosts(kit, org, job, { from: "2026-10-01", to: "2026-10-07" })
+  const billedRow = kit.rows(`select id from public.billable_costs where org_id=${kit.q(org.orgId)} and status='billed' and correction_of is null limit 1`)[0].id
+  const edit = await refusal(async () => kit.sql(`update public.billable_costs set cost_cents = cost_cents + 1 where id=${kit.q(billedRow)};`))
+  const remove = await refusal(async () => kit.sql(`delete from public.billable_costs where id=${kit.q(billedRow)};`))
+  const voidFirst = await refusal(() => kit.as(org.owner, () => app("invoices").voidInvoice({ invoiceId: first.invoiceId })))
+  check.equal("billed costs are credited once with an explicit decision, rebill when corrected, and never change", expected.expected, {
+    firstInvoice: first.totalBillableCents, secondInvoice: second.totalBillableCents,
+    credits: costRows(kit, org, job).filter((row) => row.credit && row.status !== "voided").map((row) => ({ billable: row.billable_cents, status: row.status, decision: row.billing_decision })),
+    absorbedDecision: absorbed.decision,
+    edit: /cannot change/.test(edit) ? "refused" : edit, remove: /cannot be deleted/.test(remove) ? "refused" : remove,
+    voidFirstInvoice: voidFirst,
+  })
+  return { orgId: org.orgId, projectId: job.projectId }
+}
+
+// Billing past the guaranteed maximum is refused unless someone overrides it on
+// record, and the savings settlement runs once even when asked twice at once.
+async function gmpCapAndSettlement(kit, expected, check) {
+  const input = expected.inputs
+  const org = await greenfieldOrg(kit, { name: "REV-01 GMP", periods: ["2026-10"] })
+  const job = costJob(kit, org, { name: "GMP clinic", billingModel: "cost_plus_gmp", markupPercent: input.markupPercent, gmpCents: input.gmpCents, ownerPct: 50, builderPct: 50 })
+  await billableBill(kit, org, job, { number: "GMP-1", date: "2026-10-01", cents: input.firstCents })
+  const first = await billCosts(kit, org, job, { from: "2026-10-01", to: "2026-10-07" })
+  await billableBill(kit, org, job, { number: "GMP-2", date: "2026-10-02", cents: input.secondCents })
+  const overCap = await refusal(() => billCosts(kit, org, job, { from: "2026-10-01", to: "2026-10-07" }))
+  const overridden = await billCosts(kit, org, job, { from: "2026-10-01", to: "2026-10-07", overrideGmpCap: true })
+  const overrideEvents = Number(kit.rows(`select count(*)::int n from public.events where org_id=${kit.q(org.orgId)} and event_type='gmp_cap_overridden'`)[0].n)
+  // A smaller job finishes under its GMP and settles its savings; two requests race.
+  const small = costJob(kit, org, { name: "GMP fit-out", billingModel: "cost_plus_gmp", markupPercent: input.markupPercent, gmpCents: input.gmpCents, ownerPct: 50, builderPct: 50 })
+  kit.sql(`update public.projects set status='completed' where id=${kit.q(small.projectId)};`)
+  const settle = () => refusal(() => kit.as(org.owner, () => app("gmp-control").settleGmpSavings(small.projectId)))
+  const outcomes = (await Promise.all([settle(), settle()])).map((outcome) => outcome === "allowed" ? "settled" : /already/.test(outcome) ? "refused: already settling or settled" : outcome).sort()
+  const settlementInvoices = Number(kit.rows(`select count(*)::int n from public.invoices where org_id=${kit.q(org.orgId)} and project_id=${kit.q(small.projectId)}`)[0].n)
+  check.equal("the GMP cap holds unless overridden on record, and savings settle once", expected.expected, {
+    firstInvoice: first.totalBillableCents, overCap: /exceed the revised GMP/.test(overCap) ? "refused" : overCap,
+    overriddenInvoice: overridden.totalBillableCents, overrideEvents, settlement: outcomes, settlementInvoices,
+  })
+  return { orgId: org.orgId }
+}
+
 module.exports = {
   id: "REV-01",
   subcases: {
@@ -185,5 +307,8 @@ module.exports = {
     "approved-change-from-its-date": approvedChangeFromItsDate,
     "superseded-contracts-reconstructible": supersededReconstructible,
     "mixed-contracts-reviewed": mixedContractsReviewed,
+    "cost-plus-earns-once": costPlusEarnsOnce,
+    "billed-cost-corrections": billedCostCorrections,
+    "gmp-cap-and-settlement": gmpCapAndSettlement,
   },
 }

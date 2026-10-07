@@ -164,6 +164,33 @@ the revenue in 4000 and the loss reserve in 2360. The schedule saved at close is
 the one the report shows for that date. The WIP review shows who approved, when
 and why, and which positions changed since.
 
+#### Cost-driven jobs (B11.2)
+
+Time-and-materials and cost-plus jobs bill their costs (with markup or fee) but
+earn by percentage of completion like any construction contract, so their
+billing is never revenue twice:
+
+- An invoice built from costs (`generateInvoiceFromCosts`) is deferred billing:
+  Dr 1100 / Cr 2350, exactly as §4b.
+- Earned revenue is cost to cost against the **expected total billable** (the
+  transaction price): for a cost-plus job, estimated cost plus markup and fee.
+  The WIP preparer enters it as the contract value. When the job is complete,
+  revenue equals what was billed and 2350 nets to zero.
+- **Billed costs are never rewritten.** A billed `billable_costs` row cannot
+  change or be deleted (`billable_costs_billed_fence`). When its source changes
+  (the vendor bill is returned to pending or re-coded) it is credited exactly
+  once (`credit_billed_cost`) with an explicit decision: credit the customer on
+  the next invoice (default) or absorb it, with who decided and why
+  (`decide_billable_correction`). The credit reverses exactly the billed markup.
+  The credited original frees its source, so the corrected cost bills again.
+  Voiding an invoice whose cost was already credited withdraws the unbilled credit,
+  and is refused when that credit is on another invoice.
+- **GMP:** billing past the revised GMP is refused unless overridden, and the
+  override is recorded. Savings settlement claims itself before creating anything, so
+  it happens once even when requested twice.
+- Payroll corrections keep billed T&M rates; other jobs stop for a billing
+  review (payroll is not in the first release).
+
 ### 4d. Revenue is earned — closing basis
 A production spec home books revenue at the sale, with no percentage-of-completion:
 

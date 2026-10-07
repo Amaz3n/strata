@@ -810,37 +810,64 @@ export async function settleGmpSavings(projectId: string, orgId?: string): Promi
     throw new Error("The active contract savings split does not allocate any savings to settle.")
   }
 
-  const ownerCreditInvoice =
-    ownerShareCents > 0
-      ? await createGmpSettlementInvoice({
-          orgId: resolvedOrgId,
-          project,
-          title: "GMP savings credit",
-          description: "Owner GMP savings credit",
-          unit: "credit",
-          amountCents: -Math.abs(ownerShareCents),
-          sourceType: "manual",
-        })
-      : null
+  // Claim the settlement before writing anything: a retry or a second click
+  // finds the claim instead of creating a second pair of invoices.
+  const claimedAt = new Date().toISOString()
+  const claimedSnapshot = { ...(contract.snapshot ?? {}), gmp_savings_settlement_claimed_at: claimedAt }
+  const { data: claimed, error: claimError } = await supabase
+    .from("contracts")
+    .update({ snapshot: claimedSnapshot })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", contract.id)
+    .is("snapshot->>savings_settled_at", null)
+    .is("snapshot->>gmp_savings_settlement_claimed_at", null)
+    .select("id")
+    .maybeSingle()
+  if (claimError) throw new Error(`Failed to claim the GMP savings settlement: ${claimError.message}`)
+  if (!claimed) throw new Error("GMP savings are already being settled for this contract.")
 
-  const builderShareInvoice =
-    builderShareCents > 0
-      ? await createGmpSettlementInvoice({
-          orgId: resolvedOrgId,
-          project,
-          title: "Builder GMP savings share",
-          description: "Builder GMP savings share",
-          unit: "fee",
-          amountCents: builderShareCents,
-          sourceType: "fee",
-        })
-      : null
+  const release = async () => {
+    await supabase.from("contracts").update({ snapshot: contract.snapshot ?? {} })
+      .eq("org_id", resolvedOrgId).eq("id", contract.id).eq("snapshot->>gmp_savings_settlement_claimed_at", claimedAt)
+  }
+  let ownerCreditInvoice: Awaited<ReturnType<typeof createGmpSettlementInvoice>> | null
+  let builderShareInvoice: Awaited<ReturnType<typeof createGmpSettlementInvoice>> | null
+  try {
+    ownerCreditInvoice =
+      ownerShareCents > 0
+        ? await createGmpSettlementInvoice({
+            orgId: resolvedOrgId,
+            project,
+            title: "GMP savings credit",
+            description: "Owner GMP savings credit",
+            unit: "credit",
+            amountCents: -Math.abs(ownerShareCents),
+            sourceType: "manual",
+          })
+        : null
+
+    builderShareInvoice =
+      builderShareCents > 0
+        ? await createGmpSettlementInvoice({
+            orgId: resolvedOrgId,
+            project,
+            title: "Builder GMP savings share",
+            description: "Builder GMP savings share",
+            unit: "fee",
+            amountCents: builderShareCents,
+            sourceType: "fee",
+          })
+        : null
+  } catch (error) {
+    await release()
+    throw error
+  }
 
   const settledAt = new Date().toISOString()
   const invoiceIds = [ownerCreditInvoice?.id, builderShareInvoice?.id].filter((value): value is string => Boolean(value))
   const before = contract as unknown as Record<string, unknown>
   const nextSnapshot = {
-    ...(contract.snapshot ?? {}),
+    ...claimedSnapshot,
     savings_settled_at: settledAt,
     gmp_savings_settlement: {
       settled_at: settledAt,

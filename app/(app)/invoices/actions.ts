@@ -41,7 +41,7 @@ import { invoiceInputSchema, invoiceVoidDateSchema } from "@/lib/validation/invo
 import { sendReminderEmail } from "@/lib/services/mailer"
 import { listChangeOrders } from "@/lib/services/change-orders"
 import { getProjectFinancialFeatureConfig, isCostDrivenBillingModel } from "@/lib/financials/billing-model"
-import { listCostPlusTabData, getProjectCostContract, resolveMarkupPercent, calculateMarkupCents } from "@/lib/services/cost-plus"
+import { listCostPlusTabData, getProjectCostContract, resolveMarkupPercent, calculateMarkupCents, decideBillingCorrection } from "@/lib/services/cost-plus"
 import { renderInvoicePdf } from "@/lib/pdfs/invoice"
 import { buildInvoicePdfData } from "@/lib/pdfs/invoice-data"
 import { uploadFilesObject } from "@/lib/storage/files-storage"
@@ -1105,6 +1105,14 @@ export async function createQboCustomerAction(input: {
  * Unbilled, billable costs for a cost-plus / T&M project — feeds the invoice composer's
  * "Add from → Unbilled costs" picker. Only status "open", billable, and not yet on an invoice.
  */
+export async function decideBillingCorrectionAction(input: { billableCostId: string; decision: "credit_customer" | "absorb"; note: string }) {
+  return run(async () => {
+    const result = await decideBillingCorrection(input)
+    revalidatePath(`/projects/${result.projectId}/financials/billing`)
+    return result
+  })
+}
+
 export async function listUnbilledCostsAction(projectId: string) {
   return run(() => loadUnbilledCosts(projectId))
 }
@@ -1123,7 +1131,9 @@ async function loadUnbilledCosts(projectId: string) {
     let resolvedMarkupCents = cost.markup_cents
     let resolvedBillableCents = cost.billable_cents
 
-    if (contract) {
+    // A snapshot markup (a line override, a T&M rate, or a credit reversing a
+    // billed cost) is billed as recorded; everything else is priced by today's rules.
+    if (contract && !cost.correction_of && cost.metadata?.markup_source !== "line" && cost.metadata?.billing_method !== "time_and_materials_rate") {
       const markup = await resolveMarkupPercent({
         supabase,
         orgId,
@@ -1148,6 +1158,8 @@ async function loadUnbilledCosts(projectId: string) {
       markupCents: resolvedMarkupCents,
       markupPercent: resolvedMarkupPercent,
       billableCents: resolvedBillableCents,
+      correctionOf: cost.correction_of ?? null,
+      billingDecision: cost.billing_decision ?? null,
     })
   }
   return { costs }

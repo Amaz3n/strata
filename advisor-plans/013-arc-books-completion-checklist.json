@@ -8755,7 +8755,7 @@
       "workstream": "B11",
       "title": "T&M, cost-plus and GMP recognition and protected billing",
       "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status_basis": "Verified locally (2026-10-07) by REV-01 cost-plus-earns-once, billed-cost-corrections and gmp-cap-and-settlement. Open: (1) GMP savings settlement semantics need an accounting decision — it issues the owner a credit invoice for the owner's share although cost-plus billing never billed the owner those savings, and savings are computed against cost EAC while the cap counts cost + markup; (2) a change order raising the GMP is not yet exercised end to end; (3) payroll correction billing beyond preserved T&M rates (payroll is not day one). Migration 20261007160000_billable_cost_corrections pending production.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "supported jobs recognize exactly once under the approved policy",
@@ -8770,13 +8770,53 @@
         "PAY-01",
         "REV-01"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "verified_at": "2026-10-07T14:56:46.834397+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261007160000_billable_cost_corrections.sql",
+            "lib/services/cost-plus.ts",
+            "lib/services/approved-cost-invoicing.ts",
+            "lib/services/job-cost-actuals.ts",
+            "lib/services/gmp-control.ts",
+            "app/(app)/invoices/actions.ts",
+            "components/invoices/bill-costs-workspace.tsx",
+            "components/invoices/unbilled-costs-picker.tsx",
+            "scripts/books-acceptance/scenarios/rev-01.cjs",
+            "docs/books-revenue-recognition.md"
+          ],
+          "test_scenario_ids": [
+            "REV-01"
+          ],
+          "commands": [
+            "scenario-runner REV-01 and full regression",
+            "pnpm test:financials"
+          ],
+          "observed_results": [
+            "Production defects fixed: billable_costs.billable_cents is a generated column in production, yet time entries on cost-driven jobs, manual billable adjustments and the invoice-time markup refresh wrote it (every such write fails); create_invoice_from_billable_costs_atomic is service-only in production but was called with the user's client (Bill costs failed for every user); the generated invoice used status 'saved', which the repository's status constraint no longer allows.",
+            "Exactly once: a cost-plus-10% job bills $115,500.00 from costs (incl. a manual adjustment that could not be saved before), posted as deferred billing; WIP at completion earns $115,500.00; revenue equals billed, 2350 nets to zero, job cost $100,000.00.",
+            "Billed corrections: a billed bill returned to pending twice and re-coded is credited exactly once (-$11,000) and rebills ($11,000); another's credit is absorbed with a recorded decision; the next invoice is $2,200.00 net; billed rows cannot be edited or deleted; voiding the first invoice is refused while A's credit is on the second.",
+            "GMP: billing past a $50,000 GMP is refused, then billed with an override recorded as an event; two simultaneous savings settlements produce one settlement and one pair of invoices.",
+            "Regression: REV-01 8/8, WIP-01, HIST-01, DIM-01, BILL-01, YEAR-01, BANK-01, STATUS-01 pass; CLOSE-01, RACE-01 pass every implemented subcase; test:financials 2735 pass / 0 fail."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-07-cost-driven-billing/BANK-01.json sha256:e70cc53d5da106a541050255761e7a3e140a6b903752435cfd7591ac49995a18",
+            "docs/books-evidence/2026-10-07-cost-driven-billing/BILL-01.json sha256:f258938d8a09e23a5354a64fed70a197820009adf503a13101f7c5731e0629d5",
+            "docs/books-evidence/2026-10-07-cost-driven-billing/CLOSE-01.json sha256:e0b5cbde591d1f849e930d03ee3d683ac943c8b561d868a19ea501edeba22b84",
+            "docs/books-evidence/2026-10-07-cost-driven-billing/DIM-01.json sha256:d8137e89938c17b56377e4f23021853a3c533ee9cd9e4f724bbb8f315cce2c14",
+            "docs/books-evidence/2026-10-07-cost-driven-billing/HIST-01.json sha256:48f0b45e3d4bb84656c2bd10d5d6b0ae27451572f0e8cf0757a546e9e455c7de",
+            "docs/books-evidence/2026-10-07-cost-driven-billing/RACE-01.json sha256:8c584ba3fc754d7e75f7047451d9b00e7e7c1e2abe4ec7a053dff72fac7dbb30",
+            "docs/books-evidence/2026-10-07-cost-driven-billing/REV-01.json sha256:60560031f0e2a72963d9b67418939f62a16eaf3f96e614157089d8faffd22e43",
+            "docs/books-evidence/2026-10-07-cost-driven-billing/STATUS-01.json sha256:20f17e9ffbfc3e07335acd0ac22bffc3375dce098da44c1b665c60be6c37b4d8",
+            "docs/books-evidence/2026-10-07-cost-driven-billing/WIP-01.json sha256:9d7e1b6c680084a6514e6ff9d8857fed16d8a94b9009780c3c53fe7d60119895",
+            "docs/books-evidence/2026-10-07-cost-driven-billing/YEAR-01.json sha256:235800d57f40ea77fa4d690a54c81dc2082ba34c5337a04c7cc72b41d5bef6aa"
+          ]
+        }
+      ],
       "remaining_criteria": [
-        "supported jobs recognize exactly once under the approved policy",
-        "invoice and POC/closing paths cannot double-count",
-        "caps/GMP/change-order adjustments reconcile",
-        "payroll/vendor cost corrections have explicit billing decisions",
-        "posted customer billing stays immutable and required credits/new billables are auditable"
+        "GMP savings settlement semantics (owner credit vs no transaction; fee inside or outside GMP) decided and implemented",
+        "change-order GMP adjustment reconciled end to end",
+        "payroll correction billing decisions beyond preserved T&M rates (with payroll)"
       ],
       "external_dependency": null,
       "reviewer": null,
