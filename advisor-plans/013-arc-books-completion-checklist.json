@@ -7817,7 +7817,7 @@
       "workstream": "B09",
       "title": "Complete economic dependency invalidation",
       "status": "PARTIAL",
-      "status_basis": "Dependency invalidation built and proven with incremental runs (STATUS-01 9/9); deletions of posted sources are now refused, so no deletion waits for the nightly pass (migration 20261006210000 pending production with the deploy). Open: project dimensions (restatement policy with B07), date-driven revenue-basis flips without an edit, and proof that a stopped or unreached company run never reads clean (moves with the B09.2 cron time budget).",
+      "status_basis": "Dependency invalidation built and proven with incremental runs (STATUS-01 9/9); deletions of posted sources are now refused, so no deletion waits for the nightly pass (migration 20261006210000 pending production with the deploy). Open: project dimensions (restatement policy with B07), date-driven revenue-basis flips without an edit (a stopped or unreached company run now opens a finding that holds its close: CAP-01 time-budget).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "table-driven mutation tests change each listed dependency and get stale/blocked/reprojected status correctly",
@@ -7937,8 +7937,7 @@
       ],
       "remaining_criteria": [
         "project dimension changes (restatement policy with B07)",
-        "date-driven revenue-basis flips re-evaluate without an edit",
-        "no skipped/capped/unreached run reports the company clean (with B09.2 cron budget)"
+        "date-driven revenue-basis flips re-evaluate without an edit"
       ],
       "external_dependency": null,
       "reviewer": null,
@@ -7949,7 +7948,7 @@
       "workstream": "B09",
       "title": "Bounded workers, captures and review reads",
       "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status_basis": "Projector capacity built and proven at 1,200 records (CAP-01 7/7 with a baseline run on the old code and a negative check): ties, kill/resume and concurrent workers post exactly once; reads and calls follow what changed. Migration 20261006220000 pending production with the deploy. Open: a narrowed proof that catches orphan/missing facts and journals and matches the full reference, and export captures and close-review reads at volume.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         ">1,000 records and repeated cursor ties return exactly once",
@@ -7986,13 +7985,45 @@
           "artifact_paths_and_hashes": [
             "docs/books-evidence/2026-10-06-golden-scenarios/STATUS-01.json sha256:bfe507389ae9a6d90f0467f57e2927c5ddfabd263aa80581296475d1f022be49"
           ]
+        },
+        {
+          "verified_at": "2026-10-07T00:35:31.188559+00:00",
+          "implemented_paths": [
+            "lib/services/books/projector.ts",
+            "lib/services/retainage.ts",
+            "lib/services/books/reconciliation.ts",
+            "app/api/jobs/books-projection/route.ts",
+            "app/api/jobs/books-maintenance/route.ts",
+            "supabase/migrations/20261006220000_books_projection_progress.sql",
+            "scripts/books-acceptance/scenarios/cap-01.cjs",
+            "scripts/books-acceptance/project-worker.cjs"
+          ],
+          "test_scenario_ids": [
+            "CAP-01"
+          ],
+          "commands": [
+            "scenario-runner CAP-01",
+            "scenario-runner BILL/YEAR/BANK/STATUS/CLOSE/RACE/WIP (regression)",
+            "pnpm test:financials"
+          ],
+          "observed_results": [
+            "1,200 bills sharing one updated_at post exactly once (1,200 entries, receipts, AP 1,200,000.00); a worker SIGKILLed after ~300 receipts is completed by one ordinary run; three concurrent workers post each bill once.",
+            "Work follows what changed (requests / rows): idle run 57/2,477 -> 32/73; one re-coded bill 64/2,481 -> 43/81 with one projection; unchanged nightly pass 4,845 requests and 2,400 RPC calls -> 66 requests, 0 calls; the nightly pass still re-posts all 1,200 bills after an unannounced division change.",
+            "A write committed after a newer one was projected (transaction held 6 s) is re-posted by the next ordinary run (baseline: missed until nightly). A source that failed transiently is retried by its open finding after the cursor passed it (negative check with retry disabled fails).",
+            "Cron time budget: an expired budget reaches no company and gives each an open finding that holds its close; the next pass completes all 568 companies on the stack in under 10 s and clears it.",
+            "Fixed on the way: whole-company loads of job cost, bill/expense lines and retainage on every run (a company past 250,000 job-cost rows would have stopped every run); offset paging of source reads; the unused `since` option.",
+            "Regression: all implemented subcases of BILL/YEAR/BANK/STATUS/CLOSE/RACE/WIP pass; test:financials 2733 pass / 0 fail."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-golden-scenarios/CAP-01.json sha256:b83537111e113b06200e8f98284f61963bea6bbf507249881f66324862b38a54",
+            "docs/books-evidence/2026-10-06-golden-scenarios/CAP-01-baseline-before-fix.json sha256:340d2a480a83c3d4a78add93d51a1fec4ea34329553b5a887a707db6386a4727",
+            "docs/books-evidence/2026-10-06-golden-scenarios/CAP-01-negative-retry-disabled.json sha256:8e3575feabc6b7565c5021dca9bc5c2ddcfd4b455253537cd60ddd2a016aa7e4"
+          ]
         }
       ],
       "remaining_criteria": [
-        ">1,000 records and repeated cursor ties return exactly once",
-        "interruption/resume and concurrent workers do not skip/duplicate entries",
-        "page/query counts scale with selected sources/rows rather than workers × entire ledger",
-        "narrowed proof catches orphan/missing facts/journals and yields the same result as full reference fixtures"
+        "narrowed proof catches orphan/missing facts/journals and yields the same result as full reference fixtures",
+        "export captures and close-review reads bounded at volume"
       ],
       "external_dependency": null,
       "reviewer": null,
