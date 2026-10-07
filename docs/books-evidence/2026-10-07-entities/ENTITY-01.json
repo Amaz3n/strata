@@ -1,0 +1,213 @@
+{
+  "scenario": "ENTITY-01",
+  "status": "PASSED",
+  "reviewedFrom": "B14.1/B14.2 definitions of done (advisor-plans/013) and docs/books-entities.md.",
+  "subcases": [
+    {
+      "name": "payment-across-companies",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "77bdba32-56bf-4e5d-b7bf-52e8c4bc819f",
+        "land": "28e208cf-23c1-4047-bb4c-6b0fca6fbd4b",
+        "builder": "006c61a0-ca99-4ff9-bc67-434c4f7be45f"
+      },
+      "checks": [
+        {
+          "label": "the payment's lines sit with their companies, with what each owes the other",
+          "pass": true,
+          "expected": {
+            "paymentLines": [
+              {
+                "code": "2000",
+                "company": "builder",
+                "debit": 3000000,
+                "credit": 0,
+                "counterparty": null
+              },
+              {
+                "code": "1005",
+                "company": "land",
+                "debit": 0,
+                "credit": 3000000,
+                "counterparty": null
+              },
+              {
+                "code": "2180",
+                "company": "builder",
+                "debit": 0,
+                "credit": 3000000,
+                "counterparty": "land"
+              },
+              {
+                "code": "1180",
+                "company": "land",
+                "debit": 3000000,
+                "credit": 0,
+                "counterparty": "builder"
+              }
+            ],
+            "builder": {
+              "balanced": true,
+              "accounts": {
+                "2180": 3000000,
+                "5000": 3000000
+              }
+            },
+            "land": {
+              "balanced": true,
+              "accounts": {
+                "1005": -3000000,
+                "1180": 3000000
+              }
+            },
+            "consolidated": {
+              "balanced": true,
+              "accounts": {
+                "1005": -3000000,
+                "5000": 3000000
+              }
+            }
+          },
+          "observed": {
+            "paymentLines": [
+              {
+                "code": "2000",
+                "company": "builder",
+                "debit": 3000000,
+                "credit": 0,
+                "counterparty": null
+              },
+              {
+                "code": "1005",
+                "company": "land",
+                "debit": 0,
+                "credit": 3000000,
+                "counterparty": null
+              },
+              {
+                "code": "2180",
+                "company": "builder",
+                "debit": 0,
+                "credit": 3000000,
+                "counterparty": "land"
+              },
+              {
+                "code": "1180",
+                "company": "land",
+                "debit": 3000000,
+                "credit": 0,
+                "counterparty": "builder"
+              }
+            ],
+            "builder": {
+              "balanced": true,
+              "accounts": {
+                "2180": 3000000,
+                "5000": 3000000
+              }
+            },
+            "land": {
+              "balanced": true,
+              "accounts": {
+                "1005": -3000000,
+                "1180": 3000000
+              }
+            },
+            "consolidated": {
+              "balanced": true,
+              "accounts": {
+                "1005": -3000000,
+                "5000": 3000000
+              }
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:03:18.629Z"
+    },
+    {
+      "name": "ownership-fixed-and-reversal",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "c38c0f30-6acb-4533-81b4-bb3e5051b7b7"
+      },
+      "checks": [
+        {
+          "label": "posted ownership cannot move, and the reversal keeps each line's company",
+          "pass": true,
+          "expected": {
+            "projectMove": "refused: already has postings",
+            "accountMove": "refused: already has postings",
+            "reversalCompanies": {
+              "1005": "land",
+              "1180": "land",
+              "2000": "builder",
+              "2180": "builder"
+            },
+            "builder": {
+              "balanced": true,
+              "accounts": {
+                "2000": 3000000,
+                "5000": 3000000
+              }
+            },
+            "land": {
+              "balanced": true,
+              "accounts": {}
+            }
+          },
+          "observed": {
+            "projectMove": "refused: already has postings",
+            "accountMove": "refused: already has postings",
+            "reversalCompanies": {
+              "1005": "land",
+              "1180": "land",
+              "2000": "builder",
+              "2180": "builder"
+            },
+            "builder": {
+              "balanced": true,
+              "accounts": {
+                "2000": 3000000,
+                "5000": 3000000
+              }
+            },
+            "land": {
+              "balanced": true,
+              "accounts": {}
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:03:21.981Z"
+    },
+    {
+      "name": "single-company-unchanged",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "5ef72611-7dd9-4ab6-89c3-b3d9255762b2"
+      },
+      "checks": [
+        {
+          "label": "one company, every line on it, no intercompany accounts",
+          "pass": true,
+          "expected": {
+            "companies": 1,
+            "linesOffPrimary": 0,
+            "intercompanyAccounts": 0,
+            "sameAsCompany": true
+          },
+          "observed": {
+            "companies": 1,
+            "linesOffPrimary": 0,
+            "intercompanyAccounts": 0,
+            "sameAsCompany": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:03:22.897Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-07T20:03:23.329Z"
+}

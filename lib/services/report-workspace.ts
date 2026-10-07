@@ -131,6 +131,7 @@ export async function evaluateReport(
         .enum(["prior_year", "prior_period", "none"])
         .parse(params.comparison ?? "prior_year"),
       includeMonthly: monthly,
+      legalEntityId: params.company || null,
     });
     base = statementResult(
       definition.slug,

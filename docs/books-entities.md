@@ -5,8 +5,15 @@ ledger**, not a second ledger. Every journal line names the legal entity that ow
 it; trial balance, statements and the close run per entity; consolidation adds
 entities together and eliminates what they owe and sold each other.
 
-**Status:** being built under B14. Until it lands, every posting belongs to the
-organization as one company; this page states the model the work follows.
+**Status (B14, in progress).** Built: the owning company on every journal line,
+resolution in the one posting function, intercompany legs that settle what two
+companies already owe each other before adding new balances, ownership fixed once
+posted, per-company trial balance / P&L / balance sheet (Reports → Company),
+consolidated statements that eliminate due-from/due-to, Books → Companies, and
+companies in the export (schema 33; older archives restore as one primary company).
+Not yet: per-company close and subledgers (AR/AP aging by company), the
+intercompany reconciliation, and eliminating intercompany sales (e.g. a land
+company selling a lot to the building company).
 
 A separate per-entity ledger (`books_native_*`, per-entity charts and calendars)
 was built in October 2026 but never shipped. It is retired: every transaction type
@@ -50,8 +57,11 @@ Entity B   Dr 5000 Job cost                  X    Cr 2180 Due to affiliates (A) 
 Entity A   Dr 1180 Due from affiliates (B)   X    Cr 1000 Cash                    X
 ```
 
-Each intercompany line names its counterparty entity. An intercompany
-reconciliation ties A's due-from-B to B's due-to-A.
+Each intercompany line names its owner and counterparty. When one company owes
+another, posting first settles what the other already owes it (a voided payment
+unwinds the balance rather than adding the opposite one), so two companies never
+carry a receivable and a payable with each other at once; A's due-from-B always
+equals B's due-to-A.
 
 ## Consolidation
 

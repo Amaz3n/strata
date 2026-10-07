@@ -1,0 +1,113 @@
+{
+  "scenario": "ENTITY-01",
+  "reviewedFrom": "B14.1/B14.2 definitions of done (advisor-plans/013) and docs/books-entities.md.",
+  "subcases": {
+    "payment-across-companies": {
+      "derivation": "The builder (primary company) owns the job; the land company owns checking account 1005. A $30,000 bill on the job is the builder's (Dr 5000 / Cr 2000). Paying it from the land company's checking: the builder's side is Dr 2000, the land company's is Cr 1005, and posting adds the builder's Cr 2180 due to the land company and the land company's Dr 1180 due from the builder, so each balances on its own. Consolidated, the 1180/2180 pair is eliminated: the group spent $30,000 of cash on job cost.",
+      "inputs": {
+        "contractCents": 10000000,
+        "billCents": 3000000,
+        "billDate": "2026-07-10",
+        "paidDate": "2026-07-15"
+      },
+      "expected": {
+        "paymentLines": [
+          {
+            "code": "2000",
+            "company": "builder",
+            "debit": 3000000,
+            "credit": 0,
+            "counterparty": null
+          },
+          {
+            "code": "1005",
+            "company": "land",
+            "debit": 0,
+            "credit": 3000000,
+            "counterparty": null
+          },
+          {
+            "code": "2180",
+            "company": "builder",
+            "debit": 0,
+            "credit": 3000000,
+            "counterparty": "land"
+          },
+          {
+            "code": "1180",
+            "company": "land",
+            "debit": 3000000,
+            "credit": 0,
+            "counterparty": "builder"
+          }
+        ],
+        "builder": {
+          "balanced": true,
+          "accounts": {
+            "2180": 3000000,
+            "5000": 3000000
+          }
+        },
+        "land": {
+          "balanced": true,
+          "accounts": {
+            "1005": -3000000,
+            "1180": 3000000
+          }
+        },
+        "consolidated": {
+          "balanced": true,
+          "accounts": {
+            "1005": -3000000,
+            "5000": 3000000
+          }
+        }
+      }
+    },
+    "ownership-fixed-and-reversal": {
+      "derivation": "Once the job and the land company's account have postings, moving either to another company is refused. Voiding the check posts Dr 1005 (land) / Cr 2000 (builder); the land company now owes the builder, which first settles what the builder owed it: Cr 1180 on the land company and Dr 2180 on the builder. Afterwards the land company has nothing (cash back, nothing owed) and the builder has its job cost and the bill owed again; neither carries a receivable and a payable with the other.",
+      "inputs": {
+        "contractCents": 10000000,
+        "billCents": 3000000,
+        "billDate": "2026-07-10",
+        "paidDate": "2026-07-15"
+      },
+      "expected": {
+        "projectMove": "refused: already has postings",
+        "accountMove": "refused: already has postings",
+        "reversalCompanies": {
+          "1005": "land",
+          "1180": "land",
+          "2000": "builder",
+          "2180": "builder"
+        },
+        "builder": {
+          "balanced": true,
+          "accounts": {
+            "2000": 3000000,
+            "5000": 3000000
+          }
+        },
+        "land": {
+          "balanced": true,
+          "accounts": {}
+        }
+      }
+    },
+    "single-company-unchanged": {
+      "derivation": "A builder with one company has its primary company created on first posting; every line is on it, no intercompany account is created, no company choice is offered, and its consolidated statements are its company's statements.",
+      "inputs": {
+        "contractCents": 10000000,
+        "billCents": 3000000,
+        "billDate": "2026-07-10",
+        "paidDate": "2026-07-15"
+      },
+      "expected": {
+        "companies": 1,
+        "linesOffPrimary": 0,
+        "intercompanyAccounts": 0,
+        "sameAsCompany": true
+      }
+    }
+  }
+}

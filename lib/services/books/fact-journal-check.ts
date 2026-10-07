@@ -81,7 +81,9 @@ export async function checkFactJournals(orgId: string, facts: CheckedFact[], pro
       differences.push({ fact_id: fact.id, type: "missing_journal" })
       continue
     }
-    const actualLines = (actual.lines ?? []).sort((left, right) => left.line_no - right.line_no).map((line) => {
+    // The database adds the due-from / due-to pair when an entry's lines belong to
+    // different legal entities; those legs follow from ownership, not the draft.
+    const actualLines = (actual.lines ?? []).filter((line) => (line.dimensions as Record<string, unknown> | null)?.intercompany !== true).sort((left, right) => left.line_no - right.line_no).map((line) => {
       const account = Array.isArray(line.account) ? line.account[0] : line.account
       // The database stamps each posted line with its account's classification at
       // posting; that is evidence beside the posting, not part of the draft, and the

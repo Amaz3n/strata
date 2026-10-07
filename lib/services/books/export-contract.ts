@@ -65,6 +65,7 @@ export const EXPORT_TABLES = [
   "books_payroll_correction_postings",
   "books_overhead_budgets",
   "books_overhead_budget_lines",
+  "books_legal_entities",
   "books_settings",
   "accounting_policies",
   "accounting_account_mappings",
@@ -225,6 +226,12 @@ export function verifyBooksExportBundle(bundle: {
       ),
     );
     for (const table of EXPORT_TABLES) {
+      if (
+        bundle.manifest.schemaVersion < 33 &&
+        table === "books_legal_entities" &&
+        !bundle.tables[table]
+      )
+        continue;
       if (
         bundle.manifest.schemaVersion < 20 &&
         table === JOURNAL_RESOLUTION_TABLE &&
@@ -438,6 +445,7 @@ export function verifyBooksExportBundle(bundle: {
       ["opening_balance_lines", "operational_payment_id", "payments"],
       ["journal_lines", "entry_id", "journal_entries"],
       ["journal_lines", "account_id", "gl_accounts"],
+      ["journal_lines", "legal_entity_id", "books_legal_entities"],
       ["journal_entries", "fact_id", "accounting_facts"],
       ["journal_entries", "reversal_of_entry_id", "journal_entries"],
       ["invoice_lines", "invoice_id", "invoices"],

@@ -1,0 +1,640 @@
+{
+  "scenario": "RACE-01",
+  "status": "INCOMPLETE",
+  "reviewedFrom": "Concurrency invariants for a ledger: any interleaving of independent sessions must end in a state some serial order could produce, or refuse with an explicit retryable error; money is never written twice or half-written; a closed period's saved statements match its ledger; repair converges. Each contention runs on fresh data several times through the product's own services, whose RPCs execute in separate database sessions. Amounts are integer cents.",
+  "subcases": [
+    {
+      "name": "double-close",
+      "status": "PASSED",
+      "identities": {
+        "outcomes": [
+          {
+            "orgId": "a0769b94-2328-437a-b821-fc189a596e35",
+            "loser": "Failed to begin accounting-period close: Accounting period close is already running"
+          },
+          {
+            "orgId": "9fc10d3c-2362-49dd-b078-e65f5b9cc891",
+            "loser": "Failed to begin accounting-period close: Accounting period close is already running"
+          },
+          {
+            "orgId": "165ad015-a03f-4b13-a2ca-a4103079cce2",
+            "loser": "Failed to begin accounting-period close: Accounting period close is already running"
+          }
+        ]
+      },
+      "checks": [
+        {
+          "label": "round 0: exactly one close wins",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "round 0: one recognition entry",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "round 0: one saved statement per type",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "round 0: worked-example July ledger",
+          "pass": true,
+          "expected": {
+            "1100": 27000000,
+            "1110": 3000000,
+            "2000": -20000000,
+            "2350": -5000000,
+            "4000": -25000000,
+            "5000": 20000000
+          },
+          "observed": {
+            "1100": 27000000,
+            "1110": 3000000,
+            "2000": -20000000,
+            "2350": -5000000,
+            "4000": -25000000,
+            "5000": 20000000
+          }
+        },
+        {
+          "label": "round 1: exactly one close wins",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "round 1: one recognition entry",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "round 1: one saved statement per type",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "round 1: worked-example July ledger",
+          "pass": true,
+          "expected": {
+            "1100": 27000000,
+            "1110": 3000000,
+            "2000": -20000000,
+            "2350": -5000000,
+            "4000": -25000000,
+            "5000": 20000000
+          },
+          "observed": {
+            "1100": 27000000,
+            "1110": 3000000,
+            "2000": -20000000,
+            "2350": -5000000,
+            "4000": -25000000,
+            "5000": 20000000
+          }
+        },
+        {
+          "label": "round 2: exactly one close wins",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "round 2: one recognition entry",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "round 2: one saved statement per type",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "round 2: worked-example July ledger",
+          "pass": true,
+          "expected": {
+            "1100": 27000000,
+            "1110": 3000000,
+            "2000": -20000000,
+            "2350": -5000000,
+            "4000": -25000000,
+            "5000": 20000000
+          },
+          "observed": {
+            "1100": 27000000,
+            "1110": 3000000,
+            "2000": -20000000,
+            "2350": -5000000,
+            "4000": -25000000,
+            "5000": 20000000
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:01:45.814Z"
+    },
+    {
+      "name": "close-versus-late-bill",
+      "status": "PASSED",
+      "identities": {
+        "outcomes": [
+          {
+            "ordering": "before",
+            "orgId": "c1980264-c177-48c8-931c-6f1824601992",
+            "close": "Close blocked: WIP and POC reviewed through period end"
+          },
+          {
+            "ordering": "during",
+            "orgId": "e707847b-fa11-4979-b4a6-c03d91d6c73b",
+            "close": "closed"
+          },
+          {
+            "ordering": "after",
+            "orgId": "e8e60116-469b-4005-91e4-3490dfed9cb3",
+            "close": "closed"
+          }
+        ]
+      },
+      "checks": [
+        {
+          "label": "before: the close outcome is the serial one",
+          "pass": true,
+          "expected": false,
+          "observed": false
+        },
+        {
+          "label": "before: after repair July holds both bills",
+          "pass": true,
+          "expected": 25000000,
+          "observed": 25000000
+        },
+        {
+          "label": "before: the repaired close stands on the ledger",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "during: the close outcome is the serial one",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "during: the saved July balance sheet equals the ledger",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "during: nothing operational posted into July after it closed",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "during: after repair July holds both bills",
+          "pass": true,
+          "expected": 25000000,
+          "observed": 25000000
+        },
+        {
+          "label": "during: the repaired close stands on the ledger",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "after: the close outcome is the serial one",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "after: the saved July balance sheet equals the ledger",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "after: nothing operational posted into July after it closed",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "after: after repair July holds both bills",
+          "pass": true,
+          "expected": 25000000,
+          "observed": 25000000
+        },
+        {
+          "label": "after: the repaired close stands on the ledger",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        }
+      ],
+      "startedAt": "2026-10-07T20:01:50.273Z"
+    },
+    {
+      "name": "bank-double-match",
+      "status": "PASSED",
+      "identities": {
+        "outcomes": [
+          {
+            "orgId": "2e6b3ab1-0e44-4502-8e49-a4291a6320ad",
+            "refusals": [
+              "Failed to confirm bank match: Matches exceed bank transaction capacity",
+              "Failed to confirm bank match: Matches exceed bank transaction capacity"
+            ]
+          },
+          {
+            "orgId": "8a0087d2-c1bf-407c-90ee-8e6ca83d20a1",
+            "refusals": [
+              "Failed to confirm bank match: Matches exceed bank transaction capacity",
+              "Failed to confirm bank match: Matches exceed bank transaction capacity"
+            ]
+          },
+          {
+            "orgId": "8c56eb53-cd32-43e0-ba60-2a7831223059",
+            "refusals": [
+              "Failed to confirm bank match: Matches exceed bank transaction capacity",
+              "Failed to confirm bank match: Matches exceed bank transaction capacity"
+            ]
+          }
+        ]
+      },
+      "checks": [
+        {
+          "label": "round 0: one bank debit, two checks: one match",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "round 0: two debits, one check: one match on the check",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "round 0: no transaction over-matched",
+          "pass": true,
+          "expected": 0,
+          "observed": 0
+        },
+        {
+          "label": "round 1: one bank debit, two checks: one match",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "round 1: two debits, one check: one match on the check",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "round 1: no transaction over-matched",
+          "pass": true,
+          "expected": 0,
+          "observed": 0
+        },
+        {
+          "label": "round 2: one bank debit, two checks: one match",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "round 2: two debits, one check: one match on the check",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "round 2: no transaction over-matched",
+          "pass": true,
+          "expected": 0,
+          "observed": 0
+        }
+      ],
+      "startedAt": "2026-10-07T20:01:55.526Z"
+    },
+    {
+      "name": "deposit-receipt-contention",
+      "status": "PASSED",
+      "identities": {
+        "outcomes": [
+          {
+            "orgId": "bbafc11b-5fa7-44ae-8e56-116d6a2dc583",
+            "loser": "Failed to post deposit batch: Receipt is already assigned to another deposit"
+          },
+          {
+            "orgId": "ffccdf24-9e0f-485c-81fd-8005cdacf020",
+            "loser": "Failed to post deposit batch: Receipt is already assigned to another deposit"
+          },
+          {
+            "orgId": "27330e5c-66ec-4ce7-ac4d-2c9eb0606b5f",
+            "loser": "Failed to post deposit batch: Receipt is already assigned to another deposit"
+          }
+        ]
+      },
+      "checks": [
+        {
+          "label": "round 0: one deposit claims the receipt",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "round 0: cash counted once",
+          "pass": true,
+          "expected": {
+            "1000": 100000,
+            "1100": 0,
+            "4900": -100000
+          },
+          "observed": {
+            "1000": 100000,
+            "1100": 0,
+            "4900": -100000
+          }
+        },
+        {
+          "label": "round 0: undeposited funds cleared",
+          "pass": true,
+          "expected": 0,
+          "observed": 0
+        },
+        {
+          "label": "round 1: one deposit claims the receipt",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "round 1: cash counted once",
+          "pass": true,
+          "expected": {
+            "1000": 100000,
+            "1100": 0,
+            "4900": -100000
+          },
+          "observed": {
+            "1000": 100000,
+            "1100": 0,
+            "4900": -100000
+          }
+        },
+        {
+          "label": "round 1: undeposited funds cleared",
+          "pass": true,
+          "expected": 0,
+          "observed": 0
+        },
+        {
+          "label": "round 2: one deposit claims the receipt",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "round 2: cash counted once",
+          "pass": true,
+          "expected": {
+            "1000": 100000,
+            "1100": 0,
+            "4900": -100000
+          },
+          "observed": {
+            "1000": 100000,
+            "1100": 0,
+            "4900": -100000
+          }
+        },
+        {
+          "label": "round 2: undeposited funds cleared",
+          "pass": true,
+          "expected": 0,
+          "observed": 0
+        }
+      ],
+      "startedAt": "2026-10-07T20:01:57.110Z"
+    },
+    {
+      "name": "concurrent-projection-runs",
+      "status": "PASSED",
+      "identities": {
+        "outcomes": [
+          {
+            "orgId": "412011d7-0c69-49d8-8875-0e19708db87a",
+            "runsFailed": 0
+          },
+          {
+            "orgId": "b6163e15-2c12-4bc4-aaf7-6aeeb33f96c7",
+            "runsFailed": 0
+          },
+          {
+            "orgId": "0c67a593-0e94-4de6-a187-92e9bce5a4b0",
+            "runsFailed": 0
+          }
+        ]
+      },
+      "checks": [
+        {
+          "label": "round 0: each bill posts exactly once",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "round 0: ledger counts each bill once",
+          "pass": true,
+          "expected": {
+            "2000": -50000,
+            "5000": 50000
+          },
+          "observed": {
+            "2000": -50000,
+            "5000": 50000
+          }
+        },
+        {
+          "label": "round 1: each bill posts exactly once",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "round 1: ledger counts each bill once",
+          "pass": true,
+          "expected": {
+            "2000": -50000,
+            "5000": 50000
+          },
+          "observed": {
+            "2000": -50000,
+            "5000": 50000
+          }
+        },
+        {
+          "label": "round 2: each bill posts exactly once",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "round 2: ledger counts each bill once",
+          "pass": true,
+          "expected": {
+            "2000": -50000,
+            "5000": 50000
+          },
+          "observed": {
+            "2000": -50000,
+            "5000": 50000
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:01:58.823Z"
+    },
+    {
+      "name": "proposal-double-approval",
+      "status": "PASSED",
+      "identities": {
+        "outcomes": [
+          {
+            "orgId": "484d0682-9493-40a4-8190-1b85b7b5e616",
+            "approvalsSucceeded": 2,
+            "errors": []
+          },
+          {
+            "orgId": "f65853fb-fd64-4cac-b623-eb90c9bbd42e",
+            "approvalsSucceeded": 2,
+            "errors": []
+          },
+          {
+            "orgId": "c6dda74c-d501-4e8e-b741-0a6afd0ef33a",
+            "approvalsSucceeded": 2,
+            "errors": []
+          }
+        ]
+      },
+      "checks": [
+        {
+          "label": "round 0: one posted entry",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "round 0: ledger",
+          "pass": true,
+          "expected": {
+            "3010": -250000,
+            "6000": 250000
+          },
+          "observed": {
+            "3010": -250000,
+            "6000": 250000
+          }
+        },
+        {
+          "label": "round 1: one posted entry",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "round 1: ledger",
+          "pass": true,
+          "expected": {
+            "3010": -250000,
+            "6000": 250000
+          },
+          "observed": {
+            "3010": -250000,
+            "6000": 250000
+          }
+        },
+        {
+          "label": "round 2: one posted entry",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "round 2: ledger",
+          "pass": true,
+          "expected": {
+            "3010": -250000,
+            "6000": 250000
+          },
+          "observed": {
+            "3010": -250000,
+            "6000": 250000
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:02:03.031Z"
+    },
+    {
+      "name": "late-mutation-before-receipt",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "d98b3e8e-8621-41ff-a8cf-7658fbfe3766",
+        "billId": "0091c92c-1091-4040-9dcd-227fd54588a2"
+      },
+      "checks": [
+        {
+          "label": "not reported posted on the stale coding",
+          "pass": true,
+          "expected": "pending",
+          "observed": "pending"
+        },
+        {
+          "label": "the next run makes it current",
+          "pass": true,
+          "expected": "posted",
+          "observed": "posted"
+        },
+        {
+          "label": "the posted entry carries the new cost code",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "one superseded entry reversed, one posted",
+          "pass": true,
+          "expected": {
+            "posted": 1,
+            "reversed": 1
+          },
+          "observed": {
+            "posted": 1,
+            "reversed": 1
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:02:03.435Z"
+    },
+    {
+      "name": "entity-pair",
+      "status": "NOT_IMPLEMENTED",
+      "checks": []
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-07T20:02:04.316Z"
+}

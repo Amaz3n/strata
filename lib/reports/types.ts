@@ -147,6 +147,11 @@ export type ReportParamSpec =
   | { key: string; kind: "period"; label: string }
   | { key: string; kind: "select"; label: string; options: ReportParamOption[] }
   | { key: string; kind: "toggle"; label: string }
+  /** One of the organization's companies, or "" for all of them consolidated. */
+  | { key: string; kind: "legal_entity"; label: string }
+
+/** What the report screen renders: a company choice arrives as a resolved select. */
+export type ClientReportParamSpec = Exclude<ReportParamSpec, { kind: "legal_entity" }>
 
 export type ReportParams = Record<string, string>
 

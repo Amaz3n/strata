@@ -26,6 +26,23 @@ test('older time archives retain their original generated-cost policy instead of
  input.bundle.tables.time_entries[0].labor_cost_policy_version=1;input.bundle.manifest.tables.time_entries.checksum=booksDigest(input.bundle.tables.time_entries)
  assert.equal(prepare(input).tables.time_entries[0].labor_cost_policy_version,1)
 })
+test('an archive from before legal entities restores as one primary company owning every line',()=>{
+ const input=fixture()
+ input.bundle.tables.gl_accounts=[{id:'cash',org_id:'org'},{id:'cost',org_id:'org'}]
+ input.bundle.tables.journal_entries=[{id:'entry',org_id:'org',status:'posted',created_at:'2026-03-01T12:00:00.000Z'}]
+ input.bundle.tables.journal_lines=[{id:'l1',org_id:'org',entry_id:'entry',account_id:'cost',debit_cents:500,credit_cents:0},{id:'l2',org_id:'org',entry_id:'entry',account_id:'cash',debit_cents:0,credit_cents:500}]
+ delete input.bundle.tables.books_legal_entities
+ input.bundle.manifest.tables=Object.fromEntries(Object.entries(input.bundle.tables).map(([name,rows])=>[name,{rows:rows.length,checksum:booksDigest(rows)}]))
+ input.catalog.columns.push({table:'journal_lines',name:'legal_entity_id',notNull:true,hasDefault:false,generated:false})
+ const before=structuredClone(input.bundle),plan=prepare(input)
+ assert.equal(plan.tables.books_legal_entities.length,1)
+ const [company]=plan.tables.books_legal_entities
+ assert.equal(company.is_primary,true);assert.equal(company.org_id,'org');assert.equal(company.created_at,'2026-03-01T12:00:00.000Z')
+ assert.deepEqual(plan.tables.journal_lines.map(line=>line.legal_entity_id),[company.id,company.id])
+ assert.equal(prepare(input).tables.books_legal_entities[0].id,company.id)
+ assert.deepEqual(input.bundle,before)
+ assert.ok(plan.changes.some(change=>change.table==='books_legal_entities'))
+})
 test('payroll document restrictions record recovery changes without rewriting the archive',()=>{
  const input=fixture()
  const payroll=require('./helpers/books-payroll-register-fixture').fixture(),proof=payroll.sourceProof

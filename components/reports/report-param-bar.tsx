@@ -4,7 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation"
 import { useTransition } from "react"
 
 import { PERIOD_PRESETS } from "@/lib/reports/params"
-import type { ReportParamSpec, ReportParams } from "@/lib/reports/types"
+import type { ClientReportParamSpec, ReportParams } from "@/lib/reports/types"
 import { cn } from "@/lib/utils"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -20,7 +20,7 @@ export function ReportParamBar({
   specs,
   values,
 }: {
-  specs: ReportParamSpec[]
+  specs: ClientReportParamSpec[]
   values: ReportParams
 }) {
   const router = useRouter()

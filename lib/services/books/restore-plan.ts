@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { booksDigest } from "@/lib/services/books/hash";
 import {
   EXPORT_TABLES,
@@ -295,6 +296,34 @@ export function prepareBooksRestorePlan(input: {
           explanation:
             "Retain the overtime-only formula used before the double-time policy migration; do not recalculate historical archived labor with the new-row default",
         });
+      }
+  }
+  // Before schema 33 the books were one company. Restoring into the legal-entity
+  // schema creates that company as the primary one, with a fixed id derived from
+  // the organization, and every journal line belongs to it.
+  if (
+    input.bundle.manifest.schemaVersion < 33 &&
+    input.catalog.columns.some(
+      (column) =>
+        (column.schema ?? "public") === "public" &&
+        column.table === "journal_lines" &&
+        column.name === "legal_entity_id",
+    )
+  ) {
+    if ((tables.books_legal_entities ?? []).length)
+      throw new Error("Older archive cannot carry legal entities");
+    const digest = createHash("sha256").update(`books-primary-entity:${input.bundle.manifest.orgId}`).digest("hex");
+    const entityId = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+    // Dated when the books began: the archive's earliest journal entry.
+    const capturedAt = (tables.journal_entries ?? []).map((entry) => String(entry.created_at ?? "")).filter(Boolean).sort()[0] ?? "1970-01-01T00:00:00.000Z";
+    tables.books_legal_entities = [{ id: entityId, org_id: input.bundle.manifest.orgId, name: "Primary company", legal_name: null, is_primary: true, status: "active", created_by: null, created_at: capturedAt, updated_at: capturedAt }];
+    changes.push({ table: "books_legal_entities", rowId: entityId, fields: ["id", "org_id", "name", "is_primary", "status"],
+      explanation: "The archive predates legal entities; its books were one company, restored as the primary company" });
+    for (const line of tables.journal_lines ?? [])
+      if (!("legal_entity_id" in line)) {
+        line.legal_entity_id = entityId;
+        changes.push({ table: "journal_lines", rowId: String(line.id), fields: ["legal_entity_id"],
+          explanation: "Lines posted before legal entities belong to the primary company" });
       }
   }
   for (const column of input.catalog.columns) {

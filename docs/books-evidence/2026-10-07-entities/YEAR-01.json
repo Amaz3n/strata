@@ -1,0 +1,311 @@
+{
+  "scenario": "YEAR-01",
+  "status": "PASSED",
+  "reviewedFrom": "Standard accrual year-end practice: every income-statement account (income, cost of sales, expense — custom accounts included) is closed to retained earnings at the fiscal year end; balance-sheet accounts, owner contributions and owner distributions are never closed. Net income = income − cost of sales − expense for the fiscal year; RE(end) = RE(open) + net income. A reopened year recloses only the residual change. Statements for a closed year still report its earnings (closing entries are excluded from the P&L). Pending licensed-CPA review (B16.3). Amounts are integer cents. Cash-side accounts are a non-control escrow asset (1060) so the year end is isolated from bank reconciliation, which BANK-01 covers.",
+  "subcases": [
+    {
+      "name": "noncalendar-year-closes-to-retained-earnings",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "9c281651-db80-4053-8ffa-86165da93b78"
+      },
+      "checks": [
+        {
+          "label": "closing fiscal periods 1–11 posts no year-end entry",
+          "pass": true,
+          "expected": 0,
+          "observed": 0
+        },
+        {
+          "label": "one year-end entry for the fiscal year",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "year-end entry dated the fiscal year end",
+          "pass": true,
+          "expected": "2026-03-31",
+          "observed": "2026-03-31"
+        },
+        {
+          "label": "year-end entry closes every income-statement account, custom ones included, to 3100",
+          "pass": true,
+          "expected": {
+            "3100": -380000,
+            "4310": 800000,
+            "5040": -300000,
+            "6810": -120000
+          },
+          "observed": {
+            "3100": -380000,
+            "4310": 800000,
+            "5040": -300000,
+            "6810": -120000
+          }
+        },
+        {
+          "label": "the closed year's P&L still reports its earnings",
+          "pass": true,
+          "expected": 380000,
+          "observed": 380000
+        },
+        {
+          "label": "ledger after year end: RE = opening + net income; distributions stay open",
+          "pass": true,
+          "expected": {
+            "1060": 1780000,
+            "3010": -500000,
+            "3020": 100000,
+            "3100": -1380000
+          },
+          "observed": {
+            "1060": 1780000,
+            "3010": -500000,
+            "3020": 100000,
+            "3100": -1380000
+          }
+        },
+        {
+          "label": "balance sheet balances at year end",
+          "pass": true,
+          "expected": 0,
+          "observed": 0
+        }
+      ],
+      "startedAt": "2026-10-07T20:01:00.125Z"
+    },
+    {
+      "name": "late-adjustment-reopen-reclose-and-next-year",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "ab6b96bc-28a5-4ae2-9f46-baedb218506f"
+      },
+      "checks": [
+        {
+          "label": "an accountant without books.reopen is refused by the server",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "reclose posts only the residual change",
+          "pass": true,
+          "expected": {
+            "3100": 40000,
+            "6810": -40000
+          },
+          "observed": {
+            "3100": 40000,
+            "6810": -40000
+          }
+        },
+        {
+          "label": "a reopen and reclose with nothing changed posts nothing",
+          "pass": true,
+          "expected": 2,
+          "observed": 2
+        },
+        {
+          "label": "closing fiscal 2026 period 1 posts no year-end entry",
+          "pass": true,
+          "expected": 2,
+          "observed": 2
+        },
+        {
+          "label": "fiscal 2025 P&L includes the late adjustment",
+          "pass": true,
+          "expected": 410000,
+          "observed": 410000
+        },
+        {
+          "label": "fiscal 2026 P&L holds only next-year activity",
+          "pass": true,
+          "expected": 200000,
+          "observed": 200000
+        },
+        {
+          "label": "ledger after reclose and next-year activity",
+          "pass": true,
+          "expected": {
+            "1060": 2110000,
+            "3010": -500000,
+            "3100": -1410000,
+            "4310": -200000
+          },
+          "observed": {
+            "1060": 2110000,
+            "3010": -500000,
+            "3100": -1410000,
+            "4310": -200000
+          }
+        },
+        {
+          "label": "balance sheet: current earnings are fiscal 2026 only, and it balances",
+          "pass": true,
+          "expected": {
+            "currentEarningsCents": 200000,
+            "differenceCents": 0
+          },
+          "observed": {
+            "currentEarningsCents": 200000,
+            "differenceCents": 0
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:01:01.822Z"
+    },
+    {
+      "name": "break-even-year",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "7bf73392-dcae-4b0f-9297-e7ddb85cdc91"
+      },
+      "checks": [
+        {
+          "label": "break-even year still closes income and expense",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "break-even year-end entry has no retained-earnings line",
+          "pass": true,
+          "expected": {
+            "4310": 100000,
+            "6810": -100000
+          },
+          "observed": {
+            "4310": 100000,
+            "6810": -100000
+          }
+        },
+        {
+          "label": "retained earnings unchanged",
+          "pass": true,
+          "expected": {
+            "1060": 1500000,
+            "3010": -500000,
+            "3100": -1000000
+          },
+          "observed": {
+            "1060": 1500000,
+            "3010": -500000,
+            "3100": -1000000
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:01:02.367Z"
+    },
+    {
+      "name": "no-activity-year",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "4d8a0ed7-b89c-43ad-8858-fa4ebf232529"
+      },
+      "checks": [
+        {
+          "label": "no year-end entry without income-statement balances",
+          "pass": true,
+          "expected": 0,
+          "observed": 0
+        },
+        {
+          "label": "opening position unchanged",
+          "pass": true,
+          "expected": {
+            "1060": 1500000,
+            "3010": -500000,
+            "3100": -1000000
+          },
+          "observed": {
+            "1060": 1500000,
+            "3010": -500000,
+            "3100": -1000000
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:01:02.634Z"
+    },
+    {
+      "name": "late-adjustment-in-earlier-closed-period",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "bae0155a-a5fe-47a1-b079-fef4d9424b8c"
+      },
+      "checks": [
+        {
+          "label": "reopening February while the year end is closed is refused",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "every period is closed again",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "the closed year carries no income-statement balance",
+          "pass": true,
+          "expected": 0,
+          "observed": 0
+        },
+        {
+          "label": "RE = opening + corrected net income",
+          "pass": true,
+          "expected": {
+            "1060": 1930000,
+            "3010": -500000,
+            "3100": -1430000
+          },
+          "observed": {
+            "1060": 1930000,
+            "3010": -500000,
+            "3100": -1430000
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:01:02.847Z"
+    },
+    {
+      "name": "same-intent-retry",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "cb4c5e6f-a973-4e2f-bdf5-42339b6e1f57"
+      },
+      "checks": [
+        {
+          "label": "the final period is closed",
+          "pass": true,
+          "expected": "closed",
+          "observed": "closed"
+        },
+        {
+          "label": "one year-end entry for one intent",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "RE = opening + net income",
+          "pass": true,
+          "expected": {
+            "1060": 1800000,
+            "3010": -500000,
+            "3100": -1300000
+          },
+          "observed": {
+            "1060": 1800000,
+            "3010": -500000,
+            "3100": -1300000
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:01:03.250Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-07T20:01:03.510Z"
+}

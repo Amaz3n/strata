@@ -183,6 +183,16 @@ commit;`)
     kit.sql(`update public.contracts set contract_type='purchase_agreement' where id=${q(jobs[2].contractId)};`)
     return org
   },
+  // A builder and its land company; the land company's checking paid a $30,000
+  // bill on the builder's job.
+  async "two-companies"(kit, password) {
+    const { twoCompanies, paidBill } = require("./scenarios/entity-01.cjs").helpers
+    const input = { contractCents: 10000000, billCents: 3000000, billDate: "2026-07-10", paidDate: "2026-07-15" }
+    const org = await twoCompanies(kit, "Browser acceptance — two companies", input, password)
+    await paidBill(kit, org, input)
+    org.periods.land = { periodId: org.land }
+    return org
+  },
   // A completed home the builder owns that cost $265,000.
   async "home-impairment"(kit, password) {
     const home = require("./scenarios/home-01.cjs").helpers

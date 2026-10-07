@@ -9557,7 +9557,7 @@
       "workstream": "B14",
       "title": "Decide and enforce the native legal-entity boundary",
       "status": "PARTIAL",
-      "status_basis": "Native adjustment money and source-derived invoice economic previews implemented; operational persistence, integrated account/status workflows and complete native lifetime/full acceptance unfinished.",
+      "status_basis": "Rebuilt on the one ledger (owner decision 2026-10-07). Verified locally: company on every line with single-point resolution, intercompany legs, posted ownership fixed, per-company and consolidated statements, export/restore. Remaining: AR/AP subledgers by company so the entity can be followed through every subledger. Earlier evidence entries describe the retired separate entity ledger and are kept for history.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "one authoritative entity ID can be followed from source → fact → journal → subledger → bank → close → statement → export",
@@ -13148,6 +13148,48 @@
             "goldens_accepted": 0,
             "release_gates_accepted": 0
           }
+        },
+        {
+          "verified_at": "2026-10-07T20:06:34.253604+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261007235500_books_retire_native_entity_ledger.sql",
+            "supabase/migrations/20261007235800_books_legal_entities.sql",
+            "lib/services/books/legal-entities.ts",
+            "lib/services/books/statements.ts",
+            "lib/services/books/statement-detail.ts",
+            "lib/services/books/period-close.ts",
+            "lib/services/books/fact-journal-check.ts",
+            "lib/services/books/export-contract.ts",
+            "lib/services/books/restore-plan.ts",
+            "components/books/legal-entity-workspace.tsx",
+            "app/(app)/books/entities/page.tsx",
+            "lib/reports/definitions/financial.ts",
+            "components/reports/report-view.tsx",
+            "docs/books-entities.md"
+          ],
+          "test_scenario_ids": [
+            "ENTITY-01"
+          ],
+          "commands": [
+            "scenario-runner ENTITY-01 and full regression (CAP-01 excluded)",
+            "playwright journeys/two-companies.spec.ts",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "Owner decision 2026-10-07: legal entity is a segment of the one ledger; the unshipped separate per-entity ledger (32 tables, 128 functions, ~126 files) was retired by a forward migration; the export snapshot was proven byte-identical apart from the retired tables.",
+            "Every journal line names its company, resolved once in post_books_journal_entry (explicit, intercompany owner, project owner, account owner, entry choice, primary); 440,204 existing acceptance lines backfilled to their primary company.",
+            "A $30,000 bill on the builder's job paid from the land company's checking: builder Dr 2000 / Cr 2180 due to land; land Cr 1005 / Dr 1180 due from builder; each company's trial balance balances; consolidated shows only cash and job cost.",
+            "Voiding the check settles the intercompany balance instead of adding the opposite one: land company ends with nothing, builder with job cost and the bill owed again; reversal lines keep their companies.",
+            "Ownership of a job or account with postings cannot change (database guard).",
+            "Single-company orgs are unchanged: one primary company, no intercompany accounts, no company choice shown, consolidated equals the company.",
+            "Statements: Reports → Trial balance / P&L / Balance sheet take a Company choice (live per company; consolidated eliminates due-from/due-to; the close saves consolidated statements).",
+            "Export schema 33 carries books_legal_entities; older archives restore as one primary company owning every line (deterministic id, recorded change).",
+            "Decision recorded in docs/books-entities.md: entities are not a security boundary (division scope remains the enforcement layer).",
+            "Regression: all scenarios pass (CLOSE-01/RACE-01 INCOMPLETE only for unimplemented parts); test:financials 2,520 pass."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-07-entities"
         }
       ],
       "remaining_criteria": [
@@ -13166,7 +13208,7 @@
       "workstream": "B14",
       "title": "Entity-specific workflows, ledgers, periods and cutover",
       "status": "PARTIAL",
-      "status_basis": "Native adjustment money and source-derived invoice economic previews implemented; operational persistence, integrated account/status workflows and complete native lifetime/full acceptance unfinished.",
+      "status_basis": "Per-company trial balance, P&L and balance sheet verified locally (ENTITY-01, two-companies journey). Remaining: per-company close/reopen, per-company opening balances and cutover, tax reports and bank mappings by company. Earlier evidence entries describe the retired separate entity ledger and are kept for history.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "two entities with different account mappings and calendars produce independent exact TB/AR/AP/payroll/banks/statements",
@@ -16085,6 +16127,48 @@
           ],
           "accepted_packages": 0,
           "accepted_release_gates": 0
+        },
+        {
+          "verified_at": "2026-10-07T20:06:34.253604+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261007235500_books_retire_native_entity_ledger.sql",
+            "supabase/migrations/20261007235800_books_legal_entities.sql",
+            "lib/services/books/legal-entities.ts",
+            "lib/services/books/statements.ts",
+            "lib/services/books/statement-detail.ts",
+            "lib/services/books/period-close.ts",
+            "lib/services/books/fact-journal-check.ts",
+            "lib/services/books/export-contract.ts",
+            "lib/services/books/restore-plan.ts",
+            "components/books/legal-entity-workspace.tsx",
+            "app/(app)/books/entities/page.tsx",
+            "lib/reports/definitions/financial.ts",
+            "components/reports/report-view.tsx",
+            "docs/books-entities.md"
+          ],
+          "test_scenario_ids": [
+            "ENTITY-01"
+          ],
+          "commands": [
+            "scenario-runner ENTITY-01 and full regression (CAP-01 excluded)",
+            "playwright journeys/two-companies.spec.ts",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "Owner decision 2026-10-07: legal entity is a segment of the one ledger; the unshipped separate per-entity ledger (32 tables, 128 functions, ~126 files) was retired by a forward migration; the export snapshot was proven byte-identical apart from the retired tables.",
+            "Every journal line names its company, resolved once in post_books_journal_entry (explicit, intercompany owner, project owner, account owner, entry choice, primary); 440,204 existing acceptance lines backfilled to their primary company.",
+            "A $30,000 bill on the builder's job paid from the land company's checking: builder Dr 2000 / Cr 2180 due to land; land Cr 1005 / Dr 1180 due from builder; each company's trial balance balances; consolidated shows only cash and job cost.",
+            "Voiding the check settles the intercompany balance instead of adding the opposite one: land company ends with nothing, builder with job cost and the bill owed again; reversal lines keep their companies.",
+            "Ownership of a job or account with postings cannot change (database guard).",
+            "Single-company orgs are unchanged: one primary company, no intercompany accounts, no company choice shown, consolidated equals the company.",
+            "Statements: Reports → Trial balance / P&L / Balance sheet take a Company choice (live per company; consolidated eliminates due-from/due-to; the close saves consolidated statements).",
+            "Export schema 33 carries books_legal_entities; older archives restore as one primary company owning every line (deterministic id, recorded change).",
+            "Decision recorded in docs/books-entities.md: entities are not a security boundary (division scope remains the enforcement layer).",
+            "Regression: all scenarios pass (CLOSE-01/RACE-01 INCOMPLETE only for unimplemented parts); test:financials 2,520 pass."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-07-entities"
         }
       ],
       "remaining_criteria": [

@@ -38,7 +38,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { PageLayout } from "@/components/layout/page-layout";
 import { ReportActivityReport } from "./report-activity-report";
-import type { ReportActivity } from "@/lib/reports/types";
+import type { ClientReportParamSpec, ReportActivity } from "@/lib/reports/types";
 import { ReportBody } from "./report-body";
 import { ReportCustomizer, Field, controlClass } from "./report-customizer";
 import { ReportChart } from "./report-chart";
@@ -66,8 +66,8 @@ import { cn } from "@/lib/utils";
 
 type Definition = Pick<
   ReportDefinition,
-  "slug" | "title" | "summary" | "params" | "ambientScope"
->;
+  "slug" | "title" | "summary" | "ambientScope"
+> & { params?: ClientReportParamSpec[] };
 type Saved = { id: string; name: string; owned: boolean };
 export function ReportWorkspace({
   definition,

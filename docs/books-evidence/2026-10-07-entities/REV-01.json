@@ -1,0 +1,667 @@
+{
+  "scenario": "REV-01",
+  "status": "PASSED",
+  "reviewedFrom": "B11.1 and B11.2 definitions of done (advisor-plans/013) and docs/books-revenue-recognition.md §2/§4b/§4c/§4d.",
+  "subcases": [
+    {
+      "name": "explicit-policy-by-kind",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "21f3c6b7-a1b0-4c06-a564-cefcbb5fc5ed"
+      },
+      "checks": [
+        {
+          "label": "every kind of work posts under a stated policy, recorded and labeled as not yet reviewed",
+          "pass": true,
+          "expected": {
+            "policies": {
+              "Fixed price": {
+                "method": "percentage_of_completion",
+                "billingMethod": "fixed_price",
+                "source": "inferred"
+              },
+              "Time and materials": {
+                "method": "percentage_of_completion",
+                "billingMethod": "time_and_materials",
+                "source": "inferred"
+              },
+              "Cost plus percentage": {
+                "method": "percentage_of_completion",
+                "billingMethod": "cost_plus_percent",
+                "source": "inferred"
+              },
+              "Cost plus fixed fee": {
+                "method": "percentage_of_completion",
+                "billingMethod": "cost_plus_fixed_fee",
+                "source": "inferred"
+              },
+              "Cost plus GMP": {
+                "method": "percentage_of_completion",
+                "billingMethod": "cost_plus_gmp",
+                "source": "inferred"
+              },
+              "Home closing": {
+                "method": "closing",
+                "billingMethod": "purchase_agreement",
+                "source": "inferred"
+              }
+            },
+            "postings": {
+              "Fixed price": "deferred until earned",
+              "Time and materials": "deferred until earned",
+              "Cost plus percentage": "deferred until earned",
+              "Cost plus fixed fee": "deferred until earned",
+              "Cost plus GMP": "deferred until earned",
+              "Home closing": "earned when invoiced",
+              "Standalone service": "earned when invoiced"
+            }
+          },
+          "observed": {
+            "policies": {
+              "Fixed price": {
+                "method": "percentage_of_completion",
+                "billingMethod": "fixed_price",
+                "source": "inferred"
+              },
+              "Time and materials": {
+                "method": "percentage_of_completion",
+                "billingMethod": "time_and_materials",
+                "source": "inferred"
+              },
+              "Cost plus percentage": {
+                "method": "percentage_of_completion",
+                "billingMethod": "cost_plus_percent",
+                "source": "inferred"
+              },
+              "Cost plus fixed fee": {
+                "method": "percentage_of_completion",
+                "billingMethod": "cost_plus_fixed_fee",
+                "source": "inferred"
+              },
+              "Cost plus GMP": {
+                "method": "percentage_of_completion",
+                "billingMethod": "cost_plus_gmp",
+                "source": "inferred"
+              },
+              "Home closing": {
+                "method": "closing",
+                "billingMethod": "purchase_agreement",
+                "source": "inferred"
+              }
+            },
+            "postings": {
+              "Fixed price": "deferred until earned",
+              "Time and materials": "deferred until earned",
+              "Cost plus percentage": "deferred until earned",
+              "Cost plus fixed fee": "deferred until earned",
+              "Cost plus GMP": "deferred until earned",
+              "Home closing": "earned when invoiced",
+              "Standalone service": "earned when invoiced"
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:02:44.839Z"
+    },
+    {
+      "name": "settings-change-cannot-rewrite",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "f311d16f-190b-4e0b-94bc-46ccb9f98428"
+      },
+      "checks": [
+        {
+          "label": "the recorded policy governs; the settings change is flagged, not applied",
+          "pass": true,
+          "expected": {
+            "julyInvoice": "deferred until earned",
+            "augustInvoice": "deferred until earned",
+            "entriesAddedByReprojection": 0,
+            "register": {
+              "method": "percentage_of_completion",
+              "source": "inferred",
+              "drift": true,
+              "settingsSay": "closing"
+            }
+          },
+          "observed": {
+            "julyInvoice": "deferred until earned",
+            "augustInvoice": "deferred until earned",
+            "entriesAddedByReprojection": 0,
+            "register": {
+              "method": "percentage_of_completion",
+              "source": "inferred",
+              "drift": true,
+              "settingsSay": "closing"
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:02:46.688Z"
+    },
+    {
+      "name": "approved-change-from-its-date",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "2755b9bf-a8a6-4fe5-9122-31e5c9f5075b"
+      },
+      "checks": [
+        {
+          "label": "an approved change applies from its date only, approved by someone else, and is kept as written",
+          "pass": true,
+          "expected": {
+            "intoClosedMonth": "July 2026 is closed under the current method. Date the change after 2026-07-31, or reopen July 2026 first.",
+            "selfApproval": "A revenue policy is approved by someone other than the person who proposed it",
+            "julyInvoice": "deferred until earned",
+            "augustInvoice": "earned when invoiced",
+            "augustNamesPolicy": true,
+            "rewrite": "refused",
+            "register": {
+              "method": "closing",
+              "source": "approved",
+              "effectiveFrom": "2026-08-01",
+              "history": [
+                "approved",
+                "inferred"
+              ]
+            }
+          },
+          "observed": {
+            "intoClosedMonth": "July 2026 is closed under the current method. Date the change after 2026-07-31, or reopen July 2026 first.",
+            "selfApproval": "A revenue policy is approved by someone other than the person who proposed it",
+            "julyInvoice": "deferred until earned",
+            "augustInvoice": "earned when invoiced",
+            "augustNamesPolicy": true,
+            "rewrite": "refused",
+            "register": {
+              "method": "closing",
+              "source": "approved",
+              "effectiveFrom": "2026-08-01",
+              "history": [
+                "approved",
+                "inferred"
+              ]
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:02:47.155Z"
+    },
+    {
+      "name": "superseded-contracts-reconstructible",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "bc454bfe-9fad-4797-8f23-c56235404280"
+      },
+      "checks": [
+        {
+          "label": "superseded contracts stay reconstructible, and unknown legacy policy has an attribution path",
+          "pass": true,
+          "expected": {
+            "recordedJob": {
+              "posted": "earned when invoiced",
+              "entriesAdded": 0
+            },
+            "legacyBefore": {
+              "posted": "not posted",
+              "finding": true
+            },
+            "legacyAfter": "earned when invoiced"
+          },
+          "observed": {
+            "recordedJob": {
+              "posted": "earned when invoiced",
+              "entriesAdded": 0
+            },
+            "legacyBefore": {
+              "posted": "not posted",
+              "finding": true
+            },
+            "legacyAfter": "earned when invoiced"
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:02:47.705Z"
+    },
+    {
+      "name": "mixed-contracts-reviewed",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "eaa70965-902d-45be-bb59-b480b450649c"
+      },
+      "checks": [
+        {
+          "label": "contracts that earn differently are refused until reviewed, then each earns under its own policy",
+          "pass": true,
+          "expected": {
+            "beforeReview": {
+              "build": "not posted",
+              "refusedWithCure": true
+            },
+            "afterReview": {
+              "build": "deferred until earned",
+              "sale": "earned when invoiced"
+            },
+            "wipScopes": [
+              "Construction"
+            ]
+          },
+          "observed": {
+            "beforeReview": {
+              "build": "not posted",
+              "refusedWithCure": true
+            },
+            "afterReview": {
+              "build": "deferred until earned",
+              "sale": "earned when invoiced"
+            },
+            "wipScopes": [
+              "Construction"
+            ]
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:02:48.318Z"
+    },
+    {
+      "name": "cost-plus-earns-once",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "d41025cc-4362-47f7-9914-9daa84ea2515",
+        "projectId": "9cace513-8cd6-4d96-bbd8-e2c977a52068"
+      },
+      "checks": [
+        {
+          "label": "a cost-plus job's billing is deferred and earned once, equal to what was billed",
+          "pass": true,
+          "expected": {
+            "adjustmentSaved": true,
+            "invoicePosting": "deferred until earned",
+            "billed": 11550000,
+            "revenue": 11550000,
+            "contractLiabilities": 0,
+            "jobCost": 10000000
+          },
+          "observed": {
+            "adjustmentSaved": true,
+            "invoicePosting": "deferred until earned",
+            "billed": 11550000,
+            "revenue": 11550000,
+            "contractLiabilities": 0,
+            "jobCost": 10000000
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:02:48.757Z"
+    },
+    {
+      "name": "billed-cost-corrections",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "58054ba8-3003-474a-a64e-14ae92fd0071",
+        "projectId": "da753208-1ebe-42af-8905-f9728365977f"
+      },
+      "checks": [
+        {
+          "label": "billed costs are credited once with an explicit decision, rebill when corrected, and never change",
+          "pass": true,
+          "expected": {
+            "firstInvoice": 1650000,
+            "secondInvoice": 220000,
+            "credits": [
+              {
+                "billable": -1100000,
+                "status": "billed",
+                "decision": "credit_customer"
+              },
+              {
+                "billable": -550000,
+                "status": "excluded",
+                "decision": "absorb"
+              }
+            ],
+            "absorbedDecision": "absorb",
+            "edit": "refused",
+            "remove": "refused",
+            "voidFirstInvoice": "Failed to void invoice: This cost's credit is already on another invoice; void or credit that invoice first"
+          },
+          "observed": {
+            "firstInvoice": 1650000,
+            "secondInvoice": 220000,
+            "credits": [
+              {
+                "billable": -1100000,
+                "status": "billed",
+                "decision": "credit_customer"
+              },
+              {
+                "billable": -550000,
+                "status": "excluded",
+                "decision": "absorb"
+              }
+            ],
+            "absorbedDecision": "absorb",
+            "edit": "refused",
+            "remove": "refused",
+            "voidFirstInvoice": "Failed to void invoice: This cost's credit is already on another invoice; void or credit that invoice first"
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:02:51.510Z"
+    },
+    {
+      "name": "gmp-cap-and-settlement",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "99c218f1-037a-4db2-91c9-e0dd782cedb0"
+      },
+      "checks": [
+        {
+          "label": "the GMP cap holds unless overridden or raised by change order, and savings settle once on what was billed",
+          "pass": true,
+          "expected": {
+            "firstInvoice": 4400000,
+            "overCap": "refused",
+            "overriddenInvoice": 1100000,
+            "overrideEvents": 1,
+            "revisedGmp": 6000000,
+            "afterChangeOrder": "allowed",
+            "settleWithUnbilledCost": "Bill the 1 remaining cost inside the GMP before settling savings.",
+            "settlement": [
+              "refused: already settling or settled",
+              "settled"
+            ],
+            "builderInvoices": [
+              740000
+            ],
+            "recorded": {
+              "billed": 3520000,
+              "savings": 1480000,
+              "owner": 740000,
+              "builder": 740000
+            }
+          },
+          "observed": {
+            "firstInvoice": 4400000,
+            "overCap": "refused",
+            "overriddenInvoice": 1100000,
+            "overrideEvents": 1,
+            "revisedGmp": 6000000,
+            "afterChangeOrder": "allowed",
+            "settleWithUnbilledCost": "Bill the 1 remaining cost inside the GMP before settling savings.",
+            "settlement": [
+              "refused: already settling or settled",
+              "settled"
+            ],
+            "builderInvoices": [
+              740000
+            ],
+            "recorded": {
+              "billed": 3520000,
+              "savings": 1480000,
+              "owner": 740000,
+              "builder": 740000
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:02:53.498Z"
+    },
+    {
+      "name": "shared-cost-allocated-once",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "1d4f004b-2cd9-4fbf-a5a6-25d022961f98",
+        "allocationId": "389c9c65-b636-43da-bd1d-6d9c748e4c05"
+      },
+      "checks": [
+        {
+          "label": "the pool is spread once, after review, in exact cents, and the home's share is capitalized",
+          "pass": true,
+          "expected": {
+            "poolBefore": 100001,
+            "jobCostBeforeReview": 0,
+            "selfApproval": "refused: approved by someone other than the proposer",
+            "shares": [
+              {
+                "to": "job",
+                "cents": 50001
+              },
+              {
+                "to": "job",
+                "cents": 30000
+              },
+              {
+                "to": "job",
+                "cents": 15000
+              },
+              {
+                "to": "retained",
+                "cents": 5000
+              }
+            ],
+            "jobs": {
+              "Riverside clinic": {
+                "ledger": 50001,
+                "rows": [
+                  50001
+                ]
+              },
+              "Harbor offices": {
+                "ledger": 30000,
+                "rows": [
+                  30000
+                ]
+              },
+              "Lot 7 spec home": {
+                "ledger": 15000,
+                "rows": [
+                  15000
+                ]
+              }
+            },
+            "homeInventory": 15000,
+            "poolAfter": 5000,
+            "allocatingTwice": "refused: exceeds the unallocated pool",
+            "jobCostControl": "passed"
+          },
+          "observed": {
+            "poolBefore": 100001,
+            "jobCostBeforeReview": 0,
+            "selfApproval": "refused: approved by someone other than the proposer",
+            "shares": [
+              {
+                "to": "job",
+                "cents": 50001
+              },
+              {
+                "to": "job",
+                "cents": 30000
+              },
+              {
+                "to": "job",
+                "cents": 15000
+              },
+              {
+                "to": "retained",
+                "cents": 5000
+              }
+            ],
+            "jobs": {
+              "Riverside clinic": {
+                "ledger": 50001,
+                "rows": [
+                  50001
+                ]
+              },
+              "Harbor offices": {
+                "ledger": 30000,
+                "rows": [
+                  30000
+                ]
+              },
+              "Lot 7 spec home": {
+                "ledger": 15000,
+                "rows": [
+                  15000
+                ]
+              }
+            },
+            "homeInventory": 15000,
+            "poolAfter": 5000,
+            "allocatingTwice": "refused: exceeds the unallocated pool",
+            "jobCostControl": "passed"
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:02:56.115Z"
+    },
+    {
+      "name": "reallocation-keeps-both-legs",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "2ea4c44f-0fc9-4be7-aa89-0228ba63cc63",
+        "original": "59c8d378-7abe-4f09-a6b2-f4e318554297",
+        "correction": "173e0658-db2b-4139-a9d9-80d23835cf1d"
+      },
+      "checks": [
+        {
+          "label": "the correction keeps the original, its reversal and the new split, and each job ends on the new share",
+          "pass": true,
+          "expected": {
+            "allocations": [
+              {
+                "reference": "July insurance",
+                "status": "reallocated",
+                "entry": "reversed",
+                "reversal": "reversal"
+              },
+              {
+                "reference": "July insurance corrected",
+                "status": "approved",
+                "entry": "posted",
+                "reversal": null
+              }
+            ],
+            "jobs": {
+              "Riverside clinic": {
+                "ledger": 60001,
+                "rows": [
+                  50001,
+                  60001,
+                  -50001
+                ]
+              },
+              "Harbor offices": {
+                "ledger": 40000,
+                "rows": [
+                  30000,
+                  40000,
+                  -30000
+                ]
+              },
+              "Lot 7 spec home": {
+                "ledger": 0,
+                "rows": [
+                  20000,
+                  -20000
+                ]
+              }
+            },
+            "poolAfter": 0,
+            "reallocatingAgain": "refused: only an approved allocation can be reallocated",
+            "jobCostControl": "passed"
+          },
+          "observed": {
+            "allocations": [
+              {
+                "reference": "July insurance",
+                "status": "reallocated",
+                "entry": "reversed",
+                "reversal": "reversal"
+              },
+              {
+                "reference": "July insurance corrected",
+                "status": "approved",
+                "entry": "posted",
+                "reversal": null
+              }
+            ],
+            "jobs": {
+              "Riverside clinic": {
+                "ledger": 60001,
+                "rows": [
+                  50001,
+                  60001,
+                  -50001
+                ]
+              },
+              "Harbor offices": {
+                "ledger": 40000,
+                "rows": [
+                  30000,
+                  40000,
+                  -30000
+                ]
+              },
+              "Lot 7 spec home": {
+                "ledger": 0,
+                "rows": [
+                  20000,
+                  -20000
+                ]
+              }
+            },
+            "poolAfter": 0,
+            "reallocatingAgain": "refused: only an approved allocation can be reallocated",
+            "jobCostControl": "passed"
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:02:56.857Z"
+    },
+    {
+      "name": "allocation-treatments-agree",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "1420f9ca-ec0f-4f0c-ba98-1218e93a664f",
+        "allocationId": "4b61edef-9bc9-4470-880f-2b4a0c776555"
+      },
+      "checks": [
+        {
+          "label": "job cost, the budget's cost code, WIP and the ledger agree on the allocation",
+          "pass": true,
+          "expected": {
+            "jobA": 66667,
+            "wipCostToDate": 66667,
+            "byCostCode": {
+              "01-500": 100001
+            },
+            "ledger": {
+              "5000": 100001,
+              "6010": 40000
+            },
+            "jobCostControl": "passed",
+            "trialBalance": "passed"
+          },
+          "observed": {
+            "jobA": 66667,
+            "wipCostToDate": 66667,
+            "byCostCode": {
+              "01-500": 100001
+            },
+            "ledger": {
+              "5000": 100001,
+              "6010": 40000
+            },
+            "jobCostControl": "passed",
+            "trialBalance": "passed"
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:02:57.529Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-07T20:02:58.042Z"
+}

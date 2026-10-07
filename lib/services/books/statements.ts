@@ -33,6 +33,7 @@ const lineSchema = z.object({
   credit_cents: z.number().int(),
   description: z.string().nullable(),
   dimensions: z.record(z.unknown()).optional(),
+  legal_entity_id: z.string().uuid().optional(),
 })
 
 export type LoadedLedger = {
@@ -74,7 +75,7 @@ export async function loadPostedLedger(orgId: string, endDate: string, startDate
     for (let from = 0; ; from += 1000) {
       const { data, error } = await service
         .from("journal_lines")
-        .select("id, entry_id, account_id, project_id, company_id, debit_cents, credit_cents, description, dimensions")
+        .select("id, entry_id, account_id, project_id, company_id, debit_cents, credit_cents, description, dimensions, legal_entity_id")
         .eq("org_id", orgId)
         .in("entry_id", ids)
         .order("entry_id")
@@ -114,7 +115,7 @@ export async function loadLedgerBalances(orgId: string, asOf: string): Promise<L
   if (balances.error) throw new Error(`Failed to load ledger balances: ${balances.error.message}`)
   const rows = z.array(z.object({
     account_id: z.string().uuid(), project_id: z.string().uuid().nullable(), contract_id: z.string().nullable(),
-    warranty_reserve_adjustment: z.boolean(), debit_cents: z.coerce.number().int(), credit_cents: z.coerce.number().int(),
+    warranty_reserve_adjustment: z.boolean(), legal_entity_id: z.string().uuid(), intercompany: z.boolean(), debit_cents: z.coerce.number().int(), credit_cents: z.coerce.number().int(),
   })).parse(balances.data ?? [])
   const entryId = randomUUID()
   return {
@@ -122,10 +123,22 @@ export async function loadLedgerBalances(orgId: string, asOf: string): Promise<L
     entries: [{ id: entryId, entry_date: asOf, memo: "Ledger balances", entry_kind: "operational", source_type: null, reversal_of_entry_id: null }],
     lines: rows.map((row) => ({
       id: randomUUID(), entry_id: entryId, account_id: row.account_id, project_id: row.project_id, company_id: null,
-      debit_cents: row.debit_cents, credit_cents: row.credit_cents, description: null,
-      dimensions: { ...(row.contract_id ? { contract_id: row.contract_id } : {}), ...(row.warranty_reserve_adjustment ? { warranty_reserve_adjustment: true } : {}) },
+      debit_cents: row.debit_cents, credit_cents: row.credit_cents, description: null, legal_entity_id: row.legal_entity_id,
+      dimensions: { ...(row.contract_id ? { contract_id: row.contract_id } : {}), ...(row.warranty_reserve_adjustment ? { warranty_reserve_adjustment: true } : {}), ...(row.intercompany ? { intercompany: true } : {}) },
     })),
   }
+}
+
+/**
+ * One company's books, or all of them consolidated (null). Each company balances
+ * on its own because posting adds the due-from / due-to pair between companies;
+ * consolidated, those pairs are what the companies owe each other and are
+ * eliminated. They always post as a balanced pair in one entry, so dropping both
+ * keeps the consolidated ledger in balance.
+ */
+export function forLegalEntity(ledger: LoadedLedger, legalEntityId: string | null): LoadedLedger {
+  if (legalEntityId) return { ...ledger, lines: ledger.lines.filter((line) => line.legal_entity_id === legalEntityId) }
+  return { ...ledger, lines: ledger.lines.filter((line) => line.dimensions?.intercompany !== true) }
 }
 
 /** Closing and its reversing entry transfer earnings; neither is operating activity. */

@@ -97,6 +97,8 @@ function defaultFor(spec: ReportParamSpec): string {
       return spec.options[0]?.value ?? ""
     case "toggle":
       return "0"
+    case "legal_entity":
+      return ""
   }
 }
 
@@ -110,6 +112,8 @@ function schemaFor(spec: ReportParamSpec) {
       return z.enum(spec.options.map((option) => option.value) as [string, ...string[]])
     case "toggle":
       return toggleParam
+    case "legal_entity":
+      return z.union([z.literal(""), z.string().uuid()])
   }
 }
 
@@ -175,6 +179,9 @@ export function describeParams(definition: ReportDefinition, params: ReportParam
       }
       case "toggle":
         if (value === "1") parts.push(spec.label)
+        break
+      case "legal_entity":
+        // The company's name is the report's subtitle; an id says nothing here.
         break
     }
   }

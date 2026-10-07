@@ -1,0 +1,617 @@
+{
+  "scenario": "STATUS-01",
+  "status": "PASSED",
+  "reviewedFrom": "Posting-status integrity: a source document reports 'posted' only when its current economic revision is in the ledger; an economic change shows as pending until reprojected and then supersedes the prior entry (reversed, not deleted); a non-economic edit never adds money; a replacement that cannot post leaves the prior monetary history in place and surfaces a finding that leads back to the source; the repair resolves exactly that finding. Amounts are integer cents.",
+  "subcases": [
+    {
+      "name": "bill-harmless-edit",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "0db32942-4c48-41f0-a889-6ff11805d451",
+        "billId": "24781848-67b3-466b-ae00-14e65fb588f1"
+      },
+      "checks": [
+        {
+          "label": "status is current after a due-date edit",
+          "pass": true,
+          "expected": "posted",
+          "observed": "posted"
+        },
+        {
+          "label": "a due-date edit adds no journal entries",
+          "pass": true,
+          "expected": 0,
+          "observed": 0
+        },
+        {
+          "label": "ledger unchanged",
+          "pass": true,
+          "expected": {
+            "2000": -100000,
+            "5000": 100000
+          },
+          "observed": {
+            "2000": -100000,
+            "5000": 100000
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:01:33.750Z"
+    },
+    {
+      "name": "bill-economic-edits",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "d7e6b8eb-e719-4168-b19e-f36d86ee88b4",
+        "billId": "f1666ff4-f39a-41a2-ba17-5d1fa9aa85f2"
+      },
+      "checks": [
+        {
+          "label": "cost code: not reported posted before the change is in the ledger",
+          "pass": true,
+          "expected": "pending",
+          "observed": "pending"
+        },
+        {
+          "label": "cost code: current once reprojected",
+          "pass": true,
+          "expected": "posted",
+          "observed": "posted"
+        },
+        {
+          "label": "job: not reported posted before the change is in the ledger",
+          "pass": true,
+          "expected": "pending",
+          "observed": "pending"
+        },
+        {
+          "label": "job: current once reprojected",
+          "pass": true,
+          "expected": "posted",
+          "observed": "posted"
+        },
+        {
+          "label": "expense account: not reported posted before the change is in the ledger",
+          "pass": true,
+          "expected": "pending",
+          "observed": "pending"
+        },
+        {
+          "label": "expense account: current once reprojected",
+          "pass": true,
+          "expected": "posted",
+          "observed": "posted"
+        },
+        {
+          "label": "bill date: not reported posted before the change is in the ledger",
+          "pass": true,
+          "expected": "pending",
+          "observed": "pending"
+        },
+        {
+          "label": "bill date: current once reprojected",
+          "pass": true,
+          "expected": "posted",
+          "observed": "posted"
+        },
+        {
+          "label": "ledger carries only the final revision",
+          "pass": true,
+          "expected": {
+            "2000": -100000,
+            "5020": 100000
+          },
+          "observed": {
+            "2000": -100000,
+            "5020": 100000
+          }
+        },
+        {
+          "label": "the posted line carries the final job and cost code",
+          "pass": true,
+          "expected": [
+            {
+              "projectIsSecondJob": true,
+              "costCodeIsSecond": true,
+              "cents": 100000,
+              "entryDate": "2026-07-20"
+            }
+          ],
+          "observed": [
+            {
+              "projectIsSecondJob": true,
+              "costCodeIsSecond": true,
+              "cents": 100000,
+              "entryDate": "2026-07-20"
+            }
+          ]
+        },
+        {
+          "label": "each superseded revision is reversed, not deleted",
+          "pass": true,
+          "expected": 4,
+          "observed": 4
+        }
+      ],
+      "startedAt": "2026-10-07T20:01:36.980Z"
+    },
+    {
+      "name": "bill-closed-period-replacement-and-repair",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "bbdb9861-6212-4d25-8d5a-465b6eb19626",
+        "billId": "166dd82d-f976-46d6-a3db-a764128da028",
+        "editRefused": false,
+        "blockedState": "blocked"
+      },
+      "checks": [
+        {
+          "label": "July's posted money is not retired while July is closed",
+          "pass": true,
+          "expected": {
+            "2000": -100000,
+            "5000": 100000
+          },
+          "observed": {
+            "2000": -100000,
+            "5000": 100000
+          }
+        },
+        {
+          "label": "the bill is not reported posted at its new coding",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "a blocked replacement leaves a finding that leads to the source",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "after the repair the bill is current",
+          "pass": true,
+          "expected": "posted",
+          "observed": "posted"
+        },
+        {
+          "label": "the repair resolves the bill's findings",
+          "pass": true,
+          "expected": 0,
+          "observed": 0
+        },
+        {
+          "label": "ledger carries the re-coded bill",
+          "pass": true,
+          "expected": {
+            "2000": -100000,
+            "5020": 100000
+          },
+          "observed": {
+            "2000": -100000,
+            "5020": 100000
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:01:38.020Z"
+    },
+    {
+      "name": "expense-family",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "7002f4a1-d1b0-4f12-a39d-867843d903ad",
+        "expenseId": "71270537-868f-49bb-a277-743ec65c6961"
+      },
+      "checks": [
+        {
+          "label": "approved expense is current",
+          "pass": true,
+          "expected": "posted",
+          "observed": "posted"
+        },
+        {
+          "label": "approved expense posts once",
+          "pass": true,
+          "expected": {
+            "1000": -50000,
+            "5000": 50000
+          },
+          "observed": {
+            "1000": -50000,
+            "5000": 50000
+          }
+        },
+        {
+          "label": "a re-code is pending until reprojected",
+          "pass": true,
+          "expected": "pending",
+          "observed": "pending"
+        },
+        {
+          "label": "the re-code is current once reprojected",
+          "pass": true,
+          "expected": "posted",
+          "observed": "posted"
+        },
+        {
+          "label": "a rejected expense reads reversed",
+          "pass": true,
+          "expected": "reversed",
+          "observed": "reversed"
+        },
+        {
+          "label": "a rejected expense leaves no money",
+          "pass": true,
+          "expected": {},
+          "observed": {}
+        }
+      ],
+      "startedAt": "2026-10-07T20:01:38.925Z"
+    },
+    {
+      "name": "invoice-view-and-revision",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "6332892f-506d-4c62-bc47-8d914c4cf242",
+        "originalId": "2d52b679-8e9a-44a8-b1f2-766594d36c44",
+        "replacementId": "96cb6497-834c-44d7-806d-4b2d5523a864",
+        "originalState": "reversed"
+      },
+      "checks": [
+        {
+          "label": "a client view leaves the status current",
+          "pass": true,
+          "expected": "posted",
+          "observed": "posted"
+        },
+        {
+          "label": "a client view adds no entries",
+          "pass": true,
+          "expected": 0,
+          "observed": 0
+        },
+        {
+          "label": "the voided original reads reversed, never pending or posted",
+          "pass": true,
+          "expected": "reversed",
+          "observed": "reversed"
+        },
+        {
+          "label": "the replacement is current",
+          "pass": true,
+          "expected": "posted",
+          "observed": "posted"
+        },
+        {
+          "label": "ledger carries only the replacement",
+          "pass": true,
+          "expected": {
+            "1100": 120000,
+            "4900": -120000
+          },
+          "observed": {
+            "1100": 120000,
+            "4900": -120000
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:01:39.455Z"
+    },
+    {
+      "name": "partial-run-scoped-resolution",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "ae490b17-2aec-4e55-b8a9-a5d59c2cebee",
+        "billA": "213cb434-02c9-4758-9948-3a0bcc0841bb",
+        "billB": "ec4b7e90-5357-41df-9bba-88fba3de2d57"
+      },
+      "checks": [
+        {
+          "label": "a run scoped to bill A resolves only bill A",
+          "pass": true,
+          "expected": {
+            "billA": {
+              "state": "posted",
+              "openFindings": 0
+            },
+            "billB": {
+              "state": "blocked",
+              "openFindings": 1
+            }
+          },
+          "observed": {
+            "billA": {
+              "state": "posted",
+              "openFindings": 0
+            },
+            "billB": {
+              "state": "blocked",
+              "openFindings": 1
+            }
+          }
+        },
+        {
+          "label": "a full run then resolves bill B",
+          "pass": true,
+          "expected": {
+            "billA": {
+              "state": "posted",
+              "openFindings": 0
+            },
+            "billB": {
+              "state": "posted",
+              "openFindings": 0
+            }
+          },
+          "observed": {
+            "billA": {
+              "state": "posted",
+              "openFindings": 0
+            },
+            "billB": {
+              "state": "posted",
+              "openFindings": 0
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:01:40.305Z"
+    },
+    {
+      "name": "dependency-invalidation",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "3dd24b66-d294-4962-863c-fd0ec9e0bfd8",
+        "reopenOrgId": "c8fb94c9-7e5e-4483-94ef-df52cf88bf99",
+        "deactivatedAfter": "posted"
+      },
+      "checks": [
+        {
+          "label": "job-cost re-code: pending, then current with the new cost code",
+          "pass": true,
+          "expected": {
+            "before": "pending",
+            "after": "posted",
+            "postedCostCodeIsNew": true
+          },
+          "observed": {
+            "before": "pending",
+            "after": "posted",
+            "postedCostCodeIsNew": true
+          }
+        },
+        {
+          "label": "billing model: pending, then current",
+          "pass": true,
+          "expected": {
+            "before": "pending",
+            "after": "posted"
+          },
+          "observed": {
+            "before": "pending",
+            "after": "posted"
+          }
+        },
+        {
+          "label": "new contract: pending, then current",
+          "pass": true,
+          "expected": {
+            "before": "pending",
+            "after": "posted"
+          },
+          "observed": {
+            "before": "pending",
+            "after": "posted"
+          }
+        },
+        {
+          "label": "funding remap: fails while unmapped, posts to the mapped account on the next run",
+          "pass": true,
+          "expected": {
+            "failedBeforeMapping": true,
+            "postedToMappedAccount": "1005"
+          },
+          "observed": {
+            "failedBeforeMapping": true,
+            "postedToMappedAccount": "1005"
+          }
+        },
+        {
+          "label": "account deactivated: pending, then re-evaluated with its posted history kept",
+          "pass": true,
+          "expected": {
+            "before": "pending",
+            "afterIsNotStalePosted": true,
+            "historyPreserved": true
+          },
+          "observed": {
+            "before": "pending",
+            "afterIsNotStalePosted": true,
+            "historyPreserved": true
+          }
+        },
+        {
+          "label": "reopen: the blocked bill posts on the next incremental run",
+          "pass": true,
+          "expected": {
+            "blocked": "blocked",
+            "afterReopenIncremental": "posted"
+          },
+          "observed": {
+            "blocked": "blocked",
+            "afterReopenIncremental": "posted"
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:01:41.404Z"
+    },
+    {
+      "name": "access-and-empty",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "17c6e138-c606-4a07-ab9a-b32b763da438"
+      },
+      "checks": [
+        {
+          "label": "project documents follow the project's readers",
+          "pass": true,
+          "expected": {
+            "pmOwnProject": "posted",
+            "pmOtherProject": "refused",
+            "booksReviewerOnProjectBill": "refused"
+          },
+          "observed": {
+            "pmOwnProject": "posted",
+            "pmOtherProject": "refused",
+            "booksReviewerOnProjectBill": "refused"
+          }
+        },
+        {
+          "label": "company documents need Books read access",
+          "pass": true,
+          "expected": {
+            "pm": "refused",
+            "booksReviewer": "posted",
+            "owner": "posted"
+          },
+          "observed": {
+            "pm": "refused",
+            "booksReviewer": "posted",
+            "owner": "posted"
+          }
+        },
+        {
+          "label": "no Arc ledger: no status, not a false pending",
+          "pass": true,
+          "expected": {
+            "owner": "none"
+          },
+          "observed": {
+            "owner": "none"
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:01:43.729Z"
+    },
+    {
+      "name": "posted-source-deletion",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "480850ce-132c-410b-a631-de0a40a612a2"
+      },
+      "checks": [
+        {
+          "label": "a posted bill cannot be deleted",
+          "pass": true,
+          "expected": {
+            "state": "posted",
+            "delete": "refused: posted",
+            "stillExists": true,
+            "entries": [
+              "posted"
+            ],
+            "jobCostCents": 100000
+          },
+          "observed": {
+            "state": "posted",
+            "delete": "refused: posted",
+            "stillExists": true,
+            "entries": [
+              "posted"
+            ],
+            "jobCostCents": 100000
+          }
+        },
+        {
+          "label": "returned to pending: refused until its journal is reversed",
+          "pass": true,
+          "expected": {
+            "delete": "refused: posted",
+            "stillExists": true
+          },
+          "observed": {
+            "delete": "refused: posted",
+            "stillExists": true
+          }
+        },
+        {
+          "label": "reversed: deletes, and the ledger keeps nothing for it",
+          "pass": true,
+          "expected": {
+            "entries": [
+              "reversed"
+            ],
+            "delete": "deleted",
+            "stillExists": false,
+            "ledgerNet": {},
+            "openFindings": 0
+          },
+          "observed": {
+            "entries": [
+              "reversed"
+            ],
+            "delete": "deleted",
+            "stillExists": false,
+            "ledgerNet": {},
+            "openFindings": 0
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:01:44.453Z"
+    },
+    {
+      "name": "contract-takes-effect",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "66904dc1-c3ca-4993-81c2-ce1d4764543e",
+        "invoiceId": "c251d445-2a04-49bc-b362-af3f9f588da2"
+      },
+      "checks": [
+        {
+          "label": "a contract taking effect later leaves an earlier invoice under its posted policy and flags the change",
+          "pass": true,
+          "expected": {
+            "noContract": [
+              "2350"
+            ],
+            "beforeEffective": [
+              "2350"
+            ],
+            "afterEffective": [
+              "2350"
+            ],
+            "status": "posted",
+            "register": {
+              "method": "percentage_of_completion",
+              "source": "inferred",
+              "drift": true,
+              "settingsSay": "closing"
+            }
+          },
+          "observed": {
+            "noContract": [
+              "2350"
+            ],
+            "beforeEffective": [
+              "2350"
+            ],
+            "afterEffective": [
+              "2350"
+            ],
+            "status": "posted",
+            "register": {
+              "method": "percentage_of_completion",
+              "source": "inferred",
+              "drift": true,
+              "settingsSay": "closing"
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-07T20:01:45.207Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-07T20:01:45.602Z"
+}

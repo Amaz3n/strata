@@ -32,6 +32,9 @@ import {
   buildGeneralLedger,
   buildProfitAndLoss,
   buildTrialBalance,
+  forLegalEntity,
+  loadLedgerBalances,
+  loadPostedLedger,
 } from "@/lib/services/books/statements"
 import { getPocJournalReview } from "@/lib/services/financial-exports"
 import { getOrgWipOverUnderReport, getProjectWipOverUnderReport, type WipOverUnderRow } from "@/lib/services/reports/wip-over-under"
@@ -111,10 +114,11 @@ const booksTrialBalance: ReportDefinition = {
   scopes: ["org"],
   permissions: ["books.read"],
   available: (ctx) => ctx.hasArcBooks,
-  params: [{ key: "asOf", kind: "date", label: "As of" }],
+  params: [{ key: "asOf", kind: "date", label: "As of" }, { key: "company", kind: "legal_entity", label: "Company" }],
   run: async (ctx) => {
     const asOf = ctx.params.asOf
-    const report = await buildTrialBalance(await booksOrgId(), asOf)
+    const orgId = await booksOrgId()
+    const report = await buildTrialBalance(orgId, asOf, forLegalEntity(await loadLedgerBalances(orgId, asOf), ctx.params.company || null))
     return {
       subtitle: `As of ${asOf}`,
       stats: [
@@ -156,12 +160,13 @@ const booksProfitAndLoss: ReportDefinition = {
   scopes: ["org"],
   permissions: ["books.read"],
   available: (ctx) => ctx.hasArcBooks,
-  params: [{ key: "period", kind: "period", label: "Period" }],
+  params: [{ key: "period", kind: "period", label: "Period" }, { key: "company", kind: "legal_entity", label: "Company" }],
   run: async (ctx) => {
     const range = periodRange(ctx.params.period ?? "ytd")
     const start = range.from ?? "1900-01-01"
     const end = range.to ?? new Date().toISOString().slice(0, 10)
-    const report = await buildProfitAndLoss(await booksOrgId(), start, end)
+    const orgId = await booksOrgId()
+    const report = await buildProfitAndLoss(orgId, start, end, forLegalEntity(await loadPostedLedger(orgId, end), ctx.params.company || null))
     return {
       subtitle: `${start} through ${end} · accrual`,
       stats: [
@@ -291,10 +296,11 @@ const booksBalanceSheet: ReportDefinition = {
   scopes: ["org"],
   permissions: ["books.read"],
   available: (ctx) => ctx.hasArcBooks,
-  params: [{ key: "asOf", kind: "date", label: "As of" }],
+  params: [{ key: "asOf", kind: "date", label: "As of" }, { key: "company", kind: "legal_entity", label: "Company" }],
   run: async (ctx) => {
     const asOf = ctx.params.asOf
-    const report = await buildBalanceSheet(await booksOrgId(), asOf)
+    const orgId = await booksOrgId()
+    const report = await buildBalanceSheet(orgId, asOf, forLegalEntity(await loadLedgerBalances(orgId, asOf), ctx.params.company || null))
     return {
       subtitle: `As of ${asOf}`,
       stats: [

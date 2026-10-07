@@ -8,6 +8,7 @@ import { loadClosedPeriodSnapshots } from "@/lib/services/books/closed-snapshots
 import { canReadWorkerPay, isWorkerPayLine, mergeWorkerPay, RESTRICTED_WORKER_PAY } from "@/lib/services/books/worker-pay-privacy"
 import { requireOrgContext } from "@/lib/services/context"
 import {
+  forLegalEntity,
   loadPostedLedger,
   buildBalanceSheet,
   buildCashBasisStatement,
@@ -157,6 +158,8 @@ export async function getStatementsForPeriod(input: {
   comparePriorYear?: boolean
   comparison?: "prior_year" | "prior_period" | "none"
   includeMonthly?: boolean
+  /** One company's statements; omitted or null, all companies consolidated. */
+  legalEntityId?: string | null
   orgId?: string
 }) {
   const context = await requireStatementsAccess(input.orgId)
@@ -202,7 +205,10 @@ export async function getStatementsForPeriod(input: {
     }
   }
 
-  const [snapshot, closed] = await Promise.all([loadPostedLedger(orgId, input.endDate), loadClosedPeriodStatements(orgId, input.startDate, input.endDate)])
+  // The statements saved at close are consolidated; one company's are read live.
+  const legalEntityId = input.legalEntityId ?? null
+  const [posted, closed] = await Promise.all([loadPostedLedger(orgId, input.endDate), legalEntityId ? Promise.resolve(null) : loadClosedPeriodStatements(orgId, input.startDate, input.endDate)])
+  const snapshot = forLegalEntity(posted, legalEntityId)
   const [profitLoss, balanceSheet, trialBalance, cashFlow, cashBasis, priorProfitLoss, monthlyProfitLoss] = await Promise.all([
     closed?.profitLoss ?? buildProfitAndLoss(orgId, input.startDate, input.endDate, snapshot),
     closed?.balanceSheet ?? buildBalanceSheet(orgId, input.endDate, snapshot),

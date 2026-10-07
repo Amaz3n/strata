@@ -16,6 +16,7 @@ import {
 import { assignInvoiceContract } from "@/lib/services/invoices";
 import { proposeRevenuePolicy, reviewRevenuePolicy } from "@/lib/services/books/revenue-policies";
 import { proposeCostAllocation, reviewCostAllocation } from "@/lib/services/books/cost-allocations";
+import { createLegalEntity, renameLegalEntity, setLegalEntityOwner } from "@/lib/services/books/legal-entities";
 import {
   getClearingSupportWorkspace,
   reviewClearingSupport,
@@ -1519,4 +1520,16 @@ export async function proposeCostAllocationAction(input: Parameters<typeof propo
 
 export async function reviewCostAllocationAction(input: Parameters<typeof reviewCostAllocation>[0]) {
   return run(() => reviewCostAllocation(input));
+}
+
+export async function createLegalEntityAction(input: Parameters<typeof createLegalEntity>[0]) {
+  return run(() => createLegalEntity(input));
+}
+
+export async function renameLegalEntityAction(input: Parameters<typeof renameLegalEntity>[0]) {
+  return run(() => renameLegalEntity(input));
+}
+
+export async function setLegalEntityOwnerAction(input: Parameters<typeof setLegalEntityOwner>[0]) {
+  return run(() => setLegalEntityOwner(input));
 }
