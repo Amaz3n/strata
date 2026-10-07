@@ -1320,6 +1320,24 @@ function isAtOrAfter(later: string, earlier: string) {
  * concurrency, prior-entry reversal, immutable fact insertion and replacement
  * posting; a worker crash can no longer expose a half-revised official ledger.
  */
+/** Project reporting tags: where a job sits in the org, not what it costs or earns. */
+const REPORTING_TAG_KEYS = ["division_id", "division_name", "community_id", "community_name", "lot_id", "lot_name"];
+
+/** The payload with each project's reporting tags as the posted fact recorded them. */
+function withPostedReportingTags(payload: Record<string, unknown>, posted: Record<string, unknown>) {
+  const current = payload.project_dimensions;
+  const recorded = posted.project_dimensions;
+  if (!current || typeof current !== "object" || !recorded || typeof recorded !== "object") return payload;
+  const merged = Object.fromEntries(Object.entries(current as Record<string, Record<string, unknown>>).map(([projectId, dimensions]) => {
+    const was = (recorded as Record<string, Record<string, unknown> | undefined>)[projectId];
+    if (!was) return [projectId, dimensions];
+    const kept = Object.fromEntries(Object.entries(dimensions).filter(([key]) => !REPORTING_TAG_KEYS.includes(key)));
+    for (const key of REPORTING_TAG_KEYS) if (key in was) kept[key] = was[key];
+    return [projectId, kept];
+  }));
+  return { ...payload, project_dimensions: merged };
+}
+
 /**
  * What the ledger should hold for a source given its latest fact: the payload
  * (legacy facts keep the shape they were posted with), its revision identity and
@@ -1328,11 +1346,27 @@ function isAtOrAfter(later: string, earlier: string) {
 function prepareCandidate(orgId: string, candidate: ProjectionCandidate, policyVersion: number, projectionVersion: number, existing: z.infer<typeof factRowSchema> | null) {
   let payload = preserveLegacyLaborPayload(candidate.sourceType, candidate.accountingDate, candidate.payload, existing);
   payload = preserveLegacyDimensionPayload(candidate.sourceType, candidate.accountingDate, preserveLegacySettlementPayload(candidate.sourceType, candidate.accountingDate, preserveLegacyInvoiceIncomePayload(candidate.sourceType, candidate.accountingDate, payload, existing), existing), existing);
-  const { sourceVersion, payloadHash, idempotencyKey } = factTransitionIdentity({
+  const identify = (candidatePayload: Record<string, unknown>) => factTransitionIdentity({
     orgId, sourceType: candidate.sourceType, sourceId: candidate.sourceId,
     accountingDate: candidate.accountingDate,
-    payload: hashableFactPayload(candidate.sourceType, payload), previous: existing,
+    payload: hashableFactPayload(candidate.sourceType, candidatePayload), previous: existing,
   });
+  let identity = identify(payload);
+  // Reporting tags stay as posted (B07): a project moving to another division,
+  // community or lot does not restate what it already posted. When the tags are
+  // the only difference from the posted fact, the posted tags are kept and the
+  // source is unchanged; a real revision posts with the current tags.
+  if (existing && identity.payloadHash !== existing.payload_hash) {
+    const asPosted = withPostedReportingTags(payload, existing.payload);
+    if (asPosted !== payload) {
+      const postedIdentity = identify(asPosted);
+      if (postedIdentity.payloadHash === existing.payload_hash) {
+        payload = asPosted;
+        identity = postedIdentity;
+      }
+    }
+  }
+  const { sourceVersion, payloadHash, idempotencyKey } = identity;
   const journal = draftFromFact({
     sourceType: candidate.sourceType,
     sourceId: candidate.sourceId,

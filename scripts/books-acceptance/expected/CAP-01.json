@@ -94,16 +94,18 @@
         "cents": 100000,
         "bills": 1200
       },
-      "derivation": "After the 1,200 bills post, a full pass with nothing changed makes no projection or receipt calls. The project is then moved into a new division by a direct change no trigger announces (reporting tags are a B07 policy and deliberately not touched). The ordinary run sees nothing; the nightly full pass re-posts all 1,200 bills with the division on their lines.",
+      "derivation": "After the 1,200 bills post, a full pass with nothing changed makes no projection or receipt calls. The project then moves into a new division. Under the reporting-tag policy (tags stay as posted, decided 2026-10-06 with B07), neither the ordinary run nor the nightly pass re-posts any bill, and the posted bills keep no division. A bill approved afterwards on the same project posts with the North division on its lines. Re-coding one of the posted bills afterwards is a real revision: it re-posts with the North division.",
       "expected": {
         "unchanged": {
           "projections": 0,
           "receipts": 0
         },
-        "unannounced": {
+        "reportingTags": {
           "incrementalProjections": 0,
-          "fullProjections": 1200,
-          "templateTagged": true
+          "fullProjections": 0,
+          "postedBillTagged": false,
+          "nextBillTagged": true,
+          "revisedBillTagged": true
         }
       }
     },

@@ -16,8 +16,7 @@ reflects.
 - **Ordinary run** — `/api/jobs/books-projection`, every 10 minutes. Reads only
   what changed (below) and posts it.
 - **Nightly pass** — `/api/jobs/books-maintenance`, `full: true`. Reads every
-  source, re-posts anything whose economics changed without an announcement
-  (for example a project moved to another division, a B07 reporting tag), and
+  source, re-posts anything whose economics changed without an announcement, and
   retires sources that no longer qualify. Unchanged sources cost no database call.
 - **Chosen sources** — `projectJournal(orgId, { sourceKeys })`, used by flows
   that must post one document now (a home closing). Reads exactly those rows.
@@ -48,7 +47,16 @@ rows and a one-bill change 81 (CAP-01).
 Inputs that live outside a source row touch that row when they change
 (job-cost lines, project billing settings, contracts, funding mappings, chart
 accounts, retainage, the payment behind a reversal), so the source re-posts on
-the next ordinary run. Reporting tags are the exception, by B07 policy.
+the next ordinary run. A contract whose effective date arrives changes its
+project's revenue basis with no edit; the first ordinary run after that date
+touches the project's sources.
+
+**Reporting tags stay as posted** (decided October 6, with B07). A project's
+division, community and lot are recorded on each entry when it posts. Moving the
+project later restates nothing: when the tags are a document's only difference
+from its posted fact, the posted tags are kept and the document is unchanged. A
+new document, or a real revision of an old one, posts with the current tags.
+Reports that need today's structure look the project up when they run.
 
 ## Companies and time
 

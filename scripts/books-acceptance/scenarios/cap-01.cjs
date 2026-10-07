@@ -133,8 +133,10 @@ async function lateCommit(kit, expected, check) {
   return { orgId: org.orgId }
 }
 
-// The nightly pass skips what is unchanged without a database call each, and
-// still finds a change that no trigger announced.
+// The nightly pass skips what is unchanged without a database call each. Moving a
+// project to another division restates nothing already posted (reporting tags
+// stay as posted, B07); the next bill, and any real revision, posts with the new
+// division.
 async function nightlyPass(kit, expected, check) {
   const input = expected.inputs
   const { org, template } = await volumeOrg(kit, "CAP-01 nightly", input)
@@ -145,9 +147,16 @@ async function nightlyPass(kit, expected, check) {
 update public.projects set division_id = (select id from public.divisions where org_id = ${q(org.orgId)} and name = 'North division') where id = ${q(org.projectId)};`)
   const quiet = await metered(() => incrementalJob(kit, org))
   const full = await metered(() => projectionJob(kit, org))
-  const tagged = Number(kit.rows(`select count(*) n from public.journal_lines l join public.journal_entries e on e.id = l.entry_id where e.org_id = ${q(org.orgId)} and e.status = 'posted' and e.source_type = 'vendor_bill' and l.dimensions ->> 'division_name' = 'North division' and e.source_id = ${q(template)}`)[0].n)
+  const tagged = (billId) => Number(kit.rows(`select count(*) n from public.journal_lines l join public.journal_entries e on e.id = l.entry_id where e.org_id = ${q(org.orgId)} and e.status = 'posted' and e.source_id = ${q(billId)} and l.dimensions ->> 'division_name' = 'North division'`)[0].n) > 0
+  const next = await createBill(kit, org, input.billDate, input.cents)
+  await incrementalJob(kit, org)
+  const beforeRevision = tagged(template)
+  await editBill(kit, org, template, { actual_lines: [{ description: "Framing", amount_cents: input.cents, cost_code_id: org.costCodeId, project_id: org.projectId, arc_books_gl_account_id: glId(kit, org, "5020") }] })
+  await incrementalJob(kit, org)
   check.equal("unchanged full pass makes no projection calls", expected.expected.unchanged, { projections: unchanged.projections, receipts: unchanged.receipts })
-  check.equal("an unannounced dimension change waits for the nightly pass, which re-posts every affected bill", expected.expected.unannounced, { incrementalProjections: quiet.projections, fullProjections: full.projections, templateTagged: tagged > 0 })
+  check.equal("a division change restates nothing posted; the next bill carries the new division", expected.expected.reportingTags, {
+    incrementalProjections: quiet.projections, fullProjections: full.projections, postedBillTagged: beforeRevision, nextBillTagged: tagged(next), revisedBillTagged: tagged(template),
+  })
   return { orgId: org.orgId, measurements: { unchanged, quiet, full } }
 }
 
