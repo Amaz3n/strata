@@ -7947,8 +7947,8 @@
       "id": "B09.2",
       "workstream": "B09",
       "title": "Bounded workers, captures and review reads",
-      "status": "PARTIAL",
-      "status_basis": "Projector capacity built and proven at 1,200 records (CAP-01 7/7 with a baseline run on the old code and a negative check): ties, kill/resume and concurrent workers post exactly once; reads and calls follow what changed. Migration 20261006220000 pending production with the deploy. Open: a narrowed proof that catches orphan/missing facts and journals and matches the full reference, and export captures and close-review reads at volume.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All four B09.2 criteria and the global DoD verified locally (2026-10-06): CAP-01 9/9 (with baseline runs on the old code and a negative check), regression of every other scenario, reference doc docs/books-posting.md. Migrations 20261006220000 and 20261006230000 pending production with the deploy.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         ">1,000 records and repeated cursor ties return exactly once",
@@ -8019,15 +8019,55 @@
             "docs/books-evidence/2026-10-06-golden-scenarios/CAP-01-baseline-before-fix.json sha256:340d2a480a83c3d4a78add93d51a1fec4ea34329553b5a887a707db6386a4727",
             "docs/books-evidence/2026-10-06-golden-scenarios/CAP-01-negative-retry-disabled.json sha256:8e3575feabc6b7565c5021dca9bc5c2ddcfd4b455253537cd60ddd2a016aa7e4"
           ]
+        },
+        {
+          "verified_at": "2026-10-07T01:18:40.023502+00:00",
+          "implemented_paths": [
+            "lib/services/books/projector.ts",
+            "lib/services/books/fact-journal-check.ts",
+            "lib/services/books/rebuild.ts",
+            "lib/services/books/statements.ts",
+            "lib/services/books/verifier.ts",
+            "lib/services/books/clearing-support.ts",
+            "lib/services/books/wip-project-scope.ts",
+            "lib/services/books/period-close.ts",
+            "app/api/jobs/books-maintenance/route.ts",
+            "supabase/migrations/20261006230000_books_close_review_aggregates.sql",
+            "docs/books-posting.md"
+          ],
+          "test_scenario_ids": [
+            "CAP-01"
+          ],
+          "commands": [
+            "scenario-runner CAP-01",
+            "scenario-runner BILL/YEAR/BANK/STATUS/CLOSE/RACE/WIP (regression)",
+            "pnpm test:financials",
+            "node --test tests/books-wip-project-scope.test.js (PGlite, real migrations)"
+          ],
+          "observed_results": [
+            "Narrowed proof vs full reference: with four kinds of damage written straight to the database, the full rebuild drill finds journal_divergence (A) and unexpected_journal (B); the narrowed proof over every bill finds the same two plus missing_fact (C, approved but never posted) and stale_fact (D, re-dated behind its fact). Over ten chosen bills it finds only A, checks 10 sources and reads 152 rows; over everything changed since the damage it finds C and B in 85 rows.",
+            "Close review reads (120 vs 1,200 posted bills): before 1,960 vs 18,160 rows (the whole journal history read about three times, every job-cost line twice, every payable bill three times); after 178 vs 1,258 rows: no journal or job-cost history, each payable bill read once for the AP and AP-retainage tie-outs; tie-outs pass at both sizes.",
+            "Nightly proof: the narrowed proof of what changed since each company's last proof, the full drill weekly, least recently proven first within the maintenance budget; unreached companies are reported, never counted as proven.",
+            "Fixed on the way: the full drill failed past ~200 facts (URL too long) and flagged every journal as divergent (posting-time account classification stamp compared as draft content); runs for chosen sources (closings) read the whole company; a deposit receipt or reversal whose deposit invoice changed outside the run window posted as an ordinary invoice payment; the GL and subledger job-cost tie-out paged without an order.",
+            "Regression: every implemented subcase of BILL/YEAR/BANK/STATUS/CLOSE/RACE/WIP passes on the database-summed statements and clearing positions; test:financials 2734 pass / 0 fail."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-06-regression-after-b09.2/CAP-01.json sha256:4ce3f4a9e75eec146f4d523a57f73703985bc550f38bce4c5c7f1fc3b1056cfd",
+            "docs/books-evidence/2026-10-06-regression-after-b09.2/CAP-01-close-review-baseline-before-fix.json sha256:8151b82c0fa7ec17773d2fc6a7962348cf6f47adea1302948e6fd4b19c0b69de",
+            "docs/books-evidence/2026-10-06-regression-after-b09.2/BILL-01.json sha256:42dfc62b94821b1550cc912cdfe1d0ad188f8945b39dc354bce462a1aa3cfe0c",
+            "docs/books-evidence/2026-10-06-regression-after-b09.2/YEAR-01.json sha256:ec444d34709b59b0033fabd53da684edd9d24c3c049da60e7a76ce7abf3942fb",
+            "docs/books-evidence/2026-10-06-regression-after-b09.2/BANK-01.json sha256:60de8c9fcb43ace0fa7e49d4899aad54aa8afc995432b81a3eebe5f8c5743522",
+            "docs/books-evidence/2026-10-06-regression-after-b09.2/STATUS-01.json sha256:3c99ef7e24561a6ad125769eadedb33027bea5adf5726b020345e9502af0cc40",
+            "docs/books-evidence/2026-10-06-regression-after-b09.2/CLOSE-01.json sha256:58fb6d1b80f6deb4c218b3dd814d0e44417d099f172b4f03d47302ff0be542c4",
+            "docs/books-evidence/2026-10-06-regression-after-b09.2/RACE-01.json sha256:132bf898c2c66e85c14949a137856e093731f09f1d421b95f5660f079350a057",
+            "docs/books-evidence/2026-10-06-regression-after-b09.2/WIP-01.json sha256:9b5b65bf45b648cdbb87496d697176a5bb53fd95626088766a517420ef534fc5"
+          ]
         }
       ],
-      "remaining_criteria": [
-        "narrowed proof catches orphan/missing facts/journals and yields the same result as full reference fixtures",
-        "export captures and close-review reads bounded at volume"
-      ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-07T01:18:40.023502+00:00"
     },
     {
       "id": "B09.3",
