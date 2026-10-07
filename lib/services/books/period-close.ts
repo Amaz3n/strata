@@ -652,6 +652,25 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
         difference_cents: apTieOut.differenceCents,
       },
     },
+    ...(["land_inventory_control", "completed_homes_control", "warranty_reserve_control"] as const).map((code) => {
+      const control = tieOut(code);
+      return {
+        code,
+        href: code === "warranty_reserve_control" ? "/warranty/accounting" : "/books/close",
+        label: control.label,
+        category: "controls",
+        blocking: true,
+        status: control.status,
+        issueCount: control.status === "failed" ? Math.max(1, control.exceptions?.length ?? 0) : 0,
+        evidence: {
+          ledger_cents: control.ledgerCents,
+          subledger_cents: control.subledgerCents,
+          difference_cents: control.differenceCents,
+          ...(control.exceptions?.length ? { exceptions: control.exceptions } : {}),
+          ...(control.rows ? { rows: control.rows } : {}),
+        },
+      };
+    }),
     {
       code: "customer_deposits_control",
       href: "/billing/deposits",

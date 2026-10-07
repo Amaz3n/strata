@@ -3,6 +3,7 @@ import { AS_OF_BILL_STATUSES, isBillPayableAsOf, isInvoiceReceivableAsOf, loadLe
 import "server-only";
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
+import { z } from "zod";
 import { isPayableVendorBillStatus } from "@/lib/financials/ledger-status";
 import { SYSTEM_ACCOUNT_CODES } from "@/lib/services/books/chart-of-accounts";
 import {
@@ -39,13 +40,33 @@ export type LedgerTieOut = {
     | "customer_deposits_control"
     | "debt_register_control"
     | "fixed_assets_control"
-    | "accumulated_depreciation_control";
+    | "accumulated_depreciation_control"
+    | "land_inventory_control"
+    | "completed_homes_control"
+    | "warranty_reserve_control";
   label: string;
   status: "passed" | "failed";
   differenceCents: number;
   ledgerCents: number;
   subledgerCents: number;
+  /** What failed, row by row, for controls that tie per lot or per home. */
+  exceptions?: unknown[];
+  /** Supporting rows (completed homes with their age) for the close and its saved evidence. */
+  rows?: unknown[];
 };
+
+const homeInventoryControlsSchema = z.object({
+  land: z.object({ ledgerCents: z.number(), subledgerCents: z.number(), exceptions: z.array(z.unknown()) }),
+  completedHomes: z.object({ ledgerCents: z.number(), heldCents: z.number(), homes: z.array(z.unknown()), exceptions: z.array(z.unknown()) }),
+  warrantyReserve: z.object({ ledgerCents: z.number(), subledgerCents: z.number() }),
+});
+
+/** Land by lot, completed homes held for sale, and warranty reserve consumption (`books_home_inventory_controls`). */
+async function loadHomeInventoryControls(orgId: string, asOf: string) {
+  const { data, error } = await createServiceSupabaseClient().rpc("books_home_inventory_controls", { p_org_id: orgId, p_as_of: asOf });
+  if (error) throw new Error(`Failed to tie home inventory: ${error.message}`);
+  return homeInventoryControlsSchema.parse(data);
+}
 
 const PAGE_SIZE = 1000;
 
@@ -154,6 +175,7 @@ async function loadCustomerDepositSubledgerCents(orgId: string, asOf: string) {
   );
   const invoiceIds = depositInvoices.map((row) => row.id);
   if (invoiceIds.length === 0) return 0;
+  // A refunded payment still happened; its refund is counted as of its own date.
   let received = 0;
   let refunded = 0;
   const depositPaymentIds: string[] = [];
@@ -165,7 +187,7 @@ async function loadCustomerDepositSubledgerCents(orgId: string, asOf: string) {
           .select("id,amount_cents")
           .eq("org_id", orgId)
           .in("invoice_id", invoiceIds.slice(start, start + 200))
-          .in("status", ["succeeded", "completed"])
+          .in("status", ["succeeded", "completed", "refunded"])
           .lte("received_at", `${asOf}T23:59:59.999Z`)
           .range(from, to),
       "customer-deposit receipts",
@@ -196,11 +218,11 @@ async function loadCustomerDepositSubledgerCents(orgId: string, asOf: string) {
         (from, to) =>
           service
             .from("payments")
-            .select("amount_cents")
+            .select("amount_cents, payment_reversals(amount_cents, status, occurred_at)")
             .eq("org_id", orgId)
             .in("metadata->>deposit_payment_id", ids)
             .contains("metadata", { customer_deposit_application: true })
-            .in("status", ["succeeded", "completed"])
+            .in("status", ["succeeded", "completed", "refunded"])
             .lte("received_at", `${asOf}T23:59:59.999Z`)
             .range(from, to),
         "customer-deposit applications",
@@ -210,8 +232,14 @@ async function loadCustomerDepositSubledgerCents(orgId: string, asOf: string) {
       (sum, row) => sum + Number(row.amount_cents ?? 0),
       0,
     );
+    // A reversed application returns the deposit to the buyer's liability.
     applied += applications.reduce(
-      (sum, row) => sum + Number(row.amount_cents ?? 0),
+      (sum, row) =>
+        sum +
+        Number(row.amount_cents ?? 0) -
+        (row.payment_reversals ?? [])
+          .filter((reversal) => reversal.status === "succeeded" && String(reversal.occurred_at) <= `${asOf}T23:59:59.999Z`)
+          .reduce((total, reversal) => total + Number(reversal.amount_cents ?? 0), 0),
       0,
     );
   }
@@ -316,6 +344,7 @@ export async function runLedgerTieOuts(
     retainage,
     customerDepositsCents,
     registers,
+    homeInventory,
   ] = await Promise.all([
     buildTrialBalance(orgId, asOf, ledger),
     buildBalanceSheet(orgId, asOf, ledger),
@@ -324,6 +353,7 @@ export async function runLedgerTieOuts(
     loadRetainageSubledgerCents(orgId, asOf, bills, isPayable),
     loadCustomerDepositSubledgerCents(orgId, asOf),
     loadOperationalRegisterBalances(orgId, asOf),
+    loadHomeInventoryControls(orgId, asOf),
   ]);
   const glJobCost = glJobCostCents(ledger);
   const accountBalance = (code: string) =>
@@ -448,6 +478,33 @@ export async function runLedgerTieOuts(
       differenceCents: depreciationLedgerCents - registers.depreciationCents,
       ledgerCents: depreciationLedgerCents,
       subledgerCents: registers.depreciationCents,
+    },
+    {
+      code: "land_inventory_control",
+      label: "Land ties lot by lot to each lot's cost basis",
+      status: homeInventory.land.exceptions.length === 0 ? "passed" : "failed",
+      differenceCents: homeInventory.land.ledgerCents - homeInventory.land.subledgerCents,
+      ledgerCents: homeInventory.land.ledgerCents,
+      subledgerCents: homeInventory.land.subledgerCents,
+      exceptions: homeInventory.land.exceptions,
+    },
+    {
+      code: "completed_homes_control",
+      label: "Completed homes held for sale tie to the homes not yet sold",
+      status: homeInventory.completedHomes.exceptions.length === 0 ? "passed" : "failed",
+      differenceCents: homeInventory.completedHomes.ledgerCents - homeInventory.completedHomes.heldCents,
+      ledgerCents: homeInventory.completedHomes.ledgerCents,
+      subledgerCents: homeInventory.completedHomes.heldCents,
+      exceptions: homeInventory.completedHomes.exceptions,
+      rows: homeInventory.completedHomes.homes,
+    },
+    {
+      code: "warranty_reserve_control",
+      label: "Warranty reserve use ties to approved warranty costs",
+      status: homeInventory.warrantyReserve.ledgerCents === homeInventory.warrantyReserve.subledgerCents ? "passed" : "failed",
+      differenceCents: homeInventory.warrantyReserve.ledgerCents - homeInventory.warrantyReserve.subledgerCents,
+      ledgerCents: homeInventory.warrantyReserve.ledgerCents,
+      subledgerCents: homeInventory.warrantyReserve.subledgerCents,
     },
   ];
 }

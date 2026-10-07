@@ -16,7 +16,7 @@ export async function loadInventoryPolicies(orgId: string) {
     .eq("org_id", orgId).eq("books_inventory_enabled", true).order("project_id").range(from, to))
   return new Map(rows.map(row => [String(row.project_id), { enabled: true, effectiveOn: row.books_inventory_effective_on, completedOn: row.books_inventory_completed_on, soldOn: row.books_inventory_sold_on, evidenceUrl: row.books_inventory_evidence_url } satisfies InventoryPolicy & { evidenceUrl: string | null }]))
 }
-async function inventoryContext(permission: "books.manage" | "books.adjust") {
+async function inventoryContext(permission: "books.manage" | "books.adjust" | "books.close") {
   const context = await requireOrgContext()
   await requireBooksAuthorization({ permission, userId: context.userId, orgId: context.orgId, supabase: context.supabase, logDecision: true })
   return context
@@ -85,16 +85,41 @@ export async function transferLandAtStartForService(orgId: string, lotId: string
   if (error) throw new Error(`Failed to transfer lot basis to construction: ${error.message}`)
 }
 
-const allocationSchema = z.object({ projectId: z.string().uuid(), date: z.string().date(), allocations: z.array(z.object({ lotId: z.string().uuid(), amountCents: z.number().int().safe().positive() })).min(1).max(250), reference: z.string().trim().min(3).max(120), evidenceUrl: z.string().url().startsWith("https://") })
-export async function allocateDevelopmentInventory(input: z.input<typeof allocationSchema>) {
-  const parsed = allocationSchema.parse(input)
+const ALLOCATION_BASES = ["equal", "front_footage", "square_footage", "sales_value", "custom"] as const
+const allocationProposalSchema = z.object({
+  projectId: z.string().uuid(), date: z.string().date(), reference: z.string().trim().min(3).max(120),
+  basis: z.enum(ALLOCATION_BASES), totalCents: z.number().int().safe().positive(),
+  weights: z.array(z.object({ lotId: z.string().uuid(), weight: z.number().positive().finite() })).min(1).max(250),
+  evidenceUrl: z.string().url().startsWith("https://"), note: z.string().trim().min(10).max(4000),
+})
+/**
+ * Proposes how shared development cost is spread across lots: the basis, each
+ * lot's weight and the total. The database computes exact-cent shares; nothing
+ * posts until a different member approves it (`reviewDevelopmentAllocation`).
+ */
+export async function proposeDevelopmentAllocation(input: z.input<typeof allocationProposalSchema>) {
+  const parsed = allocationProposalSchema.parse(input)
   const context = await inventoryContext("books.adjust")
-  const { data, error } = await createServiceSupabaseClient().rpc("allocate_books_development_cost", { p_org_id: context.orgId, p_project_id: parsed.projectId, p_date: parsed.date, p_allocations: parsed.allocations.map(row => ({ lot_id: row.lotId, amount_cents: row.amountCents })), p_reference: parsed.reference, p_evidence_url: parsed.evidenceUrl, p_actor_id: context.userId })
-  if (error) throw new Error(`Failed to allocate development inventory: ${error.message}`)
+  const { data, error } = await createServiceSupabaseClient().rpc("propose_books_development_allocation", {
+    p_org_id: context.orgId, p_project_id: parsed.projectId, p_date: parsed.date, p_reference: parsed.reference, p_basis: parsed.basis,
+    p_total_cents: parsed.totalCents, p_weights: parsed.weights.map(row => ({ lot_id: row.lotId, weight: row.weight })), p_evidence_url: parsed.evidenceUrl, p_note: parsed.note, p_actor_id: context.userId,
+  })
+  if (error) throw new Error(error.message)
   const id = z.string().uuid().parse(data)
-  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "project", entityId: parsed.projectId, after: { ...parsed, journal_entry_id: id }, source: "books.development_allocation" })
-  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "books.development_allocated", entityType: "project", entityId: parsed.projectId, payload: { journal_entry_id: id } })
+  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "books_development_allocation", entityId: id, after: parsed, source: "books.development_allocation" })
+  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "books.development_allocation_proposed", entityType: "project", entityId: parsed.projectId, payload: { allocation_id: id } })
   return { id }
+}
+/** Approves (and posts) or rejects a proposed allocation. The proposer cannot approve it. */
+export async function reviewDevelopmentAllocation(input: { allocationId: string; approve: boolean; note?: string }) {
+  const parsed = z.object({ allocationId: z.string().uuid(), approve: z.boolean(), note: z.string().trim().max(4000).optional() }).parse(input)
+  const context = await inventoryContext("books.close")
+  const { data, error } = await createServiceSupabaseClient().rpc("review_books_development_allocation", { p_org_id: context.orgId, p_allocation_id: parsed.allocationId, p_approve: parsed.approve, p_note: parsed.note ?? null, p_actor_id: context.userId })
+  if (error) throw new Error(error.message)
+  const result = z.object({ allocationId: z.string().uuid(), projectId: z.string().uuid(), status: z.enum(["approved", "rejected"]), journalEntryId: z.string().uuid().nullable() }).parse(data)
+  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "books_development_allocation", entityId: parsed.allocationId, after: result, source: "books.development_allocation" })
+  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: `books.development_allocation_${result.status}`, entityType: "project", entityId: result.projectId, payload: { allocation_id: parsed.allocationId, journal_entry_id: result.journalEntryId } })
+  return result
 }
 const interestSchema = z.object({ projectId: z.string().uuid(), sourceLineId: z.string().uuid(), date: z.string().date(), amountCents: z.number().int().safe().positive(), reference: z.string().trim().min(3).max(120), evidenceUrl: z.string().url().startsWith("https://") })
 export async function capitalizeInventoryInterest(input: z.input<typeof interestSchema>) {
@@ -114,5 +139,10 @@ export async function getInventoryAllocationWorkspace() {
     collectBooksRows((from,to) => service.from("lots").select("id,lot_number").eq("org_id",context.orgId).in("status",["owned","developed","assigned"]).not("books_acquisition_entry_id","is",null).order("id").range(from,to)),
     collectBooksRows((from,to) => service.from("journal_lines").select("id,debit_cents,description,entry:journal_entries!journal_lines_entry_owner_fk!inner(entry_date,status),account:gl_accounts!journal_lines_account_owner_fk!inner(subtype)").eq("org_id",context.orgId).eq("entry.status","posted").eq("account.subtype","interest").gt("debit_cents",0).order("id").range(from,to)),
   ])
-  return { lots: lots.map(row => ({ id: row.id, name: `Lot ${row.lot_number}` })), interest: interest.map(row => { const entry = Array.isArray(row.entry) ? row.entry[0] : row.entry; return { id: row.id, amountCents: Number(row.debit_cents), label: `${entry?.entry_date} · ${row.description ?? "Interest expense"}` } }) }
+  const { data: proposals, error: proposalError } = await service.from("books_development_allocations").select("id,project_id,reference,basis,total_cents,shares,note,prepared_by,prepared_at").eq("org_id", context.orgId).eq("status", "proposed").order("prepared_at").limit(100)
+  if (proposalError) throw new Error(`Failed to load allocation proposals: ${proposalError.message}`)
+  const lotName = new Map(lots.map(row => [String(row.id), `Lot ${row.lot_number}`]))
+  return { userId: context.userId, pending: (proposals ?? []).map(row => ({ id: String(row.id), projectId: String(row.project_id), reference: String(row.reference), basis: String(row.basis), totalCents: Number(row.total_cents), note: String(row.note), preparedBy: String(row.prepared_by),
+    shares: z.array(z.object({ lot_id: z.string(), amount_cents: z.number() })).parse(row.shares).map(share => ({ lot: lotName.get(share.lot_id) ?? "Lot", cents: share.amount_cents })) })),
+    lots: lots.map(row => ({ id: row.id, name: `Lot ${row.lot_number}` })), interest: interest.map(row => { const entry = Array.isArray(row.entry) ? row.entry[0] : row.entry; return { id: row.id, amountCents: Number(row.debit_cents), label: `${entry?.entry_date} · ${row.description ?? "Interest expense"}` } }) }
 }

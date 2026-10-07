@@ -37,7 +37,8 @@ import { attachFile } from "@/lib/services/file-links"
 import { createInitialVersion } from "@/lib/services/file-versions"
 import { createFileRecord } from "@/lib/services/files"
 import { createInvoice } from "@/lib/services/invoices"
-import { recordPayment } from "@/lib/services/payments"
+import { recordPayment, recordPaymentReversal } from "@/lib/services/payments"
+import { createReceivableAdjustment } from "@/lib/services/receivable-adjustments"
 import { requirePermission } from "@/lib/services/permissions"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { scheduleClosingSchema, settleClosingSchema, updateClosingChecklistItemSchema, upsertClosingAdjustmentSchema } from "@/lib/validation/closings"
@@ -83,12 +84,14 @@ export async function buildSettlement(closingId: string, orgId?: string) {
   await requireAuthorization({ permission: "sales.read", orgId: context.orgId, userId: context.userId,
     projectId: closing.project_id, supabase: context.supabase, resourceType: "closing", resourceId: closing.id, logDecision: true })
   if (closing.status === "closed") return readClosedSettlementEvidence(closing.settlement)
-  const [contractResult, changes, depositInvoices] = await Promise.all([
-    context.supabase.from("contracts").select("id,number,total_cents,snapshot,signed_at,metadata").eq("org_id", context.orgId).eq("project_id", closing.project_id).eq("contract_type", "purchase_agreement").eq("status", "active").order("id").limit(2),
+  const [contractResult, changes, depositInvoices, closingInvoice] = await Promise.all([
+    context.supabase.from("contracts").select("id,number,total_cents,snapshot,signed_at").eq("org_id", context.orgId).eq("project_id", closing.project_id).eq("contract_type", "purchase_agreement").eq("status", "active").order("id").limit(2),
     readAllRows((from, to) => context.supabase.from("change_orders").select("id,title,total_cents,metadata").eq("org_id", context.orgId).eq("project_id", closing.project_id).eq("status", "approved").order("id").range(from, to), { cap: 10001, label: "Unable to read approved closing changes" }),
     readAllRows((from, to) => context.supabase.from("invoices").select("id,title,status,metadata").eq("org_id", context.orgId).eq("project_id", closing.project_id).contains("metadata", { invoice_kind: "earnest_deposit" }).order("id").range(from, to), { cap: 10001, label: "Unable to read earnest deposit invoices" }),
+    context.supabase.from("invoices").select("id").eq("org_id", context.orgId).eq("project_id", closing.project_id).contains("metadata", { invoice_kind: "closing", source_closing_id: closing.id }).maybeSingle(),
   ])
   if (contractResult.error) throw new Error(`Unable to verify settlement agreement: ${contractResult.error.message}`)
+  if (closingInvoice.error) throw new Error(`Unable to read the closing invoice: ${closingInvoice.error.message}`)
   if (contractResult.data?.length !== 1) throw new Error("Exactly one active purchase agreement is required for settlement")
   const contract = contractResult.data[0]
   if (changes.truncated || depositInvoices.truncated) throw new Error("Settlement source records exceed the supported limit; reconcile them before closing")
@@ -101,9 +104,30 @@ export async function buildSettlement(closingId: string, orgId?: string) {
       .eq("org_id", context.orgId).in("invoice_id", invoices.slice(offset, offset + 100).map(invoice => invoice.id))
       .eq("status", "succeeded").order("id").range(from, to), { cap: 10001, label: "Unable to read settlement deposits" })
     if (payments.truncated || deposits.length + payments.rows.length > 10000) throw new Error("Settlement deposits exceed the supported limit; reconcile them before closing")
+    // A deposit counts at what is still available: received, less refunds and less
+    // what was already applied to another invoice. Its application to this
+    // closing's own invoice is the settlement itself, so it still counts.
+    const paymentIds = payments.rows.map(payment => String(payment.id))
+    const [refunds, applications] = paymentIds.length ? await Promise.all([
+      readAllRows((from, to) => context.supabase.from("payment_reversals").select("payment_id,amount_cents").eq("org_id", context.orgId)
+        .in("payment_id", paymentIds).in("status", ["pending", "succeeded"]).order("id").range(from, to), { cap: 10001, label: "Unable to read deposit refunds" }),
+      readAllRows((from, to) => context.supabase.from("payments").select("invoice_id,amount_cents,metadata,payment_reversals(amount_cents,status)").eq("org_id", context.orgId)
+        .in("metadata->>deposit_payment_id", paymentIds).in("status", ["succeeded", "completed", "paid"]).order("id").range(from, to), { cap: 10001, label: "Unable to read deposit applications" }),
+    ]) : [{ rows: [], truncated: false }, { rows: [], truncated: false }]
+    if (refunds.truncated || applications.truncated) throw new Error("Settlement deposits exceed the supported limit; reconcile them before closing")
+    const used = new Map<string, number>()
+    for (const row of refunds.rows) used.set(String(row.payment_id), (used.get(String(row.payment_id)) ?? 0) + Number(row.amount_cents))
+    for (const row of applications.rows) {
+      if (closingInvoice.data && row.invoice_id === closingInvoice.data.id) continue
+      const depositId = String((row.metadata as Record<string, unknown> | null)?.deposit_payment_id)
+      const reversed = (row.payment_reversals ?? []).filter(reversal => ["pending", "succeeded"].includes(reversal.status)).reduce((sum, reversal) => sum + Number(reversal.amount_cents), 0)
+      used.set(depositId, (used.get(depositId) ?? 0) + Number(row.amount_cents) - reversed)
+    }
     for (const payment of payments.rows) {
-      const amountCents = Number(payment.amount_cents)
-      if (!Number.isSafeInteger(amountCents) || amountCents < 0 || payment.amount_cents === null) throw new Error("Settlement deposit amount is invalid")
+      const receivedCents = Number(payment.amount_cents)
+      if (!Number.isSafeInteger(receivedCents) || receivedCents < 0 || payment.amount_cents === null) throw new Error("Settlement deposit amount is invalid")
+      const amountCents = receivedCents - (used.get(String(payment.id)) ?? 0)
+      if (amountCents <= 0) continue
       deposits.push({ invoiceId: payment.invoice_id, paymentId: payment.id, label: labels.get(payment.invoice_id) ?? "Earnest deposit", amountCents, receivedAt: payment.created_at })
     }
   }
@@ -117,7 +141,7 @@ export async function buildSettlement(closingId: string, orgId?: string) {
   })
   // A preview is computed evidence. Persist it only through the settlement owner.
   return { ...settlement, contractId: contract.id, agreement: { id: contract.id, number: contract.number ?? null, signed_at: contract.signed_at ?? null },
-    agreementEvidenceDigest: booksDigest({ kind: "closing-agreement-v1", id: contract.id, totalCents: contract.total_cents, snapshot: contract.snapshot, signedAt: contract.signed_at, metadata: contract.metadata }),
+    agreementEvidenceDigest: booksDigest({ kind: "closing-agreement-v1", id: contract.id, totalCents: contract.total_cents, snapshot: contract.snapshot, signedAt: contract.signed_at }),
     pricing: (contract.snapshot as any)?.purchase_agreement?.pricing as PurchaseAgreementPricing | undefined, changeOrders }
 }
 
@@ -532,6 +556,53 @@ export async function cancelClosing(input: { closingId: string; reason: string }
   if (error || !data) throw new Error("Closing could not be cancelled")
   await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "closing_cancelled", entityType: "closing", entityId: data.id, payload: { reason: input.reason } })
   await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "closing", entityId: data.id, before, after: data })
+}
+
+/**
+ * Reverses a recorded closing (a sale that fell through after it was recorded).
+ * The money comes off first, each through its own record: the balance payment is
+ * refunded, the deposit applications are reversed so the buyer's deposit is a
+ * liability again, and a full credit memo takes the sale out of revenue. Then the
+ * home goes back to inventory component by component, its warranty provision is
+ * withdrawn, the lot returns to started and the closing is recorded as cancelled
+ * (`reverse_books_home_closing`). Every step is dated in an open month; nothing
+ * recorded is deleted.
+ */
+export async function reverseClosing(input: { closingId: string; reason: string; date: string }, orgId?: string) {
+  const reason = input.reason.trim()
+  if (reason.length < 10 || reason.length > 2000) throw new Error("Say why the closing is reversed (10 to 2000 characters)")
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) throw new Error("Choose the reversal date")
+  const context = await requireOrgContext(orgId)
+  await requirePermission("closing.manage", context)
+  const { data: closing, error } = await context.supabase.from("closings").select("id, project_id, status, closing_invoice_id").eq("org_id", context.orgId).eq("id", input.closingId).maybeSingle()
+  if (error || !closing) throw new Error("Closing not found")
+  await authorizeClosingProject({ ...context, projectId: closing.project_id, closingId: closing.id })
+  if (closing.status !== "closed" || !closing.closing_invoice_id) throw new Error("Only a recorded closing can be reversed")
+  const service = createServiceSupabaseClient()
+  const { data: invoice, error: invoiceError } = await service.from("invoices").select("id, total_cents").eq("org_id", context.orgId).eq("id", closing.closing_invoice_id).single()
+  if (invoiceError || !invoice) throw new Error("Closing invoice not found")
+  const { data: payments, error: paymentsError } = await service.from("payments").select("id, amount_cents, metadata, payment_reversals(amount_cents, status)")
+    .eq("org_id", context.orgId).eq("invoice_id", invoice.id).gt("amount_cents", 0).in("status", ["succeeded", "completed", "paid"]).order("id")
+  if (paymentsError) throw new Error(`Failed to read the closing payments: ${paymentsError.message}`)
+  for (const payment of payments ?? []) {
+    const reversed = (payment.payment_reversals ?? []).filter((row: { status: string }) => ["pending", "succeeded"].includes(row.status)).reduce((sum: number, row: { amount_cents: number }) => sum + Number(row.amount_cents), 0)
+    const open = Number(payment.amount_cents) - reversed
+    if (open <= 0) continue
+    const depositApplication = (payment.metadata as Record<string, unknown> | null)?.customer_deposit_application === true
+    await recordPaymentReversal({ paymentId: payment.id, amountCents: open, reversalType: depositApplication ? "correction" : "refund", reason: `Closing reversed: ${reason}`, metadata: { source_closing_id: closing.id }, orgId: context.orgId })
+  }
+  const { data: credited, error: creditedError } = await service.from("receivable_adjustments").select("amount_cents").eq("org_id", context.orgId).eq("invoice_id", invoice.id).eq("adjustment_type", "credit_memo").eq("status", "posted")
+  if (creditedError) throw new Error(`Failed to read closing credits: ${creditedError.message}`)
+  const remaining = Number(invoice.total_cents) - (credited ?? []).reduce((sum, row) => sum + Number(row.amount_cents), 0)
+  if (remaining > 0) {
+    await createReceivableAdjustment({ invoiceId: invoice.id, adjustmentType: "credit_memo", amountCents: remaining, effectiveDate: input.date, reason: `Closing reversed: ${reason}`.slice(0, 500), idempotencyKey: `closing-reversal:${closing.id}` })
+  }
+  const { data, error: reverseError } = await service.rpc("reverse_books_home_closing", { p_org_id: context.orgId, p_closing_id: closing.id, p_date: input.date, p_reason: reason, p_actor_id: context.userId })
+  if (reverseError) throw new Error(reverseError.message)
+  await projectJournal(context.orgId, {})
+  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "closing_reversed", entityType: "closing", entityId: closing.id, payload: { reason, date: input.date, project_id: closing.project_id } })
+  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "closing", entityId: closing.id, before: closing, after: data })
+  return data as { closingId: string; projectId: string; inventoryEntryId: string | null; warrantyEntryId: string | null }
 }
 
 export interface BacklogReportRow {

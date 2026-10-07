@@ -74,7 +74,11 @@ settings as they are today:
 | 1100 | Accounts receivable | Asset |
 | 1110 | Retainage receivable | Asset |
 | 1150 | Contract assets | Asset — **seeded, never posted (see §6b)** |
-| 1160 | Work in progress | Asset — **seeded, never posted (see §6a)** |
+| 1120 | Owned land | Asset — owned homes only (§4d) |
+| 1160 | Work in progress | Asset — owned homes only (§4d); contract jobs never post here (§6a) |
+| 1170 | Completed homes held for sale | Asset — owned homes only (§4d) |
+| 2260 | Warranty reserve | Liability — owned homes only (§4d) |
+| 2300 | Customer deposits | Liability |
 | 2000 | Accounts payable | Liability |
 | 2010 | Retainage payable | Liability |
 | 2350 | Contract liabilities | Liability |
@@ -204,6 +208,44 @@ Dr  1100  Accounts receivable           B
     Cr  4000  Construction revenue            B
 ```
 
+**A home the builder owns (B11.3).** Once a project adopts inventory accounting its
+costs are an asset until the sale, not job cost:
+
+- **Land.** A lot bought for a community debits 1120 at its cost, lot by lot. Shared
+  development cost reaches lots only through a *reviewed allocation*: the preparer
+  states the basis (equal, front footage, square footage, sales value or a custom
+  schedule) and each lot's weight; Arc splits the total to the cent (largest
+  remainder) and a different member approves it before it posts. When the house
+  starts, the lot's basis moves from 1120 into the home's 1160.
+- **Construction.** Bills, expenses and labor on the home debit 1160 until
+  completion, then 1170. Eligible interest actually incurred is capitalized from
+  6060 into the home.
+- **Sale.** Settlement applies only that home's deposits (each at what is still
+  available: received, less refunds, less any earlier application), books the
+  revenue above, and relieves inventory to 5000 **by component** — land and
+  development, capitalized interest, construction — one cost-of-sales line each,
+  so a sold home reconciles to where its cost came from.
+- **Costs after the sale.** A cost dated on or before the sale that arrives later
+  is relieved on the sale date while that month is open. A cost dated into a
+  closed sale month cannot post (it waits as a closed-period finding, and the
+  closed month is never rewritten); if one is posted while the month is reopened
+  and the month closes before relief runs, it is relieved on the date it is found
+  and labeled `late_closed_home_cost`. A cost dated after the sale is the sold
+  home's period cost: it posts to cost of sales and is labeled `closed_home_cost`.
+- **Warranty.** The approved reserve estimate is provided at closing
+  (Dr 5050 / Cr 2260). An approved warranty visit consumes it: Dr 2260 and credit
+  the account the repair cost was booked to, so cost of sales is not overstated.
+- **Controls.** Three blocking close controls tie to the ledger: 1120 equals each
+  lot held as land at its recorded basis; 1170 equals the homes completed and not
+  yet sold (with each home's age); 2260 consumption equals the reserve consumed on
+  approved visits.
+- **Reversal.** A recorded closing is reversed, not edited: the wire is refunded,
+  each deposit application is reversed (Dr 1100 / Cr 2300, the deposit back to the
+  buyer's liability), the sale is credited in full, each relieved component
+  returns to inventory, the remaining warranty provision is withdrawn and the lot
+  returns to started. The closing stays on record as cancelled with who reversed
+  it and why.
+
 ### 4e. Cash is collected
 ```
 Dr  1000  Operating cash                amount
@@ -272,9 +314,9 @@ the substance of question §6b.
 
 ## 6. Open questions — we believe these need your judgment
 
-### 6a. Costs expense directly to COGS; the WIP account is never used
-Account **1160 Work in progress is seeded but nothing posts to it**. Job costs debit
-5000 as incurred, and the billings-versus-earned difference is carried entirely in 2350.
+### 6a. Contract-job costs expense directly to COGS; WIP is used only for owned homes
+On contract jobs **nothing posts to 1160 Work in progress** (it holds only homes the
+builder owns, §4d). Contract job costs debit 5000 as incurred, and the billings-versus-earned difference is carried entirely in 2350.
 
 We believe this is defensible under ASC 606 — the contract asset / contract liability
 model replaced the older WIP-accumulation presentation — but it differs from what many

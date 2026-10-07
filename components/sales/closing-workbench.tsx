@@ -8,6 +8,7 @@ import {
   downloadSettlementStatementAction,
   markClearedToCloseAction,
   removeClosingAdjustmentAction,
+  reverseClosingAction,
   scheduleClosingAction,
   settleClosingAction,
   updateClosingChecklistItemAction,
@@ -23,6 +24,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
 type ClosingDetail = NonNullable<Awaited<ReturnType<typeof getClosing>>>
@@ -72,6 +74,8 @@ export function ClosingWorkbench({ projectId, detail }: { projectId: string; det
     <div className="space-y-5 p-4">
       {posting.books_posting_status ? <div className="border p-4 text-sm"><p>Books posting: {String(posting.books_posting_status).replaceAll("_", " ")}</p>{posting.books_posting_error ? <p className="mt-2 text-destructive">{String(posting.books_posting_error)}. Resolve the accounting issue, then retry settlement using the same date and payment reference.</p> : null}</div> : null}
       {detail.closing.status === "closed" && detail.canRecoverCompletion ? <div className="flex flex-wrap items-center justify-between gap-3 border p-4 text-sm"><p>Retry lot handoff, warranty enrollment and statement filing after a completion failure.</p><Button size="sm" variant="outline" disabled={pending} onClick={() => act(() => recoverClosingCompletionAction(projectId, detail.closing.id), "Closing completion verified")}>Retry completion</Button></div> : null}
+      {detail.closing.status === "closed" && detail.canManageClosing ? <ReverseClosing projectId={projectId} closingId={detail.closing.id} /> : null}
+      {detail.closing.status === "cancelled" && (detail.closing.metadata as Record<string, unknown> | null)?.reversed_at ? <div role="status" className="border p-4 text-sm"><p className="font-medium">Closing reversed on {String((detail.closing.metadata as Record<string, unknown>).reversed_on)}</p><p className="text-muted-foreground">{detail.closing.cancel_reason}</p></div> : null}
       <SettlementStatement projectId={projectId} closing={detail.closing} settlement={settlement} />
 
       <section className="border bg-background">
@@ -419,5 +423,40 @@ function SettlementAdjustments({
         </div>
       )}
     </section>
+  )
+}
+
+/**
+ * A recorded sale that fell through: refunds the balance, returns the buyer's
+ * deposit to their deposit balance, credits the sale and puts the home back in
+ * inventory, each on its own record and dated in an open month.
+ */
+function ReverseClosing({ projectId, closingId }: { projectId: string; closingId: string }) {
+  const [open, setOpen] = useState(false)
+  const [reason, setReason] = useState("")
+  const [date, setDate] = useState(today())
+  const [pending, startTransition] = useTransition()
+  return (
+    <div className="space-y-3 border p-4 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-muted-foreground">If this sale fell through after it was recorded, reverse it. The balance is refunded, the deposit returns to the buyer&apos;s deposit balance, the sale is credited and the home goes back to inventory.</p>
+        <Button size="sm" variant="outline" onClick={() => setOpen((value) => !value)}>Reverse closing</Button>
+      </div>
+      {open ? (
+        <div className="grid gap-2 sm:grid-cols-[10rem_1fr_auto]">
+          <Input type="date" aria-label="Reversal date" value={date} onChange={(event) => setDate(event.target.value)} />
+          <Textarea aria-label="Why the closing is reversed" rows={2} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Why the sale is reversed" />
+          <Button size="sm" variant="destructive" disabled={pending || reason.trim().length < 10} onClick={() => startTransition(async () => {
+            try {
+              unwrapAction(await reverseClosingAction(projectId, { closingId, reason, date }))
+              toast.success("Closing reversed", { description: "The home is back in inventory." })
+              setOpen(false)
+            } catch (error) {
+              toast.error(error instanceof Error ? error.message : "Could not reverse the closing")
+            }
+          })}>{pending ? "Reversing…" : "Reverse"}</Button>
+        </div>
+      ) : null}
+    </div>
   )
 }

@@ -29,6 +29,9 @@ export const TIE_OUT_ITEM_CATEGORIES = [
   "tie_out_debt_register_control",
   "tie_out_fixed_assets_control",
   "tie_out_accumulated_depreciation_control",
+  "tie_out_land_inventory_control",
+  "tie_out_completed_homes_control",
+  "tie_out_warranty_reserve_control",
 ] as const
 
 /**

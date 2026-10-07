@@ -12,7 +12,7 @@ import { z } from "zod";
 import { loadOpeningOwnedSources } from "@/lib/services/books/opening-sources";
 import { reconcileWarrantyRecoveriesForService } from "@/lib/services/books/warranty-accounting";
 import { loadInventoryPolicies, transitionInventoryForService } from "@/lib/services/books/inventory";
-import { inventoryCostAccount } from "@/lib/services/books/inventory-rules";
+import { inventoryCostAccount, isClosedHomeCost } from "@/lib/services/books/inventory-rules";
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { chunk } from "@/lib/utils";
@@ -715,7 +715,7 @@ async function projectionCandidates(
       let query = service
         .from("payment_reversals")
         .select(
-          "id, project_id, invoice_id, bill_id, payment_id, amount_cents, occurred_at, updated_at, status",
+          "id, project_id, invoice_id, bill_id, payment_id, amount_cents, occurred_at, updated_at, status, payment:payments!payment_reversals_payment_id_fkey(metadata)",
         )
         .eq("org_id", orgId);
       if (watermarks.reversals) query = query.or(readFromFilter(watermarks.reversals));
@@ -894,7 +894,7 @@ async function projectionCandidates(
         retainage_cents: Number(row.retainage_cents ?? 0),
         project_id: row.project_id ?? null,
         company_id: row.company_id ?? null,
-        cost_lines: costLines.map(item => { const code = inventoryCostAccount(inventoryPolicies.get(item.project_id ?? ""), String(row.bill_date), item.account_code); return code === (item.account_code ?? SYSTEM_ACCOUNT_CODES.jobCosts) ? item : { ...item, account_code: code }; }),
+        cost_lines: costLines.map(item => { const policy = inventoryPolicies.get(item.project_id ?? ""); const code = inventoryCostAccount(policy, String(row.bill_date), item.account_code); const tagged = isClosedHomeCost(policy, String(row.bill_date)) ? { ...item, dimensions: { ...item.dimensions, closed_home_cost: true } } : item; return code === (item.account_code ?? SYSTEM_ACCOUNT_CODES.jobCosts) ? tagged : { ...tagged, account_code: code }; }),
       },
     });
   }
@@ -1153,7 +1153,7 @@ async function projectionCandidates(
         project_id: row.project_id ?? null,
         ...(paymentCode !== SYSTEM_ACCOUNT_CODES.operatingCash ? { payment_account_code: paymentCode } : {}),
         vendor_company_id: row.vendor_company_id ?? null,
-        cost_lines: costLines.map(item => { const code = inventoryCostAccount(inventoryPolicies.get(item.project_id ?? ""), String(row.expense_date), item.account_code); return code === (item.account_code ?? SYSTEM_ACCOUNT_CODES.jobCosts) ? item : { ...item, account_code: code }; }),
+        cost_lines: costLines.map(item => { const policy = inventoryPolicies.get(item.project_id ?? ""); const code = inventoryCostAccount(policy, String(row.expense_date), item.account_code); const tagged = isClosedHomeCost(policy, String(row.expense_date)) ? { ...item, dimensions: { ...item.dimensions, closed_home_cost: true } } : item; return code === (item.account_code ?? SYSTEM_ACCOUNT_CODES.jobCosts) ? tagged : { ...tagged, account_code: code }; }),
       },
     });
   }
@@ -1186,7 +1186,11 @@ async function projectionCandidates(
     // `payment_reversals` carries a DB check that exactly one of invoice_id and
     // bill_id is set, so the side is unambiguous here.
     const hasBill = Boolean(row.bill_id);
-    const cashCode = hasBill ? fundingCode(reversalSourceType, String(row.id), () => funding.reversal(String(row.payment_id))) : SYSTEM_ACCOUNT_CODES.undepositedFunds;
+    // Reversing a deposit application moves no cash: the deposit goes back to
+    // the buyer's liability and the invoice is owed again.
+    const reversedPayment = Array.isArray(row.payment) ? row.payment[0] : row.payment;
+    const applicationReversal = !hasBill && (reversedPayment?.metadata as Record<string, unknown> | null | undefined)?.customer_deposit_application === true;
+    const cashCode = hasBill ? fundingCode(reversalSourceType, String(row.id), () => funding.reversal(String(row.payment_id))) : applicationReversal ? SYSTEM_ACCOUNT_CODES.customerDeposits : SYSTEM_ACCOUNT_CODES.undepositedFunds;
     if (!cashCode) continue;
     let settlementEvidence;
     try {
@@ -1203,11 +1207,13 @@ async function projectionCandidates(
       payload: {
         memo: depositReversal
           ? "Customer deposit refunded"
-          : hasBill
+          : applicationReversal
+            ? "Customer deposit application reversed"
+            : hasBill
             ? "Vendor payment returned"
             : "Customer payment reversed",
         amount_cents: amountCents,
-        ...(hasBill && cashCode !== SYSTEM_ACCOUNT_CODES.operatingCash ? { cash_account_code: cashCode } : {}),
+        ...((hasBill && cashCode !== SYSTEM_ACCOUNT_CODES.operatingCash) || applicationReversal ? { cash_account_code: cashCode } : {}),
         side: hasBill ? "bill_payment" : "invoice_payment",
         project_id: row.project_id ?? null,
         settlement_evidence: settlementEvidence,
@@ -1272,7 +1278,7 @@ async function projectionCandidates(
       payload: {
         memo: "Field labor",
         ...(laborBasis ? {labor_basis:laborBasis} : {}),
-        dimensions: { cost_type: "labor", ...(row.cost_code_id ? { cost_code_id: row.cost_code_id } : {}) },
+        dimensions: { cost_type: "labor", ...(row.cost_code_id ? { cost_code_id: row.cost_code_id } : {}), ...(isClosedHomeCost(inventoryPolicies.get(String(row.project_id)), String(row.incurred_on)) ? { closed_home_cost: true } : {}) },
         ...(inventoryCostAccount(inventoryPolicies.get(String(row.project_id)), String(row.incurred_on), SYSTEM_ACCOUNT_CODES.laborCosts) !== SYSTEM_ACCOUNT_CODES.laborCosts ? { cost_account_code: inventoryCostAccount(inventoryPolicies.get(String(row.project_id)), String(row.incurred_on), SYSTEM_ACCOUNT_CODES.laborCosts) } : {}),
         amount_cents: amountCents,
         project_id: row.project_id ?? null,

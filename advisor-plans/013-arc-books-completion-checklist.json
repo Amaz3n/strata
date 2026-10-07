@@ -8823,8 +8823,8 @@
       "id": "B11.3",
       "workstream": "B11",
       "title": "Home closing, land/lot/development/inventory and closeout",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "All B11.3 criteria verified locally (2026-10-07) by HOME-01 (5/5). A sale relieves inventory by component; settlement applies only the home's own deposit net of refunds and earlier applications; shared development reaches lots only through an independently reviewed allocation split to the cent; costs after the sale follow an explicit policy; warranty consumption credits the source cost account; land, completed-home and warranty-reserve controls block the close; a recorded closing is reversed, never edited. Migrations 20261007180000, 190000, 200000, 210000 and 220000 pending production.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "land/lot/home inventory balances reconcile to original cost ownership",
@@ -8840,18 +8840,54 @@
         "PAY-01",
         "REV-01"
       ],
-      "evidence": [],
-      "remaining_criteria": [
-        "land/lot/home inventory balances reconcile to original cost ownership",
-        "allocation totals conserve cents with reviewed basis",
-        "a closing relieves only the sold home's attributable cost and applies only its deposit",
-        "reversal reconstructs original balances",
-        "late cost uses explicit closed-home policy rather than disappearing or changing historical COGS silently",
-        "reserve consumption and inventory/spec aging tie to GL"
+      "evidence": [
+        {
+          "verified_at": "2026-10-07T15:49:11.548425+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261007180000_books_home_sale_relief.sql",
+            "supabase/migrations/20261007190000_books_warranty_consumption_accounts.sql",
+            "supabase/migrations/20261007200000_books_home_inventory_controls.sql",
+            "supabase/migrations/20261007210000_books_development_allocation_review.sql",
+            "supabase/migrations/20261007220000_books_home_closing_reversal.sql",
+            "lib/services/closings.ts",
+            "lib/services/payments.ts",
+            "lib/services/books/projector.ts",
+            "lib/services/books/verifier.ts",
+            "lib/services/books/period-close.ts",
+            "lib/services/books/reconciliation-rules.ts",
+            "lib/services/books/inventory.ts",
+            "lib/services/books/inventory-rules.ts",
+            "components/books/inventory-allocation.tsx",
+            "components/sales/closing-workbench.tsx",
+            "scripts/books-acceptance/scenarios/home-01.cjs",
+            "docs/books-revenue-recognition.md"
+          ],
+          "test_scenario_ids": [
+            "HOME-01"
+          ],
+          "commands": [
+            "scenario-runner HOME-01 and full regression (CAP-01 excluded, known outbox backlog)",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "Production defects fixed: buildSettlement read contracts.metadata, which does not exist in production, so every home closing settlement failed before it started; recordPayment sent undefined provider ids, so PostgREST could not resolve apply_invoice_payment_with_details_atomic and every manual payment (including the closing wire) failed; reversing a deposit application posted as cash out (Cr 1010) instead of returning the deposit to 2300; the customer-deposit subledger read only succeeded/completed payments, so a fully refunded or reversed payment vanished from history and the control failed.",
+            "Sale relief by component: land and development 6,000,000, capitalized interest 250,000, construction 20,000,000; nothing left in 1120/1160/1170; deposits applied [1,500,000] (2,000,000 received less 500,000 refunded); the neighbour's 1,500,000 deposit untouched; revenue 40,000,000; land, completed homes, warranty and deposit controls pass.",
+            "Costs after the sale: a bill dated before the sale entered later is relieved on the sale date while July is open; a post-sale bill posts to 5000 labeled closed_home_cost; July closes with no blocking failure; a bill dated into closed July waits as projection_blocked_by_closed_period and July cost of sales is unchanged.",
+            "Reviewed allocation: front footage 60/45/45 of 100,001 cents gives 40,001/30,000/30,000 (sums exactly); nothing posts before review; the proposer's approval is refused; land control passes.",
+            "Warranty: the 500,000 reserve is provided at closing; approving an 80,000 repair debits 2260 and credits 5000 (the account the repair was booked to); the reserve control ties.",
+            "Reversal: every home balance (1100, 1170, 2260, 2300, 4000, 5000, 5050) returns to its position immediately before settlement; the closing is cancelled, the sale date cleared, the lot back to started; a short reason is refused.",
+            "Regression: BILL-01, WIP-01, YEAR-01, BANK-01, STATUS-01, DIM-01, HIST-01 and REV-01 pass; CLOSE-01 INCOMPLETE only for its unimplemented parts. RACE-01 close-versus-late-bill lost the race once while the unit suites ran alongside (the close refused with 'WIP evidence changed before loss provisioning', a safe outcome) and passed on two isolated reruns.",
+            "Not covered here: filing the signed settlement statement PDF needs R2 storage, which the acceptance stack lacks; the scenario allows only that failure, after asserting the closing is recorded."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-07-home-closing"
+        }
       ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-07T15:49:11.548425+00:00"
     },
     {
       "id": "B11.4",

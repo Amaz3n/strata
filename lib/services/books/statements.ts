@@ -351,10 +351,10 @@ export async function buildProfitAndLoss(orgId: string, startDate: string, endDa
   // Cost codes and contracts carry no name on the line; a slice reads by its code
   // and name or its contract title, never by a record id.
   const idsOf = (dimension: StatementDimension) => byDimension[dimension].map((group) => group.key).filter((key) => /^[0-9a-f-]{36}$/i.test(key));
-  const service = createServiceSupabaseClient();
+  const service = idsOf("cost_code_id").length || idsOf("contract_id").length ? createServiceSupabaseClient() : null;
   const [costCodes, contracts] = await Promise.all([
-    idsOf("cost_code_id").length ? service.from("cost_codes").select("id, code, name").eq("org_id", orgId).in("id", idsOf("cost_code_id")) : Promise.resolve({ data: [], error: null }),
-    idsOf("contract_id").length ? service.from("contracts").select("id, title").eq("org_id", orgId).in("id", idsOf("contract_id")) : Promise.resolve({ data: [], error: null }),
+    service && idsOf("cost_code_id").length ? service.from("cost_codes").select("id, code, name").eq("org_id", orgId).in("id", idsOf("cost_code_id")) : Promise.resolve({ data: [], error: null }),
+    service && idsOf("contract_id").length ? service.from("contracts").select("id, title").eq("org_id", orgId).in("id", idsOf("contract_id")) : Promise.resolve({ data: [], error: null }),
   ]);
   if (costCodes.error || contracts.error) throw new Error(`Failed to name statement slices: ${(costCodes.error ?? contracts.error)?.message}`);
   const names = new Map<string, string>([

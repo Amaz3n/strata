@@ -94,7 +94,7 @@ test("tax bases separate exempt and unknown lines, allocate discounts and exclud
   assert.deepEqual(invoiceTaxBases([{ ...base, metadata: { taxable: true } }, { ...base, metadata: { taxable: false } }], 2000), { taxableSalesCents: 9000, exemptSalesCents: 9000, unclassifiedSalesCents: 0 });
   assert.deepEqual(invoiceTaxBases([{ ...base, metadata: {} }], 0), { taxableSalesCents: 0, exemptSalesCents: 0, unclassifiedSalesCents: 10000 });
 });
-const { inventoryCostAccount, allocateInventoryCost } = require("../lib/services/books/inventory-rules");
+const { inventoryCostAccount, isClosedHomeCost } = require("../lib/services/books/inventory-rules");
 test("owned inventory policy keeps contract costs and pre-adoption history intact", () => {
   const policy = { enabled: true, effectiveOn: "2026-03-01", completedOn: "2026-05-01", soldOn: "2026-06-01" };
   assert.equal(inventoryCostAccount(undefined, "2026-04-01", "5030"), "5030");
@@ -102,7 +102,10 @@ test("owned inventory policy keeps contract costs and pre-adoption history intac
   assert.equal(inventoryCostAccount(policy, "2026-04-01", "5030"), "1160");
   assert.equal(inventoryCostAccount(policy, "2026-05-10", "5030"), "1170");
   assert.equal(inventoryCostAccount(policy, "2026-06-10", "5030"), "5030");
-  assert.deepEqual(allocateInventoryCost(100, [{id:"b",weight:1},{id:"a",weight:1},{id:"c",weight:1}]), [{id:"a",amountCents:34},{id:"b",amountCents:33},{id:"c",amountCents:33}]);
+  // A cost on or after the sale is cost of the sold home, labeled as such.
+  assert.equal(isClosedHomeCost(policy, "2026-05-31"), false);
+  assert.equal(isClosedHomeCost(policy, "2026-06-01"), true);
+  assert.equal(isClosedHomeCost({ ...policy, soldOn: null }, "2026-06-10"), false);
 });
 const { preserveLegacyDimensionPayload } = require('../lib/services/books/fact-drafts');
 test('dimension rollout preserves unchanged historical facts and enriches the next economic revision',()=>{

@@ -1315,16 +1315,15 @@ export async function loadInventoryAllocationWorkspaceAction() {
     ).getInventoryAllocationWorkspace(),
   );
 }
-export async function allocateDevelopmentInventoryAction(
-  input: Parameters<
-    typeof import("@/lib/services/books/inventory").allocateDevelopmentInventory
-  >[0],
+export async function proposeDevelopmentAllocationAction(
+  input: Parameters<typeof import("@/lib/services/books/inventory").proposeDevelopmentAllocation>[0],
 ) {
-  return run(async () =>
-    (
-      await import("@/lib/services/books/inventory")
-    ).allocateDevelopmentInventory(input),
-  );
+  return run(async () => (await import("@/lib/services/books/inventory")).proposeDevelopmentAllocation(input));
+}
+export async function reviewDevelopmentAllocationAction(
+  input: Parameters<typeof import("@/lib/services/books/inventory").reviewDevelopmentAllocation>[0],
+) {
+  return run(async () => (await import("@/lib/services/books/inventory")).reviewDevelopmentAllocation(input));
 }
 export async function capitalizeInventoryInterestAction(
   input: Parameters<
