@@ -54,7 +54,7 @@ test('actual export service streams retained originals, reuses current objects, 
  const Module=require('node:module'),{gunzipSync}=require('node:zlib')
  const bundle=fixture(),downloads=[],updates=[];let upload,corrupt=false
  const service={rpc:async(name,args)=>{
-  assert.equal(name,'capture_books_entity_authorized_export');assert.equal(args.p_org_id,org)
+  assert.equal(name,'capture_books_export_snapshot');assert.equal(args.p_org_id,org)
   return {data:{orgId:org,capturedAt:'2026-10-03T00:00:00Z',databaseSnapshot:'1:2:',tables:bundle.tables},error:null}
  },from(table){
   assert.equal(table,'books_exports')

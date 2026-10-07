@@ -1,54 +1,7 @@
 import {
-  NATIVE_INVOICE_CORRECTION_REVIEW_TABLE,
-  verifyNativeInvoiceCorrectionReviewArchive,
-} from "./native-invoice-correction-review";
-import {
-  NATIVE_INVOICE_CORRECTION_PROPOSAL_TABLE,
-  verifyNativeInvoiceCorrectionProposalArchive,
-} from "./native-invoice-correction-proposal";
-import {
-  NATIVE_INVOICE_INCOME_RESOLUTION_TABLE,
-  verifyNativeIncomeResolutionArchive,
-} from "./native-invoice-income-resolution";
-import { NATIVE_INVOICE_INCOME_TABLE } from "./native-invoice-income-contract";
-import { verifyNativeInvoiceIncomeArchive } from "./native-invoice-income-archive";
-import {
-  NATIVE_INVOICE_RESOLUTION_TABLE,
-  verifyNativeInvoiceResolutionArchive,
-} from "./native-invoice-resolution";
-import {
-  NATIVE_ADJUSTMENT_TABLES,
-  NATIVE_INVOICE_POSTING_TABLE,
-  verifyNativeAdjustmentArchive,
-} from "./native-adjustment-archive";
-import {
-  PROJECT_OWNER_RESOLUTION_TABLE,
-  verifyProjectOwnerResolutionArchive,
-} from "./project-owner-resolution-archive";
-import {
-  PROJECT_ENTITY_TABLES,
-  verifyProjectEntityArchive,
-} from "./project-entity-archive";
-import {
-  ENTITY_CHART_TABLES,
-  verifyEntityChartArchive,
-} from "./entity-chart-archive";
-import {
-  ENTITY_CALENDAR_TABLES,
-  verifyEntityCalendarArchive,
-} from "./entity-calendars";
-import {
   JOURNAL_RESOLUTION_TABLE,
   verifyJournalResolutionArchive,
 } from "./journal-resolution-archive";
-import {
-  LEGACY_ENTITY_OWNERSHIP_TABLES,
-  verifyLegacyEntityOwnershipArchive,
-} from "./legacy-entity-ownership";
-import {
-  LEGAL_ENTITY_ARCHIVE_TABLES,
-  verifyLegalEntityArchive,
-} from "./legal-entity-archive";
 import { verifyPayrollCorrectionPosting } from "./payroll-correction-posting";
 import { taxWorkpaperEvidenceSchema } from "@/lib/services/books/tax-adjustment-lines";
 import {
@@ -66,23 +19,10 @@ import { verifyPayrollCorrectionSourceBytes } from "./payroll-correction-source"
 import { parsePayrollCorrectionProposal } from "./payroll-correction-proposal";
 import { parsePayrollPostingProposal } from "./payroll-posting-proposal-evidence";
 
-export const BOOKS_EXPORT_SCHEMA_VERSION = 32 as const;
+export const BOOKS_EXPORT_SCHEMA_VERSION = 33 as const;
 
 export const EXPORT_TABLES = [
-  NATIVE_INVOICE_CORRECTION_REVIEW_TABLE,
-  NATIVE_INVOICE_CORRECTION_PROPOSAL_TABLE,
-  ...NATIVE_ADJUSTMENT_TABLES,
-  NATIVE_INVOICE_POSTING_TABLE,
-  NATIVE_INVOICE_RESOLUTION_TABLE,
-  NATIVE_INVOICE_INCOME_TABLE,
-  NATIVE_INVOICE_INCOME_RESOLUTION_TABLE,
-  PROJECT_OWNER_RESOLUTION_TABLE,
-  ...PROJECT_ENTITY_TABLES,
-  ...ENTITY_CHART_TABLES,
-  ...ENTITY_CALENDAR_TABLES,
   JOURNAL_RESOLUTION_TABLE,
-  ...LEGAL_ENTITY_ARCHIVE_TABLES,
-  ...LEGACY_ENTITY_OWNERSHIP_TABLES,
   "closings",
   "closing_checklist_items",
   "lot_takedowns",
@@ -194,7 +134,6 @@ export function verifyBooksExportBundle(bundle: {
   manifest?: {
     schemaVersion: number;
     orgId: string;
-    legalEntityIds?: string[];
     tables: Record<string, { rows: number; checksum?: string }>;
     supportingFiles?: {
       id: unknown;
@@ -258,16 +197,14 @@ export function verifyBooksExportBundle(bundle: {
   if (
     bundle.manifest &&
     ![
-      2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-      22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
+      2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 33,
     ].includes(bundle.manifest.schemaVersion)
   )
     integrityErrors.push("Unsupported Books export schema version");
   if (
     bundle.manifest &&
     [
-      2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-      22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
+      2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 33,
     ].includes(bundle.manifest.schemaVersion)
   ) {
     if (bundle.manifest.schemaVersion >= 31)
@@ -281,209 +218,16 @@ export function verifyBooksExportBundle(bundle: {
             "Invoice quantity requires exact decimal text in schema31",
           );
     integrityErrors.push(
-      ...verifyNativeInvoiceCorrectionReviewArchive(
-        bundle.tables,
-        bundle.manifest.orgId,
-        bundle.manifest.schemaVersion,
-      ),
-    );
-    integrityErrors.push(
-      ...verifyNativeInvoiceCorrectionProposalArchive(
-        bundle.tables,
-        bundle.manifest.orgId,
-        bundle.manifest.schemaVersion,
-      ),
-    );
-    integrityErrors.push(
-      ...verifyNativeIncomeResolutionArchive(
-        bundle.tables,
-        bundle.manifest.orgId,
-        bundle.manifest.schemaVersion,
-      ),
-      ...verifyNativeInvoiceIncomeArchive(
-        bundle.tables,
-        bundle.manifest.orgId,
-        bundle.manifest.schemaVersion,
-      ),
-      ...verifyNativeInvoiceResolutionArchive(
-        bundle.tables,
-        bundle.manifest.orgId,
-        bundle.manifest.schemaVersion,
-      ),
-      ...verifyNativeAdjustmentArchive(
-        bundle.tables,
-        bundle.manifest.orgId,
-        bundle.manifest.schemaVersion,
-      ),
-      ...verifyProjectOwnerResolutionArchive(
-        bundle.tables,
-        bundle.manifest.orgId,
-        bundle.manifest.schemaVersion,
-      ),
-      ...verifyProjectEntityArchive(
-        bundle.tables,
-        bundle.manifest.orgId,
-        bundle.manifest.schemaVersion,
-      ),
-      ...verifyEntityChartArchive(
-        bundle.tables,
-        bundle.manifest.orgId,
-        bundle.manifest.schemaVersion,
-      ),
-      ...verifyEntityCalendarArchive(
-        bundle.tables,
-        bundle.manifest.orgId,
-        bundle.manifest.schemaVersion,
-      ),
-    );
-    integrityErrors.push(
       ...verifyJournalResolutionArchive(
         bundle.tables,
         bundle.manifest.orgId,
         bundle.manifest.schemaVersion,
       ),
     );
-    integrityErrors.push(
-      ...verifyLegacyEntityOwnershipArchive(
-        bundle.tables,
-        bundle.manifest.orgId,
-        bundle.manifest.schemaVersion,
-        EXPORT_TABLES.filter(
-          (table) =>
-            !NATIVE_ADJUSTMENT_TABLES.includes(
-              table as (typeof NATIVE_ADJUSTMENT_TABLES)[number],
-            ) &&
-            table !== NATIVE_INVOICE_INCOME_TABLE &&
-            table !== NATIVE_INVOICE_CORRECTION_PROPOSAL_TABLE &&
-            table !== NATIVE_INVOICE_CORRECTION_REVIEW_TABLE &&
-            table !== NATIVE_INVOICE_INCOME_RESOLUTION_TABLE &&
-            table !== NATIVE_INVOICE_RESOLUTION_TABLE &&
-            table !== NATIVE_INVOICE_POSTING_TABLE &&
-            table !== JOURNAL_RESOLUTION_TABLE &&
-            table !== PROJECT_OWNER_RESOLUTION_TABLE &&
-            !PROJECT_ENTITY_TABLES.includes(
-              table as (typeof PROJECT_ENTITY_TABLES)[number],
-            ) &&
-            !ENTITY_CHART_TABLES.includes(
-              table as (typeof ENTITY_CHART_TABLES)[number],
-            ) &&
-            !ENTITY_CALENDAR_TABLES.includes(
-              table as (typeof ENTITY_CALENDAR_TABLES)[number],
-            ) &&
-            !LEGACY_ENTITY_OWNERSHIP_TABLES.includes(
-              table as (typeof LEGACY_ENTITY_OWNERSHIP_TABLES)[number],
-            ),
-        ),
-      ),
-    );
-    integrityErrors.push(
-      ...verifyLegalEntityArchive(
-        bundle.tables,
-        bundle.manifest.orgId,
-        bundle.manifest.schemaVersion,
-      ),
-    );
-    if (
-      bundle.manifest.schemaVersion >= 18 &&
-      (bundle.manifest.legalEntityIds !== undefined ||
-        (bundle.tables.books_legal_entities ?? []).length)
-    ) {
-      const expected = (bundle.tables.books_legal_entities ?? [])
-        .map((row) => String(row.id))
-        .sort();
-      if (
-        !Array.isArray(bundle.manifest.legalEntityIds) ||
-        JSON.stringify(bundle.manifest.legalEntityIds) !==
-          JSON.stringify(expected)
-      )
-        integrityErrors.push("Export legal entity identity inventory differs");
-    }
     for (const table of EXPORT_TABLES) {
-      if (
-        bundle.manifest.schemaVersion < 32 &&
-        table === NATIVE_INVOICE_CORRECTION_REVIEW_TABLE
-      )
-        continue;
-      if (
-        bundle.manifest.schemaVersion < 30 &&
-        table === NATIVE_INVOICE_CORRECTION_PROPOSAL_TABLE
-      )
-        continue;
-      if (
-        bundle.manifest.schemaVersion < 29 &&
-        table === NATIVE_INVOICE_INCOME_RESOLUTION_TABLE
-      )
-        continue;
-      if (
-        bundle.manifest.schemaVersion < 28 &&
-        table === NATIVE_INVOICE_INCOME_TABLE
-      )
-        continue;
-      if (
-        bundle.manifest.schemaVersion < 27 &&
-        table === NATIVE_INVOICE_RESOLUTION_TABLE
-      )
-        continue;
-      if (
-        bundle.manifest.schemaVersion < 26 &&
-        table === NATIVE_INVOICE_POSTING_TABLE
-      )
-        continue;
-      if (
-        bundle.manifest.schemaVersion < 25 &&
-        NATIVE_ADJUSTMENT_TABLES.includes(
-          table as (typeof NATIVE_ADJUSTMENT_TABLES)[number],
-        )
-      )
-        continue;
-      if (
-        bundle.manifest.schemaVersion < 24 &&
-        table === PROJECT_OWNER_RESOLUTION_TABLE
-      )
-        continue;
-      if (
-        bundle.manifest.schemaVersion < 23 &&
-        PROJECT_ENTITY_TABLES.includes(
-          table as (typeof PROJECT_ENTITY_TABLES)[number],
-        ) &&
-        !bundle.tables[table]
-      )
-        continue;
-      if (
-        bundle.manifest.schemaVersion < 22 &&
-        ENTITY_CHART_TABLES.includes(
-          table as (typeof ENTITY_CHART_TABLES)[number],
-        ) &&
-        !bundle.tables[table]
-      )
-        continue;
-      if (
-        bundle.manifest.schemaVersion < 21 &&
-        ENTITY_CALENDAR_TABLES.includes(
-          table as (typeof ENTITY_CALENDAR_TABLES)[number],
-        ) &&
-        !bundle.tables[table]
-      )
-        continue;
       if (
         bundle.manifest.schemaVersion < 20 &&
         table === JOURNAL_RESOLUTION_TABLE &&
-        !bundle.tables[table]
-      )
-        continue;
-      if (
-        bundle.manifest.schemaVersion < 19 &&
-        LEGACY_ENTITY_OWNERSHIP_TABLES.includes(
-          table as (typeof LEGACY_ENTITY_OWNERSHIP_TABLES)[number],
-        ) &&
-        !bundle.tables[table]
-      )
-        continue;
-      if (
-        bundle.manifest.schemaVersion < 18 &&
-        LEGAL_ENTITY_ARCHIVE_TABLES.includes(
-          table as (typeof LEGAL_ENTITY_ARCHIVE_TABLES)[number],
-        ) &&
         !bundle.tables[table]
       )
         continue;

@@ -35,7 +35,6 @@ test('real export snapshot RPC scopes every table, keeps all rows and uses state
 test('actual bigint audit identities survive capture, verification and SQL restoration beyond JavaScript precision',async t=>{
  const {BOOKS_EXPORT_SCHEMA_VERSION,verifyBooksExportBundle}=require('../lib/services/books/export-contract');
  const {booksDigest}=require('../lib/services/books/hash');
- const {prepareLegacyOwnershipInventory}=require('../lib/services/books/legacy-ownership-inventory');
  const db=new PGlite();t.after(()=>db.close());
  await db.exec('create role anon;create role authenticated;create role service_role;');
  for(const table of EXPORT_TABLES)await db.exec(`create table ${table}(id ${table==='audit_log'?'bigint':'uuid'} primary key,org_id uuid not null)`);
@@ -44,10 +43,8 @@ test('actual bigint audit identities survive capture, verification and SQL resto
  await db.query("insert into audit_log values(9007199254740993,$1),(9223372036854775806,$1)",[org]);
  const captured=(await db.query('select capture_books_export_snapshot($1) value',[org])).rows[0].value;
  assert.deepEqual(captured.tables.audit_log.map(row=>row.id),['9007199254740993','9223372036854775806']);
- const bundle={tables:captured.tables,manifest:{schemaVersion:BOOKS_EXPORT_SCHEMA_VERSION,orgId:org,legalEntityIds:[],tables:Object.fromEntries(Object.entries(captured.tables).map(([name,rows])=>[name,{rows:rows.length,checksum:booksDigest(rows)}])),supportingFiles:[],supportingHistoricalFiles:[]}};
+ const bundle={tables:captured.tables,manifest:{schemaVersion:BOOKS_EXPORT_SCHEMA_VERSION,orgId:org,tables:Object.fromEntries(Object.entries(captured.tables).map(([name,rows])=>[name,{rows:rows.length,checksum:booksDigest(rows)}])),supportingFiles:[],supportingHistoricalFiles:[]}};
  assert.equal(verifyBooksExportBundle(bundle).valid,true);
- const inventory=prepareLegacyOwnershipInventory(bundle,{orgId:org,accountingCutoff:'2026-09-30'});
- assert.deepEqual(inventory.populations.find(p=>p.table==='audit_log').retainedRows.map(row=>row.id),['9007199254740993','9223372036854775806']);
  // The target retains its actual bigint column, rather than changing database
  // identities into text or casting through a JavaScript Number.
  await db.exec('create table restored_audit (like audit_log including all)');

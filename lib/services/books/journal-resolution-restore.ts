@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { verifyBooksExportBundle } from "./export-contract";
+import { BOOKS_EXPORT_SCHEMA_VERSION, verifyBooksExportBundle } from "./export-contract";
 import { JOURNAL_RESOLUTION_TABLE } from "./journal-resolution-archive";
 
 const targetSchema = z
@@ -41,13 +41,11 @@ export function prepareJournalResolutionRestoreSql(
   const verified = verifyBooksExportBundle(bundle);
   if (
     !bundle.manifest ||
-    ![20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32].includes(
-      bundle.manifest.schemaVersion,
-    ) ||
+    bundle.manifest.schemaVersion !== BOOKS_EXPORT_SCHEMA_VERSION ||
     !verified.valid
   )
     throw new Error(
-      "Journal resolution restoration requires a verified schema20 through schema32 archive",
+      `Journal resolution restoration requires a verified schema${BOOKS_EXPORT_SCHEMA_VERSION} archive`,
     );
   const org = z.string().uuid().parse(bundle.manifest.orgId);
   const rows = bundle.tables[JOURNAL_RESOLUTION_TABLE];

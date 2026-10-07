@@ -53,7 +53,7 @@ test('schema 15 preserves decimal evidence, reviewed proposal history and retry 
  const tables=(await capture(f.db)).tables,row=parsePayrollCorrectionProposal(tables.books_payroll_correction_proposals[0],tables)
  assert.match(row.context_text,/11\.11/);assert.equal(row.status,'reviewed')
  const bundle={tables,manifest:{schemaVersion:BOOKS_EXPORT_SCHEMA_VERSION,orgId:org,tables:Object.fromEntries(Object.entries(tables).map(([name,rows])=>[name,{rows:rows.length,checksum:booksDigest(rows)}])),supportingFiles:tables.files.map(file=>({id:file.id,storagePath:file.storage_path,sizeBytes:file.size_bytes,checksum:file.checksum})),supportingHistoricalFiles:historicalDocumentInventory(tables,org)},supportingObjects:[{fileId:id(8),dataBase64:f.registerBytes.toString('base64')},{fileId:id(702),dataBase64:f.bytes.toString('base64')}]}
- assert.equal(BOOKS_EXPORT_SCHEMA_VERSION,32);assert.equal(verifyBooksExportBundle(bundle).valid,true,JSON.stringify(verifyBooksExportBundle(bundle)))
+ assert.equal(BOOKS_EXPORT_SCHEMA_VERSION,33);assert.equal(verifyBooksExportBundle(bundle).valid,true,JSON.stringify(verifyBooksExportBundle(bundle)))
  const bad=structuredClone(bundle),saved=bad.tables.books_payroll_correction_proposals[0];saved.plan.math.journalDraft.lines[0].debitCents++
  saved.plan_text=JSON.stringify(saved.plan);saved.plan_digest=createHash('sha256').update(saved.plan_text).digest('hex');bad.manifest.tables.books_payroll_correction_proposals.checksum=booksDigest(bad.tables.books_payroll_correction_proposals)
  assert.equal(verifyBooksExportBundle(bad).valid,false,'recomputed text, digest and table checksum cannot invent approved payroll money')

@@ -22,12 +22,6 @@ The required next implementation is an explicit obligation/attempt contract: bin
 
 ## Candidate Books archive integration gap
 
-The preceding review found that the staged native-invoice posting migration extended `capture_books_export_snapshot` with `books_native_invoice_postings` while the TypeScript export manifest and restore inventory omitted it. The shared export fixture exposed the mismatch. The current shared worktree now includes that archive table in schema 26, and the financial suite plus three standalone native-invoice archive tests pass locally. Existing assertions remain intact. Full receipt/source/restore contract acceptance remains open; the standalone archive suite is not yet registered in the financial command.
-
-This is a candidate-schema integration blocker for E12-03, not evidence that the deployed production database has been changed. Complete native posting receipt/body/source verification, archive schema compatibility, restore dependency order, actor/entity access and exact recovery before adding the table to an accepted export contract. Merely allowing the new table would not satisfy monetary-history recovery. The fixture is partial-schema test infrastructure and cannot establish full-schema readiness.
-
-
-Local inspection handoff evidence: manifest. Current financial verification passed 3,348 tests after the shared worktree archive contract advanced to schema 26. The earlier six failures remain historical evidence; full native archive acceptance is still open.
-
-
-The staged [obligation and accepted-attempt lifecycle](inspection-obligation-lifecycle.md) now implements linked corrective work/reinspection, independent review, atomic completion receipts and SQL closing/schedule proof checks. It remains disabled and unapplied. See its local evidence and outstanding release requirements; this is not E09-03 acceptance.
+Resolved 2026-10-07: the separate native legal-entity ledger was retired before
+release (`docs/books-entities.md`), so there is no native-invoice archive table to
+reconcile.

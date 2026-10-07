@@ -1,4 +1,3 @@
-import { ProjectBooksOwnership } from "@/components/books/project-owner-server";
 import { connection } from "next/server";
 import { parsePayablesBookQuery } from "@/lib/financials/payables-book";
 import { Suspense } from "react";
@@ -94,9 +93,6 @@ async function ProjectPayablesData({
       fullBleed
     >
       <FinancialSetupStatusBanner setup={setup} />
-      <Suspense fallback={null}>
-        <ProjectBooksOwnership projectId={project.id} />
-      </Suspense>
       <PayablesDesk
         key={id}
         data={data}

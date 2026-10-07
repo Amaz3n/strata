@@ -134,9 +134,7 @@ with money preserved and 777/777 pgTAP assertions on the upgraded database.
 Next infrastructure work is actual fresh replay/pgTAP and populated upgrade,
 then the 25 golden scenario journeys with independent expected entries. CI's
 existing database job cannot substitute for retained upgrade/golden evidence or
-G1–G7 completion. Native entity ownership follows
-`docs/adr/2026-10-04-books-native-legal-entities.md` and still requires implementation
-and upgrade acceptance.
+G1–G7 completion. Legal entities follow `docs/books-entities.md`.
 
 A further October 4 retry after the user reported Docker running is retained at
 `/tmp/books-full-schema-20261004-resume-02/bootstrap.json`. Authorized local socket

@@ -1,6 +1,5 @@
 "use client"
 import { SourcePostingStatus } from "@/components/books/source-posting-status"
-import { NativeInvoiceAccounting } from "@/components/books/native-invoice-accounting"
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
@@ -1063,7 +1062,6 @@ function InvoiceInspectorBody({
               <InvoiceVoidDateCard invoice={invoice} onChanged={onChanged} />
             ) : null}
             <SourcePostingStatus key={`${invoice.id}:${invoice.updated_at}`} sourceType="invoice" sourceId={invoice.id} revision={invoice.updated_at} />
-            <NativeInvoiceAccounting key={`native:${invoice.id}`} invoiceId={invoice.id} revision={invoice.updated_at} />
             {labels.showExternalSync ? (
             <section className="space-y-2">
               <SectionHeading>{accounting?.external?.label ?? DEFAULT_ACCOUNTING_PROVIDER_LABEL} sync</SectionHeading>

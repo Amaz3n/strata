@@ -1,4 +1,3 @@
-import { ProjectBooksOwnership } from "@/components/books/project-owner-server";
 import { connection } from "next/server";
 import { Suspense } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -68,9 +67,6 @@ async function ProjectExpensesData({ id }: { id: string }) {
         { label: "Expenses" },
       ]}
     >
-      <Suspense fallback={null}>
-        <ProjectBooksOwnership projectId={project.id} />
-      </Suspense>
       <ExpensesClient
         projectId={project.id}
         initialPage={data}

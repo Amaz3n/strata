@@ -90,7 +90,7 @@ test('supporting file extraction rejects path traversal before creating output',
 test('export service uploads embedded documents and refuses a changed source file',async()=>{
  const Module=require('node:module');const {database}=require('./helpers/report-database');const {gunzipSync}=require('node:zlib');
  const {bundle,bytes}=embeddedFixture();const source=database(bundle.tables);let upload,changed=false,snapshotMode="valid";const updates=[];
- const service={rpc:async(name,args)=>{assert.equal(name,"capture_books_entity_authorized_export");assert.equal(args.p_org_id,"org");if(snapshotMode==="error")return {data:null,error:{message:"snapshot unavailable"}};const tables={...bundle.tables};if(snapshotMode==="missing")delete tables.journal_lines;return {data:{orgId:snapshotMode==="wrong-org"?"other":"org",capturedAt:"2026-10-03T00:00:00Z",databaseSnapshot:"1:2:",tables},error:null}},from(table){
+ const service={rpc:async(name,args)=>{assert.equal(name,"capture_books_export_snapshot");assert.equal(args.p_org_id,"org");if(snapshotMode==="error")return {data:null,error:{message:"snapshot unavailable"}};const tables={...bundle.tables};if(snapshotMode==="missing")delete tables.journal_lines;return {data:{orgId:snapshotMode==="wrong-org"?"other":"org",capturedAt:"2026-10-03T00:00:00Z",databaseSnapshot:"1:2:",tables},error:null}},from(table){
   if(table!=='books_exports')return source.from(table);
   const query={insert(row){assert.equal(row.schema_version,BOOKS_EXPORT_SCHEMA_VERSION);return query},select(){return query},single:async()=>({data:{id:'00000000-0000-4000-8000-000000000001'},error:null}),update(row){updates.push(row);return query},eq(){return query},then(resolve){return Promise.resolve({error:null}).then(resolve)}};return query;
  }};

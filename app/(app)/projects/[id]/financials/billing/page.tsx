@@ -1,4 +1,3 @@
-import { ProjectBooksOwnership } from "@/components/books/project-owner-server";
 import { connection } from "next/server";
 import { notFound, unstable_rethrow } from "next/navigation";
 import { Suspense } from "react";
@@ -179,9 +178,6 @@ async function BillingData({
       fullBleed
     >
       <FinancialSetupStatusBanner setup={setupStatus} />
-      <Suspense fallback={null}>
-        <ProjectBooksOwnership projectId={project.id} />
-      </Suspense>
       <BillingBook
         scope={{ kind: "project", projectId: project.id }}
         projects={[{ ...project, billing_contract: contract }]}

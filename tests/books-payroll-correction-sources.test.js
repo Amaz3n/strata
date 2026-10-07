@@ -43,7 +43,7 @@ test('schema 15 recovers reviewed/withdrawn correction sources and original byte
  const tables=(await capture(f.db)).tables,history=historicalDocumentInventory(tables,org),original=history.find(row=>row.storagePath===f.proof.storage_path)
  assert.equal(original.currentFileId,null)
  const bundle={tables,manifest:{schemaVersion:BOOKS_EXPORT_SCHEMA_VERSION,orgId:org,tables:Object.fromEntries(Object.entries(tables).map(([name,rows])=>[name,{rows:rows.length,checksum:booksDigest(rows)}])),supportingFiles:tables.files.map(file=>({id:file.id,storagePath:file.storage_path,sizeBytes:file.size_bytes,checksum:file.checksum})),supportingHistoricalFiles:history},supportingObjects:[{fileId:id(8),dataBase64:f.registerBytes.toString('base64')},{fileId:id(702),dataBase64:replacement.toString('base64')}],supportingHistoricalObjects:[{attachmentId:original.id,dataBase64:f.bytes.toString('base64')}]}
- assert.equal(BOOKS_EXPORT_SCHEMA_VERSION,32);assert.equal(verifyBooksExportBundle(bundle).valid,true,JSON.stringify(verifyBooksExportBundle(bundle)))
+ assert.equal(BOOKS_EXPORT_SCHEMA_VERSION,33);assert.equal(verifyBooksExportBundle(bundle).valid,true,JSON.stringify(verifyBooksExportBundle(bundle)))
  const target=await sourceFixture(t)
  await target.db.exec('set session_replication_role=replica')
  for(const name of EXPORT_TABLES)await target.db.exec(`delete from ${name}`)

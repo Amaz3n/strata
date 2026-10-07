@@ -66,8 +66,6 @@ Recognition and loss provisions are per contract and always carry it
   a finding with that cure. A key present with a null value means none.
 - **Never ambiguous.** A tag is set only when the relationship is single: one lot
   per project by constraint, a contract only when the project has one.
-- **Entity ownership.** A project with a reviewed legal-entity owner refuses
-  legacy facts, entries and lines; its documents post through the entity ledger.
 - **Tags stay as posted.** Later changes to a project's division, community or
   lot, or to a community's or account's name, relabel nothing already posted;
   nor does a project gaining a second contract take the first contract off the
@@ -78,9 +76,6 @@ Recognition and loss provisions are per contract and always carry it
   exactly and must match its account, project, company and amounts
   (`books_capture_account_classification`, `books_complete_reversal`), so a
   historical entry can always be reversed as it was posted.
-- **Reviewed ownership is append-only.** Legacy and project entity ownership
-  proposals and reviews (`books_legacy_entity_*`, `books_project_entity_*`)
-  cannot be changed or deleted; a review never relabels posted lines.
 
 ## Statements by dimension
 

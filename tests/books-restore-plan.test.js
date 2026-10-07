@@ -95,24 +95,3 @@ test('offline preparation writes a private new plan without overwriting files or
   assert.equal(spawnSync(process.execPath,args,{encoding:'utf8'}).status,1);assert.deepEqual(fs.readFileSync(target),saved)
  }finally{fs.rmSync(root,{recursive:true,force:true})}
 })
-test('schema22 restores add empty project ownership families without inventing historical assignments',()=>{
- const input=fixture();input.bundle.manifest.schemaVersion=22;input.bundle.manifest.supportingHistoricalFiles=[];input.bundle.supportingHistoricalObjects=[]
- for(const table of ['books_project_entity_proposals','books_project_entity_reviews']){delete input.bundle.tables[table];delete input.bundle.manifest.tables[table]}
- assert.equal(require('../lib/services/books/export-contract').verifyBooksExportBundle(input.bundle).valid,true,JSON.stringify(require('../lib/services/books/export-contract').verifyBooksExportBundle(input.bundle)))
- const before=structuredClone(input),plan=prepare(input)
- assert.deepEqual(plan.tables.books_project_entity_proposals,[])
- assert.deepEqual(plan.tables.books_project_entity_reviews,[])
- assert.deepEqual(input,before)
- input.bundle.tables.books_project_entity_proposals=[{id:'invented',org_id:'org'}]
- input.bundle.manifest.tables.books_project_entity_proposals={rows:1,checksum:booksDigest(input.bundle.tables.books_project_entity_proposals)}
- assert.throws(()=>prepare(input),/verified versioned archive/)
-})
-
-test('schema23 restore adds empty cancellation history and rejects invented cancellation rows',()=>{
- const input=fixture();input.bundle.manifest.schemaVersion=23;input.bundle.manifest.supportingHistoricalFiles=[];input.bundle.supportingHistoricalObjects=[];
- const table='books_project_owner_request_resolutions';delete input.bundle.tables[table];delete input.bundle.manifest.tables[table];
- assert.equal(require('../lib/services/books/export-contract').verifyBooksExportBundle(input.bundle).valid,true);
- const before=structuredClone(input),plan=prepare(input);assert.deepEqual(plan.tables[table],[]);assert.deepEqual(input,before);
- input.bundle.tables[table]=[{id:'invented',org_id:'org'}];input.bundle.manifest.tables[table]={rows:1,checksum:booksDigest(input.bundle.tables[table])};
- assert.throws(()=>prepare(input),/verified versioned archive/);
-});

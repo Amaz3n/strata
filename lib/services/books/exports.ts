@@ -63,7 +63,7 @@ export async function createCompleteBooksExport(input: {
     throw new Error(`Failed to create Books export: ${createError.message}`);
   const exportId = z.object({ id: z.string().uuid() }).parse(exportData).id;
   try {
-    const { data: snapshotData, error: snapshotError } = await service.rpc("capture_books_entity_authorized_export", { p_org_id: context.orgId, p_actor_id: context.userId });
+    const { data: snapshotData, error: snapshotError } = await service.rpc("capture_books_export_snapshot", { p_org_id: context.orgId });
     if (snapshotError) throw new Error(`Failed to capture Books export snapshot: ${snapshotError.message}`);
     const snapshot = z.object({
       orgId: z.string(), capturedAt: z.string().datetime({ offset: true }),
@@ -109,7 +109,6 @@ export async function createCompleteBooksExport(input: {
     const generatedAt = new Date().toISOString();
     const manifest = {
       schemaVersion: BOOKS_EXPORT_SCHEMA_VERSION,
-      legalEntityIds: (tables.books_legal_entities ?? []).map(row => String(row.id)).sort(),
       orgId: context.orgId,
       generatedAt,
       databaseSnapshot: { capturedAt: snapshot.capturedAt, visibility: snapshot.databaseSnapshot },
