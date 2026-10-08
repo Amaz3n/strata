@@ -231,6 +231,18 @@ commit;`)
     await kit.as(org.reviewer, () => tax.reviewTaxWorkpaper({ id: workpaper, notes: "Checked against the depreciation schedule" }))
     return org
   },
+  // A year of vendor payments with every 1099 payee ready to file and the
+  // company's own taxpayer ID recorded; no package prepared yet.
+  async "vendor-1099"(kit, password) {
+    const { builder, yearOfPayments, ADDRESS } = require("./scenarios/tax-01.cjs").helpers
+    const org = await builder(kit, "Browser acceptance — 1099s", password)
+    const vendors = await yearOfPayments(kit, org, require("./expected/TAX-01.json").subcases["package-review-and-handoff"].inputs)
+    kit.sql(`update public.companies set w9_received_at=now() where id=${kit.q(vendors.roofing)}`)
+    await kit.as(org.owner, () => app("books/tax-register").storeCompanyTaxIdentity({ companyId: vendors.roofing, tin: "444556666" }))
+    const primary = kit.rows(`select public.books_primary_entity(${kit.q(org.orgId)}) id`)[0].id
+    await kit.as(org.owner, () => app("books/vendor-1099-packages").setPayerTaxIdentity({ legalEntityId: primary, tin: "112223334", address: ADDRESS("100 Builder Way") }))
+    return org
+  },
   // July's close died right after freezing the period, 31 minutes ago.
   async "abandoned-close"(kit, password) {
     const org = await greenfieldOrg(kit, { name: "Browser acceptance — abandoned close", periods: ["2026-07"], password })

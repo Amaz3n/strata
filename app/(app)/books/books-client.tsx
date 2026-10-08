@@ -19,6 +19,7 @@ import { GreenfieldLaunch } from "@/components/books/greenfield-launch";
 import { AccountantHandoff } from "@/components/books/accountant-handoff";
 import { TaxRegister } from "@/components/books/tax-register";
 import { TaxWorkpapers } from "@/components/books/tax-workpapers";
+import { Vendor1099Packages } from "@/components/books/vendor-1099-packages";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -640,6 +641,7 @@ export function BooksClient({
               </div>
             </div>
             <TaxRegister mode="filings" />
+            <Vendor1099Packages defaultYear={Number(workspace.asOf.slice(0, 4)) - 1} />
             <TaxWorkpapers canAdjust={workspace.capabilities.adjust} asOf={workspace.asOf} />
           </div>
         ) : null}

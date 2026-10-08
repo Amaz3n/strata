@@ -85,3 +85,33 @@ test("1099 totals exhaust pages, deduplicate direct/allocation payments, and do 
   assert.equal(legacy.blocked_for_filing, true)
   assert.match(legacy.blocking_reasons.join(" "), /dated payment evidence/)
 })
+
+const { buildPackageSnapshot, buildFilingFile, validateFilingFile, FILING_COLUMNS } = require("../lib/services/books/vendor-1099-filing-rules")
+
+const id = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`
+const address = { street1: "1 Main St", city: "Naples", state: "fl", postal_code: "34102" }
+const row = (n, name, cents, extra = {}) => ({ company_id: id(n), vendor_name: name, tax_id_last4: "4321", tax_entity_type: "llc", w9_on_file: true, tax_identity_vaulted: true,
+  tin_verification_status: "pending", total_paid_cents: cents, reversed_cents: 0, meets_threshold: cents >= 200000, blocked_for_filing: false, blocking_reasons: [], ...extra })
+const payer = { legalEntityId: id(99), name: "Cedar Ridge Builders, LLC", tinLast4: "3334", address: { ...address, street1: "100 Builder Way" } }
+
+test("a package files everyone at or over the threshold and is refused, with every reason, while anyone is blocked", () => {
+  const rows = [row(1, "Framing, Inc.", 300000), row(2, "Pat Rivera", 250000, { tax_entity_type: "individual" }), row(3, "Painter", 150000)]
+  const built = buildPackageSnapshot({ taxYear: 2026, thresholdCents: 200000, payer, rows, addresses: new Map([[id(1), address], [id(2), address]]) })
+  assert.deepEqual(built.snapshot.payees.map((payee) => [payee.name, payee.tin_type, payee.amount_cents, payee.address.state]), [["Framing, Inc.", "EIN", 300000, "FL"], ["Pat Rivera", "SSN", 250000, "FL"]])
+  const blocked = buildPackageSnapshot({ taxYear: 2026, thresholdCents: 200000, payer: { ...payer, tinLast4: null }, addresses: new Map([[id(1), address]]),
+    rows: [row(1, "Framing, Inc.", 300000, { blocking_reasons: ["No W-9 on file"] }), row(2, "Pat Rivera", 250000)] })
+  assert.deepEqual(blocked.problems, ["Cedar Ridge Builders, LLC: record the company's own taxpayer ID before filing", "Framing, Inc.: No W-9 on file", "Pat Rivera: add the vendor's street, city, state and ZIP"])
+})
+
+test("the filing file carries full IDs only when they still match the approved last four, and is checked against the approved totals", () => {
+  const { snapshot } = buildPackageSnapshot({ taxYear: 2026, thresholdCents: 200000, payer, rows: [row(1, "Framing, Inc.", 300001), row(2, "Pat Rivera", 250000, { tax_entity_type: "individual" })], addresses: new Map([[id(1), address], [id(2), address]]) })
+  const identities = { payer: "112223334", payees: { [id(1)]: "123454321", [id(2)]: "987654321" } }
+  const file = buildFilingFile(snapshot, identities)
+  assert.equal(file.split("\n")[0], FILING_COLUMNS.join(","))
+  assert.match(file, /^112223334,"Cedar Ridge Builders, LLC",100 Builder Way,Naples,FL,34102,123454321,EIN,"Framing, Inc\.",1 Main St,Naples,FL,34102,3000\.01,2026,/m)
+  assert.deepEqual(validateFilingFile(file, snapshot), { rows: 2, totalCents: 550001 })
+  assert.throws(() => buildFilingFile(snapshot, { ...identities, payees: { ...identities.payees, [id(2)]: "987650000" } }), /Pat Rivera's taxpayer ID changed after this package was approved/)
+  assert.throws(() => buildFilingFile(snapshot, { ...identities, payer: null }), /company's taxpayer ID changed/)
+  assert.throws(() => validateFilingFile(file.replace("3000.01", "3000.02"), snapshot), /total does not match/)
+  assert.throws(() => validateFilingFile(file.replace("123454321", "12345432"), snapshot), /nine digits/)
+})

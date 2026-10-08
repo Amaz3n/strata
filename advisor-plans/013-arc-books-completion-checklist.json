@@ -4925,8 +4925,8 @@
       "id": "B05.1",
       "workstream": "B05",
       "title": "Complete annual payment classification",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified locally (TAX-01 annual-classification; ENTITY-01 company 1099s): over 1,200 checks plus an ACH counted once though recorded as payment and allocation, checks dated Dec 31 2025 and Jan 2 2027 kept in their own years, a card payment excluded, an in-year refund reducing 2026 and a January 2027 refund of a December payment not; the year's threshold from tax_policy_versions (2025 $600, 2026 $2,000); a reportable vendor without W-9 or vaulted TIN blocked with the reason; payers separated by the company owning the cash line. Bounds: network exclusion is by recorded payment method; joint checks are not modeled; a two-company package was not exercised (the per-company report was, in ENTITY-01).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "independent reference totals match across annual/period boundaries and over 1,000 payments",
@@ -4939,7 +4939,40 @@
       "scenario_ids": [
         "TAX-01"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "verified_at": "2026-10-08T02:54:08.517966+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261008020000_books_1099_packages.sql",
+            "lib/services/books/vendor-1099-packages.ts",
+            "lib/services/books/vendor-1099-filing-rules.ts",
+            "app/api/books/1099-packages/[packageId]/filing/route.ts",
+            "app/(app)/books/actions.ts",
+            "components/books/vendor-1099-packages.tsx",
+            "app/(app)/books/books-client.tsx",
+            "scripts/books-acceptance/scenarios/tax-01.cjs",
+            "scripts/books-acceptance/journeys/vendor-1099.spec.ts",
+            "tests/vendor-1099-report.test.js",
+            "docs/books-1099.md"
+          ],
+          "test_scenario_ids": [
+            "TAX-01"
+          ],
+          "commands": [
+            "scenario-runner TAX-01 (2/2) and full regression",
+            "playwright journeys (all; vendor-1099 desktop and mobile-dark)",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "Independent totals: Cedar Framing 12,620.00 (12,000 + 200 once + 400 - 50 + 70), Rivera 2,500.00, Summit Roofing 3,000.00 (blocked), Gulf Painting 1,500.00 (under); report total 19,620.00; 2025 reads 500.00 at a 600.00 threshold.",
+            "Regression green (15 scenarios incl. TAX-01 2/2 and CASH-01); browser journeys all pass (vendor-1099 desktop and phone/dark); test:financials 2,524 pass; tsc clean; lint only the other session's existing error.",
+            "Migration 20261008020000_books_1099_packages applied to the acceptance stack only; production waits for approval."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-07-vendor-1099"
+        }
+      ],
       "remaining_criteria": [
         "independent reference totals match across annual/period boundaries and over 1,000 payments",
         "duplicate links count once",
@@ -4957,7 +4990,7 @@
       "workstream": "B05",
       "title": "Filing-ready review and partner handoff",
       "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status_basis": "Verified locally (TAX-01 package-review-and-handoff; vendor-1099 browser journey): a package per paying company and year freezes payees at or over the threshold (last four only); preparing is refused listing every blocked payee and a missing company TIN or address; the preparer cannot approve; a payment after preparation refuses approval until withdrawn and prepared again; a Books member without books.tax cannot get the file and sees no full TIN; the approved file (full TINs from Vault, each matched to the frozen last four, checked against the import format and approved totals, audited) downloads no-store, while the package stays approved (not filed) until a submission is recorded; submitted, rejected, resubmitted, accepted; a correction supersedes the accepted package, which keeps its approval, submission and outcome. Remaining: validating the file in a chosen filing partner's sandbox or import; including books_1099_packages and the payer TIN reference in the Books archive (B06).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "package totals reconcile to reviewed report and payment evidence",
@@ -4970,7 +5003,41 @@
       "scenario_ids": [
         "TAX-01"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "verified_at": "2026-10-08T02:54:08.517966+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261008020000_books_1099_packages.sql",
+            "lib/services/books/vendor-1099-packages.ts",
+            "lib/services/books/vendor-1099-filing-rules.ts",
+            "app/api/books/1099-packages/[packageId]/filing/route.ts",
+            "app/(app)/books/actions.ts",
+            "components/books/vendor-1099-packages.tsx",
+            "app/(app)/books/books-client.tsx",
+            "scripts/books-acceptance/scenarios/tax-01.cjs",
+            "scripts/books-acceptance/journeys/vendor-1099.spec.ts",
+            "tests/vendor-1099-report.test.js",
+            "docs/books-1099.md"
+          ],
+          "test_scenario_ids": [
+            "TAX-01"
+          ],
+          "commands": [
+            "scenario-runner TAX-01 (2/2) and full regression",
+            "playwright journeys (all; vendor-1099 desktop and mobile-dark)",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "New: books_1099_packages (service-only, guard trigger for every transition, immutable snapshot, one draft and one live per company/year), payer TIN in Vault on books_legal_entities, filing identities read only by the service for approved packages.",
+            "Found while testing in the browser: the primary company row is created on first use, so the seed must call books_primary_entity rather than read the table.",
+            "Regression green (15 scenarios incl. TAX-01 2/2 and CASH-01); browser journeys all pass (vendor-1099 desktop and phone/dark); test:financials 2,524 pass; tsc clean; lint only the other session's existing error.",
+            "Migration 20261008020000_books_1099_packages applied to the acceptance stack only; production waits for approval."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-07-vendor-1099"
+        }
+      ],
       "remaining_criteria": [
         "package totals reconcile to reviewed report and payment evidence",
         "ordinary users cannot retrieve full TINs",
@@ -17157,7 +17224,12 @@
           "20261007210000_books_development_allocation_review",
           "20261007220000_books_home_closing_reversal",
           "20261007230000_books_cost_allocations",
-          "20261007235000_books_inventory_impairment"
+          "20261007235000_books_inventory_impairment",
+          "20261007235500_books_retire_native_entity_ledger",
+          "20261007235800_books_legal_entities",
+          "20261007235900_books_intercompany_lot_sales",
+          "20261008001000_books_company_opening_balances",
+          "20261008020000_books_1099_packages"
         ],
         "older_files_to_classify": [
           "20260801020000_invoice_lines_budget_line_linkage",

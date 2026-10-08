@@ -1505,6 +1505,29 @@ export async function withdrawTaxWorkpaperAction(
   );
 }
 
+const vendor1099 = () => import("@/lib/services/books/vendor-1099-packages")
+export async function loadVendor1099PackagesAction(taxYear: number) {
+  return read(async () => (await vendor1099()).getVendor1099Packages(taxYear))
+}
+export async function setPayerTaxIdentityAction(input: Parameters<Awaited<ReturnType<typeof vendor1099>>["setPayerTaxIdentity"]>[0]) {
+  return run(async () => (await vendor1099()).setPayerTaxIdentity(input))
+}
+export async function prepare1099PackageAction(input: Parameters<Awaited<ReturnType<typeof vendor1099>>["prepare1099Package"]>[0]) {
+  return run(async () => (await vendor1099()).prepare1099Package(input))
+}
+export async function approve1099PackageAction(input: Parameters<Awaited<ReturnType<typeof vendor1099>>["approve1099Package"]>[0]) {
+  return run(async () => (await vendor1099()).approve1099Package(input))
+}
+export async function withdraw1099PackageAction(input: Parameters<Awaited<ReturnType<typeof vendor1099>>["withdraw1099Package"]>[0]) {
+  return run(async () => (await vendor1099()).withdraw1099Package(input))
+}
+export async function record1099SubmissionAction(input: Parameters<Awaited<ReturnType<typeof vendor1099>>["record1099Submission"]>[0]) {
+  return run(async () => (await vendor1099()).record1099Submission(input))
+}
+export async function record1099OutcomeAction(input: Parameters<Awaited<ReturnType<typeof vendor1099>>["record1099Outcome"]>[0]) {
+  return run(async () => (await vendor1099()).record1099Outcome(input))
+}
+
 export async function resolveJournalRecoveryAction(
   input: Parameters<
     typeof import("@/lib/services/books/bookkeeping").resolveJournalRecovery

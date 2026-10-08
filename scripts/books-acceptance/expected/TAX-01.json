@@ -1,0 +1,130 @@
+{
+  "scenario": "TAX-01",
+  "reviewedFrom": "1099-NEC reporting as configured in tax_policy_versions (2026 threshold $2,000 per the IRS page cited there; 2025 $600); card payments are reported by the card network (1099-K) and excluded; refunds reduce the year they occur in. Pending licensed-CPA review (B16.3). Amounts are integer cents.",
+  "subcases": {
+    "annual-classification": {
+      "inputs": {
+        "checks": 1200,
+        "checkCents": 1000,
+        "boundaryCents": 50000,
+        "cardCents": 30000,
+        "achCents": 20000,
+        "refundedPaymentCents": 40000,
+        "refundCents": 5000,
+        "lateRefundedPaymentCents": 7000,
+        "lateRefundCents": 7000,
+        "riveraCents": 250000,
+        "paintingCents": 150000,
+        "roofingCents": 300000,
+        "latePaymentCents": 10000,
+        "missedPaintingCents": 60000
+      },
+      "derivation": "Cedar Framing: 1,200 checks of 10.00 (12,000.00), an ACH of 200.00 recorded as a payment and an allocation (counted once), a 400.00 payment with a 50.00 refund in July, and a 70.00 December payment refunded in January 2027 (stays in 2026): 12,620.00. The 500.00 checks dated December 31, 2025 and January 2, 2027 are other years; the 300.00 card payment is reported by the card network. Rivera 2,500.00 and Summit Roofing 3,000.00 are over the 2,000.00 threshold; Roofing has no W-9 or secured TIN, so it blocks filing. Gulf Painting 1,500.00 is under. 2025 reads its own 600.00 threshold and the 500.00 December check.",
+      "expected": {
+        "threshold": 200000,
+        "vendors": {
+          "Cedar Framing LLC": {
+            "paid": 1262000,
+            "reportable": true,
+            "blocked": []
+          },
+          "Summit Roofing LLC": {
+            "paid": 300000,
+            "reportable": true,
+            "blocked": [
+              "No W-9 on file",
+              "Complete taxpayer ID is not secured in Vault"
+            ]
+          },
+          "Pat Rivera": {
+            "paid": 250000,
+            "reportable": true,
+            "blocked": []
+          },
+          "Gulf Painting LLC": {
+            "paid": 150000,
+            "reportable": false,
+            "blocked": []
+          }
+        },
+        "total": 1962000,
+        "priorYear": {
+          "threshold": 60000,
+          "framing": 50000
+        },
+        "readerSeesLastFourOnly": true
+      }
+    },
+    "package-review-and-handoff": {
+      "inputs": {
+        "checks": 1200,
+        "checkCents": 1000,
+        "boundaryCents": 50000,
+        "cardCents": 30000,
+        "achCents": 20000,
+        "refundedPaymentCents": 40000,
+        "refundCents": 5000,
+        "lateRefundedPaymentCents": 7000,
+        "lateRefundCents": 7000,
+        "riveraCents": 250000,
+        "paintingCents": 150000,
+        "roofingCents": 300000,
+        "latePaymentCents": 10000,
+        "missedPaintingCents": 60000,
+        "blockingReasons": [
+          "Summit Roofing LLC: No W-9 on file",
+          "record the company's own taxpayer ID"
+        ]
+      },
+      "derivation": "Preparing is refused while Summit Roofing lacks a W-9 and the paying company has no taxpayer ID. Once both are recorded, the package freezes three payees (12,620.00 + 3,000.00 + 2,500.00 = 18,120.00). The preparer cannot approve it; a 100.00 December payment to Rivera makes approval refuse until the package is withdrawn and prepared again (18,220.00). A Books member without tax filing rights cannot get the file and sees no full taxpayer ID. With the partner unavailable the approved file still downloads and the package stays approved, not filed. It is submitted, rejected, resubmitted and accepted. A missed 600.00 December check takes Gulf Painting to 2,100.00, so a corrected package of four payees (20,320.00) replaces the accepted one, which keeps its submission and outcome.",
+      "expected": {
+        "blocked": [
+          true,
+          true
+        ],
+        "selfApprovalRefused": true,
+        "staleRefused": true,
+        "readerFileRefused": true,
+        "readerSeesNoFullTin": true,
+        "file": {
+          "header": "Payer TIN,Payer Name,Payer Address,Payer City,Payer State,Payer ZIP,Recipient TIN,Recipient TIN Type,Recipient Name,Recipient Address,Recipient City,Recipient State,Recipient ZIP,Box 1 Nonemployee Compensation,Tax Year,Arc Payee ID",
+          "rows": 3,
+          "rivera": [
+            "987654324",
+            "SSN",
+            "2600.00"
+          ],
+          "payerTin": "112223334"
+        },
+        "statusBeforeHandoff": "approved",
+        "history": [
+          {
+            "status": "withdrawn",
+            "reference": null,
+            "outcome": null,
+            "reviewed": false,
+            "payees": 3,
+            "total": 1812000
+          },
+          {
+            "status": "superseded",
+            "reference": "SANDBOX-002",
+            "outcome": "Accepted by the partner",
+            "reviewed": true,
+            "payees": 3,
+            "total": 1822000
+          },
+          {
+            "status": "approved",
+            "reference": null,
+            "outcome": null,
+            "reviewed": true,
+            "payees": 4,
+            "total": 2032000
+          }
+        ],
+        "correctedFileRows": 4
+      }
+    }
+  }
+}
