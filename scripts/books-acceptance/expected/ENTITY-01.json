@@ -135,9 +135,9 @@
           }
         },
         "savedAtClose": {
-          "land": 6,
           "builder": 6,
-          "consolidated": 8
+          "consolidated": 8,
+          "land": 6
         },
         "landReadsAsClosed": true,
         "landNetIncome": 1200000,
@@ -146,6 +146,66 @@
           "payable": 800000,
           "readAsClosed": true
         }
+      }
+    },
+    "intercompany-lot-sale": {
+      "derivation": "The land company (owner of land account 1120 and checking 1005) buys lot 9 for $60,000 and sells it to the builder's home for $75,000: land company revenue $75,000, cost $60,000, due from the builder $75,000; the builder's home takes the lot in at $75,000 and owes the land company. A sale without a price is refused. The builder adds $200,000 of construction and completes the home ($275,000 in 1170). Consolidated before the outside sale: the land company's sale and the due-from/due-to are eliminated and the home stands at $260,000 — the lot at its $60,000 cost. The home then sells for $300,000: land company profit $15,000, builder profit $300,000 − $275,000 = $25,000, group profit $40,000 = $300,000 − $260,000, exactly the two companies' profits. The reconciliation pair ties at $75,000 and the lot sale's $15,000 profit is realized. The close's intercompany control passes: every company's due-from agrees with its affiliate's due-to.",
+      "inputs": {
+        "landCostCents": 6000000,
+        "lotPriceCents": 7500000,
+        "constructionCents": 20000000,
+        "outsidePriceCents": 30000000
+      },
+      "expected": {
+        "priceRequired": "refused: a sale price is required",
+        "beforeSale": {
+          "land": {
+            "balanced": true,
+            "accounts": {
+              "1005": -6000000,
+              "1180": 7500000,
+              "4000": 7500000,
+              "5000": 6000000
+            }
+          },
+          "builder": {
+            "balanced": true,
+            "accounts": {
+              "1170": 27500000,
+              "2000": 20000000,
+              "2180": 7500000
+            }
+          },
+          "consolidated": {
+            "balanced": true,
+            "accounts": {
+              "1005": -6000000,
+              "1170": 26000000,
+              "2000": 20000000
+            }
+          }
+        },
+        "netIncome": {
+          "land": 1500000,
+          "builder": 2500000,
+          "consolidated": 4000000
+        },
+        "groupEqualsCompanies": true,
+        "reconciliation": {
+          "pairs": [
+            {
+              "ties": true,
+              "owed": 7500000
+            }
+          ],
+          "sales": [
+            {
+              "profit": 1500000,
+              "realized": true
+            }
+          ]
+        },
+        "intercompanyControl": "passed"
       }
     }
   }

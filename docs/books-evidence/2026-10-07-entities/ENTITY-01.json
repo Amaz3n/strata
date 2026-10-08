@@ -7,9 +7,9 @@
       "name": "payment-across-companies",
       "status": "PASSED",
       "identities": {
-        "orgId": "19e4e46b-6989-424e-a567-3417f97c9919",
-        "land": "840a6649-7cac-4371-912c-d2d50dbdaeda",
-        "builder": "081b5226-364a-46a7-9ae8-65abcc2254ae"
+        "orgId": "ba03346a-723c-412c-8a1b-5cc53ed529eb",
+        "land": "90cdddf6-b126-4f47-a8c2-7cf249c54d10",
+        "builder": "854c3b82-94bf-4694-989a-525af3706613"
       },
       "checks": [
         {
@@ -123,13 +123,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:20:27.875Z"
+      "startedAt": "2026-10-08T00:14:12.676Z"
     },
     {
       "name": "ownership-fixed-and-reversal",
       "status": "PASSED",
       "identities": {
-        "orgId": "3a180967-fdf3-4150-a999-913c1628b596"
+        "orgId": "11e66ed3-6521-4c84-8c17-7cd67e123f67"
       },
       "checks": [
         {
@@ -179,13 +179,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:20:31.300Z"
+      "startedAt": "2026-10-08T00:14:16.044Z"
     },
     {
       "name": "single-company-unchanged",
       "status": "PASSED",
       "identities": {
-        "orgId": "b9003d7e-6b4b-44a2-accc-2f29a82ce172"
+        "orgId": "38a6874b-bf99-4b57-a19f-dfb9ea50d52f"
       },
       "checks": [
         {
@@ -205,14 +205,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:20:32.233Z"
+      "startedAt": "2026-10-08T00:14:16.973Z"
     },
     {
       "name": "company-subledgers-and-close",
       "status": "PASSED",
       "identities": {
-        "orgId": "04e14cb6-ca98-4d6a-8fea-32d7bfc10479",
-        "landJob": "a38e52ec-4775-4cb0-839e-d470e87ecede"
+        "orgId": "b454bf39-979b-40d1-9c39-86e3b4d10dc1",
+        "landJob": "52ebced1-3770-4086-9f05-fe368aaf35a3"
       },
       "checks": [
         {
@@ -234,9 +234,9 @@
               }
             },
             "savedAtClose": {
-              "land": 6,
               "builder": 6,
-              "consolidated": 8
+              "consolidated": 8,
+              "land": 6
             },
             "landReadsAsClosed": true,
             "landNetIncome": 1200000,
@@ -262,9 +262,9 @@
               }
             },
             "savedAtClose": {
-              "land": 6,
               "builder": 6,
-              "consolidated": 8
+              "consolidated": 8,
+              "land": 6
             },
             "landReadsAsClosed": true,
             "landNetIncome": 1200000,
@@ -276,9 +276,125 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:20:32.682Z"
+      "startedAt": "2026-10-08T00:14:17.424Z"
+    },
+    {
+      "name": "intercompany-lot-sale",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "125d7043-9b6c-42ff-8b10-be597cf53718"
+      },
+      "checks": [
+        {
+          "label": "each company books its side of the lot sale, and the group earns only what was earned outside",
+          "pass": true,
+          "expected": {
+            "priceRequired": "refused: a sale price is required",
+            "beforeSale": {
+              "land": {
+                "balanced": true,
+                "accounts": {
+                  "1005": -6000000,
+                  "1180": 7500000,
+                  "4000": 7500000,
+                  "5000": 6000000
+                }
+              },
+              "builder": {
+                "balanced": true,
+                "accounts": {
+                  "1170": 27500000,
+                  "2000": 20000000,
+                  "2180": 7500000
+                }
+              },
+              "consolidated": {
+                "balanced": true,
+                "accounts": {
+                  "1005": -6000000,
+                  "1170": 26000000,
+                  "2000": 20000000
+                }
+              }
+            },
+            "netIncome": {
+              "land": 1500000,
+              "builder": 2500000,
+              "consolidated": 4000000
+            },
+            "groupEqualsCompanies": true,
+            "reconciliation": {
+              "pairs": [
+                {
+                  "ties": true,
+                  "owed": 7500000
+                }
+              ],
+              "sales": [
+                {
+                  "profit": 1500000,
+                  "realized": true
+                }
+              ]
+            },
+            "intercompanyControl": "passed"
+          },
+          "observed": {
+            "priceRequired": "refused: a sale price is required",
+            "beforeSale": {
+              "land": {
+                "balanced": true,
+                "accounts": {
+                  "1005": -6000000,
+                  "1180": 7500000,
+                  "4000": 7500000,
+                  "5000": 6000000
+                }
+              },
+              "builder": {
+                "balanced": true,
+                "accounts": {
+                  "1170": 27500000,
+                  "2000": 20000000,
+                  "2180": 7500000
+                }
+              },
+              "consolidated": {
+                "balanced": true,
+                "accounts": {
+                  "1005": -6000000,
+                  "1170": 26000000,
+                  "2000": 20000000
+                }
+              }
+            },
+            "netIncome": {
+              "land": 1500000,
+              "builder": 2500000,
+              "consolidated": 4000000
+            },
+            "groupEqualsCompanies": true,
+            "reconciliation": {
+              "pairs": [
+                {
+                  "ties": true,
+                  "owed": 7500000
+                }
+              ],
+              "sales": [
+                {
+                  "profit": 1500000,
+                  "realized": true
+                }
+              ]
+            },
+            "intercompanyControl": "passed"
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T00:14:18.424Z"
     }
   ],
   "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
-  "finishedAt": "2026-10-07T20:20:33.652Z"
+  "finishedAt": "2026-10-08T00:14:19.734Z"
 }

@@ -39,7 +39,7 @@ async function paidBill(kit, org, input) {
 // Trial balance rows (code → balance) and the proof, for one company or consolidated.
 async function trialBalance(kit, org, entityId, asOf = "2026-07-31") {
   const statements = app("books/statements")
-  const report = await kit.service(async () => statements.buildTrialBalance(org.orgId, asOf, statements.forLegalEntity(await statements.loadLedgerBalances(org.orgId, asOf), entityId)))
+  const report = await kit.service(async () => statements.buildTrialBalance(org.orgId, asOf, await statements.ledgerForCompany(org.orgId, await statements.loadLedgerBalances(org.orgId, asOf), entityId)))
   return {
     balanced: report.totalDebitCents === report.totalCreditCents,
     accounts: Object.fromEntries(report.rows.filter((row) => row.balanceCents !== 0).map((row) => [row.code, row.balanceCents]).sort(([a], [b]) => a.localeCompare(b))),
@@ -158,7 +158,7 @@ commit;`)
   await kit.as(org.owner, () => closeBankReconciliation(reconciliation))
   await kit.as(org.owner, () => app("books/period-close").closeAccountingPeriod(org.periods["2026-07"].periodId))
   const saved = Object.fromEntries(kit.rows(`select case when legal_entity_id=${q(org.land)} then 'land' when legal_entity_id is null then 'consolidated' else 'builder' end company, count(*)::int n
-    from public.financial_statement_snapshots where period_id=${q(org.periods["2026-07"].periodId)} group by 1`).map((row) => [row.company, Number(row.n)]))
+    from public.financial_statement_snapshots where period_id=${q(org.periods["2026-07"].periodId)} group by 1 order by 1`).map((row) => [row.company, Number(row.n)]))
   const closedLand = await kit.as(org.owner, () => app("books/statement-detail").getStatementsForPeriod({ startDate: "2026-07-01", endDate: "2026-07-31", comparison: "none", legalEntityId: org.land }))
   check.equal("each company's aging ties to its own ledger, and its statements are kept as closed", expected.expected, {
     before,
@@ -170,12 +170,52 @@ commit;`)
   return { orgId: org.orgId, landJob }
 }
 
+// A land company sells a lot to the building company's home. Each company books
+// its side; consolidated, the lot stays at the land company's cost and the land
+// company's profit is held back until the home sells to an outside buyer, so the
+// group earns exactly what the two companies earned together.
+async function intercompanyLotSale(kit, expected, check) {
+  const input = expected.inputs
+  const home = require("./home-01.cjs").helpers
+  const org = await home.builder(kit, "ENTITY-01 intercompany lot sale", [{ name: "Lot 9 — Aspen plan", priceCents: input.outsidePriceCents }])
+  const lot = org.homes[0]
+  const entities = app("books/legal-entities")
+  org.land = (await kit.as(org.owner, () => entities.createLegalEntity({ name: "Cedar Ridge Land Co", legalName: null }))).id
+  org.builderEntity = kit.rows(`select id from public.books_legal_entities where org_id=${kit.q(org.orgId)} and is_primary`)[0].id
+  await kit.as(org.owner, () => app("books/chart-management").createGlAccount(LAND_CHECKING))
+  for (const code of ["1005", "1120"]) await kit.as(org.owner, () => entities.setLegalEntityOwner({ kind: "account", id: glId(kit, org, code), entityId: org.land }))
+  const inventory = app("books/inventory")
+  await kit.as(org.owner, () => inventory.enableProjectInventory({ projectId: lot.projectId, effectiveOn: "2026-06-01", evidenceUrl: "https://evidence.acceptance.example.test/entity-01/ownership" }))
+  await kit.as(org.owner, () => inventory.acquireLandInventory({ date: "2026-06-02", allocations: [{ lotId: lot.lotId, amountCents: input.landCostCents }], cashAccountId: glId(kit, org, "1005"), cashCents: input.landCostCents, debtInstrumentId: null, debtCents: 0, reference: "Lot 9 settlement", evidenceUrl: "https://evidence.acceptance.example.test/entity-01/land" }))
+  kit.sql(`update public.lots set project_id=${kit.q(lot.projectId)} where id=${kit.q(lot.lotId)}`)
+  const sameCompany = await refusal(() => kit.as(org.owner, () => entities.sellLotToAffiliate({ projectId: lot.projectId, date: "2026-06-03", priceCents: 0, evidenceUrl: "https://evidence.acceptance.example.test/entity-01/sale" })))
+  await kit.as(org.owner, () => entities.sellLotToAffiliate({ projectId: lot.projectId, date: "2026-06-03", priceCents: input.lotPriceCents, evidenceUrl: "https://evidence.acceptance.example.test/entity-01/sale" }))
+  await home.bill(kit, org, lot.projectId, "2026-06-10", input.constructionCents)
+  await kit.as(org.owner, () => inventory.completeProjectInventory({ projectId: lot.projectId, date: "2026-07-01", evidenceUrl: "https://evidence.acceptance.example.test/entity-01/completion" }))
+  const beforeSale = { land: await trialBalance(kit, org, org.land, "2026-07-31"), builder: await trialBalance(kit, org, org.builderEntity, "2026-07-31"), consolidated: await trialBalance(kit, org, null, "2026-07-31") }
+  await home.settle(kit, org, lot, "2026-08-10")
+  const statements = app("books/statements")
+  const profit = async (entityId) => (await kit.service(async () => statements.buildProfitAndLoss(org.orgId, "2026-06-01", "2026-08-31", await statements.ledgerForCompany(org.orgId, await statements.loadPostedLedger(org.orgId, "2026-08-31"), entityId)))).netIncomeCents
+  const reconciliation = await kit.as(org.owner, () => entities.getIntercompanyReconciliation("2026-08-31"))
+  const net = { land: await profit(org.land), builder: await profit(org.builderEntity), consolidated: await profit(null) }
+  check.equal("each company books its side of the lot sale, and the group earns only what was earned outside", expected.expected, {
+    priceRequired: /price/.test(sameCompany) ? "refused: a sale price is required" : sameCompany,
+    beforeSale,
+    netIncome: net,
+    groupEqualsCompanies: net.consolidated === net.land + net.builder,
+    reconciliation: { pairs: reconciliation.pairs.map((pair) => ({ ties: pair.ties, owed: Math.abs(pair.aOwedByB) })), sales: reconciliation.sales.map((sale) => ({ profit: sale.profitCents, realized: sale.realized })) },
+    intercompanyControl: (await kit.service(() => app("books/verifier").runLedgerTieOuts(org.orgId, "2026-08-31"))).find((row) => row.code === "intercompany_control")?.status,
+  })
+  return { orgId: org.orgId }
+}
+
 module.exports = {
   subcases: {
     "payment-across-companies": paymentAcrossCompanies,
     "ownership-fixed-and-reversal": ownershipFixedAndReversal,
     "single-company-unchanged": singleCompanyUnchanged,
     "company-subledgers-and-close": companySubledgersAndClose,
+    "intercompany-lot-sale": intercompanyLotSale,
   },
 }
 module.exports.helpers = { twoCompanies, paidBill }

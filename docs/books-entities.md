@@ -5,16 +5,14 @@ ledger**, not a second ledger. Every journal line names the legal entity that ow
 it; trial balance, statements and the close run per entity; consolidation adds
 entities together and eliminates what they owe and sold each other.
 
-**Status (B14, in progress).** Built: the owning company on every journal line,
-resolution in the one posting function, intercompany legs that settle what two
-companies already owe each other before adding new balances, ownership fixed once
-posted, per-company trial balance / P&L / balance sheet (Reports → Company),
-consolidated statements that eliminate due-from/due-to, Books → Companies, and
-companies in the export (schema 33; older archives restore as one primary company).
-AR/AP aging by company, and a close that saves each company's statements and
-agings beside the consolidated ones. Not yet: the intercompany reconciliation,
-eliminating intercompany sales (e.g. a land company selling a lot to the building
-company), and per-company opening balances.
+**Status (B14).** Built and verified locally: the owning company on every journal
+line, resolved in the one posting function; intercompany legs that settle what two
+companies already owe each other first; ownership fixed once posted; per-company
+trial balance, P&L, balance sheet and AR/AP aging (Reports → Company); consolidated
+statements with eliminations; intercompany lot sales; the intercompany
+reconciliation and its close control; a close that saves each company's statements;
+Books → Companies; companies in the export (schema 33). Not built: independent
+per-company close, per-company opening balances, minority interests.
 
 A separate per-entity ledger (`books_native_*`, per-entity charts and calendars)
 was built in October 2026 but never shipped. It is retired: every transaction type
@@ -64,11 +62,32 @@ unwinds the balance rather than adding the opposite one), so two companies never
 carry a receivable and a payable with each other at once; A's due-from-B always
 equals B's due-to-A.
 
+## Intercompany lot sales
+
+A land company sells a lot to an affiliate's home from the home's inventory tab
+(`sell_books_lot_to_affiliate`). The seller is the company holding the lot's land
+basis; it books revenue at the price and relieves the lot's cost (both lines tagged
+`intercompany_eliminate`). The home takes the lot in at the price, and posting adds
+the due-from / due-to legs. The sale replaces the ordinary land-to-start transfer
+(same posting key) and is kept in `books_intercompany_sales`.
+
 ## Consolidation
 
-Consolidated statements sum the entities and eliminate, from lines tagged as
-intercompany: due-from against due-to, and intercompany revenue against the
-matching cost. Eliminations are computed, never posted to an entity's books.
+Consolidated statements sum the companies and remove the due-from / due-to legs and
+the lines tagged `intercompany_eliminate`. From the sales register they add computed
+eliminations: the seller's profit stays out of the home's inventory (moving with it
+from construction to completed homes) until the home sells to an outside buyer,
+when it comes out of cost of sales. So the group earns exactly what the companies
+earned together, and the lot is carried at the land company's cost. Eliminations
+are never posted to a company's books. Consolidation assumes wholly owned
+affiliates; minority interests are out of scope.
+
+## Reconciliation
+
+Books → Companies shows what each pair of companies owes the other, read from both
+sides, and the lots sold between them. The close's blocking intercompany control
+requires every company's due-from to equal its affiliate's due-to; posting writes
+both legs in one atomic entry, so a one-sided posting cannot occur.
 
 ## Close
 

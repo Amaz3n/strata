@@ -32,7 +32,7 @@ import {
   buildGeneralLedger,
   buildProfitAndLoss,
   buildTrialBalance,
-  forLegalEntity,
+  ledgerForCompany,
   loadLedgerBalances,
   loadPostedLedger,
 } from "@/lib/services/books/statements"
@@ -118,7 +118,7 @@ const booksTrialBalance: ReportDefinition = {
   run: async (ctx) => {
     const asOf = ctx.params.asOf
     const orgId = await booksOrgId()
-    const report = await buildTrialBalance(orgId, asOf, forLegalEntity(await loadLedgerBalances(orgId, asOf), ctx.params.company || null))
+    const report = await buildTrialBalance(orgId, asOf, await ledgerForCompany(orgId, await loadLedgerBalances(orgId, asOf), ctx.params.company || null))
     return {
       subtitle: `As of ${asOf}`,
       stats: [
@@ -166,7 +166,7 @@ const booksProfitAndLoss: ReportDefinition = {
     const start = range.from ?? "1900-01-01"
     const end = range.to ?? new Date().toISOString().slice(0, 10)
     const orgId = await booksOrgId()
-    const report = await buildProfitAndLoss(orgId, start, end, forLegalEntity(await loadPostedLedger(orgId, end), ctx.params.company || null))
+    const report = await buildProfitAndLoss(orgId, start, end, await ledgerForCompany(orgId, await loadPostedLedger(orgId, end), ctx.params.company || null))
     return {
       subtitle: `${start} through ${end} · accrual`,
       stats: [
@@ -300,7 +300,7 @@ const booksBalanceSheet: ReportDefinition = {
   run: async (ctx) => {
     const asOf = ctx.params.asOf
     const orgId = await booksOrgId()
-    const report = await buildBalanceSheet(orgId, asOf, forLegalEntity(await loadLedgerBalances(orgId, asOf), ctx.params.company || null))
+    const report = await buildBalanceSheet(orgId, asOf, await ledgerForCompany(orgId, await loadLedgerBalances(orgId, asOf), ctx.params.company || null))
     return {
       subtitle: `As of ${asOf}`,
       stats: [

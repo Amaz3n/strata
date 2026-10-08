@@ -129,16 +129,75 @@ export async function loadLedgerBalances(orgId: string, asOf: string): Promise<L
   }
 }
 
+/** One company's books. Each balances on its own because posting adds the due-from / due-to legs. */
+export function forLegalEntity(ledger: LoadedLedger, legalEntityId: string): LoadedLedger {
+  return { ...ledger, lines: ledger.lines.filter((line) => line.legal_entity_id === legalEntityId) }
+}
+
 /**
- * One company's books, or all of them consolidated (null). Each company balances
- * on its own because posting adds the due-from / due-to pair between companies;
- * consolidated, those pairs are what the companies owe each other and are
- * eliminated. They always post as a balanced pair in one entry, so dropping both
- * keeps the consolidated ledger in balance.
+ * What consolidation removes beyond the tagged lines, computed from the
+ * intercompany sales register and never posted: the profit a seller made on a
+ * lot sold to an affiliate's home stays out of that home's inventory (moving with
+ * it from construction to completed homes) until the home sells to an outside
+ * buyer, when it comes out of cost of sales instead.
  */
-export function forLegalEntity(ledger: LoadedLedger, legalEntityId: string | null): LoadedLedger {
-  if (legalEntityId) return { ...ledger, lines: ledger.lines.filter((line) => line.legal_entity_id === legalEntityId) }
-  return { ...ledger, lines: ledger.lines.filter((line) => line.dimensions?.intercompany !== true) }
+export async function loadConsolidationEliminations(orgId: string): Promise<Pick<LoadedLedger, "entries" | "lines">> {
+  const service = createServiceSupabaseClient()
+  const [sales, accounts] = await Promise.all([
+    collectBooksRows((from, to) => service.from("books_intercompany_sales").select("id, buyer_project_id, sale_date, price_cents, cost_cents").eq("org_id", orgId).order("id").range(from, to)),
+    service.from("gl_accounts").select("id, code").eq("org_id", orgId).in("code", ["1160", "1170", "5000"]),
+  ])
+  if (accounts.error) throw new Error(`Failed to load elimination accounts: ${accounts.error.message}`)
+  if (!sales.length) return { entries: [], lines: [] }
+  const account = (code: string) => {
+    const id = accounts.data?.find((row) => row.code === code)?.id
+    if (!id) throw new Error(`Account ${code} is missing for consolidation`)
+    return String(id)
+  }
+  const { data: settings, error } = await service.from("project_financial_settings").select("project_id, books_inventory_completed_on, books_inventory_sold_on")
+    .eq("org_id", orgId).in("project_id", [...new Set(sales.map((sale) => String(sale.buyer_project_id)))])
+  if (error) throw new Error(`Failed to load home stages for consolidation: ${error.message}`)
+  const stage = new Map((settings ?? []).map((row) => [String(row.project_id), row]))
+  const entries: LoadedLedger["entries"] = [], lines: LoadedLedger["lines"] = []
+  const post = (date: string, projectId: string, debitCode: string | null, creditCode: string, cents: number) => {
+    const id = randomUUID()
+    entries.push({ id, entry_date: date, memo: "Eliminate intercompany profit", entry_kind: "adjusting", source_type: "consolidation_elimination", reversal_of_entry_id: null })
+    const side = (code: string, debit: boolean) => ({ id: randomUUID(), entry_id: id, account_id: account(code), project_id: projectId, company_id: null, description: null,
+      debit_cents: debit === cents > 0 ? Math.abs(cents) : 0, credit_cents: debit === cents > 0 ? 0 : Math.abs(cents), dimensions: { intercompany_elimination: true } })
+    if (debitCode) lines.push(side(debitCode, true))
+    lines.push(side(creditCode, false))
+  }
+  for (const sale of sales) {
+    const profit = Number(sale.price_cents) - Number(sale.cost_cents)
+    if (profit === 0) continue
+    const projectId = String(sale.buyer_project_id), home = stage.get(projectId)
+    const completedOn = home?.books_inventory_completed_on ? String(home.books_inventory_completed_on) : null
+    const soldOn = home?.books_inventory_sold_on ? String(home.books_inventory_sold_on) : null
+    // Balanced by the seller's revenue, cost and the due-from / due-to legs it replaces.
+    post(String(sale.sale_date), projectId, null, "1160", profit)
+    if (completedOn) post(completedOn, projectId, "1160", "1170", profit)
+    if (soldOn) post(soldOn, projectId, completedOn ? "1170" : "1160", "5000", profit)
+  }
+  return { entries, lines }
+}
+
+/**
+ * All companies consolidated: what they owe each other (the due-from / due-to
+ * legs) and what one sold another (tagged intercompany_eliminate) come out, and
+ * the computed eliminations go in. The legs always post as a balanced pair, and
+ * a sale's tagged lines with its legs balance its elimination.
+ */
+export function consolidated(ledger: LoadedLedger, eliminations: Pick<LoadedLedger, "entries" | "lines">): LoadedLedger {
+  return {
+    accounts: ledger.accounts,
+    entries: [...ledger.entries, ...eliminations.entries],
+    lines: [...ledger.lines.filter((line) => line.dimensions?.intercompany !== true && line.dimensions?.intercompany_eliminate !== true), ...eliminations.lines],
+  }
+}
+
+/** One company's ledger, or (null) the consolidated one. */
+export async function ledgerForCompany(orgId: string, ledger: LoadedLedger, legalEntityId: string | null) {
+  return legalEntityId ? forLegalEntity(ledger, legalEntityId) : consolidated(ledger, await loadConsolidationEliminations(orgId))
 }
 
 /** Closing and its reversing entry transfer earnings; neither is operating activity. */

@@ -7,8 +7,8 @@
       "name": "contract-loss-lifecycle",
       "status": "PASSED",
       "identities": {
-        "orgId": "e56ac2f1-b094-4044-a499-b49dfeadaaf6",
-        "projectId": "b144dd3b-e48d-4d09-9701-44accb68a7c4"
+        "orgId": "5d3e8923-7a8c-4466-962e-e2c5f0dbd20f",
+        "projectId": "3d0fe07a-b987-4b30-aa3e-6c80571a6ec8"
       },
       "checks": [
         {
@@ -74,14 +74,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:20:20.471Z"
+      "startedAt": "2026-10-08T00:14:05.279Z"
     },
     {
       "name": "contracts-not-netted",
       "status": "PASSED",
       "identities": {
-        "orgId": "1711893f-2cb9-436b-b99b-e38eec5cc506",
-        "projectId": "28e2f339-1f98-47b1-8989-72d00359e7e7"
+        "orgId": "13755ef6-d75e-4be5-893b-fa35c0691269",
+        "projectId": "c9ad2fbf-aa1b-49c1-b997-318f2e64b972"
       },
       "checks": [
         {
@@ -99,14 +99,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:20:25.033Z"
+      "startedAt": "2026-10-08T00:14:09.846Z"
     },
     {
       "name": "home-impairment",
       "status": "PASSED",
       "identities": {
-        "orgId": "39fcc9e7-1ee9-4c09-8925-e715a10b8322",
-        "impairmentId": "0ee6fb2f-e600-4647-9ddf-e8f3005d839c"
+        "orgId": "a8790520-53f7-41fa-a3f4-0fe116c770e7",
+        "impairmentId": "8f5c9ea8-2d29-4d8f-929f-8c2476cea383"
       },
       "checks": [
         {
@@ -168,9 +168,9 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:20:25.870Z"
+      "startedAt": "2026-10-08T00:14:10.687Z"
     }
   ],
   "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
-  "finishedAt": "2026-10-07T20:20:27.665Z"
+  "finishedAt": "2026-10-08T00:14:12.463Z"
 }

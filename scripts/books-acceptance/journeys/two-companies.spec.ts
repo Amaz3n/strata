@@ -13,12 +13,15 @@ test("two companies: ownership is shown and each company has its own trial balan
 
   await page.goto("/books/entities")
   await page.waitForLoadState("networkidle")
-  const companies = page.getByRole("region", { name: "Companies" })
+  const companies = page.getByRole("region", { name: "Companies", exact: true })
   await expect(companies).toContainText("Cedar Ridge Land Co")
   await expect(companies).toContainText("Primary")
   const accounts = page.getByRole("region", { name: "Cash and card accounts" })
   await expect(accounts.getByRole("row", { name: /1005/ })).toContainText("Cedar Ridge Land Co")
   await expect(accounts.getByRole("row", { name: /1005/ })).toContainText("Fixed by postings")
+  const owed = page.getByRole("region", { name: "Owed between companies" })
+  await expect(owed).toContainText("$30,000.00")
+  await expect(owed).toContainText("Agrees")
   await expectNoHorizontalOverflow(page)
   await page.screenshot({ path: info.outputPath("companies.png"), fullPage: true })
 

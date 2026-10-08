@@ -23,7 +23,9 @@ import {
   buildGeneralLedger,
   buildProfitAndLoss,
   buildTrialBalance,
+  consolidated,
   forLegalEntity,
+  loadConsolidationEliminations,
   loadLedgerBalances,
   loadPostedLedger,
 } from "@/lib/services/books/statements";
@@ -655,11 +657,11 @@ export async function runBooksCloseChecklist(periodId: string, orgId?: string) {
         difference_cents: apTieOut.differenceCents,
       },
     },
-    ...(["land_inventory_control", "completed_homes_control", "warranty_reserve_control", "impairment_control"] as const).map((code) => {
+    ...(["land_inventory_control", "completed_homes_control", "warranty_reserve_control", "impairment_control", "intercompany_control"] as const).map((code) => {
       const control = tieOut(code);
       return {
         code,
-        href: code === "warranty_reserve_control" ? "/warranty/accounting" : "/books/close",
+        href: code === "warranty_reserve_control" ? "/warranty/accounting" : code === "intercompany_control" ? "/books/entities" : "/books/close",
         label: control.label,
         category: "controls",
         blocking: true,
@@ -941,9 +943,10 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
     // The saved statements are the organization's consolidated statements: what
     // its companies owe each other is eliminated (docs/books-entities.md). The
     // general ledger keeps every line.
-    const [balances, posted] = await Promise.all([
+    const [balances, posted, eliminations] = await Promise.all([
       loadLedgerBalances(context.orgId, period.period_end),
       loadPostedLedger(context.orgId, period.period_end),
+      loadConsolidationEliminations(context.orgId),
     ]);
     const [
       trialBalance,
@@ -955,14 +958,14 @@ export async function closeAccountingPeriod(periodId: string, orgId?: string) {
       apAging,
       wip,
     ] = await Promise.all([
-      buildTrialBalance(context.orgId, period.period_end, forLegalEntity(balances, null)),
-      buildProfitAndLoss(context.orgId, period.period_start, period.period_end, forLegalEntity(posted, null)),
-      buildBalanceSheet(context.orgId, period.period_end, forLegalEntity(balances, null)),
+      buildTrialBalance(context.orgId, period.period_end, consolidated(balances, eliminations)),
+      buildProfitAndLoss(context.orgId, period.period_start, period.period_end, consolidated(posted, eliminations)),
+      buildBalanceSheet(context.orgId, period.period_end, consolidated(balances, eliminations)),
       buildCashFlowStatement(
         context.orgId,
         period.period_start,
         period.period_end,
-        forLegalEntity(posted, null),
+        consolidated(posted, eliminations),
       ),
       buildGeneralLedger(context.orgId, period.period_start, period.period_end),
       getArAgingReport({ asOf: period.period_end, orgId: context.orgId, includeExcludedProjects: true }),

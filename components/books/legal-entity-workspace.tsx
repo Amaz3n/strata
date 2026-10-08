@@ -11,6 +11,8 @@ import { Label } from "@/components/ui/label"
 
 type Workspace = Awaited<ReturnType<typeof import("@/lib/services/books/legal-entities").getLegalEntityWorkspace>>
 type Entity = Workspace["entities"][number]
+type Reconciliation = Awaited<ReturnType<typeof import("@/lib/services/books/legal-entities").getIntercompanyReconciliation>>
+const money = (cents: number) => (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })
 
 /**
  * The companies this organization keeps books for. Every posting belongs to
@@ -18,7 +20,7 @@ type Entity = Workspace["entities"][number]
  * account, anything unassigned to the primary company. When one company pays
  * for another's work, Arc records what they owe each other.
  */
-export function LegalEntityWorkspace({ workspace }: { workspace: Workspace }) {
+export function LegalEntityWorkspace({ workspace, reconciliation }: { workspace: Workspace; reconciliation: Reconciliation }) {
   const primary = workspace.entities.find(entity => entity.isPrimary)
   const active = workspace.entities.filter(entity => entity.status === "active")
   return <div className="space-y-6">
@@ -31,6 +33,7 @@ export function LegalEntityWorkspace({ workspace }: { workspace: Workspace }) {
     </section>
 
     {active.length > 1 && <>
+      <IntercompanyBalances reconciliation={reconciliation} />
       <OwnerTable label="Cash and card accounts" kind="account" rows={workspace.accounts.map(row => ({ id: row.id, name: row.label, entityId: row.entityId, locked: row.locked }))} entities={active} primaryName={primary?.name ?? "Primary"} canManage={workspace.canManage} />
       <OwnerTable label="Jobs" kind="project" rows={workspace.projects} entities={active} primaryName={primary?.name ?? "Primary"} canManage={workspace.canManage} />
       {workspace.projectsTruncated && <p className="text-xs text-muted-foreground">Showing the first {workspace.projects.length} jobs.</p>}
@@ -104,5 +107,37 @@ function OwnerTable({ label, kind, rows, entities, primaryName, canManage }: {
         </tr>)}</tbody>
       </table>
     </div>}
+  </section>
+}
+
+/** What the companies owe each other, read from both sides, and lots sold between them. */
+function IntercompanyBalances({ reconciliation }: { reconciliation: Reconciliation }) {
+  return <section aria-label="Owed between companies" className="space-y-2">
+    <h2 className="text-sm font-medium">Owed between companies</h2>
+    {!reconciliation.pairs.length ? <p className="border px-3 py-8 text-center text-sm text-muted-foreground">Nothing is owed between the companies.</p> : <div className="overflow-x-auto border">
+      <table className="w-full text-sm">
+        <thead><tr className="border-b bg-muted/30 text-left text-xs text-muted-foreground"><th className="px-3 py-2 font-medium">Companies</th><th className="px-3 py-2 text-right font-medium">Owed</th><th className="px-3 py-2 font-medium">Both sides agree</th></tr></thead>
+        <tbody>{reconciliation.pairs.map(pair => {
+          const [creditor, debtor] = pair.aOwedByB >= 0 ? [pair.companyA, pair.companyB] : [pair.companyB, pair.companyA]
+          return <tr key={`${pair.companyA}:${pair.companyB}`} className="border-b last:border-0">
+            <td className="px-3 py-2">{debtor} owes {creditor}</td>
+            <td className="px-3 py-2 text-right tabular-nums">{money(Math.abs(pair.aOwedByB))}</td>
+            <td className={pair.ties ? "px-3 py-2 text-success" : "px-3 py-2 text-destructive"}>{pair.ties ? "Agrees" : `Differs: ${money(pair.aOwedByB + pair.bOwedByA)}`}</td>
+          </tr>
+        })}</tbody>
+      </table>
+    </div>}
+    {reconciliation.sales.length > 0 && <div className="overflow-x-auto border">
+      <table className="w-full text-sm">
+        <thead><tr className="border-b bg-muted/30 text-left text-xs text-muted-foreground"><th className="px-3 py-2 font-medium">Lot sold between companies</th><th className="px-3 py-2 text-right font-medium">Price</th><th className="px-3 py-2 text-right font-medium">Profit</th><th className="px-3 py-2 font-medium">In group results</th></tr></thead>
+        <tbody>{reconciliation.sales.map(sale => <tr key={sale.id} className="border-b last:border-0">
+          <td className="px-3 py-2">{sale.home}<p className="text-xs text-muted-foreground">{sale.date} · {sale.seller} to {sale.buyer}</p></td>
+          <td className="px-3 py-2 text-right tabular-nums">{money(sale.priceCents)}</td>
+          <td className="px-3 py-2 text-right tabular-nums">{money(sale.profitCents)}</td>
+          <td className="px-3 py-2 text-xs">{sale.realized ? "Earned: the home has sold" : "Held back until the home sells"}</td>
+        </tr>)}</tbody>
+      </table>
+    </div>}
+    {reconciliation.salesTruncated && <p className="text-xs text-muted-foreground">Showing the latest {reconciliation.sales.length} lot sales.</p>}
   </section>
 }

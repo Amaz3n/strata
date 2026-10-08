@@ -16,7 +16,7 @@ import {
 import { assignInvoiceContract } from "@/lib/services/invoices";
 import { proposeRevenuePolicy, reviewRevenuePolicy } from "@/lib/services/books/revenue-policies";
 import { proposeCostAllocation, reviewCostAllocation } from "@/lib/services/books/cost-allocations";
-import { createLegalEntity, renameLegalEntity, setLegalEntityOwner } from "@/lib/services/books/legal-entities";
+import { createLegalEntity, renameLegalEntity, sellLotToAffiliate, setLegalEntityOwner } from "@/lib/services/books/legal-entities";
 import {
   getClearingSupportWorkspace,
   reviewClearingSupport,
@@ -1532,4 +1532,8 @@ export async function renameLegalEntityAction(input: Parameters<typeof renameLeg
 
 export async function setLegalEntityOwnerAction(input: Parameters<typeof setLegalEntityOwner>[0]) {
   return run(() => setLegalEntityOwner(input));
+}
+
+export async function sellLotToAffiliateAction(input: Parameters<typeof sellLotToAffiliate>[0]) {
+  return run(() => sellLotToAffiliate(input));
 }

@@ -259,7 +259,8 @@ async function billedCostCorrections(kit, expected, check) {
   await kit.as(org.owner, () => updateVendorBillStatus({ billId: billB, input: { status: "pending" } }))
   const creditB = kit.rows(`select id from public.billable_costs where org_id=${kit.q(org.orgId)} and project_id=${kit.q(job.projectId)} and correction_of in (select id from public.billable_costs where metadata->>'bill_id'=${kit.q(billB)}) and status <> 'voided'`)[0].id
   const absorbed = await kit.as(org.owner, () => app("cost-plus").decideBillingCorrection({ billableCostId: creditB, decision: "absorb", note: "The owner agreed to keep the original price for this work." }))
-  const second = await billCosts(kit, org, job, { from: "2026-10-01", to: "2026-10-07" })
+  // Credits are dated when recorded (UTC), so the second billing runs through today.
+  const second = await billCosts(kit, org, job, { from: "2026-10-01", to: [new Date().toISOString().slice(0, 10), "2026-10-07"].sort().at(-1) })
   const billedRow = kit.rows(`select id from public.billable_costs where org_id=${kit.q(org.orgId)} and status='billed' and correction_of is null limit 1`)[0].id
   const edit = await refusal(async () => kit.sql(`update public.billable_costs set cost_cents = cost_cents + 1 where id=${kit.q(billedRow)};`))
   const remove = await refusal(async () => kit.sql(`delete from public.billable_costs where id=${kit.q(billedRow)};`))

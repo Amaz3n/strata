@@ -16238,8 +16238,8 @@
       "id": "B14.3",
       "workstream": "B14",
       "title": "Intercompany transactions and reconciliations",
-      "status": "NOT_STARTED",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified locally (ENTITY-01 payment-across-companies, ownership-fixed-and-reversal, intercompany-lot-sale): every cross-company entry carries balanced legs written atomically with it, so one-sided failures cannot occur; legs settle existing balances first; reciprocal positions agree (Books → Companies reconciliation) and a blocking close control lists any pair that differs; bank and cash ownership come from the account's company; closed periods are enforced for every company (they close together). Migration 20261007235900 pending production.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "every pair balances independently",
@@ -16256,26 +16256,53 @@
         "INTERCO-01",
         "RESTORE-01"
       ],
-      "evidence": [],
-      "remaining_criteria": [
-        "every pair balances independently",
-        "reciprocal balances agree by counterparty/cutoff/currency",
-        "one-sided failures recover without duplicate legs",
-        "closed entity periods enforced",
-        "allocations conserve cents",
-        "clearing and bank ownership accurate",
-        "mismatches are actionable and block relevant consolidation/close"
+      "evidence": [
+        {
+          "verified_at": "2026-10-08T00:14:51.827147+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261007235900_books_intercompany_lot_sales.sql",
+            "lib/services/books/statements.ts",
+            "lib/services/books/legal-entities.ts",
+            "lib/services/books/verifier.ts",
+            "lib/services/books/period-close.ts",
+            "lib/services/books/cash-profit-loss.ts",
+            "components/books/legal-entity-workspace.tsx",
+            "components/books/affiliate-lot-sale.tsx",
+            "scripts/books-acceptance/scenarios/entity-01.cjs",
+            "docs/books-entities.md"
+          ],
+          "test_scenario_ids": [
+            "ENTITY-01"
+          ],
+          "commands": [
+            "scenario-runner ENTITY-01 (5/5) and full regression",
+            "playwright journeys/two-companies.spec.ts",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "Intercompany lot sale: the land company (holder of the lot's land basis) sells lot 9 to the builder's home for $75,000 against $60,000 cost; the land company books revenue and cost, the home takes the lot in at $75,000, and the legs record what the builder owes. Each company balances.",
+            "Consolidated before the outside sale: the sale and the legs are eliminated, the home stands at $260,000 (lot at $60,000 cost). After the $300,000 outside sale: land profit $15,000, builder $25,000, group $40,000 — exactly their sum.",
+            "Reconciliation: the pair ties at $75,000, the sale's profit shows as realized; the close's blocking intercompany control passes.",
+            "Scenario date dependence fixed in REV-01 billed-cost-corrections (credits are dated when recorded in UTC; the run crossed UTC midnight).",
+            "Bounds: wholly owned affiliates only (no minority interests); companies close together; per-company report choice is the drill from consolidated to companies.",
+            "Regression green; test:financials 2,521 pass."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-07-entities"
+        }
       ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-08T00:14:51.827147+00:00"
     },
     {
       "id": "B14.4",
       "workstream": "B14",
       "title": "Consolidated reporting and eliminations",
-      "status": "NOT_STARTED",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified locally (ENTITY-01): consolidated = company ledgers − tagged intercompany lines + computed eliminations; consolidated statements balance and the group earns exactly the companies' combined profit on an intercompany lot sale; eliminations never touch a company's books; consolidated statements are saved at close. Bounded: wholly owned affiliates only (minority interests out of scope); drill from consolidated to a company is the Company choice on each statement.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "entity TBs + approved adjustments − eliminations = consolidated TB",
@@ -16291,18 +16318,46 @@
         "INTERCO-01",
         "RESTORE-01"
       ],
-      "evidence": [],
-      "remaining_criteria": [
-        "entity TBs + approved adjustments − eliminations = consolidated TB",
-        "consolidated statements balance and drill to entities/original intent",
-        "no unexplained intercompany residue",
-        "entity standalone ledgers unchanged by reporting-only elimination",
-        "historical group membership and frozen consolidated runs reproducible",
-        "supported minority/ownership treatment reviewed or explicitly bounded by the approved original-scope interpretation"
+      "evidence": [
+        {
+          "verified_at": "2026-10-08T00:14:51.827147+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261007235900_books_intercompany_lot_sales.sql",
+            "lib/services/books/statements.ts",
+            "lib/services/books/legal-entities.ts",
+            "lib/services/books/verifier.ts",
+            "lib/services/books/period-close.ts",
+            "lib/services/books/cash-profit-loss.ts",
+            "components/books/legal-entity-workspace.tsx",
+            "components/books/affiliate-lot-sale.tsx",
+            "scripts/books-acceptance/scenarios/entity-01.cjs",
+            "docs/books-entities.md"
+          ],
+          "test_scenario_ids": [
+            "ENTITY-01"
+          ],
+          "commands": [
+            "scenario-runner ENTITY-01 (5/5) and full regression",
+            "playwright journeys/two-companies.spec.ts",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "Intercompany lot sale: the land company (holder of the lot's land basis) sells lot 9 to the builder's home for $75,000 against $60,000 cost; the land company books revenue and cost, the home takes the lot in at $75,000, and the legs record what the builder owes. Each company balances.",
+            "Consolidated before the outside sale: the sale and the legs are eliminated, the home stands at $260,000 (lot at $60,000 cost). After the $300,000 outside sale: land profit $15,000, builder $25,000, group $40,000 — exactly their sum.",
+            "Reconciliation: the pair ties at $75,000, the sale's profit shows as realized; the close's blocking intercompany control passes.",
+            "Scenario date dependence fixed in REV-01 billed-cost-corrections (credits are dated when recorded in UTC; the run crossed UTC midnight).",
+            "Bounds: wholly owned affiliates only (no minority interests); companies close together; per-company report choice is the drill from consolidated to companies.",
+            "Regression green; test:financials 2,521 pass."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-07-entities"
+        }
       ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-08T00:14:51.827147+00:00"
     },
     {
       "id": "B14.5",

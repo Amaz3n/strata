@@ -7,8 +7,8 @@
       "name": "general-invoice-income-and-tax",
       "status": "PASSED",
       "identities": {
-        "orgId": "d09cc039-a13d-4b5c-a6a8-cb44ee1e0f2b",
-        "invoiceId": "c37f9d75-d708-4359-a0fa-c254beceeb16"
+        "orgId": "cfd45256-1206-494d-91b0-50b788e026d6",
+        "invoiceId": "54173cb2-444d-4081-b00e-c4647870b1bf"
       },
       "checks": [
         {
@@ -44,14 +44,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:17:50.764Z"
+      "startedAt": "2026-10-08T00:11:36.939Z"
     },
     {
       "name": "installments-credit-refund-count-once",
       "status": "PASSED",
       "identities": {
-        "orgId": "b42e59bc-0ab7-4beb-805d-7969b6a52308",
-        "invoiceId": "c214129c-7e34-4fa7-b460-b06ece8a184a"
+        "orgId": "7234710b-2a07-494b-b5f7-7a908a546cfb",
+        "invoiceId": "5d7c2632-47e6-4192-a66b-65ee74214f3c"
       },
       "checks": [
         {
@@ -91,13 +91,13 @@
           "observed": true
         }
       ],
-      "startedAt": "2026-10-07T20:17:54.316Z"
+      "startedAt": "2026-10-08T00:11:40.030Z"
     },
     {
       "name": "account-rename-preserves-posted-history",
       "status": "PASSED",
       "identities": {
-        "orgId": "66f9219f-261d-4dab-b25c-91cc5b740be6"
+        "orgId": "bacb936d-285b-4938-b41e-7f372e6d91ba"
       },
       "checks": [
         {
@@ -112,7 +112,7 @@
                 "code": "1100",
                 "subtype": "accounts_receivable",
                 "version": 1,
-                "account_id": "8bebb98d-fbbc-4f8b-a16a-def01c274d6a",
+                "account_id": "2a09d4e0-94a6-4d2b-a793-fb32f57bcad4",
                 "account_type": "asset",
                 "normal_balance": "debit",
                 "cash_flow_category": "operating"
@@ -121,12 +121,12 @@
             {
               "line_no": 2,
               "debit_cents": 0,
-              "credit_cents": 40000,
+              "credit_cents": 60000,
               "classification": {
-                "code": "4120",
+                "code": "4110",
                 "subtype": "other_revenue",
                 "version": 1,
-                "account_id": "26046c94-0fa1-43cd-b92f-cbbc12aa2c29",
+                "account_id": "13ff430b-9b77-4957-b9cf-b3470c6bef71",
                 "account_type": "income",
                 "normal_balance": "credit",
                 "cash_flow_category": null
@@ -135,12 +135,12 @@
             {
               "line_no": 3,
               "debit_cents": 0,
-              "credit_cents": 60000,
+              "credit_cents": 40000,
               "classification": {
-                "code": "4110",
+                "code": "4120",
                 "subtype": "other_revenue",
                 "version": 1,
-                "account_id": "90d57c12-f665-4211-9558-6ced55d88b08",
+                "account_id": "65794e1d-385a-4ce2-95cd-62376497fb82",
                 "account_type": "income",
                 "normal_balance": "credit",
                 "cash_flow_category": null
@@ -154,7 +154,7 @@
                 "code": "2250",
                 "subtype": "sales_use_tax",
                 "version": 1,
-                "account_id": "03c7577a-3de8-4455-880a-6b5930cea7d3",
+                "account_id": "b69d0340-8a63-4e52-912b-fa789b41142f",
                 "account_type": "liability",
                 "normal_balance": "credit",
                 "cash_flow_category": "operating"
@@ -170,7 +170,7 @@
                 "code": "1100",
                 "subtype": "accounts_receivable",
                 "version": 1,
-                "account_id": "8bebb98d-fbbc-4f8b-a16a-def01c274d6a",
+                "account_id": "2a09d4e0-94a6-4d2b-a793-fb32f57bcad4",
                 "account_type": "asset",
                 "normal_balance": "debit",
                 "cash_flow_category": "operating"
@@ -179,12 +179,12 @@
             {
               "line_no": 2,
               "debit_cents": 0,
-              "credit_cents": 40000,
+              "credit_cents": 60000,
               "classification": {
-                "code": "4120",
+                "code": "4110",
                 "subtype": "other_revenue",
                 "version": 1,
-                "account_id": "26046c94-0fa1-43cd-b92f-cbbc12aa2c29",
+                "account_id": "13ff430b-9b77-4957-b9cf-b3470c6bef71",
                 "account_type": "income",
                 "normal_balance": "credit",
                 "cash_flow_category": null
@@ -193,12 +193,12 @@
             {
               "line_no": 3,
               "debit_cents": 0,
-              "credit_cents": 60000,
+              "credit_cents": 40000,
               "classification": {
-                "code": "4110",
+                "code": "4120",
                 "subtype": "other_revenue",
                 "version": 1,
-                "account_id": "90d57c12-f665-4211-9558-6ced55d88b08",
+                "account_id": "65794e1d-385a-4ce2-95cd-62376497fb82",
                 "account_type": "income",
                 "normal_balance": "credit",
                 "cash_flow_category": null
@@ -212,7 +212,7 @@
                 "code": "2250",
                 "subtype": "sales_use_tax",
                 "version": 1,
-                "account_id": "03c7577a-3de8-4455-880a-6b5930cea7d3",
+                "account_id": "b69d0340-8a63-4e52-912b-fa789b41142f",
                 "account_type": "liability",
                 "normal_balance": "credit",
                 "cash_flow_category": "operating"
@@ -221,14 +221,14 @@
           ]
         }
       ],
-      "startedAt": "2026-10-07T20:17:55.138Z"
+      "startedAt": "2026-10-08T00:11:40.707Z"
     },
     {
       "name": "progress-invoice-retainage",
       "status": "PASSED",
       "identities": {
-        "orgId": "e76e9a8a-2a80-4dbe-91c8-02616c623ee3",
-        "invoiceId": "69e5f4fc-b753-4c60-8369-7a623e82cebf"
+        "orgId": "519bbf56-c978-4e8e-9d38-c8f516e929b0",
+        "invoiceId": "40fd97e4-8b20-4892-99cd-7db3440b4af0"
       },
       "checks": [
         {
@@ -258,9 +258,9 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:17:55.557Z"
+      "startedAt": "2026-10-08T00:11:41.086Z"
     }
   ],
   "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
-  "finishedAt": "2026-10-07T20:17:55.972Z"
+  "finishedAt": "2026-10-08T00:11:41.481Z"
 }

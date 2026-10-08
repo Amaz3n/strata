@@ -44,7 +44,8 @@ export type LedgerTieOut = {
     | "land_inventory_control"
     | "completed_homes_control"
     | "warranty_reserve_control"
-    | "impairment_control";
+    | "impairment_control"
+    | "intercompany_control";
   label: string;
   status: "passed" | "failed";
   differenceCents: number;
@@ -67,6 +68,23 @@ async function loadHomeInventoryControls(orgId: string, asOf: string) {
   const { data, error } = await createServiceSupabaseClient().rpc("books_home_inventory_controls", { p_org_id: orgId, p_as_of: asOf });
   if (error) throw new Error(`Failed to tie home inventory: ${error.message}`);
   return homeInventoryControlsSchema.parse(data);
+}
+
+/**
+ * What companies owe each other, from both sides (`books_intercompany_positions`):
+ * every company's net position with an affiliate must be the affiliate's opposite.
+ */
+async function loadIntercompanyControl(orgId: string, asOf: string) {
+  const { data, error } = await createServiceSupabaseClient().rpc("books_intercompany_positions", { p_org_id: orgId, p_as_of: asOf });
+  if (error) throw new Error(`Failed to tie intercompany balances: ${error.message}`);
+  const rows = z.array(z.object({ entityId: z.string().uuid(), counterpartyId: z.string().uuid(), dueFromCents: z.coerce.number(), dueToCents: z.coerce.number() })).parse(data ?? []);
+  const net = new Map(rows.map((row) => [`${row.entityId}:${row.counterpartyId}`, row.dueFromCents - row.dueToCents]));
+  const exceptions = [...new Set(rows.map((row) => [row.entityId, row.counterpartyId].sort().join(":")))].flatMap((key) => {
+    const [a, b] = key.split(":");
+    const difference = (net.get(`${a}:${b}`) ?? 0) + (net.get(`${b}:${a}`) ?? 0);
+    return difference === 0 ? [] : [{ entityId: a, counterpartyId: b, differenceCents: difference }];
+  });
+  return { dueFromCents: rows.reduce((sum, row) => sum + row.dueFromCents, 0), dueToCents: rows.reduce((sum, row) => sum + row.dueToCents, 0), exceptions };
 }
 
 /** Write-downs posted to 5070 against approved impairment reviews (`books_impairment_control`). */
@@ -354,6 +372,7 @@ export async function runLedgerTieOuts(
     registers,
     homeInventory,
     impairment,
+    intercompany,
   ] = await Promise.all([
     buildTrialBalance(orgId, asOf, ledger),
     buildBalanceSheet(orgId, asOf, ledger),
@@ -364,6 +383,7 @@ export async function runLedgerTieOuts(
     loadOperationalRegisterBalances(orgId, asOf),
     loadHomeInventoryControls(orgId, asOf),
     loadImpairmentControl(orgId, asOf),
+    loadIntercompanyControl(orgId, asOf),
   ]);
   const glJobCost = glJobCostCents(ledger);
   const accountBalance = (code: string) =>
@@ -523,6 +543,15 @@ export async function runLedgerTieOuts(
       differenceCents: impairment.ledgerCents - impairment.subledgerCents,
       ledgerCents: impairment.ledgerCents,
       subledgerCents: impairment.subledgerCents,
+    },
+    {
+      code: "intercompany_control",
+      label: "What the companies owe each other agrees on both sides",
+      status: intercompany.exceptions.length === 0 && intercompany.dueFromCents === intercompany.dueToCents ? "passed" : "failed",
+      differenceCents: intercompany.dueFromCents - intercompany.dueToCents,
+      ledgerCents: intercompany.dueFromCents,
+      subledgerCents: intercompany.dueToCents,
+      ...(intercompany.exceptions.length ? { exceptions: intercompany.exceptions } : {}),
     },
   ];
 }

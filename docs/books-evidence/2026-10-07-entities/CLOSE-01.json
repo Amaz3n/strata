@@ -7,8 +7,8 @@
       "name": "late-source-into-closed-period",
       "status": "PASSED",
       "identities": {
-        "orgId": "27dc0f5e-344b-4e71-967c-84ad0ca951d2",
-        "lateInvoiceId": "696331bd-4ca3-471b-9671-03ada6d1d093"
+        "orgId": "70caba3e-7b58-400e-aef3-9abc28c5786b",
+        "lateInvoiceId": "f96ecb8a-6a27-46c6-a5cf-8c310db6a8c1"
       },
       "checks": [
         {
@@ -88,14 +88,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:18:15.632Z"
+      "startedAt": "2026-10-08T00:12:00.528Z"
     },
     {
       "name": "unreviewed-journal-proposal-blocks-close",
       "status": "PASSED",
       "identities": {
-        "orgId": "e2661a71-2337-4747-97df-959ac6b34b00",
-        "proposalId": "0f63ff45-5704-4824-bb02-59d471a92778"
+        "orgId": "6733459a-4c8c-447e-aaeb-6172902690fb",
+        "proposalId": "fba1321a-cc20-4fe2-b30f-b713eff60cc2"
       },
       "checks": [
         {
@@ -129,14 +129,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:18:19.312Z"
+      "startedAt": "2026-10-08T00:12:04.190Z"
     },
     {
       "name": "close-failure-resumes",
       "status": "PASSED",
       "identities": {
-        "statement_snapshot": "f46b28df-7b5b-4291-97cd-73efb81f367b",
-        "period_lock": "ef82b538-8b96-48e3-b8f8-d882cdb47f7f"
+        "statement_snapshot": "bc57765b-e6a9-4529-a557-02c9fafbf90e",
+        "period_lock": "ed023895-fe65-4592-8d64-4c15152bec20"
       },
       "checks": [
         {
@@ -276,13 +276,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:18:19.505Z"
+      "startedAt": "2026-10-08T00:12:04.381Z"
     },
     {
       "name": "twelve-month-sequence-snapshots",
       "status": "PASSED",
       "identities": {
-        "orgId": "870cb527-4b67-4738-9a0a-ce307687c7cf"
+        "orgId": "42bd4b52-ce3f-4515-9807-c0dac2ffeea9"
       },
       "checks": [
         {
@@ -324,7 +324,7 @@
           ]
         }
       ],
-      "startedAt": "2026-10-07T20:18:21.596Z"
+      "startedAt": "2026-10-08T00:12:06.470Z"
     },
     {
       "name": "quarter-end",
@@ -340,7 +340,7 @@
       "name": "abandoned-close-resumes",
       "status": "PASSED",
       "identities": {
-        "orgId": "1f13670c-1a12-4aa1-b54c-5f2543da149a"
+        "orgId": "4342afdf-a4db-4601-9afe-39518d0bafb7"
       },
       "checks": [
         {
@@ -396,14 +396,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:18:25.881Z"
+      "startedAt": "2026-10-08T00:12:10.722Z"
     },
     {
       "name": "gate-matrix",
       "status": "PASSED",
       "identities": {
-        "cleanOrgId": "dd1ab369-8d98-4eec-bc72-db4e8eb0680d",
-        "combinedOrgId": "bf762083-d415-49b2-afdb-0a203aad13f7"
+        "cleanOrgId": "78498011-2d98-43dc-93f0-83e6af65eb61",
+        "combinedOrgId": "e71d15d4-8817-4c5b-b4e7-142c70849710"
       },
       "checks": [
         {
@@ -553,13 +553,13 @@
           "observed": []
         }
       ],
-      "startedAt": "2026-10-07T20:18:26.589Z"
+      "startedAt": "2026-10-08T00:12:11.402Z"
     },
     {
       "name": "reviewer-cannot-mutate-gates",
       "status": "PASSED",
       "identities": {
-        "orgId": "845670ca-e223-42b2-b6d7-b84ec6041b7b"
+        "orgId": "acf6b857-6b2e-420d-969f-9d2f2a0804c3"
       },
       "checks": [
         {
@@ -579,9 +579,9 @@
           }
         }
       ],
-      "startedAt": "2026-10-07T20:18:29.127Z"
+      "startedAt": "2026-10-08T00:12:13.808Z"
     }
   ],
   "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
-  "finishedAt": "2026-10-07T20:18:29.234Z"
+  "finishedAt": "2026-10-08T00:12:13.911Z"
 }

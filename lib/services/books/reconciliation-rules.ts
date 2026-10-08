@@ -33,6 +33,7 @@ export const TIE_OUT_ITEM_CATEGORIES = [
   "tie_out_completed_homes_control",
   "tie_out_warranty_reserve_control",
   "tie_out_impairment_control",
+  "tie_out_intercompany_control",
 ] as const
 
 /**

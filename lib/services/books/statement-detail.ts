@@ -8,7 +8,7 @@ import { loadClosedPeriodSnapshots } from "@/lib/services/books/closed-snapshots
 import { canReadWorkerPay, isWorkerPayLine, mergeWorkerPay, RESTRICTED_WORKER_PAY } from "@/lib/services/books/worker-pay-privacy"
 import { requireOrgContext } from "@/lib/services/context"
 import {
-  forLegalEntity,
+  ledgerForCompany,
   loadPostedLedger,
   buildBalanceSheet,
   buildCashBasisStatement,
@@ -208,7 +208,7 @@ export async function getStatementsForPeriod(input: {
 
   const legalEntityId = input.legalEntityId ?? null
   const [posted, closed] = await Promise.all([loadPostedLedger(orgId, input.endDate), loadClosedPeriodStatements(orgId, input.startDate, input.endDate, legalEntityId)])
-  const snapshot = forLegalEntity(posted, legalEntityId)
+  const snapshot = await ledgerForCompany(orgId, posted, legalEntityId)
   const [profitLoss, balanceSheet, trialBalance, cashFlow, cashBasis, priorProfitLoss, monthlyProfitLoss] = await Promise.all([
     closed?.profitLoss ?? buildProfitAndLoss(orgId, input.startDate, input.endDate, snapshot),
     closed?.balanceSheet ?? buildBalanceSheet(orgId, input.endDate, snapshot),

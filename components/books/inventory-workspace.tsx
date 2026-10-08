@@ -2,6 +2,7 @@
 import { InventoryAllocation } from "@/components/books/inventory-allocation"
 import { WarrantyReserveEstimate } from "@/components/books/warranty-accounting"
 import { InventoryImpairment } from "@/components/books/inventory-impairment"
+import { AffiliateLotSale } from "@/components/books/affiliate-lot-sale"
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 import { loadInventoryWorkspaceAction, enableProjectInventoryAction, completeProjectInventoryAction } from "@/app/(app)/books/actions"
@@ -56,6 +57,7 @@ function InventoryWorkspaceContent({ canManage, initialProject }: { canManage: b
   }
   return <section className="space-y-4 border p-5"><div className="flex items-center justify-between gap-3"><div><h3 className="font-medium">Owned-home inventory</h3><p className="text-sm text-muted-foreground">Adopt an ownership policy, accumulate build costs, and transfer completed homes to inventory held for sale. Closing releases their recorded cost.</p></div></div>
     {project?.policy && !project.policy.completedOn && !project.policy.soldOn && <InventoryAllocation projectId={project.id} />}
+    {project?.policy && !project.policy.completedOn && !project.policy.soldOn && <AffiliateLotSale projectId={project.id} />}
     {project?.policy && !project.policy.soldOn && <InventoryImpairment projectId={project.id} />}
     {project && <WarrantyReserveEstimate projectId={project.id} />}
     {project && <div className="space-y-3"><p className="text-sm">{project.policy?.soldOn ? `Sold ${project.policy.soldOn}` : project.policy?.completedOn ? `Completed inventory since ${project.policy.completedOn}` : project.policy ? `Build costs capitalized from ${project.policy.effectiveOn}` : "Inventory policy has not been adopted. Existing expenses remain in their recorded periods."}</p>

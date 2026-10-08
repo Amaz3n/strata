@@ -76,6 +76,9 @@ export function cashProfitAndLossFromSnapshot(orgId: string, startDate: string, 
     // A cost allocation moves accrual cost between the pool and jobs and moves no
     // cash: cash basis reports the cost once, when paid, under its original account.
     if (original.source_type === "cost_allocation" && original.entry_kind === "adjusting" && !hasCash) continue
+    // A lot sold to an affiliate moves no cash; consolidated it is eliminated, and a
+    // company's cash basis has no sale to report until money changes hands.
+    if (original.source_type === "inventory_start" && !hasCash && (lines.get(entry.id) ?? []).some((line) => record.parse(line.dimensions ?? {}).intercompany_eliminate === true)) continue
     // Balance-only opening entries establish cutover balances, not new receipts.
     if (original.source_type === "opening_balance" && original.entry_kind === "opening" && !hasProfitLoss) continue
     // A bank categorization or manual journal whose only balance-sheet side is cash

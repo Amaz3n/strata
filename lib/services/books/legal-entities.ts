@@ -125,3 +125,66 @@ export async function listLegalEntityChoices() {
   if (error) throw new Error(`Failed to load companies: ${error.message}`)
   return (data ?? []).map(row => ({ id: String(row.id), name: String(row.name) }))
 }
+
+const lotSaleSchema = z.object({ projectId: z.string().uuid(), date: z.string().date(), priceCents: z.number().int().safe().positive(), evidenceUrl: z.string().url().startsWith("https://") })
+
+/**
+ * Sells the home's lot to it from the affiliated company that holds the lot's
+ * land: the seller earns the price and relieves the lot's cost, the home takes
+ * the lot in at the price, and consolidated statements eliminate the profit
+ * until the home sells.
+ */
+export async function sellLotToAffiliate(input: z.input<typeof lotSaleSchema>) {
+  const parsed = lotSaleSchema.parse(input)
+  const context = await requireOrgContext()
+  await requireBooksAuthorization({ permission: "books.adjust", userId: context.userId, orgId: context.orgId, supabase: context.supabase, resourceType: "project", resourceId: parsed.projectId, logDecision: true })
+  const service = createServiceSupabaseClient()
+  const { data: lot, error: lotError } = await service.from("lots").select("id").eq("org_id", context.orgId).eq("project_id", parsed.projectId).maybeSingle()
+  if (lotError) throw new Error(`Failed to read the home's lot: ${lotError.message}`)
+  if (!lot) throw new Error("Assign the lot to this home first")
+  const { data, error } = await service.rpc("sell_books_lot_to_affiliate", { p_org_id: context.orgId, p_lot_id: lot.id, p_date: parsed.date, p_price_cents: parsed.priceCents, p_evidence_url: parsed.evidenceUrl, p_actor_id: context.userId })
+  if (error) throw new Error(error.message)
+  const result = z.object({ saleId: z.string().uuid(), journalEntryId: z.string().uuid() }).parse(data)
+  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "books.intercompany_lot_sold", entityType: "project", entityId: parsed.projectId, payload: { sale_id: result.saleId, journal_entry_id: result.journalEntryId } })
+  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "books_intercompany_sale", entityId: result.saleId, after: parsed, source: "books.intercompany" })
+  return result
+}
+
+/**
+ * What the companies owe each other, pair by pair, read from both sides: each
+ * pair ties when one company's net position with the other is the other's
+ * opposite. Lots sold between them are listed with the profit consolidation holds
+ * back until the home sells.
+ */
+export async function getIntercompanyReconciliation(asOf: string) {
+  const day = z.string().date().parse(asOf)
+  const context = await entityContext("books.read")
+  const service = createServiceSupabaseClient()
+  const [positions, sales, entities] = await Promise.all([
+    service.rpc("books_intercompany_positions", { p_org_id: context.orgId, p_as_of: day }),
+    service.from("books_intercompany_sales").select("id, sale_date, price_cents, cost_cents, seller_entity_id, buyer_entity_id, project:projects(name, project_financial_settings(books_inventory_sold_on))", { count: "exact" })
+      .eq("org_id", context.orgId).lte("sale_date", day).order("sale_date", { ascending: false }).limit(200),
+    service.from("books_legal_entities").select("id, name").eq("org_id", context.orgId),
+  ])
+  for (const result of [positions, sales, entities]) if (result.error) throw new Error(`Failed to load intercompany balances: ${result.error.message}`)
+  const name = new Map((entities.data ?? []).map((row) => [String(row.id), String(row.name)]))
+  const rows = z.array(z.object({ entityId: z.string().uuid(), counterpartyId: z.string().uuid(), dueFromCents: z.coerce.number(), dueToCents: z.coerce.number() })).parse(positions.data ?? [])
+  const net = new Map(rows.map((row) => [`${row.entityId}:${row.counterpartyId}`, row.dueFromCents - row.dueToCents]))
+  const pairs = [...new Set(rows.map((row) => [row.entityId, row.counterpartyId].sort().join(":")))].map((key) => {
+    const [a, b] = key.split(":")
+    const aSide = net.get(`${a}:${b}`) ?? 0, bSide = net.get(`${b}:${a}`) ?? 0
+    return { companyA: name.get(a) ?? "Company", companyB: name.get(b) ?? "Company", aOwedByB: aSide, bOwedByA: bSide, ties: aSide === -bSide }
+  })
+  return {
+    asOf: day,
+    pairs,
+    sales: (sales.data ?? []).map((row) => {
+      const project = Array.isArray(row.project) ? row.project[0] : row.project
+      const settings = Array.isArray(project?.project_financial_settings) ? project.project_financial_settings[0] : project?.project_financial_settings
+      const soldOn = settings?.books_inventory_sold_on ?? null
+      return { id: String(row.id), date: String(row.sale_date), home: project?.name ?? "Home", seller: name.get(String(row.seller_entity_id)) ?? "Company", buyer: name.get(String(row.buyer_entity_id)) ?? "Company",
+        priceCents: Number(row.price_cents), costCents: Number(row.cost_cents), profitCents: Number(row.price_cents) - Number(row.cost_cents), realized: Boolean(soldOn && String(soldOn) <= day) }
+    }),
+    salesTruncated: (sales.count ?? 0) > (sales.data ?? []).length,
+  }
+}
