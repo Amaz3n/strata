@@ -112,3 +112,17 @@ test('offline preparation writes a private new plan without overwriting files or
   assert.equal(spawnSync(process.execPath,args,{encoding:'utf8'}).status,1);assert.deepEqual(fs.readFileSync(target),saved)
  }finally{fs.rmSync(root,{recursive:true,force:true})}
 })
+test('a bank feed comes back disconnected without a credential, and taxpayer IDs are named for Vault recovery',()=>{
+ const input=fixture()
+ input.bundle.tables.bank_feed_connections=[{id:'feed',org_id:'org',provider:'file',external_item_id:'item',status:'active',updated_at:'2026-08-01T00:00:00.000Z'}]
+ input.bundle.tables.companies=[{id:'vendor',org_id:'org',tax_id_last4:'4321'},{id:'client',org_id:'org',tax_id_last4:null}]
+ input.bundle.tables.books_legal_entities=[{id:'company',org_id:'org',payer_tin_last4:'3334'}]
+ input.bundle.manifest.tables=Object.fromEntries(Object.entries(input.bundle.tables).map(([name,rows])=>[name,{rows:rows.length,checksum:booksDigest(rows)}]))
+ for(const name of ['provider','external_item_id','secret_ref','status','cursor','disconnected_at','updated_at'])input.catalog.columns.push({table:'bank_feed_connections',name,notNull:false,hasDefault:false,generated:false})
+ for(const [table,name]of [['companies','tax_id_last4'],['books_legal_entities','payer_tin_last4']])input.catalog.columns.push({table,name,notNull:false,hasDefault:false,generated:false})
+ const plan=prepare(input)
+ assert.deepEqual(plan.tables.bank_feed_connections[0],{...input.bundle.tables.bank_feed_connections[0],secret_ref:'restore-disconnected:feed',cursor:null,status:'disconnected',disconnected_at:'2026-08-01T00:00:00.000Z'})
+ assert.equal(input.bundle.tables.bank_feed_connections[0].status,'active')
+ assert.ok(plan.changes.some(change=>change.table==='bank_feed_connections'&&change.fields.includes('secret_ref')))
+ assert.deepEqual(plan.preflight.secretRecovery.map(row=>[row.table,row.rowId]),[['books_legal_entities','company'],['companies','vendor']])
+})

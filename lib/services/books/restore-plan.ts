@@ -373,6 +373,17 @@ export function prepareBooksRestorePlan(input: {
       explanation: mapping.explanation,
     });
   }
+  // A bank feed is reconnected by its owner after recovery: each connection comes
+  // back disconnected with a placeholder credential, never the provider's.
+  for (const connection of tables.bank_feed_connections ?? []) {
+    const id = String(connection.id);
+    connection.secret_ref = `restore-disconnected:${id}`;
+    connection.cursor = null;
+    connection.status = "disconnected";
+    connection.disconnected_at = connection.disconnected_at ?? connection.updated_at;
+    changes.push({ table: "bank_feed_connections", rowId: id, fields: ["secret_ref", "cursor", "status", "disconnected_at"],
+      explanation: "Bank feed credentials are never archived; reconnect the feed after restore" });
+  }
   // The original checksummed archive remains immutable. Record every intentional
   // recovery change in a separately checksummed plan before re-verifying it.
   const manifest = {

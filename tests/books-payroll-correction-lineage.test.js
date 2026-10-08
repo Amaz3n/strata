@@ -62,7 +62,7 @@ test('posted reservations cannot be released or claimed without matching actual 
 })
 test('schema 17 exports complete monetary ancestry and restores historical and latest retries with ordinary guards',async t=>{
  const f=await lineageFixture(t),history=await third(f),tables=await verifyAll(f),bundle=archive(f,tables)
- assert.equal(BOOKS_EXPORT_SCHEMA_VERSION,33);assert.equal(verifyBooksExportBundle(bundle).valid,true,JSON.stringify(verifyBooksExportBundle(bundle)))
+ assert.equal(BOOKS_EXPORT_SCHEMA_VERSION,34);assert.equal(verifyBooksExportBundle(bundle).valid,true,JSON.stringify(verifyBooksExportBundle(bundle)))
  const downgraded=structuredClone(bundle);downgraded.manifest.schemaVersion=16;assert.equal(verifyBooksExportBundle(downgraded).valid,false,"sequential money cannot be hidden under the older receipt contract")
  for(const mutate of [b=>b.tables.books_payroll_correction_postings.splice(0,1),b=>b.tables.books_payroll_correction_postings[1].previous_posting_id=id(999),b=>b.tables.books_payroll_correction_proposals[1].posted_receipt_id=null,b=>b.tables.books_payroll_correction_postings[2].sequence=2,b=>b.tables.job_cost_entries.find(j=>j.source_type==='payroll_correction').cost_cents++]){const bad=structuredClone(bundle);mutate(bad);for(const [name,rows] of Object.entries(bad.tables))bad.manifest.tables[name]={rows:rows.length,checksum:booksDigest(rows)};assert.equal(verifyBooksExportBundle(bad).valid,false)}
  const target=await lineageFixture(t);await target.db.exec('set session_replication_role=replica');for(const name of [...EXPORT_TABLES].reverse())await target.db.exec(`delete from ${name}`)

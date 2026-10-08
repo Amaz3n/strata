@@ -77,7 +77,7 @@ test('schema 11 replays and restores proposal history and rejects fabricated jou
  const f=await sources(t);await prepareProposal(f);await reviewProposal(f);await withdraw(f.db)
  const {verifyBooksExportBundle,BOOKS_EXPORT_SCHEMA_VERSION,EXPORT_TABLES}=require('../lib/services/books/export-contract')
  const tables=(await capture(f.db)).tables,bundle=archive(f,tables)
- assert.equal(BOOKS_EXPORT_SCHEMA_VERSION,33);assert.equal(verifyBooksExportBundle(bundle).valid,true,JSON.stringify(verifyBooksExportBundle(bundle)))
+ assert.equal(BOOKS_EXPORT_SCHEMA_VERSION,34);assert.equal(verifyBooksExportBundle(bundle).valid,true,JSON.stringify(verifyBooksExportBundle(bundle)))
  const fs=require('node:fs'),path=require('node:path'),{tmpdir}=require('node:os'),{gzipSync}=require('node:zlib'),{verifyFileCopy,extractSupportingFiles}=require('../scripts/verify-books-export.cjs')
  const directory=fs.mkdtempSync(path.join(tmpdir(),'payroll-proposal-recovery-'));t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));const archivePath=path.join(directory,'archive.gz');fs.writeFileSync(archivePath,gzipSync(JSON.stringify(bundle)))
  assert.equal((await verifyFileCopy(archivePath)).verifiedFiles,2);assert.equal((await extractSupportingFiles(archivePath,path.join(directory,'objects'))).verifiedFiles,2)

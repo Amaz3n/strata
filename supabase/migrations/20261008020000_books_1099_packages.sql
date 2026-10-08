@@ -18,6 +18,10 @@ begin
   if not exists (select 1 from public.memberships where org_id = p_org_id and user_id = p_actor_id and status = 'active') then raise exception 'Only an active member can record the payer TIN'; end if;
   select payer_tin_secret_id into v_secret from public.books_legal_entities where org_id = p_org_id and id = p_legal_entity_id for update;
   if not found then raise exception 'Company not found'; end if;
+  -- After a restore the pointer is gone but the company's Vault secret may remain.
+  if v_secret is null then
+    select id into v_secret from vault.secrets where name = 'payer-tin-' || p_legal_entity_id::text;
+  end if;
   if v_secret is null then
     v_secret := vault.create_secret(p_tin, 'payer-tin-' || p_legal_entity_id::text, 'Arc Books payer taxpayer identity; legal entity ' || p_legal_entity_id::text);
   else

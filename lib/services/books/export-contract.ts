@@ -19,7 +19,7 @@ import { verifyPayrollCorrectionSourceBytes } from "./payroll-correction-source"
 import { parsePayrollCorrectionProposal } from "./payroll-correction-proposal";
 import { parsePayrollPostingProposal } from "./payroll-posting-proposal-evidence";
 
-export const BOOKS_EXPORT_SCHEMA_VERSION = 33 as const;
+export const BOOKS_EXPORT_SCHEMA_VERSION = 34 as const;
 
 export const EXPORT_TABLES = [
   JOURNAL_RESOLUTION_TABLE,
@@ -67,6 +67,14 @@ export const EXPORT_TABLES = [
   "books_overhead_budget_lines",
   "books_legal_entities",
   "books_intercompany_sales",
+  "books_revenue_policies",
+  "books_development_allocations",
+  "books_cost_allocations",
+  "books_wip_cost_allocations",
+  "books_inventory_impairments",
+  "books_bank_offsets",
+  "books_bank_offset_lines",
+  "books_1099_packages",
   "books_settings",
   "accounting_policies",
   "accounting_account_mappings",
@@ -84,6 +92,7 @@ export const EXPORT_TABLES = [
   "opening_balance_batches",
   "opening_balance_lines",
   "opening_balance_approvals",
+  "bank_feed_connections",
   "bank_accounts",
   "bank_transactions",
   "bank_transaction_details",
@@ -128,6 +137,9 @@ export const EXPORT_TABLES = [
   "files",
   "audit_log",
 ] as const;
+
+/** Records first archived in schema 34; an older archive simply has none. */
+const SCHEMA34_TABLES = new Set<string>(["bank_feed_connections", "books_revenue_policies", "books_development_allocations", "books_cost_allocations", "books_wip_cost_allocations", "books_inventory_impairments", "books_bank_offsets", "books_bank_offset_lines", "books_1099_packages"]);
 
 export function verifyBooksExportBundle(bundle: {
   tables: Record<string, Record<string, unknown>[]>;
@@ -199,14 +211,14 @@ export function verifyBooksExportBundle(bundle: {
   if (
     bundle.manifest &&
     ![
-      2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 33,
+      2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 33, 34,
     ].includes(bundle.manifest.schemaVersion)
   )
     integrityErrors.push("Unsupported Books export schema version");
   if (
     bundle.manifest &&
     [
-      2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 33,
+      2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 33, 34,
     ].includes(bundle.manifest.schemaVersion)
   ) {
     if (bundle.manifest.schemaVersion >= 31)
@@ -230,6 +242,12 @@ export function verifyBooksExportBundle(bundle: {
       if (
         bundle.manifest.schemaVersion < 33 &&
         (table === "books_legal_entities" || table === "books_intercompany_sales") &&
+        !bundle.tables[table]
+      )
+        continue;
+      if (
+        bundle.manifest.schemaVersion < 34 &&
+        SCHEMA34_TABLES.has(table) &&
         !bundle.tables[table]
       )
         continue;

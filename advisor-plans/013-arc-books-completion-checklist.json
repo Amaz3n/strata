@@ -4990,7 +4990,7 @@
       "workstream": "B05",
       "title": "Filing-ready review and partner handoff",
       "status": "PARTIAL",
-      "status_basis": "Verified locally (TAX-01 package-review-and-handoff; vendor-1099 browser journey): a package per paying company and year freezes payees at or over the threshold (last four only); preparing is refused listing every blocked payee and a missing company TIN or address; the preparer cannot approve; a payment after preparation refuses approval until withdrawn and prepared again; a Books member without books.tax cannot get the file and sees no full TIN; the approved file (full TINs from Vault, each matched to the frozen last four, checked against the import format and approved totals, audited) downloads no-store, while the package stays approved (not filed) until a submission is recorded; submitted, rejected, resubmitted, accepted; a correction supersedes the accepted package, which keeps its approval, submission and outcome. Remaining: validating the file in a chosen filing partner's sandbox or import; including books_1099_packages and the payer TIN reference in the Books archive (B06).",
+      "status_basis": "Verified locally (TAX-01 package-review-and-handoff; vendor-1099 browser journey): a package per paying company and year freezes payees at or over the threshold (last four only); preparing is refused listing every blocked payee and a missing company TIN or address; the preparer cannot approve; a payment after preparation refuses approval until withdrawn and prepared again; a Books member without books.tax cannot get the file and sees no full TIN; the approved file (full TINs from Vault, each matched to the frozen last four, checked against the import format and approved totals, audited) downloads no-store, while the package stays approved (not filed) until a submission is recorded; submitted, rejected, resubmitted, accepted; a correction supersedes the accepted package, which keeps its approval, submission and outcome. Remaining: validating the file in a chosen filing partner's sandbox or import. (Archive coverage of 1099 packages was added in export schema 34.)",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "package totals reconcile to reviewed report and payment evidence",
@@ -5055,7 +5055,7 @@
       "workstream": "B06",
       "title": "Consistent streamed capture and archive jobs",
       "status": "PARTIAL",
-      "status_basis": "Scoped schema19 retained ownership review/archive/recovery verified; native full schema, actual source/ledger ownership, workflow UI, company recovery and release evidence incomplete.",
+      "status_basis": "Progress (RESTORE-01, export/restore tests): export schema 34 adds the accounting records built since schema 33 (revenue policies, development, cost and WIP allocations, inventory impairments, bank offsets and lines, 1099 packages, bank feed connections) to the one-snapshot capture; no taxpayer ID, Vault pointer or feed credential enters the archive; schemas 2-17 and 33 still verify. Remaining: durable background capture with streaming, bounded memory and resumable attempts (today one in-memory snapshot); capacity profile (B09).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "source edits during capture cannot mix revisions",
@@ -6110,6 +6110,37 @@
             "Authenticated application and complete company recovery/golden acceptance",
             "Independent licensed CPA and actual builder parallel close; release authorization"
           ]
+        },
+        {
+          "verified_at": "2026-10-08T04:40:05.001506+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261008030000_books_export_schema34.sql",
+            "supabase/migrations/20261008020000_books_1099_packages.sql",
+            "lib/services/books/export-contract.ts",
+            "lib/services/books/restore-plan.ts",
+            "lib/services/books/restore-preflight.ts",
+            "scripts/books-acceptance/scenarios/restore-01.cjs",
+            "scripts/books-acceptance/scenarios/entity-01.cjs",
+            "tests/books-restore-plan.test.js",
+            "docs/books-restore.md"
+          ],
+          "test_scenario_ids": [
+            "RESTORE-01",
+            "ENTITY-01"
+          ],
+          "commands": [
+            "scenario-runner RESTORE-01 (2/2) and full regression",
+            "node --test tests/books-export-*.test.js tests/books-restore-*.test.js",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "Found by this work: seven accounting tables added in B08-B14 were missing from the archive, so a restore would have silently lost them.",
+            "Regression green (16 scenarios incl. RESTORE-01 2/2); test:financials 2,525 pass; tsc clean; lint only the other session's existing error.",
+            "Migration 20261008030000_books_export_schema34 applied to the acceptance stack only; production waits for approval."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-restore"
         }
       ],
       "remaining_criteria": [
@@ -6128,7 +6159,7 @@
       "workstream": "B06",
       "title": "Self-contained recoverable dependency package",
       "status": "PARTIAL",
-      "status_basis": "Scoped schema19 retained ownership review/archive/recovery verified; native full schema, actual source/ledger ownership, workflow UI, company recovery and release evidence incomplete.",
+      "status_basis": "Progress (RESTORE-01 tax-records and closed-group): preflight against the actual target catalog names blockers, external identities and every taxpayer ID that Vault recovery must supply; the plan records each intentional change (generated columns, disabled funding, bank feeds disconnected with a placeholder credential) without touching the archive; actor and audit relationships restore with explicit identity mappings; the 1099 filing file refuses until the payer EIN is re-entered, then is byte-identical. Remaining: supporting document bytes and path safety against live storage (STORE-01).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "preflight names every external/secret requirement before writes",
@@ -7198,6 +7229,37 @@
             "Authenticated application and complete company recovery/golden acceptance",
             "Independent licensed CPA and actual builder parallel close; release authorization"
           ]
+        },
+        {
+          "verified_at": "2026-10-08T04:40:05.001506+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261008030000_books_export_schema34.sql",
+            "supabase/migrations/20261008020000_books_1099_packages.sql",
+            "lib/services/books/export-contract.ts",
+            "lib/services/books/restore-plan.ts",
+            "lib/services/books/restore-preflight.ts",
+            "scripts/books-acceptance/scenarios/restore-01.cjs",
+            "scripts/books-acceptance/scenarios/entity-01.cjs",
+            "tests/books-restore-plan.test.js",
+            "docs/books-restore.md"
+          ],
+          "test_scenario_ids": [
+            "RESTORE-01",
+            "ENTITY-01"
+          ],
+          "commands": [
+            "scenario-runner RESTORE-01 (2/2) and full regression",
+            "node --test tests/books-export-*.test.js tests/books-restore-*.test.js",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "Re-entering a payer EIN after restore relinks the company's existing Vault secret instead of failing on its name (fixed in the pending 1099 migration).",
+            "Regression green (16 scenarios incl. RESTORE-01 2/2); test:financials 2,525 pass; tsc clean; lint only the other session's existing error.",
+            "Migration 20261008030000_books_export_schema34 applied to the acceptance stack only; production waits for approval."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-restore"
         }
       ],
       "remaining_criteria": [
@@ -7217,7 +7279,7 @@
       "workstream": "B06",
       "title": "Full populated recovery and post-restore continuity",
       "status": "PARTIAL",
-      "status_basis": "Schema18 native setup archive and scoped populated upgrade/recovery locally verified; native full schema, complete company restore, workflow ownership and release evidence incomplete.",
+      "status_basis": "Progress (RESTORE-01 closed-group-and-continuation): a closed two-company group is archived, lost and restored from the plan: every archived table's checksum identical except the planned feed disconnection, July tie-outs and saved per-company statements unchanged, a July journal refused (closed), an exact projector rerun adds nothing; then August is opened, billed, collected, a bill paid, a truck bought and depreciated, WIP reviewed, the bank statement reconciled and August closed with controls passing. Restore measured: 95 ms (175 rows) and 167 ms (TAX-01 company, 1,200+ payments). Remaining: supporting document bytes (STORE-01), payroll correction after restore (payroll not day one), large-company timing (B09).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "every control and immutable report reproduces to the cent",
@@ -7842,6 +7904,36 @@
             "Authenticated application and complete company recovery/golden acceptance",
             "Independent licensed CPA and actual builder parallel close; release authorization"
           ]
+        },
+        {
+          "verified_at": "2026-10-08T04:40:05.001506+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261008030000_books_export_schema34.sql",
+            "supabase/migrations/20261008020000_books_1099_packages.sql",
+            "lib/services/books/export-contract.ts",
+            "lib/services/books/restore-plan.ts",
+            "lib/services/books/restore-preflight.ts",
+            "scripts/books-acceptance/scenarios/restore-01.cjs",
+            "scripts/books-acceptance/scenarios/entity-01.cjs",
+            "tests/books-restore-plan.test.js",
+            "docs/books-restore.md"
+          ],
+          "test_scenario_ids": [
+            "RESTORE-01",
+            "ENTITY-01"
+          ],
+          "commands": [
+            "scenario-runner RESTORE-01 (2/2) and full regression",
+            "node --test tests/books-export-*.test.js tests/books-restore-*.test.js",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "Regression green (16 scenarios incl. RESTORE-01 2/2); test:financials 2,525 pass; tsc clean; lint only the other session's existing error.",
+            "Migration 20261008030000_books_export_schema34 applied to the acceptance stack only; production waits for approval."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-restore"
         }
       ],
       "remaining_criteria": [
@@ -17229,7 +17321,8 @@
           "20261007235800_books_legal_entities",
           "20261007235900_books_intercompany_lot_sales",
           "20261008001000_books_company_opening_balances",
-          "20261008020000_books_1099_packages"
+          "20261008020000_books_1099_packages",
+          "20261008030000_books_export_schema34"
         ],
         "older_files_to_classify": [
           "20260801020000_invoice_lines_budget_line_linkage",

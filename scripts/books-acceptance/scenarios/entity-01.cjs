@@ -280,6 +280,11 @@ begin
     select string_agg(quote_ident(column_name), ',' order by ordinal_position) into cols from information_schema.columns
       where table_schema = 'public' and table_name = t and is_generated = 'NEVER';
     select s -> 'tables' -> t into rows from snap;
+    -- As the restore plan does: a feed connection comes back disconnected, without its credential.
+    if t = 'bank_feed_connections' then
+      select coalesce(jsonb_agg(r || jsonb_build_object('secret_ref', 'restore-disconnected:' || (r->>'id'), 'status', 'disconnected', 'disconnected_at', coalesce(r->>'disconnected_at', r->>'updated_at'))), '[]'::jsonb)
+        into rows from jsonb_array_elements(coalesce(rows, '[]'::jsonb)) r;
+    end if;
     execute format('delete from public.%I where org_id = %L', t, ${q(org.orgId)});
     execute format('insert into public.%I (%s) overriding system value select %s from jsonb_populate_recordset(null::public.%I, $1)', t, cols, cols, t) using coalesce(rows, '[]'::jsonb);
   end loop;

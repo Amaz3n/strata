@@ -77,6 +77,12 @@ export function preflightBooksRestore(bundle: Bundle, catalog: BooksRestoreCatal
     }
   }
   const order = (left: { table: string; rowId: string }, right: { table: string; rowId: string }) => left.table < right.table ? -1 : left.table > right.table ? 1 : left.rowId < right.rowId ? -1 : left.rowId > right.rowId ? 1 : 0
-  blockers.sort(order); externalDependencies.sort(order)
-  return { schemaVersion: bundle.manifest.schemaVersion, orgId: bundle.manifest.orgId, readyForRestoreAttempt: !blockers.length && !externalDependencies.length, blockers, externalDependencies }
+  // Taxpayer IDs never enter an ordinary archive: each one is restored by the
+  // separate privileged Vault recovery (or a new W-9). Named here, not blocking.
+  const secretRecovery = [
+    ...(bundle.tables.companies ?? []).filter((record) => record.tax_id_last4).map((record) => ({ table: "companies", rowId: String(record.id), reason: "Vendor taxpayer ID is kept in Vault: recover it with the privileged Vault restore or collect a new W-9" })),
+    ...(bundle.tables.books_legal_entities ?? []).filter((record) => record.payer_tin_last4).map((record) => ({ table: "books_legal_entities", rowId: String(record.id), reason: "The company's own taxpayer ID is kept in Vault: recover it with the privileged Vault restore or enter it again before filing" })),
+  ]
+  blockers.sort(order); externalDependencies.sort(order); secretRecovery.sort(order)
+  return { schemaVersion: bundle.manifest.schemaVersion, orgId: bundle.manifest.orgId, readyForRestoreAttempt: !blockers.length && !externalDependencies.length, blockers, externalDependencies, secretRecovery }
 }

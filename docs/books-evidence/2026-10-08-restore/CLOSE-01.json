@@ -1,0 +1,587 @@
+{
+  "scenario": "CLOSE-01",
+  "status": "INCOMPLETE",
+  "reviewedFrom": "Month-end close controls: a closed period accepts no postings; a source dated into a closed period must surface as blocked (never silently re-dated or dropped) and block later closes until cured by reopening; manual journals need an independent reviewer before close; a failed close leaves the period open and a retry produces exactly the books a clean close would; each close's saved statements report that period's balances. POC figures follow docs/books-revenue-recognition.md §5 (July of the worked example). Pending licensed-CPA review (B16.3). Amounts are integer cents.",
+  "subcases": [
+    {
+      "name": "late-source-into-closed-period",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "ebd94128-911f-460e-ad31-01f071d2ac1d",
+        "lateInvoiceId": "0472644f-2a7d-4835-b067-65c5b075a268"
+      },
+      "checks": [
+        {
+          "label": "a source dated into closed July shows as blocked",
+          "pass": true,
+          "expected": "blocked",
+          "observed": "blocked"
+        },
+        {
+          "label": "closed July's ledger is unchanged",
+          "pass": true,
+          "expected": {
+            "1100": 100000,
+            "4900": -100000
+          },
+          "observed": {
+            "1100": 100000,
+            "4900": -100000
+          }
+        },
+        {
+          "label": "the August close is blocked by the unposted July source",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "a direct journal into closed July is refused",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "after reopening, the late invoice posts on its own date",
+          "pass": true,
+          "expected": "2026-07-25",
+          "observed": "2026-07-25"
+        },
+        {
+          "label": "its posting status is current",
+          "pass": true,
+          "expected": "posted",
+          "observed": "posted"
+        },
+        {
+          "label": "the reclose records a new digest",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "July's current close stands on the corrected balance sheet",
+          "pass": true,
+          "expected": {
+            "1100": 150000
+          },
+          "observed": {
+            "1100": 150000
+          }
+        },
+        {
+          "label": "August closes once the source is cured",
+          "pass": true,
+          "expected": "closed",
+          "observed": "closed"
+        },
+        {
+          "label": "final ledger",
+          "pass": true,
+          "expected": {
+            "1100": 150000,
+            "4900": -150000
+          },
+          "observed": {
+            "1100": 150000,
+            "4900": -150000
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T04:34:04.628Z"
+    },
+    {
+      "name": "unreviewed-journal-proposal-blocks-close",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "a0f76ae5-a2ca-435d-b9e8-2f8c3077d9f4",
+        "proposalId": "f8e69f20-7b0b-47b4-b11b-46ab853f09d3"
+      },
+      "checks": [
+        {
+          "label": "close is blocked by the unreviewed proposal",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "the proposer cannot approve their own journal",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "the period closes after independent review",
+          "pass": true,
+          "expected": "closed",
+          "observed": "closed"
+        },
+        {
+          "label": "the reviewed journal is posted",
+          "pass": true,
+          "expected": {
+            "3010": -250000,
+            "6000": 250000
+          },
+          "observed": {
+            "3010": -250000,
+            "6000": 250000
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T04:34:08.601Z"
+    },
+    {
+      "name": "close-failure-resumes",
+      "status": "PASSED",
+      "identities": {
+        "statement_snapshot": "b44ce9d6-6c09-41ba-bc4c-d1df707be22f",
+        "period_lock": "f38665f2-0088-486b-b5cd-398fb9a2490c"
+      },
+      "checks": [
+        {
+          "label": "statement_snapshot: the injected failure stops the close",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "statement_snapshot: the period is left open without a digest",
+          "pass": true,
+          "expected": {
+            "status": "open",
+            "digest": null
+          },
+          "observed": {
+            "status": "open",
+            "digest": null
+          }
+        },
+        {
+          "label": "statement_snapshot: the retry closes the period",
+          "pass": true,
+          "expected": "closed",
+          "observed": "closed"
+        },
+        {
+          "label": "statement_snapshot: the retry's books equal a clean close",
+          "pass": true,
+          "expected": {
+            "1100": 27000000,
+            "1110": 3000000,
+            "2000": -20000000,
+            "2350": -5000000,
+            "4000": -25000000,
+            "5000": 20000000
+          },
+          "observed": {
+            "1100": 27000000,
+            "1110": 3000000,
+            "2000": -20000000,
+            "2350": -5000000,
+            "4000": -25000000,
+            "5000": 20000000
+          }
+        },
+        {
+          "label": "statement_snapshot: exactly one recognition entry",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "statement_snapshot: one saved statement per type",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "statement_snapshot: the close stands on the retry's balance sheet",
+          "pass": true,
+          "expected": {
+            "1100": 27000000,
+            "1110": 3000000
+          },
+          "observed": {
+            "1100": 27000000,
+            "1110": 3000000
+          }
+        },
+        {
+          "label": "period_lock: the injected failure stops the close",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "period_lock: the period is left open without a digest",
+          "pass": true,
+          "expected": {
+            "status": "open",
+            "digest": null
+          },
+          "observed": {
+            "status": "open",
+            "digest": null
+          }
+        },
+        {
+          "label": "period_lock: the retry closes the period",
+          "pass": true,
+          "expected": "closed",
+          "observed": "closed"
+        },
+        {
+          "label": "period_lock: the retry's books equal a clean close",
+          "pass": true,
+          "expected": {
+            "1100": 27000000,
+            "1110": 3000000,
+            "2000": -20000000,
+            "2350": -5000000,
+            "4000": -25000000,
+            "5000": 20000000
+          },
+          "observed": {
+            "1100": 27000000,
+            "1110": 3000000,
+            "2000": -20000000,
+            "2350": -5000000,
+            "4000": -25000000,
+            "5000": 20000000
+          }
+        },
+        {
+          "label": "period_lock: exactly one recognition entry",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "period_lock: one saved statement per type",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "period_lock: the close stands on the retry's balance sheet",
+          "pass": true,
+          "expected": {
+            "1100": 27000000,
+            "1110": 3000000
+          },
+          "observed": {
+            "1100": 27000000,
+            "1110": 3000000
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T04:34:08.809Z"
+    },
+    {
+      "name": "twelve-month-sequence-snapshots",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "59cc1e32-fa3c-49ef-996d-1000b9237e54"
+      },
+      "checks": [
+        {
+          "label": "twelve distinct close digests",
+          "pass": true,
+          "expected": 12,
+          "observed": 12
+        },
+        {
+          "label": "each saved balance sheet reports that month's receivables",
+          "pass": true,
+          "expected": [
+            100000,
+            200000,
+            300000,
+            400000,
+            500000,
+            600000,
+            700000,
+            800000,
+            900000,
+            1000000,
+            1100000,
+            1200000
+          ],
+          "observed": [
+            100000,
+            200000,
+            300000,
+            400000,
+            500000,
+            600000,
+            700000,
+            800000,
+            900000,
+            1000000,
+            1100000,
+            1200000
+          ]
+        }
+      ],
+      "startedAt": "2026-10-08T04:34:11.098Z"
+    },
+    {
+      "name": "quarter-end",
+      "status": "NOT_IMPLEMENTED",
+      "checks": []
+    },
+    {
+      "name": "all-supported-modules",
+      "status": "NOT_IMPLEMENTED",
+      "checks": []
+    },
+    {
+      "name": "abandoned-close-resumes",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "9ba82fc7-99d9-495a-8cfe-ff8bc4b6060a"
+      },
+      "checks": [
+        {
+          "label": "operational postings are refused while the period is frozen",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "a second close within 30 minutes refuses as already running",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "the next close resumes and finishes",
+          "pass": true,
+          "expected": {
+            "status": "closed",
+            "close_started_at": null,
+            "close_prior_status": null
+          },
+          "observed": {
+            "status": "closed",
+            "close_started_at": null,
+            "close_prior_status": null
+          }
+        },
+        {
+          "label": "one recognition entry",
+          "pass": true,
+          "expected": 1,
+          "observed": 1
+        },
+        {
+          "label": "the resumed close's ledger equals a clean close",
+          "pass": true,
+          "expected": {
+            "1100": 27000000,
+            "1110": 3000000,
+            "2000": -20000000,
+            "2350": -5000000,
+            "4000": -25000000,
+            "5000": 20000000
+          },
+          "observed": {
+            "1100": 27000000,
+            "1110": 3000000,
+            "2000": -20000000,
+            "2350": -5000000,
+            "4000": -25000000,
+            "5000": 20000000
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T04:34:15.706Z"
+    },
+    {
+      "name": "gate-matrix",
+      "status": "PASSED",
+      "identities": {
+        "cleanOrgId": "56b751b0-f65b-4830-a222-8547fb42c552",
+        "combinedOrgId": "61ec0b26-c6f6-4ba9-a0ef-f47aa1625f2b"
+      },
+      "checks": [
+        {
+          "label": "a valid company has no blocking checks",
+          "pass": true,
+          "expected": [],
+          "observed": []
+        },
+        {
+          "label": "draft-journal: blocks for exactly its cause",
+          "pass": true,
+          "expected": [
+            "All journals posted"
+          ],
+          "observed": [
+            "All journals posted"
+          ]
+        },
+        {
+          "label": "draft-journal: the cure clears it",
+          "pass": true,
+          "expected": [],
+          "observed": []
+        },
+        {
+          "label": "unreviewed-proposal: blocks for exactly its cause",
+          "pass": true,
+          "expected": [
+            "Manual journal proposals independently reviewed"
+          ],
+          "observed": [
+            "Manual journal proposals independently reviewed"
+          ]
+        },
+        {
+          "label": "unreviewed-proposal: the cure clears it",
+          "pass": true,
+          "expected": [],
+          "observed": []
+        },
+        {
+          "label": "unreconciled-bank: blocks for exactly its cause",
+          "pass": true,
+          "expected": [
+            "Bank and card accounts reconciled"
+          ],
+          "observed": [
+            "Bank and card accounts reconciled"
+          ]
+        },
+        {
+          "label": "unreconciled-bank: the cure clears it",
+          "pass": true,
+          "expected": [],
+          "observed": []
+        },
+        {
+          "label": "undeposited-receipt: blocks for exactly its cause",
+          "pass": true,
+          "expected": [
+            "Clearing and undeposited-funds accounts reviewed"
+          ],
+          "observed": [
+            "Clearing and undeposited-funds accounts reviewed"
+          ]
+        },
+        {
+          "label": "undeposited-receipt: the cure clears it",
+          "pass": true,
+          "expected": [],
+          "observed": []
+        },
+        {
+          "label": "invoice-not-yet-posted: blocks for exactly its cause",
+          "pass": true,
+          "expected": [
+            "Accounts receivable ties to the AR subledger"
+          ],
+          "observed": [
+            "Accounts receivable ties to the AR subledger"
+          ]
+        },
+        {
+          "label": "invoice-not-yet-posted: the cure clears it",
+          "pass": true,
+          "expected": [],
+          "observed": []
+        },
+        {
+          "label": "direct-job-cost-journal: blocks for exactly its cause",
+          "pass": true,
+          "expected": [
+            "GL job cost ties to the job-cost subledger"
+          ],
+          "observed": [
+            "GL job cost ties to the job-cost subledger"
+          ]
+        },
+        {
+          "label": "direct-job-cost-journal: the cure clears it",
+          "pass": true,
+          "expected": [],
+          "observed": []
+        },
+        {
+          "label": "unreviewed-wip: blocks for exactly its cause",
+          "pass": true,
+          "expected": [
+            "WIP and POC reviewed through period end"
+          ],
+          "observed": [
+            "WIP and POC reviewed through period end"
+          ]
+        },
+        {
+          "label": "unreviewed-wip: the cure clears it",
+          "pass": true,
+          "expected": [],
+          "observed": []
+        },
+        {
+          "label": "two problems: both block",
+          "pass": true,
+          "expected": [
+            "Clearing and undeposited-funds accounts reviewed",
+            "Manual journal proposals independently reviewed"
+          ],
+          "observed": [
+            "Clearing and undeposited-funds accounts reviewed",
+            "Manual journal proposals independently reviewed"
+          ]
+        },
+        {
+          "label": "curing one leaves the other",
+          "pass": true,
+          "expected": [
+            "Clearing and undeposited-funds accounts reviewed"
+          ],
+          "observed": [
+            "Clearing and undeposited-funds accounts reviewed"
+          ]
+        },
+        {
+          "label": "curing both clears the close",
+          "pass": true,
+          "expected": [],
+          "observed": []
+        }
+      ],
+      "startedAt": "2026-10-08T04:34:16.462Z"
+    },
+    {
+      "name": "reviewer-cannot-mutate-gates",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "6a68ee08-5a19-4070-803e-cc014cb42427"
+      },
+      "checks": [
+        {
+          "label": "a read-only reviewer is refused every gate mutation",
+          "pass": true,
+          "expected": {
+            "runChecks": true,
+            "clearingSupport": true,
+            "close": true,
+            "reopen": true
+          },
+          "observed": {
+            "runChecks": true,
+            "clearingSupport": true,
+            "close": true,
+            "reopen": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T04:34:19.125Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-08T04:34:19.240Z"
+}

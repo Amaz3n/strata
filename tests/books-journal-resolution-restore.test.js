@@ -38,7 +38,7 @@ async function archive(f) {
   const bundle = {
     tables,
     manifest: {
-      schemaVersion: 33,
+      schemaVersion: 34,
       orgId: id(1),
       tables: Object.fromEntries(
         Object.entries(tables).map(([name, rows]) => [

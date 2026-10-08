@@ -157,7 +157,7 @@ test('schema 10 archive proves payment evidence and original bytes, restores all
  const {verifyBooksExportBundle,BOOKS_EXPORT_SCHEMA_VERSION,EXPORT_TABLES}=require('../lib/services/books/export-contract'),{historicalDocumentInventory}=require('../lib/services/books/tax-attachment-archive')
  const tables=(await capture(f.db)).tables
  const bundle={tables,manifest:{schemaVersion:BOOKS_EXPORT_SCHEMA_VERSION,orgId:org,tables:Object.fromEntries(Object.entries(tables).map(([name,rows])=>[name,{rows:rows.length,checksum:booksDigest(rows)}])),supportingFiles:tables.files.map(file=>({id:file.id,storagePath:file.storage_path,sizeBytes:file.size_bytes,checksum:file.checksum})),supportingHistoricalFiles:historicalDocumentInventory(tables,org)},supportingObjects:[{fileId:id(8),dataBase64:f.registerBytes.toString('base64')},{fileId:id(70),dataBase64:f.paymentBytes.toString('base64')}],supportingHistoricalObjects:[]}
- assert.equal(BOOKS_EXPORT_SCHEMA_VERSION,33)
+ assert.equal(BOOKS_EXPORT_SCHEMA_VERSION,34)
  assert.equal(verifyBooksExportBundle(bundle).valid,true,JSON.stringify(verifyBooksExportBundle(bundle)))
  for(const mutate of [b=>b.tables.books_payroll_payment_reviews[0].reviewed_by=null,b=>b.tables.books_payroll_payment_reviews[0].prepared_at='invalid',b=>{const l=b.tables.journal_lines.find(row=>row.id===id(63));l.debit_cents=l.credit_cents;l.credit_cents=0},b=>{const e=b.tables.books_payroll_payment_reviews[0];e.evidence.allocation_components[0].signed_cents++;e.evidence_digest=booksDigest(e.evidence)}]){
   const b=structuredClone(bundle);mutate(b);for(const [name,rows] of Object.entries(b.tables))b.manifest.tables[name].checksum=booksDigest(rows)

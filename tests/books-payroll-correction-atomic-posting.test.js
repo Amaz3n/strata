@@ -64,7 +64,7 @@ test('posted source/proposal, receipt, signed cost and GL cannot be independentl
 })
 test('export schema 16 independently verifies actual corrective money and populated restore preserves exact retry and guards',async t=>{
  const f=await correctionPostingFixture(t);await postCorrection(f);const {tables}=await receipt(f),archive=bundle(f,tables)
- assert.equal(BOOKS_EXPORT_SCHEMA_VERSION,33);assert.equal(verifyBooksExportBundle(archive).valid,true,JSON.stringify(verifyBooksExportBundle(archive)))
+ assert.equal(BOOKS_EXPORT_SCHEMA_VERSION,34);assert.equal(verifyBooksExportBundle(archive).valid,true,JSON.stringify(verifyBooksExportBundle(archive)))
  for(const mutate of [
   b=>b.tables.job_cost_entries.find(j=>j.source_type==='payroll_correction').cost_cents++,
   b=>b.tables.journal_lines.find(l=>l.entry_id===tables.books_payroll_correction_postings[0].result.journalId).dimensions.payroll_run_id=id(999),
