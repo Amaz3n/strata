@@ -7,9 +7,9 @@
       "name": "void-before-close",
       "status": "PASSED",
       "identities": {
-        "orgId": "339bdabe-862f-4d46-bf90-a9e50442fd1b",
-        "kept": "b181d7e9-d093-4f19-9f17-bcf917f6e249",
-        "voided": "ebbc6c8d-1a36-4cd0-ad2d-63497f1dc5a8",
+        "orgId": "d933f6d0-2174-4bff-8e05-63ae6950a162",
+        "kept": "45ce3f8f-ce88-4364-a306-578e3ca5711f",
+        "voided": "8ed05794-bd56-4b5b-bac3-a05ba8082c43",
         "agingKeys": [
           "as_of",
           "project_id",
@@ -40,13 +40,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-08T00:13:06.656Z"
+      "startedAt": "2026-10-08T00:42:22.845Z"
     },
     {
       "name": "removal-after-close-refused",
       "status": "PASSED",
       "identities": {
-        "orgId": "610b41da-93db-4e7d-83be-74c68f82b139"
+        "orgId": "9cffca9a-20df-4741-82b6-449c17a3fbef"
       },
       "checks": [
         {
@@ -68,13 +68,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-08T00:13:10.029Z"
+      "startedAt": "2026-10-08T00:42:26.176Z"
     },
     {
       "name": "frozen-aging",
       "status": "PASSED",
       "identities": {
-        "orgId": "a41e00ea-803e-47b2-851d-c046a11bed28"
+        "orgId": "a34bb298-046b-47eb-aea9-faf274a4a317"
       },
       "checks": [
         {
@@ -94,13 +94,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-08T00:13:10.850Z"
+      "startedAt": "2026-10-08T00:42:26.970Z"
     },
     {
       "name": "ties-at-cutoffs",
       "status": "PASSED",
       "identities": {
-        "orgId": "f214ed07-3083-427f-8aa3-379265d3ab9c"
+        "orgId": "68bb83a4-4802-478b-bfc9-998e849de08a"
       },
       "checks": [
         {
@@ -172,13 +172,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-08T00:13:11.337Z"
+      "startedAt": "2026-10-08T00:42:27.446Z"
     },
     {
       "name": "restatement",
       "status": "PASSED",
       "identities": {
-        "orgId": "dead76f5-ff99-40a5-a8e8-df4d0cd2e008"
+        "orgId": "e37fef53-eec3-42e6-987b-fada4a7f834b"
       },
       "checks": [
         {
@@ -214,13 +214,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-08T00:13:13.051Z"
+      "startedAt": "2026-10-08T00:42:29.144Z"
     },
     {
       "name": "volume-aging",
       "status": "PASSED",
       "identities": {
-        "orgId": "a4ba8c30-5d7a-4592-99d8-96434bf0df56"
+        "orgId": "b4e92c92-6e8a-4456-b2a3-394ab6669112"
       },
       "checks": [
         {
@@ -242,13 +242,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-08T00:13:13.819Z"
+      "startedAt": "2026-10-08T00:42:29.898Z"
     },
     {
       "name": "opening-items",
       "status": "PASSED",
       "identities": {
-        "orgId": "9c6592c2-3243-4c06-8342-1fca5406590c"
+        "orgId": "8bdc08c2-e6af-49e3-902a-88fc9cc86239"
       },
       "checks": [
         {
@@ -344,16 +344,16 @@
           }
         }
       ],
-      "startedAt": "2026-10-08T00:13:36.297Z"
+      "startedAt": "2026-10-08T00:42:52.082Z"
     },
     {
       "name": "customer-statement",
       "status": "PASSED",
       "identities": {
-        "orgId": "940db1da-c248-4417-afb1-4b305cfac76f",
-        "kept": "590a7395-97a0-4840-86c1-eb4f7da64dc0",
-        "voided": "e2d2a708-536f-4f58-9aaf-7d25d2e8d29f",
-        "customer": "a91abb9f-7ef9-4c3b-91d1-b0c70ae6abef"
+        "orgId": "9e2a8e3d-91d4-4119-8227-12e10d58b9da",
+        "kept": "42796a06-8b73-405e-a36d-f5a7d43725a2",
+        "voided": "b3d40959-bdd7-4f8f-8f8b-a791d0b2d004",
+        "customer": "b3c85ca1-82cc-4ffd-9bcc-df778cb87552"
       },
       "checks": [
         {
@@ -413,15 +413,15 @@
           }
         }
       ],
-      "startedAt": "2026-10-08T00:13:36.901Z"
+      "startedAt": "2026-10-08T00:42:52.685Z"
     },
     {
       "name": "undated-void",
       "status": "PASSED",
       "identities": {
-        "orgId": "4ca1ec94-5a18-45b6-8591-a3b512278972",
-        "kept": "5b39d642-1e9d-416c-9e5b-3cda8942906a",
-        "legacy": "d35cd7d3-f9f6-4e7a-ab24-c5800352a003"
+        "orgId": "5615d5e6-ea2d-44b5-a6ba-d2b936bd5cdb",
+        "kept": "b4604556-4165-4117-80b1-5113d5505508",
+        "legacy": "87f1a293-706c-4e29-a4b4-a6c30627bb7e"
       },
       "checks": [
         {
@@ -499,9 +499,9 @@
           }
         }
       ],
-      "startedAt": "2026-10-08T00:13:37.851Z"
+      "startedAt": "2026-10-08T00:42:53.601Z"
     }
   ],
   "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
-  "finishedAt": "2026-10-08T00:13:38.631Z"
+  "finishedAt": "2026-10-08T00:42:54.336Z"
 }

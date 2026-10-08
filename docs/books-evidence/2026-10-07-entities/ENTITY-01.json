@@ -7,9 +7,9 @@
       "name": "payment-across-companies",
       "status": "PASSED",
       "identities": {
-        "orgId": "ba03346a-723c-412c-8a1b-5cc53ed529eb",
-        "land": "90cdddf6-b126-4f47-a8c2-7cf249c54d10",
-        "builder": "854c3b82-94bf-4694-989a-525af3706613"
+        "orgId": "f9ea5cdf-449b-403e-af82-71da28fcfb90",
+        "land": "c7e16ce5-ff4a-43f3-befa-72e623797d45",
+        "builder": "96d35f9a-7533-44e5-acc6-18d86731a0c9"
       },
       "checks": [
         {
@@ -66,6 +66,10 @@
                 "1005": -3000000,
                 "5000": 3000000
               }
+            },
+            "vendor1099": {
+              "land": 3000000,
+              "builder": 0
             }
           },
           "observed": {
@@ -119,17 +123,21 @@
                 "1005": -3000000,
                 "5000": 3000000
               }
+            },
+            "vendor1099": {
+              "land": 3000000,
+              "builder": 0
             }
           }
         }
       ],
-      "startedAt": "2026-10-08T00:14:12.676Z"
+      "startedAt": "2026-10-08T00:43:28.060Z"
     },
     {
       "name": "ownership-fixed-and-reversal",
       "status": "PASSED",
       "identities": {
-        "orgId": "11e66ed3-6521-4c84-8c17-7cd67e123f67"
+        "orgId": "31bf27c4-af18-485a-97ee-fc0bb1f57256"
       },
       "checks": [
         {
@@ -179,13 +187,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-08T00:14:16.044Z"
+      "startedAt": "2026-10-08T00:43:31.510Z"
     },
     {
       "name": "single-company-unchanged",
       "status": "PASSED",
       "identities": {
-        "orgId": "38a6874b-bf99-4b57-a19f-dfb9ea50d52f"
+        "orgId": "e0da05dc-b1ce-4d7b-a6de-067071484f13"
       },
       "checks": [
         {
@@ -205,14 +213,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-08T00:14:16.973Z"
+      "startedAt": "2026-10-08T00:43:32.431Z"
     },
     {
       "name": "company-subledgers-and-close",
       "status": "PASSED",
       "identities": {
-        "orgId": "b454bf39-979b-40d1-9c39-86e3b4d10dc1",
-        "landJob": "52ebced1-3770-4086-9f05-fe368aaf35a3"
+        "orgId": "6d492d4e-3934-4fa7-b5d0-59307d5a5cdb",
+        "landJob": "2a1533bb-f8d5-4ed3-a24e-4f58a2e7c712"
       },
       "checks": [
         {
@@ -276,13 +284,13 @@
           }
         }
       ],
-      "startedAt": "2026-10-08T00:14:17.424Z"
+      "startedAt": "2026-10-08T00:43:32.874Z"
     },
     {
       "name": "intercompany-lot-sale",
       "status": "PASSED",
       "identities": {
-        "orgId": "125d7043-9b6c-42ff-8b10-be597cf53718"
+        "orgId": "8a494b84-23ad-45b2-851b-f05873ec0771"
       },
       "checks": [
         {
@@ -392,9 +400,145 @@
           }
         }
       ],
-      "startedAt": "2026-10-08T00:14:18.424Z"
+      "startedAt": "2026-10-08T00:43:33.862Z"
+    },
+    {
+      "name": "company-openings",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "b23a22da-bdb5-4b8f-88fe-d2577acdb56a"
+      },
+      "checks": [
+        {
+          "label": "each company opens with its own position, and a batch spanning companies is refused",
+          "pass": true,
+          "expected": {
+            "mixed": "refused: lines belong to more than one company",
+            "land": {
+              "balanced": true,
+              "accounts": {
+                "1200": 1000000,
+                "3000": 1000000
+              }
+            },
+            "builder": {
+              "balanced": true,
+              "accounts": {
+                "1200": 500000,
+                "3000": 500000
+              }
+            },
+            "consolidated": {
+              "balanced": true,
+              "accounts": {
+                "1200": 1500000,
+                "3000": 1500000
+              }
+            }
+          },
+          "observed": {
+            "mixed": "refused: lines belong to more than one company",
+            "land": {
+              "balanced": true,
+              "accounts": {
+                "1200": 1000000,
+                "3000": 1000000
+              }
+            },
+            "builder": {
+              "balanced": true,
+              "accounts": {
+                "1200": 500000,
+                "3000": 500000
+              }
+            },
+            "consolidated": {
+              "balanced": true,
+              "accounts": {
+                "1200": 1500000,
+                "3000": 1500000
+              }
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T00:43:35.235Z"
+    },
+    {
+      "name": "archive-round-trip",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "24fc76cb-8d09-41b2-bf8b-55690754c857"
+      },
+      "checks": [
+        {
+          "label": "the export alone rebuilds each company's books, and posting and guards work on the restored data",
+          "pass": true,
+          "expected": {
+            "bundleVerifies": true,
+            "balancesRestored": true,
+            "positionsRestored": true,
+            "probeLegs": 2,
+            "positionsAfterProbe": {
+              "builder": {
+                "dueFrom": 0,
+                "dueTo": 3100000
+              },
+              "land": {
+                "dueFrom": 3100000,
+                "dueTo": 0
+              }
+            },
+            "guard": "refused: already has postings"
+          },
+          "observed": {
+            "bundleVerifies": true,
+            "balancesRestored": true,
+            "positionsRestored": true,
+            "probeLegs": 2,
+            "positionsAfterProbe": {
+              "builder": {
+                "dueFrom": 0,
+                "dueTo": 3100000
+              },
+              "land": {
+                "dueFrom": 3100000,
+                "dueTo": 0
+              }
+            },
+            "guard": "refused: already has postings"
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T00:43:35.441Z"
+    },
+    {
+      "name": "foreign-company-refused",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "8274efcc-347c-448c-b1cc-ce7e5bb2dad4"
+      },
+      "checks": [
+        {
+          "label": "another organization's company is refused or shows nothing",
+          "pass": true,
+          "expected": {
+            "moved": "refused: company not found",
+            "opening": "refused: company not found",
+            "posted": "refused: not this organization's company",
+            "statementAccounts": 0
+          },
+          "observed": {
+            "moved": "refused: company not found",
+            "opening": "refused: company not found",
+            "posted": "refused: not this organization's company",
+            "statementAccounts": 0
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T00:43:36.310Z"
     }
   ],
   "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
-  "finishedAt": "2026-10-08T00:14:19.734Z"
+  "finishedAt": "2026-10-08T00:43:36.665Z"
 }

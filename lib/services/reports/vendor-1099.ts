@@ -1,4 +1,6 @@
+import { z } from "zod";
 import { requireOrgContext } from "@/lib/services/context";
+import { companyOwnership } from "@/lib/services/books/legal-entities";
 import { requirePermission } from "@/lib/services/permissions";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { collectBooksRows } from "@/lib/services/books/paging";
@@ -30,7 +32,13 @@ export type Vendor1099Report = {
 export async function getVendor1099Report({
   year,
   orgId,
-}: { year?: number; orgId?: string } = {}): Promise<Vendor1099Report> {
+  legalEntityId = null,
+}: {
+  year?: number;
+  orgId?: string;
+  /** One paying company's 1099s: what it paid from its own cash. */
+  legalEntityId?: string | null;
+} = {}): Promise<Vendor1099Report> {
   const {
     supabase,
     orgId: resolvedOrgId,
@@ -98,6 +106,17 @@ export async function getVendor1099Report({
       .gte("occurred_at", start).lt("occurred_at", end).order("id").range(from, to)),
   ]);
   const identityByCompany = new Map(identities.map(identity => [String(identity.company_id), identity]));
+  // Who paid: the company owning the cash line of the posted payment, reversal or
+  // expense; anything not yet posted counts for the primary company.
+  const paidBy = legalEntityId ? await (async () => {
+    const [{ data, error }, owner] = await Promise.all([
+      service.rpc("books_cash_source_companies", { p_org_id: resolvedOrgId, p_start: `${taxYear}-01-01`, p_end: `${taxYear}-12-31` }),
+      companyOwnership(resolvedOrgId),
+    ]);
+    if (error) throw new Error(`Failed to read which company paid: ${error.message}`);
+    const payer = new Map(z.array(z.object({ sourceId: z.string(), legalEntityId: z.string().uuid() })).parse(data ?? []).map((row) => [row.sourceId, row.legalEntityId]));
+    return (sourceId: string) => (payer.get(sourceId) ?? owner(null)) === legalEntityId;
+  })() : () => true;
   const paidByCompany = new Map<string, number>();
   const reversedByCompany = new Map<string, number>();
   const evidenceIssues = new Map<string, Set<string>>();
@@ -119,6 +138,7 @@ export async function getVendor1099Report({
     if (!bill?.company_id || !payment) throw new Error("A vendor allocation is missing its payment or vendor");
     allocatedPayments.add(`${allocation.payment_id}:${allocation.bill_id}`);
     evidencedBills.add(allocation.bill_id);
+    if (!paidBy(String(allocation.payment_id))) continue;
     addPayment(bill.company_id, payment.method, Number(allocation.amount_cents));
   }
   for (const payment of payments) {
@@ -126,6 +146,7 @@ export async function getVendor1099Report({
     if (!bill?.company_id) throw new Error("A vendor payment is missing its vendor");
     evidencedBills.add(payment.bill_id);
     if (allocatedPayments.has(`${payment.id}:${payment.bill_id}`)) continue;
+    if (!paidBy(String(payment.id))) continue;
     addPayment(bill.company_id, payment.method, Number(payment.amount_cents));
   }
   // A lifetime paid balance and last-paid date cannot prove this year's cash.
@@ -137,12 +158,14 @@ export async function getVendor1099Report({
   }
   for (const expense of expenses) {
     if (!expense.vendor_company_id || expense.accounting_coding?.transaction_type === "bill") continue;
+    if (!paidBy(String(expense.id))) continue;
     addPayment(expense.vendor_company_id, expense.payment_method, Number(expense.amount_cents ?? 0) + Number(expense.tax_cents ?? 0));
   }
   for (const reversal of reversals) {
     const bill = Array.isArray(reversal.bill) ? reversal.bill[0] : reversal.bill;
     const payment = Array.isArray(reversal.payment) ? reversal.payment[0] : reversal.payment;
     if (!bill?.company_id || !payment) throw new Error("A vendor reversal is missing its payment or vendor");
+    if (!paidBy(String(reversal.id))) continue;
     if (!payment.method) issue(bill.company_id, "A reversed payment has no method; confirm whether it is reportable");
     const cents = reportableVendorReversal({ status: reversal.status, occurredAt: reversal.occurred_at, paymentMethod: payment.method, amountCents: Number(reversal.amount_cents) }, taxYear);
     reversedByCompany.set(bill.company_id, (reversedByCompany.get(bill.company_id) ?? 0) + cents);

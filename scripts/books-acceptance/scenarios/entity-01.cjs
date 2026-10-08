@@ -61,6 +61,12 @@ async function paymentAcrossCompanies(kit, expected, check) {
     builder: await trialBalance(kit, org, org.builder),
     land: await trialBalance(kit, org, org.land),
     consolidated: await trialBalance(kit, org, null),
+    // Each company files its own 1099s: the land company paid the framing sub.
+    vendor1099: await (async () => {
+      kit.sql(`update public.companies set is_1099_eligible=true where id=${kit.q(org.vendorId)}`)
+      const paid = async (legalEntityId) => (await kit.as(org.owner, () => app("reports/vendor-1099").getVendor1099Report({ year: 2026, legalEntityId }))).rows.find((row) => row.company_id === org.vendorId)?.total_paid_cents ?? 0
+      return { land: await paid(org.land), builder: await paid(org.builder) }
+    })(),
   })
   return { orgId: org.orgId, land: org.land, builder: org.builder }
 }
@@ -209,6 +215,140 @@ async function intercompanyLotSale(kit, expected, check) {
   return { orgId: org.orgId }
 }
 
+// Each company brings its own opening position at cutover; a batch whose lines
+// belong to more than one company is refused rather than inventing what they owe
+// each other.
+async function companyOpenings(kit, expected, check) {
+  const input = expected.inputs
+  const { greenfieldOrg } = require("./shared.cjs")
+  const balances = app("books/opening-balances")
+  const post = async (org, lines, legalEntityId, name) => {
+    const batch = await kit.as(org.owner, () => balances.createOpeningBalanceBatch({ cutoverDate: "2026-06-30", sourceFilename: `${name}.csv`, sourceContent: JSON.stringify(lines), lines, legalEntityId }))
+    await kit.as(org.owner, () => balances.approveOpeningBalanceBatch({ batchId: batch.batchId, approvalRole: "owner" }))
+    await kit.as(org.reviewer, () => balances.approveOpeningBalanceBatch({ batchId: batch.batchId, approvalRole: "accountant" }))
+    return kit.as(org.owner, () => balances.postOpeningBalanceBatch(batch.batchId))
+  }
+  const position = (cents) => [
+    { accountCode: "1200", description: "Prepaid insurance", debitCents: cents, creditCents: 0 },
+    { accountCode: "3000", description: "Owner equity", debitCents: 0, creditCents: cents },
+  ]
+  let mixed
+  const org = await greenfieldOrg(kit, { name: "ENTITY-01 company openings", periods: ["2026-07"],
+    setup: (org) => {
+      org.projectId = randomUUID()
+      kit.sql(`insert into public.projects(id,org_id,name,property_type,created_by) values(${kit.q(org.projectId)},${kit.q(org.orgId)},'Builder job','residential',${kit.q(org.owner.userId)});`)
+    },
+    beforeOpening: async (org) => {
+      org.land = (await kit.as(org.owner, () => app("books/legal-entities").createLegalEntity({ name: "Cedar Ridge Land Co", legalName: null }))).id
+      await post(org, position(input.landOpeningCents), org.land, "land-opening")
+      mixed = await refusal(() => post(org, [
+        { accountCode: "1200", description: "Prepaid on the builder's job", projectId: org.projectId, debitCents: input.mixedCents, creditCents: 0 },
+        { accountCode: "3000", description: "Owner equity", debitCents: 0, creditCents: input.mixedCents },
+      ], org.land, "mixed-opening"))
+    },
+    opening: () => position(input.builderOpeningCents),
+  })
+  const builder = kit.rows(`select id from public.books_legal_entities where org_id=${kit.q(org.orgId)} and is_primary`)[0].id
+  check.equal("each company opens with its own position, and a batch spanning companies is refused", expected.expected, {
+    mixed: /more than one company/.test(mixed) ? "refused: lines belong to more than one company" : mixed,
+    land: await trialBalance(kit, org, org.land, "2026-06-30"),
+    builder: await trialBalance(kit, org, builder, "2026-06-30"),
+    consolidated: await trialBalance(kit, org, null, "2026-06-30"),
+  })
+  return { orgId: org.orgId }
+}
+
+// The export alone rebuilds a multi-company organization: every exported row is
+// removed and reinserted from the snapshot (in a transaction that is rolled
+// back), each company's balances and what they owe each other come back exactly,
+// and a new cross-company posting and the ownership guard work on the restored data.
+async function archiveRoundTrip(kit, expected, check) {
+  const input = expected.inputs
+  const org = await twoCompanies(kit, "ENTITY-01 archive round trip", input)
+  await paidBill(kit, org, input)
+  const { q } = kit
+  const tables = app("books/export-contract").EXPORT_TABLES
+  const balancesSql = `select coalesce(jsonb_agg(jsonb_build_array(legal_entity_id, account_id, n) order by legal_entity_id, account_id), '[]'::jsonb) from (select legal_entity_id, account_id, sum(debit_cents - credit_cents) n from public.journal_lines where org_id = ${q(org.orgId)} group by 1, 2) b`
+  const result = JSON.parse(kit.sql(`begin;
+create temp table snap on commit drop as select public.capture_books_export_snapshot(${q(org.orgId)}) s;
+create temp table before_state on commit drop as select (${balancesSql}) balances, public.books_intercompany_positions(${q(org.orgId)}, '2099-12-31') positions;
+set local session_replication_role = replica;
+do $$
+declare t text; cols text; rows jsonb;
+begin
+  foreach t in array array[${tables.map((t) => q(t)).join(",")}] loop
+    select string_agg(quote_ident(column_name), ',' order by ordinal_position) into cols from information_schema.columns
+      where table_schema = 'public' and table_name = t and is_generated = 'NEVER';
+    select s -> 'tables' -> t into rows from snap;
+    execute format('delete from public.%I where org_id = %L', t, ${q(org.orgId)});
+    execute format('insert into public.%I (%s) overriding system value select %s from jsonb_populate_recordset(null::public.%I, $1)', t, cols, cols, t) using coalesce(rows, '[]'::jsonb);
+  end loop;
+end $$;
+set local session_replication_role = origin;
+create temp table after_state on commit drop as select (${balancesSql}) balances, public.books_intercompany_positions(${q(org.orgId)}, '2099-12-31') positions;
+create temp table probe on commit drop as select public.post_books_journal_entry(${q(org.orgId)},
+  jsonb_build_object('entry_date','2026-07-20','entry_kind','adjusting','memo','Land company pays a builder cost after restore','posting_key',${q(`round-trip-${org.orgId}`)},'policy_version',1),
+  jsonb_build_array(
+    jsonb_build_object('line_no',1,'account_id',(select id from public.gl_accounts where org_id=${q(org.orgId)} and code='5000'),'project_id',${q(org.projectId)},'debit_cents',${input.probeCents},'credit_cents',0),
+    jsonb_build_object('line_no',2,'account_id',(select id from public.gl_accounts where org_id=${q(org.orgId)} and code='1005'),'debit_cents',0,'credit_cents',${input.probeCents}))) id;
+create temp table guard on commit drop as select 'allowed'::text outcome;
+do $$ begin
+  update public.projects set legal_entity_id = ${q(org.land)} where id = ${q(org.projectId)};
+exception when others then update guard set outcome = 'refused: ' || sqlerrm; end $$;
+select json_build_object(
+  'balancesRestored', (select balances from before_state) = (select balances from after_state),
+  'positionsRestored', (select positions from before_state) = (select positions from after_state),
+  'probeLegs', (select count(*) from public.journal_lines where entry_id = (select id from probe) and dimensions->>'intercompany' = 'true'),
+  'positionsAfterProbe', public.books_intercompany_positions(${q(org.orgId)}, '2099-12-31'),
+  'guard', (select outcome from guard));
+rollback;`).split("\n").filter(Boolean).at(-1))
+  const owed = (rows) => Object.fromEntries(rows.map((row) => [row.entityId === org.land ? "land" : "builder", { dueFrom: Number(row.dueFromCents), dueTo: Number(row.dueToCents) }]).sort(([a], [b]) => a.localeCompare(b)))
+  check.equal("the export alone rebuilds each company's books, and posting and guards work on the restored data", expected.expected, {
+    bundleVerifies: (({ valid, integrityErrors }) => valid || integrityErrors.slice(0, 3).join("; "))(app("books/export-contract").verifyBooksExportBundle(await exportBundle(kit, org))),
+    balancesRestored: result.balancesRestored,
+    positionsRestored: result.positionsRestored,
+    probeLegs: Number(result.probeLegs),
+    positionsAfterProbe: owed(result.positionsAfterProbe),
+    guard: /already has postings/.test(result.guard) ? "refused: already has postings" : result.guard,
+  })
+  return { orgId: org.orgId }
+}
+
+// The bundle an export would write, from the same snapshot.
+async function exportBundle(kit, org) {
+  const { BOOKS_EXPORT_SCHEMA_VERSION, EXPORT_TABLES } = app("books/export-contract")
+  const { booksDigest } = require("../../../lib/services/books/hash")
+  const snapshot = JSON.parse(kit.sql(`select public.capture_books_export_snapshot(${kit.q(org.orgId)});`))
+  const tables = Object.fromEntries(EXPORT_TABLES.map((table) => [table, snapshot.tables[table] ?? []]))
+  const { historicalDocumentInventory } = app("books/tax-attachment-archive")
+  return { tables, manifest: { schemaVersion: BOOKS_EXPORT_SCHEMA_VERSION, orgId: org.orgId, tables: Object.fromEntries(Object.entries(tables).map(([name, rows]) => [name, { rows: rows.length, checksum: booksDigest(rows) }])),
+    supportingFiles: [], supportingHistoricalFiles: historicalDocumentInventory(tables, org.orgId) } }
+}
+
+// Another organization's company ids are refused or see nothing, everywhere a
+// company id is taken.
+async function foreignCompanyRefused(kit, expected, check) {
+  const input = expected.inputs
+  const owner = await twoCompanies(kit, "ENTITY-01 company owner", input)
+  const other = await contractJob(kit, { name: "ENTITY-01 other organization", contractCents: input.contractCents, retainagePercent: 0, periods: ["2026-07"] })
+  const entities = app("books/legal-entities")
+  const foreign = owner.land
+  const moved = await refusal(() => kit.as(other.owner, () => entities.setLegalEntityOwner({ kind: "project", id: other.projectId, entityId: foreign })))
+  const opening = await refusal(() => kit.as(other.owner, () => app("books/opening-balances").createOpeningBalanceBatch({ cutoverDate: "2026-06-30", sourceContent: "[]", legalEntityId: foreign,
+    lines: [{ accountCode: "1200", description: "Prepaid", debitCents: 100, creditCents: 0 }, { accountCode: "3000", description: "Equity", debitCents: 0, creditCents: 100 }] })))
+  const posted = await refusal(async () => kit.sql(`select public.post_books_journal_entry(${kit.q(other.orgId)}, jsonb_build_object('entry_date','2026-07-05','entry_kind','adjusting','memo','Foreign company','posting_key',${kit.q(`foreign-${other.orgId}`)},'policy_version',1),
+    jsonb_build_array(jsonb_build_object('line_no',1,'account_id',(select id from public.gl_accounts where org_id=${kit.q(other.orgId)} and code='1200'),'debit_cents',100,'credit_cents',0,'legal_entity_id',${kit.q(foreign)}),
+      jsonb_build_object('line_no',2,'account_id',(select id from public.gl_accounts where org_id=${kit.q(other.orgId)} and code='3000'),'debit_cents',0,'credit_cents',100)));`))
+  const statement = await trialBalance(kit, other, foreign)
+  check.equal("another organization's company is refused or shows nothing", expected.expected, {
+    moved: /Company not found/.test(moved) ? "refused: company not found" : moved,
+    opening: /Company not found/.test(opening) ? "refused: company not found" : opening,
+    posted: /legal_entity_fkey|violates foreign key/.test(posted) ? "refused: not this organization's company" : posted,
+    statementAccounts: Object.keys(statement.accounts).length,
+  })
+  return { orgId: other.orgId }
+}
+
 module.exports = {
   subcases: {
     "payment-across-companies": paymentAcrossCompanies,
@@ -216,6 +356,9 @@ module.exports = {
     "single-company-unchanged": singleCompanyUnchanged,
     "company-subledgers-and-close": companySubledgersAndClose,
     "intercompany-lot-sale": intercompanyLotSale,
+    "company-openings": companyOpenings,
+    "archive-round-trip": archiveRoundTrip,
+    "foreign-company-refused": foreignCompanyRefused,
   },
 }
 module.exports.helpers = { twoCompanies, paidBill }

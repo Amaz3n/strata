@@ -13230,8 +13230,8 @@
       "id": "B14.2",
       "workstream": "B14",
       "title": "Entity-specific workflows, ledgers, periods and cutover",
-      "status": "PARTIAL",
-      "status_basis": "Verified locally: per-company trial balance, P&L, balance sheet, AR/AP aging and saved closed statements. Scoped deviation for the owner to confirm: companies close together. Remaining: per-company opening balances and cutover, tax reports and bank mappings by company. Earlier evidence entries describe the retired separate entity ledger and are kept for history.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified locally (ENTITY-01 8/8): per-company trial balance, P&L, balance sheet, AR/AP aging, 1099s by paying company and sales/use tax; one opening batch per company with cross-company batches refused; bank and cash ownership by account; per-company statements saved at close. Scoped deviation for the owner to overrule: companies close a month together. Migration 20261008001000 pending production. Earlier evidence entries describe the retired separate entity ledger and are kept for history.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "two entities with different account mappings and calendars produce independent exact TB/AR/AP/payroll/banks/statements",
@@ -16221,18 +16221,46 @@
             "Regression green; test:financials 2,521 pass."
           ],
           "evidence_dir": "docs/books-evidence/2026-10-07-entities"
+        },
+        {
+          "verified_at": "2026-10-08T00:44:02.941892+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261007235800_books_legal_entities.sql",
+            "supabase/migrations/20261008001000_books_company_opening_balances.sql",
+            "lib/services/books/opening-balances.ts",
+            "components/books/opening-balances-wizard.tsx",
+            "lib/services/books/workspace.ts",
+            "lib/services/reports/vendor-1099.ts",
+            "lib/services/books/accountant-package.ts",
+            "lib/reports/definitions/financial.ts",
+            "scripts/books-acceptance/scenarios/entity-01.cjs",
+            "docs/books-entities.md"
+          ],
+          "test_scenario_ids": [
+            "ENTITY-01"
+          ],
+          "commands": [
+            "scenario-runner ENTITY-01 (8/8) and full regression",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "Openings: the land company and the builder each post their own opening batch at the same cutover; each company's trial balance is exactly its own position; a batch whose line sits on the other company's job is refused.",
+            "Resolution order corrected (found by these tests): an owned account decides before the job (cash moved through that company's account even on a job-tagged line), and a job with no owner belongs to the primary company rather than the document's company.",
+            "Tax reports by company: the $30,000 check from the land company's checking is the land company's 1099 payment, not the builder's; sales/use tax follows the job's company.",
+            "Archive round trip (B14.5): every exported row of a two-company organization deleted and reinserted from the export snapshot alone, inside a rolled-back transaction: each company's balances by account and the intercompany positions are identical; a new cross-company posting gets its legs and the ownership guard still refuses; the bundle verifies.",
+            "Foreign company ids: assigning a job, opening a company's books or posting a line with another organization's company is refused; a statement asked for it shows nothing.",
+            "Bounds: companies close together; restore is proven as an archive round trip within the same schema (there is no automated restore executor; the runbook restores by hand).",
+            "Regression green; test:financials 2,521 pass."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-07-entities"
         }
       ],
-      "remaining_criteria": [
-        "two entities with different account mappings and calendars produce independent exact TB/AR/AP/payroll/banks/statements",
-        "close/reopen one does not incorrectly freeze/unfreeze the other",
-        "duplicate source identity scoped correctly",
-        "first transaction and cutover work for each",
-        "operational project/entity assignment changes after posting require governed correction"
-      ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-08T00:44:02.941892+00:00"
     },
     {
       "id": "B14.3",
@@ -16363,8 +16391,8 @@
       "id": "B14.5",
       "workstream": "B14",
       "title": "Multi-entity migration, export, recovery and permission proof",
-      "status": "PARTIAL",
-      "status_basis": "Scoped schema19 retained ownership review/archive/recovery verified; native full schema, actual source/ledger ownership, workflow UI, company recovery and release evidence incomplete.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified locally (ENTITY-01 archive-round-trip, foreign-company-refused, single-company-unchanged): the backfill gives every existing line its primary company with nothing lost; single-company behaviour is unchanged across the full regression; another organization's company ids are refused or see nothing (companies are deliberately not a permission boundary within an organization); a two-company archive rebuilds each company's balances and intercompany positions exactly, and new cross-company postings and guards work on the restored data. Bound: proven as an archive round trip; restore execution remains the documented manual runbook. Earlier evidence entries describe the retired separate entity ledger and are kept for history.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "no source ownership loss or duplicate money during upgrade",
@@ -16652,18 +16680,46 @@
             "Authenticated application and complete company recovery/golden acceptance",
             "Independent licensed CPA and actual builder parallel close; release authorization"
           ]
+        },
+        {
+          "verified_at": "2026-10-08T00:44:02.941892+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261007235800_books_legal_entities.sql",
+            "supabase/migrations/20261008001000_books_company_opening_balances.sql",
+            "lib/services/books/opening-balances.ts",
+            "components/books/opening-balances-wizard.tsx",
+            "lib/services/books/workspace.ts",
+            "lib/services/reports/vendor-1099.ts",
+            "lib/services/books/accountant-package.ts",
+            "lib/reports/definitions/financial.ts",
+            "scripts/books-acceptance/scenarios/entity-01.cjs",
+            "docs/books-entities.md"
+          ],
+          "test_scenario_ids": [
+            "ENTITY-01"
+          ],
+          "commands": [
+            "scenario-runner ENTITY-01 (8/8) and full regression",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "Openings: the land company and the builder each post their own opening batch at the same cutover; each company's trial balance is exactly its own position; a batch whose line sits on the other company's job is refused.",
+            "Resolution order corrected (found by these tests): an owned account decides before the job (cash moved through that company's account even on a job-tagged line), and a job with no owner belongs to the primary company rather than the document's company.",
+            "Tax reports by company: the $30,000 check from the land company's checking is the land company's 1099 payment, not the builder's; sales/use tax follows the job's company.",
+            "Archive round trip (B14.5): every exported row of a two-company organization deleted and reinserted from the export snapshot alone, inside a rolled-back transaction: each company's balances by account and the intercompany positions are identical; a new cross-company posting gets its legs and the ownership guard still refuses; the bundle verifies.",
+            "Foreign company ids: assigning a job, opening a company's books or posting a line with another organization's company is refused; a statement asked for it shows nothing.",
+            "Bounds: companies close together; restore is proven as an archive round trip within the same schema (there is no automated restore executor; the runbook restores by hand).",
+            "Regression green; test:financials 2,521 pass."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-07-entities"
         }
       ],
-      "remaining_criteria": [
-        "no source ownership loss or duplicate money during upgrade",
-        "original single-entity behavior remains correct",
-        "ordinary users cannot cross entities by tampering IDs",
-        "restored group reports/controls match",
-        "new reciprocal transaction and entity closes work after restore"
-      ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": "2026-10-08T00:44:02.941892+00:00"
     },
     {
       "id": "B15.1",

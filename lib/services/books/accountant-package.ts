@@ -5,6 +5,7 @@ import { collectBooksRows } from "@/lib/services/books/paging";
 import { invoiceTaxBases } from "@/lib/services/books/tax-summary-rules";
 
 import { z } from "zod";
+import { companyOwnership } from "@/lib/services/books/legal-entities";
 
 import {
   BILLED_INVOICE_STATUSES,
@@ -21,6 +22,8 @@ import { getVendor1099Report } from "@/lib/services/reports/vendor-1099";
 export async function buildSalesUseTaxSummary(input: {
   startDate: string;
   endDate: string;
+  /** One company's sales and use tax: invoices and bills on its jobs (company-level ones for the primary company). */
+  legalEntityId?: string | null;
   orgId?: string;
 }) {
   const context = await requireOrgContext(input.orgId);
@@ -35,17 +38,19 @@ export async function buildSalesUseTaxSummary(input: {
   });
   const service = createServiceSupabaseClient();
   const [invoices, bills, jurisdictions, adjustments, openingSources, retainageReleases] = await Promise.all([
-    collectBooksRows((from, to) => service.from("invoices").select("id,issue_date,subtotal_cents,tax_cents,tax_jurisdiction_id,metadata")
+    collectBooksRows((from, to) => service.from("invoices").select("id,issue_date,subtotal_cents,tax_cents,tax_jurisdiction_id,metadata,project:projects(legal_entity_id)")
       .eq("org_id", context.orgId).gte("issue_date", input.startDate).lte("issue_date", input.endDate).in("status", [...BILLED_INVOICE_STATUSES]).order("id").range(from, to)),
-    collectBooksRows((from, to) => service.from("vendor_bills").select("id,tax_jurisdiction_id,use_tax_accrued_cents")
+    collectBooksRows((from, to) => service.from("vendor_bills").select("id,tax_jurisdiction_id,use_tax_accrued_cents,project:projects(legal_entity_id)")
       .eq("org_id", context.orgId).gte("bill_date", input.startDate).lte("bill_date", input.endDate).in("status", [...PAYABLE_VENDOR_BILL_STATUSES]).order("id").range(from, to)),
     collectBooksRows((from, to) => service.from("books_tax_jurisdictions").select("id,name").eq("org_id", context.orgId).order("id").range(from, to)),
-    collectBooksRows((from, to) => service.from("receivable_adjustments").select("id,invoice_id,amount_cents,tax_cents,metadata,invoice:invoices(tax_jurisdiction_id)")
+    collectBooksRows((from, to) => service.from("receivable_adjustments").select("id,invoice_id,amount_cents,tax_cents,metadata,invoice:invoices(tax_jurisdiction_id,project:projects(legal_entity_id))")
       .eq("org_id", context.orgId).eq("status", "posted").eq("adjustment_type", "credit_memo").gte("effective_date", input.startDate).lte("effective_date", input.endDate).order("id").range(from, to)),
     loadOpeningOwnedSources(context.orgId),
     loadRetainageReleaseInvoiceCents({ supabase: service, orgId: context.orgId }),
   ]);
-  const reportInvoices = invoices.filter(invoice => !openingSources.invoices.has(invoice.id) && !retainageReleases.has(invoice.id) && (invoice.metadata as Record<string, unknown> | null)?.invoice_kind !== "earnest_deposit");
+  const owner = input.legalEntityId ? await companyOwnership(context.orgId) : null;
+  const ownedBy = (project: unknown) => !owner || owner((Array.isArray(project) ? project[0] : project as { legal_entity_id?: string | null } | null)?.legal_entity_id) === input.legalEntityId;
+  const reportInvoices = invoices.filter(invoice => ownedBy(invoice.project) && !openingSources.invoices.has(invoice.id) && !retainageReleases.has(invoice.id) && (invoice.metadata as Record<string, unknown> | null)?.invoice_kind !== "earnest_deposit");
   const excludedOpeningCount = invoices.filter(invoice => openingSources.invoices.has(invoice.id)).length;
   const jurisdictionNames = new Map(jurisdictions.map((row) => [row.id, row.name]));
   const ids = reportInvoices.map((row) => row.id);
@@ -77,6 +82,7 @@ export async function buildSalesUseTaxSummary(input: {
   }
   for (const adjustment of adjustments) {
     const invoice = Array.isArray(adjustment.invoice) ? adjustment.invoice[0] : adjustment.invoice;
+    if (!ownedBy(invoice?.project)) continue;
     const jurisdiction = nameFor(invoice?.tax_jurisdiction_id ?? null);
     const current = byJurisdiction.get(jurisdiction) ?? empty();
     const metadata = z.record(z.unknown()).catch({}).parse(adjustment.metadata);
@@ -92,7 +98,7 @@ export async function buildSalesUseTaxSummary(input: {
     byJurisdiction.set(jurisdiction, current);
   }
   for (const bill of bills) {
-    if (Number(bill.use_tax_accrued_cents ?? 0) === 0) continue;
+    if (Number(bill.use_tax_accrued_cents ?? 0) === 0 || !ownedBy(bill.project)) continue;
     const jurisdiction = nameFor(bill.tax_jurisdiction_id);
     const current = byJurisdiction.get(jurisdiction) ?? empty();
     current.useTaxCents += Number(bill.use_tax_accrued_cents);

@@ -3,7 +3,7 @@
   "reviewedFrom": "B14.1/B14.2 definitions of done (advisor-plans/013) and docs/books-entities.md.",
   "subcases": {
     "payment-across-companies": {
-      "derivation": "The builder (primary company) owns the job; the land company owns checking account 1005. A $30,000 bill on the job is the builder's (Dr 5000 / Cr 2000). Paying it from the land company's checking: the builder's side is Dr 2000, the land company's is Cr 1005, and posting adds the builder's Cr 2180 due to the land company and the land company's Dr 1180 due from the builder, so each balances on its own. Consolidated, the 1180/2180 pair is eliminated: the group spent $30,000 of cash on job cost.",
+      "derivation": "The builder (primary company) owns the job; the land company owns checking account 1005. A $30,000 bill on the job is the builder's (Dr 5000 / Cr 2000). Paying it from the land company's checking: the builder's side is Dr 2000, the land company's is Cr 1005, and posting adds the builder's Cr 2180 due to the land company and the land company's Dr 1180 due from the builder, so each balances on its own. Consolidated, the 1180/2180 pair is eliminated: the group spent $30,000 of cash on job cost. Each company files its own 1099s: the $30,000 check came from the land company's checking, so it is the land company's 1099 payment to the framing sub, and not the builder's.",
       "inputs": {
         "contractCents": 10000000,
         "billCents": 3000000,
@@ -61,6 +61,10 @@
             "1005": -3000000,
             "5000": 3000000
           }
+        },
+        "vendor1099": {
+          "land": 3000000,
+          "builder": 0
         }
       }
     },
@@ -206,6 +210,80 @@
           ]
         },
         "intercompanyControl": "passed"
+      }
+    },
+    "company-openings": {
+      "derivation": "The land company opens with $10,000 of prepaid insurance against owner equity, posted as its own batch; the builder (primary company) opens with $5,000. A land-company batch whose prepaid line sits on the builder's job resolves to two companies and is refused. Each company's trial balance at cutover is exactly its own position; consolidated is their sum, with nothing owed between them.",
+      "inputs": {
+        "landOpeningCents": 1000000,
+        "builderOpeningCents": 500000,
+        "mixedCents": 200000
+      },
+      "expected": {
+        "mixed": "refused: lines belong to more than one company",
+        "land": {
+          "balanced": true,
+          "accounts": {
+            "1200": 1000000,
+            "3000": 1000000
+          }
+        },
+        "builder": {
+          "balanced": true,
+          "accounts": {
+            "1200": 500000,
+            "3000": 500000
+          }
+        },
+        "consolidated": {
+          "balanced": true,
+          "accounts": {
+            "1200": 1500000,
+            "3000": 1500000
+          }
+        }
+      }
+    },
+    "archive-round-trip": {
+      "derivation": "The builder's $30,000 bill paid from the land company's checking leaves the land company owed $30,000. Inside one rolled-back transaction every exported row of the organization is deleted and reinserted from the export snapshot alone: each company's balance by account and the intercompany positions are identical. On the restored data a new $1,000 builder cost paid from the land company's checking gets its two legs (the land company is then owed $31,000), and moving the job to another company is still refused. The export bundle itself verifies.",
+      "inputs": {
+        "contractCents": 10000000,
+        "billCents": 3000000,
+        "billDate": "2026-07-10",
+        "paidDate": "2026-07-15",
+        "probeCents": 100000
+      },
+      "expected": {
+        "bundleVerifies": true,
+        "balancesRestored": true,
+        "positionsRestored": true,
+        "probeLegs": 2,
+        "positionsAfterProbe": {
+          "builder": {
+            "dueFrom": 0,
+            "dueTo": 3100000
+          },
+          "land": {
+            "dueFrom": 3100000,
+            "dueTo": 0
+          }
+        },
+        "guard": "refused: already has postings"
+      }
+    },
+    "foreign-company-refused": {
+      "derivation": "A company belongs to one organization. Another organization naming it is refused when assigning a job, opening its books or posting a line (the line's company must be in the line's organization), and a statement asked for it shows nothing.",
+      "inputs": {
+        "contractCents": 10000000,
+        "billCents": 3000000,
+        "billDate": "2026-07-10",
+        "paidDate": "2026-07-15"
+      },
+      "expected": {
+        "moved": "refused: company not found",
+        "opening": "refused: company not found",
+        "posted": "refused: not this organization's company",
+        "statementAccounts": 0
       }
     }
   }

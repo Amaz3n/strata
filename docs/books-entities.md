@@ -8,11 +8,12 @@ entities together and eliminates what they owe and sold each other.
 **Status (B14).** Built and verified locally: the owning company on every journal
 line, resolved in the one posting function; intercompany legs that settle what two
 companies already owe each other first; ownership fixed once posted; per-company
-trial balance, P&L, balance sheet and AR/AP aging (Reports → Company); consolidated
-statements with eliminations; intercompany lot sales; the intercompany
-reconciliation and its close control; a close that saves each company's statements;
-Books → Companies; companies in the export (schema 33). Not built: independent
-per-company close, per-company opening balances, minority interests.
+trial balance, P&L, balance sheet, AR/AP aging, 1099s (by paying company) and
+sales/use tax (Reports → Company); consolidated statements with eliminations;
+intercompany lot sales; the intercompany reconciliation and its close control; a
+close that saves each company's statements; one opening batch per company;
+Books → Companies; companies in the export (schema 33), with an archive round trip
+proven. Not built: independent per-company close, minority interests.
 
 A separate per-entity ledger (`books_native_*`, per-entity charts and calendars)
 was built in October 2026 but never shipped. It is retired: every transaction type
@@ -37,11 +38,12 @@ have to repeat all of it.
 
 Resolved once, at posting, by one function — never inline:
 
-1. A line on a **project** belongs to the project's owning entity
+1. A line on an account a company owns (its bank, cash or card account, or its
+   land account) belongs to that company, even when the line names a job.
+2. A line on a **project** belongs to the project's owning entity
    (`projects.legal_entity_id`, default the primary entity).
-2. A **cash** line belongs to the entity that owns the bank or GL cash account.
-3. A company-level line with neither (overhead, a manual journal) takes the entity
-   chosen on the document, else the primary entity.
+3. Any other line takes the entity chosen on the document (an opening batch names
+   its company), else the primary entity.
 
 Changing a project's owner after it has posted is a governed correction, never a
 silent rewrite of posted lines.
@@ -88,6 +90,20 @@ Books → Companies shows what each pair of companies owes the other, read from 
 sides, and the lots sold between them. The close's blocking intercompany control
 requires every company's due-from to equal its affiliate's due-to; posting writes
 both legs in one atomic entry, so a one-sided posting cannot occur.
+
+## Opening balances
+
+Each company brings its own opening position as its own batch (the opening wizard
+asks which company when there is more than one). Lines on a job or an owned account
+still belong to that job's or account's company, so a batch whose lines resolve to
+more than one company is refused rather than inventing intercompany balances at
+cutover.
+
+## Tax reports
+
+1099s are filed by the company that paid: the owner of the cash line on the posted
+payment, reversal or expense (unposted payments count for the primary company).
+Sales and use tax belong to the company whose job the invoice or bill is on.
 
 ## Close
 

@@ -4,9 +4,9 @@
 --   single-company builder never sees the concept.
 -- * Every journal line names its owning entity, resolved once, inside the only
 --   writer (post_books_journal_entry): an explicit choice on the line, then the
---   owner recorded on an intercompany leg, then the project's owner, then the
---   account's owner (a cash or bank account belongs to one entity), then the
---   entry's choice, then the primary entity. A reversal keeps each original
+--   owner recorded on an intercompany leg, then the account's owner (a company's
+--   bank, cash or card account), then the project's owner (the primary entity
+--   when the project names none), then the entry's choice, then the primary entity. A reversal keeps each original
 --   line's owner, even if a project has changed hands since.
 -- * An entry balances per entity. When its lines resolve to different entities,
 --   posting adds the due-from / due-to legs (1180 / 2180) that make each entity
@@ -134,8 +134,11 @@ begin
       v_entity,
       nullif(line_row ->> 'legal_entity_id', '')::uuid,
       nullif(line_row -> 'dimensions' ->> 'intercompany_owner_entity_id', '')::uuid,
-      (select p.legal_entity_id from public.projects p where p.org_id = p_org_id and p.id = nullif(line_row ->> 'project_id', '')::uuid),
+      -- An owned account (a company's bank, cash or card) decides, even on a line
+      -- tagged with a job: the money moved through that company's account.
       (select a.legal_entity_id from public.gl_accounts a where a.org_id = p_org_id and a.id = (line_row ->> 'account_id')::uuid),
+      -- A job belongs to its company, or to the primary company when it names none.
+      (select coalesce(p.legal_entity_id, v_primary) from public.projects p where p.org_id = p_org_id and p.id = nullif(line_row ->> 'project_id', '')::uuid),
       v_entry_entity,
       v_primary);
     v_resolved := v_resolved || jsonb_build_array(line_row || jsonb_build_object('legal_entity_id', v_entity));

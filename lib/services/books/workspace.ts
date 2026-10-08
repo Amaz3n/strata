@@ -83,6 +83,7 @@ export async function getBooksWorkspace(
     openingBatches,
     cutovers,
     closeItems,
+    companies,
   ] = await Promise.all([
     queryForSection(
       needsAccounts,
@@ -243,6 +244,16 @@ export async function getBooksWorkspace(
         .order("category")
         .order("label"),
     ),
+    queryForSection(
+      section === "opening-balances",
+      service
+        .from("books_legal_entities")
+        .select("id, name, is_primary")
+        .eq("org_id", context.orgId)
+        .eq("status", "active")
+        .order("is_primary", { ascending: false })
+        .order("name"),
+    ),
   ]);
   const queryErrors = [
     accounts.error,
@@ -259,6 +270,7 @@ export async function getBooksWorkspace(
     openingBatches.error,
     cutovers.error,
     closeItems.error,
+    companies.error,
   ].filter(Boolean);
   if (queryErrors.length > 0)
     throw new Error(
@@ -313,6 +325,7 @@ export async function getBooksWorkspace(
     exports: exports.data ?? [],
     accountantPackages: accountantPackages.data ?? [],
     openingBatches: openingBatches.data ?? [],
+    companies: companies.data ?? [],
     cutovers: cutovers.data ?? [],
     closeItems: (closeItems.data ?? []).map((item) => {
       const evidence = item.evidence;

@@ -115,17 +115,27 @@ export async function createOpeningBalanceBatch(input: {
   sourceContent: string;
   sourceMetadata?: Record<string, unknown>;
   lines: OpeningBalanceLineInput[];
+  /** The company this opening position belongs to; omitted, the primary company. */
+  legalEntityId?: string | null;
   orgId?: string;
 }) {
   const context = await requireOpeningPermission("books.manage", input.orgId);
   const totals = validateLines(input.lines, input.cutoverDate);
   const service = createServiceSupabaseClient();
+  const legalEntityId = input.legalEntityId ? z.string().uuid().parse(input.legalEntityId) : null;
+  if (legalEntityId) {
+    const { data: company, error: companyError } = await service.from("books_legal_entities").select("id")
+      .eq("org_id", context.orgId).eq("id", legalEntityId).eq("status", "active").maybeSingle();
+    if (companyError) throw new Error(`Failed to read the company: ${companyError.message}`);
+    if (!company) throw new Error("Company not found");
+  }
   const sourceContentHash = booksDigest(input.sourceContent);
   const digest = booksDigest({
     orgId: context.orgId,
     cutoverDate: input.cutoverDate,
     sourceContentHash,
     lines: input.lines,
+    ...(legalEntityId ? { legalEntityId } : {}),
   });
   const codes = Array.from(
     new Set(input.lines.map((line) => line.accountCode)),
@@ -165,6 +175,7 @@ export async function createOpeningBalanceBatch(input: {
       credit_total_cents: totals.creditTotalCents,
       validation_errors: [],
       digest,
+      legal_entity_id: legalEntityId,
       created_by: context.userId,
     })
     .select("id")

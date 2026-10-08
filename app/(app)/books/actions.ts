@@ -1074,11 +1074,13 @@ export async function importOpeningBalancesAction(input: {
   /** What the person actually pasted, kept verbatim as the batch's provenance. */
   sourceContent: string;
   lines: Array<z.infer<typeof openingLineSchema>>;
+  legalEntityId?: string | null;
 }) {
   return run(() => {
     const parsed = z
       .object({
         cutoverDate: isoDate,
+        legalEntityId: z.string().uuid().nullable().optional(),
         sourceFilename: z.string().max(200).nullable().optional(),
         sourceContent: z.string().min(2),
         lines: z
@@ -1091,6 +1093,7 @@ export async function importOpeningBalancesAction(input: {
       sourceFilename: parsed.sourceFilename ?? undefined,
       sourceContent: parsed.sourceContent,
       lines: parsed.lines,
+      legalEntityId: parsed.legalEntityId ?? null,
     });
   });
 }

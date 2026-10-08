@@ -9,15 +9,15 @@
       "identities": {
         "outcomes": [
           {
-            "orgId": "d6028954-73e0-42eb-b9ac-70137b148a81",
+            "orgId": "884f75d7-44d6-4ef5-a377-703803167bd4",
             "loser": "Failed to begin accounting-period close: Accounting period close is already running"
           },
           {
-            "orgId": "097f05b8-ed5c-4b59-bfc1-ed6e1334f550",
+            "orgId": "653b807d-fd1e-4c90-b46a-49235902beb9",
             "loser": "Failed to begin accounting-period close: Accounting period close is already running"
           },
           {
-            "orgId": "5b6b20e9-86fc-4b90-9987-c8ac7062a07a",
+            "orgId": "0f98a080-3891-43eb-bd65-277edc324ccc",
             "loser": "Failed to begin accounting-period close: Accounting period close is already running"
           }
         ]
@@ -138,7 +138,7 @@
           }
         }
       ],
-      "startedAt": "2026-10-08T00:12:41.091Z"
+      "startedAt": "2026-10-08T00:41:57.359Z"
     },
     {
       "name": "close-versus-late-bill",
@@ -147,17 +147,17 @@
         "outcomes": [
           {
             "ordering": "before",
-            "orgId": "4a505794-cdc1-4783-8f65-0d0dcee0e6f7",
+            "orgId": "9a687925-d908-4947-ab13-0543497237bb",
             "close": "Close blocked: WIP and POC reviewed through period end"
           },
           {
             "ordering": "during",
-            "orgId": "2b25f6ae-41dc-44e4-9c98-9129bdb2e584",
+            "orgId": "ffde75e1-db71-4417-b512-28fff5664598",
             "close": "closed"
           },
           {
             "ordering": "after",
-            "orgId": "1b6cec09-6862-4844-ab04-eecd8c97bc7f",
+            "orgId": "5b3d998e-f207-4466-ae32-c8fc991b66f3",
             "close": "closed"
           }
         ]
@@ -242,7 +242,7 @@
           "observed": true
         }
       ],
-      "startedAt": "2026-10-08T00:12:45.492Z"
+      "startedAt": "2026-10-08T00:42:01.801Z"
     },
     {
       "name": "bank-double-match",
@@ -250,21 +250,21 @@
       "identities": {
         "outcomes": [
           {
-            "orgId": "e01acc62-6669-41bd-b5d8-b9014270781b",
+            "orgId": "27d4e570-9cf8-402d-80ae-f7c51b70ee91",
             "refusals": [
               "Failed to confirm bank match: Matches exceed bank transaction capacity",
               "Failed to confirm bank match: Matches exceed bank transaction capacity"
             ]
           },
           {
-            "orgId": "435fe52b-c34f-4896-8aae-fee25171736f",
+            "orgId": "c2123ec3-18af-404b-963f-3a554f9c2188",
             "refusals": [
               "Failed to confirm bank match: Matches exceed bank transaction capacity",
               "Failed to confirm bank match: Matches exceed bank transaction capacity"
             ]
           },
           {
-            "orgId": "af0b5faf-acc4-41d0-8eb1-3e69576e690e",
+            "orgId": "9206efe6-c8f8-4c0c-9079-5b4fafa760d8",
             "refusals": [
               "Failed to confirm bank match: Matches exceed bank transaction capacity",
               "Failed to confirm bank match: Matches exceed bank transaction capacity"
@@ -328,7 +328,7 @@
           "observed": 0
         }
       ],
-      "startedAt": "2026-10-08T00:12:50.631Z"
+      "startedAt": "2026-10-08T00:42:06.968Z"
     },
     {
       "name": "deposit-receipt-contention",
@@ -336,15 +336,15 @@
       "identities": {
         "outcomes": [
           {
-            "orgId": "cb46781c-f8f9-4aef-a875-9b12b431a32e",
+            "orgId": "294c274a-5be5-4988-982c-3bca55be848b",
             "loser": "Failed to post deposit batch: Receipt is already assigned to another deposit"
           },
           {
-            "orgId": "65f17692-a791-47d5-99eb-1e46ad8e5677",
+            "orgId": "831fec08-0268-4468-b3fc-98e633daf3a1",
             "loser": "Failed to post deposit batch: Receipt is already assigned to another deposit"
           },
           {
-            "orgId": "9896afd1-9e96-4b83-8abe-bd0fdc0ec2bb",
+            "orgId": "b6e5cac0-5085-4c35-92d6-bcb84c547dc4",
             "loser": "Failed to post deposit batch: Receipt is already assigned to another deposit"
           }
         ]
@@ -429,7 +429,7 @@
           "observed": 0
         }
       ],
-      "startedAt": "2026-10-08T00:12:52.164Z"
+      "startedAt": "2026-10-08T00:42:08.497Z"
     },
     {
       "name": "concurrent-projection-runs",
@@ -437,15 +437,15 @@
       "identities": {
         "outcomes": [
           {
-            "orgId": "3fc87e31-1318-4b13-9c52-38e0400b895b",
+            "orgId": "ebec4e07-f2ee-4a55-82ee-98810b9e1724",
             "runsFailed": 0
           },
           {
-            "orgId": "5ff715da-30fa-4b9d-91b3-fe5ab718471f",
+            "orgId": "301e365e-9df4-4a31-b629-6e798ebb92a9",
             "runsFailed": 0
           },
           {
-            "orgId": "d9e17d2d-483d-43e7-9e41-cf99c815741f",
+            "orgId": "5b233854-fe9e-41f4-b036-ae742e738659",
             "runsFailed": 0
           }
         ]
@@ -506,7 +506,7 @@
           }
         }
       ],
-      "startedAt": "2026-10-08T00:12:53.846Z"
+      "startedAt": "2026-10-08T00:42:10.129Z"
     },
     {
       "name": "proposal-double-approval",
@@ -514,17 +514,17 @@
       "identities": {
         "outcomes": [
           {
-            "orgId": "fb2a93b3-527c-46d0-b32d-01155c4831fd",
+            "orgId": "d90f9302-4638-42b4-bb24-30037c8a11cd",
             "approvalsSucceeded": 2,
             "errors": []
           },
           {
-            "orgId": "11c3383c-06b4-4f1f-8dde-e49050461ec2",
+            "orgId": "02c6215f-82d9-4ea8-a718-85992c2afdbe",
             "approvalsSucceeded": 2,
             "errors": []
           },
           {
-            "orgId": "7b481785-19a2-402c-b7d4-8206ccd89443",
+            "orgId": "2feef995-4044-4e0f-883a-924247594bdf",
             "approvalsSucceeded": 2,
             "errors": []
           }
@@ -586,14 +586,14 @@
           }
         }
       ],
-      "startedAt": "2026-10-08T00:12:57.983Z"
+      "startedAt": "2026-10-08T00:42:14.244Z"
     },
     {
       "name": "late-mutation-before-receipt",
       "status": "PASSED",
       "identities": {
-        "orgId": "21c362fb-ded9-4ba8-9a5e-a66cd2213ed6",
-        "billId": "96a3c294-c400-401d-bcd2-1b471c83e01b"
+        "orgId": "f6da526a-89e6-46c8-a033-e37f2eec42a3",
+        "billId": "08e4c9e9-b327-410a-8cc7-49d0d87cb75e"
       },
       "checks": [
         {
@@ -627,7 +627,7 @@
           }
         }
       ],
-      "startedAt": "2026-10-08T00:12:58.383Z"
+      "startedAt": "2026-10-08T00:42:14.644Z"
     },
     {
       "name": "entity-pair",
@@ -636,5 +636,5 @@
     }
   ],
   "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
-  "finishedAt": "2026-10-08T00:12:59.018Z"
+  "finishedAt": "2026-10-08T00:42:15.294Z"
 }

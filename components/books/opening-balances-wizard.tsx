@@ -43,11 +43,15 @@ type GlAccount = {
 export function OpeningBalancesWizard({
   accounts,
   asOf,
+  companies,
 }: {
   accounts: GlAccount[];
   asOf: string;
+  /** The organization's companies; each brings its own opening position. */
+  companies: Array<{ id: string; name: string; is_primary: boolean }>;
 }) {
   const [cutoverDate, setCutoverDate] = useState(asOf);
+  const [companyId, setCompanyId] = useState(companies.find((company) => company.is_primary)?.id ?? "");
   const [sourceFilename, setSourceFilename] = useState("");
   const [pasted, setPasted] = useState("");
   const [rows, setRows] = useState<ParsedTrialBalanceRow[] | null>(null);
@@ -91,6 +95,7 @@ export function OpeningBalancesWizard({
     startTransition(async () => {
       const result = await importOpeningBalancesAction({
         cutoverDate,
+        legalEntityId: companies.length > 1 ? companyId || null : null,
         sourceFilename: sourceFilename.trim() || null,
         // The paste itself is the provenance — what the batch digest attests to.
         sourceContent: pasted,
@@ -154,6 +159,27 @@ export function OpeningBalancesWizard({
             placeholder="QuickBooks trial balance 2026-06-30.csv"
           />
         </label>
+        {companies.length > 1 ? (
+          <label className="space-y-1">
+            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              Company
+            </span>
+            <select
+              className="w-full border bg-background p-2 text-sm"
+              value={companyId}
+              onChange={(event) => setCompanyId(event.target.value)}
+            >
+              {companies.map((company) => (
+                <option key={company.id} value={company.id}>
+                  {company.name}
+                </option>
+              ))}
+            </select>
+            <span className="block text-xs text-muted-foreground">
+              Each company brings its own trial balance as its own batch.
+            </span>
+          </label>
+        ) : null}
       </div>
 
       <div className="border-b px-5 py-4">
@@ -201,7 +227,7 @@ export function OpeningBalancesWizard({
         <Button variant="outline" disabled={pending || !operationalJson.trim()} onClick={() => startTransition(async () => {
           try {
             const lines: OpeningBalanceLineInput[] = JSON.parse(operationalJson);
-            const result = await importOpeningBalancesAction({ cutoverDate, sourceFilename: sourceFilename || null, sourceContent: operationalJson, lines });
+            const result = await importOpeningBalancesAction({ cutoverDate, legalEntityId: companies.length > 1 ? companyId || null : null, sourceFilename: sourceFilename || null, sourceContent: operationalJson, lines });
             if (!result.success) { toast.error(result.error); return; }
             toast.success("Detailed batch validated for owner and accountant review"); setOperationalJson("");
           } catch { toast.error("The file must contain a valid JSON array of opening lines"); }

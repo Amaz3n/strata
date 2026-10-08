@@ -77,12 +77,13 @@ const salesUseTax: ReportDefinition = {
   scopes: ["org"],
   permissions: ["books.tax"],
   available: (ctx) => ctx.hasArcBooks,
-  params: [{ key: "period", kind: "period", label: "Period" }],
+  params: [{ key: "period", kind: "period", label: "Period" }, { key: "company", kind: "legal_entity", label: "Company" }],
   run: async (ctx) => {
     const range = periodRange(ctx.params.period ?? "ytd")
     const report = await buildSalesUseTaxSummary({
       startDate: range.from ?? "1900-01-01",
       endDate: range.to ?? new Date().toISOString().slice(0, 10),
+      legalEntityId: ctx.params.company || null,
     })
     return {
       subtitle: `${report.startDate} – ${report.endDate}`,
@@ -1554,9 +1555,9 @@ const vendor1099: ReportDefinition = {
   group: "compliance",
   scopes: ["org"],
   permissions: ["report.read"],
-  params: [{ key: "year", kind: "select", label: "Tax year", options: taxYearOptions() }],
+  params: [{ key: "year", kind: "select", label: "Tax year", options: taxYearOptions() }, { key: "company", kind: "legal_entity", label: "Paying company" }],
   run: async (ctx) => {
-    const report = await getVendor1099Report({ year: Number(ctx.params.year) || undefined })
+    const report = await getVendor1099Report({ year: Number(ctx.params.year) || undefined, legalEntityId: ctx.params.company || null })
     const reportable = report.rows.filter((row) => row.meets_threshold)
     const missingW9 = reportable.filter((row) => !row.w9_on_file)
     // Reportable but unfileable is the state worth surfacing in December rather

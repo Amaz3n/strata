@@ -547,6 +547,7 @@ export function BooksClient({
                 <OpeningBalancesWizard
                   accounts={workspace.accounts}
                   asOf={workspace.asOf}
+                  companies={workspace.companies}
                 />
               ) : null}
               {section === "opening-balances" ? (
