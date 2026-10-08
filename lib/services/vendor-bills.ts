@@ -9,7 +9,8 @@ import { findDuplicatePayable } from "@/lib/services/payable-duplicate-check"
 import { z } from "zod"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { requireOrgContext } from "@/lib/services/context"
+import { requireOrgContext, runWithServiceOrgContext } from "@/lib/services/context"
+import { normalizeProductTier } from "@/lib/product-tier"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { requireAuthorization } from "@/lib/services/authorization"
@@ -394,6 +395,32 @@ export async function approveVendorBillsAtomic(
     }),
   )
   return { approvedCount: approved.size, outcomes }
+}
+
+/**
+ * The outbox retry of an approval's ledger side effects (job cost, billable cost,
+ * accounting sync), for when the approving request ended before they ran. The
+ * worker has no session, so it runs as the member who approved the bill; one who
+ * has since left the organization stops the retry rather than being impersonated.
+ */
+export async function runVendorBillApprovalProjection(orgId: string, billId: string) {
+  const supabase = createServiceSupabaseClient()
+  const [{ data: bill, error: billError }, { data: org, error: orgError }] = await Promise.all([
+    supabase.from("vendor_bills").select("id, approved_by").eq("org_id", orgId).eq("id", billId).maybeSingle(),
+    supabase.from("orgs").select("product_tier").eq("id", orgId).maybeSingle(),
+  ])
+  if (billError || orgError) throw new Error(`Failed to load the approved bill: ${(billError ?? orgError)?.message}`)
+  if (!bill) throw new Error("Approved vendor bill no longer exists")
+  if (!bill.approved_by) throw new Error("Vendor bill has no approver to run its ledger update as")
+  const { data: member, error: memberError } = await supabase.from("memberships").select("id")
+    .eq("org_id", orgId).eq("user_id", bill.approved_by).eq("status", "active").maybeSingle()
+  if (memberError) throw new Error(`Failed to verify the bill's approver: ${memberError.message}`)
+  if (!member) throw new Error("The member who approved this bill is no longer active; re-approve it to post its job cost")
+  await runWithServiceOrgContext({ supabase, orgId, userId: bill.approved_by, productTier: normalizeProductTier(org?.product_tier) }, async () => {
+    await propagateApprovalToLedger({ source: "vendor_bill", sourceId: billId, orgId })
+    const result = await enqueueVendorBillSync(billId, orgId)
+    await recordPayableAccountingEnqueueResult({ orgId, billId, entityType: "vendor_bill", entityId: billId, result })
+  })
 }
 
 export const vendorBillSelect = `
@@ -2071,7 +2098,11 @@ export async function updateVendorBillStatus({
     await replaceBillLineCoding(supabase, { orgId: resolvedOrgId, billId, lines: actualLines })
   }
 
-  if (!isVendorCredit && isApprovedOrReleased && existing.project_id) {
+  // A bill brought over at cutover was costed in the builder's previous books;
+  // paying it settles the payable and codes no new cost.
+  const billMetadata = existing.metadata
+  const openingDocument = Boolean(billMetadata) && typeof billMetadata === "object" && !Array.isArray(billMetadata) && typeof billMetadata.opening_batch_id === "string"
+  if (!isVendorCredit && isApprovedOrReleased && existing.project_id && !openingDocument) {
     const approvalSettings = await loadApprovalGateSettings({ supabase, orgId: resolvedOrgId, projectId: existing.project_id })
 
     if (approvalSettings.cost_codes_enabled) {

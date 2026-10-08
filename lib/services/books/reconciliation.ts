@@ -1,4 +1,4 @@
-import { PROJECTION_RUN_SOURCE_TYPE, projectionFindingWasEvaluated } from "@/lib/services/books/reconciliation-rules"
+import { PROJECTION_RUN_SOURCE_TYPE, notifiableFindingCount, projectionFindingWasEvaluated } from "@/lib/services/books/reconciliation-rules"
 import "server-only"
 
 import { z } from "zod"
@@ -957,16 +957,17 @@ export async function recordProjectionFailures(
       if (error) throw new Error(`Failed to complete the projection reconciliation run: ${error.message}`)
     }
 
-    if (plan.newFindingCount > 0) {
+    const notifiable = notifiableFindingCount(plan)
+    if (notifiable > 0) {
       await recordEvent({
         orgId: result.orgId,
         eventType: "accounting_reconciliation_drift",
         entityType: "accounting_reconciliation_run",
         entityId: run.runId,
         payload: {
-          message: `${plan.newFindingCount} source record${plan.newFindingCount === 1 ? "" : "s"} cannot be projected into the ledger`,
+          message: `${notifiable} source record${notifiable === 1 ? "" : "s"} cannot be projected into the ledger`,
           discrepancy_count: findings.length,
-          new_discrepancy_count: plan.newFindingCount,
+          new_discrepancy_count: notifiable,
         },
         channel: "notification",
       })

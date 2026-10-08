@@ -1,6 +1,6 @@
 require('../scripts/register-ts-node-test');
 const test=require('node:test');const assert=require('node:assert/strict');const Module=require('node:module');
-const {projectionFindingWasEvaluated,planReconciliationItemSync}=require('../lib/services/books/reconciliation-rules');
+const {projectionFindingWasEvaluated,planReconciliationItemSync,notifiableFindingCount,PROJECTION_RUN_SOURCE_TYPE}=require('../lib/services/books/reconciliation-rules');
 test('incremental projection resolves only evaluated sources and retains unrelated failures',()=>{
  const existing=[{id:'checked',category:'projection_failed',entityType:'invoice',entityId:'one',status:'open',differenceCents:null},{id:'unchecked',category:'projection_failed',entityType:'vendor_bill',entityId:'two',status:'open',differenceCents:null}];
  const evaluated=new Set(['invoice:one']);const scope=existing.filter(item=>projectionFindingWasEvaluated(item,evaluated));
@@ -21,4 +21,13 @@ test('regular projection job persists actionable failures with explicit scan sco
  const response=await GET({nextUrl:new URL('http://localhost/api/jobs/books-projection')});assert.equal(response.status,207);assert.equal((await response.json()).surfaced.opened,1);assert.equal(calls[1].scope.full,false);assert.deepEqual(calls[1].results,result.results);
  await GET({nextUrl:new URL('http://localhost/api/jobs/books-projection?full=1')});assert.equal(calls[3].scope.full,true);
  authorized=false;assert.equal((await GET({nextUrl:new URL('http://localhost')})).status,401);assert.equal(calls.length,4);
+});
+test('a pass that did not reach a company opens an item but never alerts its owner; a source record that cannot post does',()=>{
+ const org='00000000-0000-4000-8000-000000000001',bill='00000000-0000-4000-8000-000000000002';
+ const notReached={category:'projection_failed',entityType:PROJECTION_RUN_SOURCE_TYPE,entityId:org,details:{severity:'critical'}};
+ const failedBill={category:'projection_failed',entityType:'vendor_bill',entityId:bill,details:{severity:'critical'}};
+ const plan=planReconciliationItemSync({findings:[notReached,failedBill],existing:[],ownsCategory:()=>true});
+ assert.equal(plan.insert.length,2);
+ assert.equal(notifiableFindingCount(plan),1);
+ assert.equal(notifiableFindingCount(planReconciliationItemSync({findings:[notReached],existing:[],ownsCategory:()=>true})),0);
 });

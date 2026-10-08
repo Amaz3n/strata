@@ -73,7 +73,6 @@ test("Phase G accounting queue and AP callers use the durable sync ledger contra
     "invoice-auto-approval.ts",
     "po-completions.ts",
   ].map((name) => fs.readFileSync(path.join(__dirname, "../lib/services", name), "utf8"))
-  apCallers.push(fs.readFileSync(path.join(__dirname, "../app/api/jobs/process-outbox/route.ts"), "utf8"))
 
   const queueBody = queue.slice(queue.indexOf("export async function listAccountingSyncQueueAction"), queue.indexOf("export async function syncAccountingItemAction"))
   assert.match(queueBody, /from\("accounting_sync_records"\)/)

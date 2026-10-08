@@ -181,6 +181,18 @@ export function planReconciliationItemSync(args: {
 }
 
 /**
+ * New findings worth telling the company about. A run-level finding (the pass
+ * ran out of time before this company, or stopped on it) is Arc's capacity, not
+ * the company's records: it stays an item on the close page, but a time-boxed
+ * pass that reaches a different subset each night would otherwise resolve and
+ * reopen it, and alert the owner, every night.
+ */
+export function notifiableFindingCount(plan: ReconciliationSyncPlan) {
+  return [...plan.insert, ...plan.carryForward.filter((row) => row.reopened).map((row) => row.finding)]
+    .filter((finding) => finding.entityType !== PROJECTION_RUN_SOURCE_TYPE).length
+}
+
+/**
  * A run that could not look everywhere is not a clean run.
  *
  * `PROJECT_CHECK_CAP` bounds how much of a large org one pass inspects, and a
