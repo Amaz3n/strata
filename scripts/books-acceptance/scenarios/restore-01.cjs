@@ -175,11 +175,73 @@ async function taxRecords(kit, expected, check) {
   return { orgId, restoreMs: result.ms }
 }
 
+// The archive is built by a background job (B06.1). One database snapshot: a
+// journal committed while the capture is running is not in it. An attempt that
+// died is recorded as interrupted when the next starts; a failed attempt keeps
+// its reason and names no file; an export whose job is gone fails explicitly; a
+// finished export cannot be started again.
+async function backgroundArchive(kit, expected, check) {
+  const { greenfieldOrg } = require("./shared.cjs")
+  const org = await greenfieldOrg(kit, { name: "RESTORE-01 background archive", periods: ["2026-07"] })
+  const { q } = kit
+  const journal = (memo) => kit.as(org.reviewer, () => app("books/bookkeeping").createAdjustingJournal({ entryDate: "2026-07-10", memo,
+    lines: [{ accountCode: "6900", debitCents: 1000, creditCents: 0 }, { accountCode: "3010", debitCents: 0, creditCents: 1000 }] }))
+  await journal("Before the capture")
+  const entries = () => Number(kit.rows(`select count(*) n from public.journal_entries where org_id=${q(org.orgId)}`)[0].n)
+  const before = entries()
+  // The capture sleeps inside its one statement while a second connection commits.
+  const { spawn } = require("node:child_process")
+  const capture = new Promise((resolve, reject) => {
+    const child = spawn("docker", ["exec", kit.container, "psql", "-U", "postgres", "-At", "-c",
+      `select pg_sleep(2), jsonb_array_length(public.capture_books_export_snapshot(${q(org.orgId)})->'tables'->'journal_entries')`])
+    let out = ""; child.stdout.on("data", (chunk) => { out += chunk }); child.on("error", reject)
+    child.on("close", (code) => code === 0 ? resolve(Number(out.trim().split("|").pop())) : reject(Error(`capture exited ${code}`)))
+  })
+  await new Promise((resolve) => setTimeout(resolve, 500))
+  await journal("Committed during the capture")
+  const captured = await capture
+
+  const exports = app("books/exports")
+  const status = (id) => kit.rows(`select status, attempt_count, storage_path, content_hash, error_message, attempts from public.books_exports where id=${q(id)}`)[0]
+  const outcomes = (row) => (typeof row.attempts === "string" ? JSON.parse(row.attempts) : row.attempts).map((attempt) => `${attempt.attempt}:${attempt.outcome}`)
+  const requested = await kit.as(org.owner, () => exports.requestBooksExport({ exportType: "complete" }))
+  const queued = { status: status(requested.exportId).status, job: Number(kit.rows(`select count(*) n from public.outbox where org_id=${q(org.orgId)} and job_type='generate_books_export' and payload->>'export_id'=${q(requested.exportId)}`)[0].n) }
+  // A worker took the job and died before finishing.
+  kit.sql(`select public.start_books_export_attempt(${q(org.orgId)}, ${q(requested.exportId)})`)
+  const job = () => kit.rows(`select id from public.outbox where org_id=${q(org.orgId)} and job_type='generate_books_export' and payload->>'export_id'=${q(requested.exportId)}`)[0].id
+  await kit.drainOutbox(org.orgId).catch(() => {})
+  const afterRetry = status(requested.exportId)
+  kit.sql(`update public.outbox set status='failed' where id=${q(job())}`)
+
+  // A second export whose job was lost, an hour on.
+  const lost = await kit.as(org.owner, () => exports.requestBooksExport({ exportType: "complete" }))
+  kit.sql(`delete from public.outbox where org_id=${q(org.orgId)} and payload->>'export_id'=${q(lost.exportId)}; update public.books_exports set requested_at=now() - interval '2 hours' where id=${q(lost.exportId)}`)
+  const fresh = await kit.as(org.owner, () => exports.requestBooksExport({ exportType: "complete" }))
+  const swept = await kit.service(() => exports.failStrandedBooksExports())
+  kit.sql(`update public.outbox set status='failed' where org_id=${q(org.orgId)} and payload->>'export_id'=${q(fresh.exportId)}`)
+
+  // A finished archive is never started again (this stack has no storage to finish
+  // one, so the fresh export is marked ready to check the rule).
+  const freshStatus = status(fresh.exportId).status
+  kit.sql(`update public.books_exports set status='ready' where id=${q(fresh.exportId)}`)
+  const readyCannotRestart = kit.rows(`select public.start_books_export_attempt(${q(org.orgId)}, ${q(fresh.exportId)}) is null as done`)[0].done === true && status(fresh.exportId).status === "ready"
+  check.equal("the archive is one snapshot; a dead attempt is recorded and the next one runs; failures keep their reason and name no file; a lost job fails the export; nothing is left generating", expected.expected, {
+    snapshot: { before, captured, after: entries() },
+    queued,
+    retry: { status: afterRetry.status, attempts: outcomes(afterRetry), storagePath: afterRetry.storage_path, contentHash: afterRetry.content_hash, reasonGiven: Boolean(afterRetry.error_message) },
+    lost: { swept: swept >= 1, status: status(lost.exportId).status, message: status(lost.exportId).error_message },
+    freshUntouched: freshStatus,
+    readyCannotRestart,
+  })
+  return { orgId: org.orgId }
+}
+
 module.exports = {
   id: "RESTORE-01",
   subcases: {
     "closed-group-and-continuation": closedGroup,
     "tax-records": taxRecords,
+    "background-archive": backgroundArchive,
   },
 }
 

@@ -6,7 +6,18 @@ RESTORE-01 acceptance scenario.
 ## The archive (`lib/services/books/export-contract.ts`, schema 34)
 
 - One database snapshot (`capture_books_export_snapshot`) of every table in
-  `EXPORT_TABLES` for one organization, so no table mixes revisions.
+  `EXPORT_TABLES` for one organization, so no table mixes revisions: the capture
+  is one `stable` statement, and an entry committed while it runs is not in it
+  (RESTORE-01 `background-archive`).
+- **Built in the background.** Requesting an export queues it
+  (`requestBooksExport`); the `generate_books_export` outbox job builds it as the
+  member who asked, with their export permission checked again. Each attempt is
+  numbered and kept in `books_exports.attempts`: an attempt that died is recorded
+  as interrupted when the next starts, a failure keeps its reason, each attempt
+  writes its own object, and only the current attempt marks the archive ready
+  after verifying and uploading it. The Books maintenance sweep fails an export
+  whose job is gone, so none reads "generating" forever. The accountant package
+  builds its archive inside its own request (`createBooksExportNow`).
 - Each table carries a row count and checksum in the manifest;
   `verifyBooksExportBundle` rejects a missing table, changed rows, unsafe cents or
   an unsupported schema. Older schemas (2–17, 33) still verify; tables added in a
@@ -44,7 +55,7 @@ projector adds nothing, and new months are opened, billed, collected and closed.
 
 ## Not covered yet
 
-- Streaming capture and background archive jobs for large companies (B06.1); the
-  capture is one in-memory snapshot.
+- Bounded memory for large companies (B06.1): the capture and the supporting
+  documents are held in memory while one attempt builds the archive.
 - Supporting document bytes in live storage (B06.4 / STORE-01).
 - An automated loader: step 4 is run by an operator from the plan.

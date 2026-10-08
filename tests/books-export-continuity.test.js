@@ -90,9 +90,9 @@ test('supporting file extraction rejects path traversal before creating output',
 test('export service uploads embedded documents and refuses a changed source file',async()=>{
  const Module=require('node:module');const {database}=require('./helpers/report-database');const {gunzipSync}=require('node:zlib');
  const {bundle,bytes}=embeddedFixture();const source=database(bundle.tables);let upload,changed=false,snapshotMode="valid";const updates=[];
- const service={rpc:async(name,args)=>{assert.equal(name,"capture_books_export_snapshot");assert.equal(args.p_org_id,"org");if(snapshotMode==="error")return {data:null,error:{message:"snapshot unavailable"}};const tables={...bundle.tables};if(snapshotMode==="missing")delete tables.journal_lines;return {data:{orgId:snapshotMode==="wrong-org"?"other":"org",capturedAt:"2026-10-03T00:00:00Z",databaseSnapshot:"1:2:",tables},error:null}},from(table){
+ const service={rpc:async(name,args)=>{if(name==='start_books_export_attempt')return {data:1,error:null};if(name==='fail_books_export_attempt'){updates.push({status:'failed'});return {data:null,error:null}};assert.equal(name,"capture_books_export_snapshot");assert.equal(args.p_org_id,"org");if(snapshotMode==="error")return {data:null,error:{message:"snapshot unavailable"}};const tables={...bundle.tables};if(snapshotMode==="missing")delete tables.journal_lines;return {data:{orgId:snapshotMode==="wrong-org"?"other":"org",capturedAt:"2026-10-03T00:00:00Z",databaseSnapshot:"1:2:",tables},error:null}},from(table){
   if(table!=='books_exports')return source.from(table);
-  const query={insert(row){assert.equal(row.schema_version,BOOKS_EXPORT_SCHEMA_VERSION);return query},select(){return query},single:async()=>({data:{id:'00000000-0000-4000-8000-000000000001'},error:null}),update(row){updates.push(row);return query},eq(){return query},then(resolve){return Promise.resolve({error:null}).then(resolve)}};return query;
+  const query={insert(row){assert.equal(row.schema_version,BOOKS_EXPORT_SCHEMA_VERSION);return query},select(){return query},single:async()=>({data:{id:'00000000-0000-4000-8000-000000000001',export_type:'complete'},error:null}),update(row){updates.push(row);return query},eq(){return query},then(resolve){return Promise.resolve({error:null}).then(resolve)}};return query;
  }};
  const original=Module._load;let createExport;
  try {
@@ -105,7 +105,7 @@ test('export service uploads embedded documents and refuses a changed source fil
    if(name==='@/lib/storage/files-storage')return {getFilesObjectStream:async()=>({body:new ReadableStream({start(controller){controller.enqueue(changed?Buffer.from('changed'):bytes);controller.close()}})}),uploadFilesObject:async input=>{upload=input;return {storagePath:input.path}}};
    return original.call(this,name,...args);
   };
-  createExport=require('../lib/services/books/exports').createCompleteBooksExport;
+  const {createBooksExportNow}=require('../lib/services/books/exports');createExport=input=>createBooksExportNow({exportType:'complete',...input});
  }finally{Module._load=original;}
  const result=await createExport({});assert.equal(result.verification.valid,true);
  const archive=JSON.parse(gunzipSync(upload.bytes));assert.equal(archive.manifest.schemaVersion,BOOKS_EXPORT_SCHEMA_VERSION);

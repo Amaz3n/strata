@@ -10,7 +10,8 @@ import { z } from "zod";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access";
 import { booksDigest } from "@/lib/services/books/hash";
-import { requireOrgContext } from "@/lib/services/context";
+import { requireOrgContext, runWithServiceOrgContext } from "@/lib/services/context";
+import { normalizeProductTier } from "@/lib/product-tier";
 import { recordEvent } from "@/lib/services/events";
 import { uploadFilesObject, getFilesObjectStream } from "@/lib/storage/files-storage";
 
@@ -42,26 +43,101 @@ function redact(table: string, rows: Record<string, unknown>[]) {
 }
 
 
-export async function createCompleteBooksExport(input: {
+const EXPORT_JOB_TYPE = "generate_books_export";
+export const BOOKS_EXPORT_JOB_TYPE = EXPORT_JOB_TYPE;
+
+/**
+ * Asks for an archive. It is built in the background (`runBooksExportJob`), so
+ * a large company's archive never depends on one request surviving; the export
+ * list shows it queued, generating, then ready or failed with the reason.
+ */
+export async function requestBooksExport(input: {
   exportType?: "complete" | "accountant" | "cutover" | "period";
   orgId?: string;
 }) {
   const context = await requireExportContext(input.orgId);
   const service = createServiceSupabaseClient();
-  const { data: exportData, error: createError } = await service
+  const exportType = input.exportType ?? "complete";
+  const exportId = await insertExport(context, exportType);
+  const { error: queueError } = await service.from("outbox").insert({
+    org_id: context.orgId, job_type: EXPORT_JOB_TYPE, payload: { export_id: exportId }, run_at: new Date().toISOString(),
+  });
+  if (queueError) {
+    await service.from("books_exports").update({ status: "failed", error_message: `Could not queue the archive: ${queueError.message}` })
+      .eq("org_id", context.orgId).eq("id", exportId);
+    throw new Error(`Failed to queue Books export: ${queueError.message}`);
+  }
+  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "books.export_requested", entityType: "books_export", entityId: exportId, payload: { export_type: exportType } });
+  return { exportId, status: "queued" as const };
+}
+
+async function insertExport(context: { orgId: string; userId: string }, exportType: string) {
+  const { data, error } = await createServiceSupabaseClient()
     .from("books_exports")
-    .insert({
-      org_id: context.orgId,
-      export_type: input.exportType ?? "complete",
-      schema_version: BOOKS_EXPORT_SCHEMA_VERSION,
-      status: "generating",
-      requested_by: context.userId,
-    })
+    .insert({ org_id: context.orgId, export_type: exportType, schema_version: BOOKS_EXPORT_SCHEMA_VERSION, status: "queued", requested_by: context.userId })
     .select("id")
     .single();
-  if (createError)
-    throw new Error(`Failed to create Books export: ${createError.message}`);
-  const exportId = z.object({ id: z.string().uuid() }).parse(exportData).id;
+  if (error) throw new Error(`Failed to create Books export: ${error.message}`);
+  return z.object({ id: z.string().uuid() }).parse(data).id;
+}
+
+/** An archive built inside the current request, for a package that waits on it. */
+export async function createBooksExportNow(input: { exportType: "complete" | "accountant" | "cutover" | "period"; orgId?: string }) {
+  const context = await requireExportContext(input.orgId);
+  const exportId = await insertExport(context, input.exportType);
+  const built = await buildBooksExport(exportId, context.orgId);
+  if (!built) throw new Error("Books export finished elsewhere");
+  return built;
+}
+
+/**
+ * The worker's entry: builds the archive as the member who asked for it, so
+ * their export permission is checked again; one who has left stops the job.
+ */
+export async function runBooksExportJob(orgId: string, exportId: string) {
+  const service = createServiceSupabaseClient();
+  const [{ data: row, error }, { data: org, error: orgError }] = await Promise.all([
+    service.from("books_exports").select("requested_by").eq("org_id", orgId).eq("id", exportId).maybeSingle(),
+    service.from("orgs").select("product_tier").eq("id", orgId).maybeSingle(),
+  ]);
+  if (error || orgError) throw new Error(`Failed to load the Books export: ${(error ?? orgError)?.message}`);
+  if (!row) throw new Error("Books export no longer exists");
+  const requestedBy = z.string().uuid().parse(row.requested_by);
+  const { data: member, error: memberError } = await service.from("memberships").select("id")
+    .eq("org_id", orgId).eq("user_id", requestedBy).eq("status", "active").maybeSingle();
+  if (memberError) throw new Error(`Failed to verify who requested the export: ${memberError.message}`);
+  if (!member) {
+    const attempt = await startAttempt(orgId, exportId);
+    if (attempt !== null) await failAttempt(orgId, exportId, attempt, "The member who requested this archive is no longer active; create a new export.");
+    return null;
+  }
+  return runWithServiceOrgContext({ supabase: service, orgId, userId: requestedBy, productTier: normalizeProductTier(org?.product_tier) }, () => buildBooksExport(exportId));
+}
+
+async function startAttempt(orgId: string, exportId: string) {
+  const { data, error } = await createServiceSupabaseClient().rpc("start_books_export_attempt", { p_org_id: orgId, p_export_id: exportId });
+  if (error) throw new Error(`Failed to start the Books export: ${error.message}`);
+  return z.number().int().positive().nullable().parse(data);
+}
+
+async function failAttempt(orgId: string, exportId: string, attempt: number, message: string) {
+  const { error } = await createServiceSupabaseClient().rpc("fail_books_export_attempt", { p_org_id: orgId, p_export_id: exportId, p_attempt: attempt, p_error: message });
+  if (error) throw new Error(`Failed to record the failed Books export: ${error.message}`);
+}
+
+/**
+ * One attempt at one archive: a single consistent database snapshot, the
+ * supporting bytes checked against it, verification, then upload. The archive is
+ * ready only once the attempt that built it has uploaded and verified it.
+ */
+export async function buildBooksExport(exportId: string, orgId?: string) {
+  const context = await requireExportContext(orgId);
+  const service = createServiceSupabaseClient();
+  const { data: exportRow, error: exportError } = await service.from("books_exports").select("export_type").eq("org_id", context.orgId).eq("id", exportId).single();
+  if (exportError) throw new Error(`Books export not found: ${exportError.message}`);
+  const exportType = String(exportRow.export_type);
+  const attempt = await startAttempt(context.orgId, exportId);
+  if (attempt === null) return null;
   try {
     const { data: snapshotData, error: snapshotError } = await service.rpc("capture_books_export_snapshot", { p_org_id: context.orgId });
     if (snapshotError) throw new Error(`Failed to capture Books export snapshot: ${snapshotError.message}`);
@@ -143,7 +219,8 @@ export async function createCompleteBooksExport(input: {
       );
     const json = JSON.stringify(bundle);
     const contentHash = booksDigest(json);
-    const path = `books/exports/${exportId}.json.gz`;
+    // Each attempt writes its own object; only the attempt that finishes names it.
+    const path = `books/exports/${exportId}/attempt-${attempt}.json.gz`;
     const uploaded = await uploadFilesObject({
       supabase: service,
       orgId: context.orgId,
@@ -167,7 +244,9 @@ export async function createCompleteBooksExport(input: {
         ).toISOString(),
       })
       .eq("org_id", context.orgId)
-      .eq("id", exportId);
+      .eq("id", exportId)
+      .eq("attempt_count", attempt)
+      .eq("status", "generating");
     if (updateError)
       throw new Error(
         `Failed to complete Books export: ${updateError.message}`,
@@ -179,7 +258,7 @@ export async function createCompleteBooksExport(input: {
       entityType: "books_export",
       entityId: exportId,
       payload: {
-        export_type: input.exportType ?? "complete",
+        export_type: exportType,
         content_hash: contentHash,
       },
       channel: "notification",
@@ -192,14 +271,14 @@ export async function createCompleteBooksExport(input: {
       verification,
     };
   } catch (error) {
-    await service
-      .from("books_exports")
-      .update({
-        status: "failed",
-        error_message: error instanceof Error ? error.message : String(error),
-      })
-      .eq("org_id", context.orgId)
-      .eq("id", exportId);
+    await failAttempt(context.orgId, exportId, attempt, error instanceof Error ? error.message : String(error));
     throw error;
   }
+}
+
+/** Archives whose job is gone fail with the reason instead of reading "generating" forever. */
+export async function failStrandedBooksExports() {
+  const { data, error } = await createServiceSupabaseClient().rpc("fail_stranded_books_exports", {});
+  if (error) throw new Error(`Failed to close out interrupted Books exports: ${error.message}`);
+  return z.number().int().parse(data);
 }

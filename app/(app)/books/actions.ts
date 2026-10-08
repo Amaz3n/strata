@@ -84,7 +84,7 @@ import {
   approveBooksCutover,
   rollbackBooksCutover,
 } from "@/lib/services/books/cutover";
-import { createCompleteBooksExport } from "@/lib/services/books/exports";
+import { requestBooksExport } from "@/lib/services/books/exports";
 import {
   getExternalAccountMappingWorkspace,
   mirrorPeriodSummary,
@@ -685,7 +685,7 @@ export async function reopenAccountingPeriodAction(
 export async function createBooksExportAction(
   exportType: "complete" | "accountant" | "cutover" | "period" = "complete",
 ) {
-  return run(() => createCompleteBooksExport({ exportType }));
+  return run(() => requestBooksExport({ exportType }));
 }
 export async function runReconciliationNowAction() {
   return run(() => runReconciliationNow());

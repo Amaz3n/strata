@@ -54,11 +54,12 @@ test('actual export service streams retained originals, reuses current objects, 
  const Module=require('node:module'),{gunzipSync}=require('node:zlib')
  const bundle=fixture(),downloads=[],updates=[];let upload,corrupt=false
  const service={rpc:async(name,args)=>{
+  if(name==='start_books_export_attempt')return {data:1,error:null};if(name==='fail_books_export_attempt'){updates.push({status:'failed'});return {data:null,error:null}};
   assert.equal(name,'capture_books_export_snapshot');assert.equal(args.p_org_id,org)
   return {data:{orgId:org,capturedAt:'2026-10-03T00:00:00Z',databaseSnapshot:'1:2:',tables:bundle.tables},error:null}
  },from(table){
   assert.equal(table,'books_exports')
-  const query={insert(row){assert.equal(row.schema_version,BOOKS_EXPORT_SCHEMA_VERSION);return query},select(){return query},single:async()=>({data:{id:id(20)},error:null}),update(row){updates.push(row);return query},eq(){return query},then(resolve){return Promise.resolve({error:null}).then(resolve)}}
+  const query={insert(row){assert.equal(row.schema_version,BOOKS_EXPORT_SCHEMA_VERSION);return query},select(){return query},single:async()=>({data:{id:id(20),export_type:'complete'},error:null}),update(row){updates.push(row);return query},eq(){return query},then(resolve){return Promise.resolve({error:null}).then(resolve)}}
   return query
  }}
  const originalLoad=Module._load;let createExport
@@ -78,7 +79,7 @@ test('actual export service streams retained originals, reuses current objects, 
    }
    return originalLoad.call(this,name,...args)
   }
-  createExport=require('../lib/services/books/exports').createCompleteBooksExport
+  const {createBooksExportNow}=require('../lib/services/books/exports');createExport=input=>createBooksExportNow({exportType:'complete',...input})
  }finally{Module._load=originalLoad}
  const result=await createExport({});assert.equal(result.verification.valid,true)
  const archived=JSON.parse(gunzipSync(upload.bytes));assert.equal(verifyBooksExportBundle(archived).valid,true)

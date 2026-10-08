@@ -2,6 +2,7 @@ import { type NextRequest, NextResponse } from "next/server"
 
 import { processRecurringPostings } from "@/lib/services/books/bookkeeping"
 import { finalizeExpiredCutoverCredentials } from "@/lib/services/books/cutover"
+import { failStrandedBooksExports } from "@/lib/services/books/exports"
 import { runBooksProjection } from "@/lib/services/books/projector"
 import { recordProjectionFailures } from "@/lib/services/books/reconciliation"
 import { runScheduledLedgerRebuildDrills } from "@/lib/services/books/rebuild"
@@ -18,9 +19,10 @@ async function handler(request: NextRequest) {
   // run will not see it again. A full pass ignores the watermark; posting is
   // idempotent on the posting key, so re-scanning costs nothing when the ledger
   // is already whole and is the only thing that recovers it when it is not.
-  const [recurring, credentials, repair] = await Promise.all([
+  const [recurring, credentials, strandedExports, repair] = await Promise.all([
     processRecurringPostings(),
     finalizeExpiredCutoverCredentials(),
+    failStrandedBooksExports(),
     // Leaves time for the rebuild drills below inside maxDuration.
     runBooksProjection({ full: true, deadline: Date.now() + 200_000 }),
   ])
@@ -36,7 +38,7 @@ async function handler(request: NextRequest) {
   const failures = repair.results.reduce((sum, item) => sum + item.failures.length, 0)
     + rebuilds.results.filter((run) => run.status !== "passed").length + rebuilds.unreached.length
   return NextResponse.json(
-    { ok: failures === 0, failures, recurring, credentials, rebuilds, repair, surfaced },
+    { ok: failures === 0, failures, recurring, credentials, strandedExports, rebuilds, repair, surfaced },
     { status: failures === 0 ? 200 : 207 },
   )
 }

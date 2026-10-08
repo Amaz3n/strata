@@ -5425,7 +5425,7 @@
       "workstream": "B06",
       "title": "Consistent streamed capture and archive jobs",
       "status": "PARTIAL",
-      "status_basis": "Progress (RESTORE-01, export/restore tests): export schema 34 adds the accounting records built since schema 33 (revenue policies, development, cost and WIP allocations, inventory impairments, bank offsets and lines, 1099 packages, bank feed connections) to the one-snapshot capture; no taxpayer ID, Vault pointer or feed credential enters the archive; schemas 2-17 and 33 still verify. Remaining: durable background capture with streaming, bounded memory and resumable attempts (today one in-memory snapshot); capacity profile (B09).",
+      "status_basis": "Progress (2026-10-08, RESTORE-01 background-archive): archives are built by a durable outbox job (generate_books_export) as the member who requested them, permission rechecked; attempts are numbered and kept, a dead attempt is recorded as interrupted when the next starts, a failure keeps its reason and names no file, each attempt writes its own object and only the current attempt marks the archive ready after verify and upload; the maintenance sweep fails exports whose job is gone. One stable-statement capture proved consistent: a journal committed during a 2 s capture is absent from it. Verification of omitted tables, changed bytes, unsafe cents and older schemas, and the no-secrets rule, were already covered (books-export-continuity, RESTORE-01). Remaining: bounded memory (capture and documents are held in memory during an attempt) and a ready archive built against real storage (STORE-01). The acceptance kit now clears R2_* settings so a scenario can never upload to production storage. Migration 20261008050000_books_export_attempts pending production approval.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "source edits during capture cannot mix revisions",
@@ -6511,14 +6511,42 @@
             "Migration 20261008030000_books_export_schema34 applied to the acceptance stack only; production waits for approval."
           ],
           "evidence_dir": "docs/books-evidence/2026-10-08-restore"
+        },
+        {
+          "verified_at": "2026-10-08T17:39:48.755572+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261008050000_books_export_attempts.sql",
+            "lib/services/books/exports.ts",
+            "lib/services/books/accountant-package.ts",
+            "app/api/jobs/process-outbox/route.ts",
+            "app/api/jobs/books-maintenance/route.ts",
+            "app/(app)/books/actions.ts",
+            "scripts/books-acceptance/scenarios/restore-01.cjs",
+            "scripts/books-acceptance/expected/RESTORE-01.json",
+            "scripts/books-acceptance/scenario-kit.cjs",
+            "tests/books-export-continuity.test.js",
+            "tests/books-historical-document-export.test.js",
+            "docs/books-restore.md"
+          ],
+          "test_scenario_ids": [
+            "RESTORE-01"
+          ],
+          "commands": [
+            "scenario-runner RESTORE-01",
+            "node --test tests/books-export-continuity.test.js tests/books-historical-document-export.test.js",
+            "pnpm test:financials",
+            "pnpm lint && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit"
+          ],
+          "observed_results": [
+            "RESTORE-01 3/3 including background-archive: capture 1 entry while the books had 2 afterwards; attempts [\"1:interrupted\",\"2:failed\"] with the reason (no storage on this stack) and no file named; a lost job swept to failed; a fresh export untouched; a ready export cannot restart.",
+            "Export unit suites 22/22; test:financials 2,527 pass."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-background-archive"
         }
       ],
       "remaining_criteria": [
-        "source edits during capture cannot mix revisions",
-        "crash/resume produces one complete archive or explicit failed attempt, never a partial “complete” file",
-        "omitted table/version, changed bytes or unsafe cents fail verification",
-        "older supported archive schemas still verify",
-        "no full TIN/provider secret enters ordinary export"
+        "bounded memory: stream the capture and supporting documents instead of holding them in one attempt",
+        "a ready archive built and downloaded against real storage (STORE-01)"
       ],
       "external_dependency": null,
       "reviewer": null,

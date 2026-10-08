@@ -27,6 +27,9 @@ function createKit(stack) {
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = localJwt({ role: "anon" })
   process.env.SUPABASE_SERVICE_ROLE_KEY = localJwt({ role: "service_role" })
   process.env.CRON_SECRET = randomUUID()
+  // A shell that carries production storage settings must never send scenario
+  // files there; scenarios run with no file storage.
+  for (const name of Object.keys(process.env)) if (name.startsWith("R2_")) delete process.env[name]
   require("../register-ts-node-test")
   // Route handlers give `after()` a request scope; scenarios await the work instead.
   const deferred = []

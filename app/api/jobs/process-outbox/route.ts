@@ -54,6 +54,7 @@ import { extractCoiFacts } from "@/lib/services/ap-document-verification"
 import { sendVendorBillWaiverChase } from "@/lib/services/payment-holds"
 import { FLOORPLAN_INTERPRET_JOB, runFloorplanInterpretation } from "@/lib/services/floorplan-models"
 import { runVendorBillApprovalProjection } from "@/lib/services/vendor-bills"
+import { BOOKS_EXPORT_JOB_TYPE, runBooksExportJob } from "@/lib/services/books/exports"
 import { INVOICE_ISSUANCE_JOB_TYPE, SCHEDULED_INVOICE_SEND_JOB_TYPE, runInvoiceIssuance, runScheduledInvoiceSend } from "@/lib/services/invoices"
 import { floorplanTargetSchema } from "@/lib/validation/floorplan"
 import type { SearchEntityType } from "@/lib/services/search-config"
@@ -160,6 +161,7 @@ const OUTBOX_JOB_TYPES = [
   "chase_vendor_bill_waiver",
   "extract_coi_facts",
   "project_vendor_bill_approval",
+  BOOKS_EXPORT_JOB_TYPE,
   INVOICE_ISSUANCE_JOB_TYPE,
   SCHEDULED_INVOICE_SEND_JOB_TYPE,
   FLOORPLAN_INTERPRET_JOB,
@@ -636,6 +638,10 @@ async function processOutboxQueue(request: NextRequest) {
         const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
         if (!billId) throw new Error("Vendor-bill approval projection is missing bill_id")
         await runVendorBillApprovalProjection(job.org_id, billId)
+      } else if (job.job_type === BOOKS_EXPORT_JOB_TYPE) {
+        const exportId = typeof job.payload?.export_id === "string" ? job.payload.export_id : null
+        if (!exportId) throw new Error("Books export job is missing export_id")
+        await runBooksExportJob(job.org_id, exportId)
       } else if (job.job_type === FLOORPLAN_INTERPRET_JOB) {
         const target = floorplanTargetSchema.safeParse(job.payload?.target)
         if (!target.success) throw new Error("Floorplan interpretation has no valid target")

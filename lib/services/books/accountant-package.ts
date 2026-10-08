@@ -13,7 +13,7 @@ import {
 } from "@/lib/financials/ledger-status";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { requireBooksAuthorization as requireAuthorization } from "@/lib/services/books/access";
-import { createCompleteBooksExport } from "@/lib/services/books/exports";
+import { createBooksExportNow } from "@/lib/services/books/exports";
 import { requireOrgContext } from "@/lib/services/context";
 import { recordEvent } from "@/lib/services/events";
 import { getVendor1099Report } from "@/lib/services/reports/vendor-1099";
@@ -168,7 +168,7 @@ export async function createAccountantPackage(input: {
   const packageId = z.object({ id: z.string().uuid() }).parse(data).id;
   try {
     const [exportResult, vendor1099] = await Promise.all([
-      createCompleteBooksExport({
+      createBooksExportNow({
         exportType: "accountant",
         orgId: context.orgId,
       }),
