@@ -1,0 +1,198 @@
+{
+  "verdict": "INCOMPLETE",
+  "finishedAt": "2026-10-08T12:06:02.276Z",
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "scenarios": [
+    {
+      "scenario": "MIG-01",
+      "status": "NOT_IMPLEMENTED",
+      "seconds": 0,
+      "disposition": "not_built",
+      "packages": [
+        "B03.3",
+        "B15.1"
+      ],
+      "open": []
+    },
+    {
+      "scenario": "GREEN-01",
+      "status": "NOT_IMPLEMENTED",
+      "seconds": 0,
+      "disposition": "not_built",
+      "packages": [
+        "B15.1"
+      ],
+      "open": []
+    },
+    {
+      "scenario": "BILL-01",
+      "status": "PASSED",
+      "seconds": 11,
+      "open": []
+    },
+    {
+      "scenario": "HIST-01",
+      "status": "PASSED",
+      "seconds": 33,
+      "open": []
+    },
+    {
+      "scenario": "WIP-01",
+      "status": "PASSED",
+      "seconds": 14,
+      "open": []
+    },
+    {
+      "scenario": "LOSS-01",
+      "status": "PASSED",
+      "seconds": 5,
+      "open": []
+    },
+    {
+      "scenario": "REV-01",
+      "status": "PASSED",
+      "seconds": 11,
+      "open": []
+    },
+    {
+      "scenario": "HOME-01",
+      "status": "PASSED",
+      "seconds": 12,
+      "open": []
+    },
+    {
+      "scenario": "DIM-01",
+      "status": "PASSED",
+      "seconds": 4,
+      "open": []
+    },
+    {
+      "scenario": "BANK-01",
+      "status": "PASSED",
+      "seconds": 12,
+      "open": []
+    },
+    {
+      "scenario": "PAY-01",
+      "status": "NOT_IMPLEMENTED",
+      "seconds": 0,
+      "disposition": "deferred",
+      "packages": [
+        "B13"
+      ],
+      "open": []
+    },
+    {
+      "scenario": "PAY-02",
+      "status": "NOT_IMPLEMENTED",
+      "seconds": 0,
+      "disposition": "deferred",
+      "packages": [
+        "B13"
+      ],
+      "open": []
+    },
+    {
+      "scenario": "CASH-01",
+      "status": "PASSED",
+      "seconds": 4,
+      "open": []
+    },
+    {
+      "scenario": "TAX-01",
+      "status": "PASSED",
+      "seconds": 4,
+      "open": []
+    },
+    {
+      "scenario": "ENTITY-01",
+      "status": "PASSED",
+      "seconds": 6,
+      "open": []
+    },
+    {
+      "scenario": "INTERCO-01",
+      "status": "NOT_IMPLEMENTED",
+      "seconds": 0,
+      "disposition": "not_built",
+      "packages": [
+        "B14.3"
+      ],
+      "open": []
+    },
+    {
+      "scenario": "CONSOL-01",
+      "status": "NOT_IMPLEMENTED",
+      "seconds": 0,
+      "disposition": "not_built",
+      "packages": [
+        "B14.4"
+      ],
+      "open": []
+    },
+    {
+      "scenario": "CLOSE-01",
+      "status": "INCOMPLETE",
+      "seconds": 11,
+      "open": [
+        "quarter-end",
+        "all-supported-modules"
+      ]
+    },
+    {
+      "scenario": "YEAR-01",
+      "status": "PASSED",
+      "seconds": 2,
+      "open": []
+    },
+    {
+      "scenario": "STATUS-01",
+      "status": "PASSED",
+      "seconds": 10,
+      "open": []
+    },
+    {
+      "scenario": "RACE-01",
+      "status": "INCOMPLETE",
+      "seconds": 16,
+      "open": [
+        "entity-pair"
+      ]
+    },
+    {
+      "scenario": "STORE-01",
+      "status": "NOT_IMPLEMENTED",
+      "seconds": 0,
+      "disposition": "blocked",
+      "packages": [
+        "B06.4"
+      ],
+      "open": []
+    },
+    {
+      "scenario": "RESTORE-01",
+      "status": "PASSED",
+      "seconds": 6,
+      "open": []
+    },
+    {
+      "scenario": "CAP-01",
+      "status": "FAILED",
+      "seconds": 668,
+      "open": [
+        "failed-source-retries",
+        "close-review-reads"
+      ]
+    },
+    {
+      "scenario": "AUTH-01",
+      "status": "NOT_IMPLEMENTED",
+      "seconds": 0,
+      "disposition": "not_built",
+      "packages": [
+        "B15.3"
+      ],
+      "open": []
+    }
+  ]
+}

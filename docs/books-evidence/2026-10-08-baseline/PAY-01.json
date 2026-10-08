@@ -1,0 +1,14 @@
+{
+  "scenario": "PAY-01",
+  "status": "NOT_IMPLEMENTED",
+  "disposition": {
+    "status": "deferred",
+    "packages": [
+      "B13"
+    ],
+    "reason": "Payroll is not day one; it arrives as a reviewed summary journal."
+  },
+  "subcases": [],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-08T11:53:55.805Z"
+}

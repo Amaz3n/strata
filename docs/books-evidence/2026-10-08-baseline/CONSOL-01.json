@@ -1,0 +1,15 @@
+{
+  "scenario": "CONSOL-01",
+  "status": "NOT_IMPLEMENTED",
+  "disposition": {
+    "status": "not_built",
+    "packages": [
+      "B14.4"
+    ],
+    "reason": "Group membership effective by date, mapped accounts, approved eliminations and a later membership change.",
+    "coveredSoFar": "ENTITY-01 and the two-companies journey cover the consolidated trial balance with eliminations."
+  },
+  "subcases": [],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-08T11:54:09.221Z"
+}

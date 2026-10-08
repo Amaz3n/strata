@@ -85,8 +85,8 @@
       "id": "B00.1",
       "workstream": "B00",
       "title": "Reconcile requirements and workspace drift",
-      "status": "PARTIAL",
-      "status_basis": "Scoped schema19 retained ownership review/archive/recovery verified; native full schema, actual source/ledger ownership, workflow UI, company recovery and release evidence incomplete.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified locally (2026-10-08): every plan package is a tracker item and every tracker scenario is in the catalog; each verified item's evidence exists and matches its recorded hash (verify-catalog.cjs, 0 findings; three items whose shared evidence files were later rewritten are pinned to the commit that verified them); every observed failure has an owner (list in evidence); the Books tree has no undocumented partial work (uncommitted Books paths are this change; the other session's edits are outside Books); baseline.cjs reproduces one sourceDigest from the live tree, migrations, catalog, tracker and runtimes.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "each original scope item maps to a package",
@@ -1384,6 +1384,99 @@
           "remaining_criteria": [],
           "external_dependency": null,
           "reviewer": "Agustin (approved application)"
+        },
+        {
+          "verified_at": "2026-10-08T12:07:18.954175+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/catalog.cjs",
+            "scripts/books-acceptance/scenario-runner.cjs",
+            "scripts/books-acceptance/verify-catalog.cjs",
+            "scripts/books-acceptance/baseline.cjs",
+            "tests/books-acceptance-scenarios.test.js",
+            "advisor-plans/013-arc-books-completion-checklist.json"
+          ],
+          "test_scenario_ids": [
+            "AUTH-01",
+            "BANK-01",
+            "BILL-01",
+            "CAP-01",
+            "CASH-01",
+            "CLOSE-01",
+            "CONSOL-01",
+            "DIM-01",
+            "ENTITY-01",
+            "GREEN-01",
+            "HIST-01",
+            "HOME-01",
+            "INTERCO-01",
+            "LOSS-01",
+            "MIG-01",
+            "PAY-01",
+            "PAY-02",
+            "RACE-01",
+            "RESTORE-01",
+            "REV-01",
+            "STATUS-01",
+            "STORE-01",
+            "TAX-01",
+            "WIP-01",
+            "YEAR-01"
+          ],
+          "commands": [
+            "node scripts/books-acceptance/scenario-runner.cjs --all",
+            "node scripts/books-acceptance/verify-catalog.cjs",
+            "node scripts/books-acceptance/baseline.cjs --container ...",
+            "node --test tests/books-acceptance-scenarios.test.js"
+          ],
+          "observed_results": [
+            "All-scenario run: 14 passed, CLOSE-01 and RACE-01 incomplete only for owned subcases, CAP-01 failed (owned by B09.2), 8 not built with dispositions.",
+            "verify-catalog: 0 findings across 60 tracker items.",
+            "Baseline sourceDigest reproduced on two consecutive runs."
+          ],
+          "observed_failures_and_owners": [
+            {
+              "failure": "CAP-01 failed-source-retries and close-review-reads: the scenario's own search-reindex jobs do not drain within the kit's 60 queue passes at CAP volume (668 s run)",
+              "owner": "B09.2",
+              "note": "CAP-01 passed when B09.2 was verified; not reproduced now, so B09.2 returns to PARTIAL until the drain is bounded or the queue is shown fair under volume."
+            },
+            {
+              "failure": "CLOSE-01 quarter-end and all-supported-modules not implemented",
+              "owner": "B01.2 / B15.2"
+            },
+            {
+              "failure": "RACE-01 entity-pair not implemented",
+              "owner": "B14.3 (buildable now)"
+            },
+            {
+              "failure": "MIG-01, GREEN-01, INTERCO-01, CONSOL-01, AUTH-01 not built",
+              "owner": "B03.3/B15.1, B15.1, B14.3, B14.4, B15.3"
+            },
+            {
+              "failure": "STORE-01 needs real R2 storage",
+              "owner": "B06.4 (needs an authorized test bucket)"
+            },
+            {
+              "failure": "PAY-01, PAY-02",
+              "owner": "B13 (deferred: payroll not day one)"
+            },
+            {
+              "failure": "pnpm lint error in tests/esign-access-code.test.js",
+              "owner": "another session's uncommitted work (not Books)"
+            },
+            {
+              "failure": "Acceptance dev server returned 'use cache ... Expected a WorkStore' after routes were added while running",
+              "owner": "B16.2 runbook: restart the acceptance app after adding routes (not a product defect; passes after restart)"
+            },
+            {
+              "failure": "Plain `npx tsc --noEmit` runs out of memory",
+              "owner": "Verification command uses NODE_OPTIONS=--max-old-space-size=12288"
+            },
+            {
+              "failure": "Production migration ledger lacks 199 repository migrations",
+              "owner": "B16.5"
+            }
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-baseline"
         }
       ],
       "remaining_criteria": [
@@ -2008,8 +2101,8 @@
       "id": "B00.3",
       "workstream": "B00",
       "title": "Build the golden acceptance runner and durable evidence catalog",
-      "status": "PARTIAL",
-      "status_basis": "Golden runner, kit and API route working end to end. Passing: BILL-01 (4/4), YEAR-01 (5/5), BANK-01 (5/5), STATUS-01 (6/6); RACE-01 7/8 (entity pair waits on B14.3); CLOSE-01 4/6; WIP-01 4/7 (3 need B04.1). 17 scenarios not started (2026-10-06).",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified locally (2026-10-08): one scenario catalog covers all 25 plan scenarios (17 built; 8 not built, each with package and reason: 5 open, STORE-01 blocked on R2, PAY-01/02 deferred); the runner's all-scenario mode runs everything, writes a per-scenario summary and exits nonzero unless every first-client scenario passes; incorrect accounting, a missing or silent subcase, an unknown scenario, missing evidence, altered evidence and credential-like evidence values all fail (unit tests); every run uses fresh organizations, so reruns never duplicate money. Bound: runs are local commands, not yet CI jobs.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "intentionally incorrect accounting causes a nonzero run",
@@ -2712,6 +2805,99 @@
             "docs/books-evidence/2026-10-06-golden-scenarios/RACE-01.json sha256:af51a74fc97621cb9e1f08fff19724876fa136c5bfbcd5b02ac7b32a7adf4582",
             "docs/books-evidence/2026-10-06-golden-scenarios/STATUS-01.json sha256:5d65b81482c02f5ed1d359f84566f09e9aead09378b98a327ce9583bca573d9c"
           ]
+        },
+        {
+          "verified_at": "2026-10-08T12:07:18.954175+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/catalog.cjs",
+            "scripts/books-acceptance/scenario-runner.cjs",
+            "scripts/books-acceptance/verify-catalog.cjs",
+            "scripts/books-acceptance/baseline.cjs",
+            "tests/books-acceptance-scenarios.test.js",
+            "advisor-plans/013-arc-books-completion-checklist.json"
+          ],
+          "test_scenario_ids": [
+            "AUTH-01",
+            "BANK-01",
+            "BILL-01",
+            "CAP-01",
+            "CASH-01",
+            "CLOSE-01",
+            "CONSOL-01",
+            "DIM-01",
+            "ENTITY-01",
+            "GREEN-01",
+            "HIST-01",
+            "HOME-01",
+            "INTERCO-01",
+            "LOSS-01",
+            "MIG-01",
+            "PAY-01",
+            "PAY-02",
+            "RACE-01",
+            "RESTORE-01",
+            "REV-01",
+            "STATUS-01",
+            "STORE-01",
+            "TAX-01",
+            "WIP-01",
+            "YEAR-01"
+          ],
+          "commands": [
+            "node scripts/books-acceptance/scenario-runner.cjs --all",
+            "node scripts/books-acceptance/verify-catalog.cjs",
+            "node scripts/books-acceptance/baseline.cjs --container ...",
+            "node --test tests/books-acceptance-scenarios.test.js"
+          ],
+          "observed_results": [
+            "All-scenario run: 14 passed, CLOSE-01 and RACE-01 incomplete only for owned subcases, CAP-01 failed (owned by B09.2), 8 not built with dispositions.",
+            "verify-catalog: 0 findings across 60 tracker items.",
+            "Baseline sourceDigest reproduced on two consecutive runs."
+          ],
+          "observed_failures_and_owners": [
+            {
+              "failure": "CAP-01 failed-source-retries and close-review-reads: the scenario's own search-reindex jobs do not drain within the kit's 60 queue passes at CAP volume (668 s run)",
+              "owner": "B09.2",
+              "note": "CAP-01 passed when B09.2 was verified; not reproduced now, so B09.2 returns to PARTIAL until the drain is bounded or the queue is shown fair under volume."
+            },
+            {
+              "failure": "CLOSE-01 quarter-end and all-supported-modules not implemented",
+              "owner": "B01.2 / B15.2"
+            },
+            {
+              "failure": "RACE-01 entity-pair not implemented",
+              "owner": "B14.3 (buildable now)"
+            },
+            {
+              "failure": "MIG-01, GREEN-01, INTERCO-01, CONSOL-01, AUTH-01 not built",
+              "owner": "B03.3/B15.1, B15.1, B14.3, B14.4, B15.3"
+            },
+            {
+              "failure": "STORE-01 needs real R2 storage",
+              "owner": "B06.4 (needs an authorized test bucket)"
+            },
+            {
+              "failure": "PAY-01, PAY-02",
+              "owner": "B13 (deferred: payroll not day one)"
+            },
+            {
+              "failure": "pnpm lint error in tests/esign-access-code.test.js",
+              "owner": "another session's uncommitted work (not Books)"
+            },
+            {
+              "failure": "Acceptance dev server returned 'use cache ... Expected a WorkStore' after routes were added while running",
+              "owner": "B16.2 runbook: restart the acceptance app after adding routes (not a product defect; passes after restart)"
+            },
+            {
+              "failure": "Plain `npx tsc --noEmit` runs out of memory",
+              "owner": "Verification command uses NODE_OPTIONS=--max-old-space-size=12288"
+            },
+            {
+              "failure": "Production migration ledger lacks 199 repository migrations",
+              "owner": "B16.5"
+            }
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-baseline"
         }
       ],
       "remaining_criteria": [
@@ -2793,11 +2979,11 @@
             "Parity test binds the 30-minute threshold between SQL and the close screen."
           ],
           "artifact_paths_and_hashes": [
-            "docs/books-evidence/2026-10-06-golden-scenarios/CLOSE-01.json sha256:c220c9cd93fdc7bffeac096abda95d0fe333157254fa7035d62f2bbebf4f357d",
+            "docs/books-evidence/2026-10-06-golden-scenarios/CLOSE-01.json@e08a31b9 sha256:c220c9cd93fdc7bffeac096abda95d0fe333157254fa7035d62f2bbebf4f357d",
             "docs/books-evidence/2026-10-06-golden-scenarios/RACE-01.json sha256:af51a74fc97621cb9e1f08fff19724876fa136c5bfbcd5b02ac7b32a7adf4582",
             "docs/books-evidence/2026-10-06-browser/abandoned-close-desktop.png sha256:3dcefa9576f9da55bf66f45cbc517a0901525d693ba6045bbd80c0f9d78d0b10",
             "docs/books-evidence/2026-10-06-browser/abandoned-close-mobile-dark.png sha256:a6f3bf3dae57c07af3046046a3e4112a74f631d4664f6d89d17e57dca304071a",
-            "docs/books-evidence/2026-10-06-browser/close-journeys.json sha256:eb43aed3830f848b549dff6495ab9cab31fff3327cf6a2c39539d2f2a2cc1234",
+            "docs/books-evidence/2026-10-06-browser/close-journeys.json@e08a31b9 sha256:eb43aed3830f848b549dff6495ab9cab31fff3327cf6a2c39539d2f2a2cc1234",
             "docs/books-evidence/2026-10-06-browser/year-end-desktop-march-reclosed.png sha256:faf8cef77e2d851967171214a27f0b05398373909081daed520cc2ed926d5437"
           ],
           "schema_or_runtime_identity": "acceptance stack arc-books-acceptance-e1c88d89280b with 20261006155617 applied (local and production); app worktree at commit a873d338+",
@@ -2809,7 +2995,12 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "CLOSE-01": "incomplete; open: quarter-end, all-supported-modules",
+        "RACE-01": "incomplete; open: entity-pair",
+        "YEAR-01": "passed"
+      }
     },
     {
       "id": "B01.2",
@@ -2918,7 +3109,12 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "CLOSE-01": "incomplete; open: quarter-end, all-supported-modules",
+        "RACE-01": "incomplete; open: entity-pair",
+        "YEAR-01": "passed"
+      }
     },
     {
       "id": "B01.3",
@@ -3025,7 +3221,12 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "CLOSE-01": "incomplete; open: quarter-end, all-supported-modules",
+        "RACE-01": "incomplete; open: entity-pair",
+        "YEAR-01": "passed"
+      }
     },
     {
       "id": "B02.1",
@@ -3623,7 +3824,10 @@
       ],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "BILL-01": "passed"
+      }
     },
     {
       "id": "B02.2",
@@ -4301,7 +4505,10 @@
       ],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "BILL-01": "passed"
+      }
     },
     {
       "id": "B03.1",
@@ -4523,7 +4730,12 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-07T12:14:55.844490+00:00"
+      "verified_at": "2026-10-07T12:14:55.844490+00:00",
+      "scenario_coverage": {
+        "HIST-01": "passed",
+        "MIG-01": "not_built (B03.3, B15.1): Importing an existing builder's trial balance with its outstanding items, through dual review to the first collection and cutover. So far: HIST-01 opening-items, ENTITY-01 company-openings and BANK-01 imported-outstanding-items cover parts of it.",
+        "RESTORE-01": "passed"
+      }
     },
     {
       "id": "B03.2",
@@ -4595,14 +4807,19 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-07T11:53:41.875125+00:00"
+      "verified_at": "2026-10-07T11:53:41.875125+00:00",
+      "scenario_coverage": {
+        "HIST-01": "passed",
+        "MIG-01": "not_built (B03.3, B15.1): Importing an existing builder's trial balance with its outstanding items, through dual review to the first collection and cutover. So far: HIST-01 opening-items, ENTITY-01 company-openings and BANK-01 imported-outstanding-items cover parts of it.",
+        "RESTORE-01": "passed"
+      }
     },
     {
       "id": "B03.3",
       "workstream": "B03",
       "title": "Opening outstanding-item migration and reviewed legacy attribution",
       "status": "LOCALLY_VERIFIED",
-      "status_basis": "All B03.3 criteria verified locally (2026-10-07): HIST-01 opening-items, BANK-01 imported outstanding bank items. Migration 20261007010000 pending production with the deploy.",
+      "status_basis": "All B03.3 criteria verified locally (2026-10-07): HIST-01 opening-items, BANK-01 imported outstanding bank items. Migration 20261007010000 pending production with the deploy. Bound (B00 reconciliation): MIG-01 (full builder trial-balance import) is not built; opening items are covered by HIST-01, ENTITY-01 and BANK-01.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "approved opening detail totals match the opening batch and bank statements",
@@ -4666,7 +4883,12 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-07T11:53:41.875125+00:00"
+      "verified_at": "2026-10-07T11:53:41.875125+00:00",
+      "scenario_coverage": {
+        "HIST-01": "passed",
+        "MIG-01": "not_built (B03.3, B15.1): Importing an existing builder's trial balance with its outstanding items, through dual review to the first collection and cutover. So far: HIST-01 opening-items, ENTITY-01 company-openings and BANK-01 imported-outstanding-items cover parts of it.",
+        "RESTORE-01": "passed"
+      }
     },
     {
       "id": "B04.1",
@@ -4773,7 +4995,11 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-07T12:58:30.294188+00:00"
+      "verified_at": "2026-10-07T12:58:30.294188+00:00",
+      "scenario_coverage": {
+        "LOSS-01": "passed",
+        "WIP-01": "passed"
+      }
     },
     {
       "id": "B04.2",
@@ -4847,7 +5073,11 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-07T13:30:42.169570+00:00"
+      "verified_at": "2026-10-07T13:30:42.169570+00:00",
+      "scenario_coverage": {
+        "LOSS-01": "passed",
+        "WIP-01": "passed"
+      }
     },
     {
       "id": "B04.3",
@@ -4919,7 +5149,11 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-07T13:30:42.169570+00:00"
+      "verified_at": "2026-10-07T13:30:42.169570+00:00",
+      "scenario_coverage": {
+        "LOSS-01": "passed",
+        "WIP-01": "passed"
+      }
     },
     {
       "id": "B05.1",
@@ -4983,7 +5217,10 @@
       ],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "TAX-01": "passed"
+      }
     },
     {
       "id": "B05.2",
@@ -5048,7 +5285,10 @@
       ],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "TAX-01": "passed"
+      }
     },
     {
       "id": "B06.1",
@@ -6152,7 +6392,12 @@
       ],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "CAP-01": "failed; open: failed-source-retries, close-review-reads",
+        "RESTORE-01": "passed",
+        "STORE-01": "blocked (B06.4): Needs real R2 storage (an authorized test bucket) for privacy, overwrite, retention and byte checks."
+      }
     },
     {
       "id": "B06.2",
@@ -7272,7 +7517,12 @@
       ],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "CAP-01": "failed; open: failed-source-retries, close-review-reads",
+        "RESTORE-01": "passed",
+        "STORE-01": "blocked (B06.4): Needs real R2 storage (an authorized test bucket) for privacy, overwrite, retention and byte checks."
+      }
     },
     {
       "id": "B06.3",
@@ -7946,7 +8196,12 @@
       ],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "CAP-01": "failed; open: failed-source-retries, close-review-reads",
+        "RESTORE-01": "passed",
+        "STORE-01": "blocked (B06.4): Needs real R2 storage (an authorized test bucket) for privacy, overwrite, retention and byte checks."
+      }
     },
     {
       "id": "B06.4",
@@ -7979,7 +8234,12 @@
       ],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "CAP-01": "failed; open: failed-source-retries, close-review-reads",
+        "RESTORE-01": "passed",
+        "STORE-01": "blocked (B06.4): Needs real R2 storage (an authorized test bucket) for privacy, overwrite, retention and byte checks."
+      }
     },
     {
       "id": "B07.1",
@@ -8040,7 +8300,11 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-07T01:57:08.402116+00:00"
+      "verified_at": "2026-10-07T01:57:08.402116+00:00",
+      "scenario_coverage": {
+        "DIM-01": "passed",
+        "ENTITY-01": "passed"
+      }
     },
     {
       "id": "B07.2",
@@ -8113,7 +8377,11 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-07T03:18:16.620756+00:00"
+      "verified_at": "2026-10-07T03:18:16.620756+00:00",
+      "scenario_coverage": {
+        "DIM-01": "passed",
+        "ENTITY-01": "passed"
+      }
     },
     {
       "id": "B08.1",
@@ -8193,13 +8461,13 @@
             "Browser: open a statement, see the check and its reversal by memo, clear them as an offset, close the statement (evidence holds 1 offset); an unclaimed bank line waits in Banking > For review with category and Post; 390px dark presentation clean."
           ],
           "artifact_paths_and_hashes": [
-            "docs/books-evidence/2026-10-06-golden-scenarios/BANK-01.json sha256:2f9e4119c977cb78a5cad3fb8100a7a15dacdab7b2e2ee918c0e89b3c4f22480",
+            "docs/books-evidence/2026-10-06-golden-scenarios/BANK-01.json@ba9db2c7 sha256:2f9e4119c977cb78a5cad3fb8100a7a15dacdab7b2e2ee918c0e89b3c4f22480",
             "docs/books-evidence/2026-10-06-golden-scenarios/RACE-01.json sha256:af51a74fc97621cb9e1f08fff19724876fa136c5bfbcd5b02ac7b32a7adf4582",
             "docs/books-evidence/2026-10-06-browser/bank-closed-desktop.png sha256:dc5b1ae7ce0b898d515cd49f36ef649a0cb48fc992ab7a14699067e29f813061",
             "docs/books-evidence/2026-10-06-browser/bank-review-desktop.png sha256:79b7a0e055af84555f53a7f0db4ea26b2ca5693a1d1bc88a4bf0cde4d928eb3c",
             "docs/books-evidence/2026-10-06-browser/bank-statements-desktop.png sha256:d674d9dd60fbab27eab1fd2e1c30b785525228ace347b703084f2ffa7ecfbd02",
             "docs/books-evidence/2026-10-06-browser/bank-statements-mobile-dark.png sha256:bfbe0cc88c989a187358d3276572ceea001ff350959f962513c4c214f745d37d",
-            "docs/books-evidence/2026-10-06-browser/all-journeys.json sha256:17911f74e27871f01a69403d2a112df46dcb1eca4a9ef57e9a16c8337c1dc94e"
+            "docs/books-evidence/2026-10-06-browser/all-journeys.json@ba9db2c7 sha256:17911f74e27871f01a69403d2a112df46dcb1eca4a9ef57e9a16c8337c1dc94e"
           ],
           "schema_or_runtime_identity": "acceptance stack arc-books-acceptance-e1c88d89280b with 20261006190000 applied locally",
           "remaining_criteria": [],
@@ -8210,7 +8478,11 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "BANK-01": "passed",
+        "RACE-01": "incomplete; open: entity-pair"
+      }
     },
     {
       "id": "B08.2",
@@ -8307,7 +8579,11 @@
       ],
       "external_dependency": "Plaid sandbox (or read-only production item) access to retain actual provider sync evidence",
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "BANK-01": "passed",
+        "RACE-01": "incomplete; open: entity-pair"
+      }
     },
     {
       "id": "B08.3",
@@ -8372,9 +8648,9 @@
             "Fixed in passing: the project payables workbench threw 'DOMMatrix is not defined' on every server render (pdf.js evaluated through lib/pdf/worker.ts) and fell back to client rendering; also present on main."
           ],
           "artifact_paths_and_hashes": [
-            "docs/books-evidence/2026-10-06-golden-scenarios/BANK-01.json sha256:95b3dc30b4f306fb3a5058617a1d2efee00da0ced13b0cbe346e5f1788b14edc",
+            "docs/books-evidence/2026-10-06-golden-scenarios/BANK-01.json@a51bf5fb sha256:95b3dc30b4f306fb3a5058617a1d2efee00da0ced13b0cbe346e5f1788b14edc",
             "docs/books-evidence/2026-10-06-browser/bank-funding-payment-desktop.png sha256:933805746b6f721afec14e8aee02d64cb3de83449573db1748b26f34ead2b03e",
-            "docs/books-evidence/2026-10-06-browser/all-journeys.json sha256:8bbd0183a0d9d2b103ff63cade63ab68e3669dfe690fc1abf11a74a62f2dd2a0"
+            "docs/books-evidence/2026-10-06-browser/all-journeys.json@a51bf5fb sha256:8bbd0183a0d9d2b103ff63cade63ab68e3669dfe690fc1abf11a74a62f2dd2a0"
           ],
           "schema_or_runtime_identity": "acceptance stack arc-books-acceptance-e1c88d89280b",
           "remaining_criteria": [],
@@ -8385,7 +8661,11 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "BANK-01": "passed",
+        "RACE-01": "incomplete; open: entity-pair"
+      }
     },
     {
       "id": "B09.1",
@@ -8568,14 +8848,19 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-07T01:43:32.713028+00:00"
+      "verified_at": "2026-10-07T01:43:32.713028+00:00",
+      "scenario_coverage": {
+        "CAP-01": "failed; open: failed-source-retries, close-review-reads",
+        "RACE-01": "incomplete; open: entity-pair",
+        "STATUS-01": "passed"
+      }
     },
     {
       "id": "B09.2",
       "workstream": "B09",
       "title": "Bounded workers, captures and review reads",
-      "status": "LOCALLY_VERIFIED",
-      "status_basis": "All four B09.2 criteria and the global DoD verified locally (2026-10-06): CAP-01 9/9 (with baseline runs on the old code and a negative check), regression of every other scenario, reference doc docs/books-posting.md. Migrations 20261006220000 and 20261006230000 pending production with the deploy.",
+      "status": "PARTIAL",
+      "status_basis": "Was verified with CAP-01 passing. The 2026-10-08 full run (all-scenario mode) fails CAP-01: its search-reindex jobs do not drain within the queue passes at CAP volume. Remaining: show the queue stays fair and bounded under one company's flood (claim order is priority then oldest-first across all organizations), or bound the reindex fan-out; then CAP-01 passes again. All four B09.2 criteria and the global DoD verified locally (2026-10-06): CAP-01 9/9 (with baseline runs on the old code and a negative check), regression of every other scenario, reference doc docs/books-posting.md. Migrations 20261006220000 and 20261006230000 pending production with the deploy.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         ">1,000 records and repeated cursor ties return exactly once",
@@ -8694,7 +8979,12 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-07T01:18:40.023502+00:00"
+      "verified_at": "2026-10-07T01:18:40.023502+00:00",
+      "scenario_coverage": {
+        "CAP-01": "failed; open: failed-source-retries, close-review-reads",
+        "RACE-01": "incomplete; open: entity-pair",
+        "STATUS-01": "passed"
+      }
     },
     {
       "id": "B09.3",
@@ -8755,7 +9045,12 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-06T23:30:56.481361+00:00"
+      "verified_at": "2026-10-06T23:30:56.481361+00:00",
+      "scenario_coverage": {
+        "CAP-01": "failed; open: failed-source-retries, close-review-reads",
+        "RACE-01": "incomplete; open: entity-pair",
+        "STATUS-01": "passed"
+      }
     },
     {
       "id": "B10.1",
@@ -8826,7 +9121,12 @@
       ],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "CASH-01": "passed",
+        "RESTORE-01": "passed",
+        "TAX-01": "passed"
+      }
     },
     {
       "id": "B10.2",
@@ -8889,7 +9189,12 @@
       ],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "CASH-01": "passed",
+        "RESTORE-01": "passed",
+        "TAX-01": "passed"
+      }
     },
     {
       "id": "B10.3",
@@ -8958,7 +9263,12 @@
       ],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "CASH-01": "passed",
+        "RESTORE-01": "passed",
+        "TAX-01": "passed"
+      }
     },
     {
       "id": "B10.4",
@@ -9022,7 +9332,12 @@
       ],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "CASH-01": "passed",
+        "RESTORE-01": "passed",
+        "TAX-01": "passed"
+      }
     },
     {
       "id": "B11.1",
@@ -9108,7 +9423,13 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-07T14:19:50.384883+00:00"
+      "verified_at": "2026-10-07T14:19:50.384883+00:00",
+      "scenario_coverage": {
+        "DIM-01": "passed",
+        "HOME-01": "passed",
+        "PAY-01": "deferred (B13): Payroll is not day one; it arrives as a reviewed summary journal.",
+        "REV-01": "passed"
+      }
     },
     {
       "id": "B11.2",
@@ -9177,7 +9498,13 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-07T15:08:06.278656+00:00"
+      "verified_at": "2026-10-07T15:08:06.278656+00:00",
+      "scenario_coverage": {
+        "DIM-01": "passed",
+        "HOME-01": "passed",
+        "PAY-01": "deferred (B13): Payroll is not day one; it arrives as a reviewed summary journal.",
+        "REV-01": "passed"
+      }
     },
     {
       "id": "B11.3",
@@ -9247,7 +9574,13 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-07T15:49:11.548425+00:00"
+      "verified_at": "2026-10-07T15:49:11.548425+00:00",
+      "scenario_coverage": {
+        "DIM-01": "passed",
+        "HOME-01": "passed",
+        "PAY-01": "deferred (B13): Payroll is not day one; it arrives as a reviewed summary journal.",
+        "REV-01": "passed"
+      }
     },
     {
       "id": "B11.4",
@@ -9310,7 +9643,13 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-07T18:01:20.541873+00:00"
+      "verified_at": "2026-10-07T18:01:20.541873+00:00",
+      "scenario_coverage": {
+        "DIM-01": "passed",
+        "HOME-01": "passed",
+        "PAY-01": "deferred (B13): Payroll is not day one; it arrives as a reviewed summary journal.",
+        "REV-01": "passed"
+      }
     },
     {
       "id": "B12.1",
@@ -9360,7 +9699,12 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-07T18:45:28.254008+00:00"
+      "verified_at": "2026-10-07T18:45:28.254008+00:00",
+      "scenario_coverage": {
+        "CLOSE-01": "incomplete; open: quarter-end, all-supported-modules",
+        "HOME-01": "passed",
+        "LOSS-01": "passed"
+      }
     },
     {
       "id": "B12.2",
@@ -9426,7 +9770,12 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-07T18:45:28.254008+00:00"
+      "verified_at": "2026-10-07T18:45:28.254008+00:00",
+      "scenario_coverage": {
+        "CLOSE-01": "incomplete; open: quarter-end, all-supported-modules",
+        "HOME-01": "passed",
+        "LOSS-01": "passed"
+      }
     },
     {
       "id": "B13.1",
@@ -9648,7 +9997,15 @@
       ],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-04T14:25:02.410062+00:00"
+      "verified_at": "2026-10-04T14:25:02.410062+00:00",
+      "scenario_coverage": {
+        "CAP-01": "failed; open: failed-source-retries, close-review-reads",
+        "PAY-01": "deferred (B13): Payroll is not day one; it arrives as a reviewed summary journal.",
+        "PAY-02": "deferred (B13): Payroll is not day one; it arrives as a reviewed summary journal.",
+        "RACE-01": "incomplete; open: entity-pair",
+        "RESTORE-01": "passed",
+        "STORE-01": "blocked (B06.4): Needs real R2 storage (an authorized test bucket) for privacy, overwrite, retention and byte checks."
+      }
     },
     {
       "id": "B13.2",
@@ -9686,7 +10043,15 @@
       ],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "CAP-01": "failed; open: failed-source-retries, close-review-reads",
+        "PAY-01": "deferred (B13): Payroll is not day one; it arrives as a reviewed summary journal.",
+        "PAY-02": "deferred (B13): Payroll is not day one; it arrives as a reviewed summary journal.",
+        "RACE-01": "incomplete; open: entity-pair",
+        "RESTORE-01": "passed",
+        "STORE-01": "blocked (B06.4): Needs real R2 storage (an authorized test bucket) for privacy, overwrite, retention and byte checks."
+      }
     },
     {
       "id": "B13.3",
@@ -9724,7 +10089,15 @@
       ],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "CAP-01": "failed; open: failed-source-retries, close-review-reads",
+        "PAY-01": "deferred (B13): Payroll is not day one; it arrives as a reviewed summary journal.",
+        "PAY-02": "deferred (B13): Payroll is not day one; it arrives as a reviewed summary journal.",
+        "RACE-01": "incomplete; open: entity-pair",
+        "RESTORE-01": "passed",
+        "STORE-01": "blocked (B06.4): Needs real R2 storage (an authorized test bucket) for privacy, overwrite, retention and byte checks."
+      }
     },
     {
       "id": "B13.4",
@@ -9762,7 +10135,15 @@
       ],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "CAP-01": "failed; open: failed-source-retries, close-review-reads",
+        "PAY-01": "deferred (B13): Payroll is not day one; it arrives as a reviewed summary journal.",
+        "PAY-02": "deferred (B13): Payroll is not day one; it arrives as a reviewed summary journal.",
+        "RACE-01": "incomplete; open: entity-pair",
+        "RESTORE-01": "passed",
+        "STORE-01": "blocked (B06.4): Needs real R2 storage (an authorized test bucket) for privacy, overwrite, retention and byte checks."
+      }
     },
     {
       "id": "B13.5",
@@ -9800,7 +10181,15 @@
       ],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "CAP-01": "failed; open: failed-source-retries, close-review-reads",
+        "PAY-01": "deferred (B13): Payroll is not day one; it arrives as a reviewed summary journal.",
+        "PAY-02": "deferred (B13): Payroll is not day one; it arrives as a reviewed summary journal.",
+        "RACE-01": "incomplete; open: entity-pair",
+        "RESTORE-01": "passed",
+        "STORE-01": "blocked (B06.4): Needs real R2 storage (an authorized test bucket) for privacy, overwrite, retention and byte checks."
+      }
     },
     {
       "id": "B13.6",
@@ -9838,7 +10227,15 @@
       ],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "CAP-01": "failed; open: failed-source-retries, close-review-reads",
+        "PAY-01": "deferred (B13): Payroll is not day one; it arrives as a reviewed summary journal.",
+        "PAY-02": "deferred (B13): Payroll is not day one; it arrives as a reviewed summary journal.",
+        "RACE-01": "incomplete; open: entity-pair",
+        "RESTORE-01": "passed",
+        "STORE-01": "blocked (B06.4): Needs real R2 storage (an authorized test bucket) for privacy, overwrite, retention and byte checks."
+      }
     },
     {
       "id": "B13.7",
@@ -9874,7 +10271,15 @@
       ],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "CAP-01": "failed; open: failed-source-retries, close-review-reads",
+        "PAY-01": "deferred (B13): Payroll is not day one; it arrives as a reviewed summary journal.",
+        "PAY-02": "deferred (B13): Payroll is not day one; it arrives as a reviewed summary journal.",
+        "RACE-01": "incomplete; open: entity-pair",
+        "RESTORE-01": "passed",
+        "STORE-01": "blocked (B06.4): Needs real R2 storage (an authorized test bucket) for privacy, overwrite, retention and byte checks."
+      }
     },
     {
       "id": "B13.8",
@@ -9910,7 +10315,15 @@
       ],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": null
+      "verified_at": null,
+      "scenario_coverage": {
+        "CAP-01": "failed; open: failed-source-retries, close-review-reads",
+        "PAY-01": "deferred (B13): Payroll is not day one; it arrives as a reviewed summary journal.",
+        "PAY-02": "deferred (B13): Payroll is not day one; it arrives as a reviewed summary journal.",
+        "RACE-01": "incomplete; open: entity-pair",
+        "RESTORE-01": "passed",
+        "STORE-01": "blocked (B06.4): Needs real R2 storage (an authorized test bucket) for privacy, overwrite, retention and byte checks."
+      }
     },
     {
       "id": "B14.1",
@@ -13584,7 +13997,13 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-07T20:20:53.028999+00:00"
+      "verified_at": "2026-10-07T20:20:53.028999+00:00",
+      "scenario_coverage": {
+        "CONSOL-01": "not_built (B14.4): Group membership effective by date, mapped accounts, approved eliminations and a later membership change. So far: ENTITY-01 and the two-companies journey cover the consolidated trial balance with eliminations.",
+        "ENTITY-01": "passed",
+        "INTERCO-01": "not_built (B14.3): Advances and partial repayment between companies, one company closed, and a failed reciprocal leg retried. So far: ENTITY-01 payment-across-companies and intercompany-lot-sale cover payments and lot sales between companies.",
+        "RESTORE-01": "passed"
+      }
     },
     {
       "id": "B14.2",
@@ -16620,14 +17039,20 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-08T00:44:02.941892+00:00"
+      "verified_at": "2026-10-08T00:44:02.941892+00:00",
+      "scenario_coverage": {
+        "CONSOL-01": "not_built (B14.4): Group membership effective by date, mapped accounts, approved eliminations and a later membership change. So far: ENTITY-01 and the two-companies journey cover the consolidated trial balance with eliminations.",
+        "ENTITY-01": "passed",
+        "INTERCO-01": "not_built (B14.3): Advances and partial repayment between companies, one company closed, and a failed reciprocal leg retried. So far: ENTITY-01 payment-across-companies and intercompany-lot-sale cover payments and lot sales between companies.",
+        "RESTORE-01": "passed"
+      }
     },
     {
       "id": "B14.3",
       "workstream": "B14",
       "title": "Intercompany transactions and reconciliations",
       "status": "LOCALLY_VERIFIED",
-      "status_basis": "Verified locally (ENTITY-01 payment-across-companies, ownership-fixed-and-reversal, intercompany-lot-sale): every cross-company entry carries balanced legs written atomically with it, so one-sided failures cannot occur; legs settle existing balances first; reciprocal positions agree (Books → Companies reconciliation) and a blocking close control lists any pair that differs; bank and cash ownership come from the account's company; closed periods are enforced for every company (they close together). Migration 20261007235900 pending production.",
+      "status_basis": "Verified locally (ENTITY-01 payment-across-companies, ownership-fixed-and-reversal, intercompany-lot-sale): every cross-company entry carries balanced legs written atomically with it, so one-sided failures cannot occur; legs settle existing balances first; reciprocal positions agree (Books → Companies reconciliation) and a blocking close control lists any pair that differs; bank and cash ownership come from the account's company; closed periods are enforced for every company (they close together). Migration 20261007235900 pending production. Bound (B00 reconciliation): INTERCO-01 (advances, repayment, failed reciprocal leg) and RACE-01 entity-pair are not built; ENTITY-01 covers payments and lot sales between companies.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "every pair balances independently",
@@ -16683,14 +17108,20 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-08T00:14:51.827147+00:00"
+      "verified_at": "2026-10-08T00:14:51.827147+00:00",
+      "scenario_coverage": {
+        "CONSOL-01": "not_built (B14.4): Group membership effective by date, mapped accounts, approved eliminations and a later membership change. So far: ENTITY-01 and the two-companies journey cover the consolidated trial balance with eliminations.",
+        "ENTITY-01": "passed",
+        "INTERCO-01": "not_built (B14.3): Advances and partial repayment between companies, one company closed, and a failed reciprocal leg retried. So far: ENTITY-01 payment-across-companies and intercompany-lot-sale cover payments and lot sales between companies.",
+        "RESTORE-01": "passed"
+      }
     },
     {
       "id": "B14.4",
       "workstream": "B14",
       "title": "Consolidated reporting and eliminations",
       "status": "LOCALLY_VERIFIED",
-      "status_basis": "Verified locally (ENTITY-01): consolidated = company ledgers − tagged intercompany lines + computed eliminations; consolidated statements balance and the group earns exactly the companies' combined profit on an intercompany lot sale; eliminations never touch a company's books; consolidated statements are saved at close. Bounded: wholly owned affiliates only (minority interests out of scope); drill from consolidated to a company is the Company choice on each statement.",
+      "status_basis": "Verified locally (ENTITY-01): consolidated = company ledgers − tagged intercompany lines + computed eliminations; consolidated statements balance and the group earns exactly the companies' combined profit on an intercompany lot sale; eliminations never touch a company's books; consolidated statements are saved at close. Bounded: wholly owned affiliates only (minority interests out of scope); drill from consolidated to a company is the Company choice on each statement. Bound (B00 reconciliation): CONSOL-01 (dated group membership, approved eliminations, membership change) is not built; ENTITY-01 and the two-companies journey cover the eliminated consolidated trial balance.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "entity TBs + approved adjustments − eliminations = consolidated TB",
@@ -16745,7 +17176,13 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-08T00:14:51.827147+00:00"
+      "verified_at": "2026-10-08T00:14:51.827147+00:00",
+      "scenario_coverage": {
+        "CONSOL-01": "not_built (B14.4): Group membership effective by date, mapped accounts, approved eliminations and a later membership change. So far: ENTITY-01 and the two-companies journey cover the consolidated trial balance with eliminations.",
+        "ENTITY-01": "passed",
+        "INTERCO-01": "not_built (B14.3): Advances and partial repayment between companies, one company closed, and a failed reciprocal leg retried. So far: ENTITY-01 payment-across-companies and intercompany-lot-sale cover payments and lot sales between companies.",
+        "RESTORE-01": "passed"
+      }
     },
     {
       "id": "B14.5",
@@ -17079,7 +17516,13 @@
       "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
-      "verified_at": "2026-10-08T00:44:02.941892+00:00"
+      "verified_at": "2026-10-08T00:44:02.941892+00:00",
+      "scenario_coverage": {
+        "CONSOL-01": "not_built (B14.4): Group membership effective by date, mapped accounts, approved eliminations and a later membership change. So far: ENTITY-01 and the two-companies journey cover the consolidated trial balance with eliminations.",
+        "ENTITY-01": "passed",
+        "INTERCO-01": "not_built (B14.3): Advances and partial repayment between companies, one company closed, and a failed reciprocal leg retried. So far: ENTITY-01 payment-across-companies and intercompany-lot-sale cover payments and lot sales between companies.",
+        "RESTORE-01": "passed"
+      }
     },
     {
       "id": "B15.1",

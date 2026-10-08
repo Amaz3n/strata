@@ -1,0 +1,15 @@
+{
+  "scenario": "INTERCO-01",
+  "status": "NOT_IMPLEMENTED",
+  "disposition": {
+    "status": "not_built",
+    "packages": [
+      "B14.3"
+    ],
+    "reason": "Advances and partial repayment between companies, one company closed, and a failed reciprocal leg retried.",
+    "coveredSoFar": "ENTITY-01 payment-across-companies and intercompany-lot-sale cover payments and lot sales between companies."
+  },
+  "subcases": [],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-08T11:54:09.221Z"
+}

@@ -1,0 +1,16 @@
+{
+  "scenario": "MIG-01",
+  "status": "NOT_IMPLEMENTED",
+  "disposition": {
+    "status": "not_built",
+    "packages": [
+      "B03.3",
+      "B15.1"
+    ],
+    "reason": "Importing an existing builder's trial balance with its outstanding items, through dual review to the first collection and cutover.",
+    "coveredSoFar": "HIST-01 opening-items, ENTITY-01 company-openings and BANK-01 imported-outstanding-items cover parts of it."
+  },
+  "subcases": [],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-08T11:52:15.205Z"
+}

@@ -40,3 +40,23 @@ test("every golden scenario is either registered as implemented or reported as n
   assert.ok(GOLDEN_SCENARIOS.includes("CONSOL-01"))
   assert.equal(result.status, "NOT_IMPLEMENTED")
 })
+
+test("the catalog verifier reports unknown scenarios, unsaved evidence and altered evidence", () => {
+  const fs = require("node:fs"), os = require("node:os"), path = require("node:path")
+  const { verifyCatalog } = require("../scripts/books-acceptance/verify-catalog.cjs")
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "catalog-"))
+  fs.writeFileSync(path.join(dir, "kept.json"), "{}")
+  const relative = path.relative(path.join(__dirname, ".."), path.join(dir, "kept.json"))
+  const item = (id, extra) => ({ id, title: id, status: "LOCALLY_VERIFIED", scenario_ids: ["BILL-01"], evidence: [{}], ...extra })
+  const trackerPath = path.join(dir, "tracker.json")
+  fs.writeFileSync(trackerPath, JSON.stringify({ items: [
+    item("B02.1", { scenario_ids: ["NOPE-01"], evidence: [{ evidence_dir: "docs" }] }),
+    item("B02.2"),
+    item("B03.1", { evidence: [{ artifact_paths_and_hashes: [`${relative} sha256:${"0".repeat(64)}`] }] }),
+    { id: "B13.1", title: "payroll", status: "PARTIAL" }, { id: "B14.3", title: "x", status: "PARTIAL" }, { id: "B14.4", title: "x", status: "PARTIAL" },
+    { id: "B15.1", title: "x", status: "PARTIAL" }, { id: "B15.2", title: "x", status: "PARTIAL" }, { id: "B15.3", title: "x", status: "PARTIAL" },
+    { id: "B03.3", title: "x", status: "PARTIAL" }, { id: "B06.4", title: "x", status: "PARTIAL" }, { id: "B01.2", title: "x", status: "PARTIAL" },
+  ] }))
+  const { findings } = verifyCatalog({ trackerPath, evidenceRoot: dir })
+  assert.deepEqual(findings, ["B02.1 names unknown scenario NOPE-01", "B02.2 is verified without saved evidence", `B03.1 evidence ${relative} no longer matches its recorded hash`])
+})

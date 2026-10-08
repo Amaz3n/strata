@@ -1,0 +1,15 @@
+{
+  "scenario": "AUTH-01",
+  "status": "NOT_IMPLEMENTED",
+  "disposition": {
+    "status": "not_built",
+    "packages": [
+      "B15.3"
+    ],
+    "reason": "Accountant, independent reviewer, division operator, ordinary project user and a foreign organization across every added path.",
+    "coveredSoFar": "Each scenario checks its own refusals (self-review, foreign ids, readers without tax filing rights)."
+  },
+  "subcases": [],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-08T12:06:02.276Z"
+}

@@ -5,12 +5,12 @@ const fs = require("node:fs"),
   path = require("node:path")
 const { createKit, recorder, loadExpected } = require("./scenario-kit.cjs")
 
-const SCENARIO_MODULES = { "BILL-01": "./scenarios/bill-01.cjs", "WIP-01": "./scenarios/wip-01.cjs", "YEAR-01": "./scenarios/year-01.cjs", "CLOSE-01": "./scenarios/close-01.cjs", "BANK-01": "./scenarios/bank-01.cjs", "STATUS-01": "./scenarios/status-01.cjs", "RACE-01": "./scenarios/race-01.cjs", "CAP-01": "./scenarios/cap-01.cjs", "DIM-01": "./scenarios/dim-01.cjs", "HIST-01": "./scenarios/hist-01.cjs", "REV-01": "./scenarios/rev-01.cjs", "HOME-01": "./scenarios/home-01.cjs", "LOSS-01": "./scenarios/loss-01.cjs", "ENTITY-01": "./scenarios/entity-01.cjs", "CASH-01": "./scenarios/cash-01.cjs", "TAX-01": "./scenarios/tax-01.cjs", "RESTORE-01": "./scenarios/restore-01.cjs" }
+const { IMPLEMENTED: SCENARIO_MODULES, NOT_IMPLEMENTED } = require("./catalog.cjs")
 
 // `only` runs the named subcases for iteration; the rest report SKIPPED, so such a
 // run can never read PASSED.
 async function runScenario(id, kit, fixtures = {}, only = null) {
-  if (!fixtures.scenario && !SCENARIO_MODULES[id]) return { scenario: id, status: "NOT_IMPLEMENTED", subcases: [] }
+  if (!fixtures.scenario && !SCENARIO_MODULES[id]) return { scenario: id, status: "NOT_IMPLEMENTED", ...(NOT_IMPLEMENTED[id] ? { disposition: NOT_IMPLEMENTED[id] } : {}), subcases: [] }
   const scenario = fixtures.scenario ?? require(SCENARIO_MODULES[id]),
     expected = fixtures.expected ?? loadExpected(id)
   const subcases = []
@@ -38,6 +38,31 @@ async function runScenario(id, kit, fixtures = {}, only = null) {
   return { scenario: id, status, reviewedFrom: expected.reviewedFrom, subcases }
 }
 
+/**
+ * Every golden scenario in one run: built ones run, the rest are recorded with
+ * their disposition. Exits nonzero unless every first-client scenario passes;
+ * deferred ones (payroll) are reported but do not count against it.
+ */
+async function runAll(kit, container, evidenceDir) {
+  const { GOLDEN_SCENARIOS } = require("./runtime.cjs")
+  fs.mkdirSync(evidenceDir, { recursive: true, mode: 0o700 })
+  const summary = []
+  for (const id of GOLDEN_SCENARIOS) {
+    const startedAt = Date.now()
+    const result = { ...(await runScenario(id, kit)), container, finishedAt: new Date().toISOString() }
+    fs.writeFileSync(path.join(evidenceDir, `${id}.json`), JSON.stringify(result, null, 2) + "\n", { mode: 0o600 })
+    summary.push({ scenario: id, status: result.status, seconds: Math.round((Date.now() - startedAt) / 1000),
+      ...(result.disposition ? { disposition: result.disposition.status, packages: result.disposition.packages } : {}),
+      open: result.subcases.filter((s) => s.status !== "PASSED").map((s) => s.name) })
+    console.log(`${result.status.padEnd(15)} ${id}${result.disposition ? ` (${result.disposition.status}: ${result.disposition.packages.join(", ")})` : ""}`)
+  }
+  const inScope = summary.filter((row) => row.disposition !== "deferred")
+  const verdict = inScope.every((row) => row.status === "PASSED") ? "PASSED" : "INCOMPLETE"
+  fs.writeFileSync(path.join(evidenceDir, "summary.json"), JSON.stringify({ verdict, finishedAt: new Date().toISOString(), container, scenarios: summary }, null, 2) + "\n", { mode: 0o600 })
+  console.log(`All scenarios: ${verdict} (${inScope.filter((row) => row.status === "PASSED").length} of ${inScope.length} first-client scenarios pass)`)
+  if (verdict !== "PASSED") process.exitCode = 1
+}
+
 module.exports = { runScenario, SCENARIO_MODULES }
 
 if (require.main === module) {
@@ -45,11 +70,12 @@ if (require.main === module) {
   ;(async () => {
     const container = arg("--container"),
       apiUrl = arg("--api-url"),
-      scenario = arg("--scenario"),
+      scenario = process.argv.includes("--all") ? null : arg("--scenario"),
       evidenceDir = arg("--evidence-dir")
-    if (!container || !apiUrl || !scenario || !evidenceDir || fs.existsSync(evidenceDir))
-      throw Error("Use --container NAME --api-url http://127.0.0.1:PORT --scenario ID --evidence-dir NEW_DIRECTORY")
+    if (!container || !apiUrl || (!scenario && !process.argv.includes("--all")) || !evidenceDir || fs.existsSync(evidenceDir))
+      throw Error("Use --container NAME --api-url http://127.0.0.1:PORT (--scenario ID | --all) --evidence-dir NEW_DIRECTORY")
     const kit = createKit({ container, apiUrl })
+    if (!scenario) return runAll(kit, container, evidenceDir)
     const only = process.argv.includes("--only") ? arg("--only").split(",") : null
     const result = { ...(await runScenario(scenario, kit, {}, only)), container, finishedAt: new Date().toISOString() }
     fs.mkdirSync(evidenceDir, { recursive: true, mode: 0o700 })
