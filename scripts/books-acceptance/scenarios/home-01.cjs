@@ -329,4 +329,4 @@ module.exports = {
     "invoice-before-closing": invoiceBeforeClosing,
   },
 }
-module.exports.helpers = { builder, bill, landAndStart, capitalizedInterest, settle, balances, reliefByComponent }
+module.exports.helpers = { builder, bill, landAndStart, capitalizedInterest, deposit, settle, balances, reliefByComponent }

@@ -222,6 +222,10 @@ async function progressTaxRetainageRelease(kit, expected, check) {
     currentMonth: kit.postedNet(job.orgId, `e.entry_date >= '${current}-01'`),
     retainageLeft: Number(kit.rows(`select coalesce(sum(amount_cents),0) c from public.retainage where project_id=${kit.q(job.projectId)} and status='held'`)[0].c),
     balances: [invoiceState(kit, invoice.id).balanceDueCents, invoiceState(kit, release.invoice_id).balanceDueCents],
+    cashBasis: await kit.as(job.owner, async () => {
+      const report = await app("books/cash-activity").buildCashProfitAndLoss(`${previous}-01`, today)
+      return { income: report.revenueCents, salesTax: report.salesTaxCollectedCents, cashMovement: report.netCashMovementCents }
+    }),
   })
   return { orgId: job.orgId, invoiceId: invoice.id, releaseInvoiceId: release.invoice_id }
 }

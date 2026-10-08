@@ -4,7 +4,7 @@ const {cashInvoiceIncomeFromSnapshot:build}=require('../lib/services/books/cash-
 const {directSettlementEvidence}=require('../lib/services/books/settlement-evidence')
 const id=n=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`,org=id(1),invoice=id(2),payment=id(3),revision='2026-09-20T12:00:00.000001+00:00'
 function fixture(){
- const tables=Object.fromEntries(['journal_entries','journal_lines','accounting_facts','gl_accounts','invoices','payments','payment_allocations','payment_reversals','receivable_adjustments','books_projection_receipts'].map(name=>[name,[]]))
+ const tables=Object.fromEntries(['journal_entries','journal_lines','accounting_facts','gl_accounts','invoices','payments','payment_allocations','payment_reversals','receivable_adjustments','books_projection_receipts','retainage'].map(name=>[name,[]]))
  tables.gl_accounts=[{id:id(4),code:'1100'},{id:id(5),code:'1000'},{id:id(6),code:'4010'},{id:id(11),code:'2250'}]
  tables.invoices=[{id:invoice,updated_at:revision}]
  tables.payments=[{id:payment,invoice_id:invoice,amount_cents:10700,status:'completed',received_at:revision,updated_at:revision}]
@@ -29,11 +29,10 @@ test('missing, stale and omitted payment postings block plausible but incomplete
  const orphan=fixture();orphan.tables.payments=[];assert.throws(()=>run(orphan),/operational payment history/)
  const staleInvoice=fixture();staleInvoice.tables.invoices[0].updated_at='2026-09-20T12:00:00.000002+00:00';assert.throws(()=>run(staleInvoice),/Refresh the invoice/)
 })
-test('legacy basis, revised tax, credits and advance policies block until reviewed',()=>{
+test('legacy basis, revised tax and an unposted credit block until reviewed or refreshed',()=>{
  const legacy=fixture();delete legacy.tables.accounting_facts[0].payload.revenue_lines;assert.throws(()=>run(legacy),/historical attribution/)
  const revised=fixture();revised.tables.accounting_facts.push({...revised.tables.accounting_facts[0],id:id(99),payload:{...revised.tables.accounting_facts[0].payload,revenue_lines:[{account_code:'4020',amount_cents:10000}]}});revised.tables.journal_entries.push({...revised.tables.journal_entries[0],id:id(100),fact_id:id(99)});assert.throws(()=>run(revised),/differs|Revised invoice/)
- const credit=fixture();credit.tables.receivable_adjustments.push({org_id:org,invoice_id:invoice,status:'posted',effective_date:'2026-09-25'});assert.throws(()=>run(credit),/credits or writeoffs/)
- const advance=fixture();advance.tables.journal_entries[0].source_type='customer_deposit_receipt';assert.throws(()=>run(advance),/Advance receipts/)
+ const credit=fixture();credit.tables.receivable_adjustments.push({id:id(98),org_id:org,invoice_id:invoice,adjustment_type:'credit_memo',amount_cents:1070,tax_cents:70,status:'posted',effective_date:'2026-09-25'});assert.throws(()=>run(credit),/Refresh the credit memo posting/)
 })
 test('snapshot completeness and organization scope are mandatory',()=>{
  const absent=fixture();delete absent.tables.payments;assert.throws(()=>run(absent),/missing payments/)

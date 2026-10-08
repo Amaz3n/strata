@@ -3,6 +3,7 @@ import { cashIncomeBasisFromInvoiceFact } from "@/lib/services/books/cash-docume
 import { cashInvoiceSettlementsFromLedger } from "@/lib/services/books/cash-settlement-ledger"
 import { allocateCashDocumentSettlements } from "@/lib/services/books/cash-settlement-rules"
 import { booksDigest } from "@/lib/services/books/hash"
+import { allocateInvoiceRevenue } from "@/lib/services/books/invoice-revenue-rules"
 import { resolveBooksPostingState } from "@/lib/services/books/posting-state"
 
 const row = z.record(z.unknown())
@@ -21,7 +22,7 @@ export function cashInvoiceIncomeFromSnapshot(orgId: string, startDate: string, 
   const snapshot = snapshotSchema.parse(input)
   if (snapshot.orgId !== orgId) throw new Error("Cash income snapshot organization mismatch")
   const tables: Record<string, Record<string, unknown>[]> = {}
-  for (const name of ["journal_entries", "journal_lines", "accounting_facts", "gl_accounts", "invoices", "payments", "payment_allocations", "payment_reversals", "receivable_adjustments", "books_projection_receipts"]) {
+  for (const name of ["journal_entries", "journal_lines", "accounting_facts", "gl_accounts", "invoices", "payments", "payment_allocations", "payment_reversals", "receivable_adjustments", "books_projection_receipts", "retainage"]) {
     if (!snapshot.tables[name]) throw new Error(`Cash income snapshot is missing ${name}`)
     if (snapshot.tables[name].some(record => record.org_id !== orgId)) throw new Error(`Cash income snapshot has foreign organization rows in ${name}`)
     tables[name] = snapshot.tables[name]
@@ -46,7 +47,10 @@ export function cashInvoiceIncomeFromSnapshot(orgId: string, startDate: string, 
   const allocationsByPayment = group(tables.payment_allocations.filter(record => record.invoice_id), record => String(record.payment_id))
   const reversalsByPayment = group(tables.payment_reversals.filter(record => record.status === "succeeded" && String(record.occurred_at).slice(0, 10) <= endDate), record => String(record.payment_id))
   const adjustmentsByDocument = group(tables.receivable_adjustments.filter(record => record.status === "posted" && String(record.effective_date) <= endDate), record => String(record.invoice_id))
-  if (entries.some(entry => ["customer_deposit_receipt", "customer_deposit_application", "customer_deposit_reversal"].includes(entry.source_type ?? ""))) throw new Error("Advance receipts require a reviewed cash-income policy before this report can be completed")
+  // A deposit received is held for the customer (the cash P&L bridges it), not
+  // income; it is income when applied to an invoice, which is a settlement below.
+  const depositReceipts = new Set(entries.filter(entry => ["customer_deposit_receipt", "customer_deposit_reversal"].includes(entry.source_type ?? "")).map(entry => String(entry.source_id)))
+  const applications = new Set(entries.filter(entry => entry.source_type === "customer_deposit_application").map(entry => String(entry.source_id)))
   const events = cashInvoiceSettlementsFromLedger({ entries, facts, lines })
   const byPayment = new Map<string, bigint>()
   for (const event of events) byPayment.set(event.paymentId, (byPayment.get(event.paymentId) ?? BigInt(0)) + BigInt(event.appliedCents))
@@ -56,6 +60,7 @@ export function cashInvoiceIncomeFromSnapshot(orgId: string, startDate: string, 
   for (const paymentId of byPayment.keys()) if (!payments.has(paymentId)) throw new Error("Cash collection has no operational payment history")
   for (const payment of tables.payments) {
     const paymentId = String(payment.id)
+    if (depositReceipts.has(paymentId)) continue
     const allocated = allocationsByPayment.get(paymentId) ?? []
     if (!payment.invoice_id && !allocated.length && !byPayment.has(paymentId)) continue
     const settledOn = String(payment.received_at).slice(0, 10)
@@ -71,15 +76,25 @@ export function cashInvoiceIncomeFromSnapshot(orgId: string, startDate: string, 
     }
     if ((byPayment.get(paymentId) ?? BigInt(0)) !== expected) throw new Error("Cash payment history does not reconcile to posted receivable principal; refresh or review historical attribution")
     if (settled) {
-      const receipt = receipts.get(`invoice_payment:${paymentId}`)
+      const sourceType = applications.has(paymentId) ? "customer_deposit_application" : "invoice_payment"
+      const receipt = receipts.get(`${sourceType}:${paymentId}`)
       const journal = receipt ? entryById.get(String(receipt.journal_id)) : null
-      if (!journal || receipt?.fact_id !== journal.fact_id || journal.source_type !== "invoice_payment" || journal.source_id !== paymentId || resolveBooksPostingState({ sourceUpdatedAt: String(payment.updated_at), receipt: receipt ? { sourceObservedAt: String(receipt.source_observed_at), journalStatus: journal.status } : null }) !== "posted") throw new Error("Refresh the invoice payment posting before completing cash income")
+      if (!journal || receipt?.fact_id !== journal.fact_id || journal.source_type !== sourceType || journal.source_id !== paymentId || resolveBooksPostingState({ sourceUpdatedAt: String(payment.updated_at), receipt: receipt ? { sourceObservedAt: String(receipt.source_observed_at), journalStatus: journal.status } : null }) !== "posted") throw new Error("Refresh the invoice payment posting before completing cash income")
     }
   }
-  const documents = [...new Set(events.map(event => event.documentId))].map(documentId => {
+  // Collecting a retainage release collects retainage withheld on the original
+  // invoices, so it settles those invoices in proportion to what each withheld.
+  const releasedFrom = group(tables.retainage.filter(record => typeof record.release_invoice_id === "string"), record => String(record.release_invoice_id))
+  const settlements = events.flatMap(event => {
+    const sources = releasedFrom.get(event.documentId)
+    if (!sources) return [event]
+    const shares = allocateInvoiceRevenue(event.appliedCents, sources.map(source => ({ account_code: String(source.invoice_id), amount_cents: z.number().int().safe().positive().parse(source.amount_cents) })))
+    const byInvoice = new Map<string, number>()
+    for (const share of shares) byInvoice.set(share.account_code, (byInvoice.get(share.account_code) ?? 0) + share.amount_cents)
+    return [...byInvoice].filter(([, cents]) => cents !== 0).map(([documentId, appliedCents]) => ({ ...event, eventId: `${event.eventId}:${documentId}`, documentId, appliedCents }))
+  })
+  const documents = [...new Set(settlements.map(event => event.documentId))].map(documentId => {
     if (!invoiceIds.has(documentId)) throw new Error("Cash collection has no scoped invoice")
-    if (adjustmentsByDocument.has(documentId)) throw new Error("Cash income with invoice credits or writeoffs requires reviewed adjustment attribution")
-    if (entries.some(entry => entry.source_type === "retainage_release" && entry.source_id === documentId)) throw new Error("Retainage collections require linkage to the original frozen invoice basis")
     const invoice = tables.invoices.find(record => record.id === documentId)!
     const receipt = receipts.get(`invoice:${documentId}`)
     const journal = receipt ? entryById.get(String(receipt.journal_id)) : null
@@ -102,9 +117,23 @@ export function cashInvoiceIncomeFromSnapshot(orgId: string, startDate: string, 
       return basis
     })
     if (new Set(bases.map(basis => booksDigest({ ...basis, snapshotId: null }))).size !== 1) throw new Error("Revised invoice income or tax needs reviewed historical settlement attribution")
-    return bases.sort((a, b) => a.snapshotId < b.snapshotId ? -1 : 1)[0]
+    const basis = bases.sort((a, b) => a.snapshotId < b.snapshotId ? -1 : 1)[0]
+    // A credit memo reduces what the invoice is made of, on the invoice's own income
+    // split plus the tax it names; a write-off leaves it alone (income never collected
+    // was never reported, so there is nothing to take back).
+    const credits = (adjustmentsByDocument.get(documentId) ?? []).filter(adjustment => adjustment.adjustment_type === "credit_memo").map(adjustment => {
+      if (!entries.some(entry => entry.source_type === "receivable_adjustment" && entry.source_id === adjustment.id && !entry.reversal_of_entry_id)) throw new Error("Refresh the credit memo posting before completing cash income")
+      const amount = z.number().int().safe().positive().parse(adjustment.amount_cents), tax = z.number().int().safe().nonnegative().parse(adjustment.tax_cents ?? 0)
+      const income = basis.components.filter(component => component.kind === "income")
+      const taxComponent = basis.components.find(component => component.kind === "sales_tax")
+      if (tax && !taxComponent) throw new Error("A credit memo credits tax on an invoice that charged none")
+      const parts = allocateInvoiceRevenue(amount - tax, income.map(component => ({ account_code: component.id, amount_cents: component.amountCents })))
+      return { id: String(adjustment.id), effectiveOn: String(adjustment.effective_date), components: [
+        ...parts.map(part => ({ id: part.account_code, amountCents: part.amount_cents })), ...(tax && taxComponent ? [{ id: taxComponent.id, amountCents: tax }] : []) ] }
+    })
+    return credits.length ? { ...basis, credits } : basis
   })
   const byDocument = new Map(documents.map(document => [document.documentId, document]))
-  const statement = allocateCashDocumentSettlements({ startDate, endDate, documents, settlements: events.map(event => ({ ...event, snapshotId: byDocument.get(event.documentId)!.snapshotId })) })
+  const statement = allocateCashDocumentSettlements({ startDate, endDate, documents, settlements: settlements.map(event => ({ ...event, snapshotId: byDocument.get(event.documentId)!.snapshotId })) })
   return { statement: "cash_invoice_income" as const, startDate, endDate, capturedAt: snapshot.capturedAt, databaseSnapshot: snapshot.databaseSnapshot, ...statement, settlementEvidence: events }
 }

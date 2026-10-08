@@ -1,0 +1,237 @@
+{
+  "scenario": "CASH-01",
+  "reviewedFrom": "Cash method as presented in docs/books-revenue-recognition.md: income when collected (net of refunds, sales tax separate), costs when paid, capitalized purchases separate, and non-income cash flows classified in a bridge. Book-only entries (depreciation, inventory movements, reserves) are listed, not deducted; tax deductibility is a reviewed workpaper adjustment. Pending licensed-CPA review (B16.3). Amounts are integer cents.",
+  "subcases": {
+    "two-months-with-bridge": {
+      "inputs": {
+        "openingCashCents": 20000,
+        "contributionCents": 50000,
+        "loanCents": 100000,
+        "firstReceiptCents": 54000,
+        "credit": {
+          "amountCents": 10800,
+          "taxCents": 800
+        },
+        "secondReceiptCents": 43200,
+        "billCents": 30000,
+        "billPayments": [
+          20000,
+          10000
+        ],
+        "truckCents": 36000,
+        "depreciationCents": 1000,
+        "transferCents": 15000,
+        "refundCents": 10800,
+        "drawCents": 8000,
+        "loanPayment": {
+          "principalCents": 5000,
+          "interestCents": 700
+        },
+        "bankFeeCents": 25,
+        "prepaidCents": 1200,
+        "prepaidUsedCents": 100
+      },
+      "derivation": "Invoice 1,080.00 = design 600 + consulting 400 + 8% tax. First month: receipts of 540.00 (half: income 500 split 300/200, tax 40) and 432.00 after a 108.00 credit (income 400 split 240/160, tax 32); the bill is 200.00 paid; owner puts in 500, the loan draws 1,000, the 360.00 truck is bought for cash and depreciated 10.00 (book only); 150.00 moves to savings (nets to zero). Cash: 500 + 1,000 + 540 + 432 - 200 - 360 = 1,912.00 = net income 700 + tax 72 + loan 1,000 + owner 500 - truck 360. Second month (dated today): a 108.00 refund of the second receipt (income -100 split -60/-40, tax -8), the other 100.00 of the bill, an 80.00 draw, a 57.00 loan payment (7.00 interest expense, 50.00 principal), a 0.25 bank fee, 10.00 depreciation (book only). Cash: -108 - 100 - 80 - 57 - 0.25 = -345.25 = net income -207.25 + tax -8 + loan -50 + owner -80. Opening cash is a balance, not movement. A 12.00 insurance premium is paid in the first month (bridged as prepaid) and 1.00 of it is expensed in the books at month end (listed, not deducted), so first-month cash is 1,900.00.",
+      "expected": {
+        "first": {
+          "income": 90000,
+          "costs": 20000,
+          "expenses": 0,
+          "netIncome": 70000,
+          "accounts": {
+            "4110": 54000,
+            "4120": 36000,
+            "5000": 20000
+          },
+          "salesTax": 7200,
+          "capitalized": 0,
+          "bridge": {
+            "transfer": 0,
+            "loan": 100000,
+            "owner": 50000,
+            "fixed_assets": -36000,
+            "prepaid": -1200
+          },
+          "bookOnly": {
+            "books_fixed_asset:6080": 1000,
+            "manual_adjustment:6010": 100
+          },
+          "cashMovement": 190000
+        },
+        "second": {
+          "income": -10000,
+          "costs": 10000,
+          "expenses": 725,
+          "netIncome": -20725,
+          "accounts": {
+            "4110": -6000,
+            "4120": -4000,
+            "5000": 10000,
+            "6050": 25,
+            "6060": 700
+          },
+          "salesTax": -800,
+          "capitalized": 0,
+          "bridge": {
+            "loan": -5000,
+            "owner": -8000
+          },
+          "bookOnly": {
+            "books_fixed_asset:6080": 1000
+          },
+          "cashMovement": -34525
+        },
+        "both": {
+          "income": 80000,
+          "costs": 30000,
+          "expenses": 725,
+          "netIncome": 49275,
+          "accounts": {
+            "4110": 48000,
+            "4120": 32000,
+            "5000": 30000,
+            "6050": 25,
+            "6060": 700
+          },
+          "salesTax": 6400,
+          "capitalized": 0,
+          "bridge": {
+            "transfer": 0,
+            "loan": 95000,
+            "owner": 42000,
+            "fixed_assets": -36000,
+            "prepaid": -1200
+          },
+          "bookOnly": {
+            "books_fixed_asset:6080": 2000,
+            "manual_adjustment:6010": 100
+          },
+          "cashMovement": 155475
+        },
+        "monthsAddUp": true,
+        "tiesToLedgerCash": [
+          true,
+          true
+        ]
+      }
+    },
+    "unclassified-refused": {
+      "inputs": {
+        "cents": 50000
+      },
+      "derivation": "An expense accrued by journal moves no cash and is not depreciation, inventory or a reserve; its later payment by journal moves cash against an accrued liability. Neither has a cash treatment, so the report refuses and says how to fix it rather than guessing the expense.",
+      "expected": {
+        "accrualOnly": "refused",
+        "paid": "refused",
+        "namesTheCure": true
+      }
+    },
+    "home-sale": {
+      "inputs": {
+        "priceCents": 40000000,
+        "landCents": 6000000,
+        "constructionCents": 20000000,
+        "depositCents": 2000000,
+        "saleDate": "2026-07-25"
+      },
+      "derivation": "June: land 60,000.00 bought for cash (bridged as land and homes held), construction 200,000.00 paid (capitalized), a 20,000.00 earnest deposit received and held (bridged). Cash: -60,000 - 200,000 + 20,000 = -240,000. July: the 400,000.00 home closes; the deposit is applied (income, leaving the deposit bridge) and the 380,000.00 wire arrives. Income 400,000, cash +380,000. The 260,000.00 cost of the home sold is relieved from inventory in the books only and is listed, not deducted: whether and when it is deductible is a reviewed tax adjustment.",
+      "expected": {
+        "june": {
+          "income": 0,
+          "costs": 0,
+          "expenses": 0,
+          "netIncome": 0,
+          "accounts": {},
+          "salesTax": 0,
+          "capitalized": 20000000,
+          "bridge": {
+            "customer_deposits": 2000000,
+            "inventory": -6000000
+          },
+          "bookOnly": {},
+          "cashMovement": -24000000
+        },
+        "july": {
+          "income": 40000000,
+          "costs": 0,
+          "expenses": 0,
+          "netIncome": 40000000,
+          "accounts": {
+            "4000": 40000000
+          },
+          "salesTax": 0,
+          "capitalized": 0,
+          "bridge": {
+            "customer_deposits": -2000000
+          },
+          "bookOnly": {
+            "inventory_sale_relief:5000": 26000000
+          },
+          "cashMovement": 38000000
+        },
+        "both": {
+          "income": 40000000,
+          "costs": 0,
+          "expenses": 0,
+          "netIncome": 40000000,
+          "accounts": {
+            "4000": 40000000
+          },
+          "salesTax": 0,
+          "capitalized": 20000000,
+          "bridge": {
+            "customer_deposits": 0,
+            "inventory": -6000000
+          },
+          "bookOnly": {
+            "inventory_sale_relief:5000": 26000000
+          },
+          "cashMovement": 14000000
+        },
+        "monthsAddUp": true
+      }
+    },
+    "tax-workpaper": {
+      "inputs": {
+        "openingCashCents": 1000000,
+        "incomeCents": 500000,
+        "lateIncomeCents": 1000,
+        "truckCents": 120000,
+        "bookDepreciationCents": 10000,
+        "taxDepreciationCents": 10000
+      },
+      "derivation": "August cash income is 5,000.00, then 10.00 more posts after the first workpaper is prepared, so book income at review is 5,010.00 (the truck is bought for cash and bridged; its 100.00 book depreciation is listed, not deducted). The accountant's tax depreciation of 100.00 is a reviewed timing adjustment: adjusted income 4,910.00. The no-adjustments replacement reconciles 5,010.00 to 5,010.00 and supersedes the approved workpaper, which keeps its reviewer and notes.",
+      "expected": {
+        "selfReviewRefused": true,
+        "staleRefused": "refused",
+        "approved": {
+          "bookIncome": 501000,
+          "adjustments": -10000,
+          "adjusted": 491000,
+          "separateReviewer": true
+        },
+        "replaced": {
+          "bookIncome": 501000,
+          "adjustments": 0,
+          "adjusted": 501000,
+          "workpaper": true
+        },
+        "originalKept": {
+          "status": "superseded",
+          "reviewer": true,
+          "notes": "Checked against the depreciation schedule"
+        },
+        "statuses": [
+          "withdrawn",
+          "superseded",
+          "approved"
+        ],
+        "delivery": {
+          "csvNamesReviewNotes": true,
+          "pdf": true,
+          "savedRunReproduces": true
+        }
+      }
+    }
+  }
+}

@@ -43,7 +43,10 @@ function documentSettlementsFromLedger(input: { entries: Entry[]; facts: Fact[];
       reversedEntries.add(original.id)
       source = original
     }
-    if (![paymentType, "payment_reversal"].includes(source.source_type ?? "")) continue
+    // A customer deposit applied to an invoice settles it without new cash: on the
+    // cash method that is when the deposit becomes income.
+    const settlementTypes = side === "invoice" ? [paymentType, "customer_deposit_application"] : [paymentType]
+    if (![...settlementTypes, "payment_reversal"].includes(source.source_type ?? "")) continue
     const fact = source.fact_id ? facts.get(source.fact_id) : null
     if (!fact || fact.source_type !== source.source_type || fact.source_id !== source.source_id) throw new Error("Cash collection has no matching immutable settlement fact")
     if (fact.source_type === "payment_reversal" && !["invoice_payment", "bill_payment"].includes(String(fact.payload.side))) throw new Error("Cash refund has no frozen settlement side")
@@ -64,7 +67,7 @@ function documentSettlementsFromLedger(input: { entries: Entry[]; facts: Fact[];
       }
       byDocument.set(documentId, ar.reduce((sum, line) => sum + (BigInt(line.credit_cents) - BigInt(line.debit_cents)) * BigInt(side === "invoice" ? 1 : -1), BigInt(0)))
     } else {
-      if (fact.source_type !== paymentType || evidence.payment_id !== fact.source_id) throw new Error("Allocated receipt fact has invalid payment lineage")
+      if (!settlementTypes.includes(fact.source_type) || evidence.payment_id !== fact.source_id) throw new Error("Allocated receipt fact has invalid payment lineage")
       for (const line of ar) {
         const documentId = line.dimensions?.[documentKey]
         if (typeof documentId !== "string" || !evidence.allocations.some(row => row[documentKey] === documentId)) throw new Error("Allocated receipt principal has no frozen document ownership")
@@ -80,7 +83,7 @@ function documentSettlementsFromLedger(input: { entries: Entry[]; facts: Fact[];
     if (!Number.isSafeInteger(expected) || Number(expected) <= 0) throw new Error("Cash settlement fact has invalid principal")
     const sign = (fact.source_type === "payment_reversal" ? -1 : 1) * (entry.reversal_of_entry_id ? -1 : 1)
     if ([...byDocument.values()].reduce((sum, amount) => sum + amount, BigInt(0)) !== BigInt(Number(expected)) * BigInt(sign)) throw new Error("Cash settlement principal differs from its immutable fact")
-    if (fact.source_type === paymentType && evidence.payment_id !== fact.source_id) throw new Error("Cash receipt fact has invalid payment identity")
+    if (settlementTypes.includes(fact.source_type) && evidence.payment_id !== fact.source_id) throw new Error("Cash receipt fact has invalid payment identity")
     for (const [documentId, amount] of byDocument) {
       const appliedCents = Number(amount)
       if (!Number.isSafeInteger(appliedCents) || !appliedCents) throw new Error("Cash settlement principal is zero or unsafe")

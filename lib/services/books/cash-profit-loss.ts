@@ -14,6 +14,41 @@ const supported = new Set(["invoice", "invoice_payment", "vendor_bill", "bill_pa
 const noncashSources = new Set(["revenue_recognition", "year_end_close"])
 /** Sources a person enters directly against cash: a categorized bank line or a manual journal. */
 const directCashSources = new Set(["bank_transaction", "manual_adjustment"])
+/**
+ * Book entries that move no cash and have no cash-basis counterpart: depreciation,
+ * owned-home inventory movements (including the cost of a home sold) and reserves.
+ * They are listed, not reported: whether any is deductible is a reviewed tax
+ * adjustment, never inferred from the book entry.
+ */
+const bookOnlySources = new Set(["books_fixed_asset", "inventory_start", "inventory_completion", "inventory_development_allocation", "inventory_interest",
+  "inventory_impairment", "inventory_sale_relief", "warranty_reserve", "warranty_reserve_consumption", "expected_loss_provision"])
+/**
+ * Cash that is not income or expense, by what the rest of the entry is. Assets
+ * bought with cash are capitalized (their book gain or loss is not cash); money
+ * borrowed, repaid, put in or taken out by owners, or held for customers is a
+ * balance, while any interest or fee paid alongside it is a cash expense.
+ */
+export const CASH_BRIDGE_CATEGORIES = {
+  transfer: "Transfers between cash accounts",
+  loan: "Loans received and principal repaid",
+  owner: "Owner contributions and distributions",
+  card: "Credit card payments",
+  customer_deposits: "Customer deposits held and refunded",
+  fixed_assets: "Equipment bought and sold",
+  inventory: "Land and homes held for sale",
+  prepaid: "Prepaid expenses",
+} as const
+export type CashBridgeCategory = keyof typeof CASH_BRIDGE_CATEGORIES
+const bridgeBySubtype: Record<string, CashBridgeCategory> = {
+  current_debt: "loan", long_term_debt: "loan", owner_equity: "owner", owner_contributions: "owner", owner_distributions: "owner",
+  credit_card: "card", customer_deposits: "customer_deposits", fixed_assets: "fixed_assets", accumulated_depreciation: "fixed_assets",
+  work_in_progress: "inventory", other_asset: "inventory", prepaid_expenses: "prepaid",
+}
+const capitalBridges = new Set<CashBridgeCategory>(["fixed_assets", "inventory", "prepaid"])
+/** Sources whose income or expense lines beside a bridged balance are cash: interest, fees. */
+const bridgedProfitLossSources = new Set(["bank_transaction", "manual_adjustment", "books_debt_instrument", "customer_deposit_receipt", "customer_deposit_reversal", "deposit_batch"])
+/** Sources whose book gain or loss beside a capitalized purchase or sale is listed, not cash. */
+const capitalProfitLossSources = new Set(["books_fixed_asset"])
 function safe(value: bigint) { const result = Number(value); if (!Number.isSafeInteger(result)) throw new Error("Cash P&L exceeds safe integer cents"); return result }
 
 export type CashProfitLossEvidence = {
@@ -40,6 +75,8 @@ export function cashProfitAndLossFromSnapshot(orgId: string, startDate: string, 
   for (const line of snapshot.tables.journal_lines) { const id = String(line.entry_id), list = lines.get(id) ?? []; list.push(line); lines.set(id, list) }
   const unsupported: string[] = []
   const directCash: CashProfitLossEvidence[] = []
+  const bridge: Array<{ category: CashBridgeCategory; entryId: string; sourceType: string; sourceId: string; entryDate: string; amountCents: number }> = []
+  const bookOnly: Array<{ sourceType: string; entryId: string; accountCode: string; kind: "income" | "cogs" | "expense"; amountCents: number }> = []
   let actualCashMovement = BigInt(0)
   // Earlier unsettled or clearing activity can affect today's cash attribution.
   // Checking only this period would hide unclassified opening history.
@@ -47,7 +84,8 @@ export function cashProfitAndLossFromSnapshot(orgId: string, startDate: string, 
     if (!["posted", "reversed"].includes(entry.status) || entry.entry_date > endDate) continue
     const original = entry.reversal_of_entry_id ? byId.get(entry.reversal_of_entry_id) : entry
     if (!original) throw new Error("Cash P&L correction has no original journal lineage")
-    let hasProfitLoss = false, hasCash = false, onlyCashBalances = true
+    let hasProfitLoss = false, hasCash = false, onlyCashBalances = true, entryCash = BigInt(0)
+    const balanceClasses = new Set<CashBridgeCategory | "other">()
     const profitLoss: Array<{ code: string; kind: "income" | "cogs" | "expense"; net: bigint; dimensions: Record<string, unknown>; projectId: unknown; lineNo: number }> = []
     const journalLines: Parameters<typeof assertBalancedJournalDraft>[0]["lines"] = []
     const lineNumbers = new Set<number>()
@@ -67,8 +105,9 @@ export function cashProfitAndLossFromSnapshot(orgId: string, startDate: string, 
       if (["income", "cogs", "expense"].includes(account.account_type)) {
         const net = BigInt(journalLines.at(-1)!.debitCents) - BigInt(journalLines.at(-1)!.creditCents)
         profitLoss.push({ code: account.code, kind: account.account_type === "income" ? "income" : account.account_type === "cogs" ? "cogs" : "expense", net: account.account_type === "income" ? -net : net, dimensions, projectId: line.project_id, lineNo })
-      } else if (!cashAccount) onlyCashBalances = false
-      if (cashAccount && entry.entry_date >= startDate && original.source_type !== "opening_balance") actualCashMovement += BigInt(journalLines.at(-1)!.debitCents) - BigInt(journalLines.at(-1)!.creditCents)
+      } else if (!cashAccount) { onlyCashBalances = false; balanceClasses.add(bridgeBySubtype[account.subtype] ?? "other") }
+      if (cashAccount) entryCash += BigInt(journalLines.at(-1)!.debitCents) - BigInt(journalLines.at(-1)!.creditCents)
+      if (cashAccount && entry.entry_date >= startDate && original.entry_kind !== "opening") actualCashMovement += BigInt(journalLines.at(-1)!.debitCents) - BigInt(journalLines.at(-1)!.creditCents)
     }
     assertBalancedJournalDraft({ entryDate: entry.entry_date, entryKind: "operational", memo: "Cash P&L coverage", postingKey: entry.id, projectionVersion: 1, policyVersion: 1, lines: journalLines })
     if (supported.has(original.source_type ?? "")) continue
@@ -80,7 +119,7 @@ export function cashProfitAndLossFromSnapshot(orgId: string, startDate: string, 
     // company's cash basis has no sale to report until money changes hands.
     if (original.source_type === "inventory_start" && !hasCash && (lines.get(entry.id) ?? []).some((line) => record.parse(line.dimensions ?? {}).intercompany_eliminate === true)) continue
     // Balance-only opening entries establish cutover balances, not new receipts.
-    if (original.source_type === "opening_balance" && original.entry_kind === "opening" && !hasProfitLoss) continue
+    if (original.entry_kind === "opening" && !hasProfitLoss) continue
     // A bank categorization or manual journal whose only balance-sheet side is cash
     // is the same on either basis: its profit and loss counts on its date. One with
     // any other balance-sheet leg (depreciation, accruals) needs reviewed treatment.
@@ -90,9 +129,48 @@ export function cashProfitAndLossFromSnapshot(orgId: string, startDate: string, 
         accountCode: row.code, kind: row.kind, amountCents: safe(row.net), dimensions: { ...row.dimensions, ...(typeof row.projectId === "string" ? { project_id: row.projectId } : {}) } })
       continue
     }
+    // A credit memo moves no cash: collected income already reflects it. A write-off
+    // is never a cash-basis expense (the income was never collected), so it is listed.
+    if (original.source_type === "receivable_adjustment" && !hasCash) {
+      if (entry.entry_date >= startDate) for (const row of profitLoss.filter(row => row.kind !== "income")) bookOnly.push({ sourceType: "receivable_adjustment", entryId: entry.id, accountCode: row.code, kind: row.kind, amountCents: safe(row.net) })
+      continue
+    }
+    // Applying a held deposit moves no cash; collected income counts it, so the
+    // deposit leaves the bridge by the same amount.
+    if (original.source_type === "customer_deposit_application" && !hasCash && !hasProfitLoss) {
+      const held = (lines.get(entry.id) ?? []).reduce((sum, line) => {
+        const account = classificationSchema.parse(record.parse(line.dimensions ?? {}).books_account_classification)
+        return account.subtype === "customer_deposits" ? sum + BigInt(Number(line.debit_cents)) - BigInt(Number(line.credit_cents)) : sum
+      }, BigInt(0))
+      if (entry.entry_date >= startDate) bridge.push({ category: "customer_deposits", entryId: entry.id, sourceType: "customer_deposit_application", sourceId: original.source_id ?? original.id, entryDate: entry.entry_date, amountCents: safe(-held) })
+      continue
+    }
+    // Expensing what was capitalized when paid (a prepaid used up, equipment or a
+    // home relieved) moves no cash, whoever posted it: a book entry, listed.
+    const capitalOnly = balanceClasses.size > 0 && [...balanceClasses].every(value => value !== "other" && capitalBridges.has(value))
+    if (!hasCash && (bookOnlySources.has(original.source_type ?? "") || (capitalOnly && hasProfitLoss && profitLoss.every(row => row.kind !== "income")))) {
+      if (entry.entry_date >= startDate) for (const row of profitLoss) bookOnly.push({ sourceType: original.source_type ?? "manual journal", entryId: entry.id, accountCode: row.code, kind: row.kind, amountCents: safe(row.net) })
+      continue
+    }
+    const category = hasCash ? bridgeCategory(balanceClasses) : null
+    const sourceKind = original.source_type ?? (original.entry_kind === "adjusting" ? "manual_adjustment" : "")
+    const profitLossAllowed = !profitLoss.length || (category && (capitalBridges.has(category) ? capitalProfitLossSources : bridgedProfitLossSources).has(sourceKind))
+    if (category && profitLossAllowed) {
+      // Interest or fees paid with a loan payment, a deposit or a transfer are cash
+      // expense; an asset's gain, loss or write-down is not.
+      const counted = capitalBridges.has(category) ? [] : profitLoss
+      const countedNet = counted.reduce((sum, row) => sum + (row.kind === "income" ? row.net : -row.net), BigInt(0))
+      if (entry.entry_date >= startDate) {
+        for (const row of counted) directCash.push({ source: "direct_cash_entry", documentId: original.source_id ?? original.id, snapshotId: entry.id, entryId: entry.id,
+          accountCode: row.code, kind: row.kind, amountCents: safe(row.net), dimensions: { ...row.dimensions, ...(typeof row.projectId === "string" ? { project_id: row.projectId } : {}) } })
+        if (capitalBridges.has(category)) for (const row of profitLoss) bookOnly.push({ sourceType: original.source_type ?? "manual journal", entryId: entry.id, accountCode: row.code, kind: row.kind, amountCents: safe(row.net) })
+        bridge.push({ category, entryId: entry.id, sourceType: original.source_type ?? "manual journal", sourceId: original.source_id ?? original.id, entryDate: entry.entry_date, amountCents: safe(entryCash - countedNet) })
+      }
+      continue
+    }
     if (hasProfitLoss || hasCash) unsupported.push(`${original.source_type ?? "manual journal"}:${original.source_id ?? original.id}`)
   }
-  if (unsupported.length) throw new Error(`Cash P&L requires reviewed cash treatment for ${Array.from(new Set(unsupported)).sort().join(", ")}`)
+  if (unsupported.length) throw new Error(`Cash P&L cannot classify ${Array.from(new Set(unsupported)).sort().join(", ")}. Each moves cash against an account with no cash treatment (such as accrued liabilities, payroll clearing or receivables) or records a non-cash expense that is not depreciation, inventory or a reserve. Record the payment against its bill or invoice, or code the bank line to the expense or income it paid, then run the report again.`)
 
   const evidence: CashProfitLossEvidence[] = [
     ...invoiceIncome.rows.filter(row => row.kind === "income").map(row => ({ source: "invoice_income" as const, documentId: row.documentId, snapshotId: row.snapshotId, entryId: null, accountCode: row.accountCode, kind: "income" as const, amountCents: row.amountCents, dimensions: row.dimensions ?? {} })),
@@ -129,15 +207,37 @@ export function cashProfitAndLossFromSnapshot(orgId: string, startDate: string, 
   })
   const total = (kind: CashProfitLossEvidence["kind"]) => rows.filter(row => row.kind === kind).reduce((sum,row) => sum + BigInt(row.amountCents), BigInt(0))
   const income = total("income"), cogs = total("cogs"), expense = total("expense"), capitalized = total("capitalized")
-  const expectedCashMovement = income - cogs - expense + BigInt(invoiceIncome.salesTaxCents) - capitalized
+  const bridged = new Map<CashBridgeCategory, bigint>()
+  for (const row of bridge) bridged.set(row.category, (bridged.get(row.category) ?? BigInt(0)) + BigInt(row.amountCents))
+  const bridgeTotal = Array.from(bridged.values()).reduce((sum, value) => sum + value, BigInt(0))
+  const expectedCashMovement = income - cogs - expense + BigInt(invoiceIncome.salesTaxCents) - capitalized + bridgeTotal
   if (actualCashMovement !== expectedCashMovement) throw new Error("Cash P&L does not reconcile to posted cash movements; review missing cash treatment")
+  const bookOnlyGrouped = new Map<string, { sourceType: string; accountCode: string; kind: "income" | "cogs" | "expense"; amount: bigint }>()
+  for (const row of bookOnly) {
+    const key = `${row.sourceType}:${row.accountCode}`, current = bookOnlyGrouped.get(key) ?? { sourceType: row.sourceType, accountCode: row.accountCode, kind: row.kind, amount: BigInt(0) }
+    current.amount += BigInt(row.amountCents); bookOnlyGrouped.set(key, current)
+  }
   return { statement: "cash_profit_loss" as const, startDate, endDate, capturedAt: snapshot.capturedAt, databaseSnapshot: snapshot.databaseSnapshot,
     rows: displayRows, evidence: displayEvidence, revenueCents: safe(income), cogsCents: safe(cogs), expenseCents: safe(expense), grossProfitCents: safe(income - cogs), netIncomeCents: safe(income - cogs - expense),
     netCashMovementCents: safe(actualCashMovement), salesTaxCollectedCents: invoiceIncome.salesTaxCents, capitalizedPurchasesCents: safe(capitalized),
+    bridge: (Object.keys(CASH_BRIDGE_CATEGORIES) as CashBridgeCategory[]).filter(category => bridged.has(category)).map(category => ({ category, label: CASH_BRIDGE_CATEGORIES[category], amountCents: safe(bridged.get(category) ?? BigInt(0)) })),
+    bridgeEvidence: bridge.sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.entryId.localeCompare(b.entryId)),
+    bookOnly: Array.from(bookOnlyGrouped.values()).filter(row => row.amount !== BigInt(0)).map(row => ({ sourceType: row.sourceType, accountCode: row.accountCode, kind: row.kind, amountCents: safe(row.amount) }))
+      .sort((a, b) => a.sourceType.localeCompare(b.sourceType) || a.accountCode.localeCompare(b.accountCode)),
     // These principals reconcile source collections/disbursements. Taxes and
     // capitalization remain outside income/deductions; fees appear separately.
     customerPrincipalCents: invoiceIncome.appliedPrincipalCents,
     paidPurchasePrincipalCents: safe(BigInt(billCosts.appliedPrincipalCents) + BigInt(directExpenses.paidPrincipalCents)),
     sourceEvidence: { invoiceIncome, billCosts, directExpenses, settlementAncillary },
   }
+}
+
+/** One bridge per entry: an asset bought decides over the loan or card that funded it. */
+function bridgeCategory(classes: Set<CashBridgeCategory | "other">): CashBridgeCategory | null {
+  const known = [...classes].filter((value): value is CashBridgeCategory => value !== "other")
+  if (known.length !== classes.size) return null
+  if (!known.length) return "transfer"
+  const assets = known.filter(value => capitalBridges.has(value))
+  if (assets.length) return assets.length === 1 ? assets[0] : null
+  return known.length === 1 ? known[0] : null
 }

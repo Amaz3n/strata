@@ -211,7 +211,7 @@ function TableBlock({
   const columns = visibleColumns(table.columns);
 
   return (
-    <section className="space-y-2">
+    <section aria-label={table.title || undefined} className="space-y-2">
       {table.title || table.description ? (
         <div>
           {table.title && (

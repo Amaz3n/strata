@@ -219,7 +219,7 @@ const booksCashProfitAndLoss: ReportDefinition = {
     return {
       subtitle: `${start} through ${end} · cash basis`,
       provenance: { source: "Arc Books collections and paid purchases", status: "Reconciled posted sources", generatedAt: report.capturedAt, scope: ctx.scopeLabel },
-      notice: { tone: "info" as const, message: "Sales tax and capitalized purchases are separate from profit and loss. Tax adjustments are not included." },
+      notice: { tone: "info" as const, message: "Sales tax, capitalized purchases, loans, owner money, transfers and customer deposits are separate from profit and loss. Depreciation, the cost of homes sold, reserves and write-offs are book entries, listed but not deducted; tax adjustments are reviewed on the tax workpaper." },
       stats: [
         { key: "income", label: "Collected income", value: formatMoneyCents(report.revenueCents) },
         { key: "gross", label: "Gross profit", value: formatMoneyCents(report.grossProfitCents) },
@@ -232,8 +232,12 @@ const booksCashProfitAndLoss: ReportDefinition = {
         { key: "cash-exclusions", title: "Cash movement reconciliation", columns: [{ key: "label", header: "Activity" }, { key: "amount", header: "Amount", type: "money" }],
           rows: [{ key: "income", cells: { label: "Net income", amount: report.netIncomeCents } },
             { key: "tax", cells: { label: "Sales tax collected, net of refunds", amount: report.salesTaxCollectedCents } },
-            { key: "capitalized", cells: { label: "Capitalized purchases, net of refunds", amount: -report.capitalizedPurchasesCents } }],
+            { key: "capitalized", cells: { label: "Capitalized purchases, net of refunds", amount: -report.capitalizedPurchasesCents } },
+            ...report.bridge.map(row => ({ key: `bridge-${row.category}`, cells: { label: row.label, amount: row.amountCents } }))],
           totals: { label: "Net cash movement", amount: report.netCashMovementCents } },
+        { key: "book-only", title: "Book entries not on the cash basis", columns: [{ key: "source", header: "Source" }, { key: "code", header: "Account" }, { key: "kind", header: "Type", type: "status" }, { key: "amount", header: "Book amount", type: "money" }],
+          emptyMessage: "No depreciation, inventory, reserve or write-off entries in this period.",
+          rows: report.bookOnly.map(row => ({ key: `${row.sourceType}:${row.accountCode}`, cells: { source: row.sourceType.replace(/_/g, " "), code: row.accountCode, kind: row.kind, amount: row.amountCents } })) },
         { key: "cash-evidence", title: "Source detail", columns: [
           { key: "source", header: "Source" }, { key: "label", header: "Document" }, { key: "projectName", header: "Project" }, { key: "code", header: "Account" }, { key: "kind", header: "Type", type: "status" },
           { key: "document", header: "Document ID", exportOnly: true }, { key: "fact", header: "Posting fact ID", exportOnly: true },

@@ -86,6 +86,7 @@ export async function reviewTaxWorkpaper(input: { id: string; notes: string }) {
   }
   const { basis } = await capture(context.orgId, batch.period_start, batch.period_end)
   const reviewed = await service.rpc("review_books_tax_workpaper", { p_org_id: context.orgId, p_id: batch.id, p_actor_id: context.userId, p_current_base_digest: basis.digest, p_notes: z.string().trim().min(10).max(2000).parse(input.notes) })
+  if (reviewed.error && /changed before review/i.test(reviewed.error.message)) throw new Error("The books changed after this workpaper was prepared. Withdraw it and prepare a replacement from the current books.")
   if (reviewed.error) throw new Error(`Failed to review tax workpaper: ${reviewed.error.message}`)
   return batch.id
 }

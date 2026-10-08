@@ -22,7 +22,7 @@ test('cash P&L is a distinct Books statement and shared result exports exact nat
  assert.equal(detail.rows[0].href,'/projects/job/expenses?expense=purchase')
  const csv=reportToCsv(result)
  assert.match(csv,/Net income,.*-3/);assert.match(csv,/Native construction job/);assert.match(csv,/Sales tax collected, net of refunds/);assert.match(csv,/Capitalized purchases, net of refunds/)
- assert.match(csv,/Posting fact ID/);assert.match(csv,/purchase,fact/);assert.match(csv,/Tax adjustments are not included/);assert.match(csv,/Net cash movement,-3/);assert.equal(result.provenance.generatedAt,'2026-09-20T12:00:00Z')
+ assert.match(csv,/Posting fact ID/);assert.match(csv,/purchase,fact/);assert.match(csv,/tax adjustments are reviewed on the tax workpaper/);assert.match(csv,/Net cash movement,-3/);assert.equal(result.provenance.generatedAt,'2026-09-20T12:00:00Z')
 })
 test('source evidence links use the actual billing and payables workflow URL contracts',async()=>{
  const base={source:'invoice_income',documentId:'invoice',snapshotId:'fact',entryId:null,accountCode:'4000',kind:'income',amountCents:0,dimensions:{},documentLabel:'Invoice',projectName:'Organization'}

@@ -17,13 +17,8 @@ reporting on the accrual basis, and mark up anything that is wrong, missing, or
 presented incorrectly. §6 lists three questions where we already believe review is
 needed — please do not treat that list as exhaustive.
 
-**Scope of the first release:** accrual basis, single entity, USD. Payroll tax filing,
-inventory, consolidation, and multi-currency are out of scope. Cash-basis statements are
-a known gap (most small builders file cash-basis) and are tracked separately. The cash-basis
-P&L that exists counts income and cost from paid documents; a categorized bank line or
-manual journal whose only balance-sheet side is cash counts on its date by its
-accounts; anything else with a non-cash balance-sheet leg (depreciation, accruals) is
-refused until its cash treatment is reviewed, rather than guessed.
+**Scope of the first release:** accrual basis with a cash-basis P&L (§4j), USD.
+Payroll tax filing and multi-currency are out of scope.
 
 ## 2. Two revenue bases, chosen per project
 
@@ -339,6 +334,45 @@ Dr  5030  Labor costs                   amount
 ### 4i. Year-end close
 Income and expense accounts close to 3100 Retained earnings, classified by
 `account_type`, not by account-code prefix.
+
+### 4j. Cash-basis P&L and tax workpaper (B10)
+Income counts when collected and costs when paid, by the accounts the documents
+posted to; sales tax and capitalized purchases are separate. Every other cash
+flow is classified in a bridge so the P&L plus the bridge equals the actual change
+in cash and undeposited funds (opening balances are a position, not movement):
+
+| Bridge | What it holds | Income or expense beside it |
+|---|---|---|
+| Transfers between cash accounts | nets to zero | deposit-batch fees are cash expense |
+| Loans received and principal repaid | 2400/2500 | interest and fees paid are cash expense |
+| Owner contributions and distributions | 3000/3010/3020 | — |
+| Credit card payments | 2100 | — |
+| Customer deposits held and refunded | 2300; leaves when applied | receipt fees are cash expense |
+| Equipment bought and sold | 1500/1590 | a book gain or loss is listed, not cash |
+| Land and homes held for sale | 1120/1130/1160/1170 | — |
+| Prepaid expenses | 1200 | — |
+
+- **Collections** are allocated over the invoice's income and tax lines cumulatively
+  at each cutoff, as the invoice stood (after credit memos) at that cutoff, so months
+  add up to the year to the cent. A credit memo reduces what the invoice is made of;
+  a write-off does not (income never collected was never reported) and is listed.
+- **Deposits** are held, not income; applied to an invoice (at closing, or forfeited)
+  they are income that day. **Retainage** collected on a release invoice is income of
+  the original invoices, in proportion to what each withheld.
+- **Book-only entries** (depreciation, the cost of a home sold, inventory moves,
+  impairment, reserves, write-offs, a prepaid or asset expensed by journal) move no
+  cash: they are listed beside the P&L and never deducted. Whether and when any is
+  deductible is a reviewed adjustment on the tax workpaper, never inferred.
+- **Refused, with the cure:** anything else that moves cash or income without a
+  treatment — a journal paying an accrued liability, an expense accrued by journal,
+  payroll clearing, interest accrued on a loan. Record the payment against its bill
+  or invoice, or code the bank line to what it paid.
+
+The **tax workpaper** is prepared by one member and approved by another against the
+exact cash P&L it was prepared from; if the books change first, review is refused
+and the preparer withdraws and prepares a replacement. A replacement (including a
+reviewed "no adjustments" one) supersedes the approved workpaper, which keeps its
+reviewer and notes. The report, CSV, PDF and saved run reproduce the reviewed period.
 
 ## 5. Worked example
 

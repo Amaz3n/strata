@@ -1,0 +1,399 @@
+{
+  "scenario": "DIM-01",
+  "status": "PASSED",
+  "reviewedFrom": "B07.1 definition of done (advisor-plans/013) and the dimension matrix in docs/books-dimensions.md; tag policy decided 2026-10-06: reporting tags stay as posted. B07.2 definition of done.",
+  "subcases": [
+    {
+      "name": "matrix-on-lines",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "ff04041d-c5a4-4869-8be6-44b08948eb77",
+        "payment": {
+          "group": {
+            "id": "bb88268b-a11b-4c4b-a596-7f1b04ca2b63",
+            "total_cents": 100000,
+            "method": "check",
+            "org_id": "ff04041d-c5a4-4869-8be6-44b08948eb77",
+            "currency": "usd",
+            "metadata": {},
+            "party_id": null,
+            "provider": "manual",
+            "reference": null,
+            "created_at": "2026-10-08T02:03:23.474981+00:00",
+            "created_by": "ed198ed3-3432-4727-8098-cc24b1f58ac5",
+            "party_type": null,
+            "received_at": "2026-07-25T12:00:00+00:00",
+            "idempotency_key": "5a8ab767-f399-4ef3-810f-d56a286950ab"
+          },
+          "items": [
+            {
+              "payment_id": "1812aaf1-1bce-4227-857b-d320fde4603b",
+              "invoice_id": "d4d379ca-aa16-4a04-aef6-888d2da41c65",
+              "amount_cents": 100000,
+              "project_id": "53ff81ff-4487-4900-b3e0-027d8f4a4926"
+            }
+          ],
+          "duplicate": false
+        }
+      },
+      "checks": [
+        {
+          "label": "each document carries the dimensions the matrix lists",
+          "pass": true,
+          "expected": {
+            "vendorBill": {
+              "2000": [
+                "community_id",
+                "community_name",
+                "contract_id",
+                "division_id",
+                "division_name",
+                "lot_id",
+                "lot_name",
+                "organization_id"
+              ],
+              "5000": [
+                "community_id",
+                "community_name",
+                "contract_id",
+                "cost_code_id",
+                "cost_type",
+                "division_id",
+                "division_name",
+                "lot_id",
+                "lot_name",
+                "organization_id"
+              ]
+            },
+            "invoice": {
+              "1100": [
+                "community_id",
+                "community_name",
+                "contract_id",
+                "division_id",
+                "division_name",
+                "lot_id",
+                "lot_name",
+                "organization_id"
+              ],
+              "2350": [
+                "community_id",
+                "community_name",
+                "contract_id",
+                "division_id",
+                "division_name",
+                "lot_id",
+                "lot_name",
+                "organization_id"
+              ]
+            },
+            "invoicePayment": {
+              "1010": [
+                "community_id",
+                "community_name",
+                "contract_id",
+                "division_id",
+                "division_name",
+                "invoice_id",
+                "lot_id",
+                "lot_name",
+                "organization_id",
+                "payment_id"
+              ],
+              "1100": [
+                "community_id",
+                "community_name",
+                "contract_id",
+                "division_id",
+                "division_name",
+                "invoice_id",
+                "lot_id",
+                "lot_name",
+                "organization_id",
+                "payment_id"
+              ]
+            }
+          },
+          "observed": {
+            "vendorBill": {
+              "2000": [
+                "community_id",
+                "community_name",
+                "contract_id",
+                "division_id",
+                "division_name",
+                "lot_id",
+                "lot_name",
+                "organization_id"
+              ],
+              "5000": [
+                "community_id",
+                "community_name",
+                "contract_id",
+                "cost_code_id",
+                "cost_type",
+                "division_id",
+                "division_name",
+                "lot_id",
+                "lot_name",
+                "organization_id"
+              ]
+            },
+            "invoice": {
+              "1100": [
+                "community_id",
+                "community_name",
+                "contract_id",
+                "division_id",
+                "division_name",
+                "lot_id",
+                "lot_name",
+                "organization_id"
+              ],
+              "2350": [
+                "community_id",
+                "community_name",
+                "contract_id",
+                "division_id",
+                "division_name",
+                "lot_id",
+                "lot_name",
+                "organization_id"
+              ]
+            },
+            "invoicePayment": {
+              "1010": [
+                "community_id",
+                "community_name",
+                "contract_id",
+                "division_id",
+                "division_name",
+                "invoice_id",
+                "lot_id",
+                "lot_name",
+                "organization_id",
+                "payment_id"
+              ],
+              "1100": [
+                "community_id",
+                "community_name",
+                "contract_id",
+                "division_id",
+                "division_name",
+                "invoice_id",
+                "lot_id",
+                "lot_name",
+                "organization_id",
+                "payment_id"
+              ]
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T02:03:19.541Z"
+    },
+    {
+      "name": "foreign-dimension-refused",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "6bdbe562-e848-44d7-9dc7-a5719c4c31ee"
+      },
+      "checks": [
+        {
+          "label": "another company's cost code is refused; the company's own posts",
+          "pass": true,
+          "expected": {
+            "foreign": "refused: not in this company",
+            "missing": "refused: not in this company",
+            "own": "posted"
+          },
+          "observed": {
+            "foreign": "refused: not in this company",
+            "missing": "refused: not in this company",
+            "own": "posted"
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T02:03:23.784Z"
+    },
+    {
+      "name": "one-lot-per-project",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "c4bff700-fd5f-48ec-be02-d61bffebce4f"
+      },
+      "checks": [
+        {
+          "label": "a second lot for the project is refused",
+          "pass": true,
+          "expected": {
+            "secondLot": "refused: lots_project_unique"
+          },
+          "observed": {
+            "secondLot": "refused: lots_project_unique"
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T02:03:24.123Z"
+    },
+    {
+      "name": "later-changes-and-reversal",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "1643fee5-40bd-4b56-9984-23948d1cfead",
+        "bill": "45c851f5-96c7-4d52-82d6-b1a6501d447c"
+      },
+      "checks": [
+        {
+          "label": "later renames and moves relabel nothing; a revision reverses with the original dimensions and re-posts with today's",
+          "pass": true,
+          "expected": {
+            "postedLinesUnchanged": true,
+            "reversalMatchesOriginal": true,
+            "originalDivision": [
+              "South division"
+            ],
+            "replacementDivision": [
+              "North division"
+            ]
+          },
+          "observed": {
+            "postedLinesUnchanged": true,
+            "reversalMatchesOriginal": true,
+            "originalDivision": [
+              "South division"
+            ],
+            "replacementDivision": [
+              "North division"
+            ]
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T02:03:24.312Z"
+    },
+    {
+      "name": "statements-by-tag",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "4e93101d-cce7-4d4f-bcc9-f9e5b0f9c44d"
+      },
+      "checks": [
+        {
+          "label": "slices add back exactly, untagged amounts show, drill-downs reach their lines and documents, and access holds",
+          "pass": true,
+          "expected": {
+            "everySliceNetsTo": [
+              -220000
+            ],
+            "divisionRows": {
+              "North division": -50000,
+              "South division": -100000,
+              "Unassigned": -70000
+            },
+            "southCostDrill": {
+              "lines": 1,
+              "cents": 100000
+            },
+            "paymentOpensInvoice": true,
+            "divisionScopedStatements": true,
+            "divisionScopedLedger": true,
+            "payrollAsOwner": [
+              20000,
+              30000
+            ],
+            "payrollAsReviewer": [
+              50000
+            ]
+          },
+          "observed": {
+            "everySliceNetsTo": [
+              -220000
+            ],
+            "divisionRows": {
+              "North division": -50000,
+              "South division": -100000,
+              "Unassigned": -70000
+            },
+            "southCostDrill": {
+              "lines": 1,
+              "cents": 100000
+            },
+            "paymentOpensInvoice": true,
+            "divisionScopedStatements": true,
+            "divisionScopedLedger": true,
+            "payrollAsOwner": [
+              20000,
+              30000
+            ],
+            "payrollAsReviewer": [
+              50000
+            ]
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T02:03:25.282Z"
+    },
+    {
+      "name": "closed-month-as-closed",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "7f3cc1e6-ccd1-4146-b6a7-75128c39a92f"
+      },
+      "checks": [
+        {
+          "label": "the closed month reads as closed on screen and in its CSV; a live rebuild would differ",
+          "pass": true,
+          "expected": {
+            "headingSaysClosed": true,
+            "closedNetIncome": "$250.00",
+            "liveNetIncome": -75000,
+            "csvNetIncomeLine": "Net income,25000"
+          },
+          "observed": {
+            "headingSaysClosed": true,
+            "closedNetIncome": "$250.00",
+            "liveNetIncome": -75000,
+            "csvNetIncomeLine": "Net income,25000"
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T02:03:26.970Z"
+    },
+    {
+      "name": "fiscal-comparisons",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "4017703a-61c8-4699-8c10-448e71c69df9"
+      },
+      "checks": [
+        {
+          "label": "prior fiscal year and a range across the fiscal year-end",
+          "pass": true,
+          "expected": {
+            "fiscalYearExpense": 12000,
+            "comparisonRange": {
+              "start": "2025-04-01",
+              "end": "2026-03-31",
+              "label": "Prior year"
+            },
+            "priorFiscalYearExpense": 3000,
+            "acrossYearEndExpense": 6000
+          },
+          "observed": {
+            "fiscalYearExpense": 12000,
+            "comparisonRange": {
+              "start": "2025-04-01",
+              "end": "2026-03-31",
+              "label": "Prior year"
+            },
+            "priorFiscalYearExpense": 3000,
+            "acrossYearEndExpense": 6000
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T02:03:27.666Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-08T02:03:27.797Z"
+}

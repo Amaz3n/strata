@@ -8602,8 +8602,8 @@
       "id": "B10.1",
       "workstream": "B10",
       "title": "Complete source/policy coverage",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified locally (CASH-01 two-months-with-bridge, home-sale, unclassified-refused; BILL-01 progress-tax-retainage-release cash check): income when collected and costs when paid, sales tax and capitalized purchases separate; owner money, loans, transfers, cards, customer deposits, equipment, land/homes and prepaids classified in a bridge; credits, deposits applied at closing and retainage collections attributed; anything else refused naming the entry and the cure. Bound: payroll settlement and interest accrued on a loan are refused by design (payroll is not day one); card charges were not exercised in a scenario.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "independent scenario totals match by month/year",
@@ -8619,7 +8619,43 @@
         "RESTORE-01",
         "TAX-01"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "verified_at": "2026-10-08T02:05:48.787378+00:00",
+          "implemented_paths": [
+            "lib/services/books/cash-profit-loss.ts",
+            "lib/services/books/cash-income-snapshot.ts",
+            "lib/services/books/cash-settlement-rules.ts",
+            "lib/services/books/cash-settlement-ledger.ts",
+            "lib/services/books/tax-adjustments.ts",
+            "lib/reports/definitions/financial.ts",
+            "components/reports/report-body.tsx",
+            "scripts/books-acceptance/scenarios/cash-01.cjs",
+            "scripts/books-acceptance/journeys/cash-basis.spec.ts",
+            "docs/books-revenue-recognition.md"
+          ],
+          "test_scenario_ids": [
+            "CASH-01",
+            "BILL-01"
+          ],
+          "commands": [
+            "scenario-runner CASH-01 (4/4) and full regression",
+            "playwright journeys/cash-basis.spec.ts (desktop, mobile-dark)",
+            "node --test tests/books-cash-*.test.js tests/books-tax-*.test.js",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "Before this, the cash P&L refused any company with opening balances (it skipped only an `opening_balance` source that is never written; batches post as `opening_balance_batch`), any credit memo, any customer deposit, any retainage collection, and any fixed asset, loan, owner or transfer entry.",
+            "Two months: income 900.00 then -100.00 (a refund), months add up to 800.00; cash income allocated over each invoice as credited at each cutoff; loan +1,000/-50, owner +500/-80, transfer 0, truck -360, prepaid -12; each month ties to the ledger's actual cash change.",
+            "Home sale: deposit held (bridged) then income at closing; land and construction capitalized; the 260,000 cost of the home sold listed as a book entry, not deducted.",
+            "Unclassified: an expense accrued by journal and its later payment by journal are refused with the cure.",
+            "Regression green (14 scenarios incl. CASH-01 4/4); cash/tax unit tests 76 pass; test:financials 2,522 pass; tsc clean; lint only the other session's existing error."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-07-cash-basis"
+        }
+      ],
       "remaining_criteria": [
         "independent scenario totals match by month/year",
         "installments/refunds telescope to exact cents",
@@ -8637,8 +8673,8 @@
       "id": "B10.2",
       "workstream": "B10",
       "title": "Inventory, prepaids, capitalization and depreciation bridge",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified locally (CASH-01 two-months-with-bridge, home-sale, tax-workpaper): cash paid for equipment, land, homes and prepaids is bridged (never deducted); book depreciation, inventory relief, impairment, reserves, write-offs and prepaids expensed by journal are listed as book-only entries; asset balances stay in the ledger; any deduction is a reviewed timing/permanent adjustment on the tax workpaper. No tax depreciation method, election or threshold is invented. Bound: there is no tax depreciation schedule or amortization engine by design; the accountant enters the reviewed amount.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "cash paid, book expense, asset balances and reviewed tax adjustment reconcile separately",
@@ -8651,7 +8687,41 @@
         "RESTORE-01",
         "TAX-01"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "verified_at": "2026-10-08T02:05:48.787378+00:00",
+          "implemented_paths": [
+            "lib/services/books/cash-profit-loss.ts",
+            "lib/services/books/cash-income-snapshot.ts",
+            "lib/services/books/cash-settlement-rules.ts",
+            "lib/services/books/cash-settlement-ledger.ts",
+            "lib/services/books/tax-adjustments.ts",
+            "lib/reports/definitions/financial.ts",
+            "components/reports/report-body.tsx",
+            "scripts/books-acceptance/scenarios/cash-01.cjs",
+            "scripts/books-acceptance/journeys/cash-basis.spec.ts",
+            "docs/books-revenue-recognition.md"
+          ],
+          "test_scenario_ids": [
+            "CASH-01",
+            "BILL-01"
+          ],
+          "commands": [
+            "scenario-runner CASH-01 (4/4) and full regression",
+            "playwright journeys/cash-basis.spec.ts (desktop, mobile-dark)",
+            "node --test tests/books-cash-*.test.js tests/books-tax-*.test.js",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "Book-only list per period by source and account (e.g. books_fixed_asset 6080, manual_adjustment 6010, inventory_sale_relief 5000).",
+            "An entry moving cost out of a capitalized asset with no cash is a book entry whoever posted it; an income booked against an inventory account is still refused.",
+            "Regression green (14 scenarios incl. CASH-01 4/4); cash/tax unit tests 76 pass; test:financials 2,522 pass; tsc clean; lint only the other session's existing error."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-07-cash-basis"
+        }
+      ],
       "remaining_criteria": [
         "cash paid, book expense, asset balances and reviewed tax adjustment reconcile separately",
         "policy changes preserve prior frozen runs and create explicit restatement/replacement where required",
@@ -8667,7 +8737,7 @@
       "workstream": "B10",
       "title": "Full tax workpaper and report delivery journey",
       "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status_basis": "Verified locally (CASH-01 tax-workpaper; cash-basis browser journey desktop and phone/dark): the preparer cannot self-review; a posting after preparation makes review refuse with the cure (withdraw and prepare a replacement); a reviewed no-adjustments replacement supersedes the approval, which keeps its reviewer and notes; the report reconciles book income + adjustments = adjusted income; UI, CSV and PDF over the signed-in session reproduce the exact period with no-store, a saved report run reproduces the same CSV, and a signed-out request gets nothing. Remaining: an altered attachment invalidating a draft and the attachment download need file storage on the acceptance stack (unit-tested only); recovery of all revisions after restore (RESTORE-01).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "preparer cannot self-review",
@@ -8683,7 +8753,41 @@
         "RESTORE-01",
         "TAX-01"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "verified_at": "2026-10-08T02:05:48.787378+00:00",
+          "implemented_paths": [
+            "lib/services/books/cash-profit-loss.ts",
+            "lib/services/books/cash-income-snapshot.ts",
+            "lib/services/books/cash-settlement-rules.ts",
+            "lib/services/books/cash-settlement-ledger.ts",
+            "lib/services/books/tax-adjustments.ts",
+            "lib/reports/definitions/financial.ts",
+            "components/reports/report-body.tsx",
+            "scripts/books-acceptance/scenarios/cash-01.cjs",
+            "scripts/books-acceptance/journeys/cash-basis.spec.ts",
+            "docs/books-revenue-recognition.md"
+          ],
+          "test_scenario_ids": [
+            "CASH-01",
+            "BILL-01"
+          ],
+          "commands": [
+            "scenario-runner CASH-01 (4/4) and full regression",
+            "playwright journeys/cash-basis.spec.ts (desktop, mobile-dark)",
+            "node --test tests/books-cash-*.test.js tests/books-tax-*.test.js",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "Stale-review message now names the cure instead of 'Cash source revision changed before review'.",
+            "Report tables are now named regions (aria-label from the title), which the journey uses.",
+            "Regression green (14 scenarios incl. CASH-01 4/4); cash/tax unit tests 76 pass; test:financials 2,522 pass; tsc clean; lint only the other session's existing error."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-07-cash-basis"
+        }
+      ],
       "remaining_criteria": [
         "preparer cannot self-review",
         "source/attachment change invalidates the affected draft",
@@ -8701,8 +8805,8 @@
       "id": "B10.4",
       "workstream": "B10",
       "title": "Independently specified cash reconciliation",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified locally (CASH-01): cash P&L plus the classified bridge equals the actual change in cash and undeposited funds in every window; monthly windows sum to the two-month total to the cent, including a credit between receipts and a refund; reversal chains follow ledger lineage. Bound: reports after restore await RESTORE-01; independent review of the policy matrix is the CPA review (B16.3).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "cash P&L plus the complete classified bridge equals actual frozen cash movement",
@@ -8716,7 +8820,40 @@
         "RESTORE-01",
         "TAX-01"
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "verified_at": "2026-10-08T02:05:48.787378+00:00",
+          "implemented_paths": [
+            "lib/services/books/cash-profit-loss.ts",
+            "lib/services/books/cash-income-snapshot.ts",
+            "lib/services/books/cash-settlement-rules.ts",
+            "lib/services/books/cash-settlement-ledger.ts",
+            "lib/services/books/tax-adjustments.ts",
+            "lib/reports/definitions/financial.ts",
+            "components/reports/report-body.tsx",
+            "scripts/books-acceptance/scenarios/cash-01.cjs",
+            "scripts/books-acceptance/journeys/cash-basis.spec.ts",
+            "docs/books-revenue-recognition.md"
+          ],
+          "test_scenario_ids": [
+            "CASH-01",
+            "BILL-01"
+          ],
+          "commands": [
+            "scenario-runner CASH-01 (4/4) and full regression",
+            "playwright journeys/cash-basis.spec.ts (desktop, mobile-dark)",
+            "node --test tests/books-cash-*.test.js tests/books-tax-*.test.js",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "Identity: actual cash movement = income - costs - expenses + sales tax - capitalized + Σ bridge, checked on every report; a mismatch refuses the report.",
+            "Regression green (14 scenarios incl. CASH-01 4/4); cash/tax unit tests 76 pass; test:financials 2,522 pass; tsc clean; lint only the other session's existing error."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-07-cash-basis"
+        }
+      ],
       "remaining_criteria": [
         "cash P&L plus the complete classified bridge equals actual frozen cash movement",
         "monthly sums equal annual totals",

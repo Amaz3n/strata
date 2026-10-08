@@ -213,6 +213,24 @@ commit;`)
       { accountCode: "6010", debitCents: 100001, creditCents: 0 }, { accountCode: "1000", debitCents: 0, creditCents: 100001 }] }))
     return org
   },
+  // August on the cash basis: consulting income, an owner contribution and a truck
+  // bought for cash and depreciated, with an approved tax workpaper.
+  async "cash-basis"(kit, password) {
+    const { openingCash, journal, glId } = require("./scenarios/cash-01.cjs").helpers
+    const org = await contractJob(kit, { name: "Browser acceptance — cash basis", contractCents: 1000000, retainagePercent: 0, periods: ["2026-08"], password,
+      beforeOpening: (org) => openingCash(kit, org, 1000000), opening: (org) => org.openingLines })
+    await journal(kit, org, "2026-08-10", "Consulting fee received", [{ accountCode: "1000", debitCents: 500000, creditCents: 0 }, { accountCode: "4900", debitCents: 0, creditCents: 500000 }])
+    await journal(kit, org, "2026-08-11", "Owner contribution", [{ accountCode: "1000", debitCents: 300000, creditCents: 0 }, { accountCode: "3010", debitCents: 0, creditCents: 300000 }])
+    const registers = app("books/registers")
+    const asset = await kit.as(org.owner, () => registers.createFixedAsset({ assetNumber: "TRK-1", name: "Crew truck", placedInServiceOn: "2026-08-12", acquisitionCostCents: 120000, salvageValueCents: 0, usefulLifeMonths: 12,
+      assetAccountId: glId(kit, org, "1500"), accumulatedDepreciationAccountId: glId(kit, org, "1590"), depreciationExpenseAccountId: glId(kit, org, "6080"), fundingAccountId: glId(kit, org, "1000"), postAcquisition: true }))
+    await kit.as(org.owner, () => registers.postFixedAssetDepreciation({ assetId: asset.id ?? asset, throughDate: "2026-08-31", amountCents: 10000 }))
+    const tax = app("books/tax-adjustments")
+    const workpaper = await kit.as(org.owner, () => tax.prepareTaxWorkpaper({ startDate: "2026-08-01", endDate: "2026-08-31", idempotencyKey: `browser-workpaper-${org.orgId}`,
+      lines: [{ id: require("node:crypto").randomUUID(), kind: "timing", amount_cents: -10000, description: "Tax depreciation on the crew truck per the accountant's schedule", evidence_reference: "Depreciation schedule, August 2026" }] }))
+    await kit.as(org.reviewer, () => tax.reviewTaxWorkpaper({ id: workpaper, notes: "Checked against the depreciation schedule" }))
+    return org
+  },
   // July's close died right after freezing the period, 31 minutes ago.
   async "abandoned-close"(kit, password) {
     const org = await greenfieldOrg(kit, { name: "Browser acceptance — abandoned close", periods: ["2026-07"], password })

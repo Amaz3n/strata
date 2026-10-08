@@ -9,6 +9,8 @@ export type CashDocumentBasis = {
   components: { id: string; accountCode: string; kind: "income" | "sales_tax"; amountCents: number; dimensions?: Record<string, unknown> }[]
   /** A partial history cannot establish the cumulative rounding position. */
   completeSettlementHistory: boolean
+  /** Credit memos, each reducing named components from its effective date. */
+  credits?: { id: string; effectiveOn: string; components: { id: string; amountCents: number }[] }[]
 }
 export type CashDocumentSettlement = {
   eventId: string
@@ -85,13 +87,26 @@ export function allocateCashDocumentSettlements(input: {
       cumulative += amount
       if (cumulative < BigInt(0) || cumulative > BigInt(document.grossCents)) throw new Error("Unapplied receipts or excess refunds require reviewed document attribution")
     }
-    const components = [...document.components].sort((a, b) => compare(a.id, b.id))
-    const allocate = (amount: bigint) => {
+    const original = [...document.components].sort((a, b) => compare(a.id, b.id))
+    for (const credit of document.credits ?? []) {
+      date(credit.effectiveOn)
+      if (credit.components.some(row => !original.some(component => component.id === row.id) || !Number.isSafeInteger(row.amountCents) || row.amountCents < 0)) throw new Error("Cash document credit names an unknown component")
+    }
+    // Collections are allocated over the document as credited by each cutoff, so
+    // monthly windows still add up to the year when a credit falls between receipts.
+    const basisAt = (cutoff: string) => original.map(row => ({ ...row, amountCents: safe(BigInt(row.amountCents) - (document.credits ?? [])
+      .filter(credit => credit.effectiveOn <= cutoff).flatMap(credit => credit.components).filter(part => part.id === row.id)
+      .reduce((sum, part) => sum + BigInt(part.amountCents), BigInt(0))) }))
+    const dayBefore = new Date(Date.parse(`${input.startDate}T00:00:00Z`) - 86400000).toISOString().slice(0, 10)
+    const allocate = (amount: bigint, cutoff: string) => {
+      const components = basisAt(cutoff)
+      if (amount === BigInt(0)) return components.map(() => 0)
+      if (components.some((row, i) => original[i].amountCents >= 0 && row.amountCents < 0)) throw new Error("Credits exceed the document's income or tax")
       const tax = components.filter(row => row.kind === "sales_tax").reduce((sum, row) => sum + BigInt(row.amountCents), BigInt(0))
       // Allocate the tax/income totals first. Largest-remainder allocation over
       // every line together can move a tax cent backwards on a positive receipt.
       const grouped = allocateInvoiceRevenue(safe(amount), [
-        { account_code: "income", amount_cents: safe(BigInt(document.grossCents) - tax) },
+        { account_code: "income", amount_cents: safe(components.reduce((sum, row) => sum + BigInt(row.amountCents), BigInt(0)) - tax) },
         { account_code: "sales_tax", amount_cents: safe(tax) },
       ])
       const amounts = new Map<string, number>()
@@ -102,8 +117,9 @@ export function allocateCashDocumentSettlements(input: {
       }
       return components.map(row => amounts.get(row.id) ?? 0)
     }
-    const openingAllocation = allocate(beginning)
-    const closingAllocation = allocate(ending)
+    const components = original
+    const openingAllocation = allocate(beginning, dayBefore)
+    const closingAllocation = allocate(ending, input.endDate)
     for (let i = 0; i < components.length; i++) {
       const amountCents = safe(BigInt(closingAllocation[i]) - BigInt(openingAllocation[i]))
       if (amountCents) rows.push({ documentId: document.documentId, snapshotId: document.snapshotId, componentId: components[i].id, accountCode: components[i].accountCode, kind: components[i].kind, amountCents,
