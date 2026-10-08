@@ -21,6 +21,11 @@ the IRS.
 - Each company files its own: the paying company is the owner of the posted cash
   line (see `books-entities.md`).
 
+The 1099 report (Reports → Vendor 1099) needs `books.read` or `books.tax`, not
+the general report permission: it names payees and what they were paid, so a
+project lead who can run job reports cannot read it. AUTH-01 holds the full role
+matrix.
+
 ## The package (`lib/services/books/vendor-1099-packages.ts`)
 
 1. **Prepare** (`books.tax`): freezes, for one paying company and year, every payee

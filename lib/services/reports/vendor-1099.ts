@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { requireOrgContext } from "@/lib/services/context";
 import { companyOwnership } from "@/lib/services/books/legal-entities";
-import { requirePermission } from "@/lib/services/permissions";
+import { requireAnyPermission } from "@/lib/services/permissions";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { collectBooksRows } from "@/lib/services/books/paging";
 import { isReportableVendorPayment, reportableVendorReversal, SETTLED_VENDOR_PAYMENT_STATUSES } from "@/lib/services/reports/vendor-tax-payment-rules";
@@ -44,7 +44,9 @@ export async function getVendor1099Report({
     orgId: resolvedOrgId,
     userId,
   } = await requireOrgContext(orgId);
-  await requirePermission("report.read", {
+  // What each vendor was paid and their tax identity are for the people who keep
+  // the books or file taxes, not everyone who can run a report.
+  await requireAnyPermission(["books.read", "books.tax"], {
     supabase,
     orgId: resolvedOrgId,
     userId,

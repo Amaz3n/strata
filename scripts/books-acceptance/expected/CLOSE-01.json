@@ -95,10 +95,73 @@
       "expectedDistinctDigests": 12
     },
     "quarter-end": {
-      "status": "NOT_IMPLEMENTED"
+      "inputs": {
+        "monthlyCents": [
+          100000,
+          200000,
+          300000
+        ],
+        "lateCents": 50000
+      },
+      "derivation": "Service invoices of 1,000, 2,000 and 3,000 in July, August and September, each month closed in order. Each month reads as closed from its saved statements. A quarter has no saved statement of its own: it is computed from the ledger (never labelled closed) and equals the three closed months together, 6,000.00; September's saved balance sheet carries 6,000.00 of receivables. Reopening September then August (newest first) for a late August invoice; the 500.00 invoice dated August 28 posts, August and September reclose, and the quarter reads 6,500.00 with 6,500.00 receivable saved at September 30.",
+      "expected": {
+        "months": [
+          {
+            "netIncome": 100000,
+            "closed": true
+          },
+          {
+            "netIncome": 200000,
+            "closed": true
+          },
+          {
+            "netIncome": 300000,
+            "closed": true
+          }
+        ],
+        "closedQuarter": {
+          "netIncome": 600000,
+          "closed": false
+        },
+        "quarterIsMonthsTogether": true,
+        "receivableAtQuarterEnd": 600000,
+        "whileReopened": {
+          "netIncome": 600000,
+          "closed": false
+        },
+        "reclosed": {
+          "netIncome": 650000,
+          "closed": false
+        },
+        "receivableAfterReclose": 650000
+      }
     },
     "all-supported-modules": {
-      "status": "NOT_IMPLEMENTED"
+      "inputs": {
+        "contractCents": 10000000,
+        "eacCents": 8000000,
+        "invoiceCents": 1000000,
+        "truckCents": 3600000,
+        "loanCents": 10000000,
+        "loanPayment": {
+          "principalCents": 200000,
+          "interestCents": 50000
+        },
+        "advanceCents": 50000,
+        "repaymentCents": 30000
+      },
+      "derivation": "The INTERCO-01 group's August (advance, repayment, the land company's bill and payroll summary paid by the builder, a shared insurance allocation) plus a 10,000.00 progress invoice collected August 12, a 36,000.00 truck bought for cash and depreciated 1,000.00, and a 100,000.00 loan drawn and paid 2,500.00 (2,000 principal, 500 interest). The WIP is prepared and independently reviewed, the 10,000.00 receipt in transit is supported, and the land company's statement (+500.00, -300.00) is matched and reconciled to 200.00. The checklist has no blocking failure, August closes, every ledger control passes, the close saves 8 consolidated and 6 per-company statements, and each company balances alone.",
+      "expected": {
+        "blocking": [],
+        "closed": "closed",
+        "controlsNotPassing": [],
+        "saved": {
+          "builder": 6,
+          "consolidated": 8,
+          "land": 6
+        },
+        "eachCompanyBalances": true
+      }
     },
     "abandoned-close-resumes": {
       "inputs": {

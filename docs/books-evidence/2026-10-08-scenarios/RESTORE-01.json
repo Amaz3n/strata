@@ -1,0 +1,121 @@
+{
+  "scenario": "RESTORE-01",
+  "status": "PASSED",
+  "reviewedFrom": "B06 recovery: archive, verify, preflight against the actual target catalog, plan with explicit identity mappings, load, compare every archived table, re-enable guards and continue ordinary work. Taxpayer IDs are recovered separately from Vault.",
+  "subcases": [
+    {
+      "name": "closed-group-and-continuation",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "db1f3cf7-a9fa-4be0-a3a1-3d5d998fa913",
+        "restoreMs": 90,
+        "blockers": [],
+        "externalDependencies": [],
+        "populatedTables": 28,
+        "rows": 175
+      },
+      "checks": [
+        {
+          "label": "the archive verifies and preflights clean; every archived table returns identical; July still reads as closed; guards are on; August is worked and closed",
+          "pass": true,
+          "expected": {
+            "archiveVerifies": true,
+            "ready": true,
+            "secretRecovery": 0,
+            "populatedTables": true,
+            "changedTables": [
+              "bank_feed_connections"
+            ],
+            "plannedChanges": [
+              "bank_feed_connections",
+              "vendor_bills"
+            ],
+            "controlsUnchanged": true,
+            "closedStatementsUnchanged": true,
+            "rerunAddsNothing": true,
+            "closedMonthRefused": true,
+            "augustClosed": "closed",
+            "augustControls": true
+          },
+          "observed": {
+            "archiveVerifies": true,
+            "ready": true,
+            "secretRecovery": 0,
+            "populatedTables": true,
+            "changedTables": [
+              "bank_feed_connections"
+            ],
+            "plannedChanges": [
+              "bank_feed_connections",
+              "vendor_bills"
+            ],
+            "controlsUnchanged": true,
+            "closedStatementsUnchanged": true,
+            "rerunAddsNothing": true,
+            "closedMonthRefused": true,
+            "augustClosed": "closed",
+            "augustControls": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T13:15:03.700Z"
+    },
+    {
+      "name": "tax-records",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "0be32d09-4dbf-4017-95f8-be721be699c9",
+        "restoreMs": 167
+      },
+      "checks": [
+        {
+          "label": "1099 packages and the 1099 report come back exactly; no taxpayer ID is archived and preflight names each one Vault must supply",
+          "pass": true,
+          "expected": {
+            "ready": true,
+            "secretRecovery": [
+              "books_legal_entities",
+              "companies",
+              "companies",
+              "companies",
+              "companies"
+            ],
+            "fileRefusedUntilPayerTinReentered": true,
+            "noTaxpayerIdArchived": true,
+            "packageStatuses": [
+              "approved",
+              "superseded",
+              "withdrawn"
+            ],
+            "changedTables": [],
+            "filingFileIdentical": true,
+            "reportIdentical": true
+          },
+          "observed": {
+            "ready": true,
+            "secretRecovery": [
+              "books_legal_entities",
+              "companies",
+              "companies",
+              "companies",
+              "companies"
+            ],
+            "fileRefusedUntilPayerTinReentered": true,
+            "noTaxpayerIdArchived": true,
+            "packageStatuses": [
+              "approved",
+              "superseded",
+              "withdrawn"
+            ],
+            "changedTables": [],
+            "filingFileIdentical": true,
+            "reportIdentical": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T13:15:06.531Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-08T13:15:09.770Z"
+}

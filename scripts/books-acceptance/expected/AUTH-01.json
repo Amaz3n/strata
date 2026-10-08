@@ -1,0 +1,73 @@
+{
+  "scenario": "AUTH-01",
+  "reviewedFrom": "Role catalog (roles/role_permissions): owner has every Books permission; accountant books.read/adjust/close/tax/reconcile/export but not books.manage; Books reviewer books.read only; project lead no Books permission. Books is organization-level, so a division-scoped operator without Books permission is the project lead's case.",
+  "subcases": {
+    "role-matrix": {
+      "inputs": {},
+      "derivation": "Reads (statements, the 1099 report, 1099 packages, companies, cost allocations) need books.read (the 1099 report books.read or books.tax): owner, accountant and Books reviewer yes, project lead no; another organization's owner reads only its own organization. Journals need books.adjust. Preparing a 1099 package needs books.tax: the accountant prepares; the accountant cannot approve their own package, the Books reviewer and project lead cannot approve at all, another organization cannot reach it, and the owner approves. The filing file (full taxpayer IDs) needs books.tax: owner and accountant only. Adding a company needs books.manage: owner only. Full taxpayer IDs appear only inside filing files.",
+      "expected": {
+        "matrix": {
+          "owner": {
+            "statements": "allowed",
+            "vendor1099Report": "allowed",
+            "packages": "allowed",
+            "companies": "allowed",
+            "costAllocations": "allowed",
+            "journal": "allowed",
+            "approvePackage": "allowed",
+            "filingFile": "allowed",
+            "addCompany": "allowed"
+          },
+          "accountant": {
+            "statements": "allowed",
+            "vendor1099Report": "allowed",
+            "packages": "allowed",
+            "companies": "allowed",
+            "costAllocations": "allowed",
+            "journal": "allowed",
+            "preparePackage": "allowed",
+            "approvePackage": "refused",
+            "filingFile": "allowed",
+            "addCompany": "refused"
+          },
+          "booksReviewer": {
+            "statements": "allowed",
+            "vendor1099Report": "allowed",
+            "packages": "allowed",
+            "companies": "allowed",
+            "costAllocations": "allowed",
+            "journal": "refused",
+            "preparePackage": "refused",
+            "approvePackage": "refused",
+            "filingFile": "refused",
+            "addCompany": "refused"
+          },
+          "projectLead": {
+            "statements": "refused",
+            "vendor1099Report": "refused",
+            "packages": "refused",
+            "companies": "refused",
+            "costAllocations": "refused",
+            "journal": "refused",
+            "preparePackage": "refused",
+            "approvePackage": "refused",
+            "filingFile": "refused",
+            "addCompany": "refused"
+          },
+          "foreign": {
+            "statements": "allowed",
+            "vendor1099Report": "allowed",
+            "packages": "allowed",
+            "companies": "allowed",
+            "costAllocations": "allowed",
+            "journal": "allowed",
+            "approvePackage": "refused",
+            "filingFile": "refused"
+          }
+        },
+        "fullTinOnlyInFilingFiles": true,
+        "foreignSeesNothingOfOurs": true
+      }
+    }
+  }
+}

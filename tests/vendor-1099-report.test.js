@@ -69,7 +69,7 @@ test("1099 totals exhaust pages, deduplicate direct/allocation payments, and do 
   try {
     Module._load = function(name, ...args) {
       if(name === "@/lib/services/context") return {requireOrgContext:async()=>({supabase:db,orgId:"org",userId:"user"})}
-      if(name === "@/lib/services/permissions") return {requirePermission:async()=>{}}
+      if(name === "@/lib/services/permissions") return {requirePermission:async()=>{},requireAnyPermission:async()=>{}}
       if(name === "@/lib/supabase/server") return {createServiceSupabaseClient:()=>db}
       return original.call(this,name,...args)
     }

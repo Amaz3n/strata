@@ -112,8 +112,23 @@
       }
     },
     "entity-pair": {
-      "status": "NOT_IMPLEMENTED",
-      "note": "Intercompany entity pairs arrive with B14.3."
+      "inputs": {
+        "rounds": 3,
+        "owedCents": 50000,
+        "repaymentCents": 30000
+      },
+      "derivation": "The land company owes the builder 500.00 and makes two 300.00 repayments at the same moment. Serialized per company pair: the first settles 300 (200 still owed), the second settles that 200 and records 100.00 the builder now owes the land company. Each company holds only one side with the other, and both agree.",
+      "expected": {
+        "builder": {
+          "dueFrom": 0,
+          "dueTo": 10000
+        },
+        "land": {
+          "dueFrom": 10000,
+          "dueTo": 0
+        },
+        "posted": 2
+      }
     }
   }
 }

@@ -78,6 +78,27 @@ alter table public.journal_lines alter column legal_entity_id set not null;
 alter table public.journal_lines add constraint journal_lines_legal_entity_fkey foreign key (org_id, legal_entity_id) references public.books_legal_entities(org_id, id);
 create index journal_lines_legal_entity_idx on public.journal_lines (org_id, legal_entity_id, account_id);
 
+-- Arc's system account for what companies owe each other: an existing one in
+-- 1180-1189 (asset) or 2180-2189 (liability), or a new one at the first free code.
+create or replace function public.books_intercompany_account(p_org_id uuid, p_side text)
+returns uuid language plpgsql security definer set search_path = public, pg_catalog as $$
+declare v_id uuid; v_code text; v_prefix text := case p_side when 'asset' then '118' when 'liability' then '218' end;
+begin
+  if v_prefix is null then raise exception 'Unknown intercompany side'; end if;
+  select id into v_id from public.gl_accounts where org_id = p_org_id and is_system and active and account_type = p_side
+    and subtype = case p_side when 'asset' then 'other_asset' else 'other_liability' end and code ~ ('^' || v_prefix || '[0-9]$') order by code limit 1;
+  if v_id is not null then return v_id; end if;
+  select v_prefix || n into v_code from generate_series(0, 9) n
+    where not exists (select 1 from public.gl_accounts where org_id = p_org_id and code = v_prefix || n) order by n limit 1;
+  if v_code is null then raise exception 'Accounts %0-%9 are all in use; free one for what companies owe each other', v_prefix, v_prefix; end if;
+  insert into public.gl_accounts(org_id, code, name, account_type, subtype, normal_balance, cash_flow_category, is_system, active)
+    values (p_org_id, v_code, case p_side when 'asset' then 'Due from affiliates' else 'Due to affiliates' end, p_side,
+      case p_side when 'asset' then 'other_asset' else 'other_liability' end, case p_side when 'asset' then 'debit' else 'credit' end, 'operating', true, true)
+    returning id into v_id;
+  return v_id;
+end $$;
+revoke all on function public.books_intercompany_account(uuid, text) from public, anon, authenticated;
+
 create or replace function public.post_books_journal_entry(p_org_id uuid, p_entry jsonb, p_lines jsonb)
 returns uuid language plpgsql security definer set search_path = public, pg_catalog as $$
 declare
@@ -135,8 +156,11 @@ begin
       nullif(line_row ->> 'legal_entity_id', '')::uuid,
       nullif(line_row -> 'dimensions' ->> 'intercompany_owner_entity_id', '')::uuid,
       -- An owned account (a company's bank, cash or card) decides, even on a line
-      -- tagged with a job: the money moved through that company's account.
-      (select a.legal_entity_id from public.gl_accounts a where a.org_id = p_org_id and a.id = (line_row ->> 'account_id')::uuid),
+      -- tagged with a job: the money moved through that company's account. Cash,
+      -- undeposited funds and cards no company owns belong to the primary company,
+      -- so paying another company's job from them records what that company owes.
+      (select coalesce(a.legal_entity_id, case when a.subtype in ('cash', 'undeposited_funds', 'credit_card') then v_primary end)
+         from public.gl_accounts a where a.org_id = p_org_id and a.id = (line_row ->> 'account_id')::uuid),
       -- A job belongs to its company, or to the primary company when it names none.
       (select coalesce(p.legal_entity_id, v_primary) from public.projects p where p.org_id = p_org_id and p.id = nullif(line_row ->> 'project_id', '')::uuid),
       v_entry_entity,
@@ -155,13 +179,11 @@ begin
         into v_creditor from jsonb_array_elements(v_resolved) group by 1 having sum(coalesce((value ->> 'debit_cents')::bigint, 0) - coalesce((value ->> 'credit_cents')::bigint, 0)) < 0 order by 2, 1 limit 1;
       if v_creditor is null then raise exception 'Journal entry does not balance'; end if;
       if v_due_from is null then
-        insert into public.gl_accounts(org_id, code, name, account_type, subtype, normal_balance, cash_flow_category, is_system, active) values
-          (p_org_id, '1180', 'Due from affiliates', 'asset', 'other_asset', 'debit', 'operating', true, true),
-          (p_org_id, '2180', 'Due to affiliates', 'liability', 'other_liability', 'credit', 'operating', true, true)
-          on conflict (org_id, code) do nothing;
-        select id into v_due_from from public.gl_accounts where org_id = p_org_id and code = '1180' and account_type = 'asset' and active;
-        select id into v_due_to from public.gl_accounts where org_id = p_org_id and code = '2180' and account_type = 'liability' and active;
-        if v_due_from is null or v_due_to is null then raise exception 'Accounts 1180/2180 conflict with the organization chart'; end if;
+        -- Arc's own system accounts in 1180-1189 and 2180-2189: a builder's chart
+        -- that already uses 1180 or 2180 for something else is never touched; the
+        -- first free code is used instead.
+        v_due_from := public.books_intercompany_account(p_org_id, 'asset');
+        v_due_to := public.books_intercompany_account(p_org_id, 'liability');
       end if;
       v_amount := least(v_debtor.net, -v_creditor.net);
       -- The entity with excess debits owes the other. It first settles what the

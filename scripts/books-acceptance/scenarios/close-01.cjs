@@ -159,6 +159,105 @@ async function twelveMonths(kit, expected, check) {
   return { orgId: org.orgId }
 }
 
+// A quarter of closes: each month reads from its saved statements; the quarter,
+// which has no saved statement of its own, is computed from the ledger and equals
+// the three closed months together; a late August invoice recloses into it.
+async function quarterEnd(kit, expected, check) {
+  const input = expected.inputs
+  const periods = ["2026-07", "2026-08", "2026-09"]
+  const org = await greenfieldOrg(kit, { name: "CLOSE-01 quarter end", periods })
+  const client = await customer(kit, org)
+  for (const [index, period] of periods.entries()) {
+    await serviceInvoice(kit, org, client.id, `${period}-15`, input.monthlyCents[index])
+    await projectionJob(kit, org)
+    await close(kit, org, period)
+  }
+  const read = async (startDate, endDate) => {
+    const statements = await kit.as(org.owner, () => app("books/statement-detail").getStatementsForPeriod({ startDate, endDate, comparison: "none", legalEntityId: null }))
+    return { netIncome: statements.profitLoss.netIncomeCents, closed: Boolean(statements.closedPeriod) }
+  }
+  const quarter = () => read("2026-07-01", "2026-09-30")
+  const months = [await read("2026-07-01", "2026-07-31"), await read("2026-08-01", "2026-08-31"), await read("2026-09-01", "2026-09-30")]
+  const closedQuarter = await quarter()
+  const receivableAtQuarterEnd = closedBalanceSheet(kit, org, "2026-09")?.["1100"] ?? null
+  await reopen(kit, org, "2026-09", "Late August invoice found during the quarter review")
+  await reopen(kit, org, "2026-08", "Late August invoice found during the quarter review")
+  const whileReopened = await quarter()
+  await serviceInvoice(kit, org, client.id, "2026-08-28", input.lateCents)
+  await projectionJob(kit, org)
+  await close(kit, org, "2026-08")
+  await close(kit, org, "2026-09")
+  check.equal("the quarter is its three closed months, computed from the ledger and never presented as a saved close", expected.expected, {
+    months, closedQuarter, quarterIsMonthsTogether: closedQuarter.netIncome === months.reduce((sum, month) => sum + month.netIncome, 0),
+    receivableAtQuarterEnd, whileReopened, reclosed: await quarter(), receivableAfterReclose: closedBalanceSheet(kit, org, "2026-09")?.["1100"] ?? null,
+  })
+  return { orgId: org.orgId }
+}
+
+// Every supported module in one month, closed the way a bookkeeper would: two
+// companies trading (advance, repayment, a bill and payroll summary paid across,
+// a shared allocation), a progress invoice collected, a truck bought and
+// depreciated, a loan drawn and paid; then the WIP review, receipts in transit
+// supported, the land company's bank statement matched, and August closes with
+// every control passing and each company's statements saved.
+async function allSupportedModules(kit, expected, check) {
+  const input = expected.inputs
+  const interco = require("./interco-01.cjs")
+  const built = await interco.subcases["company-business"](kit, require("../expected/INTERCO-01.json").subcases["company-business"], { equal: () => true, checks: [] })
+  const org = interco.helpers.describe(kit, built.orgId)
+  const q = kit.q
+  org.projectId = org.builderJob
+  org.periods = Object.fromEntries(kit.rows(`select to_char(period_start,'YYYY-MM') p, id from public.accounting_periods where org_id=${q(org.orgId)}`).map((row) => [row.p, { periodId: row.id }]))
+  const august = org.periods["2026-08"].periodId
+
+  const contract = kit.rows(`select id from public.contracts where org_id=${q(org.orgId)} and project_id=${q(org.builderJob)} limit 1`)[0].id
+  const invoice = await kit.as(org.owner, () => app("invoices").createInvoice({ input: { project_id: org.builderJob, invoice_number: `AUG-${randomUUID().slice(0, 6)}`, title: "August progress billing", issue: true,
+    issue_date: "2026-08-05", due_date: "2026-08-20", sent_to_emails: ["owner@acceptance.example.test"], metadata: { source_contract_id: contract },
+    lines: [{ description: "Work completed", quantity: 1, unit_cost: input.invoiceCents / 100, taxable: false }] } }))
+  await kit.as(org.owner, () => app("payments").recordMultiInvoicePayment({ received_at: "2026-08-12T12:00:00Z", method: "check", idempotency_key: randomUUID(), allocations: [{ invoice_id: invoice.id, amount_cents: input.invoiceCents }] }))
+  const registers = app("books/registers")
+  const truck = await kit.as(org.owner, () => registers.createFixedAsset({ assetNumber: "TRK-A", name: "Crew truck", placedInServiceOn: "2026-08-15", acquisitionCostCents: input.truckCents, salvageValueCents: 0, usefulLifeMonths: 36,
+    assetAccountId: org.account("1500"), accumulatedDepreciationAccountId: org.account("1590"), depreciationExpenseAccountId: org.account("6080"), fundingAccountId: org.account("1000"), postAcquisition: true }))
+  await kit.as(org.owner, () => registers.postFixedAssetDepreciation({ assetId: truck.id ?? truck, throughDate: "2026-08-31", amountCents: input.truckCents / 36 }))
+  const loan = await kit.as(org.owner, () => registers.createDebtInstrument({ name: "Equipment line", openedOn: "2026-08-02", originalPrincipalCents: 0, annualInterestBps: 800, paymentFrequency: "monthly",
+    liabilityAccountId: org.account("2500"), cashAccountId: org.account("1000"), interestExpenseAccountId: org.account("6060") }))
+  await kit.as(org.owner, () => registers.recordDebtEvent({ instrumentId: loan.id ?? loan, eventType: "draw", eventDate: "2026-08-02", principalCents: input.loanCents, interestCents: 0, feeCents: 0, memo: "Loan draw" }))
+  await kit.as(org.owner, () => registers.recordDebtEvent({ instrumentId: loan.id ?? loan, eventType: "payment", eventDate: "2026-08-30", principalCents: input.loanPayment.principalCents, interestCents: input.loanPayment.interestCents, feeCents: 0, memo: "August payment" }))
+  await kit.drainOutbox(org.orgId)
+  await projectionJob(kit, org)
+
+  // The close, step by step.
+  await prepareAndReview(kit, org, "2026-08", { contractCents: input.contractCents, eacCents: input.eacCents })
+  const { getClearingSupportWorkspace, reviewClearingSupport } = app("books/clearing-support")
+  const clearing = await kit.as(org.owner, () => getClearingSupportWorkspace(august))
+  await kit.as(org.owner, () => reviewClearingSupport({ periodId: august, ledgerDigest: clearing.ledgerDigest, items: clearing.balances.filter((row) => row.balanceCents !== 0)
+    .map((row) => ({ code: row.code, amountCents: row.balanceCents, expectedSettlementDate: "2026-09-02", explanation: "August receipts deposited September 2", evidenceUrl: "https://evidence.acceptance.example.test/close-01/deposit" })) }))
+  const bankId = kit.rows(`select id from public.bank_accounts where org_id=${q(org.orgId)} and gl_account_id=${q(org.account("1005"))}`)[0].id
+  const statement = [{ date: "2026-08-03", description: "Advance from builder", cents: input.advanceCents }, { date: "2026-08-20", description: "Repayment to builder", cents: -input.repaymentCents }]
+  await kit.as(org.owner, () => app("books/bank-feeds").importBankStatement({ bankAccountId: bankId, fileName: "land-august.csv",
+    contents: ["Date,Description,Amount,Id", ...statement.map((line, index) => `${line.date},${line.description},${(line.cents / 100).toFixed(2)},aug-${index}`)].join("\n") }))
+  const { confirmBankMatch, createBankReconciliation, closeBankReconciliation } = app("books/bank-reconciliation")
+  for (const line of statement) {
+    const side = line.cents > 0 ? "debit" : "credit"
+    const txn = kit.rows(`select id from public.bank_transactions where org_id=${q(org.orgId)} and bank_account_id=${q(bankId)} and description=${q(line.description)}`)[0].id
+    const bookLine = kit.rows(`select l.id from public.journal_lines l join public.journal_entries e on e.id=l.entry_id where l.org_id=${q(org.orgId)} and l.account_id=${q(org.account("1005"))}
+      and e.status='posted' and l.${side}_cents=${Math.abs(line.cents)} and e.entry_date=${q(line.date)}`)[0].id
+    await kit.as(org.owner, () => confirmBankMatch({ bankTransactionId: txn, journalLineId: bookLine, amountCents: Math.abs(line.cents), matchType: "exact" }))
+  }
+  const reconciliation = await kit.as(org.owner, () => createBankReconciliation({ bankAccountId: bankId, statementStart: "2026-08-01", statementEnd: "2026-08-31", beginningBalanceCents: 0, endingBalanceCents: input.advanceCents - input.repaymentCents }))
+  await kit.as(org.owner, () => closeBankReconciliation(reconciliation))
+  const checklist = await kit.as(org.owner, () => app("books/period-close").runBooksCloseChecklist(august))
+  const closed = await refusal(() => close(kit, org, "2026-08"))
+  const controls = (await kit.service(() => app("books/verifier").runLedgerTieOuts(org.orgId, "2026-08-31"))).filter((row) => row.status !== "passed" && row.status !== "not_applicable").map((row) => `${row.code}: ${row.status}`)
+  const saved = Object.fromEntries(kit.rows(`select case when legal_entity_id=${q(org.land)} then 'land' when legal_entity_id is null then 'consolidated' else 'builder' end company, count(*)::int n
+    from public.financial_statement_snapshots where period_id=${q(august)} group by 1 order by 1`).map((row) => [row.company, Number(row.n)]))
+  check.equal("with every supported module active, August closes cleanly: no blocking check, every control passing, each company's statements saved", expected.expected, {
+    blocking: checklist.blockingFailures.map((item) => item.label), closed: closed === null ? "closed" : closed, controlsNotPassing: controls, saved,
+    eachCompanyBalances: kit.rows(`select legal_entity_id, sum(debit_cents - credit_cents)::bigint n from public.journal_lines where org_id=${q(org.orgId)} group by 1`).every((row) => Number(row.n) === 0),
+  })
+  return { orgId: org.orgId }
+}
+
 async function abandonedClose(kit, expected, check) {
   const input = expected.inputs
   const job = await contractJob(kit, { name: "CLOSE-01 abandoned close", contractCents: input.contractCents, retainagePercent: input.retainagePercent, periods: [input.period] })
@@ -191,6 +290,8 @@ module.exports = {
     "close-failure-resumes": closeFailure,
     "twelve-month-sequence-snapshots": twelveMonths,
     "abandoned-close-resumes": abandonedClose,
+    "quarter-end": quarterEnd,
+    "all-supported-modules": allSupportedModules,
   },
 }
 

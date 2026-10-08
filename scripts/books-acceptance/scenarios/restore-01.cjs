@@ -182,3 +182,5 @@ module.exports = {
     "tax-records": taxRecords,
   },
 }
+
+module.exports.helpers = { restore, tableDigests }

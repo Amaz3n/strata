@@ -36,8 +36,8 @@ test("a subcase that asserts nothing or throws cannot pass", async () => {
 
 test("every golden scenario is either registered as implemented or reported as not implemented", async () => {
   const { GOLDEN_SCENARIOS } = require("../scripts/books-acceptance/runtime.cjs")
-  const result = await runScenario("CONSOL-01", {})
-  assert.ok(GOLDEN_SCENARIOS.includes("CONSOL-01"))
+  const result = await runScenario("STORE-01", {})
+  assert.ok(GOLDEN_SCENARIOS.includes("STORE-01"))
   assert.equal(result.status, "NOT_IMPLEMENTED")
 })
 

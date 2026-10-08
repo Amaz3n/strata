@@ -1,0 +1,95 @@
+{
+  "scenario": "CONSOL-01",
+  "status": "PASSED",
+  "reviewedFrom": "Consolidation over the one ledger (docs/books-entities.md): the group is every active company; intercompany legs are dropped and internal lot-sale profit is eliminated at read time, never posted. Group membership changing over time is a documented deviation for the first client. Amounts are integer cents.",
+  "subcases": [
+    {
+      "name": "reciprocal-balances",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "fd9577ae-6772-46c3-ae66-0fc3507debdf"
+      },
+      "checks": [
+        {
+          "label": "the bridge is only what the companies owe each other; consolidating posts nothing; July's group statements are kept as closed and survive a restore",
+          "pass": true,
+          "expected": {
+            "august": {
+              "1180": 61000,
+              "2180": 61000
+            },
+            "consolidationPostsNothing": true,
+            "julyGroup": {
+              "closed": true,
+              "netIncome": 1950000
+            },
+            "groupSnapshotsSaved": true,
+            "restoredIdentical": true
+          },
+          "observed": {
+            "august": {
+              "1180": 61000,
+              "2180": 61000
+            },
+            "consolidationPostsNothing": true,
+            "julyGroup": {
+              "closed": true,
+              "netIncome": 1950000
+            },
+            "groupSnapshotsSaved": true,
+            "restoredIdentical": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T13:14:14.088Z"
+    },
+    {
+      "name": "internal-profit",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "d5ff340f-1952-4a2e-a9ce-32a792e152a8"
+      },
+      "checks": [
+        {
+          "label": "the bridge removes the internal sale, its cost and the unearned profit, which is earned once the home sells",
+          "pass": true,
+          "expected": {
+            "beforeOutsideSale": {
+              "1170": 1500000,
+              "1180": 7500000,
+              "2180": 7500000,
+              "4000": 7500000,
+              "5000": 6000000
+            },
+            "afterOutsideSale": {
+              "1180": 7500000,
+              "2180": 7500000,
+              "4000": 7500000,
+              "5000": 7500000
+            },
+            "groupProfitIsCompaniesProfit": true
+          },
+          "observed": {
+            "beforeOutsideSale": {
+              "1170": 1500000,
+              "1180": 7500000,
+              "2180": 7500000,
+              "4000": 7500000,
+              "5000": 6000000
+            },
+            "afterOutsideSale": {
+              "1180": 7500000,
+              "2180": 7500000,
+              "4000": 7500000,
+              "5000": 7500000
+            },
+            "groupProfitIsCompaniesProfit": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T13:14:17.482Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-08T13:14:19.087Z"
+}

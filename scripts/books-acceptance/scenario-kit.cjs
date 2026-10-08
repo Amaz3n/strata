@@ -92,8 +92,10 @@ function createKit(stack) {
       await settle()
       if (response.status >= 400) throw Error(`process-outbox returned ${response.status}: ${await response.text()}`)
     }
-    const failed = rows(`select job_type, last_error from public.outbox where ${relevant} and status in ('pending','processing','failed')`)
-    if (failed.length) throw Error(`Outbox did not drain: ${JSON.stringify(failed).slice(0, 500)}`)
+    const failed = rows(`select job_type, status, retry_count, run_at <= now() due, round(extract(epoch from now() - updated_at)) idle_s, last_error from public.outbox where ${relevant} and status in ('pending','processing','failed')`)
+    // The queue is shared by every org on the stack; say what was ahead.
+    const ahead = () => rows(`select job_type, status, priority, count(*)::int n from public.outbox where status in ('pending','processing') and run_at <= now() group by 1,2,3 order by 3 desc, 4 desc limit 8`)
+    if (failed.length) throw Error(`Outbox did not drain: ${JSON.stringify(failed).slice(0, 500)}; queue: ${JSON.stringify(ahead())}`)
   }
 
   // A fresh organisation per scenario run: reruns never collide or duplicate money.

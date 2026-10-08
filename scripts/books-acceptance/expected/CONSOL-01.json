@@ -1,0 +1,43 @@
+{
+  "scenario": "CONSOL-01",
+  "reviewedFrom": "Consolidation over the one ledger (docs/books-entities.md): the group is every active company; intercompany legs are dropped and internal lot-sale profit is eliminated at read time, never posted. Group membership changing over time is a documented deviation for the first client. Amounts are integer cents.",
+  "subcases": {
+    "reciprocal-balances": {
+      "inputs": {},
+      "derivation": "The INTERCO-01 group at August 31: the builder is owed 610.00 (1180) and the land company owes 610.00 (2180); nothing else differs between the companies' trial balances summed and the group's. Reading consolidated statements posts nothing and changes no company balance. July (closed) reads as closed for the group with its saved group statements; after a restore from the archive the group statements, July's closed read and the August bridge are identical. July group net income: the builder's job is 37.5% complete (30,000.00 of an 80,000.00 estimate) on a 100,000.00 contract, earning 37,500.00 against 30,000.00 of cost (7,500.00), plus the land company's 12,000.00: 19,500.00.",
+      "expected": {
+        "august": {
+          "1180": 61000,
+          "2180": 61000
+        },
+        "consolidationPostsNothing": true,
+        "julyGroup": {
+          "closed": true,
+          "netIncome": 1950000
+        },
+        "groupSnapshotsSaved": true,
+        "restoredIdentical": true
+      }
+    },
+    "internal-profit": {
+      "inputs": {},
+      "derivation": "The ENTITY-01 lot-sale group. July 31, before the home sells: the 75,000.00 owed (1180 and 2180), the land company's 75,000.00 internal sale (4000) and 60,000.00 cost (5000), and the 15,000.00 profit still in the builder's 275,000.00 home (1170 at 260,000.00 for the group). August 31, after the 300,000.00 outside sale: still 75,000.00 owed, and the internal sale and its cost each 75,000.00 (the builder's 275,000.00 cost of sale against the group's 260,000.00 plus the land company's 60,000.00), so group profit equals the two companies' profits.",
+      "expected": {
+        "beforeOutsideSale": {
+          "1170": 1500000,
+          "1180": 7500000,
+          "2180": 7500000,
+          "4000": 7500000,
+          "5000": 6000000
+        },
+        "afterOutsideSale": {
+          "1180": 7500000,
+          "2180": 7500000,
+          "4000": 7500000,
+          "5000": 7500000
+        },
+        "groupProfitIsCompaniesProfit": true
+      }
+    }
+  }
+}

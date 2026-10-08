@@ -1558,7 +1558,7 @@ const vendor1099: ReportDefinition = {
   summary: "Calendar-year vendor payments against the 1099 threshold, flagging who is still missing a W-9.",
   group: "compliance",
   scopes: ["org"],
-  permissions: ["report.read"],
+  permissions: ["books.read", "books.tax"],
   params: [{ key: "year", kind: "select", label: "Tax year", options: taxYearOptions() }, { key: "company", kind: "legal_entity", label: "Paying company" }],
   run: async (ctx) => {
     const report = await getVendor1099Report({ year: Number(ctx.params.year) || undefined, legalEntityId: ctx.params.company || null })

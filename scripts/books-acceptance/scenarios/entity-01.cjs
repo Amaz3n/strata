@@ -366,4 +366,4 @@ module.exports = {
     "foreign-company-refused": foreignCompanyRefused,
   },
 }
-module.exports.helpers = { twoCompanies, paidBill }
+module.exports.helpers = { twoCompanies, paidBill, trialBalance }

@@ -78,8 +78,13 @@ export async function expectNoHorizontalOverflow(page: Page) {
 }
 
 /** Fails the journey on any uncaught browser exception. */
+// React's development-only performance tracks sometimes time a server component's
+// prerender before the navigation start and throw this from performance.measure.
+// It cannot happen in a production build, so it is not an application error.
+const DEVELOPMENT_ONLY = /^Failed to execute 'measure' on 'Performance': .* cannot have a negative time stamp\.$/
+
 export function watchErrors(page: Page) {
   const errors: string[] = []
-  page.on("pageerror", (error) => errors.push(error.message))
+  page.on("pageerror", (error) => { if (!DEVELOPMENT_ONLY.test(error.message)) errors.push(error.message) })
   return () => expect(errors, "browser exceptions").toEqual([])
 }

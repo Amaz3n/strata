@@ -22,6 +22,11 @@ const IMPLEMENTED = {
   "CASH-01": "./scenarios/cash-01.cjs",
   "TAX-01": "./scenarios/tax-01.cjs",
   "RESTORE-01": "./scenarios/restore-01.cjs",
+  "INTERCO-01": "./scenarios/interco-01.cjs",
+  "CONSOL-01": "./scenarios/consol-01.cjs",
+  "MIG-01": "./scenarios/mig-01.cjs",
+  "AUTH-01": "./scenarios/auth-01.cjs",
+  "GREEN-01": "./scenarios/green-01.cjs",
 }
 
 /**
@@ -29,25 +34,12 @@ const IMPLEMENTED = {
  * `blocked` waits on something outside the repository; `not_built` is open work.
  */
 const NOT_IMPLEMENTED = {
-  "MIG-01": { status: "not_built", packages: ["B03.3", "B15.1"], reason: "Importing an existing builder's trial balance with its outstanding items, through dual review to the first collection and cutover.",
-    coveredSoFar: "HIST-01 opening-items, ENTITY-01 company-openings and BANK-01 imported-outstanding-items cover parts of it." },
-  "GREEN-01": { status: "not_built", packages: ["B15.1"], reason: "A zero-history company set up through the normal screens to its first invoice, bill and expense.",
-    coveredSoFar: "Every scenario launches a greenfield company through the services, not the screens." },
-  "INTERCO-01": { status: "not_built", packages: ["B14.3"], reason: "Advances and partial repayment between companies, one company closed, and a failed reciprocal leg retried.",
-    coveredSoFar: "ENTITY-01 payment-across-companies and intercompany-lot-sale cover payments and lot sales between companies." },
-  "CONSOL-01": { status: "not_built", packages: ["B14.4"], reason: "Group membership effective by date, mapped accounts, approved eliminations and a later membership change.",
-    coveredSoFar: "ENTITY-01 and the two-companies journey cover the consolidated trial balance with eliminations." },
-  "AUTH-01": { status: "not_built", packages: ["B15.3"], reason: "Accountant, independent reviewer, division operator, ordinary project user and a foreign organization across every added path.",
-    coveredSoFar: "Each scenario checks its own refusals (self-review, foreign ids, readers without tax filing rights)." },
   "STORE-01": { status: "blocked", packages: ["B06.4"], reason: "Needs real R2 storage (an authorized test bucket) for privacy, overwrite, retention and byte checks." },
   "PAY-01": { status: "deferred", packages: ["B13"], reason: "Payroll is not day one; it arrives as a reviewed summary journal." },
   "PAY-02": { status: "deferred", packages: ["B13"], reason: "Payroll is not day one; it arrives as a reviewed summary journal." },
 }
 
 /** Subcases a built scenario names but does not implement yet, and who owns each. */
-const OPEN_SUBCASES = {
-  "CLOSE-01": { "quarter-end": "B01.2", "all-supported-modules": "B15.2" },
-  "RACE-01": { "entity-pair": "B14.3" },
-}
+const OPEN_SUBCASES = {}
 
 module.exports = { IMPLEMENTED, NOT_IMPLEMENTED, OPEN_SUBCASES }

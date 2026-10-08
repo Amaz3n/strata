@@ -1477,6 +1477,58 @@
             }
           ],
           "evidence_dir": "docs/books-evidence/2026-10-08-baseline"
+        },
+        {
+          "verified_at": "2026-10-08T13:20:58.704193+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/catalog.cjs",
+            "scripts/books-acceptance/scenario-kit.cjs",
+            "tests/books-acceptance-scenarios.test.js"
+          ],
+          "test_scenario_ids": [
+            "AUTH-01",
+            "BANK-01",
+            "BILL-01",
+            "CAP-01",
+            "CASH-01",
+            "CLOSE-01",
+            "CONSOL-01",
+            "DIM-01",
+            "ENTITY-01",
+            "GREEN-01",
+            "HIST-01",
+            "HOME-01",
+            "INTERCO-01",
+            "LOSS-01",
+            "MIG-01",
+            "PAY-01",
+            "PAY-02",
+            "RACE-01",
+            "RESTORE-01",
+            "REV-01",
+            "STATUS-01",
+            "STORE-01",
+            "TAX-01",
+            "WIP-01",
+            "YEAR-01"
+          ],
+          "commands": [
+            "node scripts/books-acceptance/scenario-runner.cjs --all",
+            "node scripts/books-acceptance/verify-catalog.cjs",
+            "node scripts/books-acceptance/baseline.cjs --container ... --out docs/books-evidence/2026-10-08-scenarios/baseline.json"
+          ],
+          "observed_results": [
+            "All-scenario run: 22 of 22 implemented scenarios passed; 3 not built with dispositions (STORE-01 blocked on real storage, B06.4; PAY-01/PAY-02 deferred, B13).",
+            "verify-catalog: 0 findings across 60 tracker items.",
+            "A drain that fails now names the job, its retries and timing, and what was ahead of it in the shared queue."
+          ],
+          "observed_failures_and_owners": [
+            {
+              "failure": "RACE-01 close-versus-late-bill failed once while browser seeds and journeys ran against the same stack; not reproduced in two isolated RACE-01 runs or the clean full run",
+              "owner": "acceptance runbook: run --all with nothing else on the stack"
+            }
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-scenarios"
         }
       ],
       "remaining_criteria": [
@@ -2898,6 +2950,58 @@
             }
           ],
           "evidence_dir": "docs/books-evidence/2026-10-08-baseline"
+        },
+        {
+          "verified_at": "2026-10-08T13:20:58.704193+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/catalog.cjs",
+            "scripts/books-acceptance/scenario-kit.cjs",
+            "tests/books-acceptance-scenarios.test.js"
+          ],
+          "test_scenario_ids": [
+            "AUTH-01",
+            "BANK-01",
+            "BILL-01",
+            "CAP-01",
+            "CASH-01",
+            "CLOSE-01",
+            "CONSOL-01",
+            "DIM-01",
+            "ENTITY-01",
+            "GREEN-01",
+            "HIST-01",
+            "HOME-01",
+            "INTERCO-01",
+            "LOSS-01",
+            "MIG-01",
+            "PAY-01",
+            "PAY-02",
+            "RACE-01",
+            "RESTORE-01",
+            "REV-01",
+            "STATUS-01",
+            "STORE-01",
+            "TAX-01",
+            "WIP-01",
+            "YEAR-01"
+          ],
+          "commands": [
+            "node scripts/books-acceptance/scenario-runner.cjs --all",
+            "node scripts/books-acceptance/verify-catalog.cjs",
+            "node scripts/books-acceptance/baseline.cjs --container ... --out docs/books-evidence/2026-10-08-scenarios/baseline.json"
+          ],
+          "observed_results": [
+            "All-scenario run: 22 of 22 implemented scenarios passed; 3 not built with dispositions (STORE-01 blocked on real storage, B06.4; PAY-01/PAY-02 deferred, B13).",
+            "verify-catalog: 0 findings across 60 tracker items.",
+            "A drain that fails now names the job, its retries and timing, and what was ahead of it in the shared queue."
+          ],
+          "observed_failures_and_owners": [
+            {
+              "failure": "RACE-01 close-versus-late-bill failed once while browser seeds and journeys ran against the same stack; not reproduced in two isolated RACE-01 runs or the clean full run",
+              "owner": "acceptance runbook: run --all with nothing else on the stack"
+            }
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-scenarios"
         }
       ],
       "remaining_criteria": [
@@ -4819,7 +4923,7 @@
       "workstream": "B03",
       "title": "Opening outstanding-item migration and reviewed legacy attribution",
       "status": "LOCALLY_VERIFIED",
-      "status_basis": "All B03.3 criteria verified locally (2026-10-07): HIST-01 opening-items, BANK-01 imported outstanding bank items. Migration 20261007010000 pending production with the deploy. Bound (B00 reconciliation): MIG-01 (full builder trial-balance import) is not built; opening items are covered by HIST-01, ENTITY-01 and BANK-01.",
+      "status_basis": "Bound lifted (2026-10-08): MIG-01 builder-import brings a June 30 trial balance over as one reviewed opening batch (open invoices, bills, retainage both ways, uncleared bank items, loan, equipment, withholding); posting refused until both reviews; the opening equals the reference and every control; the projector adds nothing; promotion to parallel needs reconciled banks and a current connection; the first collection and payment clear exactly the documents they name; a comparison that disagrees with the connected system keeps cutover blocked. Fixed: paying an imported opening bill was refused by the cost-code gate meant for new bills.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "approved opening detail totals match the opening batch and bank statements",
@@ -4831,7 +4935,8 @@
       "scenario_ids": [
         "HIST-01",
         "MIG-01",
-        "RESTORE-01"
+        "RESTORE-01",
+        "BANK-01"
       ],
       "evidence": [
         {
@@ -4878,6 +4983,31 @@
             "docs/books-evidence/2026-10-07-history/WIP-01.json sha256:ce43aa41f28ab2e678a15e476490917f7ab6037aae02a94325290302ae27a38e",
             "docs/books-evidence/2026-10-07-history/YEAR-01.json sha256:462c98aac5a593ce272dc3f13523dad88dc0a66bc1d95ac3c14c61632e971d09"
           ]
+        },
+        {
+          "verified_at": "2026-10-08T13:20:40.889806+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/mig-01.cjs",
+            "scripts/books-acceptance/expected/MIG-01.json",
+            "lib/services/vendor-bills.ts"
+          ],
+          "test_scenario_ids": [
+            "MIG-01",
+            "HIST-01",
+            "BANK-01",
+            "RESTORE-01"
+          ],
+          "commands": [
+            "node scripts/books-acceptance/scenario-runner.cjs --container C --api-url URL --all --evidence-dir docs/books-evidence/2026-10-08-scenarios",
+            "node scripts/books-acceptance/verify-catalog.cjs",
+            "pnpm test:financials",
+            "pnpm lint && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit"
+          ],
+          "observed_results": [
+            "MIG-01 builder-import and chart-collision passed.",
+            "All-scenario run (2026-10-08, clean, nothing else on the stack): 22 of 22 implemented scenarios passed; STORE-01 blocked on real storage (B06.4); PAY-01/PAY-02 deferred (B13)."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-scenarios"
         }
       ],
       "remaining_criteria": [],
@@ -8859,8 +8989,8 @@
       "id": "B09.2",
       "workstream": "B09",
       "title": "Bounded workers, captures and review reads",
-      "status": "PARTIAL",
-      "status_basis": "Was verified with CAP-01 passing. The 2026-10-08 full run (all-scenario mode) fails CAP-01: its search-reindex jobs do not drain within the queue passes at CAP volume. Remaining: show the queue stays fair and bounded under one company's flood (claim order is priority then oldest-first across all organizations), or bound the reindex fan-out; then CAP-01 passes again. All four B09.2 criteria and the global DoD verified locally (2026-10-06): CAP-01 9/9 (with baseline runs on the old code and a negative check), regression of every other scenario, reference doc docs/books-posting.md. Migrations 20261006220000 and 20261006230000 pending production with the deploy.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Back to verified (2026-10-08): CAP-01 9/9 in the all-scenario run. The starvation had two product causes, both fixed: (1) every time-boxed nightly pass resolved and reopened each unreached company's \"not reached before the time limit\" finding and notified its owner, so ~4,200 companies on the stack generated ~12,600 drift alerts per run that buried the queue (a run-level finding is Arc's capacity, now kept as a close-page item but never alerted: notifiableFindingCount); (2) the project_vendor_bill_approval outbox retry called a session-only service from the worker and failed on every attempt with \"User is not authenticated\", retrying at priority 80 ahead of everything (now runs as the member who approved the bill via runWithServiceOrgContext; a departed approver stops the retry). Production has no such jobs in the last 60 days. The kit now reports what was ahead in the queue when a drain fails.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         ">1,000 records and repeated cursor ties return exactly once",
@@ -8974,6 +9104,34 @@
             "docs/books-evidence/2026-10-06-regression-after-b09.2/RACE-01.json sha256:132bf898c2c66e85c14949a137856e093731f09f1d421b95f5660f079350a057",
             "docs/books-evidence/2026-10-06-regression-after-b09.2/WIP-01.json sha256:9b5b65bf45b648cdbb87496d697176a5bb53fd95626088766a517420ef534fc5"
           ]
+        },
+        {
+          "verified_at": "2026-10-08T13:20:40.889806+00:00",
+          "implemented_paths": [
+            "lib/services/books/reconciliation.ts",
+            "lib/services/books/reconciliation-rules.ts",
+            "lib/services/vendor-bills.ts",
+            "app/api/jobs/process-outbox/route.ts",
+            "scripts/books-acceptance/scenario-kit.cjs",
+            "tests/books-projection-status.test.js",
+            "tests/accounting-abstraction.test.js"
+          ],
+          "test_scenario_ids": [
+            "CAP-01",
+            "RACE-01",
+            "STATUS-01"
+          ],
+          "commands": [
+            "node scripts/books-acceptance/scenario-runner.cjs --container C --api-url URL --all --evidence-dir docs/books-evidence/2026-10-08-scenarios",
+            "node scripts/books-acceptance/verify-catalog.cjs",
+            "pnpm test:financials",
+            "pnpm lint && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit"
+          ],
+          "observed_results": [
+            "CAP-01 9/9; drift alerts during a full CAP-01 run: 1 (was ~12,600).",
+            "All-scenario run (2026-10-08, clean, nothing else on the stack): 22 of 22 implemented scenarios passed; STORE-01 blocked on real storage (B06.4); PAY-01/PAY-02 deferred (B13)."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-scenarios"
         }
       ],
       "remaining_criteria": [],
@@ -17052,7 +17210,7 @@
       "workstream": "B14",
       "title": "Intercompany transactions and reconciliations",
       "status": "LOCALLY_VERIFIED",
-      "status_basis": "Verified locally (ENTITY-01 payment-across-companies, ownership-fixed-and-reversal, intercompany-lot-sale): every cross-company entry carries balanced legs written atomically with it, so one-sided failures cannot occur; legs settle existing balances first; reciprocal positions agree (Books → Companies reconciliation) and a blocking close control lists any pair that differs; bank and cash ownership come from the account's company; closed periods are enforced for every company (they close together). Migration 20261007235900 pending production. Bound (B00 reconciliation): INTERCO-01 (advances, repayment, failed reciprocal leg) and RACE-01 entity-pair are not built; ENTITY-01 covers payments and lot sales between companies.",
+      "status_basis": "Verified locally (2026-10-08): ENTITY-01 plus INTERCO-01 (advance, the land company's bill and crew payroll paid by the builder, a shared allocation, partial repayment; both companies agree after every event; a fault while writing the legs leaves nothing and the retry posts one mirrored pair; a closed month refuses a new cross-company entry) and RACE-01 entity-pair (two simultaneous over-repayments settle serially, never a receivable and payable at once). Fixed on the way: unassigned operating cash paying an affiliate's bill was booked to the affiliate (now the primary company's); an imported chart already using 1180/2180 would have been borrowed for intercompany (now system accounts at the first free 118x/218x code). Migrations 20261007235800/20261007235900 edited in place, pending production with the deploy.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "every pair balances independently",
@@ -17067,7 +17225,9 @@
         "CONSOL-01",
         "ENTITY-01",
         "INTERCO-01",
-        "RESTORE-01"
+        "RESTORE-01",
+        "RACE-01",
+        "MIG-01"
       ],
       "evidence": [
         {
@@ -17103,6 +17263,35 @@
             "Regression green; test:financials 2,521 pass."
           ],
           "evidence_dir": "docs/books-evidence/2026-10-07-entities"
+        },
+        {
+          "verified_at": "2026-10-08T13:20:40.889806+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261007235800_books_legal_entities.sql",
+            "supabase/migrations/20261007235900_books_intercompany_lot_sales.sql",
+            "scripts/books-acceptance/scenarios/interco-01.cjs",
+            "scripts/books-acceptance/expected/INTERCO-01.json",
+            "scripts/books-acceptance/scenarios/race-01.cjs",
+            "scripts/books-acceptance/expected/RACE-01.json",
+            "docs/books-entities.md"
+          ],
+          "test_scenario_ids": [
+            "INTERCO-01",
+            "RACE-01",
+            "ENTITY-01",
+            "MIG-01"
+          ],
+          "commands": [
+            "node scripts/books-acceptance/scenario-runner.cjs --container C --api-url URL --all --evidence-dir docs/books-evidence/2026-10-08-scenarios",
+            "node scripts/books-acceptance/verify-catalog.cjs",
+            "pnpm test:financials",
+            "pnpm lint && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit"
+          ],
+          "observed_results": [
+            "INTERCO-01 company-business passed; RACE-01 entity-pair passed (3 rounds); ENTITY-01 8/8 after the cash-ownership change; MIG-01 chart-collision passed (1181/2181 created, 1180/2180 untouched).",
+            "All-scenario run (2026-10-08, clean, nothing else on the stack): 22 of 22 implemented scenarios passed; STORE-01 blocked on real storage (B06.4); PAY-01/PAY-02 deferred (B13)."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-scenarios"
         }
       ],
       "remaining_criteria": [],
@@ -17121,7 +17310,7 @@
       "workstream": "B14",
       "title": "Consolidated reporting and eliminations",
       "status": "LOCALLY_VERIFIED",
-      "status_basis": "Verified locally (ENTITY-01): consolidated = company ledgers − tagged intercompany lines + computed eliminations; consolidated statements balance and the group earns exactly the companies' combined profit on an intercompany lot sale; eliminations never touch a company's books; consolidated statements are saved at close. Bounded: wholly owned affiliates only (minority interests out of scope); drill from consolidated to a company is the Company choice on each statement. Bound (B00 reconciliation): CONSOL-01 (dated group membership, approved eliminations, membership change) is not built; ENTITY-01 and the two-companies journey cover the eliminated consolidated trial balance.",
+      "status_basis": "Verified locally (2026-10-08): CONSOL-01 reciprocal-balances (the elimination bridge is only what the companies owe each other; consolidating posts nothing; July group statements read as closed and are identical after a restore) and internal-profit (the bridge removes the internal sale, its cost and unearned profit until the home sells outside; group profit = sum of companies). Bounded deviation, documented in docs/books-entities.md: group membership is not dated; every active company is in the group for every period. Minority interests out of scope (wholly owned affiliates).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "entity TBs + approved adjustments − eliminations = consolidated TB",
@@ -17171,6 +17360,32 @@
             "Regression green; test:financials 2,521 pass."
           ],
           "evidence_dir": "docs/books-evidence/2026-10-07-entities"
+        },
+        {
+          "verified_at": "2026-10-08T13:20:40.889806+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/consol-01.cjs",
+            "scripts/books-acceptance/expected/CONSOL-01.json",
+            "scripts/books-acceptance/scenarios/entity-01.cjs",
+            "scripts/books-acceptance/scenarios/restore-01.cjs",
+            "docs/books-entities.md"
+          ],
+          "test_scenario_ids": [
+            "CONSOL-01",
+            "ENTITY-01",
+            "RESTORE-01"
+          ],
+          "commands": [
+            "node scripts/books-acceptance/scenario-runner.cjs --container C --api-url URL --all --evidence-dir docs/books-evidence/2026-10-08-scenarios",
+            "node scripts/books-acceptance/verify-catalog.cjs",
+            "pnpm test:financials",
+            "pnpm lint && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit"
+          ],
+          "observed_results": [
+            "CONSOL-01 reciprocal-balances and internal-profit passed.",
+            "All-scenario run (2026-10-08, clean, nothing else on the stack): 22 of 22 implemented scenarios passed; STORE-01 blocked on real storage (B06.4); PAY-01/PAY-02 deferred (B13)."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-scenarios"
         }
       ],
       "remaining_criteria": [],
@@ -17529,7 +17744,7 @@
       "workstream": "B15",
       "title": "Two entry routes and first normal transaction",
       "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status_basis": "Greenfield and migration routes verified locally (2026-10-08): GREEN-01 (launch waits for a period and no connected system, takes the exact attestation once, posts nothing for a zero opening, records audit and event once; the first invoice, bill and expense post and July reads them) with a phone and desktop browser journey; MIG-01 (above, B03.3) for an existing builder, including a chart that already uses the intercompany codes. Remaining: a migrated opening with land and homes-in-progress inventory agreeing to the reference is not exercised; migrated payroll liabilities beyond withholding wait for B13.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "greenfield activation proves zero or reviewed opening position",
@@ -17538,14 +17753,41 @@
         "first transactions post correct ownership once",
         "no manual DB patch is needed to finish onboarding"
       ],
-      "scenario_ids": [],
-      "evidence": [],
+      "scenario_ids": [
+        "GREEN-01",
+        "MIG-01"
+      ],
+      "evidence": [
+        {
+          "verified_at": "2026-10-08T13:20:40.889806+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/green-01.cjs",
+            "scripts/books-acceptance/expected/GREEN-01.json",
+            "scripts/books-acceptance/scenarios/mig-01.cjs",
+            "components/books/greenfield-launch.tsx",
+            "scripts/books-acceptance/journeys/greenfield-launch.spec.ts",
+            "scripts/books-acceptance/browser-seed.cjs"
+          ],
+          "test_scenario_ids": [
+            "GREEN-01",
+            "MIG-01"
+          ],
+          "commands": [
+            "node scripts/books-acceptance/scenario-runner.cjs --container C --api-url URL --all --evidence-dir docs/books-evidence/2026-10-08-scenarios",
+            "node scripts/books-acceptance/verify-catalog.cjs",
+            "pnpm test:financials",
+            "pnpm lint && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit"
+          ],
+          "observed_results": [
+            "GREEN-01 zero-history-launch passed; greenfield-launch journey passed on mobile-dark and desktop (labels added to the launch form so it is usable by name).",
+            "All-scenario run (2026-10-08, clean, nothing else on the stack): 22 of 22 implemented scenarios passed; STORE-01 blocked on real storage (B06.4); PAY-01/PAY-02 deferred (B13)."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-scenarios"
+        }
+      ],
       "remaining_criteria": [
-        "greenfield activation proves zero or reviewed opening position",
-        "migrated company TB/subledgers/banks/retainage/payroll/inventory agree to external reference",
-        "activation fails on known mismatches or unauthorized review",
-        "first transactions post correct ownership once",
-        "no manual DB patch is needed to finish onboarding"
+        "migrated land and homes-in-progress inventory agreeing to the external reference",
+        "migrated payroll liabilities (deferred with B13)"
       ],
       "external_dependency": null,
       "reviewer": null,
@@ -17555,8 +17797,8 @@
       "id": "B15.2",
       "workstream": "B15",
       "title": "Golden twelve-period scenario matrix",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "BLOCKED_EXTERNAL",
+      "status_basis": "Every locally buildable golden scenario is built and passes in one all-scenario run (2026-10-08), including CLOSE-01 all-supported-modules (two companies trading, a progress invoice collected, a truck bought and depreciated, a loan drawn and paid; WIP reviewed, receipts in transit supported, the land company's statement matched and reconciled; August closes with no blocking check, every ledger control passing, 8 consolidated and 6+6 company statements saved, each company balancing alone) and quarter-end. Found on the way: INTERCO-01 had keyed the land crew's payroll summary straight onto a job, which the job-cost control rightly blocks; the summary now posts to the payroll pool and moves by reviewed allocation (documented). Only STORE-01 remains, and it needs a real test storage bucket (B06.4). PAY-01/PAY-02 are out of first-client scope (B13).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "independently specified expected journals, subledgers and immutable reports agree at each checkpoint",
@@ -17565,16 +17807,45 @@
         "all G2 controls reproduce after restore",
         "no fixture mysteriously deleted to erase a failed gate"
       ],
-      "scenario_ids": [],
-      "evidence": [],
-      "remaining_criteria": [
-        "independently specified expected journals, subledgers and immutable reports agree at each checkpoint",
-        "full scenario passes through actual source workflows",
-        "direct SQL shortcuts are confined to deliberate failure injection/inspection, not a substitute for ordinary actions",
-        "all G2 controls reproduce after restore",
-        "no fixture mysteriously deleted to erase a failed gate"
+      "scenario_ids": [
+        "CLOSE-01",
+        "INTERCO-01",
+        "YEAR-01",
+        "RESTORE-01"
       ],
-      "external_dependency": null,
+      "evidence": [
+        {
+          "verified_at": "2026-10-08T13:20:40.889806+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/close-01.cjs",
+            "scripts/books-acceptance/expected/CLOSE-01.json",
+            "scripts/books-acceptance/scenarios/interco-01.cjs",
+            "scripts/books-acceptance/catalog.cjs",
+            "docs/books-entities.md"
+          ],
+          "test_scenario_ids": [
+            "CLOSE-01",
+            "INTERCO-01",
+            "YEAR-01",
+            "RESTORE-01"
+          ],
+          "commands": [
+            "node scripts/books-acceptance/scenario-runner.cjs --container C --api-url URL --all --evidence-dir docs/books-evidence/2026-10-08-scenarios",
+            "node scripts/books-acceptance/verify-catalog.cjs",
+            "pnpm test:financials",
+            "pnpm lint && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit"
+          ],
+          "observed_results": [
+            "CLOSE-01 all subcases passed including all-supported-modules and quarter-end.",
+            "All-scenario run (2026-10-08, clean, nothing else on the stack): 22 of 22 implemented scenarios passed; STORE-01 blocked on real storage (B06.4); PAY-01/PAY-02 deferred (B13)."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-scenarios"
+        }
+      ],
+      "remaining_criteria": [
+        "STORE-01 against real storage"
+      ],
+      "external_dependency": "An authorized test R2 bucket for STORE-01 (shared with B06.4)",
       "reviewer": null,
       "verified_at": null
     },
@@ -17583,7 +17854,7 @@
       "workstream": "B15",
       "title": "Failure, concurrency, permission and transport acceptance",
       "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status_basis": "Verified locally (2026-10-08): AUTH-01 role matrix (owner, accountant, Books reviewer, project lead, another organization) across statements, the 1099 report and packages, companies, allocations, journals, package prepare/approve (maker and checker), filing file and adding a company; refusals happen on the server and only filers receive full taxpayer IDs. Fixed: the 1099 report was readable by every report.read role (project leads); now books.read or books.tax. RACE-01 8/8, INTERCO-01 fault-and-retry, CAP-01 interrupted/concurrent runs. Remaining: acceptance in CI (it runs repeatably on an isolated local stack only) and a whole-app browser sweep beyond the Books journeys.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "no unauthorized data/money transition",
@@ -17594,16 +17865,45 @@
         "full app has no relevant browser errors or hydration issues",
         "acceptance tests run in CI/repeatable isolated environment"
       ],
-      "scenario_ids": [],
-      "evidence": [],
+      "scenario_ids": [
+        "AUTH-01",
+        "RACE-01",
+        "INTERCO-01",
+        "CAP-01"
+      ],
+      "evidence": [
+        {
+          "verified_at": "2026-10-08T13:20:40.889806+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/auth-01.cjs",
+            "scripts/books-acceptance/expected/AUTH-01.json",
+            "lib/services/reports/vendor-1099.ts",
+            "lib/reports/definitions/financial.ts",
+            "tests/vendor-1099-report.test.js",
+            "docs/books-1099.md"
+          ],
+          "test_scenario_ids": [
+            "AUTH-01",
+            "RACE-01",
+            "INTERCO-01",
+            "CAP-01"
+          ],
+          "commands": [
+            "node scripts/books-acceptance/scenario-runner.cjs --container C --api-url URL --all --evidence-dir docs/books-evidence/2026-10-08-scenarios",
+            "node scripts/books-acceptance/verify-catalog.cjs",
+            "pnpm test:financials",
+            "pnpm lint && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit"
+          ],
+          "observed_results": [
+            "AUTH-01 role-matrix passed; vendor-1099 journey passed.",
+            "All-scenario run (2026-10-08, clean, nothing else on the stack): 22 of 22 implemented scenarios passed; STORE-01 blocked on real storage (B06.4); PAY-01/PAY-02 deferred (B13)."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-scenarios"
+        }
+      ],
       "remaining_criteria": [
-        "no unauthorized data/money transition",
-        "no duplicate/partial monetary receipt",
-        "current readiness distinguished from retained historical approval",
-        "UI errors actionable",
-        "failure repair/retry succeeds with original intent",
-        "full app has no relevant browser errors or hydration issues",
-        "acceptance tests run in CI/repeatable isolated environment"
+        "acceptance tests run in CI",
+        "full app has no relevant browser errors or hydration issues (beyond the Books journeys)"
       ],
       "external_dependency": null,
       "reviewer": null,

@@ -12,8 +12,10 @@ trial balance, P&L, balance sheet, AR/AP aging, 1099s (by paying company) and
 sales/use tax (Reports → Company); consolidated statements with eliminations;
 intercompany lot sales; the intercompany reconciliation and its close control; a
 close that saves each company's statements; one opening batch per company;
-Books → Companies; companies in the export (schema 33), with an archive round trip
-proven. Not built: independent per-company close, minority interests.
+Books → Companies; companies in the export (schema 34), with an archive round trip
+proven. Acceptance: ENTITY-01, INTERCO-01, CONSOL-01, RACE-01 `entity-pair` and
+CLOSE-01 `all-supported-modules`. Not built: independent per-company close,
+minority interests, group membership that changes over time.
 
 A separate per-entity ledger (`books_native_*`, per-entity charts and calendars)
 was built in October 2026 but never shipped. It is retired: every transaction type
@@ -39,7 +41,10 @@ have to repeat all of it.
 Resolved once, at posting, by one function — never inline:
 
 1. A line on an account a company owns (its bank, cash or card account, or its
-   land account) belongs to that company, even when the line names a job.
+   land account) belongs to that company, even when the line names a job. Cash,
+   undeposited funds and card accounts nobody has assigned belong to the primary
+   company, so the builder's operating account paying an affiliate's bill is the
+   builder's money, not the affiliate's.
 2. A line on a **project** belongs to the project's owning entity
    (`projects.legal_entity_id`, default the primary entity).
 3. Any other line takes the entity chosen on the document (an opening batch names
@@ -58,7 +63,10 @@ Entity B   Dr 5000 Job cost                  X    Cr 2180 Due to affiliates (A) 
 Entity A   Dr 1180 Due from affiliates (B)   X    Cr 1000 Cash                    X
 ```
 
-Each intercompany line names its owner and counterparty. When one company owes
+The due-from / due-to accounts are system accounts found or created by
+`books_intercompany_account()` in the 118x / 218x range at the first free code, so
+an imported chart that already uses 1180 or 2180 for something else is never
+borrowed. Each intercompany line names its owner and counterparty. When one company owes
 another, posting first settles what the other already owes it (a voided payment
 unwinds the balance rather than adding the opposite one), so two companies never
 carry a receivable and a payable with each other at once; A's due-from-B always
@@ -83,6 +91,11 @@ when it comes out of cost of sales. So the group earns exactly what the companie
 earned together, and the lot is carried at the land company's cost. Eliminations
 are never posted to a company's books. Consolidation assumes wholly owned
 affiliates; minority interests are out of scope.
+
+**Deviation: group membership is not dated.** Every active company is in the group
+for every period. A company acquired or disposed of mid-year would need its
+membership dated so earlier group statements exclude it; that is not built, and a
+group that changes shape should keep comparatives from the saved close snapshots.
 
 ## Reconciliation
 
@@ -112,4 +125,12 @@ scope: affiliated builder companies share one bookkeeper and calendar). The clos
 saves the consolidated statements and, when there is more than one company, each
 company's trial balance, P&L, balance sheet, cash flow and AR/AP aging, so a closed
 month reads as it was closed for every company. Independent per-company close and
-reopen are not built.
+reopen are not built. A quarter or any multi-month range is computed live and is
+never labelled closed, even when every month in it is: only a single closed
+month's saved statements read as closed.
+
+Cost moves onto a job only through a document (bill, expense, payroll import) or
+a reviewed cost allocation, which writes the job-cost record with it. A hand
+journal that names a job on a job-cost account blocks the close at the job-cost
+control until it is reversed; a payroll summary posts to the payroll expense pool
+and is allocated to the companies' jobs.

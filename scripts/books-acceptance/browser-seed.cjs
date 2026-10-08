@@ -243,6 +243,13 @@ commit;`)
     await kit.as(org.owner, () => app("books/vendor-1099-packages").setPayerTaxIdentity({ legalEntityId: primary, tin: "112223334", address: ADDRESS("100 Builder Way") }))
     return org
   },
+  // A brand-new company with a July period and no books yet.
+  async "greenfield-launch"(kit, password) {
+    const { CONSTRUCTION_CHART_TEMPLATE } = app("books/chart-of-accounts")
+    const org = { ...kit.organization({ name: "Browser acceptance — new books", chart: CONSTRUCTION_CHART_TEMPLATE, reviewerRole: "org_accountant", password }), periods: {} }
+    org.periods.july = { periodId: await kit.as(org.owner, () => app("books/period-close").createAccountingPeriod({ periodStart: "2026-07-01", periodEnd: "2026-07-31", fiscalYear: 2026, fiscalPeriod: 7 })) }
+    return org
+  },
   // July's close died right after freezing the period, 31 minutes ago.
   async "abandoned-close"(kit, password) {
     const org = await greenfieldOrg(kit, { name: "Browser acceptance — abandoned close", periods: ["2026-07"], password })

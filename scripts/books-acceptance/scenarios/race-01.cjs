@@ -249,6 +249,29 @@ create trigger acceptance_late_mutation before insert or update on public.books_
   return { orgId: job.orgId, billId }
 }
 
+// Two repayments between the same two companies at once, more than is owed: the
+// pair is settled one posting at a time, so the first settles part of what is
+// owed and the second settles the rest and records the excess the other way.
+// Neither company ever carries a receivable and a payable with the other.
+async function entityPair(kit, expected, check) {
+  const input = expected.inputs
+  const { twoCompanies } = require("./entity-01.cjs").helpers
+  const { createAdjustingJournal } = app("books/bookkeeping")
+  const outcomes = await rounds(input, async (round) => {
+    const org = await twoCompanies(kit, `RACE-01 entity pair ${round}`, { contractCents: 1000000 })
+    const journal = (memo, lines) => kit.as(org.reviewer, () => createAdjustingJournal({ entryDate: "2026-07-10", memo, lines }))
+    await journal("Advance to the land company", [{ accountCode: "1005", debitCents: input.owedCents, creditCents: 0 }, { accountCode: "1000", debitCents: 0, creditCents: input.owedCents }])
+    const repay = (n) => journal(`Land company repayment ${n}`, [{ accountCode: "1000", debitCents: input.repaymentCents, creditCents: 0 }, { accountCode: "1005", debitCents: 0, creditCents: input.repaymentCents }])
+    const outcome = settled(await Promise.allSettled([repay(1), repay(2)]))
+    const rows = JSON.parse(kit.rows(`select public.books_intercompany_positions(${kit.q(org.orgId)}, '2026-07-31')::text p`)[0].p)
+    const side = (entity) => rows.filter((row) => row.entityId === entity).reduce((sum, row) => ({ dueFrom: sum.dueFrom + Number(row.dueFromCents), dueTo: sum.dueTo + Number(row.dueToCents) }), { dueFrom: 0, dueTo: 0 })
+    const result = { builder: side(org.builder), land: side(org.land), posted: 2 - outcome.errors.length }
+    check.equal(`round ${round}: both repayments post, settled one at a time`, expected.expected, result)
+    return { orgId: org.orgId, refusals: outcome.errors }
+  })
+  return { outcomes }
+}
+
 module.exports = {
   id: "RACE-01",
   subcases: {
@@ -259,5 +282,6 @@ module.exports = {
     "concurrent-projection-runs": concurrentProjection,
     "proposal-double-approval": proposalDoubleApproval,
     "late-mutation-before-receipt": lateMutationBeforeReceipt,
+    "entity-pair": entityPair,
   },
 }

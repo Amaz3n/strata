@@ -1,0 +1,69 @@
+{
+  "scenario": "INTERCO-01",
+  "reviewedFrom": "Intercompany as one ledger with company segments (docs/books-entities.md): a line belongs to the company that owns its account or job; unowned cash, undeposited funds and cards belong to the primary company; each posting adds due-from/due-to legs so every company balances alone, settling what is already owed first. Amounts are integer cents.",
+  "subcases": {
+    "company-business": {
+      "inputs": {
+        "advanceCents": 50000,
+        "landBillCents": 20000,
+        "payrollCents": 12000,
+        "repaymentCents": 30000,
+        "insuranceCents": 10000,
+        "retriedCents": 5000
+      },
+      "derivation": "Start at zero after the closed July. Aug 3 the builder advances 500.00 (land owes 500); Aug 10 it pays the land company's 200.00 survey bill from its operating cash (700); Aug 15 a 120.00 payroll summary for the land crew paid by the builder (820); Aug 20 the land company repays 300.00 (520); the builder's 100.00 insurance is allocated 60/40, 40.00 to the land job (560); Aug 28 a 50.00 land expense paid by the builder fails while its reciprocal leg is written (nothing posts, still 560), then posts once with two intercompany legs on retry, a second retry adding nothing (610). Both companies agree on every date, each balances alone, and a July entry is refused because July is closed.",
+      "expected": {
+        "byDate": {
+          "2026-07-31": {
+            "landOwesBuilder": 0,
+            "agrees": true
+          },
+          "2026-08-03": {
+            "landOwesBuilder": 50000,
+            "agrees": true
+          },
+          "2026-08-10": {
+            "landOwesBuilder": 70000,
+            "agrees": true
+          },
+          "2026-08-15": {
+            "landOwesBuilder": 82000,
+            "agrees": true
+          },
+          "2026-08-20": {
+            "landOwesBuilder": 52000,
+            "agrees": true
+          },
+          "2026-08-25": {
+            "landOwesBuilder": 56000,
+            "agrees": true
+          },
+          "2026-08-31": {
+            "landOwesBuilder": 61000,
+            "agrees": true
+          }
+        },
+        "atStart": {
+          "landOwesBuilder": 0,
+          "agrees": true
+        },
+        "failureRefused": true,
+        "afterFailure": {
+          "entries": 0,
+          "owed": {
+            "landOwesBuilder": 56000,
+            "agrees": true
+          }
+        },
+        "retry": {
+          "entries": 1,
+          "intercompanyLegs": [
+            2
+          ]
+        },
+        "closedMonthRefused": true,
+        "eachCompanyBalances": true
+      }
+    }
+  }
+}

@@ -1,0 +1,142 @@
+{
+  "scenario": "MIG-01",
+  "reviewedFrom": "Opening balances as documents (docs/books-period-close.md, B03.3) and the parallel-to-cutover path (lib/services/books/cutover.ts). Amounts are integer cents; trial balance amounts are on each account's normal side.",
+  "subcases": {
+    "builder-import": {
+      "inputs": {
+        "trialBalance": {
+          "operatingStatement": 120000,
+          "outstandingCheck": 8000,
+          "depositInTransit": 3000,
+          "payrollBank": 20000,
+          "undeposited": 4500,
+          "invoices": [
+            30000,
+            12000
+          ],
+          "retainageReceivable": 9000,
+          "prepaid": 2400,
+          "truckCost": 60000,
+          "truckDepreciation": 15000,
+          "bills": [
+            18000,
+            7000
+          ],
+          "retainagePayable": 5000,
+          "payrollWithholding": 3200,
+          "salesTax": 1800,
+          "loan": 40000
+        },
+        "knownMismatchCents": 100
+      },
+      "derivation": "June 30 reference: operating 1,150.00 (1,200 statement - 80 check 5001 + 30 deposit in transit), payroll 200.00, undeposited 45.00, invoices 300.00 and 120.00 (420.00), retainage receivable 90.00, prepaid 24.00, truck 600.00 less 150.00 depreciation; bills 180.00 and 70.00 (250.00), retainage payable 50.00, withholding 32.00, sales tax 18.00, loan 400.00; retained earnings 1,629.00 (assets 2,379.00 - liabilities 750.00). Posting is refused until both reviews; the posted opening equals the reference, its controls pass and a full projection adds nothing. After promotion to parallel, July's 120.00 collection of INV-1052 and 70.00 payment of V-318 leave the other documents untouched. The connected system shows 44.00 undeposited: the comparison has one unexplained 1.00 difference on 1010 and cutover stays blocked. Held retainage (RET-HEND, V-RET) is not yet due, so aging shows it at zero open and the retainage controls carry it. The June statements reconcile with 50.00 net outstanding (the 80.00 check less the 30.00 deposit) to book balances of 1,150.00 and 200.00.",
+      "expected": {
+        "postedBeforeReview": "refused until reviewed",
+        "atCutover": {
+          "1000": 115000,
+          "1001": 20000,
+          "1010": 4500,
+          "1100": 42000,
+          "1110": 9000,
+          "1200": 2400,
+          "1500": 60000,
+          "1590": 15000,
+          "2000": 25000,
+          "2010": 5000,
+          "2230": 3200,
+          "2250": 1800,
+          "2500": 40000,
+          "3100": 162900
+        },
+        "projectionAddsNothing": true,
+        "controls": {
+          "accumulated_depreciation_control": "passed",
+          "ap_control": "passed",
+          "ar_control": "passed",
+          "retainage_payable_control": "passed",
+          "retainage_receivable_control": "passed"
+        },
+        "statements": {
+          "operating": {
+            "status": "closed",
+            "outstanding": -5000,
+            "book": 115000
+          },
+          "payroll": {
+            "status": "closed",
+            "outstanding": 0,
+            "book": 20000
+          }
+        },
+        "mode": {
+          "arc_ledger_mode": "parallel",
+          "ledger_authority": "external"
+        },
+        "openByDocument": {
+          "receivables": {
+            "INV-1041": 30000,
+            "INV-1052": 0,
+            "RET-HEND": 0
+          },
+          "payables": {
+            "V-311": 18000,
+            "V-318": 0,
+            "V-RET": 0
+          }
+        },
+        "comparison": {
+          "unexplained": 1,
+          "variances": [
+            {
+              "code": "1010",
+              "diff": 100
+            }
+          ]
+        },
+        "cutover": {
+          "status": "blocked",
+          "blockedByComparisons": true
+        }
+      }
+    },
+    "chart-collision": {
+      "inputs": {
+        "employeeAdvanceCents": 700,
+        "advanceCents": 50000
+      },
+      "derivation": "The migrated chart has 1180 Employee advances and 2180 Accrued wages. A 7.00 foreman advance stays in 1180. The builder's 500.00 advance to the land company creates Arc's own system accounts at the next free codes, 1181 Due from affiliates (builder +500.00) and 2181 Due to affiliates (land company -500.00 on the debit side); 2180 is untouched and both companies agree.",
+      "expected": {
+        "accounts": {
+          "1180": {
+            "name": "Employee advances",
+            "system": false,
+            "net": 700
+          },
+          "1181": {
+            "name": "Due from affiliates",
+            "system": true,
+            "net": 50000
+          },
+          "2180": {
+            "name": "Accrued wages",
+            "system": false,
+            "net": 0
+          },
+          "2181": {
+            "name": "Due to affiliates",
+            "system": true,
+            "net": -50000
+          }
+        },
+        "builder": {
+          "dueFrom": 50000,
+          "dueTo": 0
+        },
+        "land": {
+          "dueFrom": 0,
+          "dueTo": 50000
+        }
+      }
+    }
+  }
+}

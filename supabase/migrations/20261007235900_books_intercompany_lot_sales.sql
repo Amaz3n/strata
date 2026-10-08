@@ -250,13 +250,13 @@ returns jsonb language sql stable security definer set search_path = public as $
   select coalesce(jsonb_agg(jsonb_build_object('entityId', owner, 'counterpartyId', counterparty, 'dueFromCents', due_from, 'dueToCents', due_to) order by owner, counterparty), '[]'::jsonb)
   from (
     select l.legal_entity_id as owner, (l.dimensions ->> 'counterparty_entity_id')::uuid as counterparty,
-      coalesce(sum(l.debit_cents - l.credit_cents) filter (where a.code = '1180'), 0)::bigint as due_from,
-      coalesce(sum(l.credit_cents - l.debit_cents) filter (where a.code = '2180'), 0)::bigint as due_to
+      coalesce(sum(l.debit_cents - l.credit_cents) filter (where a.account_type = 'asset'), 0)::bigint as due_from,
+      coalesce(sum(l.credit_cents - l.debit_cents) filter (where a.account_type = 'liability'), 0)::bigint as due_to
     from public.journal_lines l
     join public.journal_entries e on e.id = l.entry_id and e.org_id = l.org_id
     join public.gl_accounts a on a.id = l.account_id and a.org_id = l.org_id
     where l.org_id = p_org_id and e.status in ('posted','reversed') and e.entry_date <= p_as_of
-      and l.dimensions ->> 'intercompany' = 'true' and a.code in ('1180','2180')
+      and l.dimensions ->> 'intercompany' = 'true' and a.account_type in ('asset','liability')
     group by 1, 2
   ) positions;
 $$;
