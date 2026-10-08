@@ -1,0 +1,72 @@
+{
+  "scenario": "STORE-01",
+  "subcases": {
+    "private-documents": {
+      "inputs": {},
+      "derivation": "A permit PDF uploaded to a job is recorded with its SHA-256 and size. Storage refuses an unsigned read (403); the owner's signed link returns the exact bytes with no public caching; a 1-second link has expired after 2.5 s (403); another organization's owner cannot get a link.",
+      "expected": {
+        "recorded": {
+          "checksumMatches": true,
+          "size": true
+        },
+        "unsignedStorageRead": 400,
+        "member": {
+          "status": 200,
+          "bytesExact": true,
+          "publicCache": false
+        },
+        "expiredLink": 403,
+        "anotherOrganization": true
+      }
+    },
+    "immutable-and-versions": {
+      "inputs": {},
+      "derivation": "Writing different bytes to a stored path with upsert:false is refused and the original is unchanged; writing the same bytes again (a retry) is allowed. A second version is a separate object; making the first current and then the second current again leaves both versions' bytes exact.",
+      "expected": {
+        "overwriteRefused": true,
+        "sameBytesRetryAllowed": true,
+        "originalUnchanged": true,
+        "versions": 2,
+        "current": true,
+        "firstVersionBytes": true,
+        "secondVersionBytes": true,
+        "separateObjects": true
+      }
+    },
+    "archive-with-documents": {
+      "inputs": {},
+      "derivation": "A requested archive is built by the background job in one attempt and marked ready; storage refuses an unsigned read of it; the signed download is served no-store, verifies, and carries the document's exact bytes at its manifest path.",
+      "expected": {
+        "status": "ready",
+        "attempts": 1,
+        "unsignedStorageRead": 400,
+        "download": {
+          "status": 200,
+          "noStore": true
+        },
+        "verifies": true,
+        "documentBytesExact": true,
+        "manifestPath": true
+      }
+    },
+    "restore-documents": {
+      "inputs": {},
+      "derivation": "After the archive is ready the document object is deleted (lost); it is written back from the archive at its manifest path: the restored bytes match the manifest checksum, the member's signed link returns the original bytes, and storage still refuses an unsigned read.",
+      "expected": {
+        "lostBeforeRestore": true,
+        "checksumMatchesManifest": true,
+        "signedBytesExact": true,
+        "unsignedStorageRead": 400
+      }
+    },
+    "tax-attachment-evidence": {
+      "inputs": {},
+      "derivation": "A depreciation schedule is attached to a tax workpaper line; preparation freezes its size and SHA-256. The accountant's download returns exactly those bytes. The stored object is then altered directly in storage: review refuses and the download refuses, both because the bytes differ from the frozen evidence.",
+      "expected": {
+        "downloadExact": true,
+        "reviewAfterAlteration": true,
+        "downloadAfterAlteration": true
+      }
+    }
+  }
+}

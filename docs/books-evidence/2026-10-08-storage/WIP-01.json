@@ -1,0 +1,630 @@
+{
+  "scenario": "WIP-01",
+  "status": "PASSED",
+  "reviewedFrom": "docs/books-revenue-recognition.md §4a, §4b, §4c and the §5 worked example (cost-to-cost percentage of completion). Expected balances are independent of the implementation; amounts are integer cents. Pending licensed-CPA review (B16.3).",
+  "subcases": [
+    {
+      "name": "policy-worked-example",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "95fc51aa-46f0-47aa-9181-e965628edce2",
+        "projectId": "2269f337-04b7-4b9c-a1dd-5229383c2352"
+      },
+      "checks": [
+        {
+          "label": "2026-07 ledger matches the policy entry set",
+          "pass": true,
+          "expected": {
+            "1100": 27000000,
+            "1110": 3000000,
+            "2000": -20000000,
+            "2350": -5000000,
+            "4000": -25000000,
+            "5000": 20000000
+          },
+          "observed": {
+            "1100": 27000000,
+            "1110": 3000000,
+            "2000": -20000000,
+            "2350": -5000000,
+            "4000": -25000000,
+            "5000": 20000000
+          }
+        },
+        {
+          "label": "2026-07 recognition delta",
+          "pass": true,
+          "expected": 25000000,
+          "observed": 25000000
+        },
+        {
+          "label": "2026-08 ledger matches the policy entry set",
+          "pass": true,
+          "expected": {
+            "1100": 54000000,
+            "1110": 6000000,
+            "2000": -60000000,
+            "2350": 15000000,
+            "4000": -75000000,
+            "5000": 60000000
+          },
+          "observed": {
+            "1100": 54000000,
+            "1110": 6000000,
+            "2000": -60000000,
+            "2350": 15000000,
+            "4000": -75000000,
+            "5000": 60000000
+          }
+        },
+        {
+          "label": "2026-08 recognition delta",
+          "pass": true,
+          "expected": 50000000,
+          "observed": 50000000
+        },
+        {
+          "label": "gross profit after August",
+          "pass": true,
+          "expected": 15000000,
+          "observed": 15000000
+        }
+      ],
+      "startedAt": "2026-10-08T22:44:45.955Z"
+    },
+    {
+      "name": "second-contract-separately-owned",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "915858c1-cf2d-4d07-8d0a-62152198f521",
+        "projectId": "edd35eb2-7528-48aa-870a-7c4f2e625726",
+        "contracts": {
+          "aa39103d-2e19-4570-afea-2d828d6fb212": "A",
+          "05399038-0adc-4454-817a-b8d3377dcf8a": "B"
+        }
+      },
+      "checks": [
+        {
+          "label": "each contract earns, reserves and reports on its own; together they are the project and the ledger",
+          "pass": true,
+          "expected": {
+            "projectScopeRefused": "This project has more than one contract; prepare WIP for each contract",
+            "reviewedPositions": [
+              "A",
+              "B"
+            ],
+            "revenueByContract": {
+              "A": 25000000,
+              "B": 8000000
+            },
+            "lossReserveByContract": {
+              "B": 3000000
+            },
+            "ledger": {
+              "revenue": 33000000,
+              "jobCost": 30000000,
+              "lossProvision": 3000000,
+              "contractLiabilities": -5000000
+            },
+            "reportRows": [
+              {
+                "contract": "A",
+                "earned": 25000000,
+                "billed": 30000000,
+                "overUnder": 5000000
+              },
+              {
+                "contract": "B",
+                "earned": 8000000,
+                "billed": 8000000,
+                "overUnder": 0
+              }
+            ],
+            "reportEarnedEqualsLedger": true,
+            "liveContractValue": 120000000
+          },
+          "observed": {
+            "projectScopeRefused": "This project has more than one contract; prepare WIP for each contract",
+            "reviewedPositions": [
+              "A",
+              "B"
+            ],
+            "revenueByContract": {
+              "A": 25000000,
+              "B": 8000000
+            },
+            "lossReserveByContract": {
+              "B": 3000000
+            },
+            "ledger": {
+              "revenue": 33000000,
+              "jobCost": 30000000,
+              "lossProvision": 3000000,
+              "contractLiabilities": -5000000
+            },
+            "reportRows": [
+              {
+                "contract": "A",
+                "earned": 25000000,
+                "billed": 30000000,
+                "overUnder": 5000000
+              },
+              {
+                "contract": "B",
+                "earned": 8000000,
+                "billed": 8000000,
+                "overUnder": 0
+              }
+            ],
+            "reportEarnedEqualsLedger": true,
+            "liveContractValue": 120000000
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T22:44:47.166Z"
+    },
+    {
+      "name": "shared-cost-allocation",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "7e7f6e76-e72d-46a8-aa33-fb6814f5d901",
+        "projectId": "8954c7fd-702d-49cf-b021-c48be3c42bb2",
+        "contracts": {
+          "a4411958-2f85-40e9-b0d5-06628d5bfc48": "A",
+          "5908c3aa-0ceb-47c9-8dac-2aa587ab202d": "B",
+          "4faa5a87-7fab-4ca6-ad39-7af606394158": "C"
+        }
+      },
+      "checks": [
+        {
+          "label": "unowned costs and billings block only the contracts they touch until a reviewed split or assignment owns them",
+          "pass": true,
+          "expected": {
+            "beforeCure": {
+              "A": "Failed to prepare WIP: Costs under 01-500 do not belong to one contract: put each code on one contract's schedule of values, or record how its costs are shared. Invoices SH-IU do not say which contract they bill: assign each to its contract.",
+              "B": "Failed to prepare WIP: Costs under 01-500 do not belong to one contract: put each code on one contract's schedule of values, or record how its costs are shared. Invoices SH-IU do not say which contract they bill: assign each to its contract.",
+              "C": "Failed to prepare WIP: Invoices SH-IU do not say which contract they bill: assign each to its contract."
+            },
+            "badSplit": "Failed to record the cost allocation: The shares must add up to 100%",
+            "assignedTwice": "This invoice already names the contract it bills",
+            "immutable": "refused",
+            "closeAfterNewSplit": "refused: WIP review out of date",
+            "costByContract": {
+              "A": 22500000,
+              "B": 12500000,
+              "C": 1000000
+            },
+            "costConserved": true,
+            "revenueByContract": {
+              "A": 28125000,
+              "B": 13888889,
+              "C": 1250000
+            }
+          },
+          "observed": {
+            "beforeCure": {
+              "A": "Failed to prepare WIP: Costs under 01-500 do not belong to one contract: put each code on one contract's schedule of values, or record how its costs are shared. Invoices SH-IU do not say which contract they bill: assign each to its contract.",
+              "B": "Failed to prepare WIP: Costs under 01-500 do not belong to one contract: put each code on one contract's schedule of values, or record how its costs are shared. Invoices SH-IU do not say which contract they bill: assign each to its contract.",
+              "C": "Failed to prepare WIP: Invoices SH-IU do not say which contract they bill: assign each to its contract."
+            },
+            "badSplit": "Failed to record the cost allocation: The shares must add up to 100%",
+            "assignedTwice": "This invoice already names the contract it bills",
+            "immutable": "refused",
+            "closeAfterNewSplit": "refused: WIP review out of date",
+            "costByContract": {
+              "A": 22500000,
+              "B": 12500000,
+              "C": 1000000
+            },
+            "costConserved": true,
+            "revenueByContract": {
+              "A": 28125000,
+              "B": 13888889,
+              "C": 1250000
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T22:44:48.484Z"
+    },
+    {
+      "name": "late-bill-after-review-blocks-close",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "782b7a1a-0b5b-462e-97b1-ac38648a007f",
+        "projectId": "9d8f63d1-e84b-44f0-9b35-ce1111ee125b"
+      },
+      "checks": [
+        {
+          "label": "close refuses after a cost lands behind the WIP review",
+          "pass": true,
+          "expected": true,
+          "observed": true
+        },
+        {
+          "label": "nothing recognized by the refused close",
+          "pass": true,
+          "expected": 0,
+          "observed": 0
+        },
+        {
+          "label": "2026-07 recognition after re-review",
+          "pass": true,
+          "expected": 50000000,
+          "observed": 50000000
+        }
+      ],
+      "startedAt": "2026-10-08T22:44:50.707Z"
+    },
+    {
+      "name": "revised-and-reverted-eac",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "7c79cbe4-5fe5-4b3e-b839-6c7442b15eaf",
+        "projectId": "b62184bd-fe32-45a0-beb3-010952553fb8"
+      },
+      "checks": [
+        {
+          "label": "2026-07 recognition delta after EAC 80000000",
+          "pass": true,
+          "expected": 25000000,
+          "observed": 25000000
+        },
+        {
+          "label": "2026-08 recognition delta after EAC 100000000",
+          "pass": true,
+          "expected": 35000000,
+          "observed": 35000000
+        },
+        {
+          "label": "2026-09 recognition delta after EAC 80000000",
+          "pass": true,
+          "expected": 15000000,
+          "observed": 15000000
+        }
+      ],
+      "startedAt": "2026-10-08T22:44:51.620Z"
+    },
+    {
+      "name": "completed-job-carryforward",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "fc31f040-96bb-4c6a-8e5d-3ead0c70dfd6",
+        "projectId": "e6e377cd-65e2-420f-a7bb-1c64845c20ae"
+      },
+      "checks": [
+        {
+          "label": "2026-07 recognition",
+          "pass": true,
+          "expected": 100000000,
+          "observed": 100000000
+        },
+        {
+          "label": "2026-08 recognition",
+          "pass": true,
+          "expected": 0,
+          "observed": 0
+        }
+      ],
+      "startedAt": "2026-10-08T22:44:52.731Z"
+    },
+    {
+      "name": "wip-recognition-close-populations-agree",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "ce225bf1-8c66-464c-85ac-34a9a15d9816",
+        "projectId": "ea6c1a6e-a018-41fb-9a6e-f97b0d8596ad",
+        "legacyOrgId": "14bced13-e63a-4983-880c-eb3e5bd7295c"
+      },
+      "checks": [
+        {
+          "label": "the close checklist, the WIP review and recognition cover the same projects and contracts",
+          "pass": true,
+          "expected": {
+            "afterNewContract": {
+              "status": "failed",
+              "missing": [
+                "A",
+                "B"
+              ]
+            },
+            "julyCloseBeforeReview": "refused: WIP review out of date",
+            "reviewedJuly": [
+              "A",
+              "B"
+            ],
+            "julyRevenue": {
+              "A": 25000000,
+              "B": 5000000
+            },
+            "projectScopedRecognition": 0,
+            "legacyClose": "Revenue on WIP-01 legacy revenue — custom home was recognized before it had more than one contract, so it belongs to no contract. Reclassify that revenue to its contracts before recognizing each contract's revenue."
+          },
+          "observed": {
+            "afterNewContract": {
+              "status": "failed",
+              "missing": [
+                "A",
+                "B"
+              ]
+            },
+            "julyCloseBeforeReview": "refused: WIP review out of date",
+            "reviewedJuly": [
+              "A",
+              "B"
+            ],
+            "julyRevenue": {
+              "A": 25000000,
+              "B": 5000000
+            },
+            "projectScopedRecognition": 0,
+            "legacyClose": "Revenue on WIP-01 legacy revenue — custom home was recognized before it had more than one contract, so it belongs to no contract. Reclassify that revenue to its contracts before recognizing each contract's revenue."
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T22:44:53.415Z"
+    },
+    {
+      "name": "period-evidence-controls",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "3590fcb9-8af4-44de-878d-657ec26fea56",
+        "projectId": "5783c8c5-7a90-4795-bd5f-f5edb337a551"
+      },
+      "checks": [
+        {
+          "label": "repeated preparation, review and close are idempotent; late evidence needs a fresh review; the past is not today",
+          "pass": true,
+          "expected": {
+            "samePreparation": true,
+            "julyCost": 20000000,
+            "afterClose": {
+              "entries": 1,
+              "revenue": 25000000
+            },
+            "afterReclose": {
+              "entries": 1,
+              "revenue": 25000000
+            },
+            "staleReview": "refused: WIP review out of date",
+            "newSnapshotAfterLateBilling": true,
+            "afterLateBilling": {
+              "billed": 35000000,
+              "entries": 1,
+              "revenue": 25000000
+            }
+          },
+          "observed": {
+            "samePreparation": true,
+            "julyCost": 20000000,
+            "afterClose": {
+              "entries": 1,
+              "revenue": 25000000
+            },
+            "afterReclose": {
+              "entries": 1,
+              "revenue": 25000000
+            },
+            "staleReview": "refused: WIP review out of date",
+            "newSnapshotAfterLateBilling": true,
+            "afterLateBilling": {
+              "billed": 35000000,
+              "entries": 1,
+              "revenue": 25000000
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T22:44:55.627Z"
+    },
+    {
+      "name": "estimate-reduction-and-reclassification",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "4649840f-63f5-491e-8e16-b00ebbad1cb8",
+        "projectId": "7741ee82-d53f-4612-834b-e0cb562dcbdb"
+      },
+      "checks": [
+        {
+          "label": "an estimate increase reverses earned revenue; a reclassification moves it between accounts and nets to zero",
+          "pass": true,
+          "expected": {
+            "recognizedByPeriod": {
+              "2026-07": 50000000,
+              "2026-08": -10000000,
+              "2026-09": 0
+            },
+            "revenueByAccount": {
+              "4000": 24000000,
+              "4050": 16000000
+            },
+            "contractLiabilitiesDebit": 40000000
+          },
+          "observed": {
+            "recognizedByPeriod": {
+              "2026-07": 50000000,
+              "2026-08": -10000000,
+              "2026-09": 0
+            },
+            "revenueByAccount": {
+              "4000": 24000000,
+              "4050": 16000000
+            },
+            "contractLiabilitiesDebit": 40000000
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T22:44:57.087Z"
+    },
+    {
+      "name": "completed-job-final-reconciliation",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "5e521407-7d06-4779-852c-02b418deb7b0",
+        "projectId": "c06b1171-5127-49dd-b2fb-51400e097eec"
+      },
+      "checks": [
+        {
+          "label": "a completed job's final revenue, cost and retainage reconcile and it stays in the close population",
+          "pass": true,
+          "expected": {
+            "reviewedAugust": [
+              "this job"
+            ],
+            "revenue": 100000000,
+            "jobCost": 80000000,
+            "grossProfit": 20000000,
+            "contractLiabilities": 0,
+            "receivable": 90000000,
+            "retainageReceivable": 10000000,
+            "augustRecognition": 0
+          },
+          "observed": {
+            "reviewedAugust": [
+              "this job"
+            ],
+            "revenue": 100000000,
+            "jobCost": 80000000,
+            "grossProfit": 20000000,
+            "contractLiabilities": 0,
+            "receivable": 90000000,
+            "retainageReceivable": 10000000,
+            "augustRecognition": 0
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T22:44:58.015Z"
+    },
+    {
+      "name": "contract-positions-presented",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "a669dbe0-a5c8-4ea0-842d-85461e5a9668",
+        "projectId": "cad63342-d8c5-40f6-b802-24682e5e9bc2",
+        "contracts": {
+          "5ecd3dd1-6bee-401f-bfb9-4ca959a87669": "A",
+          "77ad7fa4-d07f-40ec-9bc1-6b61fe27aca7": "B"
+        }
+      },
+      "checks": [
+        {
+          "label": "contract positions are presented apart and the WIP schedule ties to the statements and journals",
+          "pass": true,
+          "expected": {
+            "balanceSheet": {
+              "contractAssets": 2000000,
+              "contractLiabilities": 5000000,
+              "unallocatedProjects": 0,
+              "positions": [
+                {
+                  "contract": "A",
+                  "asset": 0,
+                  "liability": 5000000
+                },
+                {
+                  "contract": "B",
+                  "asset": 2000000,
+                  "liability": 0
+                }
+              ]
+            },
+            "schedule": [
+              {
+                "contract": "A",
+                "earned": 30000000,
+                "billed": 35000000,
+                "overBilled": 5000000,
+                "underBilled": 0,
+                "lossReserve": 0
+              },
+              {
+                "contract": "B",
+                "earned": 8000000,
+                "billed": 6000000,
+                "overBilled": 0,
+                "underBilled": 2000000,
+                "lossReserve": 3000000
+              }
+            ],
+            "ties": {
+              "underBilledIsContractAssets": true,
+              "overBilledIsContractLiabilities": true,
+              "earnedIsRevenue": true,
+              "lossReserveIsJournal": true
+            },
+            "savedScheduleMatchesReport": true,
+            "approval": {
+              "reviewerNamed": true,
+              "note": "Independent review of each contract's WIP position.",
+              "current": true
+            },
+            "afterLateCost": {
+              "current": false,
+              "changed": [
+                "A"
+              ]
+            }
+          },
+          "observed": {
+            "balanceSheet": {
+              "contractAssets": 2000000,
+              "contractLiabilities": 5000000,
+              "unallocatedProjects": 0,
+              "positions": [
+                {
+                  "contract": "A",
+                  "asset": 0,
+                  "liability": 5000000
+                },
+                {
+                  "contract": "B",
+                  "asset": 2000000,
+                  "liability": 0
+                }
+              ]
+            },
+            "schedule": [
+              {
+                "contract": "A",
+                "earned": 30000000,
+                "billed": 35000000,
+                "overBilled": 5000000,
+                "underBilled": 0,
+                "lossReserve": 0
+              },
+              {
+                "contract": "B",
+                "earned": 8000000,
+                "billed": 6000000,
+                "overBilled": 0,
+                "underBilled": 2000000,
+                "lossReserve": 3000000
+              }
+            ],
+            "ties": {
+              "underBilledIsContractAssets": true,
+              "overBilledIsContractLiabilities": true,
+              "earnedIsRevenue": true,
+              "lossReserveIsJournal": true
+            },
+            "savedScheduleMatchesReport": true,
+            "approval": {
+              "reviewerNamed": true,
+              "note": "Independent review of each contract's WIP position.",
+              "current": true
+            },
+            "afterLateCost": {
+              "current": false,
+              "changed": [
+                "A"
+              ]
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T22:44:58.784Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-08T22:45:01.060Z"
+}

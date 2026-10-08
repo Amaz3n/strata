@@ -4,6 +4,7 @@ import { isPayrollDocumentPrivate, assertPayrollDocumentStorageRead } from "@/li
 import { resolveDrawingPdfSourceKey } from "./drawing-pdf-source"
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { createHash } from "node:crypto"
 import { Readable } from "node:stream"
 import {
   AbortMultipartUploadCommand,
@@ -190,17 +191,35 @@ export async function uploadFilesObject(params: {
   }
 
   const client = getR2Client()
-  await client.send(
-    new PutObjectCommand({
-      Bucket: R2_BUCKET,
-      Key: normalizeKey(storagePath),
-      Body: bytes,
-      ContentType: contentType,
-      CacheControl: cacheControl,
-    })
-  )
+  const key = normalizeKey(storagePath)
+  try {
+    await client.send(
+      new PutObjectCommand({
+        Bucket: R2_BUCKET,
+        Key: key,
+        Body: bytes,
+        ContentType: contentType,
+        CacheControl: cacheControl,
+        // A path that must not be overwritten is written only if nothing is there.
+        IfNoneMatch: params.upsert === false ? "*" : undefined,
+      })
+    )
+  } catch (error) {
+    if (params.upsert !== false || !isPreconditionFailed(error)) throw error
+    // A retry that writes the same bytes again succeeds; anything else is refused.
+    const existing = await client.send(new HeadObjectCommand({ Bucket: R2_BUCKET, Key: key }))
+    if (existing.ETag?.replaceAll('"', "") !== createHash("md5").update(bytes).digest("hex"))
+      throw new Error(`A different file is already stored at ${storagePath}; stored files are never overwritten`)
+  }
 
   return { storagePath }
+}
+
+function isPreconditionFailed(error: unknown) {
+  return typeof error === "object" && error !== null &&
+    (("name" in error && error.name === "PreconditionFailed") ||
+      ("$metadata" in error && typeof error.$metadata === "object" && error.$metadata !== null &&
+        "httpStatusCode" in error.$metadata && error.$metadata.httpStatusCode === 412))
 }
 
 export async function createFilesUploadUrl(params: {

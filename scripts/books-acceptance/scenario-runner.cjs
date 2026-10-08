@@ -5,11 +5,12 @@ const fs = require("node:fs"),
   path = require("node:path")
 const { createKit, recorder, loadExpected } = require("./scenario-kit.cjs")
 
-const { IMPLEMENTED: SCENARIO_MODULES, NOT_IMPLEMENTED } = require("./catalog.cjs")
+const { IMPLEMENTED: SCENARIO_MODULES, NOT_IMPLEMENTED, NEEDS_STORAGE } = require("./catalog.cjs")
 
 // `only` runs the named subcases for iteration; the rest report SKIPPED, so such a
 // run can never read PASSED.
 async function runScenario(id, kit, fixtures = {}, only = null) {
+  if (!fixtures.scenario && NEEDS_STORAGE[id] && !kit.storage) return { scenario: id, status: "NOT_IMPLEMENTED", disposition: NEEDS_STORAGE[id], subcases: [] }
   if (!fixtures.scenario && !SCENARIO_MODULES[id]) return { scenario: id, status: "NOT_IMPLEMENTED", ...(NOT_IMPLEMENTED[id] ? { disposition: NOT_IMPLEMENTED[id] } : {}), subcases: [] }
   const scenario = fixtures.scenario ?? require(SCENARIO_MODULES[id]),
     expected = fixtures.expected ?? loadExpected(id)
@@ -71,10 +72,11 @@ if (require.main === module) {
     const container = arg("--container"),
       apiUrl = arg("--api-url"),
       scenario = process.argv.includes("--all") ? null : arg("--scenario"),
-      evidenceDir = arg("--evidence-dir")
+      evidenceDir = arg("--evidence-dir"),
+      storageEnv = process.argv.includes("--storage-env") ? arg("--storage-env") : null
     if (!container || !apiUrl || (!scenario && !process.argv.includes("--all")) || !evidenceDir || fs.existsSync(evidenceDir))
-      throw Error("Use --container NAME --api-url http://127.0.0.1:PORT (--scenario ID | --all) --evidence-dir NEW_DIRECTORY")
-    const kit = createKit({ container, apiUrl })
+      throw Error("Use --container NAME --api-url http://127.0.0.1:PORT (--scenario ID | --all) --evidence-dir NEW_DIRECTORY [--storage-env FILE]")
+    const kit = createKit({ container, apiUrl, storageEnv })
     if (!scenario) return runAll(kit, container, evidenceDir)
     const only = process.argv.includes("--only") ? arg("--only").split(",") : null
     const result = { ...(await runScenario(scenario, kit, {}, only)), container, finishedAt: new Date().toISOString() }

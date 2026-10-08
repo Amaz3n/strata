@@ -201,7 +201,15 @@ and the run non-zero. A subcase that throws or asserts nothing fails.
 `SKIPPED`, so such a run never reads `PASSED`. Scenarios that measure work
 (CAP-01) count every PostgREST request, row and RPC call the services make.
 
-Status (October 6): `BILL-01`, `YEAR-01`, `BANK-01`, `STATUS-01` and `CAP-01`
-pass in full. `CLOSE-01` (quarter-end and all-modules), `RACE-01` (entity pair)
-and `WIP-01` (three contract-level subcases, awaiting B04.1) pass every
-implemented subcase. The remaining 15 scenarios are not yet implemented.
+**Storage.** Scenarios run with no file storage: the kit deletes every `R2_*`
+setting it inherits, so a shell carrying production storage can never receive
+scenario files. `--storage-env FILE` opts a run into real storage: the file
+holds `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
+`R2_BUCKET`, and the kit refuses any bucket not named `*-acceptance`. The test
+bucket is `arc-books-acceptance`, with a key limited to that bucket. STORE-01
+runs only with it; without it STORE-01 reports blocked and the run is not a
+pass.
+
+`--all` runs every golden scenario; nothing else should use the stack while it
+runs (RACE-01 holds locks on timing). Status (October 8): every scenario in the
+catalog passes except PAY-01 and PAY-02, which are deferred with payroll.

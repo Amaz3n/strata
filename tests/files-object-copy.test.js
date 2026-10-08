@@ -2,7 +2,7 @@ require('../scripts/register-ts-node-test')
 const test=require('node:test'),assert=require('node:assert/strict')
 const {S3Client}=require('@aws-sdk/client-s3')
 const supabase=require('../lib/supabase/server')
-const {copyFilesObject}=require('../lib/storage/files-storage')
+const {copyFilesObject,uploadFilesObject}=require('../lib/storage/files-storage')
 function storage(t,handler,privacy={data:false,error:null}){
  const createServiceClient=supabase.createServiceSupabaseClient
  const privacyChecks=[]
@@ -62,4 +62,18 @@ test('ordinary copy refuses unverifiable document privacy before storage access'
    assert.equal(calls.length,0)
   })
  }
+})
+test('an upload that must not overwrite is conditional; only the identical bytes count as already stored',async t=>{
+ const {createHash}=require('node:crypto');const bytes=Buffer.from('signed agreement');let stored=null
+ const calls=storage(t,command=>{
+  if(command.constructor.name==='HeadObjectCommand')return {ETag:`"${createHash('md5').update(stored).digest('hex')}"`}
+  if(command.input.IfNoneMatch==='*'&&stored)throw Object.assign(new Error('At least one of the pre-conditions you specified did not hold'),{name:'PreconditionFailed',$metadata:{httpStatusCode:412}})
+  stored=command.input.Body;return {}
+ })
+ const put=(body,upsert)=>uploadFilesObject({supabase:null,orgId:'org',path:'org/agreements/signed.pdf',bytes:body,contentType:'application/pdf',upsert})
+ await put(bytes,false);assert.equal(calls[0].input.IfNoneMatch,'*')
+ await put(bytes,false)
+ await assert.rejects(put(Buffer.from('a different agreement'),false),/never overwritten/)
+ assert.equal(stored.toString(),'signed agreement')
+ await put(Buffer.from('replaced on purpose'),true);assert.equal(calls.at(-1).input.IfNoneMatch,undefined);assert.equal(stored.toString(),'replaced on purpose')
 })

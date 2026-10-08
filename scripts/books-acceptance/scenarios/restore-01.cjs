@@ -225,10 +225,12 @@ async function backgroundArchive(kit, expected, check) {
   const freshStatus = status(fresh.exportId).status
   kit.sql(`update public.books_exports set status='ready' where id=${q(fresh.exportId)}`)
   const readyCannotRestart = kit.rows(`select public.start_books_export_attempt(${q(org.orgId)}, ${q(fresh.exportId)}) is null as done`)[0].done === true && status(fresh.exportId).status === "ready"
-  check.equal("the archive is one snapshot; a dead attempt is recorded and the next one runs; failures keep their reason and name no file; a lost job fails the export; nothing is left generating", expected.expected, {
+  // With storage the retry finishes the archive; without it the retry fails at
+  // upload and keeps that reason. Either way the dead attempt is on record.
+  check.equal("the archive is one snapshot; a dead attempt is recorded and the next one runs; failures keep their reason and name no file; a lost job fails the export; nothing is left generating", kit.storage ? expected.expectedWithStorage : expected.expected, {
     snapshot: { before, captured, after: entries() },
     queued,
-    retry: { status: afterRetry.status, attempts: outcomes(afterRetry), storagePath: afterRetry.storage_path, contentHash: afterRetry.content_hash, reasonGiven: Boolean(afterRetry.error_message) },
+    retry: { status: afterRetry.status, attempts: outcomes(afterRetry), archivedByAttempt: afterRetry.storage_path?.endsWith(`/attempt-${afterRetry.attempt_count}.json.gz`) ?? null, contentHashed: Boolean(afterRetry.content_hash), reasonGiven: Boolean(afterRetry.error_message) },
     lost: { swept: swept >= 1, status: status(lost.exportId).status, message: status(lost.exportId).error_message },
     freshUntouched: freshStatus,
     readyCannotRestart,

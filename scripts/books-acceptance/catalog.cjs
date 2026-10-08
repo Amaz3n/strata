@@ -27,6 +27,12 @@ const IMPLEMENTED = {
   "MIG-01": "./scenarios/mig-01.cjs",
   "AUTH-01": "./scenarios/auth-01.cjs",
   "GREEN-01": "./scenarios/green-01.cjs",
+  "STORE-01": "./scenarios/store-01.cjs",
+}
+
+/** Built, but run only against real storage (`--storage-env`); otherwise reported blocked. */
+const NEEDS_STORAGE = {
+  "STORE-01": { status: "blocked", packages: ["B06.4"], reason: "Runs only with --storage-env naming the acceptance bucket's key file." },
 }
 
 /**
@@ -34,7 +40,6 @@ const IMPLEMENTED = {
  * `blocked` waits on something outside the repository; `not_built` is open work.
  */
 const NOT_IMPLEMENTED = {
-  "STORE-01": { status: "blocked", packages: ["B06.4"], reason: "Needs real R2 storage (an authorized test bucket) for privacy, overwrite, retention and byte checks." },
   "PAY-01": { status: "deferred", packages: ["B13"], reason: "Payroll is not day one; it arrives as a reviewed summary journal." },
   "PAY-02": { status: "deferred", packages: ["B13"], reason: "Payroll is not day one; it arrives as a reviewed summary journal." },
 }
@@ -42,4 +47,4 @@ const NOT_IMPLEMENTED = {
 /** Subcases a built scenario names but does not implement yet, and who owns each. */
 const OPEN_SUBCASES = {}
 
-module.exports = { IMPLEMENTED, NOT_IMPLEMENTED, OPEN_SUBCASES }
+module.exports = { IMPLEMENTED, NOT_IMPLEMENTED, NEEDS_STORAGE, OPEN_SUBCASES }

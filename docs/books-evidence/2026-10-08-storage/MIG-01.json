@@ -1,0 +1,357 @@
+{
+  "scenario": "MIG-01",
+  "status": "PASSED",
+  "reviewedFrom": "Opening balances as documents (docs/books-period-close.md, B03.3) and the parallel-to-cutover path (lib/services/books/cutover.ts). Amounts are integer cents; trial balance amounts are on each account's normal side.",
+  "subcases": [
+    {
+      "name": "builder-import",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "685ce0c3-82c5-4e72-b97a-77fc90396cb5",
+        "cutoverBlockers": [
+          "three_approved_comparisons",
+          "quarter_of_silent_correctness",
+          "bank_accounts_reconciled",
+          "complete_export_downloaded"
+        ]
+      },
+      "checks": [
+        {
+          "label": "the opening equals the reference trial balance and its controls; parallel mode; the first collection and payment clear their own documents; a disagreement keeps cutover blocked",
+          "pass": true,
+          "expected": {
+            "postedBeforeReview": "refused until reviewed",
+            "atCutover": {
+              "1000": 115000,
+              "1001": 20000,
+              "1010": 4500,
+              "1100": 42000,
+              "1110": 9000,
+              "1200": 2400,
+              "1500": 60000,
+              "1590": 15000,
+              "2000": 25000,
+              "2010": 5000,
+              "2230": 3200,
+              "2250": 1800,
+              "2500": 40000,
+              "3100": 162900
+            },
+            "projectionAddsNothing": true,
+            "controls": {
+              "accumulated_depreciation_control": "passed",
+              "ap_control": "passed",
+              "ar_control": "passed",
+              "retainage_payable_control": "passed",
+              "retainage_receivable_control": "passed"
+            },
+            "statements": {
+              "operating": {
+                "status": "closed",
+                "outstanding": -5000,
+                "book": 115000
+              },
+              "payroll": {
+                "status": "closed",
+                "outstanding": 0,
+                "book": 20000
+              }
+            },
+            "mode": {
+              "arc_ledger_mode": "parallel",
+              "ledger_authority": "external"
+            },
+            "openByDocument": {
+              "receivables": {
+                "INV-1041": 30000,
+                "INV-1052": 0,
+                "RET-HEND": 0
+              },
+              "payables": {
+                "V-311": 18000,
+                "V-318": 0,
+                "V-RET": 0
+              }
+            },
+            "comparison": {
+              "unexplained": 1,
+              "variances": [
+                {
+                  "code": "1010",
+                  "diff": 100
+                }
+              ]
+            },
+            "cutover": {
+              "status": "blocked",
+              "blockedByComparisons": true
+            }
+          },
+          "observed": {
+            "postedBeforeReview": "refused until reviewed",
+            "atCutover": {
+              "1000": 115000,
+              "1001": 20000,
+              "1010": 4500,
+              "1100": 42000,
+              "1110": 9000,
+              "1200": 2400,
+              "1500": 60000,
+              "1590": 15000,
+              "2000": 25000,
+              "2010": 5000,
+              "2230": 3200,
+              "2250": 1800,
+              "2500": 40000,
+              "3100": 162900
+            },
+            "projectionAddsNothing": true,
+            "controls": {
+              "accumulated_depreciation_control": "passed",
+              "ap_control": "passed",
+              "ar_control": "passed",
+              "retainage_payable_control": "passed",
+              "retainage_receivable_control": "passed"
+            },
+            "statements": {
+              "operating": {
+                "status": "closed",
+                "outstanding": -5000,
+                "book": 115000
+              },
+              "payroll": {
+                "status": "closed",
+                "outstanding": 0,
+                "book": 20000
+              }
+            },
+            "mode": {
+              "arc_ledger_mode": "parallel",
+              "ledger_authority": "external"
+            },
+            "openByDocument": {
+              "receivables": {
+                "INV-1041": 30000,
+                "INV-1052": 0,
+                "RET-HEND": 0
+              },
+              "payables": {
+                "V-311": 18000,
+                "V-318": 0,
+                "V-RET": 0
+              }
+            },
+            "comparison": {
+              "unexplained": 1,
+              "variances": [
+                {
+                  "code": "1010",
+                  "diff": 100
+                }
+              ]
+            },
+            "cutover": {
+              "status": "blocked",
+              "blockedByComparisons": true
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T22:43:50.731Z"
+    },
+    {
+      "name": "chart-collision",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "a56092df-0150-4935-8ad9-c7f84b1984c3"
+      },
+      "checks": [
+        {
+          "label": "the builder's 1180 and 2180 keep their own balances; intercompany uses Arc's 1181 and 2181",
+          "pass": true,
+          "expected": {
+            "accounts": {
+              "1180": {
+                "name": "Employee advances",
+                "system": false,
+                "net": 700
+              },
+              "1181": {
+                "name": "Due from affiliates",
+                "system": true,
+                "net": 50000
+              },
+              "2180": {
+                "name": "Accrued wages",
+                "system": false,
+                "net": 0
+              },
+              "2181": {
+                "name": "Due to affiliates",
+                "system": true,
+                "net": -50000
+              }
+            },
+            "builder": {
+              "dueFrom": 50000,
+              "dueTo": 0
+            },
+            "land": {
+              "dueFrom": 0,
+              "dueTo": 50000
+            }
+          },
+          "observed": {
+            "accounts": {
+              "1180": {
+                "name": "Employee advances",
+                "system": false,
+                "net": 700
+              },
+              "1181": {
+                "name": "Due from affiliates",
+                "system": true,
+                "net": 50000
+              },
+              "2180": {
+                "name": "Accrued wages",
+                "system": false,
+                "net": 0
+              },
+              "2181": {
+                "name": "Due to affiliates",
+                "system": true,
+                "net": -50000
+              }
+            },
+            "builder": {
+              "dueFrom": 50000,
+              "dueTo": 0
+            },
+            "land": {
+              "dueFrom": 0,
+              "dueTo": 50000
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T22:43:57.474Z"
+    },
+    {
+      "name": "land-and-homes",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "d4f55ed5-3912-4d83-9efd-b55d4ab51dca"
+      },
+      "checks": [
+        {
+          "label": "land and homes open with their lot basis and job cost; every inventory control ties at cutover and after the first month; mistakes are named and a lot cannot open twice",
+          "pass": true,
+          "expected": {
+            "mistakesRefused": 3,
+            "trialBalance": {
+              "1120": 18000000,
+              "1160": 26000000,
+              "1170": 39000000,
+              "3100": 83000000
+            },
+            "lot": {
+              "status": "owned",
+              "basis": 18000000,
+              "acquired": "2025-11-14"
+            },
+            "homes": {
+              "specJobCost": 27500000,
+              "completedJobCost": 39000000,
+              "completedOn": "2026-05-20"
+            },
+            "landTwiceRefused": true,
+            "atCutover": {
+              "completed_homes_control": "passed",
+              "job_cost_control": "passed",
+              "land_inventory_control": "passed",
+              "trial_balance": "passed"
+            },
+            "afterJuly": {
+              "completed_homes_control": "passed",
+              "job_cost_control": "passed",
+              "land_inventory_control": "passed",
+              "trial_balance": "passed"
+            }
+          },
+          "observed": {
+            "mistakesRefused": 3,
+            "trialBalance": {
+              "1120": 18000000,
+              "1160": 26000000,
+              "1170": 39000000,
+              "3100": 83000000
+            },
+            "lot": {
+              "status": "owned",
+              "basis": 18000000,
+              "acquired": "2025-11-14"
+            },
+            "homes": {
+              "specJobCost": 27500000,
+              "completedJobCost": 39000000,
+              "completedOn": "2026-05-20"
+            },
+            "landTwiceRefused": true,
+            "atCutover": {
+              "completed_homes_control": "passed",
+              "job_cost_control": "passed",
+              "land_inventory_control": "passed",
+              "trial_balance": "passed"
+            },
+            "afterJuly": {
+              "completed_homes_control": "passed",
+              "job_cost_control": "passed",
+              "land_inventory_control": "passed",
+              "trial_balance": "passed"
+            }
+          }
+        },
+        {
+          "label": "reversing the opening returns the lot, the homes' opening cost and the completion, and the controls still tie",
+          "pass": true,
+          "expected": {
+            "lot": {
+              "status": "controlled",
+              "basis": null,
+              "acquisition": null
+            },
+            "specJobCost": 1500000,
+            "completedJobCost": 0,
+            "completedOn": null,
+            "controls": {
+              "completed_homes_control": "passed",
+              "job_cost_control": "passed",
+              "land_inventory_control": "passed",
+              "trial_balance": "passed"
+            }
+          },
+          "observed": {
+            "lot": {
+              "status": "controlled",
+              "basis": null,
+              "acquisition": null
+            },
+            "specJobCost": 1500000,
+            "completedJobCost": 0,
+            "completedOn": null,
+            "controls": {
+              "completed_homes_control": "passed",
+              "job_cost_control": "passed",
+              "land_inventory_control": "passed",
+              "trial_balance": "passed"
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T22:43:57.941Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-08T22:43:59.424Z"
+}

@@ -5425,7 +5425,7 @@
       "workstream": "B06",
       "title": "Consistent streamed capture and archive jobs",
       "status": "PARTIAL",
-      "status_basis": "Progress (2026-10-08, RESTORE-01 background-archive): archives are built by a durable outbox job (generate_books_export) as the member who requested them, permission rechecked; attempts are numbered and kept, a dead attempt is recorded as interrupted when the next starts, a failure keeps its reason and names no file, each attempt writes its own object and only the current attempt marks the archive ready after verify and upload; the maintenance sweep fails exports whose job is gone. One stable-statement capture proved consistent: a journal committed during a 2 s capture is absent from it. Verification of omitted tables, changed bytes, unsafe cents and older schemas, and the no-secrets rule, were already covered (books-export-continuity, RESTORE-01). Remaining: bounded memory (capture and documents are held in memory during an attempt) and a ready archive built against real storage (STORE-01). The acceptance kit now clears R2_* settings so a scenario can never upload to production storage. Migration 20261008050000_books_export_attempts pending production approval.",
+      "status_basis": "Progress (2026-10-08, RESTORE-01 background-archive): archives are built by a durable outbox job (generate_books_export) as the member who requested them, permission rechecked; attempts are numbered and kept, a dead attempt is recorded as interrupted when the next starts, a failure keeps its reason and names no file, each attempt writes its own object and only the current attempt marks the archive ready after verify and upload; the maintenance sweep fails exports whose job is gone. One stable-statement capture proved consistent: a journal committed during a 2 s capture is absent from it. Verification of omitted tables, changed bytes, unsafe cents and older schemas, and the no-secrets rule, were already covered (books-export-continuity, RESTORE-01). Remaining: bounded memory (capture and documents are held in memory during an attempt) and a ready archive built against real storage (STORE-01). The acceptance kit now clears R2_* settings so a scenario can never upload to production storage. Migration 20261008050000_books_export_attempts pending production approval. (2026-10-08) A ready archive is now proven against real storage: built by the background job, downloaded no-store, verified, carrying each document's exact bytes (STORE-01 archive-with-documents; RESTORE-01 background-archive with storage). Remaining: bounded memory.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "source edits during capture cannot mix revisions",
@@ -6545,8 +6545,7 @@
         }
       ],
       "remaining_criteria": [
-        "bounded memory: stream the capture and supporting documents instead of holding them in one attempt",
-        "a ready archive built and downloaded against real storage (STORE-01)"
+        "bounded memory: stream the capture and supporting documents instead of holding them in one attempt"
       ],
       "external_dependency": null,
       "reviewer": null,
@@ -6561,8 +6560,8 @@
       "id": "B06.2",
       "workstream": "B06",
       "title": "Self-contained recoverable dependency package",
-      "status": "PARTIAL",
-      "status_basis": "Progress (RESTORE-01 tax-records and closed-group): preflight against the actual target catalog names blockers, external identities and every taxpayer ID that Vault recovery must supply; the plan records each intentional change (generated columns, disabled funding, bank feeds disconnected with a placeholder credential) without touching the archive; actor and audit relationships restore with explicit identity mappings; the 1099 filing file refuses until the payer EIN is re-entered, then is byte-identical. Remaining: supporting document bytes and path safety against live storage (STORE-01).",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified locally (2026-10-08): preflight, identity mappings and unchanged source archive (RESTORE-01); document bytes hash-identical through a real-storage archive and restore (STORE-01 archive-with-documents, restore-documents); extraction refuses paths that escape the target or overwrite (tests/books-export-continuity); no provider activity after restore (feeds disconnected, funding disabled).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "preflight names every external/secret requirement before writes",
@@ -7663,16 +7662,38 @@
             "Migration 20261008030000_books_export_schema34 applied to the acceptance stack only; production waits for approval."
           ],
           "evidence_dir": "docs/books-evidence/2026-10-08-restore"
+        },
+        {
+          "verified_at": "2026-10-08T22:54:54.789530+00:00",
+          "implemented_paths": [
+            "lib/storage/files-storage.ts",
+            "scripts/books-acceptance/scenarios/store-01.cjs",
+            "scripts/books-acceptance/expected/STORE-01.json",
+            "scripts/books-acceptance/scenario-kit.cjs",
+            "scripts/books-acceptance/scenario-runner.cjs",
+            "scripts/books-acceptance/catalog.cjs",
+            "tests/files-object-copy.test.js",
+            "docs/books-restore.md",
+            "docs/books-acceptance-runner.md"
+          ],
+          "test_scenario_ids": [
+            "STORE-01",
+            "RESTORE-01"
+          ],
+          "commands": [
+            "scenario-runner --all --storage-env <acceptance key file>",
+            "node --test tests/files-object-copy.test.js (+ upload-related suites, 128 pass)",
+            "pnpm test:financials",
+            "pnpm lint && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit"
+          ],
+          "observed_results": [
+            "STORE-01 archive and restore subcases passed; RESTORE-01 passed.",
+            "All-scenario run with real storage (2026-10-08): 23 of 23 first-client scenarios pass (STORE-01 included; RESTORE-01's background-archive expectation was made storage-aware and RESTORE-01 rerun in full with storage, evidence replaced); PAY-01/02 deferred."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-storage"
         }
       ],
-      "remaining_criteria": [
-        "preflight names every external/secret requirement before writes",
-        "exact source archive remains unchanged",
-        "restored actor/audit relationships remain meaningful",
-        "file paths cannot escape target or overwrite originals",
-        "source bytes hash-identical",
-        "no accidental payment/provider activity after restore"
-      ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
       "verified_at": null,
@@ -7686,8 +7707,8 @@
       "id": "B06.3",
       "workstream": "B06",
       "title": "Full populated recovery and post-restore continuity",
-      "status": "PARTIAL",
-      "status_basis": "Progress (RESTORE-01 closed-group-and-continuation): a closed two-company group is archived, lost and restored from the plan: every archived table's checksum identical except the planned feed disconnection, July tie-outs and saved per-company statements unchanged, a July journal refused (closed), an exact projector rerun adds nothing; then August is opened, billed, collected, a bill paid, a truck bought and depreciated, WIP reviewed, the bank statement reconciled and August closed with controls passing. Restore measured: 95 ms (175 rows) and 167 ms (TAX-01 company, 1,200+ payments). Remaining: supporting document bytes (STORE-01), payroll correction after restore (payroll not day one), large-company timing (B09).",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified locally (2026-10-08): RESTORE-01 closed-group-and-continuation (every control and saved statement reproduces; August billed, collected, paid, depreciated, reconciled and closed after restore), proof-repair-and-close (next period closes on a restored copy), and STORE-01 (each sampled document reproduces its original bytes). Bounded: payroll corrections after restore wait for payroll (B13).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "every control and immutable report reproduces to the cent",
@@ -8342,16 +8363,39 @@
             "Migration 20261008030000_books_export_schema34 applied to the acceptance stack only; production waits for approval."
           ],
           "evidence_dir": "docs/books-evidence/2026-10-08-restore"
+        },
+        {
+          "verified_at": "2026-10-08T22:54:54.789530+00:00",
+          "implemented_paths": [
+            "lib/storage/files-storage.ts",
+            "scripts/books-acceptance/scenarios/store-01.cjs",
+            "scripts/books-acceptance/expected/STORE-01.json",
+            "scripts/books-acceptance/scenario-kit.cjs",
+            "scripts/books-acceptance/scenario-runner.cjs",
+            "scripts/books-acceptance/catalog.cjs",
+            "tests/files-object-copy.test.js",
+            "docs/books-restore.md",
+            "docs/books-acceptance-runner.md",
+            "scripts/books-acceptance/scenarios/restore-01.cjs"
+          ],
+          "test_scenario_ids": [
+            "RESTORE-01",
+            "STORE-01"
+          ],
+          "commands": [
+            "scenario-runner --all --storage-env <acceptance key file>",
+            "node --test tests/files-object-copy.test.js (+ upload-related suites, 128 pass)",
+            "pnpm test:financials",
+            "pnpm lint && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit"
+          ],
+          "observed_results": [
+            "RESTORE-01 4/4 and STORE-01 5/5 with storage.",
+            "All-scenario run with real storage (2026-10-08): 23 of 23 first-client scenarios pass (STORE-01 included; RESTORE-01's background-archive expectation was made storage-aware and RESTORE-01 rerun in full with storage, evidence replaced); PAY-01/02 deferred."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-storage"
         }
       ],
-      "remaining_criteria": [
-        "every control and immutable report reproduces to the cent",
-        "each sampled document reproduces original bytes",
-        "ordinary permissions still work",
-        "new invoice/collection/payable/expense/payroll correction/bank close/period close succeed after restore",
-        "historical exact retries recover without rewriting money",
-        "restore timing and failure restart measured"
-      ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
       "verified_at": null,
@@ -8365,8 +8409,8 @@
       "id": "B06.4",
       "workstream": "B06",
       "title": "Live storage retention and recovery",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified against real R2 (2026-10-08, STORE-01, bucket arc-books-acceptance with a key limited to it): unsigned storage reads refused; signed links work for the member, expire, and are not issued to another organization; no public caching; a stored path is never overwritten — fixed: uploadFilesObject ignored upsert:false, so about 15 callers (executed e-signature PDFs, document versions, generated PDFs, intake) silently replaced stored files; it is now a conditional write and only identical bytes count as already stored; each version keeps its bytes as the current pointer moves; download size/hash checks hold on real bytes (tax attachments); a document restored from the archive keeps its checksum and privacy.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "unauthorized reads denied at application and storage boundaries",
@@ -8381,15 +8425,37 @@
         "RESTORE-01",
         "STORE-01"
       ],
-      "evidence": [],
-      "remaining_criteria": [
-        "unauthorized reads denied at application and storage boundaries",
-        "private originals never served from a public cache",
-        "immutable keys reject overwrite",
-        "download size/hash checks work with actual R2",
-        "supported version retention survives application pointer changes",
-        "restored objects retain privacy and checksum"
+      "evidence": [
+        {
+          "verified_at": "2026-10-08T22:54:54.789530+00:00",
+          "implemented_paths": [
+            "lib/storage/files-storage.ts",
+            "scripts/books-acceptance/scenarios/store-01.cjs",
+            "scripts/books-acceptance/expected/STORE-01.json",
+            "scripts/books-acceptance/scenario-kit.cjs",
+            "scripts/books-acceptance/scenario-runner.cjs",
+            "scripts/books-acceptance/catalog.cjs",
+            "tests/files-object-copy.test.js",
+            "docs/books-restore.md",
+            "docs/books-acceptance-runner.md"
+          ],
+          "test_scenario_ids": [
+            "STORE-01"
+          ],
+          "commands": [
+            "scenario-runner --all --storage-env <acceptance key file>",
+            "node --test tests/files-object-copy.test.js (+ upload-related suites, 128 pass)",
+            "pnpm test:financials",
+            "pnpm lint && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit"
+          ],
+          "observed_results": [
+            "STORE-01 5/5: private-documents, immutable-and-versions, archive-with-documents, restore-documents, tax-attachment-evidence.",
+            "All-scenario run with real storage (2026-10-08): 23 of 23 first-client scenarios pass (STORE-01 included; RESTORE-01's background-archive expectation was made storage-aware and RESTORE-01 rerun in full with storage, evidence replaced); PAY-01/02 deferred."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-storage"
+        }
       ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
       "verified_at": null,
@@ -9386,8 +9452,8 @@
       "id": "B10.3",
       "workstream": "B10",
       "title": "Full tax workpaper and report delivery journey",
-      "status": "BLOCKED_EXTERNAL",
-      "status_basis": "Verified locally (CASH-01 tax-workpaper; cash-basis browser journey desktop and phone/dark): the preparer cannot self-review; a posting after preparation makes review refuse with the cure (withdraw and prepare a replacement); a reviewed no-adjustments replacement supersedes the approval, which keeps its reviewer and notes; the report reconciles book income + adjustments = adjusted income; UI, CSV and PDF over the signed-in session reproduce the exact period with no-store, a saved report run reproduces the same CSV, and a signed-out request gets nothing. Remaining: an altered attachment invalidating a draft and the attachment download need file storage on the acceptance stack (unit-tested only); recovery of all revisions after restore (RESTORE-01). (2026-10-08) Recovery of all revisions is covered by RESTORE-01 tax-records (superseded and approved workpapers restore exactly). What remains needs file storage on the acceptance stack: an altered attachment invalidating a draft, and the permission-scoped attachment download against real storage (STORE-01).",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified locally (2026-10-08): CASH-01 tax-workpaper and the cash-basis browser journey (preparer cannot self-review, books changes force a replacement, UI/CSV/PDF reproduce the reviewed period no-store, signed-out refused), RESTORE-01 tax-records (every revision restores), and STORE-01 tax-attachment-evidence against real storage (the accountant downloads exactly the frozen bytes; an altered stored attachment stops both review and download).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "preparer cannot self-review",
@@ -9401,7 +9467,8 @@
       "scenario_ids": [
         "CASH-01",
         "RESTORE-01",
-        "TAX-01"
+        "TAX-01",
+        "STORE-01"
       ],
       "evidence": [
         {
@@ -9436,13 +9503,38 @@
             "Regression green (14 scenarios incl. CASH-01 4/4); cash/tax unit tests 76 pass; test:financials 2,522 pass; tsc clean; lint only the other session's existing error."
           ],
           "evidence_dir": "docs/books-evidence/2026-10-07-cash-basis"
+        },
+        {
+          "verified_at": "2026-10-08T22:54:54.789530+00:00",
+          "implemented_paths": [
+            "lib/storage/files-storage.ts",
+            "scripts/books-acceptance/scenarios/store-01.cjs",
+            "scripts/books-acceptance/expected/STORE-01.json",
+            "scripts/books-acceptance/scenario-kit.cjs",
+            "scripts/books-acceptance/scenario-runner.cjs",
+            "scripts/books-acceptance/catalog.cjs",
+            "tests/files-object-copy.test.js",
+            "docs/books-restore.md",
+            "docs/books-acceptance-runner.md"
+          ],
+          "test_scenario_ids": [
+            "STORE-01"
+          ],
+          "commands": [
+            "scenario-runner --all --storage-env <acceptance key file>",
+            "node --test tests/files-object-copy.test.js (+ upload-related suites, 128 pass)",
+            "pnpm test:financials",
+            "pnpm lint && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit"
+          ],
+          "observed_results": [
+            "STORE-01 tax-attachment-evidence passed.",
+            "All-scenario run with real storage (2026-10-08): 23 of 23 first-client scenarios pass (STORE-01 included; RESTORE-01's background-archive expectation was made storage-aware and RESTORE-01 rerun in full with storage, evidence replaced); PAY-01/02 deferred."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-storage"
         }
       ],
-      "remaining_criteria": [
-        "source/attachment change invalidates the affected draft (attachment half, with real storage)",
-        "attachment download against real storage"
-      ],
-      "external_dependency": "An authorized test R2 bucket (shared with B06.4 / STORE-01)",
+      "remaining_criteria": [],
+      "external_dependency": null,
       "reviewer": null,
       "verified_at": null,
       "scenario_coverage": {
@@ -17850,8 +17942,8 @@
       "id": "B15.2",
       "workstream": "B15",
       "title": "Golden twelve-period scenario matrix",
-      "status": "BLOCKED_EXTERNAL",
-      "status_basis": "Every locally buildable golden scenario is built and passes in one all-scenario run (2026-10-08), including CLOSE-01 all-supported-modules (two companies trading, a progress invoice collected, a truck bought and depreciated, a loan drawn and paid; WIP reviewed, receipts in transit supported, the land company's statement matched and reconciled; August closes with no blocking check, every ledger control passing, 8 consolidated and 6+6 company statements saved, each company balancing alone) and quarter-end. Found on the way: INTERCO-01 had keyed the land crew's payroll summary straight onto a job, which the job-cost control rightly blocks; the summary now posts to the payroll pool and moves by reviewed allocation (documented). Only STORE-01 remains, and it needs a real test storage bucket (B06.4). PAY-01/PAY-02 are out of first-client scope (B13).",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified locally (2026-10-08): every first-client golden scenario passes in one run against real storage (23 of 23), PAY-01/02 deferred with payroll.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "independently specified expected journals, subledgers and immutable reports agree at each checkpoint",
@@ -17864,7 +17956,8 @@
         "CLOSE-01",
         "INTERCO-01",
         "YEAR-01",
-        "RESTORE-01"
+        "RESTORE-01",
+        "STORE-01"
       ],
       "evidence": [
         {
@@ -17893,12 +17986,30 @@
             "All-scenario run (2026-10-08, clean, nothing else on the stack): 22 of 22 implemented scenarios passed; STORE-01 blocked on real storage (B06.4); PAY-01/PAY-02 deferred (B13)."
           ],
           "evidence_dir": "docs/books-evidence/2026-10-08-scenarios"
+        },
+        {
+          "verified_at": "2026-10-08T22:54:54.789530+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/catalog.cjs"
+          ],
+          "test_scenario_ids": [
+            "STORE-01"
+          ],
+          "commands": [
+            "scenario-runner --all --storage-env <acceptance key file>",
+            "node --test tests/files-object-copy.test.js (+ upload-related suites, 128 pass)",
+            "pnpm test:financials",
+            "pnpm lint && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit"
+          ],
+          "observed_results": [
+            "23 of 23 first-client scenarios pass.",
+            "All-scenario run with real storage (2026-10-08): 23 of 23 first-client scenarios pass (STORE-01 included; RESTORE-01's background-archive expectation was made storage-aware and RESTORE-01 rerun in full with storage, evidence replaced); PAY-01/02 deferred."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-storage"
         }
       ],
-      "remaining_criteria": [
-        "STORE-01 against real storage"
-      ],
-      "external_dependency": "An authorized test R2 bucket for STORE-01 (shared with B06.4)",
+      "remaining_criteria": [],
+      "external_dependency": null,
       "reviewer": null,
       "verified_at": null
     },

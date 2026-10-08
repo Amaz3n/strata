@@ -58,7 +58,7 @@
     },
     "background-archive": {
       "inputs": {},
-      "derivation": "One journal before the capture (plus none from launch: zero opening), a second committed 0.5 s into a capture that sleeps 2 s inside its one statement: the capture holds 1 entry, the books 2 afterwards. The first export is queued with one job; a worker starts attempt 1 and dies; the job runs attempt 2, which records attempt 1 as interrupted, captures and verifies, and fails at upload because this stack has no storage, keeping the reason and naming no file. An export whose job was deleted, two hours old, is failed by the sweep with its reason; a fresh queued export is left alone. A ready export cannot be started again.",
+      "derivation": "One journal before the capture (plus none from launch: zero opening), a second committed 0.5 s into a capture that sleeps 2 s inside its one statement: the capture holds 1 entry, the books 2 afterwards. The first export is queued with one job; a worker starts attempt 1 and dies; the job runs attempt 2, which records attempt 1 as interrupted, captures and verifies, and fails at upload because this stack has no storage, keeping the reason and naming no file. An export whose job was deleted, two hours old, is failed by the sweep with its reason; a fresh queued export is left alone. A ready export cannot be started again. With real storage (--storage-env) attempt 2 finishes instead: the archive is ready, written to its own attempt-2 object and hashed, and attempt 1 stays on record as interrupted.",
       "expected": {
         "snapshot": {
           "before": 1,
@@ -75,9 +75,36 @@
             "1:interrupted",
             "2:failed"
           ],
-          "storagePath": null,
-          "contentHash": null,
+          "archivedByAttempt": null,
+          "contentHashed": false,
           "reasonGiven": true
+        },
+        "lost": {
+          "swept": true,
+          "status": "failed",
+          "message": "The archive was interrupted and its job ended; create a new export."
+        },
+        "freshUntouched": "queued",
+        "readyCannotRestart": true
+      },
+      "expectedWithStorage": {
+        "snapshot": {
+          "before": 1,
+          "captured": 1,
+          "after": 2
+        },
+        "queued": {
+          "status": "queued",
+          "job": 1
+        },
+        "retry": {
+          "status": "ready",
+          "attempts": [
+            "1:interrupted"
+          ],
+          "archivedByAttempt": true,
+          "contentHashed": true,
+          "reasonGiven": false
         },
         "lost": {
           "swept": true,

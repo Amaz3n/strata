@@ -53,9 +53,18 @@ RESTORE-01 acceptance scenario.
 After step 5 the company works normally: closed months stay closed, rerunning the
 projector adds nothing, and new months are opened, billed, collected and closed.
 
+## Documents in storage (STORE-01)
+
+Proven against real storage: a document is private at both boundaries (storage
+refuses an unsigned read, signed links expire, another organization gets none);
+a stored path is never overwritten (`upload` with `upsert: false` is a
+conditional write, and only the identical bytes count as already stored); each
+version keeps its bytes as the current one moves; a background archive finishes,
+downloads no-store and carries each document's exact bytes; and a document put
+back from the archive at its manifest path keeps its checksum and privacy.
+
 ## Not covered yet
 
 - Bounded memory for large companies (B06.1): the capture and the supporting
   documents are held in memory while one attempt builds the archive.
-- Supporting document bytes in live storage (B06.4 / STORE-01).
 - An automated loader: step 4 is run by an operator from the plan.

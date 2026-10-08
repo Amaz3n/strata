@@ -28,8 +28,19 @@ function createKit(stack) {
   process.env.SUPABASE_SERVICE_ROLE_KEY = localJwt({ role: "service_role" })
   process.env.CRON_SECRET = randomUUID()
   // A shell that carries production storage settings must never send scenario
-  // files there; scenarios run with no file storage.
+  // files there. Storage comes only from the file `--storage-env` names, and only
+  // for a bucket named as an acceptance bucket; otherwise there is none.
   for (const name of Object.keys(process.env)) if (name.startsWith("R2_")) delete process.env[name]
+  let storage = null
+  if (stack.storageEnv) {
+    const settings = Object.fromEntries(fs.readFileSync(stack.storageEnv, "utf8").split("\n").filter((line) => line.includes("="))
+      .map((line) => [line.slice(0, line.indexOf("=")).trim(), line.slice(line.indexOf("=") + 1).trim().replace(/^"|"$/g, "")]))
+    for (const name of ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"]) if (!settings[name]) throw Error(`${stack.storageEnv} is missing ${name}`)
+    if (!/-acceptance$/.test(settings.R2_BUCKET)) throw Error("Scenarios only write to a bucket named *-acceptance")
+    for (const [name, value] of Object.entries(settings)) if (name.startsWith("R2_")) process.env[name] = value
+    process.env.FILES_STORAGE = "r2"
+    storage = { bucket: settings.R2_BUCKET }
+  }
   require("../register-ts-node-test")
   // Route handlers give `after()` a request scope; scenarios await the work instead.
   const deferred = []
@@ -137,7 +148,7 @@ function createKit(stack) {
     return result
   }
 
-  return { container: stack.container, apiUrl: stack.apiUrl, sql, rows, q, as, service, settle, organization, postedNet, drainOutbox, localJwt }
+  return { container: stack.container, apiUrl: stack.apiUrl, storage, sql, rows, q, as, service, settle, organization, postedNet, drainOutbox, localJwt }
 }
 
 // Expected-versus-observed recorder. A subcase passes only if every check passes.
