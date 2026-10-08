@@ -10,6 +10,7 @@ import { booksDigest } from "@/lib/services/books/hash"
 import { proveProjectedSources, resolveProjectionVersion } from "@/lib/services/books/projector"
 import { collectBooksRows } from "@/lib/services/books/paging"
 import { requireOrgContext } from "@/lib/services/context"
+import { recordLedgerProofFindings } from "@/lib/services/books/reconciliation"
 
 /**
  * The orphan scan has no natural bound, so it is paged rather than capped, and
@@ -96,6 +97,8 @@ export async function runLedgerRebuildDrillForOrg(orgId: string) {
     const status = differences.length === 0 ? "passed" : "failed"
     const { error: updateError } = await service.from("ledger_rebuild_runs").update({ status, source_fact_count: sourceFactCount, rebuilt_entry_count: rebuiltEntryCount, rebuilt_digest: rebuiltDigest, differences: differences.slice(0, 200), completed_at: new Date().toISOString() }).eq("org_id", orgId).eq("id", runId)
     if (updateError) throw new Error(updateError.message)
+    // A capped scan is not a whole proof, so it cannot clear findings.
+    if (!orphanScanCapped) await recordLedgerProofFindings(orgId, differences)
     return { runId, status, sourceFactCount, rebuiltEntryCount, rebuiltDigest, differences, orphanScanCapped }
   } catch (error) {
     await service.from("ledger_rebuild_runs").update({ status: "failed", source_fact_count: sourceFactCount, rebuilt_entry_count: rebuiltEntryCount, differences: [{ type: "run_error", message: error instanceof Error ? error.message : String(error) }], completed_at: new Date().toISOString() }).eq("org_id", orgId).eq("id", runId)

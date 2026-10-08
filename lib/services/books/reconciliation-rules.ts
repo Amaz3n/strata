@@ -50,6 +50,36 @@ export const PROJECTION_ITEM_CATEGORIES = [
 ] as const
 
 /**
+ * What the full ledger proof found, as findings the close shows with their cure.
+ * Only a full proof writes or resolves them: a narrowed proof cannot say a
+ * finding is gone, and the reconciliation sweep cannot reproduce them at all.
+ */
+export const LEDGER_PROOF_CATEGORY = "ledger_proof"
+
+const PROOF_CURES: Record<string, string> = {
+  journal_divergence: "This entry no longer matches its source. Reverse it with the reason, then run posting: the source posts again from its unchanged record.",
+  unexpected_journal: "This entry has no source behind it. Reverse it with the reason, or record what it was for as a journal.",
+  missing_journal: "This source's posting was lost or reversed. Run posting to post it again.",
+}
+
+export function ledgerProofFindings(differences: Array<Record<string, unknown> & { type: string }>): ReconciliationFinding[] {
+  return differences.flatMap((difference) => {
+    const cure = PROOF_CURES[difference.type]
+    if (!cure) return []
+    const entryId = typeof difference.entry_id === "string" ? difference.entry_id : null
+    const factId = typeof difference.fact_id === "string" ? difference.fact_id : null
+    return [{
+      category: LEDGER_PROOF_CATEGORY,
+      entityType: entryId ? "journal_entry" : "accounting_fact",
+      entityId: entryId ?? factId ?? undefined,
+      findingKey: difference.type,
+      details: { severity: "critical", description: cure, cure, href: entryId ? `/books/ledger?entry=${entryId}` : "/books/close",
+        source_type: difference.source_type ?? null, source_id: difference.source_id ?? null },
+    }]
+  })
+}
+
+/**
  * One finding, as produced by a sweep. A finding is a *current* observation; its
  * persisted status is decided by the lifecycle below, never by the producer.
  */

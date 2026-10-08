@@ -1,10 +1,22 @@
 # Books acceptance runner
 
-This is B00 infrastructure in Plan 013, not a completed release scenario suite.
-`scripts/test-books-release-acceptance.cjs --list` registers all 25 golden
-scenarios. They currently report `NOT_IMPLEMENTED` and fail if requested,
-including `--scenario all`. Existing scoped unit/browser successes do not satisfy
-these integrated scenarios.
+Two layers. `scripts/test-books-release-acceptance.cjs` runs `SCHEMA-01`, the
+database contracts (below). The golden scenarios — month-by-month stories run
+through Arc's real services — run with `scripts/books-acceptance/scenario-runner.cjs`
+(see Golden scenarios). One command does everything from nothing, as CI does
+(`.github/workflows/books-acceptance.yml`, nightly, on `main` and on Books pull
+requests):
+
+```sh
+node scripts/books-acceptance/ci.cjs --workspace NEW_DIR --db-port PORT \
+  --evidence-dir NEW_DIR [--storage-env FILE]
+```
+
+It bootstraps a fresh isolated stack from the repository's migrations, starts its
+API, runs every golden scenario, keeps the evidence, and stops the stack and
+removes its volume whatever the result. In CI the acceptance bucket's key comes
+from the `BOOKS_ACCEPTANCE_R2_*` secrets; without them STORE-01 reports blocked
+and the run fails as incomplete.
 
 `SCHEMA-01` runs every current `supabase/tests/*.sql` file using native PostgreSQL
 and pgTAP. It verifies the isolated database marker and the complete installed

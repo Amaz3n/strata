@@ -18,6 +18,7 @@ import {
   reopenAccountingPeriodAction,
   resolveReconciliationItemAction,
   runCloseChecklistAction,
+  runLedgerRebuildAction,
   runReconciliationNowAction,
 } from "@/app/(app)/books/actions";
 import { WipReview } from "@/components/books/wip-review";
@@ -48,6 +49,7 @@ type Props = {
   periodId?: string;
 };
 type CheckRow = Props["checks"][number];
+const LEDGER_CONTROLS = new Set(["job_cost_control", "ar_control", "ap_control"]);
 const date = (value: string) =>
   new Date(`${value.slice(0, 10)}T12:00:00Z`).toLocaleDateString("en-US", {
     month: "short",
@@ -343,6 +345,18 @@ function PeriodReview({
                 <ClearingSupport periodId={period.id} />
               ) : check.code === "poc_snapshots" && capabilities.close ? (
                 <WipReview periodId={period.id} />
+              ) : LEDGER_CONTROLS.has(check.code) && capabilities.export ? (
+                // A ledger that does not tie to its subledger is found entry by
+                // entry by the ledger proof; what it finds lists under the
+                // reconciliation findings with the entry and its cure.
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={pending}
+                  onClick={() => act("Ledger proof finished; differences are listed under the reconciliation findings", runLedgerRebuildAction, capabilities.close)}
+                >
+                  Run ledger proof
+                </Button>
               ) : href ? (
                 <Button asChild size="sm" variant="outline">
                   <Link href={href}>

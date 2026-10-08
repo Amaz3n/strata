@@ -281,14 +281,17 @@ insert into public.journal_entries select (jsonb_populate_record(null::public.jo
 insert into public.journal_lines select (jsonb_populate_record(null::public.journal_lines, to_jsonb(l) || jsonb_build_object('id', gen_random_uuid(), 'entry_id', (select id from stray)))).* from public.journal_lines l where l.entry_id = ${q(copied)};
 commit;`, "supabase_admin")
   const stray = kit.rows(`select id from public.journal_entries where org_id=${q(job.orgId)} and posting_key=${q(`stray:${copied}`)}`)[0].id
-  const damaged = { proof: await drill(), controlsNotPassing: await controls() }
+  const openFindings = () => Number(kit.rows(`select count(*) n from public.accounting_reconciliation_items where org_id=${q(job.orgId)} and category='ledger_proof' and status='open'
+    and (details->>'href' like '/books/ledger?entry=%' or details->>'href' = '/books/close') and details->>'cure' <> ''`)[0].n)
+  const damaged = { proof: await drill(), controlsNotPassing: await controls(), openFindings: openFindings(),
+    closeBlockedBy: (await kit.as(job.owner, () => app("books/period-close").runBooksCloseChecklist(job.periods["2026-07"].periodId))).blockingFailures.map((item) => item.code).filter((code) => code === "accounting_drift") }
 
   // The repair: reverse what is wrong with its reason, post the sources again.
   const reverse = (entryId, reason) => kit.as(job.reviewer, () => app("books/ledger").reverseBooksJournalEntry({ entryId, reversalDate: "2026-07-31", reason }))
   await reverse(tampered, "Ledger proof: this entry no longer matched its bill")
   await reverse(stray, "Ledger proof: entry has no source document")
   await project(kit, job)
-  const repaired = { proof: await drill(), controlsNotPassing: await controls(),
+  const repaired = { proof: await drill(), controlsNotPassing: await controls(), openFindings: openFindings(),
     jobCost: Number(kit.rows(`select coalesce(sum(l.debit_cents - l.credit_cents),0)::bigint n from public.journal_lines l join public.journal_entries e on e.id=l.entry_id join public.gl_accounts a on a.id=l.account_id
       where l.org_id=${q(job.orgId)} and l.project_id=${q(job.projectId)} and e.status in ('posted','reversed') and a.code in ('5000','5020')`)[0].n) }
 

@@ -19,6 +19,10 @@ test("close gates: each blocking check names its cause and leads to its cure", a
   // A failing check opens to the place where it is cured.
   await controls.getByText("Bank and card accounts reconciled", { exact: true }).click()
   await expect(controls.getByRole("link", { name: /Review source/ }).filter({ visible: true })).toHaveAttribute("href", "/books/banking")
+  // A ledger that does not tie to its subledger is found entry by entry by the proof.
+  await controls.getByText("GL job cost ties to the job-cost subledger", { exact: true }).click()
+  await controls.getByRole("button", { name: "Run ledger proof" }).filter({ visible: true }).click()
+  await expect(page.getByText(/Ledger proof finished/)).toBeVisible()
   await page.getByRole("button", { name: /Run checks/ }).click()
   await expect(page.getByText("Period checks updated", { exact: true })).toBeVisible()
   await expect(page.getByRole("button", { name: "Close period" })).toBeDisabled()

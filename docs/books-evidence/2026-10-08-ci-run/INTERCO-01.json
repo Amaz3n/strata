@@ -1,0 +1,127 @@
+{
+  "scenario": "INTERCO-01",
+  "status": "PASSED",
+  "reviewedFrom": "Intercompany as one ledger with company segments (docs/books-entities.md): a line belongs to the company that owns its account or job; unowned cash, undeposited funds and cards belong to the primary company; each posting adds due-from/due-to legs so every company balances alone, settling what is already owed first. Amounts are integer cents.",
+  "subcases": [
+    {
+      "name": "company-business",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "61edac7b-6388-4fa9-a029-c8db0b082816"
+      },
+      "checks": [
+        {
+          "label": "both companies agree on what is owed after every event; a fault leaves nothing one-sided and the retry posts one mirrored pair; July is closed",
+          "pass": true,
+          "expected": {
+            "byDate": {
+              "2026-07-31": {
+                "landOwesBuilder": 0,
+                "agrees": true
+              },
+              "2026-08-03": {
+                "landOwesBuilder": 50000,
+                "agrees": true
+              },
+              "2026-08-10": {
+                "landOwesBuilder": 70000,
+                "agrees": true
+              },
+              "2026-08-15": {
+                "landOwesBuilder": 82000,
+                "agrees": true
+              },
+              "2026-08-20": {
+                "landOwesBuilder": 52000,
+                "agrees": true
+              },
+              "2026-08-25": {
+                "landOwesBuilder": 56000,
+                "agrees": true
+              },
+              "2026-08-31": {
+                "landOwesBuilder": 61000,
+                "agrees": true
+              }
+            },
+            "atStart": {
+              "landOwesBuilder": 0,
+              "agrees": true
+            },
+            "failureRefused": true,
+            "afterFailure": {
+              "entries": 0,
+              "owed": {
+                "landOwesBuilder": 56000,
+                "agrees": true
+              }
+            },
+            "retry": {
+              "entries": 1,
+              "intercompanyLegs": [
+                2
+              ]
+            },
+            "closedMonthRefused": true,
+            "eachCompanyBalances": true
+          },
+          "observed": {
+            "byDate": {
+              "2026-07-31": {
+                "landOwesBuilder": 0,
+                "agrees": true
+              },
+              "2026-08-03": {
+                "landOwesBuilder": 50000,
+                "agrees": true
+              },
+              "2026-08-10": {
+                "landOwesBuilder": 70000,
+                "agrees": true
+              },
+              "2026-08-15": {
+                "landOwesBuilder": 82000,
+                "agrees": true
+              },
+              "2026-08-20": {
+                "landOwesBuilder": 52000,
+                "agrees": true
+              },
+              "2026-08-25": {
+                "landOwesBuilder": 56000,
+                "agrees": true
+              },
+              "2026-08-31": {
+                "landOwesBuilder": 61000,
+                "agrees": true
+              }
+            },
+            "atStart": {
+              "landOwesBuilder": 0,
+              "agrees": true
+            },
+            "failureRefused": true,
+            "afterFailure": {
+              "entries": 0,
+              "owed": {
+                "landOwesBuilder": 56000,
+                "agrees": true
+              }
+            },
+            "retry": {
+              "entries": 1,
+              "intercompanyLegs": [
+                2
+              ]
+            },
+            "closedMonthRefused": true,
+            "eachCompanyBalances": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T23:08:38.286Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-8b41f1f75176",
+  "finishedAt": "2026-10-08T23:08:40.678Z"
+}

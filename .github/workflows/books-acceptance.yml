@@ -1,0 +1,67 @@
+name: Books acceptance
+
+# Every golden Books scenario against a fresh isolated Supabase stack built from
+# the repository's migrations (scripts/books-acceptance/ci.cjs). No production
+# credentials: the stack mints its own development keys. Real storage runs only
+# against the acceptance bucket, when its secrets are configured; without them
+# STORE-01 reports blocked and the run fails as incomplete.
+on:
+  schedule:
+    - cron: "30 6 * * *"
+  push:
+    branches: [main]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "lib/services/books/**"
+      - "lib/storage/**"
+      - "lib/financials/**"
+      - "supabase/migrations/**"
+      - "scripts/books-acceptance/**"
+
+concurrency:
+  group: books-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scenarios:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Acceptance storage key
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.BOOKS_ACCEPTANCE_R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.BOOKS_ACCEPTANCE_R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.BOOKS_ACCEPTANCE_R2_SECRET_ACCESS_KEY }}
+        run: |
+          if [ -n "$R2_SECRET_ACCESS_KEY" ]; then
+            umask 077
+            printf 'R2_ACCOUNT_ID=%s\nR2_ACCESS_KEY_ID=%s\nR2_SECRET_ACCESS_KEY=%s\nR2_BUCKET=arc-books-acceptance\n' \
+              "$R2_ACCOUNT_ID" "$R2_ACCESS_KEY_ID" "$R2_SECRET_ACCESS_KEY" > "$RUNNER_TEMP/r2.env"
+            echo "STORAGE_ARGS=--storage-env $RUNNER_TEMP/r2.env" >> "$GITHUB_ENV"
+          fi
+      - name: Golden scenarios
+        run: >
+          node scripts/books-acceptance/ci.cjs
+          --workspace "$RUNNER_TEMP/books-stack"
+          --db-port 55480
+          --evidence-dir "$RUNNER_TEMP/books-evidence"
+          $STORAGE_ARGS
+      - name: Remove the storage key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/r2.env"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: books-acceptance-evidence
+          path: ${{ runner.temp }}/books-evidence
+          retention-days: 30

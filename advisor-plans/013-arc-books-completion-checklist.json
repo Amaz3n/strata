@@ -18018,7 +18018,7 @@
       "workstream": "B15",
       "title": "Failure, concurrency, permission and transport acceptance",
       "status": "PARTIAL",
-      "status_basis": "Verified locally (2026-10-08): AUTH-01 role matrix (owner, accountant, Books reviewer, project lead, another organization) across statements, the 1099 report and packages, companies, allocations, journals, package prepare/approve (maker and checker), filing file and adding a company; refusals happen on the server and only filers receive full taxpayer IDs. Fixed: the 1099 report was readable by every report.read role (project leads); now books.read or books.tax. RACE-01 8/8, INTERCO-01 fault-and-retry, CAP-01 interrupted/concurrent runs. Remaining: acceptance in CI (it runs repeatably on an isolated local stack only) and a whole-app browser sweep beyond the Books journeys.",
+      "status_basis": "(2026-10-08) Acceptance runs from nothing with one command, scripts/books-acceptance/ci.cjs: a fresh isolated Supabase stack replayed from all 601 repository migrations, its API, every golden scenario, evidence kept, the stack and volume removed whatever the result. Run locally exactly as CI will: 23 of 23 first-client scenarios pass with real storage, and the stack was gone afterwards. .github/workflows/books-acceptance.yml runs it nightly, on main, on demand and on Books pull requests, with the acceptance bucket key from BOOKS_ACCEPTANCE_R2_* secrets (without them STORE-01 reports blocked and the run fails as incomplete). Earlier: AUTH-01 role matrix, RACE-01, INTERCO-01 fault and retry, CAP-01. Remaining: the first run on GitHub (needs the branch pushed and the three secrets added), and a browser sweep of the whole app beyond the Books journeys.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "no unauthorized data/money transition",
@@ -18063,10 +18063,26 @@
             "All-scenario run (2026-10-08, clean, nothing else on the stack): 22 of 22 implemented scenarios passed; STORE-01 blocked on real storage (B06.4); PAY-01/PAY-02 deferred (B13)."
           ],
           "evidence_dir": "docs/books-evidence/2026-10-08-scenarios"
+        },
+        {
+          "verified_at": "2026-10-08T23:12:44.366681+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/ci.cjs",
+            ".github/workflows/books-acceptance.yml",
+            "docs/books-acceptance-runner.md"
+          ],
+          "test_scenario_ids": [],
+          "commands": [
+            "node scripts/books-acceptance/ci.cjs --workspace NEW --db-port 55600 --evidence-dir NEW --storage-env <key file>"
+          ],
+          "observed_results": [
+            "bootstrap REPLAYED (fresh route, 601 migrations); All scenarios: PASSED (23 of 23); exit 0; no containers left for the run's project."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-ci-run"
         }
       ],
       "remaining_criteria": [
-        "acceptance tests run in CI",
+        "the workflow passes on GitHub (push and BOOKS_ACCEPTANCE_R2_* secrets)",
         "full app has no relevant browser errors or hydration issues (beyond the Books journeys)"
       ],
       "external_dependency": null,
@@ -18165,8 +18181,8 @@
       "id": "B16.2",
       "workstream": "B16",
       "title": "Operator and recovery runbooks",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "docs/books-operations.md (2026-10-08): ownership by area; every scheduled Books job with what it does and what its failure looks like; the deploy procedure (db:pending, rehearsal on the acceptance stack, owner approval, ledger repair, CLI apply in one window with the code deploy); onboarding a new or existing builder and multiple companies; every close blocker with its cure; payroll summaries; ledger repair; recovery and the quarterly incident drill (RESTORE-01 + STORE-01); secrets and outside dependencies by name only. Fixed so every blocker reaches a cure: job cost, AR and AP blockers had no link and the ledger proof had an action no screen called and results nobody saw; the blockers now offer Run ledger proof, and each proof difference becomes a blocking close finding with its cure and a link to the entry, resolved by the next passing proof (close-gates journey desktop and phone; RESTORE-01 proof-repair-and-close). Remaining as acceptance by people: an operator unfamiliar with Arc following it with the first builder (B16.3).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "an operator unfamiliar with implementation completes B15 journeys from these docs",
@@ -18175,15 +18191,48 @@
         "secrets/Vault recovery roles and external dependencies documented without exposing keys",
         "maintenance ownership assigned"
       ],
-      "scenario_ids": [],
-      "evidence": [],
-      "remaining_criteria": [
-        "an operator unfamiliar with implementation completes B15 journeys from these docs",
-        "every blocker links to a real cure",
-        "incident drill restores then operates normally",
-        "secrets/Vault recovery roles and external dependencies documented without exposing keys",
-        "maintenance ownership assigned"
+      "scenario_ids": [
+        "RESTORE-01",
+        "STORE-01",
+        "CLOSE-01"
       ],
+      "evidence": [
+        {
+          "verified_at": "2026-10-08T23:12:44.366681+00:00",
+          "implemented_paths": [
+            "docs/books-operations.md",
+            "docs/README.md",
+            "lib/services/books/reconciliation-rules.ts",
+            "lib/services/books/reconciliation.ts",
+            "lib/services/books/reconciliation-digest.ts",
+            "lib/services/books/rebuild.ts",
+            "lib/services/books/fact-journal-check.ts",
+            "components/books/close-workspace.tsx",
+            "scripts/books-acceptance/browser-seed.cjs",
+            "scripts/books-acceptance/journeys/close-gates.spec.ts",
+            "scripts/books-acceptance/scenarios/restore-01.cjs",
+            "scripts/books-acceptance/expected/RESTORE-01.json",
+            "tests/books-projection-status.test.js"
+          ],
+          "test_scenario_ids": [
+            "RESTORE-01",
+            "STORE-01",
+            "CLOSE-01"
+          ],
+          "commands": [
+            "node scripts/books-acceptance/ci.cjs (fresh stack, all scenarios, storage)",
+            "playwright close-gates desktop + mobile-dark",
+            "node --test tests/books-projection-status.test.js"
+          ],
+          "observed_results": [
+            "RESTORE-01 proof-repair-and-close: 3 open ledger_proof findings with cures block the close; 0 after the repair.",
+            "close-gates journey passed on desktop and phone with the Run ledger proof cure.",
+            "Fresh-stack run: 23 of 23 first-client scenarios pass."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-ci-run"
+        }
+      ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
       "verified_at": null

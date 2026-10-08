@@ -1,4 +1,4 @@
-import { PROJECTION_RUN_SOURCE_TYPE, notifiableFindingCount, projectionFindingWasEvaluated } from "@/lib/services/books/reconciliation-rules"
+import { LEDGER_PROOF_CATEGORY, PROJECTION_RUN_SOURCE_TYPE, ledgerProofFindings, notifiableFindingCount, projectionFindingWasEvaluated } from "@/lib/services/books/reconciliation-rules"
 import "server-only"
 
 import { z } from "zod"
@@ -712,9 +712,9 @@ export async function runOrgReconciliation(orgId: string) {
       ...projectResult.items,
     ]
 
-    // The projection repair sweep owns its own categories; this pass cannot
-    // reproduce them and must not close them.
-    const ownsCategory = (category: string) => !isProjectionCategory(category)
+    // The projection repair sweep and the ledger proof own their own categories;
+    // this pass cannot reproduce them and must not close them.
+    const ownsCategory = (category: string) => !isProjectionCategory(category) && category !== LEDGER_PROOF_CATEGORY
     const plan = await applyReconciliationSync({ orgId, runId, findings: items, ownsCategory, existing })
 
     const status = reconciliationRunStatus({
@@ -1098,4 +1098,33 @@ export async function runNightlyAccountingReconciliation() {
     })
   }
   return { attempted: orgIds.length, completed, failures }
+}
+
+/**
+ * What a full ledger proof found, as findings with their cure. The proof owns
+ * `ledger_proof` alone: a passing proof resolves what it no longer reproduces,
+ * which is how a repair clears its finding.
+ */
+export async function recordLedgerProofFindings(orgId: string, differences: Array<Record<string, unknown> & { type: string }>) {
+  const findings = ledgerProofFindings(differences)
+  const ownsCategory = (category: string) => category === LEDGER_PROOF_CATEGORY
+  const existing = (await loadUnresolvedItems(orgId)).filter((item) => ownsCategory(item.category))
+  if (findings.length === 0 && existing.length === 0) return { opened: 0, resolved: 0 }
+  const run = await ensureReconciliationRunForDay(orgId, new Date().toISOString().slice(0, 10))
+  const plan = await applyReconciliationSync({ orgId, runId: run.runId, findings, ownsCategory, existing })
+  if (plan.newFindingCount > 0) {
+    await recordEvent({
+      orgId,
+      eventType: "accounting_reconciliation_drift",
+      entityType: "accounting_reconciliation_run",
+      entityId: run.runId,
+      payload: {
+        message: `${plan.newFindingCount} ledger ${plan.newFindingCount === 1 ? "entry differs" : "entries differ"} from ${plan.newFindingCount === 1 ? "its source" : "their sources"}`,
+        discrepancy_count: findings.length,
+        new_discrepancy_count: plan.newFindingCount,
+      },
+      channel: "notification",
+    })
+  }
+  return { opened: plan.newFindingCount, resolved: plan.resolveIds.length }
 }

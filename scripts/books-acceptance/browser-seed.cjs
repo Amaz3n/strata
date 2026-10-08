@@ -39,6 +39,12 @@ const JOURNEYS = {
     const invoice = await kit.as(org.owner, () => app("invoices").createInvoice({ input: { invoice_number: "GATE-1", customer_id: client.id, title: "Services", issue: true, issue_date: "2026-07-10", due_date: "2026-07-10",
       sent_to_emails: ["gate@acceptance.example.test"], lines: [{ description: "Services", quantity: 1, unit_cost: 1000, taxable: false, arc_books_gl_account_id: gl("4900") }] } }))
     await kit.as(org.owner, () => app("payments").recordMultiInvoicePayment({ received_at: "2026-07-30T12:00:00Z", method: "check", idempotency_key: `gate-${org.orgId}`, allocations: [{ invoice_id: invoice.id, amount_cents: 100000 }] }))
+    // Cost keyed straight onto a job by hand: the job-cost control blocks it.
+    const projectId = require("node:crypto").randomUUID()
+    kit.sql(`insert into public.projects(id,org_id,name,property_type,created_by) values(${kit.q(projectId)},${kit.q(org.orgId)},'Gate job','residential',${kit.q(org.owner.userId)});
+insert into public.project_financial_settings(org_id,project_id) values(${kit.q(org.orgId)},${kit.q(projectId)}) on conflict do nothing;`)
+    await kit.as(org.owner, () => app("books/bookkeeping").createAdjustingJournal({ entryDate: "2026-07-20", memo: "Job cost keyed by hand",
+      lines: [{ accountCode: "5000", debitCents: 25000, creditCents: 0, projectId }, { accountCode: "3010", debitCents: 0, creditCents: 25000 }] }))
     await kit.drainOutbox(org.orgId)
     await kit.service(() => app("books/projector").projectJournal(org.orgId, { full: true }))
     await kit.as(org.owner, () => app("books/period-close").runBooksCloseChecklist(org.periods["2026-07"].periodId))

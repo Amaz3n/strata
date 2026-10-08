@@ -92,7 +92,7 @@ export async function checkFactJournals(orgId: string, facts: CheckedFact[], pro
     }
     const actual = entryByFact.get(fact.id)
     if (!actual) {
-      differences.push({ fact_id: fact.id, type: "missing_journal" })
+      differences.push({ fact_id: fact.id, type: "missing_journal", source_type: fact.source_type, source_id: fact.source_id })
       continue
     }
     // The database adds the due-from / due-to pair when an entry's lines belong to
@@ -109,7 +109,7 @@ export async function checkFactJournals(orgId: string, facts: CheckedFact[], pro
     const actualNormalized = { entryDate: actual.entry_date, entryKind: actual.entry_kind, memo: actual.memo, postingKey: actual.posting_key.replace(/:repost:\d+$/, ""), policyVersion: actual.policy_version, lines: actualLines }
     const expectedNormalized = normalizedDraft(expected)
     rebuilt.push(expectedNormalized)
-    if (booksDigest(actualNormalized) !== booksDigest(expectedNormalized)) differences.push({ fact_id: fact.id, type: "journal_divergence", expected: expectedNormalized, actual: actualNormalized })
+    if (booksDigest(actualNormalized) !== booksDigest(expectedNormalized)) differences.push({ fact_id: fact.id, entry_id: actual.id, source_type: fact.source_type, source_id: fact.source_id, type: "journal_divergence", expected: expectedNormalized, actual: actualNormalized })
   }
   return { differences, rebuilt }
 }
