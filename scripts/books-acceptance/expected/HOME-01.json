@@ -42,7 +42,7 @@
       }
     },
     "costs-after-the-sale": {
-      "derivation": "A $3,000 grading bill dated 20 July is entered after the 25 July sale while July is open: it reached 1170 and is relieved on the sale date. A $1,200 touch-up dated 3 August is cost of the sold home in August, expensed and labeled. July then closes with the controls tying; a bill dated 28 July cannot post into closed July — it waits as a closed-period finding and July's cost of sales is unchanged.",
+      "derivation": "A $3,000 grading bill dated 20 July is entered after the 25 July sale while July is open: it reached 1170 and is relieved on the sale date. A $1,200 touch-up dated 3 August is cost of the sold home in August, expensed and labeled. July then closes with the controls tying; a bill dated 28 July cannot post into closed July \u2014 it waits as a closed-period finding and July's cost of sales is unchanged.",
       "inputs": {
         "priceCents": 40000000,
         "landCents": 6000000,
@@ -184,6 +184,38 @@
           "completed_homes_control": "passed",
           "warranty_reserve_control": "passed",
           "customer_deposits_control": "passed"
+        }
+      }
+    },
+    "invoice-before-closing": {
+      "derivation": "A $400,000 home sold at closing. Under the closing method an invoice is earned when issued, so a $5,000 kitchen upgrade invoiced June 20 posts AR 5,000 and revenue 5,000. Settlement is refused while it stands, because the closing invoice bills the whole price and would count the upgrade twice. Credited June 25 (revenue back to zero), the home closes July 25: the closing invoice is paid by the wire, and revenue is the $400,000 price exactly once. A $2,000 fence invoiced August 5, after the sale, is revenue when issued and open in AR.",
+      "inputs": {
+        "priceCents": 40000000,
+        "landCents": 6000000,
+        "constructionCents": 20000000,
+        "upgradeDate": "2026-06-20",
+        "upgradeCents": 500000,
+        "creditDate": "2026-06-25",
+        "saleDate": "2026-07-25",
+        "afterSaleDate": "2026-08-05",
+        "afterSaleCents": 200000
+      },
+      "expected": {
+        "beforeSale": {
+          "1100": 500000,
+          "2350": 0,
+          "4000": -500000
+        },
+        "refusedWhileOpen": "refused",
+        "atSale": {
+          "1100": 0,
+          "2350": 0,
+          "4000": -40000000
+        },
+        "afterLaterInvoice": {
+          "1100": 200000,
+          "2350": 0,
+          "4000": -40200000
         }
       }
     }

@@ -99,19 +99,26 @@ async function deposit(kit, org, home, { date, cents }) {
 }
 
 // The closing desk's own path: schedule, clear every gate, settle.
-async function settle(kit, org, home, date) {
-  const closings = app("closings")
+function scheduleSale(kit, org, home) {
   const closingId = randomUUID()
   kit.sql(`insert into public.closings(id,org_id,project_id,lot_id,community_id,status,buyer_contact_id,created_by) values(${kit.q(closingId)},${kit.q(org.orgId)},${kit.q(home.projectId)},${kit.q(home.lotId)},${kit.q(org.communityId)},'projected',${kit.q(home.buyerId)},${kit.q(org.owner.userId)})`)
-  await kit.as(org.owner, () => closings.scheduleClosing({ closingId, scheduledDate: date }))
-  for (const item of kit.rows(`select id from public.closing_checklist_items where closing_id=${kit.q(closingId)} and is_gate`))
-    await kit.as(org.owner, () => closings.updateClosingChecklistItem({ itemId: item.id, status: "waived", notes: "Verified at the closing table by the title agent." }))
-  await kit.as(org.owner, () => closings.markClearedToClose(closingId))
+  return closingId
+}
+
+async function settle(kit, org, home, date, closingId = scheduleSale(kit, org, home)) {
+  const closings = app("closings")
+  const status = () => kit.rows(`select status from public.closings where id=${kit.q(closingId)}`)[0].status
+  if (status() === "projected") {
+    await kit.as(org.owner, () => closings.scheduleClosing({ closingId, scheduledDate: date }))
+    for (const item of kit.rows(`select id from public.closing_checklist_items where closing_id=${kit.q(closingId)} and is_gate`))
+      await kit.as(org.owner, () => closings.updateClosingChecklistItem({ itemId: item.id, status: "waived", notes: "Verified at the closing table by the title agent." }))
+  }
+  if (status() !== "cleared_to_close") await kit.as(org.owner, () => closings.markClearedToClose(closingId))
   // The acceptance stack has no file storage, so filing the signed statement PDF
   // (after the closing is recorded) is the one step allowed to fail here.
   await kit.as(org.owner, () => closings.settleClosing({ closingId, actualDate: date, paymentMethod: "wire", paymentReference: `WIRE-${home.lotNumber}` }))
     .catch((error) => { if (!/^Closing is recorded; retry completion after resolving the statement: Missing R2/.test(error.message)) throw error })
-  if (kit.rows(`select status from public.closings where id=${kit.q(closingId)}`)[0].status !== "closed") throw Error("Closing was not recorded")
+  if (status() !== "closed") throw Error("Closing was not recorded")
   await kit.drainOutbox(org.orgId)
   await project(kit, org)
   return closingId
@@ -277,6 +284,41 @@ async function closingReversal(kit, expected, check) {
   return { orgId: org.orgId, closingId }
 }
 
+// Under the closing method an invoice is a sale document, earned when issued.
+// The closing invoice bills the home's whole price, so settlement is refused
+// while an ordinary invoice on the home would count part of it twice. Credited,
+// the home closes and earns its price exactly once; an invoice after the sale is
+// earned when issued.
+async function invoiceBeforeClosing(kit, expected, check) {
+  const input = expected.inputs
+  const org = await builder(kit, "HOME-01 invoice before closing", [{ name: "Lot 1 — Aspen plan", priceCents: input.priceCents }])
+  const [home] = org.homes
+  await landAndStart(kit, org, home, { date: "2026-06-02", startDate: "2026-06-03", cents: input.landCents })
+  await bill(kit, org, home.projectId, "2026-06-10", input.constructionCents)
+  await kit.as(org.owner, () => app("books/inventory").completeProjectInventory({ projectId: home.projectId, date: "2026-07-01", evidenceUrl: `${EVIDENCE}/completion` }))
+  const invoice = (date, cents, title) => kit.as(org.owner, () => app("invoices").createInvoice({ input: { project_id: home.projectId, invoice_number: `UP-${randomUUID().slice(0, 6)}`, customer_id: home.buyerId,
+    title, issue: true, issue_date: date, due_date: date, tax_rate: 0, sent_to_emails: [`buyer-${home.lotNumber}@acceptance.example.test`],
+    lines: [{ description: title, quantity: 1, unit_cost: cents / 100, taxable: false }] } }))
+  const upgrade = await invoice(input.upgradeDate, input.upgradeCents, "Kitchen upgrade")
+  await kit.drainOutbox(org.orgId)
+  await project(kit, org)
+  const beforeSale = balances(kit, org, { projectId: home.projectId, codes: ["1100", "2350", "4000"] })
+  const closingId = scheduleSale(kit, org, home)
+  const refused = await refusal(() => settle(kit, org, home, input.saleDate, closingId))
+  await kit.as(org.owner, () => app("receivable-adjustments").createReceivableAdjustment({ invoiceId: upgrade.id, adjustmentType: "credit_memo", amountCents: input.upgradeCents, effectiveDate: input.creditDate, reason: "Upgrade moves onto the closing statement", idempotencyKey: randomUUID() }))
+  await kit.drainOutbox(org.orgId)
+  await settle(kit, org, home, input.saleDate, closingId)
+  const atSale = balances(kit, org, { projectId: home.projectId, codes: ["1100", "2350", "4000"] })
+  await invoice(input.afterSaleDate, input.afterSaleCents, "Fence added after closing")
+  await kit.drainOutbox(org.orgId)
+  await project(kit, org)
+  check.equal("the closing waits for the earlier invoice to be credited; revenue is the price once, then the later invoice", expected.expected, {
+    beforeSale, refusedWhileOpen: /outside the closing statement/.test(refused) ? "refused" : refused, atSale,
+    afterLaterInvoice: balances(kit, org, { projectId: home.projectId, codes: ["1100", "2350", "4000"] }),
+  })
+  return { orgId: org.orgId, closingId, refused }
+}
+
 module.exports = {
   subcases: {
     "sale-relief-by-component": saleReliefByComponent,
@@ -284,6 +326,7 @@ module.exports = {
     "reviewed-development-allocation": reviewedDevelopmentAllocation,
     "warranty-consumption": warrantyConsumption,
     "closing-reversal": closingReversal,
+    "invoice-before-closing": invoiceBeforeClosing,
   },
 }
 module.exports.helpers = { builder, bill, landAndStart, capitalizedInterest, settle, balances, reliefByComponent }

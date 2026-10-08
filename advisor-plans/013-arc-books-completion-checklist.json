@@ -3031,8 +3031,8 @@
       "id": "B02.1",
       "workstream": "B02",
       "title": "One complete native invoice accounting contract",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified locally (BILL-01 general-invoice-income-and-tax, progress-invoice-retainage, progress-tax-retainage-release, account-rename-preserves-posted-history, cross-month-credit-and-write-off; HOME-01 invoice-before-closing): general invoices earn on their own income lines and tax; job billing is deferred to contract liabilities; a taxable progress invoice with retainage ties AR + retainage receivable to billing + tax to the cent; credits keep the invoice's income split even after an income account is retired; settlement refuses to bill a home whose price an earlier invoice already counted. Earlier evidence entries describe the retired native-ledger work and are kept for history.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "general/service invoices recognize under approved policy",
@@ -3581,6 +3581,37 @@
           ],
           "external_dependency": null,
           "reviewer": null
+        },
+        {
+          "verified_at": "2026-10-08T01:28:29.867492+00:00",
+          "implemented_paths": [
+            "lib/services/receivable-adjustments.ts",
+            "lib/services/books/closed-period-guard.ts",
+            "lib/services/books/ledger.ts",
+            "lib/services/closing-readiness.ts",
+            "lib/services/retainage.ts",
+            "app/(app)/projects/[id]/actions.ts",
+            "scripts/books-acceptance/scenarios/bill-01.cjs",
+            "scripts/books-acceptance/scenarios/home-01.cjs",
+            "docs/books-revenue-recognition.md"
+          ],
+          "test_scenario_ids": [
+            "BILL-01",
+            "HOME-01"
+          ],
+          "commands": [
+            "scenario-runner BILL-01 (8/8), HOME-01 (6/6) and full regression",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "Document tie-out: gross 1,000.00 taxed 8% before retainage, 10% withheld, total 980.00; AR 980.00 + 1110 100.00 = 2350 1,000.00 + 2250 80.00.",
+            "Closing method (policy unchanged, per REV-01): an invoice is a sale document, earned when issued. The closing invoice bills the whole price, so settlement is now refused while an ordinary invoice on the home stands uncredited; credited, the home closes with revenue of the price exactly once; an invoice after the sale is earned when issued.",
+            "Considered and rejected: deferring pre-closing invoices on closing-method jobs to 2350. It contradicted the reviewed REV-01 policy and broke a land company selling lots by invoice without the closing desk (ENTITY-01).",
+            "Retired income account: a credit memo now posts to the invoice's original income accounts even when one was deactivated after posting (previously it failed to post and the ledger kept a receivable the invoice no longer had). Only a credit's own copied income lines may use a retired account."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-07-customer-invoices"
         }
       ],
       "remaining_criteria": [
@@ -3598,8 +3629,8 @@
       "id": "B02.2",
       "workstream": "B02",
       "title": "Credits, writeoffs, voids, returns and collections",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified locally (BILL-01 cross-month-credit-and-write-off, limits-and-retries, voids, installments-credit-refund-count-once, progress-tax-retainage-release): August closes; a credit dated into it is refused with the cure; September carries the credit, receipt and write-off without rewriting August; credits and write-offs cannot exceed what is owed; another organization's invoice cannot take a receipt (alone or split) or a credit; replayed receipt and credit keys record once; a void reverses the whole invoice and is refused once money is received; retainage released the following month moves 1110 to 1100 with no new income or tax. Bound: a cross-month customer refund is covered by the same-month refund case and the closed-month date guard, not a dedicated cross-month refund case.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "cross-month partial credit/refund and retainage release reproduce historical AR and revenue",
@@ -4226,6 +4257,39 @@
           ],
           "external_dependency": null,
           "reviewer": null
+        },
+        {
+          "verified_at": "2026-10-08T01:28:29.867492+00:00",
+          "implemented_paths": [
+            "lib/services/receivable-adjustments.ts",
+            "lib/services/books/closed-period-guard.ts",
+            "lib/services/books/ledger.ts",
+            "lib/services/closing-readiness.ts",
+            "lib/services/retainage.ts",
+            "app/(app)/projects/[id]/actions.ts",
+            "scripts/books-acceptance/scenarios/bill-01.cjs",
+            "scripts/books-acceptance/scenarios/home-01.cjs",
+            "docs/books-revenue-recognition.md"
+          ],
+          "test_scenario_ids": [
+            "BILL-01",
+            "HOME-01"
+          ],
+          "commands": [
+            "scenario-runner BILL-01 (8/8), HOME-01 (6/6) and full regression",
+            "pnpm test:financials",
+            "npx tsc --noEmit",
+            "pnpm lint"
+          ],
+          "observed_results": [
+            "Closed-month credits (found by these tests): a credit memo or write-off dated into a closed month was accepted, so the invoice balance moved while its posting was blocked. It is now refused: date it in an open month or reopen the month. Voiding a credit or write-off posted in a closed month is refused the same way.",
+            "Write-off: Dr 6090 / Cr 1100, income and tax untouched; invoice reads paid with nothing owed.",
+            "Limits: credit or write-off of balance + 1 cent refused; receipt to another builder's invoice refused alone and split; credit on another builder's invoice refused; the other builder's ledger untouched.",
+            "Retries: the same receipt and credit idempotency keys replay without a second row.",
+            "Retainage release (jobs without a schedule of values): the release logic moved from the page action into lib/services/retainage.ts (releaseProjectRetainage); four unused retainage functions that changed status without an invoice were deleted.",
+            "Regression green (13 scenarios); test:financials 2,521 pass; tsc clean; lint only the other session's existing error."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-07-customer-invoices"
         }
       ],
       "remaining_criteria": [

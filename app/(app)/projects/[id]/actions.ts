@@ -78,6 +78,7 @@ import { createDrawScheduleFromContract } from "@/lib/services/proposals"
 import { invoiceDrawSchedule, linkInvoiceToDraw, unlinkInvoiceFromDraw } from "@/lib/services/draws"
 import { listInvoices } from "@/lib/services/invoices"
 import { getNextInvoiceNumber, releaseInvoiceNumberReservation } from "@/lib/services/invoice-numbers"
+import { releaseProjectRetainage } from "@/lib/services/retainage"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { requireProjectPermission } from "@/lib/services/permissions"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
@@ -1200,84 +1201,11 @@ export async function releaseProjectRetainageAction(
   input: { amount_cents: number; title: string; notes?: string }
 ) {
   return run(async () => {
-      const parsed = z.object({
-        amount_cents: z.number().int().positive(),
-        title: z.string().trim().min(1).max(200),
-        notes: z.string().trim().max(5000).optional(),
-      }).parse(input)
-      const { supabase, orgId, userId } = await requireOrgContext()
-
-      await requireAuthorization({
-        permission: "invoice.write",
-        userId,
-        orgId,
-        projectId,
-        supabase,
-        logDecision: true,
-        resourceType: "retainage",
-        resourceId: projectId,
-      })
-      await requireAuthorization({
-        permission: "invoice.send",
-        userId,
-        orgId,
-        projectId,
-        supabase,
-        logDecision: true,
-        resourceType: "retainage",
-        resourceId: projectId,
-      })
-
-      const next = await getNextInvoiceNumber(orgId, projectId)
-      const serviceClient = createServiceSupabaseClient()
-      const issueDate = new Date().toISOString().slice(0, 10)
-
-      const { data, error } = await serviceClient.rpc("release_project_retainage_atomic", {
-        p_org_id: orgId,
-        p_project_id: projectId,
-        p_actor_id: userId,
-        p_amount_cents: parsed.amount_cents,
-        p_invoice_number: next.number,
-        p_reservation_id: next.reservation_id ?? null,
-        p_title: parsed.title,
-        p_notes: parsed.notes ?? null,
-        p_issue_date: issueDate,
-        p_due_date: null,
-      })
-
-      if (error || !data) {
-        if (next.reservation_id) {
-          await releaseInvoiceNumberReservation(next.reservation_id, orgId)
-        }
-        throw new Error(`Failed to release retainage: ${error?.message ?? "No result returned"}`)
-      }
-
-      const result = data as { invoice_id: string; released_cents: number }
-      await recordEvent({
-        orgId,
-        eventType: "retainage_released",
-        entityType: "invoice",
-        entityId: result.invoice_id,
-        payload: { project_id: projectId, amount_cents: result.released_cents },
-      })
-      await recordAudit({
-        orgId,
-        actorId: userId,
-        action: "insert",
-        entityType: "retainage_release",
-        entityId: result.invoice_id,
-        after: {
-          project_id: projectId,
-          invoice_id: result.invoice_id,
-          amount_cents: result.released_cents,
-        },
-      })
-
-      revalidatePath(`/projects/${projectId}`)
-      revalidatePath(`/projects/${projectId}/financials`)
-      revalidatePath(`/projects/${projectId}/financials/billing`)
-
-      return { success: true, invoice_id: result.invoice_id }
+    const result = await releaseProjectRetainage(projectId, input)
+    revalidatePath(`/projects/${projectId}`)
+    revalidatePath(`/projects/${projectId}/financials`)
+    revalidatePath(`/projects/${projectId}/financials/billing`)
+    return { success: true, invoice_id: result.invoice_id }
   })
 }
 

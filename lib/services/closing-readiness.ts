@@ -46,6 +46,7 @@ export async function assertClosingReadiness(input: ClosingScope) {
   if (punch.count === null || punch.count === undefined) throw new Error("Punch list count is unavailable")
   if (punch.count > 0) throw new Error("Open punch items must be cleared before closing")
   if (!waivers.ready) throw new Error(`Final waivers outstanding: ${waivers.missing.join(", ")}`)
+  await assertNoBillingOutsideClosing(input)
   const fileIds = [...new Set(gates.flatMap(gate => gate.file_id ? [gate.file_id] : []))]
   for (let offset = 0; offset < fileIds.length; offset += 100) {
     const batch = fileIds.slice(offset, offset + 100)
@@ -55,4 +56,25 @@ export async function assertClosingReadiness(input: ClosingScope) {
     const present = new Set((data ?? []).map(row => row.id))
     if (batch.some(id => !present.has(id))) throw new Error("Closing evidence file is missing or belongs to another home")
   }
+}
+
+/**
+ * The closing invoice bills the home's whole price. An ordinary invoice already
+ * issued on the home would bill part of it twice, so it is credited or voided
+ * first; money taken before closing is collected as a deposit.
+ */
+async function assertNoBillingOutsideClosing(input: ClosingScope) {
+  const invoices = await readAllRows((from, to) => input.supabase.from("invoices").select("id,invoice_number,total_cents")
+    .eq("org_id", input.orgId).eq("project_id", input.projectId).not("status", "in", "(draft,void)").is("metadata->>invoice_kind", null)
+    .order("id").range(from, to), { cap: 1001, label: "Unable to verify the home's invoices" })
+  if (invoices.truncated) throw new Error("This home has more invoices than can be verified; reconcile them before closing")
+  if (!invoices.rows.length) return
+  const credits = await readAllRows((from, to) => input.supabase.from("receivable_adjustments").select("invoice_id,amount_cents")
+    .eq("org_id", input.orgId).eq("adjustment_type", "credit_memo").eq("status", "posted").in("invoice_id", invoices.rows.map((row) => row.id))
+    .order("id").range(from, to), { cap: 10001, label: "Unable to verify credits on the home's invoices" })
+  if (credits.truncated) throw new Error("This home has more credits than can be verified; reconcile them before closing")
+  const credited = new Map<string, number>()
+  for (const row of credits.rows) credited.set(row.invoice_id, (credited.get(row.invoice_id) ?? 0) + Number(row.amount_cents))
+  const open = invoices.rows.find((row) => Number(row.total_cents) - (credited.get(row.id) ?? 0) > 0)
+  if (open) throw new Error(`Invoice ${open.invoice_number ?? open.id} bills this home outside the closing statement. The closing invoice bills the whole price, so credit or void it first; collect money before closing as a deposit.`)
 }

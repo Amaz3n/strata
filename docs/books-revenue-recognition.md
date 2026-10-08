@@ -136,6 +136,15 @@ Dr  1110  Retainage receivable          R
     Cr  2350  Contract liabilities            B
 ```
 
+**Credits, write-offs and voids (B02.2).** A credit memo reverses what its invoice
+posted: on a job, contract liabilities; on an invoice earned when issued, the
+invoice's own income accounts in proportion to its lines (even an account since
+retired from the chart), plus any tax it credits. A write-off is Dr 6090 Bad debt
+expense / Cr 1100 and leaves income and tax alone. Neither may exceed what is still
+owed, and neither may be dated, or voided, in a closed month: the cure is to date it
+in an open month or reopen the month. A void reverses the whole invoice on its own
+date and is refused once anything is received on it (credit or refund instead).
+
 ### 4c. Revenue is earned — percentage of completion
 Run at period close for every percentage-of-completion project.
 
@@ -257,6 +266,10 @@ costs are an asset until the sale, not job cost:
 - **Construction.** Bills, expenses and labor on the home debit 1160 until
   completion, then 1170. Eligible interest actually incurred is capitalized from
   6060 into the home.
+- **One sale document.** Under the closing method an invoice is a sale document and
+  is earned when issued. The closing invoice bills the home's whole price, so
+  settlement is refused while an ordinary invoice on that home stands uncredited;
+  money taken before closing is collected as a deposit.
 - **Sale.** Settlement applies only that home's deposits (each at what is still
   available: received, less refunds, less any earlier application), books the
   revenue above, and relieves inventory to 5000 **by component** — land and

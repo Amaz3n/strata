@@ -16,6 +16,7 @@ import { recordEvent } from "@/lib/services/events";
 
 const idRowSchema = z.object({ id: z.string().uuid() });
 const accountRowSchema = z.object({ id: z.string().uuid(), code: z.string() });
+const creditedIncomeSchema = z.array(z.object({ account_code: z.string() }));
 const journalRowSchema = z.object({
   id: z.string().uuid(),
   entry_date: z.string(),
@@ -131,18 +132,21 @@ async function resolveAccountIds(
   orgId: string,
   accountCodes: string[],
   includeInactive = false,
+  /** Codes a correction may post to although retired: the original document's own accounts. */
+  originalCodes: string[] = [],
 ) {
   const service = createServiceSupabaseClient();
+  const lookup = async (codes: string[], inactive: boolean) => {
+    let query = service.from("gl_accounts").select("id, code").eq("org_id", orgId);
+    if (!inactive) query = query.eq("active", true);
+    const { data, error } = await query.in("code", codes);
+    if (error) throw new Error(`Failed to resolve GL accounts: ${error.message}`);
+    return z.array(accountRowSchema).parse(data ?? []);
+  };
   const uniqueCodes = Array.from(new Set(accountCodes));
-  let query = service
-    .from("gl_accounts")
-    .select("id, code")
-    .eq("org_id", orgId);
-  if (!includeInactive) query = query.eq("active", true);
-  const { data, error } = await query.in("code", uniqueCodes);
-  if (error) throw new Error(`Failed to resolve GL accounts: ${error.message}`);
-  const rows = z.array(accountRowSchema).parse(data ?? []);
-  const byCode = new Map(rows.map((row) => [row.code, row.id]));
+  const byCode = new Map((await lookup(uniqueCodes, includeInactive)).map((row) => [row.code, row.id]));
+  const retired = uniqueCodes.filter((code) => !byCode.has(code) && originalCodes.includes(code));
+  if (retired.length) for (const row of await lookup(retired, true)) byCode.set(row.code, row.id);
   const missing = uniqueCodes.filter((code) => !byCode.has(code));
   if (missing.length > 0)
     throw new Error(
@@ -315,9 +319,16 @@ export async function projectBooksFactAndJournalForService(input: {
   reversalReason: string;
 }) {
   assertBalancedJournalDraft(input.draft);
+  // A credit memo reverses income on the accounts its invoice was billed to,
+  // even when one has since been retired from the chart.
+  const creditedIncome = input.fact.sourceType === "receivable_adjustment"
+    ? (creditedIncomeSchema.safeParse(input.fact.payload.revenue_lines).data ?? []).map((row) => row.account_code)
+    : [];
   const accountIds = await resolveAccountIds(
     input.orgId,
     input.draft.lines.map((line) => line.accountCode),
+    false,
+    creditedIncome,
   );
   const service = createServiceSupabaseClient();
   const { data, error } = await service.rpc(
