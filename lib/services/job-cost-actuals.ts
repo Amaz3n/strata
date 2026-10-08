@@ -35,7 +35,9 @@ export type JobCostSourceType =
   | "bank_transaction"
   | "inventory_event"
   | "payroll_import"
-  | "payroll_correction";
+  | "payroll_correction"
+  | "cost_allocation"
+  | "opening_balance";
 
 /** An entry is `posted` from birth; the only transition is voiding it. */
 export type JobCostEntryStatus = "posted" | "voided";

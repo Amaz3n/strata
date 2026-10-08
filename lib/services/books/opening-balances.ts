@@ -20,7 +20,9 @@ export type OpeningBalanceLineInput = {
     | "fixed_asset"
     | "deposit"
     | "equity"
-    | "other";
+    | "other"
+    | "land"
+    | "home_inventory";
   sourceEntityType?: string;
   sourceEntityId?: string;
   projectId?: string;
@@ -60,6 +62,7 @@ function validateLines(lines: OpeningBalanceLineInput[], cutoverDate: string) {
   let creditTotalCents = 0;
   const requiredSubledger: Record<string, OpeningBalanceLineInput["subledgerType"]> = {
     "1000": "bank", "1100": "ar", "1110": "ar", "2010": "ap", "2300": "deposit", "2000": "ap", "2100": "credit_card", "2400": "loan", "2500": "loan",
+    "1120": "land",
   };
   for (const [index, line] of lines.entries()) {
     const at = `Line ${index + 1}`;
@@ -73,7 +76,7 @@ function validateLines(lines: OpeningBalanceLineInput[], cutoverDate: string) {
     if (expected && line.subledgerType !== expected)
       issues.push(`${at}: account ${line.accountCode} is a ${expected} control account; mark the line as ${expected}.`);
     if (expected && !line.sourceEntityType && !line.sourceEntityId && !line.companyId && !line.projectId &&
-      !line.details?.existing_entity_id && !line.details?.customer_id && !line.details?.cash_account_id)
+      !line.details?.existing_entity_id && !line.details?.customer_id && !line.details?.cash_account_id && !line.details?.lot_id)
       issues.push(`${at}: say which customer, vendor, account or document this control-account balance belongs to.`);
     // An open invoice, bill or deposit comes over as the document it is: its own
     // number, date and party. A missing due date stays missing.
@@ -86,6 +89,19 @@ function validateLines(lines: OpeningBalanceLineInput[], cutoverDate: string) {
       else if (documentDate > cutoverDate) issues.push(`${at}: the document is dated after cutover; it belongs after the opening.`);
       if (line.subledgerType === "ap" ? !line.companyId : !line.details?.customer_id) issues.push(`${at}: name the ${party}.`);
       if (line.subledgerType === "ap" && !line.projectId) issues.push(`${at}: name the job this bill belongs to.`);
+    }
+    // Land opens per lot and a spec home per job, so the lot's basis and the
+    // home's job cost agree with the books from cutover.
+    if (["1160", "1170"].includes(line.accountCode) && line.projectId && line.subledgerType !== "home_inventory")
+      issues.push(`${at}: a home's inventory on ${line.accountCode} opens as home_inventory on its job.`);
+    if (line.subledgerType === "land" && typeof line.details?.lot_id !== "string")
+      issues.push(`${at}: name the lot this land is.`);
+    if (line.subledgerType === "home_inventory") {
+      if (!["1160", "1170"].includes(line.accountCode)) issues.push(`${at}: home inventory opens on 1160 (under construction) or 1170 (completed).`);
+      if (!line.projectId) issues.push(`${at}: name the home's job.`);
+      const completedOn = line.details?.completed_on;
+      if (line.accountCode === "1170" && (typeof completedOn !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(completedOn) || completedOn > cutoverDate))
+        issues.push(`${at}: give the completed home its completion date, on or before cutover.`);
     }
     // A check or deposit the bank had not cleared at cutover is its own opening
     // line, so the first statements can clear exactly that item.

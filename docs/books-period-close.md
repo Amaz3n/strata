@@ -148,3 +148,14 @@ source on its own date and resolves exactly that finding.
   due date stays missing ("no due date" in aging). An opening batch missing any
   of this is refused with every fix listed at once, and cutover blockers read as
   fixes rather than codes.
+- **Opening land and homes.** A production builder's owned lot opens on 1120 as a
+  `land` line naming the lot; posting makes the opening the lot's acquisition
+  (owned, at that basis, on its original date). A spec home opens on 1160, or on
+  1170 with its completion date once finished, as a `home_inventory` line on its
+  job, after the job adopts its inventory policy (effective on or before any
+  completion); posting writes the job-cost record the job-cost control ties to.
+  Plain lines on those accounts are refused, a lot or home opens on one line, and
+  a lot that already has basis cannot open again. Reversing the opening returns
+  the lot to controlled, voids the homes' opening job cost and clears the
+  completion, refused once the lot has started or been sold, or the home has since
+  completed or sold.

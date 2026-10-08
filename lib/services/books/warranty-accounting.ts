@@ -28,7 +28,7 @@ export async function getWarrantyCostSources(visitId: string) {
   const service = createServiceSupabaseClient()
   const { data: visit, error } = await service.from("warranty_service_visits").select("project_id").eq("org_id",context.orgId).eq("id",z.string().uuid().parse(visitId)).single()
   if (error) throw new Error(`Visit not found: ${error.message}`)
-  const sources = await collectBooksRows((from,to) => service.from("job_cost_entries").select("id,source_type,incurred_on,cost_cents,metadata").eq("org_id",context.orgId).eq("project_id",visit.project_id).eq("status","posted").gt("cost_cents",0).neq("source_type","inventory_event").order("id").range(from,to))
+  const sources = await collectBooksRows((from,to) => service.from("job_cost_entries").select("id,source_type,incurred_on,cost_cents,metadata").eq("org_id",context.orgId).eq("project_id",visit.project_id).eq("status","posted").gt("cost_cents",0).not("source_type","in","(inventory_event,opening_balance)").order("id").range(from,to))
   return sources.map(row => ({ id: row.id, incurredOn: row.incurred_on, amountCents: Number(row.cost_cents), label: typeof row.metadata?.description === "string" ? row.metadata.description : String(row.source_type).replaceAll("_", " ") }))
 }
 const approvalSchema = z.object({ visitId: z.string().uuid(), date: z.string().date(), evidenceUrl: z.string().url().startsWith("https://"), sources: z.array(z.object({ jobCostEntryId: z.string().uuid(), amountCents: z.number().int().safe().positive() })).min(1).max(100) })

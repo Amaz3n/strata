@@ -17743,8 +17743,8 @@
       "id": "B15.1",
       "workstream": "B15",
       "title": "Two entry routes and first normal transaction",
-      "status": "PARTIAL",
-      "status_basis": "Greenfield and migration routes verified locally (2026-10-08): GREEN-01 (launch waits for a period and no connected system, takes the exact attestation once, posts nothing for a zero opening, records audit and event once; the first invoice, bill and expense post and July reads them) with a phone and desktop browser journey; MIG-01 (above, B03.3) for an existing builder, including a chart that already uses the intercompany codes. Remaining: a migrated opening with land and homes-in-progress inventory agreeing to the reference is not exercised; migrated payroll liabilities beyond withholding wait for B13.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified locally (2026-10-08): GREEN-01 (greenfield, browser on phone and desktop) and MIG-01 builder-import, chart-collision and land-and-homes. A production builder's owned lot opens on 1120 as a land line and the opening becomes its acquisition; a spec home opens on 1160 (or 1170 with its completion date) as home_inventory on its job with the job-cost record, so the land, completed-home and job-cost controls tie at cutover and after July's first bill; plain lines on those accounts, a land line without its lot and a completed home without its date are refused with every fix named; a lot cannot open twice; reversing the opening returns the lot, voids the homes' opening cost and clears the completion. New migration 20261008040000_books_opening_inventory (pending production approval). Bounded: migrated payroll liabilities beyond withholding wait for payroll (B13, not day one).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "greenfield activation proves zero or reviewed opening position",
@@ -17783,12 +17783,42 @@
             "All-scenario run (2026-10-08, clean, nothing else on the stack): 22 of 22 implemented scenarios passed; STORE-01 blocked on real storage (B06.4); PAY-01/PAY-02 deferred (B13)."
           ],
           "evidence_dir": "docs/books-evidence/2026-10-08-scenarios"
+        },
+        {
+          "verified_at": "2026-10-08T17:28:45.764155+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261008040000_books_opening_inventory.sql",
+            "lib/services/books/opening-balances.ts",
+            "app/(app)/books/actions.ts",
+            "components/books/opening-balances-wizard.tsx",
+            "lib/services/job-cost-actuals.ts",
+            "lib/services/books/warranty-accounting.ts",
+            "scripts/books-acceptance/scenarios/mig-01.cjs",
+            "scripts/books-acceptance/expected/MIG-01.json",
+            "docs/books-period-close.md"
+          ],
+          "test_scenario_ids": [
+            "MIG-01",
+            "HIST-01",
+            "HOME-01",
+            "ENTITY-01",
+            "RESTORE-01",
+            "BANK-01"
+          ],
+          "commands": [
+            "scenario-runner MIG-01 (and HIST/HOME/ENTITY/RESTORE/BANK regression)",
+            "pnpm test:financials",
+            "pnpm lint && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit"
+          ],
+          "observed_results": [
+            "MIG-01 3/3 including land-and-homes and its reversal; HIST-01, HOME-01, ENTITY-01, RESTORE-01 and BANK-01 all pass after the migration.",
+            "test:financials 2,527 pass, 0 fail; tsc clean; lint clean apart from another session's file.",
+            "Fixed on the way: the land-ownership guard accepted only a land-acquisition journal as proof of basis, so an opening could never own a lot; it now also accepts the posted opening that names the lot. A completed home whose inventory policy took effect after its completion is refused with that rule in words."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-opening-inventory"
         }
       ],
-      "remaining_criteria": [
-        "migrated land and homes-in-progress inventory agreeing to the external reference",
-        "migrated payroll liabilities (deferred with B13)"
-      ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
       "verified_at": null

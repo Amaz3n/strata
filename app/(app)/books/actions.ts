@@ -1056,6 +1056,8 @@ const openingLineSchema = z.object({
       "deposit",
       "equity",
       "other",
+      "land",
+      "home_inventory",
     ])
     .optional(),
   sourceEntityType: z.string().optional(),

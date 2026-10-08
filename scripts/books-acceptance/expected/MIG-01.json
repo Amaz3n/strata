@@ -137,6 +137,65 @@
           "dueTo": 50000
         }
       }
+    },
+    "land-and-homes": {
+      "inputs": {
+        "openings": {
+          "landCents": 18000000,
+          "specCents": 26000000,
+          "completedCents": 39000000
+        },
+        "julyBillCents": 1500000
+      },
+      "derivation": "June 30: lot 6 owned at 180,000.00 (bought 2025-11-14), the lot 7 spec home 260,000.00 into construction, the lot 8 spec home 390,000.00 completed 2026-05-20; retained earnings 830,000.00. A batch with a land line not marked land, a home line not marked home_inventory and a completed home with no date is refused with three fixes. Posted, lot 6 is owned with basis 180,000.00 acquired 2025-11-14, lot 7 carries 260,000.00 of job cost, lot 8 carries 390,000.00 and is completed 2026-05-20. A second opening on lot 6 is refused. The land, completed-home and job-cost controls pass at cutover and again after July's 15,000.00 drywall bill on lot 7. Reversing the opening on July 31 returns lot 6 to controlled with no basis, voids the homes' opening job cost (lot 7 keeps July's 15,000.00) and clears lot 8's completion; the controls still pass.",
+      "expected": {
+        "mistakesRefused": 3,
+        "trialBalance": {
+          "1120": 18000000,
+          "1160": 26000000,
+          "1170": 39000000,
+          "3100": 83000000
+        },
+        "lot": {
+          "status": "owned",
+          "basis": 18000000,
+          "acquired": "2025-11-14"
+        },
+        "homes": {
+          "specJobCost": 27500000,
+          "completedJobCost": 39000000,
+          "completedOn": "2026-05-20"
+        },
+        "landTwiceRefused": true,
+        "atCutover": {
+          "completed_homes_control": "passed",
+          "job_cost_control": "passed",
+          "land_inventory_control": "passed",
+          "trial_balance": "passed"
+        },
+        "afterJuly": {
+          "completed_homes_control": "passed",
+          "job_cost_control": "passed",
+          "land_inventory_control": "passed",
+          "trial_balance": "passed"
+        }
+      },
+      "expectedAfterReversal": {
+        "lot": {
+          "status": "controlled",
+          "basis": null,
+          "acquisition": null
+        },
+        "specJobCost": 1500000,
+        "completedJobCost": 0,
+        "completedOn": null,
+        "controls": {
+          "completed_homes_control": "passed",
+          "job_cost_control": "passed",
+          "land_inventory_control": "passed",
+          "trial_balance": "passed"
+        }
+      }
     }
   }
 }

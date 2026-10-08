@@ -168,7 +168,80 @@ async function chartCollision(kit, expected, check) {
   return { orgId: org.orgId }
 }
 
+// A production builder brings its land and homes. An owned lot opens at its basis
+// and the opening becomes its acquisition; a spec home under construction and a
+// completed one open with the job cost behind them, so the land, completed-home
+// and job-cost controls tie from cutover. Plain lines on those accounts, a lot
+// without its lot and a completed home without its date are refused with every
+// fix named; a lot that already has basis is refused at posting.
+async function landAndHomes(kit, expected, check) {
+  const input = expected.inputs
+  const org = await existingBuilder(kit, "MIG-01 production builder")
+  const q = kit.q, ids = { communityId: randomUUID(), landLot: randomUUID(), specLot: randomUUID(), completedLot: randomUUID(), spec: randomUUID(), completed: randomUUID(), costCodeId: randomUUID() }
+  kit.sql(`begin;
+insert into public.communities(id,org_id,name) values(${q(ids.communityId)},${q(org.orgId)},'Willow Bend');
+insert into public.cost_codes(id,org_id,code,name) values(${q(ids.costCodeId)},${q(org.orgId)},'01-000','Construction to date');
+${[["spec", "Willow Bend lot 7"], ["completed", "Willow Bend lot 8"]].map(([key, name]) => `insert into public.projects(id,org_id,name,property_type,created_by) values(${q(ids[key])},${q(org.orgId)},${q(name)},'production',${q(org.owner.userId)});
+insert into public.project_financial_settings(org_id,project_id) values(${q(org.orgId)},${q(ids[key])}) on conflict do nothing;
+insert into public.contracts(id,org_id,project_id,title,status,total_cents,currency,contract_type,retainage_percent,effective_date)
+  values(${q(randomUUID())},${q(org.orgId)},${q(ids[key])},'Spec home, for sale','active',0,'usd','purchase_agreement',0,'2026-01-15');`).join("\n")}
+insert into public.lots(id,org_id,community_id,lot_number,status) values(${q(ids.landLot)},${q(org.orgId)},${q(ids.communityId)},'6','controlled'),
+  (${q(ids.specLot)},${q(org.orgId)},${q(ids.communityId)},'7','assigned'),(${q(ids.completedLot)},${q(org.orgId)},${q(ids.communityId)},'8','assigned');
+commit;`)
+  const inventory = app("books/inventory")
+  for (const projectId of [ids.spec, ids.completed])
+    await kit.as(org.owner, () => inventory.enableProjectInventory({ projectId, effectiveOn: "2026-01-15", evidenceUrl: "https://evidence.acceptance.example.test/mig-01/spec-policy" }))
+  const t = input.openings
+  const land = { accountCode: "1120", subledgerType: "land", description: "Lot 6 held for a future start", debitCents: t.landCents, creditCents: 0, details: { lot_id: ids.landLot, document_date: "2025-11-14" } }
+  const spec = { accountCode: "1160", subledgerType: "home_inventory", description: "Lot 7 spec home, framing complete", debitCents: t.specCents, creditCents: 0, projectId: ids.spec, details: { cost_code_id: ids.costCodeId } }
+  const done = { accountCode: "1170", subledgerType: "home_inventory", description: "Lot 8 spec home, completed", debitCents: t.completedCents, creditCents: 0, projectId: ids.completed, details: { completed_on: "2026-05-20" } }
+  const equity = { accountCode: "3100", description: "Retained earnings at cutover", debitCents: 0, creditCents: t.landCents + t.specCents + t.completedCents }
+  const openings = app("books/opening-balances")
+  const create = (lines) => kit.as(org.owner, () => openings.createOpeningBalanceBatch({ cutoverDate: "2026-06-30", sourceFilename: "inventory-2026-06-30.json", sourceContent: JSON.stringify(lines), lines }))
+  const mistakes = await refusal(() => create([{ ...land, subledgerType: undefined }, { ...spec, subledgerType: "other" }, { ...done, details: {} }, equity]))
+  const batch = await create([land, spec, done, equity])
+  const post = async (batchId) => {
+    await kit.as(org.owner, () => openings.approveOpeningBalanceBatch({ batchId, approvalRole: "owner" }))
+    await kit.as(org.reviewer, () => openings.approveOpeningBalanceBatch({ batchId, approvalRole: "accountant" }))
+    return kit.as(org.owner, () => openings.postOpeningBalanceBatch(batchId))
+  }
+  await post(batch.batchId)
+  const again = await create([{ ...land, debitCents: 100 }, { ...equity, creditCents: 100 }])
+  const landTwice = await refusal(() => post(again.batchId))
+  const lot = kit.rows(`select status, cost_basis_cents::bigint basis, acquired_date::text acquired from public.lots where id=${q(ids.landLot)}`)[0]
+  const controls = async (asOf) => Object.fromEntries((await kit.service(() => app("books/verifier").runLedgerTieOuts(org.orgId, asOf)))
+    .filter((row) => ["job_cost_control", "land_inventory_control", "completed_homes_control", "trial_balance"].includes(row.code)).map((row) => [row.code, row.status]).sort(([a], [b]) => a.localeCompare(b)))
+  const atCutover = await controls("2026-06-30")
+  // July: the spec home keeps building on its opening cost.
+  const vendorBills = app("vendor-bills")
+  const bill = await kit.as(org.owner, () => vendorBills.createProjectVendorBill({ projectId: ids.spec, input: { company_id: org.vendorId, bill_number: "WB-701", bill_date: "2026-07-09", due_date: "2026-08-08", total_cents: input.julyBillCents,
+    actual_lines: [{ cost_code_id: ids.costCodeId, description: "Drywall", amount_cents: input.julyBillCents, project_id: ids.spec }] } }))
+  await kit.as(org.owner, () => vendorBills.approveVendorBillsAtomic([{ id: bill.id }]))
+  await kit.drainOutbox(org.orgId)
+  await project(kit, org)
+  const jobCost = (projectId) => Number(kit.rows(`select coalesce(sum(cost_cents),0)::bigint n from public.job_cost_entries where org_id=${q(org.orgId)} and project_id=${q(projectId)} and status='posted'`)[0].n)
+  check.equal("land and homes open with their lot basis and job cost; every inventory control ties at cutover and after the first month; mistakes are named and a lot cannot open twice", expected.expected, {
+    mistakesRefused: mistakes.split("\n").filter((line) => line.startsWith("•")).length,
+    trialBalance: await trialBalance(kit, org, "2026-06-30"),
+    lot: { status: lot.status, basis: Number(lot.basis), acquired: lot.acquired },
+    homes: { specJobCost: jobCost(ids.spec), completedJobCost: jobCost(ids.completed),
+      completedOn: kit.rows(`select books_inventory_completed_on::text d from public.project_financial_settings where project_id=${q(ids.completed)}`)[0].d },
+    landTwiceRefused: /already has recorded land basis/.test(landTwice), atCutover, afterJuly: await controls("2026-07-31"),
+  })
+  // Reversing the opening puts the lot back under control and takes the homes'
+  // opening cost and completion out, while July's bill stays on its home.
+  await kit.as(org.reviewer, () => openings.reverseOpeningBalanceBatch({ batchId: batch.batchId, reversalDate: "2026-07-31", reason: "Inventory opening re-cut after the count" }))
+  const reversedLot = kit.rows(`select status, cost_basis_cents, books_acquisition_entry_id from public.lots where id=${q(ids.landLot)}`)[0]
+  check.equal("reversing the opening returns the lot, the homes' opening cost and the completion, and the controls still tie", expected.expectedAfterReversal, {
+    lot: { status: reversedLot.status, basis: reversedLot.cost_basis_cents, acquisition: reversedLot.books_acquisition_entry_id },
+    specJobCost: jobCost(ids.spec), completedJobCost: jobCost(ids.completed),
+    completedOn: kit.rows(`select books_inventory_completed_on d from public.project_financial_settings where project_id=${q(ids.completed)}`)[0].d,
+    controls: await controls("2026-07-31"),
+  })
+  return { orgId: org.orgId }
+}
+
 module.exports = {
   id: "MIG-01",
-  subcases: { "builder-import": builderImport, "chart-collision": chartCollision },
+  subcases: { "builder-import": builderImport, "chart-collision": chartCollision, "land-and-homes": landAndHomes },
 }
