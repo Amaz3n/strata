@@ -18079,8 +18079,8 @@
       "id": "B16.5",
       "workstream": "B16",
       "title": "Migration deploy inventory: know exactly what production needs",
-      "status": "NOT_STARTED",
-      "status_basis": "Deferred to the end by the owner (2026-10-07). A read-only comparison on 2026-10-07 found 199 repository migrations from 2026-08 onward that the production ledger records under no version or name: 17 Books migrations from this plan, about 154 in the October train, and 28 older August/September files. Some of the 28 are likely applied under a different name (repository books_accounting_foundation vs production arc_books_accounting_foundation); others may never have been applied. pnpm db:ledger:check fails on all of this but reports it mixed with ledger drift, not as a deploy list.",
+      "status": "BLOCKED_EXTERNAL",
+      "status_basis": "Built and measured (2026-10-08). `pnpm db:pending` (scripts/list-pending-migrations.mjs over the pure scripts/migration-ledger.mjs, tested) lists every repository migration production has not applied, matching by version, MCP-stamped stem or name, and counting the object-verified map in supabase/scripts/repair-migration-ledger.sql as applied; pending-migrations/ is never listed. Live reading needs list_migration_ledger(), which production does not have (it is installed by the reviewed repair script), so today it runs on a read-only ledger export (--ledger). On 2026-10-08: 116 applied by version, 266 under another version, 29 object-verified awaiting the ledger repair, 189 pending. The older August/September question is settled: the 29 object-verified files are applied (ledger repair only), and ten are genuinely pending, each confirmed absent by its own object in production (six from the September audit, four late-September files); four the September audit listed as pending were applied since. Waiting on: the owner's review of the deploy list and the ledger repair, then the deploy.",
       "global_definition_of_done_required": false,
       "definition_of_done": [
         "a read-only `pnpm db:pending` command lists, live from the production ledger, every repository migration production has not applied (matched by version or by name, normalizing MCP-stamped names)",
@@ -18089,14 +18089,35 @@
         "pnpm db:ledger:check passes after the deploy"
       ],
       "scenario_ids": [],
-      "evidence": [],
-      "remaining_criteria": [
-        "a read-only `pnpm db:pending` command lists, live from the production ledger, every repository migration production has not applied (matched by version or by name, normalizing MCP-stamped names)",
-        "each of the 28 older August/September files is classified as applied-under-another-name (ledger record repaired with approval) or never applied (added to the deploy) with evidence",
-        "the deploy list is reviewed with the owner before any migration is applied; pending-migrations/ stays excluded",
-        "pnpm db:ledger:check passes after the deploy"
+      "evidence": [
+        {
+          "verified_at": "2026-10-08T17:44:33.043088+00:00",
+          "implemented_paths": [
+            "scripts/migration-ledger.mjs",
+            "scripts/list-pending-migrations.mjs",
+            "tests/migration-ledger.test.js",
+            "package.json",
+            "docs/plans/migration-ledger-reconciliation.md"
+          ],
+          "test_scenario_ids": [],
+          "commands": [
+            "pnpm db:pending --ledger docs/books-evidence/2026-10-08-deploy-inventory/production-ledger.txt",
+            "node --test tests/migration-ledger.test.js",
+            "read-only SELECTs (Supabase MCP) for the ledger export and the ten object checks"
+          ],
+          "observed_results": [
+            "189 pending for production, in order (db-pending.txt).",
+            "Ten pre-October files confirmed not applied by their own objects (older-files-object-checks.json); 29 object-verified files applied, ledger repair only.",
+            "tests/migration-ledger.test.js 3/3."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-deploy-inventory"
+        }
       ],
-      "external_dependency": "Owner review of the deploy list; production changes only with explicit approval",
+      "remaining_criteria": [
+        "the deploy list is reviewed with the owner before any migration is applied; pending-migrations/ stays excluded",
+        "pnpm db:ledger:check passes after the ledger repair and the deploy"
+      ],
+      "external_dependency": "Owner review of the deploy list and approval of the ledger repair and each migration",
       "reviewer": null,
       "verified_at": null,
       "notes": {

@@ -17,6 +17,7 @@
     "dev:fresh": "rm -rf .next && next dev --turbo",
     "db:schema:check": "bash ./scripts/check-schema-sync.sh",
     "db:ledger:check": "node ./scripts/check-migration-ledger.mjs",
+    "db:pending": "node ./scripts/list-pending-migrations.mjs",
     "qa:evidence:check": "node ./scripts/qa/validate-ap-payment-evidence.mjs",
     "test:db": "supabase test db --local",
     "test:db:payments": "supabase test db supabase/tests/payment_lifecycle.test.sql --local",
