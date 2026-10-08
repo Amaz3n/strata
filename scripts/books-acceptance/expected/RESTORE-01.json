@@ -87,6 +87,56 @@
         "freshUntouched": "queued",
         "readyCannotRestart": true
       }
+    },
+    "proof-repair-and-close": {
+      "inputs": {
+        "contractCents": 10000000,
+        "eacCents": 8000000,
+        "bills": {
+          "A": 400000,
+          "B": 300000,
+          "C": 200000
+        },
+        "tamperCents": 100,
+        "augustBillCents": 250000
+      },
+      "derivation": "July: bills A 4,000.00, B 3,000.00 and C 2,000.00 post; B is recoded to 5020 after posting (its entry reversed and reposted) and a 50.00 accrual is reversed. The proof passes on that ordinary history. Damage past the guards: A's entry gains 1.00 a side, C's entry is deleted, a copy of B's entry is added with no fact. The proof finds journal_divergence, missing_journal and unexpected_journal; job cost and AP stop tying. The bookkeeper reverses A's entry and the stray entry with reasons and the projector posts A again (under a repost key) and C again: the proof passes, every control ties, the job's cost in the ledger is the three bills' 9,000.00, and July closes. Restored from its archive, the company bills 2,500.00 in August, reviews WIP and closes August; the proof still passes.",
+      "expected": {
+        "ordinary": {
+          "status": "passed",
+          "found": []
+        },
+        "damaged": {
+          "proof": {
+            "status": "failed",
+            "found": [
+              "journal_divergence",
+              "missing_journal",
+              "unexpected_journal"
+            ]
+          },
+          "controlsNotPassing": [
+            "ap_control",
+            "job_cost_control"
+          ]
+        },
+        "repaired": {
+          "proof": {
+            "status": "passed",
+            "found": []
+          },
+          "controlsNotPassing": [],
+          "jobCost": 900000
+        },
+        "julyClosed": "allowed",
+        "augustAfterRestore": {
+          "closed": "allowed",
+          "proof": {
+            "status": "passed",
+            "found": []
+          }
+        }
+      }
     }
   }
 }

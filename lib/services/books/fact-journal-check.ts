@@ -51,11 +51,25 @@ export async function checkFactJournals(orgId: string, facts: CheckedFact[], pro
   // Fact ids travel in the URL beside a long select, so they go 100 at a time.
   const entries = []
   for (const slice of chunk(live.map((fact) => fact.id), 100)) {
-    const { data, error } = await service.from("journal_entries").select("id, fact_id, entry_date, entry_kind, memo, posting_key, projection_version, policy_version, lines:journal_lines!journal_lines_entry_owner_fk(line_no, project_id, company_id, debit_cents, credit_cents, description, dimensions, account:gl_accounts!journal_lines_account_owner_fk(code))").eq("org_id", orgId).in("fact_id", slice).in("status", ["posted", "reversed"])
+    const { data, error } = await service.from("journal_entries").select("id, fact_id, status, entry_date, entry_kind, memo, posting_key, projection_version, policy_version, lines:journal_lines!journal_lines_entry_owner_fk(line_no, project_id, company_id, debit_cents, credit_cents, description, dimensions, account:gl_accounts!journal_lines_account_owner_fk(code))").eq("org_id", orgId).in("fact_id", slice).in("status", ["posted", "reversed"])
     if (error) throw new Error(`Failed to load journals for facts: ${error.message}`)
     entries.push(...(data ?? []))
   }
-  const entryByFact = new Map(entries.map((entry) => [entry.fact_id, entry]))
+  // A fact is compared with the entry standing for it. A reversed entry stands in
+  // only for a fact a later revision superseded; for a current fact it means the
+  // posting was reversed and not yet replaced, so the source is off the books.
+  const superseded = new Set<string>()
+  for (const slice of chunk(live.map((fact) => fact.id), 100)) {
+    const { data, error } = await service.from("accounting_facts").select("supersedes_fact_id").eq("org_id", orgId).in("supersedes_fact_id", slice)
+    if (error) throw new Error(`Failed to load fact revisions: ${error.message}`)
+    for (const row of data ?? []) superseded.add(String(row.supersedes_fact_id))
+  }
+  const entryByFact = new Map<string, (typeof entries)[number]>()
+  for (const entry of entries) {
+    const fact = String(entry.fact_id), held = entryByFact.get(fact)
+    if (entry.status === "posted") entryByFact.set(fact, entry)
+    else if (!held && superseded.has(fact)) entryByFact.set(fact, entry)
+  }
   for (const fact of live) {
     let expected: JournalEntryDraft | null = null
     try {
@@ -91,7 +105,8 @@ export async function checkFactJournals(orgId: string, facts: CheckedFact[], pro
       const { books_account_classification: _classification, ...dimensions } = (line.dimensions ?? {}) as Record<string, unknown>
       return { accountCode: account?.code, projectId: line.project_id ?? null, companyId: line.company_id ?? null, debitCents: Number(line.debit_cents), creditCents: Number(line.credit_cents), description: line.description ?? null, dimensions }
     })
-    const actualNormalized = { entryDate: actual.entry_date, entryKind: actual.entry_kind, memo: actual.memo, postingKey: actual.posting_key, policyVersion: actual.policy_version, lines: actualLines }
+    // A source posted again after a reversal carries a `:repost:N` key; the entry is otherwise the draft's.
+    const actualNormalized = { entryDate: actual.entry_date, entryKind: actual.entry_kind, memo: actual.memo, postingKey: actual.posting_key.replace(/:repost:\d+$/, ""), policyVersion: actual.policy_version, lines: actualLines }
     const expectedNormalized = normalizedDraft(expected)
     rebuilt.push(expectedNormalized)
     if (booksDigest(actualNormalized) !== booksDigest(expectedNormalized)) differences.push({ fact_id: fact.id, type: "journal_divergence", expected: expectedNormalized, actual: actualNormalized })

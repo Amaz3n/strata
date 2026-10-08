@@ -33,6 +33,7 @@ then the reference docs below.
 | [`books-dimensions.md`](books-dimensions.md) | Which reporting dimensions each kind of Books posting carries, which are required, and the rules that keep them true: own-company records only, never ambiguous, tags stay as posted, reversals inherit. Read before changing `dimensions.ts`, `draftFromFact`, posting-rule dimensions or `journal_lines` triggers. |
 | [`books-1099.md`](books-1099.md) | What counts toward each vendor's 1099-NEC and the reviewed package, filing file and handoff per paying company. Read before changing 1099 reporting or packages. |
 | [`books-restore.md`](books-restore.md) | What a Books archive holds (and never holds), and the verify → preflight → plan → load → compare recovery procedure. Read before changing the export snapshot or restore plan. |
+| [`books-capabilities.md`](books-capabilities.md) | Arc Books' accounting policy and what it supports for the first client, each capability with its doc, screen, scenarios and acceptance state. Start here for Books. |
 | [`books-entities.md`](books-entities.md) | Legal entities as a segment of the one Books ledger: who owns a posting, intercompany legs, per-entity close and consolidation. The separate per-entity ledger was retired before release. Read before any multi-company work. |
 | [`accounting-sync.md`](accounting-sync.md) | Provider boundaries, durable delivery/import, and the gated D2 release and acceptance process. |
 | [`mobile-api-v1.openapi.yaml`](mobile-api-v1.openapi.yaml) | Mobile API contract. Enforced by `pnpm test:mobile`. |

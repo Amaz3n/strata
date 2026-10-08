@@ -236,12 +236,80 @@ async function backgroundArchive(kit, expected, check) {
   return { orgId: org.orgId }
 }
 
+// B15.4: the proof accepts what an ordinary month leaves behind (a bill revised
+// after posting, a journal reversed), finds what damage leaves behind (a journal
+// altered, a journal lost, a stray entry with no source), and the bookkeeper's
+// own tools repair it: reverse the bad entry with its reason, let the projector
+// post the source again. Then July closes green, and a restored copy closes
+// August.
+async function proofRepairAndClose(kit, expected, check) {
+  const input = expected.inputs
+  const { contractJob } = require("./shared.cjs")
+  const wip = require("./wip-01.cjs").helpers
+  const job = await contractJob(kit, { name: "RESTORE-01 proof and repair", contractCents: input.contractCents, retainagePercent: 0, periods: ["2026-07", "2026-08"] })
+  const { q } = kit
+  for (const [label, cents] of Object.entries(input.bills)) await wip.bill(kit, job, "2026-07", cents, label)
+  await project(kit, job)
+  const billId = (label) => kit.rows(`select id from public.vendor_bills where org_id=${q(job.orgId)} and bill_number=${q(label)}`)[0].id
+  const entryOf = (label) => kit.rows(`select id from public.journal_entries where org_id=${q(job.orgId)} and source_id=${q(billId(label))} and status='posted' and reversal_of_entry_id is null order by created_at desc limit 1`)[0].id
+  // An ordinary month's history: a bill recoded after it posted, a journal reversed.
+  await kit.as(job.owner, () => app("vendor-bills").updateVendorBillStatus({ billId: billId("B"), input: { status: "approved",
+    actual_lines: [{ description: "Framing", amount_cents: input.bills.B, cost_code_id: job.costCodeId, project_id: job.projectId, arc_books_gl_account_id: glId(kit, job, "5020") }] } }))
+  await kit.drainOutbox(job.orgId)
+  await project(kit, job)
+  const accrual = await kit.as(job.reviewer, () => app("books/bookkeeping").createAdjustingJournal({ entryDate: "2026-07-15", memo: "Accrued permit fee",
+    lines: [{ accountCode: "6900", debitCents: 5000, creditCents: 0 }, { accountCode: "2100", debitCents: 0, creditCents: 5000 }] }))
+  await kit.as(job.reviewer, () => app("books/ledger").reverseBooksJournalEntry({ entryId: accrual.id, reversalDate: "2026-07-20", reason: "Permit fee was paid by the owner" }))
+  const drill = async () => {
+    const run = await kit.service(() => app("books/rebuild").runLedgerRebuildDrillForOrg(job.orgId))
+    return { status: run.status, found: [...new Set(run.differences.map((item) => item.type))].sort() }
+  }
+  const controls = async () => (await kit.service(() => app("books/verifier").runLedgerTieOuts(job.orgId, "2026-07-31")))
+    .filter((row) => row.status !== "passed" && row.status !== "not_applicable").map((row) => row.code).sort()
+  const ordinary = await drill()
+
+  // Damage written past the guards, as a defect or a bypass would.
+  const tampered = entryOf("A"), lost = entryOf("C"), copied = entryOf("B")
+  kit.sql(`begin; set local session_replication_role = replica;
+update public.journal_lines set debit_cents = debit_cents + case when debit_cents > 0 then ${input.tamperCents} else 0 end, credit_cents = credit_cents + case when credit_cents > 0 then ${input.tamperCents} else 0 end where entry_id = ${q(tampered)};
+delete from public.journal_lines where entry_id = ${q(lost)};
+delete from public.journal_entries where id = ${q(lost)};
+create temp table stray on commit drop as select gen_random_uuid() id;
+insert into public.journal_entries select (jsonb_populate_record(null::public.journal_entries, to_jsonb(e) || jsonb_build_object('id', (select id from stray), 'fact_id', null, 'posting_key', 'stray:' || e.id))).* from public.journal_entries e where e.id = ${q(copied)};
+insert into public.journal_lines select (jsonb_populate_record(null::public.journal_lines, to_jsonb(l) || jsonb_build_object('id', gen_random_uuid(), 'entry_id', (select id from stray)))).* from public.journal_lines l where l.entry_id = ${q(copied)};
+commit;`, "supabase_admin")
+  const stray = kit.rows(`select id from public.journal_entries where org_id=${q(job.orgId)} and posting_key=${q(`stray:${copied}`)}`)[0].id
+  const damaged = { proof: await drill(), controlsNotPassing: await controls() }
+
+  // The repair: reverse what is wrong with its reason, post the sources again.
+  const reverse = (entryId, reason) => kit.as(job.reviewer, () => app("books/ledger").reverseBooksJournalEntry({ entryId, reversalDate: "2026-07-31", reason }))
+  await reverse(tampered, "Ledger proof: this entry no longer matched its bill")
+  await reverse(stray, "Ledger proof: entry has no source document")
+  await project(kit, job)
+  const repaired = { proof: await drill(), controlsNotPassing: await controls(),
+    jobCost: Number(kit.rows(`select coalesce(sum(l.debit_cents - l.credit_cents),0)::bigint n from public.journal_lines l join public.journal_entries e on e.id=l.entry_id join public.gl_accounts a on a.id=l.account_id
+      where l.org_id=${q(job.orgId)} and l.project_id=${q(job.projectId)} and e.status in ('posted','reversed') and a.code in ('5000','5020')`)[0].n) }
+
+  await wip.prepareAndReview(kit, job, "2026-07", { contractCents: input.contractCents, eacCents: input.eacCents })
+  const julyClosed = await refusal(() => wip.close(kit, job, "2026-07"))
+  restore(kit, job.orgId)
+  await wip.bill(kit, job, "2026-08", input.augustBillCents, "AUG-1")
+  await project(kit, job)
+  await wip.prepareAndReview(kit, job, "2026-08", { contractCents: input.contractCents, eacCents: input.eacCents })
+  const augustClosed = await refusal(() => wip.close(kit, job, "2026-08"))
+  check.equal("the proof accepts ordinary history, finds the damage, the bookkeeper's tools repair it, July closes green and a restored copy closes August", expected.expected, {
+    ordinary, damaged, repaired, julyClosed, augustAfterRestore: { closed: augustClosed, proof: await drill() },
+  })
+  return { orgId: job.orgId }
+}
+
 module.exports = {
   id: "RESTORE-01",
   subcases: {
     "closed-group-and-continuation": closedGroup,
     "tax-records": taxRecords,
     "background-archive": backgroundArchive,
+    "proof-repair-and-close": proofRepairAndClose,
   },
 }
 

@@ -108,6 +108,19 @@ A company without the Arc ledger gets no status.
   one is a week old, least recently proven first, within the maintenance budget.
   Damage written around the application's timestamps is the weekly drill's job.
 
+- **What the proof compares.** Each current fact against the entry standing for
+  it. A reversed entry stands in only for a fact a later revision superseded; a
+  current fact whose entry was reversed and not replaced is `missing_journal`,
+  because its source is off the books.
+- **Repairing what it finds** (RESTORE-01 `proof-repair-and-close`). With the
+  bookkeeper's own tools, never by editing rows: reverse the entry that no longer
+  matches its source (`journal_divergence`) or has no source
+  (`unexpected_journal`) with the reason, then run the projection. A source whose
+  entry was reversed or lost (`missing_journal`) is posted again from its
+  unchanged fact; the reversed entry keeps the original posting key, so the
+  repost takes `<key>:repost:N`, which the proof reads as the same entry. The
+  proof then passes, the controls tie, and the month closes.
+
 ## Month-end review reads
 
 The close checklist and the as-of statements read ledger totals, job-cost

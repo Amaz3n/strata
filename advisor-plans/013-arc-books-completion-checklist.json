@@ -9386,8 +9386,8 @@
       "id": "B10.3",
       "workstream": "B10",
       "title": "Full tax workpaper and report delivery journey",
-      "status": "PARTIAL",
-      "status_basis": "Verified locally (CASH-01 tax-workpaper; cash-basis browser journey desktop and phone/dark): the preparer cannot self-review; a posting after preparation makes review refuse with the cure (withdraw and prepare a replacement); a reviewed no-adjustments replacement supersedes the approval, which keeps its reviewer and notes; the report reconciles book income + adjustments = adjusted income; UI, CSV and PDF over the signed-in session reproduce the exact period with no-store, a saved report run reproduces the same CSV, and a signed-out request gets nothing. Remaining: an altered attachment invalidating a draft and the attachment download need file storage on the acceptance stack (unit-tested only); recovery of all revisions after restore (RESTORE-01).",
+      "status": "BLOCKED_EXTERNAL",
+      "status_basis": "Verified locally (CASH-01 tax-workpaper; cash-basis browser journey desktop and phone/dark): the preparer cannot self-review; a posting after preparation makes review refuse with the cure (withdraw and prepare a replacement); a reviewed no-adjustments replacement supersedes the approval, which keeps its reviewer and notes; the report reconciles book income + adjustments = adjusted income; UI, CSV and PDF over the signed-in session reproduce the exact period with no-store, a saved report run reproduces the same CSV, and a signed-out request gets nothing. Remaining: an altered attachment invalidating a draft and the attachment download need file storage on the acceptance stack (unit-tested only); recovery of all revisions after restore (RESTORE-01). (2026-10-08) Recovery of all revisions is covered by RESTORE-01 tax-records (superseded and approved workpapers restore exactly). What remains needs file storage on the acceptance stack: an altered attachment invalidating a draft, and the permission-scoped attachment download against real storage (STORE-01).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "preparer cannot self-review",
@@ -9439,15 +9439,10 @@
         }
       ],
       "remaining_criteria": [
-        "preparer cannot self-review",
-        "source/attachment change invalidates the affected draft",
-        "original approval stays meaningful after replacement/withdrawal",
-        "report-run UI/CSV/PDF reproduce the reviewed exact period and provenance",
-        "actual logged-in HTTP/browser transport works",
-        "download is permission-scoped/no-store",
-        "recovery reproduces all revisions"
+        "source/attachment change invalidates the affected draft (attachment half, with real storage)",
+        "attachment download against real storage"
       ],
-      "external_dependency": null,
+      "external_dependency": "An authorized test R2 bucket (shared with B06.4 / STORE-01)",
       "reviewer": null,
       "verified_at": null,
       "scenario_coverage": {
@@ -17971,8 +17966,8 @@
       "id": "B15.4",
       "workstream": "B15",
       "title": "Recovery, rebuild and nightly continuity",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified locally (2026-10-08, RESTORE-01 proof-repair-and-close): the ledger proof passes on ordinary history (a bill recoded after posting, a journal reversed); damage written past the guards (a journal's amounts altered, a journal deleted, a stray entry with no source) is found as journal_divergence, missing_journal and unexpected_journal, with job cost and AP failing to tie. The bookkeeper's own tools repair it: reverse the wrong entries with reasons and run the projection. Fixed to make that work: the projector never reposted a source whose entry had been reversed (the reversed entry kept the posting key, so the post returned it as done); it now reposts under <key>:repost:N (migration 20261008060000, pending production). And the proof compared a current fact against a reversed entry, so a reversed-and-not-replaced posting read as fine; it now compares the standing entry and reports missing_journal. After repair the proof passes, every control ties, July closes, and the company restored from its archive closes August with the proof still passing. Evidence from the full regression on the current tree.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "expected superseded/reversed histories are accepted",
@@ -17981,15 +17976,38 @@
         "restored next period closes",
         "evidence references the final source/schema train, not the older 467-migration checkpoint"
       ],
-      "scenario_ids": [],
-      "evidence": [],
-      "remaining_criteria": [
-        "expected superseded/reversed histories are accepted",
-        "actual missing/divergent records found",
-        "all required close controls green after repair",
-        "restored next period closes",
-        "evidence references the final source/schema train, not the older 467-migration checkpoint"
+      "scenario_ids": [
+        "RESTORE-01",
+        "CAP-01"
       ],
+      "evidence": [
+        {
+          "verified_at": "2026-10-08T18:04:17.468237+00:00",
+          "implemented_paths": [
+            "supabase/migrations/20261008060000_books_repost_after_reversal.sql",
+            "lib/services/books/fact-journal-check.ts",
+            "scripts/books-acceptance/scenarios/restore-01.cjs",
+            "scripts/books-acceptance/expected/RESTORE-01.json",
+            "docs/books-posting.md"
+          ],
+          "test_scenario_ids": [
+            "RESTORE-01",
+            "CAP-01"
+          ],
+          "commands": [
+            "scenario-runner --all",
+            "pnpm test:financials",
+            "node --test tests/arc-books.test.js"
+          ],
+          "observed_results": [
+            "RESTORE-01 proof-repair-and-close passed: ordinary passed; damaged found 3 kinds; repaired proof passed, 0 controls failing, job cost 9,000.00; July closed; August closed after restore.",
+            "All-scenario run (2026-10-08, clean): 22 of 22 implemented scenarios passed; STORE-01 blocked on storage, PAY-01/02 deferred.",
+            "test:financials 2,527 pass; arc-books 90 pass."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-proof-repair"
+        }
+      ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
       "verified_at": null
@@ -17998,8 +18016,8 @@
       "id": "B16.1",
       "workstream": "B16",
       "title": "One current accounting policy and capability matrix",
-      "status": "PARTIAL",
-      "status_basis": "No current full acceptance asserted; revalidate existing implementation and historical checkpoints before updating. Entity work has no verified native-ledger completion record in the planning evidence.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "docs/books-capabilities.md (2026-10-08): one accounting policy (one ledger, ledger authority modes with parallel first, accrual with a reviewed cash view, revenue methods by dated policy, inventory, companies, close, taxes: 1099 via a filing partner, sales and use tax recorded not computed or filed, payroll taxes the provider's) and a capability matrix where each row names its reference doc, the route where the work happens, its golden scenarios and its acceptance state from this tracker, plus what is not supported in the first release. Linked from docs/README.md. A sweep of the Books reference docs found no contradictory scope statements. Acceptance with the owner (activation and sales wording) follows with B16.3/B16.4.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "no contradictory “finished”/“unsupported” statements across current docs",
@@ -18009,14 +18027,25 @@
         "no claim of native tax filing/calculation if a partner supplies it"
       ],
       "scenario_ids": [],
-      "evidence": [],
-      "remaining_criteria": [
-        "no contradictory “finished”/“unsupported” statements across current docs",
-        "historical checkpoints clearly historical",
-        "every matrix row has an owner, entry set, workflow, tests and acceptance state",
-        "activation/support/sales wording matches actual capability",
-        "no claim of native tax filing/calculation if a partner supplies it"
+      "evidence": [
+        {
+          "verified_at": "2026-10-08T18:04:17.468237+00:00",
+          "implemented_paths": [
+            "docs/books-capabilities.md",
+            "docs/README.md"
+          ],
+          "test_scenario_ids": [],
+          "commands": [
+            "grep sweep of docs/books-*.md for scope statements",
+            "routes checked against components/layout/books-nav-items.ts and the browser journeys"
+          ],
+          "observed_results": [
+            "Every matrix row has a doc, a route, scenarios and a state; routes match the app and journeys."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-08-proof-repair"
+        }
       ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
       "verified_at": null

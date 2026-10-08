@@ -1,0 +1,544 @@
+{
+  "scenario": "ENTITY-01",
+  "status": "PASSED",
+  "reviewedFrom": "B14.1/B14.2 definitions of done (advisor-plans/013) and docs/books-entities.md.",
+  "subcases": [
+    {
+      "name": "payment-across-companies",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "3b07ee4a-e773-4dbe-b222-630c876be578",
+        "land": "73f89144-3c97-431f-9df7-ee456914c926",
+        "builder": "6c5261f3-4c43-4243-bc3d-20c910fe652f"
+      },
+      "checks": [
+        {
+          "label": "the payment's lines sit with their companies, with what each owes the other",
+          "pass": true,
+          "expected": {
+            "paymentLines": [
+              {
+                "code": "2000",
+                "company": "builder",
+                "debit": 3000000,
+                "credit": 0,
+                "counterparty": null
+              },
+              {
+                "code": "1005",
+                "company": "land",
+                "debit": 0,
+                "credit": 3000000,
+                "counterparty": null
+              },
+              {
+                "code": "2180",
+                "company": "builder",
+                "debit": 0,
+                "credit": 3000000,
+                "counterparty": "land"
+              },
+              {
+                "code": "1180",
+                "company": "land",
+                "debit": 3000000,
+                "credit": 0,
+                "counterparty": "builder"
+              }
+            ],
+            "builder": {
+              "balanced": true,
+              "accounts": {
+                "2180": 3000000,
+                "5000": 3000000
+              }
+            },
+            "land": {
+              "balanced": true,
+              "accounts": {
+                "1005": -3000000,
+                "1180": 3000000
+              }
+            },
+            "consolidated": {
+              "balanced": true,
+              "accounts": {
+                "1005": -3000000,
+                "5000": 3000000
+              }
+            },
+            "vendor1099": {
+              "land": 3000000,
+              "builder": 0
+            }
+          },
+          "observed": {
+            "paymentLines": [
+              {
+                "code": "2000",
+                "company": "builder",
+                "debit": 3000000,
+                "credit": 0,
+                "counterparty": null
+              },
+              {
+                "code": "1005",
+                "company": "land",
+                "debit": 0,
+                "credit": 3000000,
+                "counterparty": null
+              },
+              {
+                "code": "2180",
+                "company": "builder",
+                "debit": 0,
+                "credit": 3000000,
+                "counterparty": "land"
+              },
+              {
+                "code": "1180",
+                "company": "land",
+                "debit": 3000000,
+                "credit": 0,
+                "counterparty": "builder"
+              }
+            ],
+            "builder": {
+              "balanced": true,
+              "accounts": {
+                "2180": 3000000,
+                "5000": 3000000
+              }
+            },
+            "land": {
+              "balanced": true,
+              "accounts": {
+                "1005": -3000000,
+                "1180": 3000000
+              }
+            },
+            "consolidated": {
+              "balanced": true,
+              "accounts": {
+                "1005": -3000000,
+                "5000": 3000000
+              }
+            },
+            "vendor1099": {
+              "land": 3000000,
+              "builder": 0
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T17:56:49.690Z"
+    },
+    {
+      "name": "ownership-fixed-and-reversal",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "bd7b24f6-8cd0-4b74-9309-0cab02db3e0a"
+      },
+      "checks": [
+        {
+          "label": "posted ownership cannot move, and the reversal keeps each line's company",
+          "pass": true,
+          "expected": {
+            "projectMove": "refused: already has postings",
+            "accountMove": "refused: already has postings",
+            "reversalCompanies": {
+              "1005": "land",
+              "1180": "land",
+              "2000": "builder",
+              "2180": "builder"
+            },
+            "builder": {
+              "balanced": true,
+              "accounts": {
+                "2000": 3000000,
+                "5000": 3000000
+              }
+            },
+            "land": {
+              "balanced": true,
+              "accounts": {}
+            }
+          },
+          "observed": {
+            "projectMove": "refused: already has postings",
+            "accountMove": "refused: already has postings",
+            "reversalCompanies": {
+              "1005": "land",
+              "1180": "land",
+              "2000": "builder",
+              "2180": "builder"
+            },
+            "builder": {
+              "balanced": true,
+              "accounts": {
+                "2000": 3000000,
+                "5000": 3000000
+              }
+            },
+            "land": {
+              "balanced": true,
+              "accounts": {}
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T17:56:50.420Z"
+    },
+    {
+      "name": "single-company-unchanged",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "35561149-0125-4844-bf3d-f424c46753e0"
+      },
+      "checks": [
+        {
+          "label": "one company, every line on it, no intercompany accounts",
+          "pass": true,
+          "expected": {
+            "companies": 1,
+            "linesOffPrimary": 0,
+            "intercompanyAccounts": 0,
+            "sameAsCompany": true
+          },
+          "observed": {
+            "companies": 1,
+            "linesOffPrimary": 0,
+            "intercompanyAccounts": 0,
+            "sameAsCompany": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T17:56:51.373Z"
+    },
+    {
+      "name": "company-subledgers-and-close",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "b4ad8dfc-dbee-4c10-a3e0-25ceff92c0b8",
+        "landJob": "92497310-22e1-4e03-9183-cddecf499117"
+      },
+      "checks": [
+        {
+          "label": "each company's aging ties to its own ledger, and its statements are kept as closed",
+          "pass": true,
+          "expected": {
+            "before": {
+              "builder": {
+                "receivable": 5000000,
+                "ledgerReceivable": 5000000,
+                "payable": 3000000,
+                "ledgerPayable": 3000000
+              },
+              "land": {
+                "receivable": 2000000,
+                "ledgerReceivable": 2000000,
+                "payable": 800000,
+                "ledgerPayable": 800000
+              }
+            },
+            "savedAtClose": {
+              "builder": 6,
+              "consolidated": 8,
+              "land": 6
+            },
+            "landReadsAsClosed": true,
+            "landNetIncome": 1200000,
+            "landAgingAfterClose": {
+              "receivable": 2000000,
+              "payable": 800000,
+              "readAsClosed": true
+            }
+          },
+          "observed": {
+            "before": {
+              "builder": {
+                "receivable": 5000000,
+                "ledgerReceivable": 5000000,
+                "payable": 3000000,
+                "ledgerPayable": 3000000
+              },
+              "land": {
+                "receivable": 2000000,
+                "ledgerReceivable": 2000000,
+                "payable": 800000,
+                "ledgerPayable": 800000
+              }
+            },
+            "savedAtClose": {
+              "builder": 6,
+              "consolidated": 8,
+              "land": 6
+            },
+            "landReadsAsClosed": true,
+            "landNetIncome": 1200000,
+            "landAgingAfterClose": {
+              "receivable": 2000000,
+              "payable": 800000,
+              "readAsClosed": true
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T17:56:51.848Z"
+    },
+    {
+      "name": "intercompany-lot-sale",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "72f4e6a7-23d2-4ea1-a717-d9c5bd364d55"
+      },
+      "checks": [
+        {
+          "label": "each company books its side of the lot sale, and the group earns only what was earned outside",
+          "pass": true,
+          "expected": {
+            "priceRequired": "refused: a sale price is required",
+            "beforeSale": {
+              "land": {
+                "balanced": true,
+                "accounts": {
+                  "1005": -6000000,
+                  "1180": 7500000,
+                  "4000": 7500000,
+                  "5000": 6000000
+                }
+              },
+              "builder": {
+                "balanced": true,
+                "accounts": {
+                  "1170": 27500000,
+                  "2000": 20000000,
+                  "2180": 7500000
+                }
+              },
+              "consolidated": {
+                "balanced": true,
+                "accounts": {
+                  "1005": -6000000,
+                  "1170": 26000000,
+                  "2000": 20000000
+                }
+              }
+            },
+            "netIncome": {
+              "land": 1500000,
+              "builder": 2500000,
+              "consolidated": 4000000
+            },
+            "groupEqualsCompanies": true,
+            "reconciliation": {
+              "pairs": [
+                {
+                  "ties": true,
+                  "owed": 7500000
+                }
+              ],
+              "sales": [
+                {
+                  "profit": 1500000,
+                  "realized": true
+                }
+              ]
+            },
+            "intercompanyControl": "passed"
+          },
+          "observed": {
+            "priceRequired": "refused: a sale price is required",
+            "beforeSale": {
+              "land": {
+                "balanced": true,
+                "accounts": {
+                  "1005": -6000000,
+                  "1180": 7500000,
+                  "4000": 7500000,
+                  "5000": 6000000
+                }
+              },
+              "builder": {
+                "balanced": true,
+                "accounts": {
+                  "1170": 27500000,
+                  "2000": 20000000,
+                  "2180": 7500000
+                }
+              },
+              "consolidated": {
+                "balanced": true,
+                "accounts": {
+                  "1005": -6000000,
+                  "1170": 26000000,
+                  "2000": 20000000
+                }
+              }
+            },
+            "netIncome": {
+              "land": 1500000,
+              "builder": 2500000,
+              "consolidated": 4000000
+            },
+            "groupEqualsCompanies": true,
+            "reconciliation": {
+              "pairs": [
+                {
+                  "ties": true,
+                  "owed": 7500000
+                }
+              ],
+              "sales": [
+                {
+                  "profit": 1500000,
+                  "realized": true
+                }
+              ]
+            },
+            "intercompanyControl": "passed"
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T17:56:52.841Z"
+    },
+    {
+      "name": "company-openings",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "5b8511af-0816-4eac-b5d5-2dfbffd3fa9f"
+      },
+      "checks": [
+        {
+          "label": "each company opens with its own position, and a batch spanning companies is refused",
+          "pass": true,
+          "expected": {
+            "mixed": "refused: lines belong to more than one company",
+            "land": {
+              "balanced": true,
+              "accounts": {
+                "1200": 1000000,
+                "3000": 1000000
+              }
+            },
+            "builder": {
+              "balanced": true,
+              "accounts": {
+                "1200": 500000,
+                "3000": 500000
+              }
+            },
+            "consolidated": {
+              "balanced": true,
+              "accounts": {
+                "1200": 1500000,
+                "3000": 1500000
+              }
+            }
+          },
+          "observed": {
+            "mixed": "refused: lines belong to more than one company",
+            "land": {
+              "balanced": true,
+              "accounts": {
+                "1200": 1000000,
+                "3000": 1000000
+              }
+            },
+            "builder": {
+              "balanced": true,
+              "accounts": {
+                "1200": 500000,
+                "3000": 500000
+              }
+            },
+            "consolidated": {
+              "balanced": true,
+              "accounts": {
+                "1200": 1500000,
+                "3000": 1500000
+              }
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T17:56:54.137Z"
+    },
+    {
+      "name": "archive-round-trip",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "f64ae1ed-03f9-4311-876c-f2d068c53049"
+      },
+      "checks": [
+        {
+          "label": "the export alone rebuilds each company's books, and posting and guards work on the restored data",
+          "pass": true,
+          "expected": {
+            "bundleVerifies": true,
+            "balancesRestored": true,
+            "positionsRestored": true,
+            "probeLegs": 2,
+            "positionsAfterProbe": {
+              "builder": {
+                "dueFrom": 0,
+                "dueTo": 3100000
+              },
+              "land": {
+                "dueFrom": 3100000,
+                "dueTo": 0
+              }
+            },
+            "guard": "refused: already has postings"
+          },
+          "observed": {
+            "bundleVerifies": true,
+            "balancesRestored": true,
+            "positionsRestored": true,
+            "probeLegs": 2,
+            "positionsAfterProbe": {
+              "builder": {
+                "dueFrom": 0,
+                "dueTo": 3100000
+              },
+              "land": {
+                "dueFrom": 3100000,
+                "dueTo": 0
+              }
+            },
+            "guard": "refused: already has postings"
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T17:56:54.326Z"
+    },
+    {
+      "name": "foreign-company-refused",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "5444dffc-b7e0-4d53-b959-5b9169e194bb"
+      },
+      "checks": [
+        {
+          "label": "another organization's company is refused or shows nothing",
+          "pass": true,
+          "expected": {
+            "moved": "refused: company not found",
+            "opening": "refused: company not found",
+            "posted": "refused: not this organization's company",
+            "statementAccounts": 0
+          },
+          "observed": {
+            "moved": "refused: company not found",
+            "opening": "refused: company not found",
+            "posted": "refused: not this organization's company",
+            "statementAccounts": 0
+          }
+        }
+      ],
+      "startedAt": "2026-10-08T17:56:55.129Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-08T17:56:55.488Z"
+}
