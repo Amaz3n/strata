@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
 
-const workspace = process.env.BOOKS_ACCEPTANCE_WORKSPACE as string
+export const workspace = process.env.BOOKS_ACCEPTANCE_WORKSPACE as string
 
 export type JourneyUsers = { orgId: string; password: string; owner: string; reviewer: string; periods: Record<string, string> }
 

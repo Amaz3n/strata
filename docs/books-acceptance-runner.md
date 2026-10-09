@@ -241,3 +241,20 @@ given it, and its scenario stays `INCOMPLETE`.
 `--all` runs every golden scenario; nothing else should use the stack while it
 runs (RACE-01 holds locks on timing). Status (October 8): every scenario in the
 catalog passes except PAY-01 and PAY-02, which are deferred with payroll.
+
+## Browser journeys and the app sweep
+
+`browser.cjs --workspace W` runs the committed app from a detached worktree
+against the acceptance API, with fresh local secrets and no third-party
+credentials; `browser-seed.cjs --workspace W --journey NAME` seeds an
+organization and its users. Journeys run with Playwright from
+`scripts/books-acceptance` (`BOOKS_ACCEPTANCE_WORKSPACE=W npx playwright test -c
+playwright.config.ts journeys/NAME.spec.ts`).
+
+`journeys/app-sweep.spec.ts` (seed `app-sweep`) signs in as the owner and opens
+every page under `app/(app)`, filling dynamic segments from the seeded project,
+period, bank account, vendor and contact. A page fails on an uncaught exception,
+a console error, a same-origin 5xx response, the error screen or a failed
+navigation; admin and Arc Trade pages refuse by design and are reported as
+`refused`. `APP_SWEEP_ONLY=/route,/route` reruns named pages. The report goes to
+`W/app-sweep.json`.

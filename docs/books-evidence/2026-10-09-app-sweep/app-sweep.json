@@ -1,0 +1,1154 @@
+[
+  {
+    "route": "/",
+    "url": "/",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/admin",
+    "url": "/admin",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/admin/analytics",
+    "url": "/admin/analytics",
+    "status": "refused",
+    "findings": [
+      "console: %c%s%c Permission guard failed background: #e6e6e6;background: light-dark(rgba(0,0,0,0.1), rgba(255,255,255,0.25));color: #000000;color: light-dark(#000000, #ffffff);border-radius: 2px  Server   Error: Missing permission: platform.billing.manage\n    at requireAnyPermission (about://React/Server/file"
+    ]
+  },
+  {
+    "route": "/admin/audit",
+    "url": "/admin/audit",
+    "status": "refused",
+    "findings": [
+      "console: %c%s%c Permission guard failed background: #e6e6e6;background: light-dark(rgba(0,0,0,0.1), rgba(255,255,255,0.25));color: #000000;color: light-dark(#000000, #ffffff);border-radius: 2px  Server   Error: Missing permission: platform.support.read\n    at requireAnyPermission (about://React/Server/file:/"
+    ]
+  },
+  {
+    "route": "/admin/customers",
+    "url": "/admin/customers",
+    "status": "refused",
+    "findings": [
+      "console: %c%s%c Permission guard failed background: #e6e6e6;background: light-dark(rgba(0,0,0,0.1), rgba(255,255,255,0.25));color: #000000;color: light-dark(#000000, #ffffff);border-radius: 2px  Server   Error: Missing permission: platform.billing.manage\n    at requireAnyPermission (about://React/Server/file"
+    ]
+  },
+  {
+    "route": "/admin/customers/[orgId]/onboarding",
+    "status": "skipped",
+    "findings": [
+      "needs a record the sweep does not seed"
+    ]
+  },
+  {
+    "route": "/admin/customers/[orgId]/onboarding/import/[importer]",
+    "status": "skipped",
+    "findings": [
+      "needs a record the sweep does not seed"
+    ]
+  },
+  {
+    "route": "/admin/features",
+    "url": "/admin/features",
+    "status": "refused",
+    "findings": [
+      "console: %c%s%c Permission guard failed background: #e6e6e6;background: light-dark(rgba(0,0,0,0.1), rgba(255,255,255,0.25));color: #000000;color: light-dark(#000000, #ffffff);border-radius: 2px  Server   Error: Missing permission: platform.feature_flags.manage\n    at requireAnyPermission (about://React/Serve"
+    ]
+  },
+  {
+    "route": "/admin/ops",
+    "url": "/admin/ops",
+    "status": "refused",
+    "findings": [
+      "console: %c%s%c Permission guard failed background: #e6e6e6;background: light-dark(rgba(0,0,0,0.1), rgba(255,255,255,0.25));color: #000000;color: light-dark(#000000, #ffffff);border-radius: 2px  Server   Error: Missing permission: platform.support.read\n    at requireAnyPermission (about://React/Server/file:/"
+    ]
+  },
+  {
+    "route": "/admin/ops/ai",
+    "url": "/admin/ops/ai",
+    "status": "refused",
+    "findings": [
+      "console: %c%s%c Permission guard failed background: #e6e6e6;background: light-dark(rgba(0,0,0,0.1), rgba(255,255,255,0.25));color: #000000;color: light-dark(#000000, #ffffff);border-radius: 2px  Server   Error: Missing permission: platform.support.read\n    at requireAnyPermission (about://React/Server/file:/"
+    ]
+  },
+  {
+    "route": "/admin/ops/drawings",
+    "url": "/admin/ops/drawings",
+    "status": "refused",
+    "findings": [
+      "console: %c%s%c Permission guard failed background: #e6e6e6;background: light-dark(rgba(0,0,0,0.1), rgba(255,255,255,0.25));color: #000000;color: light-dark(#000000, #ffffff);border-radius: 2px  Server   Error: Missing permission: platform.support.read\n    at requireAnyPermission (about://React/Server/file:/"
+    ]
+  },
+  {
+    "route": "/admin/ops/payment-launch",
+    "url": "/admin/ops/payment-launch",
+    "status": "refused",
+    "findings": [
+      "console: %o\n\n%s Error: Only Arc platform owners can attest or revoke payment launch gates\n    at requirePaymentLaunchOwner (about://React/Server/file:///private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/beaf89a0-1bbe-4660-bc17-9b00f4191643/scratchpad/ws/app/.next/dev/server/chunks/ssr/lib_serv"
+    ]
+  },
+  {
+    "route": "/admin/payment-fees",
+    "url": "/admin/payment-fees",
+    "status": "refused",
+    "findings": [
+      "console: %c%s%c Permission guard failed background: #e6e6e6;background: light-dark(rgba(0,0,0,0.1), rgba(255,255,255,0.25));color: #000000;color: light-dark(#000000, #ffffff);border-radius: 2px  Server   Error: Missing permission: platform.billing.manage\n    at requireAnyPermission (about://React/Server/file"
+    ]
+  },
+  {
+    "route": "/admin/subscription-plans",
+    "url": "/admin/subscription-plans",
+    "status": "refused",
+    "findings": [
+      "console: %c%s%c Permission guard failed background: #e6e6e6;background: light-dark(rgba(0,0,0,0.1), rgba(255,255,255,0.25));color: #000000;color: light-dark(#000000, #ffffff);border-radius: 2px  Server   Error: Missing permission: platform.billing.manage\n    at requireAnyPermission (about://React/Server/file"
+    ]
+  },
+  {
+    "route": "/admin/support",
+    "url": "/admin/support",
+    "status": "refused",
+    "findings": [
+      "console: %c%s%c Permission guard failed background: #e6e6e6;background: light-dark(rgba(0,0,0,0.1), rgba(255,255,255,0.25));color: #000000;color: light-dark(#000000, #ffffff);border-radius: 2px  Server   Error: Missing permission: platform.support.read\n    at requireAnyPermission (about://React/Server/file:/"
+    ]
+  },
+  {
+    "route": "/admin/users",
+    "url": "/admin/users",
+    "status": "refused",
+    "findings": [
+      "console: %c%s%c Permission guard failed background: #e6e6e6;background: light-dark(rgba(0,0,0,0.1), rgba(255,255,255,0.25));color: #000000;color: light-dark(#000000, #ffffff);border-radius: 2px  Server   Error: Missing permission: platform.support.read\n    at requireAnyPermission (about://React/Server/file:/"
+    ]
+  },
+  {
+    "route": "/bids",
+    "url": "/bids",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/billing",
+    "url": "/billing",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/billing/deposits",
+    "url": "/billing/deposits",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/billing/receive-payment",
+    "url": "/billing/receive-payment",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/books",
+    "url": "/books",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/books/accountant",
+    "url": "/books/accountant",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/books/assets",
+    "url": "/books/assets",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/books/banking",
+    "url": "/books/banking",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/books/banking/[accountId]/reconcile",
+    "url": "/books/banking/5c029e27-2e0f-45f1-b138-2bc56ca4b5a7/reconcile",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/books/chart",
+    "url": "/books/chart",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/books/close",
+    "url": "/books/close",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/books/close/[periodId]",
+    "url": "/books/close/01bc6ce5-e833-4741-8dd7-f577c1bdb0a2",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/books/cost-allocations",
+    "url": "/books/cost-allocations",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/books/cutover",
+    "url": "/books/cutover",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/books/entities",
+    "url": "/books/entities",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/books/exports",
+    "url": "/books/exports",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/books/inventory",
+    "url": "/books/inventory",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/books/ledger",
+    "url": "/books/ledger",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/books/opening-balances",
+    "url": "/books/opening-balances",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/books/overhead",
+    "url": "/books/overhead",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/books/revenue-policies",
+    "url": "/books/revenue-policies",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/books/statements",
+    "url": "/books/statements",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/books/taxes",
+    "url": "/books/taxes",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/books/transactions",
+    "url": "/books/transactions",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/communities",
+    "url": "/communities",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/communities/[id]",
+    "status": "skipped",
+    "findings": [
+      "needs a record the sweep does not seed"
+    ]
+  },
+  {
+    "route": "/communities/[id]/land",
+    "status": "skipped",
+    "findings": [
+      "needs a record the sweep does not seed"
+    ]
+  },
+  {
+    "route": "/communities/[id]/offering",
+    "status": "skipped",
+    "findings": [
+      "needs a record the sweep does not seed"
+    ]
+  },
+  {
+    "route": "/communities/[id]/settings",
+    "status": "skipped",
+    "findings": [
+      "needs a record the sweep does not seed"
+    ]
+  },
+  {
+    "route": "/companies",
+    "url": "/companies",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/companies/[id]",
+    "url": "/companies/d7b21dfb-a59b-4a6a-8b1f-53494cec4a9f",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/contacts",
+    "url": "/contacts",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/contacts/[id]",
+    "url": "/contacts/aad5e577-7148-4dda-9da4-eddeb7e8e09c",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/crm",
+    "url": "/crm",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/crm/prospects",
+    "url": "/crm/prospects",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/design-studio",
+    "url": "/design-studio",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/design-studio/catalog",
+    "url": "/design-studio/catalog",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/design-studio/catalog/history",
+    "url": "/design-studio/catalog/history",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/design-studio/rules",
+    "url": "/design-studio/rules",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/design-studio/sheet/[projectId]",
+    "status": "skipped",
+    "findings": [
+      "needs a record the sweep does not seed"
+    ]
+  },
+  {
+    "route": "/directory",
+    "url": "/directory",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/directory/[id]",
+    "url": "/directory/d7b21dfb-a59b-4a6a-8b1f-53494cec4a9f",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/directory/[id]/access",
+    "url": "/directory/d7b21dfb-a59b-4a6a-8b1f-53494cec4a9f/access",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/directory/[id]/activity",
+    "url": "/directory/d7b21dfb-a59b-4a6a-8b1f-53494cec4a9f/activity",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/directory/[id]/commitments",
+    "url": "/directory/d7b21dfb-a59b-4a6a-8b1f-53494cec4a9f/commitments",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/directory/[id]/communications",
+    "url": "/directory/d7b21dfb-a59b-4a6a-8b1f-53494cec4a9f/communications",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/directory/[id]/compliance",
+    "url": "/directory/d7b21dfb-a59b-4a6a-8b1f-53494cec4a9f/compliance",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/directory/[id]/contacts",
+    "url": "/directory/d7b21dfb-a59b-4a6a-8b1f-53494cec4a9f/contacts",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/directory/[id]/prequalification",
+    "url": "/directory/d7b21dfb-a59b-4a6a-8b1f-53494cec4a9f/prequalification",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/directory/[id]/transactions",
+    "url": "/directory/d7b21dfb-a59b-4a6a-8b1f-53494cec4a9f/transactions",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/documents",
+    "url": "/documents",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/drawings/sets/[setId]",
+    "status": "skipped",
+    "findings": [
+      "needs a record the sweep does not seed"
+    ]
+  },
+  {
+    "route": "/drawings/sheets/[sheetId]",
+    "status": "skipped",
+    "findings": [
+      "needs a record the sweep does not seed"
+    ]
+  },
+  {
+    "route": "/emails/preview",
+    "url": "/emails/preview",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/estimates",
+    "url": "/estimates",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/invoices",
+    "url": "/invoices",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/my-houses",
+    "url": "/my-houses",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/my-work",
+    "url": "/my-work",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/payables",
+    "url": "/payables",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/payables/payment-runs",
+    "url": "/payables/payment-runs",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/payables/payment-runs/[id]",
+    "status": "skipped",
+    "findings": [
+      "needs a record the sweep does not seed"
+    ]
+  },
+  {
+    "route": "/payables/reconciliation",
+    "url": "/payables/reconciliation",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/payables/waivers",
+    "url": "/payables/waivers",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/payments",
+    "url": "/payments",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/pipeline",
+    "url": "/pipeline",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/pipeline/[dealId]",
+    "status": "skipped",
+    "findings": [
+      "needs a record the sweep does not seed"
+    ]
+  },
+  {
+    "route": "/pipeline/[dealId]/files",
+    "status": "skipped",
+    "findings": [
+      "needs a record the sweep does not seed"
+    ]
+  },
+  {
+    "route": "/pipeline/[dealId]/plans",
+    "status": "skipped",
+    "findings": [
+      "needs a record the sweep does not seed"
+    ]
+  },
+  {
+    "route": "/pipeline/[dealId]/quotes/[packageId]",
+    "status": "skipped",
+    "findings": [
+      "needs a record the sweep does not seed"
+    ]
+  },
+  {
+    "route": "/plans",
+    "url": "/plans",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/plans/[id]",
+    "status": "skipped",
+    "findings": [
+      "needs a record the sweep does not seed"
+    ]
+  },
+  {
+    "route": "/platform",
+    "url": "/platform",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/platform/bugs",
+    "url": "/platform/bugs",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects",
+    "url": "/projects",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/bids",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/bids",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/bids/[packageId]",
+    "status": "skipped",
+    "findings": [
+      "needs a record the sweep does not seed"
+    ]
+  },
+  {
+    "route": "/projects/[id]/budget",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/budget",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/change-orders",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/change-orders",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/closeout",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/closeout",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/closing",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/closing",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/commitments",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/commitments",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/correspondence",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/correspondence",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/cost-inbox",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/cost-inbox",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/daily-logs",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/daily-logs",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/decisions",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/decisions",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/documents",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/documents",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/drawings",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/drawings",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/drawings/model",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/drawings/model",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/drawings/sets/[setId]",
+    "status": "skipped",
+    "findings": [
+      "needs a record the sweep does not seed"
+    ]
+  },
+  {
+    "route": "/projects/[id]/expenses",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/expenses",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/financials",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/financials",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/financials/billing",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/financials/billing",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/financials/billing/new",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/financials/billing/new",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/financials/budget",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/financials/budget",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/financials/close",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/financials/close",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/financials/cost-inbox",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/financials/cost-inbox",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/financials/cost-plus",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/financials/cost-plus",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/financials/inventory",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/financials/inventory",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/financials/payables",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/financials/payables",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/financials/payables/waivers",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/financials/payables/waivers",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/financials/receivables",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/financials/receivables",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/financials/review",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/financials/review",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/financials/tm-tickets",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/financials/tm-tickets",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/financials/trust-center",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/financials/trust-center",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/financials/waivers",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/financials/waivers",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/inspections",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/inspections",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/invoices",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/invoices",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/meetings",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/meetings",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/payables",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/payables",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/photos",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/photos",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/proposals",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/proposals",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/punch",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/punch",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/reports",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/reports",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/reports/[slug]",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/reports/job-cost-detail",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/reports/forecast-history",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/reports/forecast-history",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/rfis",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/rfis",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/safety",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/safety",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/schedule",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/schedule",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/selections",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/selections",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/signatures",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/signatures",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/specs",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/specs",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/submittals",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/submittals",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/tasks",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/tasks",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/time",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/time",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/time/certified-payroll",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/time/certified-payroll",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/time/payroll",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/time/payroll",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/transmittals",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/transmittals",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/projects/[id]/warranty",
+    "url": "/projects/47d9695a-dc8e-4157-9c7e-dbf149342711/warranty",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/proposals",
+    "url": "/proposals",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/proposals/new",
+    "url": "/proposals/new",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/prospects",
+    "url": "/prospects",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/purchasing",
+    "url": "/purchasing",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/purchasing/bids/[packageId]",
+    "status": "skipped",
+    "findings": [
+      "needs a record the sweep does not seed"
+    ]
+  },
+  {
+    "route": "/reports",
+    "url": "/reports",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/reports/[slug]",
+    "url": "/reports/books-trial-balance",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/safety",
+    "url": "/safety",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/sales",
+    "url": "/sales",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/sales/[dealId]",
+    "status": "skipped",
+    "findings": [
+      "needs a record the sweep does not seed"
+    ]
+  },
+  {
+    "route": "/schedule",
+    "url": "/schedule",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/schedule/trades",
+    "url": "/schedule/trades",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/settings",
+    "url": "/settings",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/settings/accounting/calendar",
+    "url": "/settings/accounting/calendar",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/settings/accounting/chart-of-accounts",
+    "url": "/settings/accounting/chart-of-accounts",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/settings/accounting/opening-balances",
+    "url": "/settings/accounting/opening-balances",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/settings/accounting/setup",
+    "url": "/settings/accounting/setup",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/settings/accounting/taxes",
+    "url": "/settings/accounting/taxes",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/settings/cost-coding",
+    "url": "/settings/cost-coding",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/settings/divisions",
+    "url": "/settings/divisions",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/settings/imports",
+    "url": "/settings/imports",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/settings/imports/[importer]",
+    "url": "/settings/imports/cost_codes",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/settings/integrations",
+    "url": "/settings/integrations",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/settings/starts",
+    "url": "/settings/starts",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/settings/takeoff",
+    "url": "/settings/takeoff",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/settings/templates",
+    "url": "/settings/templates",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/settings/warranty",
+    "url": "/settings/warranty",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/signatures",
+    "url": "/signatures",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/starts",
+    "url": "/starts",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/starts/[id]",
+    "status": "skipped",
+    "findings": [
+      "needs a record the sweep does not seed"
+    ]
+  },
+  {
+    "route": "/tasks",
+    "url": "/tasks",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/team",
+    "url": "/team",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/trade/connections",
+    "url": "/trade/connections",
+    "status": "refused",
+    "findings": [
+      "console: %o\n\n%s Error: Enable Arc Trade in Company setup first.\n    at requireTradeContext (about://React/Server/file:///private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/beaf89a0-1bbe-4660-bc17-9b00f4191643/scratchpad/ws/app/.next/dev/server/chunks/ssr/lib_services_1os4utk._.js?0:6039:41)\n   "
+    ]
+  },
+  {
+    "route": "/trade/crew",
+    "url": "/trade/crew",
+    "status": "refused",
+    "findings": [
+      "console: %o\n\n%s Error: Enable Arc Trade in Company setup first.\n    at requireTradeContext (about://React/Server/file:///private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/beaf89a0-1bbe-4660-bc17-9b00f4191643/scratchpad/ws/app/.next/dev/server/chunks/ssr/lib_services_1os4utk._.js?0:6039:41)\n   "
+    ]
+  },
+  {
+    "route": "/trade/setup",
+    "url": "/trade/setup",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/unauthorized",
+    "url": "/unauthorized",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/warranty",
+    "url": "/warranty",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/warranty/accounting",
+    "url": "/warranty/accounting",
+    "status": "clean",
+    "findings": []
+  },
+  {
+    "route": "/whats-new",
+    "url": "/whats-new",
+    "status": "clean",
+    "findings": []
+  }
+]

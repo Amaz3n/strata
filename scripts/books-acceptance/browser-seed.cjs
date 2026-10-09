@@ -50,6 +50,25 @@ insert into public.project_financial_settings(org_id,project_id) values(${kit.q(
     await kit.as(org.owner, () => app("books/period-close").runBooksCloseChecklist(org.periods["2026-07"].periodId))
     return org
   },
+  // A builder with a contract job and a posted bill, for the whole-app sweep.
+  async "app-sweep"(kit, password) {
+    const org = await contractJob(kit, { name: "Browser acceptance — app sweep", contractCents: 5000000, retainagePercent: 0, periods: ["2026-07"], password })
+    const { createProjectVendorBill, approveVendorBillsAtomic } = app("vendor-bills")
+    const bill = await kit.as(org.owner, () => createProjectVendorBill({ projectId: org.projectId, input: { company_id: org.vendorId, bill_number: "SWEEP-1", bill_date: "2026-07-08", due_date: "2026-07-30", total_cents: 120000,
+      actual_lines: [{ cost_code_id: org.costCodeId, description: "Framing", amount_cents: 120000, project_id: org.projectId }] } }))
+    await kit.as(org.owner, () => approveVendorBillsAtomic([{ id: bill.id }]))
+    await kit.drainOutbox(org.orgId)
+    await kit.service(() => app("books/projector").projectJournal(org.orgId, { full: true }))
+    const gl = kit.rows(`select id from public.gl_accounts where org_id=${kit.q(org.orgId)} and code='1000'`)[0].id
+    const bank = await kit.as(org.owner, () => app("books/bank-feeds").createManualBankAccount({ name: "Operating checking", accountType: "depository", glAccountId: gl }))
+    const client = await kit.as(org.owner, () => app("contacts").createContact({ input: { full_name: "Sweep Client", role_key: "client", email: "sweep-client@acceptance.example.test" } }))
+    // Record IDs the sweep fills into pages that open one record.
+    org.periods.project = { periodId: org.projectId }
+    org.periods.vendor = { periodId: org.vendorId }
+    org.periods.bank = { periodId: bank.bankAccountId }
+    org.periods.contact = { periodId: client.id }
+    return org
+  },
   // An operating account with check 301 written and voided in July; the bank
   // never saw it.
   async "bank-statement"(kit, password) {

@@ -18094,7 +18094,7 @@
       "workstream": "B15",
       "title": "Failure, concurrency, permission and transport acceptance",
       "status": "PARTIAL",
-      "status_basis": "(2026-10-08) Acceptance runs from nothing with one command, scripts/books-acceptance/ci.cjs: a fresh isolated Supabase stack replayed from all 601 repository migrations, its API, every golden scenario, evidence kept, the stack and volume removed whatever the result. Run locally exactly as CI will: 23 of 23 first-client scenarios pass with real storage, and the stack was gone afterwards. .github/workflows/books-acceptance.yml runs it nightly, on main, on demand and on Books pull requests, with the acceptance bucket key from BOOKS_ACCEPTANCE_R2_* secrets (without them STORE-01 reports blocked and the run fails as incomplete). Earlier: AUTH-01 role matrix, RACE-01, INTERCO-01 fault and retry, CAP-01. Remaining: the first run on GitHub (needs the branch pushed and the three secrets added), and a browser sweep of the whole app beyond the Books journeys.",
+      "status_basis": "(2026-10-09) Acceptance runs from nothing with one command, scripts/books-acceptance/ci.cjs (601 migrations replayed, every golden scenario, stack removed afterwards); 23 of 23 first-client scenarios pass locally exactly as CI will, and .github/workflows/books-acceptance.yml runs it nightly, on main, on demand and on Books pull requests. Whole-app browser sweep (journeys/app-sweep.spec.ts): every page under app/(app) opened as a builder owner; it found and fixed owners missing 22 admin permissions (migration 20261009010000, held for the deploy), clock reads during prerender on three routes, a pdf.js server crash, a duplicate React key and a warranty seeding race. Final run: 150 clean, 14 refused by design (Arc staff consoles, Arc Trade before enabled), 20 skipped (need records the seed does not create), 0 with errors. Remaining: the first workflow run on GitHub (needs the branch pushed and the BOOKS_ACCEPTANCE_* secrets).",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "no unauthorized data/money transition",
@@ -18155,11 +18155,41 @@
             "bootstrap REPLAYED (fresh route, 601 migrations); All scenarios: PASSED (23 of 23); exit 0; no containers left for the run's project."
           ],
           "evidence_dir": "docs/books-evidence/2026-10-08-ci-run"
+        },
+        {
+          "verified_at": "2026-10-09T11:05:10.873Z",
+          "implemented_paths": [
+            "scripts/books-acceptance/journeys/app-sweep.spec.ts",
+            "scripts/books-acceptance/browser-seed.cjs",
+            "supabase/migrations/20261009010000_owner_holds_admin_permissions.sql",
+            "supabase/tests/owner_permissions.test.sql",
+            "app/(app)/directory/[id]/layout.tsx",
+            "app/(app)/books/page.tsx",
+            "app/(app)/projects/[id]/drawings/model/page.tsx",
+            "components/settings/waiver-setup-workspace.tsx",
+            "components/invoices/invoice-waiver-step.tsx",
+            "app/(app)/projects/[id]/time/payroll/page.tsx",
+            "lib/services/warranty-operations.ts"
+          ],
+          "test_scenario_ids": [],
+          "commands": [
+            "node scripts/books-acceptance/browser.cjs --workspace W",
+            "node scripts/books-acceptance/browser-seed.cjs --workspace W --journey app-sweep",
+            "BOOKS_ACCEPTANCE_WORKSPACE=W npx playwright test -c playwright.config.ts journeys/app-sweep.spec.ts --project=desktop"
+          ],
+          "observed_results": [
+            "184 pages: 150 clean, 14 refused by design, 20 skipped, 0 with errors (app at abf88776).",
+            "pgTAP owner_permissions: 2 of 2 on the acceptance stack."
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-09-app-sweep/app-sweep.json sha256:b2b38e4e2af77cca6d3f36240c65a22a96a8e37487fdbde77f1ee7e58c8f8e9a",
+            "docs/books-evidence/2026-10-09-app-sweep/summary.json sha256:a8cca226fa50af1b7b5363dd7a396ee012287bdf936e1eddbad220c292a728d3"
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-09-app-sweep"
         }
       ],
       "remaining_criteria": [
-        "the workflow passes on GitHub (push and BOOKS_ACCEPTANCE_R2_* secrets)",
-        "full app has no relevant browser errors or hydration issues (beyond the Books journeys)"
+        "the workflow passes on GitHub (push and BOOKS_ACCEPTANCE_* secrets)"
       ],
       "external_dependency": null,
       "reviewer": null,
