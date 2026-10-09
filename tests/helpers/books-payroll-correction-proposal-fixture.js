@@ -1,10 +1,10 @@
+const { migrationSql } = require("../support/migration-sql")
 require('../../scripts/register-ts-node-test')
-const fs=require('node:fs'),path=require('node:path')
 const {sourceFixture,prepareSource,reviewSource}=require('./books-payroll-correction-source-fixture'),{capture}=require('./books-payroll-workflow-fixture'),{id,org}=require('./books-payroll-register-fixture')
 async function proposalFixture(t,options={}){
  const f=await sourceFixture(t,options)
  await f.db.exec('drop table if exists books_payroll_correction_proposals')
- for(const name of ['20261004021236_books_payroll_correction_math.sql','20261004022226_books_payroll_correction_context.sql','20261004024219_books_payroll_correction_proposals.sql'])await f.db.exec(fs.readFileSync(path.join(__dirname,'../../supabase/migrations',name),'utf8'))
+ for(const name of ['20261004021236_books_payroll_correction_math.sql','20261004022226_books_payroll_correction_context.sql','20261004024219_books_payroll_correction_proposals.sql'])await f.db.exec(migrationSql(name.replace(/\.sql$/, "")))
  await require('../fixtures/books-export-snapshot-database').installBooksExportSnapshot(f.db)
  await prepareSource(f);await reviewSource(f)
  const plan=(await f.db.query('select lock_books_payroll_correction_context($1,$2) result',[org,id(700)])).rows[0].result;delete plan.locksHeldUntilTransactionEnd

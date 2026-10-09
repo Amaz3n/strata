@@ -1,3 +1,4 @@
+const { migrationSql } = require("./support/migration-sql")
 require('../scripts/register-ts-node-test');
 const test=require('node:test');const assert=require('node:assert/strict');const Module=require('node:module');
 test('closed statement detail uses frozen transactions and never reconstructs legacy history from live feeds',async()=>{
@@ -29,8 +30,8 @@ for (const scenario of [{name:'outstanding check',factor:1,outstanding:-1000},{n
  await db.exec('create trigger validate_match before insert or update on bank_transaction_matches for each row execute function validate_books_bank_match()');
  await db.exec(definition('reopen_books_bank_reconciliation'));
  await db.exec("alter table bank_transaction_matches add column match_type text default 'exact'");
- await db.exec(fs.readFileSync(path.join(__dirname,'../supabase/migrations/20261003021045_books_bank_statement_evidence.sql'),'utf8'));
- await db.exec(fs.readFileSync(path.join(__dirname,'../supabase/migrations/20261003020833_books_bank_statement_sequence.sql'),'utf8'));
+ await db.exec(migrationSql("20261003021045_books_bank_statement_evidence"));
+ await db.exec(migrationSql("20261003020833_books_bank_statement_sequence"));
  const id=n=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;const org=id(1),actor=id(2),cash=id(3),equity=id(4),bank=id(5),sept=id(6),oct=id(7);
  await db.exec(`insert into orgs values('${org}');insert into app_users values('${actor}');insert into gl_accounts(id,org_id,code,name,account_type,subtype,normal_balance) values('${cash}','${org}','1000','Bank','${scenario.factor===1?'asset':'liability'}','${scenario.factor===1?'cash':'credit_card'}','${scenario.factor===1?'debit':'credit'}'),('${equity}','${org}','3000','Equity','equity','owner_equity','credit');insert into bank_accounts values('${bank}','${org}','${cash}');`);
  const post=async(key,normalAmount,kind='operational')=>{const amount=normalAmount*scenario.factor;return (await db.query('select post_books_journal_entry($1,$2,$3) id',[org,JSON.stringify({entry_date:'2026-09-15',entry_kind:kind,memo:key,posting_key:key,policy_version:1,source_type:'test'}),JSON.stringify([{line_no:1,account_id:cash,debit_cents:Math.max(amount,0),credit_cents:Math.max(-amount,0)},{line_no:2,account_id:equity,debit_cents:Math.max(-amount,0),credit_cents:Math.max(amount,0)}])])).rows[0].id;};

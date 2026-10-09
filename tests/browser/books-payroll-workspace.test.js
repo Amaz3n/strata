@@ -7,6 +7,7 @@ const test = require("node:test"),
   { join } = require("node:path"),
   { execFileSync } = require("node:child_process"),
   Module = require("node:module");
+const { migrationSql } = require("../support/migration-sql")
 const { chromium } = require("@playwright/test"),
   {
     scenario,
@@ -16,10 +17,7 @@ const { chromium } = require("@playwright/test"),
 test("real browser drives project payroll placement, separate review and posting through actual actions/services/scoped SQL", async (t) => {
   const f = await scenario(t);
   await f.db.exec(
-    await readFile(
-      "supabase/migrations/20261004053644_books_payroll_workspace_reads.sql",
-      "utf8",
-    ),
+    migrationSql("20261004053644_books_payroll_workspace_reads"),
   );
   await f.db.exec(
     "alter table projects add name text;alter table budget_lines add description text;alter table cost_codes add name text",

@@ -1,3 +1,4 @@
+const { migrationSql } = require("./support/migration-sql")
 require('../scripts/register-ts-node-test')
 const test=require('node:test'),assert=require('node:assert/strict')
 const {ready,post}=require('./helpers/books-payroll-atomic-fixture')
@@ -78,7 +79,7 @@ test('minimal ownership foreign keys independently prohibit moving consumed sour
  assert.deepEqual((await capture(f.db)).tables,f.tables)
 })
 test('existing schema 12 posted payroll receives proven ownership during upgrade; drift aborts upgrade',async t=>{
- const fs=require('node:fs'),path=require('node:path'),migration=fs.readFileSync(path.join(__dirname,'../supabase/migrations/20261004004909_books_payroll_native_ownership.sql'),'utf8')
+ const migration=migrationSql("20261004004909_books_payroll_native_ownership")
  const f=await ready(t,{ownership:false}),result=(await post(f)).rows[0].result
  await f.db.exec('drop table books_payroll_labor_ownership');await f.db.exec(migration)
  const tables=(await capture(f.db)).tables;assert.equal(tables.books_payroll_labor_ownership.length,1)

@@ -1,3 +1,4 @@
+const { migrationSql } = require("../support/migration-sql")
 const fs = require("node:fs");
 const { createBooksLedgerDb } = require("../helpers/books-ledger-db");
 const id = (n) => "88500000-0000-4000-8000-" + String(n).padStart(12, "0");
@@ -16,7 +17,7 @@ async function fixture(t) {
     "20261004201613_books_journal_proposal_review_receipts.sql",
     "20261004203909_books_journal_preparation_intents.sql",
   ])
-    await db.exec(fs.readFileSync("supabase/migrations/" + p, "utf8"));
+    await db.exec(migrationSql(p.replace(/\.sql$/, "")));
   const lines = [
     {
       line_no: 1,

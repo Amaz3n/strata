@@ -1,7 +1,7 @@
+const { migrationSql } = require("./support/migration-sql")
 require("../scripts/register-ts-node-test");
 const test = require("node:test"),
-  assert = require("node:assert/strict"),
-  fs = require("node:fs");
+  assert = require("node:assert/strict");
 const {
   scenario,
 } = require("./helpers/books-payroll-construction-decisions-fixture");
@@ -25,10 +25,7 @@ const {
 const {
   parsePayrollCorrectionContext,
 } = require("../lib/services/books/payroll-correction-context");
-const migration = fs.readFileSync(
-  "supabase/migrations/20261004053644_books_payroll_workspace_reads.sql",
-  "utf8",
-);
+const migration = migrationSql("20261004053644_books_payroll_workspace_reads");
 async function setup(t) {
   const f = await scenario(t);
   await f.db.exec(migration);

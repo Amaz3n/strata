@@ -1,16 +1,13 @@
+const { migrationSql } = require("./support/migration-sql")
 require("../scripts/register-ts-node-test");
 const test = require("node:test"),
   assert = require("node:assert/strict"),
-  fs = require("node:fs"),
   Module = require("node:module");
 const {
     fixture,
   } = require("./helpers/books-private-payroll-documents-fixture"),
   { id, org } = require("./helpers/books-payroll-register-fixture");
-const sql = fs.readFileSync(
-  "supabase/migrations/20261004080920_books_payroll_support_versions.sql",
-  "utf8",
-);
+const sql = migrationSql("20261004080920_books_payroll_support_versions");
 const read = async (f, args = [org, null, "", 50]) =>
   (
     await f.db.query(

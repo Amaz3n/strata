@@ -1,3 +1,4 @@
+const { migrationSql } = require("./support/migration-sql")
 const test = require("node:test")
 const assert = require("node:assert/strict")
 const { createBooksLedgerDb } = require("./helpers/books-ledger-db")
@@ -5,7 +6,7 @@ const id = n => `00000000-0000-4000-8000-${String(n).padStart(12,"0")}`
 test("completed WIP carries approved final estimates forward only while dated evidence remains unchanged", async t => {
   const db=await createBooksLedgerDb(); t.after(()=>db.close())
   await db.exec("create table cost_codes(id uuid primary key,org_id uuid)")
-  await db.exec(require("node:fs").readFileSync("supabase/migrations/20261003115030_books_wip_revenue_allocations.sql", "utf8"))
+  await db.exec(migrationSql("20261003115030_books_wip_revenue_allocations"))
   const org=id(1),actor=id(2),project=id(3),prior=id(4),target=id(5)
   await db.exec(`insert into orgs values('${org}'); insert into app_users values('${actor}'); insert into projects(id,org_id,status) values('${project}','${org}','completed');
     insert into accounting_periods(id,org_id,period_start,period_end,fiscal_year,fiscal_period) values('${prior}','${org}','2026-08-01','2026-08-31',2026,8),('${target}','${org}','2026-09-01','2026-09-30',2026,9);

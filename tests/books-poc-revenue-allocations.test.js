@@ -1,7 +1,7 @@
+const { migrationSql } = require("./support/migration-sql")
 require("../scripts/register-ts-node-test")
 const test = require("node:test")
 const assert = require("node:assert/strict")
-const fs = require("node:fs")
 const { pocRevenueAllocationDeltas } = require("../lib/services/books/poc-revenue-allocations")
 const { postRevenueRecognition } = require("../lib/services/books/posting-rules")
 const { createBooksLedgerDb } = require("./helpers/books-ledger-db")
@@ -37,7 +37,7 @@ test("cumulative POC allocation preserves cents, reverses old buckets and suppor
 test("real WIP allocation revisions preserve evidence, validate scope and reconcile native revenue with loss provisions", async t => {
   const db = await createBooksLedgerDb(); t.after(() => db.close())
   await db.exec("create table cost_codes(id uuid primary key,org_id uuid)")
-  await db.exec(fs.readFileSync("supabase/migrations/20261003115030_books_wip_revenue_allocations.sql", "utf8"))
+  await db.exec(migrationSql("20261003115030_books_wip_revenue_allocations"))
   const org = id(1), actor = id(2), project = id(3), period = id(4)
   await db.exec(`insert into orgs values('${org}'),('${id(99)}'); insert into app_users values('${actor}'); insert into projects(id,org_id) values('${project}','${org}');
     insert into accounting_periods(id,org_id,period_start,period_end,fiscal_year,fiscal_period) values('${period}','${org}','2026-09-01','2026-09-30',2026,9);

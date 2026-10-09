@@ -1,7 +1,7 @@
+const { migrationSql } = require("./support/migration-sql")
 require("../scripts/register-ts-node-test");
 const test = require("node:test"),
   assert = require("node:assert/strict"),
-  fs = require("node:fs"),
   Module = require("node:module");
 const { setup } = require("./helpers/books-payroll-payment-fixture");
 const { prepare } = require("./helpers/books-payroll-database");
@@ -9,10 +9,7 @@ const { id, org } = require("./helpers/books-payroll-register-fixture");
 const {
   payrollPaymentReviewEvidence,
 } = require("../lib/services/books/payroll-payment-review-rules");
-const sql = fs.readFileSync(
-  "supabase/migrations/20261004082928_books_payroll_payment_workspace.sql",
-  "utf8",
-);
+const sql = migrationSql("20261004082928_books_payroll_payment_workspace");
 const notes = "Verified original statement and worker allocation";
 async function fixture(t) {
   const f = await setup(t);

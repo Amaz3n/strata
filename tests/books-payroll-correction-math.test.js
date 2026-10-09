@@ -1,8 +1,9 @@
+const { migrationSql } = require("./support/migration-sql")
 require('../scripts/register-ts-node-test')
-const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs')
+const test=require('node:test'),assert=require('node:assert/strict')
 const {sourceFixture,prepareSource,reviewSource}=require('./helpers/books-payroll-correction-source-fixture'),{capture}=require('./helpers/books-payroll-workflow-fixture'),{id,org,fixture}=require('./helpers/books-payroll-register-fixture')
 const {payrollCorrectionPlan}=require('../lib/services/books/payroll-correction-plan'),{reconcilePayrollImport}=require('../lib/services/books/payroll-import-rules')
-const migration=fs.readFileSync(require('node:path').join(__dirname,'../supabase/migrations/20261004021236_books_payroll_correction_math.sql'),'utf8')
+const migration=migrationSql("20261004021236_books_payroll_correction_math")
 async function ready(t){const f=await sourceFixture(t);await f.db.exec(migration);return f}
 const delta=(f,before,accounts,after,nextAccounts,request=f.evidence.request)=>f.db.query('select books_payroll_provider_delta($1::jsonb,$2::jsonb,$3::jsonb,$4::jsonb,$5::jsonb) result',[before,accounts,after,nextAccounts,request].map(JSON.stringify)).then(result=>result.rows[0].result)
 test('independent SQL reviewed-source delta matches actual posting preview and writes no accounting money',async t=>{

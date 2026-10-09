@@ -10268,7 +10268,7 @@
           },
           "artifact_paths_and_hashes": [
             {
-              "path": "supabase/migrations/20261004082928_books_payroll_payment_workspace.sql",
+              "path": "supabase/migrations/20261004082928_books_payroll_payment_workspace.sql@f59b0980",
               "sha256": "367e1b99354a623ec8dd0349b759c89e0a931fbc0c3d0d94f0fc977cec26a4d1"
             },
             {
@@ -10304,7 +10304,7 @@
               "sha256": "f31ef6ee3061db1784595bde6d91327d6537b55de6d3006efc7cb4e9f94ffb41"
             },
             {
-              "path": "tests/books-payroll-payment-workspace.test.js",
+              "path": "tests/books-payroll-payment-workspace.test.js@f59b0980",
               "sha256": "917431e22314b2fcfcb28ee16fc33de43415a622bd70fa45c76b71c55ca41bc5"
             },
             {
@@ -10312,7 +10312,7 @@
               "sha256": "34c6581d5f4b98d14e1fa55b00b1b030a03dd7a580dce847976ff7d57a25e5d4"
             },
             {
-              "path": "tests/books-private-payroll-storage-service.test.js",
+              "path": "tests/books-private-payroll-storage-service.test.js@f59b0980",
               "sha256": "2f5983c829493576399bf5593e4fec49dbe4ce4c7b86549e02dfa3c0c6505ddf"
             },
             {
@@ -18375,7 +18375,7 @@
       "workstream": "B16",
       "title": "Migration deploy inventory: know exactly what production needs",
       "status": "BLOCKED_EXTERNAL",
-      "status_basis": "Built and measured (2026-10-08). `pnpm db:pending` (scripts/list-pending-migrations.mjs over the pure scripts/migration-ledger.mjs, tested) lists every repository migration production has not applied, matching by version, MCP-stamped stem or name, and counting the object-verified map in supabase/scripts/repair-migration-ledger.sql as applied; pending-migrations/ is never listed. Live reading needs list_migration_ledger(), which production does not have (it is installed by the reviewed repair script), so today it runs on a read-only ledger export (--ledger). On 2026-10-08: 116 applied by version, 266 under another version, 29 object-verified awaiting the ledger repair, 189 pending. The older August/September question is settled: the 29 object-verified files are applied (ledger repair only), and ten are genuinely pending, each confirmed absent by its own object in production (six from the September audit, four late-September files); four the September audit listed as pending were applied since. Waiting on: the owner's review of the deploy list and the ledger repair, then the deploy.",
+      "status_basis": "Built and measured (2026-10-08). `pnpm db:pending` (scripts/list-pending-migrations.mjs over the pure scripts/migration-ledger.mjs, tested) lists every repository migration production has not applied, matching by version, MCP-stamped stem or name, and counting the object-verified map in supabase/scripts/repair-migration-ledger.sql as applied; pending-migrations/ is never listed. Live reading needs list_migration_ledger(), which production does not have (it is installed by the reviewed repair script), so today it runs on a read-only ledger export (--ledger). On 2026-10-08: 116 applied by version, 266 under another version, 29 object-verified awaiting the ledger repair, 189 pending. The older August/September question is settled: the 29 object-verified files are applied (ledger repair only), and ten are genuinely pending, each confirmed absent by its own object in production (six from the September audit, four late-September files); four the September audit listed as pending were applied since. Waiting on: the owner's review of the deploy list and the ledger repair, then the deploy. (2026-10-09) Consolidated before deploy: 191 pending became 93. The 26 migrations of the retired per-entity ledger were removed (their only lasting effects, the service-only books_exports grant and the export capture, stay in the trimmed retirement section), and the 80 remaining unapplied Books migrations became 7 files of contiguous slices in their original order, each section marked with its source file. A fresh replay matches the unconsolidated set exactly apart from two functions that already called dropped functions; a populated upgrade from production keeps money unchanged; SCHEMA-01 623 assertions; scenarios 20 of 23 with the rest blocked only on key files. The upgrade rehearsal also found that production, which applies older unapplied files last, would have lost invoice budget allocations and left a trigger function executable by anon; 20261009020000_deploy_order_parity restores parity and the runbook now requires the upgrade and a fresh replay to match.",
       "global_definition_of_done_required": false,
       "definition_of_done": [
         "a read-only `pnpm db:pending` command lists, live from the production ledger, every repository migration production has not applied (matched by version or by name, normalizing MCP-stamped names)",
@@ -18406,6 +18406,44 @@
             "tests/migration-ledger.test.js 3/3."
           ],
           "evidence_dir": "docs/books-evidence/2026-10-08-deploy-inventory"
+        },
+        {
+          "verified_at": "2026-10-09T18:17:20.112Z",
+          "implemented_paths": [
+            "supabase/migrations/20261003192751_books_close_wip_and_tax_controls.sql",
+            "supabase/migrations/20261004082928_books_payroll.sql",
+            "supabase/migrations/20261006014500_books_journal_review_and_reversals.sql",
+            "supabase/migrations/20261007140000_books_posting_close_and_revenue.sql",
+            "supabase/migrations/20261007235500_books_homes_inventory_and_allocations.sql",
+            "supabase/migrations/20261008001000_books_companies.sql",
+            "supabase/migrations/20261008060000_books_1099_exports_and_openings.sql",
+            "supabase/migrations/20261009020000_deploy_order_parity.sql",
+            "tests/support/migration-sql.js",
+            "docs/books-operations.md"
+          ],
+          "test_scenario_ids": [],
+          "commands": [
+            "fresh replay of both trees and pg_dump comparison (schema, grants, seeded data, role permissions)",
+            "node scripts/bootstrap-books-acceptance.cjs --baseline-file <production-applied list> --run && node scripts/books-acceptance/upgrade.cjs",
+            "node scripts/test-books-release-acceptance.cjs --scenario SCHEMA-01",
+            "node scripts/books-acceptance/ci.cjs",
+            "pnpm test:financials"
+          ],
+          "observed_results": [
+            "pending 191 -> 93",
+            "fresh replay identical except two dead functions",
+            "upgrade: 93 applied, money preserved; upgrade schema == fresh schema",
+            "SCHEMA-01 623 assertions passed",
+            "scenarios 20 of 23; 3 blocked on key files"
+          ],
+          "artifact_paths_and_hashes": [
+            "docs/books-evidence/2026-10-09-migration-consolidation/fresh-vs-before.grants.diff sha256:09c34530f23093387ec39f3eb58dab976c68194fb58607227135323dd4e512d6",
+            "docs/books-evidence/2026-10-09-migration-consolidation/fresh-vs-before.schema.diff sha256:c6fad959d26001708971a001af603f82f42ea51f7bdbe664e4e758f3904f5946",
+            "docs/books-evidence/2026-10-09-migration-consolidation/scenarios-summary.json sha256:8e4d0862dc6a2a8cb4e64440906f0f1507c299697e6defac4874a57e3b0aa626",
+            "docs/books-evidence/2026-10-09-migration-consolidation/summary.json sha256:d83b0845c40b80419e95e73521303f1db0ce141dc79a1afc057da6b87f1ba932",
+            "docs/books-evidence/2026-10-09-migration-consolidation/upgrade.json sha256:0c2caf111809ade70b789f788c11c9a361eedc3d15d214b2ab3fb8cc061f9cd7"
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-09-migration-consolidation"
         }
       ],
       "remaining_criteria": [

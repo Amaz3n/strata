@@ -1,0 +1,310 @@
+{
+  "schemaVersion": 1,
+  "route": "upgrade",
+  "workspace": "/private/tmp/claude-501/-Users-agustinzenuto-Desktop-Projects-arc/beaf89a0-1bbe-4660-bc17-9b00f4191643/scratchpad/mig/ws-up",
+  "instanceId": "92db6920-5bfd-463d-872d-cc59e2fee4b0",
+  "container": "supabase_db_arc-books-acceptance-92db69205bfd",
+  "steps": [
+    {
+      "phase": "seed",
+      "status": "PASSED",
+      "sha256": "655cb27d19c9727d897d8163e5d522a5f4567c9af1acd46a07145d60d4576b4b"
+    },
+    {
+      "phase": "fingerprint-before",
+      "status": "PASSED",
+      "sha256": "ddb958e3d41356e42e6a6df16f8024beaa563e026c9332519524c8265d624973"
+    },
+    {
+      "phase": "migration-up",
+      "status": "PASSED",
+      "sha256": "e2b19e49b455937b4ffae8bd76cf4071d43470ca22095203853e80a269082e74"
+    },
+    {
+      "phase": "fingerprint-after",
+      "status": "PASSED",
+      "sha256": "ddb958e3d41356e42e6a6df16f8024beaa563e026c9332519524c8265d624973"
+    }
+  ],
+  "startedAt": "2026-10-09T18:01:12.772Z",
+  "appliedMigrations": [
+    "supabase/migrations/20260731150000_desk_rollup_counts.sql",
+    "supabase/migrations/20260813030000_payment_reconciliation_run_idempotency.sql",
+    "supabase/migrations/20260813030100_payment_ledger_balance_error_detail.sql",
+    "supabase/migrations/20260818170000_prequalification_waiver.sql",
+    "supabase/migrations/20260829120000_billing_lifecycle_and_command_permissions.sql",
+    "supabase/migrations/20260902141500_compliance_autopilot_deficient_reminders.sql",
+    "supabase/migrations/20260919235924_unified_reporting_access.sql",
+    "supabase/migrations/20260921123155_customer_billing_refunds.sql",
+    "supabase/migrations/20260924230342_accounting_d2_compatibility_mirror.sql",
+    "supabase/migrations/20260929011236_takeoff_estimating_continuity.sql",
+    "supabase/migrations/20261001121920_drawing_job_leases.sql",
+    "supabase/migrations/20261001122054_drawing_upload_operations.sql",
+    "supabase/migrations/20261001123000_drawing_page_artifacts.sql",
+    "supabase/migrations/20261001124849_drawing_storage_cleanup.sql",
+    "supabase/migrations/20261001124901_drawing_publication_receipts.sql",
+    "supabase/migrations/20261001124910_drawing_current_register.sql",
+    "supabase/migrations/20261001162622_drawing_artifact_guards.sql",
+    "supabase/migrations/20261001162632_drawing_split_manifest.sql",
+    "supabase/migrations/20261001164202_drawing_split_registration.sql",
+    "supabase/migrations/20261003004606_documents_integrity.sql",
+    "supabase/migrations/20261003004822_esign_durable_execution_and_evidence.sql",
+    "supabase/migrations/20261003004906_document_mutation_undo.sql",
+    "supabase/migrations/20261003004921_document_upload_transfers.sql",
+    "supabase/migrations/20261003010150_document_exports.sql",
+    "supabase/migrations/20261003010417_esign_template_reservations.sql",
+    "supabase/migrations/20261003010841_esign_delivery_observability.sql",
+    "supabase/migrations/20261003013000_selection_configuration_rules.sql",
+    "supabase/migrations/20261003013101_esign_atomic_resend.sql",
+    "supabase/migrations/20261003023000_starts_job_claim_leases.sql",
+    "supabase/migrations/20261003024000_starts_core_write_fences.sql",
+    "supabase/migrations/20261003025000_starts_generated_artifact_fences.sql",
+    "supabase/migrations/20261003030000_starts_package_lease_rpc.sql",
+    "supabase/migrations/20261003031000_starts_purchasing_write_fences.sql",
+    "supabase/migrations/20261003032000_po_regeneration_fenced_children.sql",
+    "supabase/migrations/20261003033000_starts_land_posting_fences.sql",
+    "supabase/migrations/20261003033500_starts_release_lot_plan_scope.sql",
+    "supabase/migrations/20261003034000_starts_drawing_record_fences.sql",
+    "supabase/migrations/20261003035000_plan_drawing_publication_transaction.sql",
+    "supabase/migrations/20261003036000_plan_drawing_copy_attempt.sql",
+    "supabase/migrations/20261003037000_starts_worker_outbox_fanout_fences.sql",
+    "supabase/migrations/20261003038000_starts_release_actor_scope.sql",
+    "supabase/migrations/20261003040000_starts_core_actor_scope.sql",
+    "supabase/migrations/20261003041000_starts_claim_actor_transitions.sql",
+    "supabase/migrations/20261003043000_purchasing_readiness_scope_index.sql",
+    "supabase/migrations/20261003044000_notification_delivery_receipts.sql",
+    "supabase/migrations/20261003045000_starts_confirmation_recovery.sql",
+    "supabase/migrations/20261003046000_starts_notification_delivery_recovery.sql",
+    "supabase/migrations/20261003047000_starts_delivery_inspection.sql",
+    "supabase/migrations/20261003048000_starts_notification_delivery_authorization.sql",
+    "supabase/migrations/20261003049000_warranty_courtesy_reservations.sql",
+    "supabase/migrations/20261003050000_closing_evidence_guards.sql",
+    "supabase/migrations/20261003051000_warranty_visit_completion_receipts.sql",
+    "supabase/migrations/20261003052000_warranty_completion_evidence_guards.sql",
+    "supabase/migrations/20261003053000_warranty_actor_analytics.sql",
+    "supabase/migrations/20261003192751_books_close_wip_and_tax_controls.sql",
+    "supabase/migrations/20261003221905_purchase_agreement_open_home_unique.sql",
+    "supabase/migrations/20261003231638_esign_send_recipient_binding.sql",
+    "supabase/migrations/20261003232615_purchase_agreement_signing_ownership.sql",
+    "supabase/migrations/20261004000030_agreement_catalog_revisions.sql",
+    "supabase/migrations/20261004000100_purchase_agreement_creation_receipts.sql",
+    "supabase/migrations/20261004011501_agreement_incentive_capacity.sql",
+    "supabase/migrations/20261004012839_catalog_package_publication.sql",
+    "supabase/migrations/20261004015201_catalog_price_publication.sql",
+    "supabase/migrations/20261004025518_catalog_publication_reconciliation.sql",
+    "supabase/migrations/20261004033000_catalog_publication_intents.sql",
+    "supabase/migrations/20261004034500_catalog_publication_history.sql",
+    "supabase/migrations/20261004043000_catalog_publication_pending_scopes.sql",
+    "supabase/migrations/20261004050000_catalog_archived_package_queue.sql",
+    "supabase/migrations/20261004060000_catalog_package_member_discovery.sql",
+    "supabase/migrations/20261004060100_catalog_package_member_search_indexes.sql",
+    "supabase/migrations/20261004065019_catalog_group_publication.sql",
+    "supabase/migrations/20261004072434_catalog_group_publication_recovery.sql",
+    "supabase/migrations/20261004081548_catalog_group_category_discovery.sql",
+    "supabase/migrations/20261004082928_books_payroll.sql",
+    "supabase/migrations/20261004120000_bid_awards_active_package_unique.sql",
+    "supabase/migrations/20261004121500_sheet_building_records.sql",
+    "supabase/migrations/20261004124500_option_model_changes.sql",
+    "supabase/migrations/20261005031540_inspection_obligation_lifecycle.sql",
+    "supabase/migrations/20261005033613_accounting_application_authorization.sql",
+    "supabase/migrations/20261005040538_qbo_webhook_provider_receipts.sql",
+    "supabase/migrations/20261005043636_safety_workspace_discovery_indexes.sql",
+    "supabase/migrations/20261005050640_qbo_cdc_recovery.sql",
+    "supabase/migrations/20261005053644_qbo_import_completion_fences.sql",
+    "supabase/migrations/20261005105415_trade_lookahead_database_workspace.sql",
+    "supabase/migrations/20261005121409_reservation_conversion_ownership.sql",
+    "supabase/migrations/20261006014500_books_journal_review_and_reversals.sql",
+    "supabase/migrations/20261007140000_books_posting_close_and_revenue.sql",
+    "supabase/migrations/20261007160000_billable_cost_corrections.sql",
+    "supabase/migrations/20261007235500_books_homes_inventory_and_allocations.sql",
+    "supabase/migrations/20261008001000_books_companies.sql",
+    "supabase/migrations/20261008060000_books_1099_exports_and_openings.sql",
+    "supabase/migrations/20261009010000_owner_holds_admin_permissions.sql",
+    "supabase/migrations/20261009020000_deploy_order_parity.sql"
+  ],
+  "fingerprintBefore": {
+    "trialBalance": [
+      {
+        "code": "2000",
+        "debit": 12500,
+        "credit": 87500
+      },
+      {
+        "code": "5040",
+        "debit": 87500,
+        "credit": 12500
+      }
+    ],
+    "journalLines": "40a825dd71050e41f1fc7fc6ada37b6b",
+    "invoices": [
+      {
+        "n": "UPG-1",
+        "status": "paid",
+        "total": 1250000,
+        "balance": 0
+      },
+      {
+        "n": "UPG-2",
+        "status": "partial",
+        "total": 1560000,
+        "balance": 780000
+      },
+      {
+        "n": "UPG-3",
+        "status": "partial",
+        "total": 1870000,
+        "balance": 935000
+      }
+    ],
+    "bills": [
+      {
+        "n": "VB-1",
+        "status": "paid",
+        "total": 420000,
+        "paid": 420000
+      },
+      {
+        "n": "VB-2",
+        "status": "approved",
+        "total": 475000,
+        "paid": 0
+      },
+      {
+        "n": "VB-3",
+        "status": "approved",
+        "total": 530000,
+        "paid": 0
+      }
+    ],
+    "payments": [
+      {
+        "key": "upgrade-ap-1",
+        "amount": 420000,
+        "status": "succeeded"
+      },
+      {
+        "key": "upgrade-payment-1",
+        "amount": 1250000,
+        "status": "succeeded"
+      },
+      {
+        "key": "upgrade-payment-2",
+        "amount": 780000,
+        "status": "succeeded"
+      },
+      {
+        "key": "upgrade-payment-3",
+        "amount": 935000,
+        "status": "succeeded"
+      }
+    ],
+    "expenses": [
+      {
+        "date": "2026-08-20",
+        "amount": 18500
+      },
+      {
+        "date": "2026-08-21",
+        "amount": 19500
+      },
+      {
+        "date": "2026-08-22",
+        "amount": 20500
+      }
+    ]
+  },
+  "fingerprintAfter": {
+    "trialBalance": [
+      {
+        "code": "2000",
+        "debit": 12500,
+        "credit": 87500
+      },
+      {
+        "code": "5040",
+        "debit": 87500,
+        "credit": 12500
+      }
+    ],
+    "journalLines": "40a825dd71050e41f1fc7fc6ada37b6b",
+    "invoices": [
+      {
+        "n": "UPG-1",
+        "status": "paid",
+        "total": 1250000,
+        "balance": 0
+      },
+      {
+        "n": "UPG-2",
+        "status": "partial",
+        "total": 1560000,
+        "balance": 780000
+      },
+      {
+        "n": "UPG-3",
+        "status": "partial",
+        "total": 1870000,
+        "balance": 935000
+      }
+    ],
+    "bills": [
+      {
+        "n": "VB-1",
+        "status": "paid",
+        "total": 420000,
+        "paid": 420000
+      },
+      {
+        "n": "VB-2",
+        "status": "approved",
+        "total": 475000,
+        "paid": 0
+      },
+      {
+        "n": "VB-3",
+        "status": "approved",
+        "total": 530000,
+        "paid": 0
+      }
+    ],
+    "payments": [
+      {
+        "key": "upgrade-ap-1",
+        "amount": 420000,
+        "status": "succeeded"
+      },
+      {
+        "key": "upgrade-payment-1",
+        "amount": 1250000,
+        "status": "succeeded"
+      },
+      {
+        "key": "upgrade-payment-2",
+        "amount": 780000,
+        "status": "succeeded"
+      },
+      {
+        "key": "upgrade-payment-3",
+        "amount": 935000,
+        "status": "succeeded"
+      }
+    ],
+    "expenses": [
+      {
+        "date": "2026-08-20",
+        "amount": 18500
+      },
+      {
+        "date": "2026-08-21",
+        "amount": 19500
+      },
+      {
+        "date": "2026-08-22",
+        "amount": 20500
+      }
+    ]
+  },
+  "moneyPreserved": true,
+  "status": "UPGRADED",
+  "finishedAt": "2026-10-09T18:01:14.667Z"
+}

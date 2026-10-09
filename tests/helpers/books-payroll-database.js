@@ -1,14 +1,15 @@
+const { migrationSql } = require("../support/migration-sql")
 require('../../scripts/register-ts-node-test')
-const fs=require('node:fs'),path=require('node:path'),{PGlite}=require('@electric-sql/pglite')
+const {PGlite}=require('@electric-sql/pglite')
 const {EXPORT_TABLES}=require('../../lib/services/books/export-contract')
 const {fixture,id,org}=require('./books-payroll-register-fixture')
-const migration=fs.readFileSync(path.join(__dirname,'../../supabase/migrations/20261003203019_books_payroll_import_drafts.sql'),'utf8')
-const liabilityMigration=fs.readFileSync(path.join(__dirname,'../../supabase/migrations/20261003214553_books_payroll_liability_history.sql'),'utf8')
-const workflowMigration=fs.readFileSync(path.join(__dirname,'../../supabase/migrations/20261003220020_books_payroll_workflow_evidence.sql'),'utf8')
-const paymentMigration=fs.readFileSync(path.join(__dirname,'../../supabase/migrations/20261003223805_books_payroll_payment_reviews.sql'),'utf8')
-const postingMigration=fs.readFileSync(path.join(__dirname,'../../supabase/migrations/20261003231822_books_payroll_posting_verification.sql'),'utf8')
-const proposalMigration=fs.readFileSync(path.join(__dirname,'../../supabase/migrations/20261003233012_books_payroll_posting_proposals.sql'),'utf8')
-const fenceMigration=fs.readFileSync(path.join(__dirname,'../../supabase/migrations/20261003235436_books_period_and_payroll_fences.sql'),'utf8')
+const migration=migrationSql("20261003203019_books_payroll_import_drafts")
+const liabilityMigration=migrationSql("20261003214553_books_payroll_liability_history")
+const workflowMigration=migrationSql("20261003220020_books_payroll_workflow_evidence")
+const paymentMigration=migrationSql("20261003223805_books_payroll_payment_reviews")
+const postingMigration=migrationSql("20261003231822_books_payroll_posting_verification")
+const proposalMigration=migrationSql("20261003233012_books_payroll_posting_proposals")
+const fenceMigration=migrationSql("20261003235436_books_period_and_payroll_fences")
 async function database(t,options={}){
  const db=new PGlite();t.after(()=>db.close())
  await db.exec(`create role anon;create role authenticated;create role service_role;
@@ -30,7 +31,7 @@ async function database(t,options={}){
  if(options.workflow!==false)await db.exec(postingMigration)
  if(options.workflow!==false)await db.exec(proposalMigration)
  if(options.workflow!==false)await db.exec(fenceMigration)
- const atomicSql=fs.readFileSync(path.join(__dirname,"../../supabase/migrations/20261004031113_books_payroll_correction_atomic_posting.sql"),"utf8")
+ const atomicSql=migrationSql("20261004031113_books_payroll_correction_atomic_posting")
  const captureStart=atomicSql.indexOf("create or replace function public.capture_books_export_snapshot"),captureEnd=atomicSql.indexOf("\n$$;",captureStart)+"\n$$;".length
  if(options.workflow!==false){await db.exec(atomicSql.slice(captureStart,captureEnd));await require('../fixtures/books-export-snapshot-database').installBooksExportSnapshot(db)}
  await db.query('insert into orgs values($1),($2)',[org,id(99)])

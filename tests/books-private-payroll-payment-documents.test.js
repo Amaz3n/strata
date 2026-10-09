@@ -1,18 +1,12 @@
+const { migrationSql } = require("./support/migration-sql")
 require("../scripts/register-ts-node-test");
 const test = require("node:test"),
-  assert = require("node:assert/strict"),
-  fs = require("node:fs");
+  assert = require("node:assert/strict");
 const { setup } = require("./helpers/books-payroll-payment-fixture");
 const { prepare } = require("./helpers/books-payroll-database");
 const { id, org } = require("./helpers/books-payroll-register-fixture");
-const privacy = fs.readFileSync(
-  "supabase/migrations/20261004055553_books_private_payroll_documents.sql",
-  "utf8",
-);
-const payments = fs.readFileSync(
-  "supabase/migrations/20261004074806_books_private_payroll_payment_documents.sql",
-  "utf8",
-);
+const privacy = migrationSql("20261004055553_books_private_payroll_documents");
+const payments = migrationSql("20261004074806_books_private_payroll_payment_documents");
 async function fixture(t) {
   const f = await setup(t);
   await f.db.exec(

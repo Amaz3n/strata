@@ -1,8 +1,9 @@
+const { migrationSql } = require("../support/migration-sql")
 require('../../scripts/register-ts-node-test')
-const fs=require('node:fs'),path=require('node:path'),{createHash}=require('node:crypto')
+const {createHash}=require('node:crypto')
 const {ready,post}=require('./books-payroll-atomic-fixture'),{capture}=require('./books-payroll-workflow-fixture'),{id,org}=require('./books-payroll-register-fixture')
 const {payrollRegisterFields}=require('../../lib/services/books/payroll-register-csv'),{booksDigest}=require('../../lib/services/books/hash'),{payrollCorrectionPlan}=require('../../lib/services/books/payroll-correction-plan'),{payrollCorrectionSourceEvidence}=require('../../lib/services/books/payroll-correction-source')
-const migration=fs.readFileSync(path.join(__dirname,'../../supabase/migrations/20261004014207_books_payroll_correction_sources.sql'),'utf8')
+const migration=migrationSql("20261004014207_books_payroll_correction_sources")
 async function sourceFixture(t,options={}){
  const f=await ready(t,options);await post(f);await f.db.exec('drop table books_payroll_correction_sources');await f.db.exec(migration)
  await require('../fixtures/books-export-snapshot-database').installBooksExportSnapshot(f.db)

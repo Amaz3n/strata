@@ -1,7 +1,7 @@
+const { migrationSql } = require("./support/migration-sql")
 require("../scripts/register-ts-node-test");
 const test = require("node:test"),
   assert = require("node:assert/strict"),
-  fs = require("node:fs"),
   Module = require("node:module");
 const {
   fixture: databaseFixture,
@@ -17,10 +17,7 @@ const {
 const {
   payrollDraftEvidence,
 } = require("../lib/services/books/payroll-draft-evidence");
-const migration = fs.readFileSync(
-  "supabase/migrations/20261004073018_books_payroll_draft_workspace.sql",
-  "utf8",
-);
+const migration = migrationSql("20261004073018_books_payroll_draft_workspace");
 async function setup(t) {
   const f = await databaseFixture(t);
   await f.db.exec(migration);

@@ -1,0 +1,41 @@
+7785,7824d7784
+< -- Name: capture_books_ownership_before_invoice_correction_reviews(uuid, uuid); Type: FUNCTION; Schema: public; Owner: -
+< --
+< 
+< CREATE FUNCTION public.capture_books_ownership_before_invoice_correction_reviews(p_org uuid, p_actor uuid) RETURNS jsonb
+<     LANGUAGE plpgsql STABLE
+<     SET search_path TO 'pg_catalog', 'public'
+<     AS $$
+< declare s jsonb;t jsonb;rows jsonb;
+< begin
+<  s:=public.capture_books_legacy_ownership_before_exact_invoice_quantity(p_org,p_actor);
+<  t:=(s->>'populationText')::jsonb;
+<  if not(t?'invoice_lines') then return s;end if;
+<  select coalesce(jsonb_agg(to_jsonb(r) order by id),'[]') into rows from public.invoice_lines r where org_id=p_org;
+<  t:=jsonb_set(t,'{invoice_lines}',rows);
+<  return jsonb_set(s,'{populationText}',to_jsonb(t::text));
+< end $$;
+< 
+< 
+< --
+< -- Name: capture_books_ownership_before_invoice_corrections(uuid, uuid); Type: FUNCTION; Schema: public; Owner: -
+< --
+< 
+< CREATE FUNCTION public.capture_books_ownership_before_invoice_corrections(p_org uuid, p_actor uuid) RETURNS jsonb
+<     LANGUAGE plpgsql STABLE
+<     SET search_path TO 'pg_catalog', 'public'
+<     AS $$
+< declare v_snapshot jsonb;v_tables jsonb;v_rows jsonb;
+< begin
+<  v_snapshot:=public.capture_books_entity_authorized_export(p_org,p_actor);
+<  v_tables:=(v_snapshot->'tables')-'books_legacy_entity_proposals'-'books_legacy_entity_reviews'-'books_journal_request_resolutions'-'books_project_owner_request_resolutions'-'books_native_period_holds'-'books_native_invoice_income_selections'-'books_native_invoice_income_resolutions'-'books_native_invoice_request_resolutions'-'books_native_invoice_postings'-'books_native_adjustment_facts'-'books_native_adjustment_reviews'-'books_native_journal_entries'-'books_native_journal_lines'-'books_entity_calendar_years'-'books_entity_fiscal_periods'-'books_entity_calendar_reviews'-'books_entity_chart_versions'-'books_entity_accounts'-'books_entity_account_definitions'-'books_entity_control_accounts'-'books_entity_chart_reviews';
+<  select coalesce(jsonb_agg(row-'tax_id'-'ein'-'ssn' order by row->>'id'),'[]'::jsonb) into v_rows from jsonb_array_elements(v_tables->'companies') row;
+<  v_tables:=jsonb_set(v_tables,'{companies}',v_rows);
+<  select coalesce(jsonb_agg((select jsonb_object_agg(key,value) from jsonb_each(row) where key=any(array['id','org_id','provider','bank_name','account_type','last4','status','books_gl_account_id','created_at','updated_at'])) order by row->>'id'),'[]'::jsonb) into v_rows from jsonb_array_elements(v_tables->'org_funding_sources') row;
+<  v_tables:=jsonb_set(v_tables,'{org_funding_sources}',v_rows);
+<  return jsonb_build_object('populationText',v_tables::text,'capturedAt',v_snapshot->'capturedAt','databaseSnapshot',v_snapshot->'databaseSnapshot');
+< end;
+< $$;
+< 
+< 
+< --

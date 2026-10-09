@@ -1,13 +1,10 @@
+const { migrationSql } = require("./support/migration-sql")
 require("../scripts/register-ts-node-test");
 const test = require("node:test"),
   assert = require("node:assert/strict"),
-  fs = require("node:fs"),
   Module = require("node:module");
 const { createBooksLedgerDb } = require("./helpers/books-ledger-db");
-const migration = fs.readFileSync(
-    "supabase/migrations/20261004194104_books_exact_reversal_posting.sql",
-    "utf8",
-  ),
+const migration = migrationSql("20261004194104_books_exact_reversal_posting"),
   id = (n) => "88300000-0000-4000-8000-" + String(n).padStart(12, "0");
 async function fixture(t, upgrade = true) {
   const db = await createBooksLedgerDb({ exactReversals: upgrade });

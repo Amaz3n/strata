@@ -1,3 +1,4 @@
+const { migrationSql } = require("./support/migration-sql")
 require('../scripts/register-ts-node-test')
 const test=require('node:test'),assert=require('node:assert/strict'),Module=require('node:module')
 const {lineageFixture,nextSource}=require('./helpers/books-payroll-correction-lineage-fixture')
@@ -90,7 +91,7 @@ test('a damaged monetary predecessor prevents service preparation before new pro
 
 test('construction placement service binds choices, verifies original CSV, recovers lost responses and rejects a different retry choice',async t=>{
  const {scenario}=require('./helpers/books-payroll-construction-decisions-fixture')
- f=await scenario(t);await f.db.exec(require('node:fs').readFileSync('supabase/migrations/20261004053644_books_payroll_workspace_reads.sql','utf8'));actor=id(2);denied=false;offline=false;calls=[];lost='prepare_books_payroll_correction_proposal'
+ f=await scenario(t);await f.db.exec(migrationSql("20261004053644_books_payroll_workspace_reads"));actor=id(2);denied=false;offline=false;calls=[];lost='prepare_books_payroll_correction_proposal'
  const request={id:id(999),sourceId:f.source.id,notes:'Prepare explicitly reviewed destination budget and GMP classification',idempotencyKey:'service-construction-choice-prepare-key',constructionDecisions:f.choices}
  assert.equal(await prepare(request),id(999));assert.ok(calls.some(row=>row[0]==='object'))
  const proposal=(await capture(f.db)).tables.books_payroll_correction_proposals.find(row=>row.id===id(999))
@@ -108,7 +109,7 @@ test('construction placement service binds choices, verifies original CSV, recov
 
 test('project review workspace authorizes before private reads and rejects disabled Books and unrelated/foreign project access',async t=>{
  const {scenario}=require('./helpers/books-payroll-construction-decisions-fixture')
- f=await scenario(t);await f.db.exec(require('node:fs').readFileSync('supabase/migrations/20261004053644_books_payroll_workspace_reads.sql','utf8'));actor=id(2);offline=false;denied=true;calls=[]
+ f=await scenario(t);await f.db.exec(migrationSql("20261004053644_books_payroll_workspace_reads"));actor=id(2);offline=false;denied=true;calls=[]
  await assert.rejects(workspace(id(4)),/Denied/);assert.deepEqual(calls,[['authorize','books.adjust']])
  denied=false;f.disabled=true;calls=[];await assert.rejects(workspace(id(4)),/disabled/);assert.ok(!calls.some(c=>c[0]==='rpc'||c[0]==='read'))
  f.disabled=false;calls=[];const w=await workspace(id(4));assert.deepEqual(calls[0],['authorize','books.adjust']);assert.equal(w.sources.length,2);assert.deepEqual(calls.filter(row=>row[0]==='rpc'),[['rpc','capture_books_payroll_workspace_snapshot']]);calls=[];await assert.rejects(workspace(id(4),{preparedAt:'invalid',id:id(3)}));assert.ok(!calls.some(row=>row[0]==='rpc'||row[0]==='read'))
@@ -118,7 +119,7 @@ test('project review workspace authorizes before private reads and rejects disab
 })
 test('project detail exposes the entire cross-project register, current placement needs, independent-review and stale approval states',async t=>{
  const {scenario}=require('./helpers/books-payroll-construction-decisions-fixture')
- f=await scenario(t);await f.db.exec(require('node:fs').readFileSync('supabase/migrations/20261004053644_books_payroll_workspace_reads.sql','utf8'));actor=id(2);denied=false;offline=false;calls=[]
+ f=await scenario(t);await f.db.exec(migrationSql("20261004053644_books_payroll_workspace_reads"));actor=id(2);denied=false;offline=false;calls=[]
  let d=await detail({projectId:id(4),sourceId:f.source.id});assert.equal(d.ready,false);assert.equal(d.costs.length,6);assert.ok(d.costs.some(row=>row.projectId===id(994)));assert.equal(d.registerTotals.gross_cents,28000);assert.ok(d.budgetLines.some(row=>row.id===id(998)))
  const request={id:id(999),sourceId:f.source.id,notes:'Prepare explicitly reviewed destination placement',idempotencyKey:'project-workspace-choice-key',constructionDecisions:f.choices};await prepare(request)
  d=await detail({projectId:id(4),sourceId:f.source.id});assert.equal(d.ready,true);assert.equal(d.proposal.canReview,false);assert.equal(d.proposal.constructionDecisions.length,3)
@@ -134,7 +135,7 @@ test('project detail exposes the entire cross-project register, current placemen
 
 test('project review shows reservation conflicts and immutable withdrawn proposal history instead of silently losing it',async t=>{
  const {scenario}=require('./helpers/books-payroll-construction-decisions-fixture')
- f=await scenario(t);await f.db.exec(require('node:fs').readFileSync('supabase/migrations/20261004053644_books_payroll_workspace_reads.sql','utf8'));actor=id(2);denied=false;offline=false
+ f=await scenario(t);await f.db.exec(migrationSql("20261004053644_books_payroll_workspace_reads"));actor=id(2);denied=false;offline=false
  await prepare({id:id(999),sourceId:f.source.id,notes:'Prepare reviewed destination placement for full correction',idempotencyKey:'project-history-prepare-key',constructionDecisions:f.choices})
  const next=await nextSource(f,{number:2,gross:29000,date:'2026-09-22',allocation:{project_id:id(994)}})
  const blocked=await detail({projectId:id(994),sourceId:next.id});assert.equal(blocked.ready,false);assert.match(blocked.currentError,/Another correction/)

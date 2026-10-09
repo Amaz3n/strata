@@ -1,3 +1,4 @@
+const { migrationSql } = require("./support/migration-sql")
 require('../scripts/register-ts-node-test');const test=require('node:test');const assert=require('node:assert/strict');
 const {resolveBooksPostingState}=require('../lib/services/books/posting-state');
 test('posting state requires verification of the current revision and a live journal',()=>{
@@ -13,8 +14,8 @@ test('posting state requires verification of the current revision and a live jou
  assert.equal(resolveBooksPostingState({...input,sourceUpdatedAt:'2026-09-30T08:00:00-04:00'}),'posted');
 });
 test('projection receipts verify journal ownership and never replace newer observations with stale work',async t=>{
- const {createBooksLedgerDb}=require('./helpers/books-ledger-db');const fs=require('node:fs');const path=require('node:path');const db=await createBooksLedgerDb();t.after(()=>db.close());
- await db.exec(fs.readFileSync(path.join(__dirname,'../supabase/migrations/20261003022656_books_projection_receipts.sql'),'utf8'));
+ const {createBooksLedgerDb}=require('./helpers/books-ledger-db');const db=await createBooksLedgerDb();t.after(()=>db.close());
+ await db.exec(migrationSql("20261003022656_books_projection_receipts"));
  const id=n=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;const org=id(1),source=id(2),fact=id(3),cash=id(4),income=id(5);
  await db.exec(`insert into orgs values('${org}');insert into gl_accounts(id,org_id,code,name,account_type,subtype,normal_balance) values('${cash}','${org}','1000','Cash','asset','cash','debit'),('${income}','${org}','4000','Revenue','income','construction_revenue','credit');
  insert into accounting_facts(id,org_id,source_type,source_id,source_version,fact_kind,occurred_at,accounting_date,payload,payload_hash,policy_version,idempotency_key) values('${fact}','${org}','invoice','${source}',1,'invoice.recognized','2026-09-30','2026-09-30','{}',repeat('a',64),1,'fixture');`);

@@ -1,4 +1,5 @@
-const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path')
+const { migrationSql } = require("./support/migration-sql")
+const test=require('node:test'),assert=require('node:assert/strict'),path=require('node:path')
 const {PGlite}=require('@electric-sql/pglite')
 const id=n=>'99700000-0000-4000-8000-'+String(n).padStart(12,'0'),org=id(1),file=id(2),version=id(3)
 async function fixture(t){
@@ -8,8 +9,8 @@ async function fixture(t){
  create table doc_versions(id uuid primary key,org_id uuid,file_id uuid,storage_path text,file_name text,mime_type text,size_bytes bigint,checksum text,label text,notes text);
  create table books_tax_adjustment_workpapers(id uuid primary key default gen_random_uuid(),org_id uuid,lines jsonb,status text default 'draft');`)
  const migrations=path.join(__dirname,'../supabase/migrations')
- await db.exec(fs.readFileSync(path.join(migrations,'20261003175333_books_tax_attachment_evidence.sql'),'utf8'))
- await db.exec(fs.readFileSync(path.join(migrations,'20261003192751_books_tax_attachment_lock_order.sql'),'utf8'))
+ await db.exec(migrationSql("20261003175333_books_tax_attachment_evidence"))
+ await db.exec(migrationSql("20261003192751_books_tax_attachment_lock_order"))
  await db.query("insert into files values($1,$2,$3,$4,'Original.txt','text/plain',3,repeat('a',64))",[file,org,version,org+'/tax/original.txt'])
  await db.query("insert into doc_versions(id,org_id,file_id,storage_path,file_name,mime_type,size_bytes,checksum) select $1,org_id,id,storage_path,file_name,mime_type,size_bytes,checksum from files where id=$2",[version,file])
  const proof={version:1,org_id:org,file_id:file,document_version_id:version,storage_path:org+'/tax/original.txt',file_name:'Original.txt',mime_type:'text/plain',size_bytes:3,checksum:'a'.repeat(64)}

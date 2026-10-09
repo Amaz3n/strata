@@ -1,8 +1,8 @@
+const { migrationSql } = require("./support/migration-sql")
 require("../scripts/register-ts-node-test")
 const test = require("node:test")
 const assert = require("node:assert/strict")
 const Module = require("node:module")
-const fs = require("node:fs")
 const { PGlite } = require("@electric-sql/pglite")
 const { database } = require("./helpers/report-database")
 const { allocatedSettlementEvidenceSchema, paymentProjectionSourceKeys } = require("../lib/services/books/settlement-evidence")
@@ -115,12 +115,12 @@ test("actual allocation triggers monotonically revise old and new parent payment
     create table payment_allocations(id uuid primary key,org_id uuid,payment_id uuid,amount_cents bigint);
     create function public.set_updated_at() returns trigger language plpgsql as $$begin new.updated_at=now(); return new; end;$$;
     create trigger payments_set_updated_at before update on payments for each row execute function public.set_updated_at();`)
-  const sql = fs.readFileSync("supabase/migrations/20261003023206_books_source_revision_invalidation.sql", "utf8")
+  const sql = migrationSql("20261003023206_books_source_revision_invalidation")
   const start = sql.indexOf("create or replace function public.books_advance_source_revision(")
   const end = sql.indexOf("$$;", start) + 3
   assert.ok(start >= 0)
   await db.exec(sql.slice(start, end))
-  await db.exec(fs.readFileSync("supabase/migrations/20261003122336_books_payment_allocation_revisions.sql", "utf8"))
+  await db.exec(migrationSql("20261003122336_books_payment_allocation_revisions"))
   assert.ok((await db.query("select proconfig from pg_proc where oid='books_touch_payment_allocation_source()'::regprocedure")).rows[0].proconfig.includes("search_path=pg_catalog, public"))
   await db.exec(`insert into payments values('${id(1)}','${id(3)}','2099-01-01'),('${id(2)}','${id(3)}','2099-01-01')`)
   const revision = async payment => (await db.query("select updated_at::text revision from payments where id=$1", [payment])).rows[0].revision

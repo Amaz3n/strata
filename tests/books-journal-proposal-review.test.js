@@ -1,3 +1,4 @@
+const { migrationSql } = require("./support/migration-sql")
 require("../scripts/register-ts-node-test");
 const test = require("node:test"),
   assert = require("node:assert/strict"),
@@ -18,10 +19,7 @@ async function fixture(t) {
  insert into accounting_periods(id,org_id,period_start,period_end,fiscal_year,fiscal_period) values('${id(5)}','${id(1)}','2026-09-01','2026-09-30',2026,9),('${id(6)}','${id(1)}','2026-10-01','2026-10-31',2026,10);
  create trigger books_journal_proposals_guard before delete on books_journal_proposals for each row execute function books_reject_mutation();`);
   await db.exec(
-    fs.readFileSync(
-      "supabase/migrations/20261004201613_books_journal_proposal_review_receipts.sql",
-      "utf8",
-    ),
+    migrationSql("20261004201613_books_journal_proposal_review_receipts"),
   );
   const lines = [
     {

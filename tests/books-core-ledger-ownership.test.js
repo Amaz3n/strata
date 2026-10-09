@@ -1,11 +1,8 @@
+const { migrationSql } = require("./support/migration-sql")
 const test = require("node:test"),
-  assert = require("node:assert/strict"),
-  fs = require("node:fs");
+  assert = require("node:assert/strict");
 const { createBooksLedgerDb } = require("./helpers/books-ledger-db");
-const migration = fs.readFileSync(
-    "supabase/migrations/20261004193127_books_core_ledger_owner_relationships.sql",
-    "utf8",
-  ),
+const migration = migrationSql("20261004193127_books_core_ledger_owner_relationships"),
   id = (n) => "88400000-0000-4000-8000-" + String(n).padStart(12, "0");
 async function fixture(t, upgrade = true) {
   const db = await createBooksLedgerDb({ coreOwnerRelationships: false });

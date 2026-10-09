@@ -1,8 +1,9 @@
+const { migrationSql } = require("./support/migration-sql")
 require('../scripts/register-ts-node-test')
-const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path')
+const test=require('node:test'),assert=require('node:assert/strict')
 const {lineageFixture,nextSource,nextProposal,postLineage}=require('./helpers/books-payroll-correction-lineage-fixture'),{capture}=require('./helpers/books-payroll-workflow-fixture'),{id,org}=require('./helpers/books-payroll-register-fixture')
 const {parsePayrollCorrectionContext}=require('../lib/services/books/payroll-correction-context'),{verifyPayrollCorrectionPosting}=require('../lib/services/books/payroll-correction-posting')
-const sql=fs.readFileSync(path.join(__dirname,'../supabase/migrations/20261004041617_books_payroll_correction_construction_policy.sql'),'utf8')
+const sql=migrationSql("20261004041617_books_payroll_correction_construction_policy")
 async function policySetup(f){
  await f.db.exec("alter table projects add status text default 'active' not null;alter table project_financial_settings add project_id uuid,add billing_model text,add setup_completed_at timestamptz;alter table contracts add project_id uuid,add status text,add contract_type text,add gmp_cents bigint;alter table closings add project_id uuid,add status text,add actual_date date,add settlement jsonb;")
  await f.db.query("insert into project_financial_settings values($1,$2,$3,'time_and_materials','2026-09-01')",[id(990),org,id(4)])

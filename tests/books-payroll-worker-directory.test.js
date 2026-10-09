@@ -1,7 +1,7 @@
+const { migrationSql } = require("./support/migration-sql")
 require("../scripts/register-ts-node-test");
 const test = require("node:test"),
-  assert = require("node:assert/strict"),
-  fs = require("node:fs");
+  assert = require("node:assert/strict");
 const {
     fixture,
   } = require("./helpers/books-private-payroll-documents-fixture"),
@@ -12,10 +12,7 @@ async function setup(t) {
     "alter table app_users add email text,add full_name text;grant select on app_users to service_role",
   );
   await f.db.exec(
-    fs.readFileSync(
-      "supabase/migrations/20261004064206_books_payroll_worker_directory.sql",
-      "utf8",
-    ),
+    migrationSql("20261004064206_books_payroll_worker_directory"),
   );
   for (const row of (
     await f.db.query("select distinct user_id from memberships")

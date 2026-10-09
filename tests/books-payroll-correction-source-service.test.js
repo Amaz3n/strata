@@ -1,3 +1,4 @@
+const { migrationSql } = require("./support/migration-sql")
 require('../scripts/register-ts-node-test')
 const test=require('node:test'),assert=require('node:assert/strict'),Module=require('node:module')
 const {sourceFixture}=require('./helpers/books-payroll-correction-source-fixture'),{capture}=require('./helpers/books-payroll-workflow-fixture'),{id,org}=require('./helpers/books-payroll-register-fixture')
@@ -44,9 +45,8 @@ test('whole organization authorization precedes every correction lifecycle priva
  denied=false
 })
 test('authorized service verifies real SQL correction closure and never represents expired preflight locks as held',async t=>{
- const fs=require('node:fs'),path=require('node:path')
  f=await sourceFixture(t);actor=id(50);denied=false;offline=false;lost=false;tamper=null;calls=[]
- for(const name of ['20261004021236_books_payroll_correction_math.sql','20261004022226_books_payroll_correction_context.sql'])await f.db.exec(fs.readFileSync(path.join(__dirname,'../supabase/migrations',name),'utf8'))
+ for(const name of ['20261004021236_books_payroll_correction_math.sql','20261004022226_books_payroll_correction_context.sql'])await f.db.exec(migrationSql(name.replace(/\.sql$/, "")))
  await prepare(input());actor=id(51);await review({id:id(700),notes:'Independent corrected provider source review'})
  const before=(await capture(f.db)).tables;calls=[];const context=await getContext({id:id(700)})
  assert.deepEqual(calls[0],['authorize','books.adjust']);assert.equal(context.preflightOnly,true);assert.equal(context.requiresCommitRevalidation,true);assert.equal(context.postingImplemented,false);assert.ok(!Object.hasOwn(context,'locksHeldUntilTransactionEnd'))

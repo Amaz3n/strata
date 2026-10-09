@@ -1,7 +1,7 @@
+const { migrationSql } = require("./support/migration-sql")
 require("../scripts/register-ts-node-test");
 const test = require("node:test"),
   assert = require("node:assert/strict"),
-  fs = require("node:fs"),
   Module = require("node:module");
 const { createBooksLedgerDb } = require("./helpers/books-ledger-db");
 const id = (n) => "88200000-0000-4000-8000-" + String(n).padStart(12, "0"),
@@ -13,10 +13,7 @@ async function fixture(t) {
  insert into gl_accounts(id,org_id,code,name,account_type,subtype,normal_balance) values('${id(3)}','${id(1)}','1000','Cash','asset','cash','debit'),('${id(4)}','${id(1)}','4000','Income','income','construction_revenue','credit');
  insert into accounting_periods(id,org_id,period_start,period_end,fiscal_year,fiscal_period) values('${id(5)}','${id(1)}','2026-09-01','2026-09-30',2026,9),('${id(6)}','${id(1)}','2026-10-01','2026-10-31',2026,10);`);
   await db.exec(
-    fs.readFileSync(
-      "supabase/migrations/20261004195905_books_atomic_adjustment_pair.sql",
-      "utf8",
-    ),
+    migrationSql("20261004195905_books_atomic_adjustment_pair"),
   );
   const lines = [
     {

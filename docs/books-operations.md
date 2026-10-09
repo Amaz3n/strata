@@ -44,7 +44,14 @@ ahead of it: the running app is written for the schema it shipped with.
 3. Rehearse: bootstrap the acceptance stack from the production baseline and
    apply the list (`scripts/books-acceptance/upgrade.cjs`), then run
    `scenario-runner --all --storage-env <key file>`. All first-client scenarios
-   must pass.
+   must pass. Then compare the upgraded schema and grants (`pg_dump
+   --schema-only`) with a fresh replay of every migration; they must be
+   identical. Production applies the list after everything it already has, so a
+   file dated before an applied migration runs later there than in a fresh
+   replay and can replace a newer definition (`20261009020000_deploy_order_parity`).
+   Migrations no environment has applied may be consolidated before a deploy, and
+   the fresh replay must then match the one from before; an applied migration
+   never changes.
 4. Owner approval of the list. Then, in the deploy window: run the reviewed
    `supabase/scripts/repair-migration-ledger.sql` once (records applied
    migrations under their repository versions), apply the list with the Supabase

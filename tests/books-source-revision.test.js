@@ -1,3 +1,4 @@
+const { migrationSql } = require("./support/migration-sql")
 require('../scripts/register-ts-node-test');const test=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const path=require('node:path');const {PGlite}=require('@electric-sql/pglite');
 const {resolveBooksPostingState}=require('../lib/services/books/posting-state');
 test('line edits invalidate receipts and source revisions advance past transaction-time triggers',async t=>{
@@ -14,7 +15,7 @@ test('line edits invalidate receipts and source revisions advance past transacti
   await db.exec(`create trigger touch_parent after insert or update or delete on ${table} for each row execute function ${fn}()`);
  }
 
- await db.exec(fs.readFileSync(path.join(__dirname,'../supabase/migrations/20261003023206_books_source_revision_invalidation.sql'),'utf8'));
+ await db.exec(migrationSql("20261003023206_books_source_revision_invalidation"));
  const id=n=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;const org=id(1),first=id(2),second=id(3),line=id(4);
  const stamp=async(table,record)=>(await db.query(`select to_char(updated_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') stamp from ${table} where id=$1`,[record])).rows[0].stamp;
  await db.query("insert into invoices values($1,$3,'2099-01-01'),($2,$3,'2099-01-01')",[first,second,org]);

@@ -1,11 +1,8 @@
+const { migrationSql } = require("../support/migration-sql")
 require("../../scripts/register-ts-node-test");
-const fs = require("node:fs");
 const { scenario } = require("./books-payroll-construction-decisions-fixture"),
   { id, org } = require("./books-payroll-register-fixture");
-const migration = fs.readFileSync(
-  "supabase/migrations/20261004055553_books_private_payroll_documents.sql",
-  "utf8",
-);
+const migration = migrationSql("20261004055553_books_private_payroll_documents");
 async function fixture(t) {
   const f = await scenario(t);
   await f.db.exec(

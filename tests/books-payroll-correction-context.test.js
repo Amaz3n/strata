@@ -1,8 +1,9 @@
+const { migrationSql } = require("./support/migration-sql")
 require('../scripts/register-ts-node-test')
-const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path')
+const test=require('node:test'),assert=require('node:assert/strict')
 const {sourceFixture,prepareSource,reviewSource}=require('./helpers/books-payroll-correction-source-fixture'),{capture}=require('./helpers/books-payroll-workflow-fixture'),{id,org}=require('./helpers/books-payroll-register-fixture')
 const {payrollCorrectionPlan}=require('../lib/services/books/payroll-correction-plan')
-const read=name=>fs.readFileSync(path.join(__dirname,'../supabase/migrations',name),'utf8')
+const read=name=>migrationSql(name.replace(/\.sql$/, ""))
 async function ready(t,options={},mutate){const f=await sourceFixture(t,options);await f.db.exec(read('20261004021236_books_payroll_correction_math.sql'));await f.db.exec(read('20261004022226_books_payroll_correction_context.sql'));if(mutate)mutate(f.evidence);await prepareSource(f);await reviewSource(f);return f}
 const context=f=>f.db.query('select lock_books_payroll_correction_context($1,$2) result',[org,id(700)]).then(r=>r.rows[0].result)
 test('SQL freezes complete correction construction/liability context and matches independent project/worker preview',async t=>{

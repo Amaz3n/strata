@@ -1,3 +1,4 @@
+const { migrationSql } = require("./support/migration-sql")
 require('../scripts/register-ts-node-test')
 const test=require('node:test'),assert=require('node:assert/strict')
 const {fixture,id,org}=require('./helpers/books-payroll-register-fixture')
@@ -160,7 +161,7 @@ test('v3 migration updates compiled review callers and leaves original ledger-on
  await prepare(db,evidence);await review(db,evidence)
  const oid=(await db.query("select 'public.books_payroll_source_revision(jsonb,jsonb)'::regprocedure::oid oid")).rows[0].oid
  const fs=require('node:fs'),path=require('node:path')
- await db.exec(fs.readFileSync(path.join(__dirname,'../supabase/migrations/20261003220020_books_payroll_workflow_evidence.sql'),'utf8'))
+ await db.exec(migrationSql("20261003220020_books_payroll_workflow_evidence"))
  assert.equal((await db.query("select 'public.books_payroll_source_revision(jsonb,jsonb)'::regprocedure::oid oid")).rows[0].oid,oid)
  assert.notEqual(await revision(db,evidence.run),evidence.source_revision)
  await assert.rejects(review(db,evidence),/revision changed/)

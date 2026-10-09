@@ -1,5 +1,6 @@
+const { migrationSql } = require("./support/migration-sql")
 require('../scripts/register-ts-node-test')
-const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path')
+const test=require('node:test'),assert=require('node:assert/strict')
 const {PGlite}=require('@electric-sql/pglite')
 const {laborBasisFromJobCost,economicLaborBasis}=require('../lib/services/books/labor-evidence')
 const {draftFromFact,hashableFactPayload,preserveLegacyLaborPayload,preserveLegacyDimensionPayload}=require('../lib/services/books/fact-drafts')
@@ -46,7 +47,7 @@ test('actual double-time migration preserves historical generated costs and fixe
  const db=new PGlite();t.after(()=>db.close())
  await db.exec(`create table time_entries(id uuid primary key,hours numeric,base_rate_cents integer,burden_multiplier numeric,is_overtime boolean,ot_multiplier numeric,is_double_time boolean,dt_multiplier numeric,cost_cents integer generated always as(round(hours*base_rate_cents::numeric*burden_multiplier*case when is_overtime then ot_multiplier else 1 end)::integer) stored);
  insert into time_entries(id,hours,base_rate_cents,burden_multiplier,is_overtime,ot_multiplier,is_double_time,dt_multiplier) values('${id(10)}',8,3000,1.5,false,1.5,true,2);`)
- await db.exec(fs.readFileSync(path.join(__dirname,'../supabase/migrations/20261003195833_books_time_cost_double_time_policy.sql'),'utf8'))
+ await db.exec(migrationSql("20261003195833_books_time_cost_double_time_policy"))
  assert.deepEqual((await db.query('select cost_cents,labor_cost_policy_version from time_entries')).rows[0],{cost_cents:36000,labor_cost_policy_version:0})
  await db.exec(`insert into time_entries(id,hours,base_rate_cents,burden_multiplier,is_overtime,ot_multiplier,is_double_time,dt_multiplier) values('${id(11)}',8,3000,1.5,false,1.5,true,2),('${id(12)}',8,3000,1.5,true,1.5,false,2);`)
  assert.equal((await db.query('select cost_cents from time_entries where id=$1',[id(11)])).rows[0].cost_cents,72000)

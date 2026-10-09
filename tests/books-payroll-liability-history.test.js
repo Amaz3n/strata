@@ -1,10 +1,11 @@
+const { migrationSql } = require("./support/migration-sql")
 require('../scripts/register-ts-node-test')
-const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path')
+const test=require('node:test'),assert=require('node:assert/strict')
 const {PGlite}=require('@electric-sql/pglite')
 const {fixture,id,org}=require('./helpers/books-payroll-register-fixture')
 const {payrollLiabilityHistory}=require('../lib/services/books/payroll-liability-history')
-const migration=fs.readFileSync(path.join(__dirname,'../supabase/migrations/20261003214553_books_payroll_liability_history.sql'),'utf8')
-const original=fs.readFileSync(path.join(__dirname,'../supabase/migrations/20261003203019_books_payroll_import_drafts.sql'),'utf8')
+const migration=migrationSql("20261003214553_books_payroll_liability_history")
+const original=migrationSql("20261003203019_books_payroll_import_drafts")
 const originalFunction=original.slice(original.indexOf('create function public.books_payroll_source_revision('),original.indexOf('\ncreate function public.capture_books_payroll_context'))
 function scenario(){
  const accounts=[...fixture().postingAccounts,{id:id(40),org_id:org,code:'1000',account_type:'asset',subtype:'cash',active:true}]

@@ -1,3 +1,4 @@
+const { migrationSql } = require("./support/migration-sql")
 require("../scripts/register-ts-node-test");
 const test = require("node:test"),
   assert = require("node:assert/strict"),
@@ -326,10 +327,7 @@ async function installWorkerDirectory() {
     "alter table app_users add email text,add full_name text;grant select on app_users to service_role",
   );
   await f.db.exec(
-    require("node:fs").readFileSync(
-      "supabase/migrations/20261004064206_books_payroll_worker_directory.sql",
-      "utf8",
-    ),
+    migrationSql("20261004064206_books_payroll_worker_directory"),
   );
   await f.db.exec(
     "update app_users set email=id::text||'@example.test',full_name=case when id='99400000-0000-4000-8000-000000000002' then 'Alex Carpenter' else 'Native worker' end",
@@ -658,30 +656,18 @@ if (process.env.BOOKS_PAYROLL_INTAKE_BROWSER === "1" || allocationBrowser)
     }
     if (draftBrowser)
       await f.db.exec(
-        require("node:fs").readFileSync(
-          "supabase/migrations/20261004073018_books_payroll_draft_workspace.sql",
-          "utf8",
-        ),
+        migrationSql("20261004073018_books_payroll_draft_workspace"),
       );
     if (draftBrowser)
       await f.db.exec(
-        require("node:fs").readFileSync(
-          "supabase/migrations/20261004082928_books_payroll_payment_workspace.sql",
-          "utf8",
-        ),
+        migrationSql("20261004082928_books_payroll_payment_workspace"),
       );
     if (attributionBrowser) {
       await f.db.exec(
-        require("node:fs").readFileSync(
-          "supabase/migrations/20261004080920_books_payroll_support_versions.sql",
-          "utf8",
-        ),
+        migrationSql("20261004080920_books_payroll_support_versions"),
       );
       await f.db.exec(
-        require("node:fs").readFileSync(
-          "supabase/migrations/20261004074806_books_private_payroll_payment_documents.sql",
-          "utf8",
-        ),
+        migrationSql("20261004074806_books_private_payroll_payment_documents"),
       );
     }
     const baselineMoney = draftBrowser

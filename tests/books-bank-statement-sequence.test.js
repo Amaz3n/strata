@@ -1,9 +1,10 @@
-const test=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const path=require('node:path');const {PGlite}=require('@electric-sql/pglite');
+const { migrationSql } = require("./support/migration-sql")
+const test=require('node:test');const assert=require('node:assert/strict');const {PGlite}=require('@electric-sql/pglite');
 test('bank statements enforce account scope, contiguous dates, opening balances and nonoverlap',async t=>{
  const db=new PGlite();t.after(()=>db.close());
  await db.exec(`create role anon;create role authenticated;create table bank_accounts(id uuid primary key,org_id uuid);
  create table bank_reconciliations(id uuid primary key,org_id uuid,bank_account_id uuid,statement_start date,statement_end date,beginning_balance_cents bigint,ending_balance_cents bigint,status text default 'draft');`);
- await db.exec(fs.readFileSync(path.join(__dirname,'../supabase/migrations/20261003020833_books_bank_statement_sequence.sql'),'utf8'));
+ await db.exec(migrationSql("20261003020833_books_bank_statement_sequence"));
  const id=n=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;const org=id(1),bank=id(2);
  await db.query('insert into bank_accounts values($1,$2)',[bank,org]);
  const insert=(n,start,end,opening=10000,ending=12000,scope=org)=>db.query('insert into bank_reconciliations values($1,$2,$3,$4,$5,$6,$7,\'draft\')',[id(n),scope,bank,start,end,opening,ending]);

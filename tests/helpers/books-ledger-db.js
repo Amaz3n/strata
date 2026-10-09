@@ -1,8 +1,6 @@
-const fs = require("node:fs")
-const path = require("node:path")
+const { migrationSql } = require("../support/migration-sql")
 const { PGlite } = require("@electric-sql/pglite")
-const root = path.resolve(__dirname, "../..")
-const read = name => fs.readFileSync(path.join(root, "supabase/migrations", name), "utf8")
+const read = name => migrationSql(name.replace(/\.sql$/, ""))
 
 function definition(sql, prefix, end) {
   const start = sql.indexOf(prefix)

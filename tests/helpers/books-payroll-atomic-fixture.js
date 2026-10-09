@@ -1,5 +1,5 @@
+const { migrationSql } = require("../support/migration-sql")
 require('../../scripts/register-ts-node-test')
-const fs=require('node:fs'),path=require('node:path')
 const {setup}=require('./books-payroll-payment-fixture')
 const {payrollPaymentReviewEvidence}=require('../../lib/services/books/payroll-payment-review-rules')
 const {scenario,refresh,capture}=require('./books-payroll-workflow-fixture')
@@ -7,7 +7,7 @@ const {prepare,review}=require('./books-payroll-database')
 const {prepareProposal,reviewProposal}=require('./books-payroll-posting-proposal-fixture')
 const {payrollPostingPlan}=require('../../lib/services/books/payroll-posting-plan')
 const {id,org}=require('./books-payroll-register-fixture')
-const read=name=>fs.readFileSync(path.join(__dirname,'../../supabase/migrations',name),'utf8')
+const read=name=>migrationSql(name.replace(/\.sql$/, ""))
 const definition=(sql,prefix,end)=>{const start=sql.indexOf(prefix),finish=sql.indexOf(end,start);if(start<0||finish<0)throw new Error(prefix);return sql.slice(start,finish+end.length)}
 /** Upgrade only fixture scaffolding using actual production table definitions,
  * constraints and posting/immutability/balance RPCs. Unrelated parents remain fixtures. */

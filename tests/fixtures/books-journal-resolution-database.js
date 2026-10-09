@@ -1,4 +1,4 @@
-const fs = require("node:fs");
+const { migrationSql } = require("../support/migration-sql")
 const { fixture: base, id } = require("./books-journal-database");
 async function fixture(t) {
   const f = await base(t);
@@ -6,10 +6,7 @@ async function fixture(t) {
     `create function capture_books_export_snapshot(p_org_id uuid) returns jsonb language sql stable as $$select jsonb_build_object('orgId',p_org_id,'tables',jsonb_build_object('books_journal_proposals',(select coalesce(jsonb_agg(to_jsonb(p)),'[]') from books_journal_proposals p where org_id=p_org_id)))$$;`,
   );
   await f.db.exec(
-    fs.readFileSync(
-      "supabase/migrations/20261004211129_books_journal_request_resolutions.sql",
-      "utf8",
-    ),
+    migrationSql("20261004211129_books_journal_request_resolutions"),
   );
   const prep = {
     expectedOrgId: id(1),
