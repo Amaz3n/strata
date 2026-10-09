@@ -36,7 +36,7 @@ production with a customer.
   moves earnings to retained earnings; reopening keeps the earlier close on
   record (`books-period-close.md`).
 - **Taxes.** Arc classifies 1099 payments and prepares a reviewed package and
-  import file; a filing partner files them (`books-1099.md`). Arc records the
+  filing; TaxBandits, the filing partner, files them with the IRS (`books-1099.md`). Arc records the
   sales and use tax entered on invoices and bills per company; it does not
   compute rates or file returns. Payroll taxes are the payroll provider's.
 
@@ -54,7 +54,7 @@ production with a customer.
 | Statements, comparisons and reporting tags | `books-dimensions.md` | `/books/statements` | DIM-01 | Verified |
 | Bank and card reconciliation, imported statements | `books-bank-reconciliation.md` | `/books/banking` | BANK-01 | Verified; live bank feeds wait on Plaid sandbox access |
 | Cash-basis P&L and tax workpaper | `books-cash-report-policy.json` | `/reports/books-cash-profit-loss`, `/reports/books-tax-workpaper` | CASH-01 | Verified; attachments wait on file storage |
-| 1099 classification and filing package | `books-1099.md` | `/books/taxes` | TAX-01, AUTH-01 | Verified; handoff waits on a filing partner |
+| 1099 classification and filing package | `books-1099.md` | `/books/taxes` | TAX-01, AUTH-01 | Verified, including filing with TaxBandits in its sandbox |
 | Multiple companies, intercompany, consolidation | `books-entities.md` | `/books/entities` | ENTITY-01, INTERCO-01, CONSOL-01 | Verified |
 | Posting health, ledger proof and repair | `books-posting.md` | each document's posting status | STATUS-01, CAP-01, RESTORE-01 | Verified |
 | Archive and restore | `books-restore.md` | `/books/exports` | RESTORE-01 | Verified; bounded memory and stored documents remain (STORE-01) |

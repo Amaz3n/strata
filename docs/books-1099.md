@@ -39,8 +39,18 @@ matrix.
    read from Vault for that download only. Each ID must still end in the frozen last
    four; the file is checked against the format and the approved totals before it
    leaves, and every download is in the audit log. Nobody else can read a full ID.
-4. **Submission and outcome**: record the partner and its reference (submitted),
-   then accepted or rejected; a rejected package can be submitted again.
+4. **Submission and outcome**: with TaxBandits configured (`TAXBANDITS_*`),
+   **File with TaxBandits** creates and transmits the approved package as one
+   1099-NEC submission (federal e-file through IRIS, no state filing or mailing;
+   `taxBanditsNecRequest`, with the same full-ID check as the import file), and
+   the package is submitted under TaxBandits' submission ID; if TaxBandits
+   refuses any record nothing is recorded and every reason is shown. **Check IRS
+   status** records accepted, or rejected with the IRS reasons, once every return
+   has an answer (`taxBanditsOutcome`). An individual filed under an SSN is named
+   first and last (the last word is the last name); a name longer than TaxBandits
+   accepts is refused, not cut short. Without TaxBandits, record the partner and
+   its reference by hand, then the outcome. A rejected package can be submitted
+   again.
 5. **Correction**: a new package naming the live one; approving it supersedes the
    original, which keeps its approval, submission and outcome.
 

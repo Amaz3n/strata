@@ -54,6 +54,17 @@ function createKit(stack) {
       TOKEN_ENCRYPTION_KEY: randomBytes(32).toString("hex"), NEXT_PUBLIC_APP_URL: "https://acceptance.example.test" })
     plaid = { env: "sandbox" }
   }
+  // TaxBandits likewise: only its sandbox, which never reaches the IRS.
+  for (const name of ["TAXBANDITS_ENV", "TAXBANDITS_CLIENT_ID", "TAXBANDITS_CLIENT_SECRET", "TAXBANDITS_USER_TOKEN"]) delete process.env[name]
+  let taxbandits = null
+  if (stack.taxbanditsEnv) {
+    const settings = Object.fromEntries(fs.readFileSync(stack.taxbanditsEnv, "utf8").split("\n").filter((line) => line.includes("="))
+      .map((line) => [line.slice(0, line.indexOf("=")).trim(), line.slice(line.indexOf("=") + 1).trim().replace(/^"|"$/g, "")]))
+    if (settings.TAXBANDITS_ENV !== "sandbox") throw Error("Scenarios only use the TaxBandits sandbox")
+    for (const name of ["TAXBANDITS_CLIENT_ID", "TAXBANDITS_CLIENT_SECRET", "TAXBANDITS_USER_TOKEN"]) if (!settings[name]) throw Error(`${stack.taxbanditsEnv} is missing ${name}`)
+    for (const name of ["TAXBANDITS_ENV", "TAXBANDITS_CLIENT_ID", "TAXBANDITS_CLIENT_SECRET", "TAXBANDITS_USER_TOKEN"]) process.env[name] = settings[name]
+    taxbandits = { env: "sandbox" }
+  }
   require("../register-ts-node-test")
   // Route handlers give `after()` a request scope; scenarios await the work instead.
   const deferred = []
@@ -161,7 +172,7 @@ function createKit(stack) {
     return result
   }
 
-  return { container: stack.container, apiUrl: stack.apiUrl, storage, plaid, sql, rows, q, as, service, settle, organization, postedNet, drainOutbox, localJwt }
+  return { container: stack.container, apiUrl: stack.apiUrl, storage, plaid, taxbandits, sql, rows, q, as, service, settle, organization, postedNet, drainOutbox, localJwt }
 }
 
 // Expected-versus-observed recorder. A subcase passes only if every check passes.

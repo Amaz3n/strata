@@ -44,7 +44,7 @@ async function yearOfPayments(kit, org, input) {
   const rivera = vendor(kit, org, { name: "Pat Rivera", entityType: "individual" })
   const painting = vendor(kit, org, { name: "Gulf Painting LLC", entityType: "llc" })
   const roofing = vendor(kit, org, { name: "Summit Roofing LLC", entityType: "llc", w9: false })
-  for (const [id, tin] of [[framing, "123456781"], [rivera, "987654324"], [painting, "555443333"]]) await kit.as(org.owner, () => tax.storeCompanyTaxIdentity({ companyId: id, tin }))
+  for (const [id, tin] of [[framing, "123456781"], [rivera, "487654324"], [painting, "555443333"]]) await kit.as(org.owner, () => tax.storeCompanyTaxIdentity({ companyId: id, tin }))
   paid(kit, org, framing, { cents: input.checkCents, at: "2026-03-15T15:00:00Z", count: input.checks })
   paid(kit, org, framing, { cents: input.boundaryCents, at: "2025-12-31T15:00:00Z" })
   paid(kit, org, framing, { cents: input.boundaryCents, at: "2027-01-02T15:00:00Z" })
@@ -125,11 +125,59 @@ async function packageAndHandoff(kit, expected, check) {
   return { orgId: org.orgId, packages: history.map((row) => row.id) }
 }
 
+// B05.2 with the filing partner's sandbox (`--taxbandits-env`): an approved
+// package is filed with TaxBandits (created and transmitted) and submitted under
+// its submission ID; the sandbox decides the IRS outcome by the payer's TIN
+// (…200 accepted, …400 rejected for a TIN error), and checking the status records
+// it on the package with the reason.
+async function taxBanditsSandbox(kit, expected, check) {
+  const input = expected.inputs
+  const packages = app("books/vendor-1099-packages")
+  const file = async (payerTin, name) => {
+    const org = await builder(kit, name)
+    const vendors = await yearOfPayments(kit, org, require("../expected/TAX-01.json").subcases["package-review-and-handoff"].inputs)
+    const primary = kit.rows(`select public.books_primary_entity(${kit.q(org.orgId)}) id`)[0].id
+    await kit.as(org.owner, () => packages.setPayerTaxIdentity({ legalEntityId: primary, tin: payerTin, address: ADDRESS("100 Builder Way") }))
+    kit.sql(`update public.companies set w9_received_at=now() where id=${kit.q(vendors.roofing)}`)
+    await kit.as(org.owner, () => app("books/tax-register").storeCompanyTaxIdentity({ companyId: vendors.roofing, tin: "444556666" }))
+    const { id } = await kit.as(org.owner, () => packages.prepare1099Package({ taxYear: 2026, idempotencyKey: `taxbandits-${randomUUID()}` }))
+    await kit.as(org.reviewer, () => packages.approve1099Package({ id, notes: "Matched to the payables register" }))
+    const filed = await kit.as(org.owner, () => packages.submit1099PackageToTaxBandits(id))
+    // The sandbox shows SENT TO AGENCY, then the outcome for the payer's TIN.
+    let result = { outcome: "pending" }
+    for (let i = 0; i < input.pollAttempts && result.outcome === "pending"; i++) {
+      await new Promise((resolve) => setTimeout(resolve, input.pollSeconds * 1000))
+      result = await kit.as(org.owner, () => packages.refresh1099PackageFromTaxBandits(id))
+    }
+    const row = kit.rows(`select status, partner, partner_reference, outcome_notes from public.books_1099_packages where id=${kit.q(id)}`)[0]
+    return { org, id, observed: { status: row.status, partner: row.partner, referenceIsSubmissionId: row.partner_reference === filed.submissionId, notes: row.outcome_notes } }
+  }
+  // The sandbox flags a return for the same payer, recipient and amount as a
+  // duplicate, so each run files as a new payer with the outcome's TIN suffix.
+  const payerTin = (suffix) => `11${String(Math.floor(Math.random() * 10000)).padStart(4, "0")}${suffix}`
+  const accepted = await file(payerTin(input.acceptedPayerTinSuffix), "TAX-01 TaxBandits accepted")
+  const rejected = await file(payerTin(input.rejectedPayerTinSuffix), "TAX-01 TaxBandits rejected")
+  // The same returns filed again are refused as duplicates; nothing is left at
+  // TaxBandits and the correction stays approved, unfiled.
+  const { org } = accepted
+  const { id: again } = await kit.as(org.owner, () => packages.prepare1099Package({ taxYear: 2026, idempotencyKey: `taxbandits-${randomUUID()}`, supersedesId: accepted.id }))
+  await kit.as(org.reviewer, () => packages.approve1099Package({ id: again, notes: "Correction review against the payables register" }))
+  const duplicate = await refusal(() => kit.as(org.owner, () => packages.submit1099PackageToTaxBandits(again)))
+  check.equal("filed with TaxBandits under its submission ID; the sandbox's accepted and rejected outcomes are recorded with their reasons; a refused filing leaves nothing behind", expected.expected, {
+    accepted: { ...accepted.observed, notes: /accepted by the IRS/.test(accepted.observed.notes ?? "") },
+    rejected: { ...rejected.observed, notes: /TIN/i.test(rejected.observed.notes ?? "") },
+    refusedAgain: { refused: /Duplicate/i.test(duplicate) && /nothing was left filed there/.test(duplicate),
+      status: kit.rows(`select status from public.books_1099_packages where id=${kit.q(again)}`)[0].status },
+  })
+  return { orgIds: [accepted.org.orgId, rejected.org.orgId] }
+}
+
 module.exports = {
   helpers: { builder, yearOfPayments, ADDRESS },
   id: "TAX-01",
   subcases: {
     "annual-classification": annualClassification,
     "package-review-and-handoff": packageAndHandoff,
+    "taxbandits-sandbox": taxBanditsSandbox,
   },
 }

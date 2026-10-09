@@ -4,7 +4,8 @@ import { recordAudit } from "@/lib/services/audit"
 import { requireBooksAuthorization } from "@/lib/services/books/access"
 import { booksDigest } from "@/lib/services/books/hash"
 import { companyOwnership } from "@/lib/services/books/legal-entities"
-import { buildFilingFile, buildPackageSnapshot, packageSnapshotSchema, validateFilingFile } from "@/lib/services/books/vendor-1099-filing-rules"
+import { buildFilingFile, buildPackageSnapshot, packageSnapshotSchema, taxBanditsNecRequest, taxBanditsOutcome, validateFilingFile } from "@/lib/services/books/vendor-1099-filing-rules"
+import { createTaxBanditsNecSubmission, deleteTaxBanditsSubmission, getTaxBanditsSubmissionStatus, transmitTaxBanditsSubmission, type TaxBanditsSubmission } from "@/lib/integrations/tax-filing/taxbandits"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { getVendor1099Report } from "@/lib/services/reports/vendor-1099"
@@ -50,7 +51,7 @@ async function currentSnapshot(orgId: string, taxYear: number, legalEntityId: st
   return { built, policySource: policy?.source_url ?? "Approved 1099-NEC policy" }
 }
 
-const packageRow = z.object({ id: z.string().uuid(), legal_entity_id: z.string().uuid(), tax_year: z.number(), status: z.string(), snapshot: z.unknown(), digest: z.string(), supersedes_id: z.string().uuid().nullable() }).passthrough()
+const packageRow = z.object({ id: z.string().uuid(), legal_entity_id: z.string().uuid(), tax_year: z.number(), status: z.string(), snapshot: z.unknown(), digest: z.string(), supersedes_id: z.string().uuid().nullable(), partner: z.string().nullish(), partner_reference: z.string().nullish() }).passthrough()
 async function loadPackage(orgId: string, id: string) {
   const { data, error } = await createServiceSupabaseClient().from("books_1099_packages").select(PACKAGE_COLUMNS).eq("org_id", orgId).eq("id", z.string().uuid().parse(id)).maybeSingle()
   if (error) throw new Error(`Failed to load the 1099 package: ${error.message}`)
@@ -73,6 +74,8 @@ export async function getVendor1099Packages(taxYear: number) {
   if (companies.error || packages.error) throw new Error(`Failed to load 1099 packages: ${(companies.error ?? packages.error)?.message}`)
   return {
     taxYear: parsedYear, userId: context.userId,
+    // Filing goes straight to TaxBandits when its keys are set; otherwise the file is handed over by hand.
+    taxBanditsConfigured: Boolean(process.env.TAXBANDITS_CLIENT_ID && process.env.TAXBANDITS_CLIENT_SECRET && process.env.TAXBANDITS_USER_TOKEN),
     companies: (companies.data ?? []).map((company) => ({ id: company.id, name: company.legal_name ?? company.name, isPrimary: company.is_primary, payerTinLast4: company.payer_tin_last4, hasAddress: Boolean(company.payer_address) })),
     packages: (packages.data ?? []).map((row) => ({ ...row, snapshot: packageSnapshotSchema.parse(row.snapshot) })),
   }
@@ -181,4 +184,57 @@ export async function build1099FilingFile(id: string) {
   const checked = validateFilingFile(content, snapshot)
   await record(context.orgId, context.userId, pkg.id, "books_1099_filing_file_downloaded", { rows: checked.rows, total_cents: checked.totalCents })
   return { filename: `1099-NEC-${pkg.tax_year}-${snapshot.payer.name.replace(/[^A-Za-z0-9]+/g, "-")}.csv`, content }
+}
+
+const TAXBANDITS = "TaxBandits"
+
+function partnerErrors(submission: TaxBanditsSubmission) {
+  return [...(submission.Errors ?? []), ...(submission.Form1099Records?.ErrorRecords ?? []).flatMap((record) => record.Errors ?? [])]
+    .map((error) => error.Message ?? error.Name ?? "Refused by the filing partner")
+}
+
+/**
+ * Files an approved package with TaxBandits: the returns are created and
+ * transmitted, and the package is submitted under TaxBandits' submission ID.
+ * If the partner refuses any record, nothing is recorded and every reason is
+ * returned, so the package can be corrected and prepared again.
+ */
+export async function submit1099PackageToTaxBandits(id: string) {
+  const context = await access("books.tax")
+  const pkg = await loadPackage(context.orgId, z.string().uuid().parse(id))
+  if (pkg.status !== "approved") throw new Error("Only an approved 1099 package can be filed")
+  const snapshot = packageSnapshotSchema.parse(pkg.snapshot)
+  const { data, error } = await createServiceSupabaseClient().rpc("books_1099_filing_identities", { p_org_id: context.orgId, p_package_id: pkg.id })
+  if (error) throw new Error(`Failed to read taxpayer IDs: ${error.message}`)
+  const request = taxBanditsNecRequest(snapshot, z.object({ payer: z.string().nullable(), payees: z.record(z.string()) }).parse(data))
+  // TaxBandits keeps the returns it accepted even when it refuses others; they
+  // are deleted so the corrected package is not refused as a duplicate.
+  const created = await createTaxBanditsNecSubmission(request)
+  const createErrors = partnerErrors(created)
+  if (createErrors.length || !created.SubmissionId) {
+    if (created.SubmissionId) await deleteTaxBanditsSubmission(created.SubmissionId)
+    throw new Error(`TaxBandits refused the package, and nothing was left filed there: ${createErrors.join("; ") || "no submission was created"}`)
+  }
+  const transmitted = await transmitTaxBanditsSubmission(created.SubmissionId)
+  const transmitErrors = partnerErrors(transmitted)
+  if (transmitErrors.length) {
+    await deleteTaxBanditsSubmission(created.SubmissionId)
+    throw new Error(`TaxBandits did not transmit the package, and nothing was left filed there: ${transmitErrors.join("; ")}`)
+  }
+  await updatePackage(context.orgId, pkg.id, { status: "submitted", submitted_by: context.userId, submitted_at: new Date().toISOString(), partner: TAXBANDITS, partner_reference: created.SubmissionId })
+  await record(context.orgId, context.userId, pkg.id, "books_1099_package_submitted", { partner: TAXBANDITS, reference: created.SubmissionId, records: snapshot.payees.length })
+  return { id: pkg.id, submissionId: created.SubmissionId }
+}
+
+/** Asks TaxBandits what the IRS decided and records it once every record has an answer. */
+export async function refresh1099PackageFromTaxBandits(id: string) {
+  const context = await access("books.tax")
+  const pkg = await loadPackage(context.orgId, z.string().uuid().parse(id))
+  if (pkg.status !== "submitted" || pkg.partner !== TAXBANDITS || !pkg.partner_reference) throw new Error("This package was not filed through TaxBandits")
+  const result = taxBanditsOutcome(await getTaxBanditsSubmissionStatus(pkg.partner_reference))
+  if (result.outcome === "pending") return { id: pkg.id, outcome: result.outcome, statuses: result.statuses }
+  const notes = result.outcome === "accepted" ? `TaxBandits reports every return accepted by the IRS (${result.statuses.length}).` : `TaxBandits reports the IRS rejected the filing: ${result.reasons.join("; ")}`
+  await updatePackage(context.orgId, pkg.id, { status: result.outcome, outcome_by: context.userId, outcome_at: new Date().toISOString(), outcome_notes: notes.slice(0, 2000) })
+  await record(context.orgId, context.userId, pkg.id, `books_1099_package_${result.outcome}`, { notes, partner: TAXBANDITS })
+  return { id: pkg.id, outcome: result.outcome, statuses: result.statuses }
 }

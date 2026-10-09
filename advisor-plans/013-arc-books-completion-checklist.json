@@ -5356,8 +5356,8 @@
       "id": "B05.2",
       "workstream": "B05",
       "title": "Filing-ready review and partner handoff",
-      "status": "PARTIAL",
-      "status_basis": "Verified locally (TAX-01 package-review-and-handoff; vendor-1099 browser journey): a package per paying company and year freezes payees at or over the threshold (last four only); preparing is refused listing every blocked payee and a missing company TIN or address; the preparer cannot approve; a payment after preparation refuses approval until withdrawn and prepared again; a Books member without books.tax cannot get the file and sees no full TIN; the approved file (full TINs from Vault, each matched to the frozen last four, checked against the import format and approved totals, audited) downloads no-store, while the package stays approved (not filed) until a submission is recorded; submitted, rejected, resubmitted, accepted; a correction supersedes the accepted package, which keeps its approval, submission and outcome. Remaining: validating the file in a chosen filing partner's sandbox or import. (Archive coverage of 1099 packages was added in export schema 34.)",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified against TaxBandits' sandbox (2026-10-09, TAX-01 taxbandits-sandbox) on top of TAX-01 package-review-and-handoff: an approved package is filed with TaxBandits (created and transmitted as one federal IRIS 1099-NEC submission with the same full-ID check as the import file) and submitted under TaxBandits' submission ID; the sandbox's IRS outcomes are recorded by Check IRS status: every return accepted (3) for one payer, rejected with TIN ERROR for another. Found and fixed with the real API: TaxBandits keeps the returns it accepts when it refuses others, so a corrected package was refused as a duplicate; a refused or untransmitted submission is now deleted and the refusal says nothing was left filed (proven by filing identical returns again). Also fixed: an individual's taxpayer ID that the SSA never issues (000/666/9xx area, 00 group, 0000 serial) was accepted at entry and only refused at filing; it is now refused when stored. Keys only from --taxbandits-env (sandbox only); no key in the evidence.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "package totals reconcile to reviewed report and payment evidence",
@@ -5403,16 +5403,40 @@
             "Migration 20261008020000_books_1099_packages applied to the acceptance stack only; production waits for approval."
           ],
           "evidence_dir": "docs/books-evidence/2026-10-07-vendor-1099"
+        },
+        {
+          "verified_at": "2026-10-09T01:29:29.709616+00:00",
+          "implemented_paths": [
+            "lib/integrations/tax-filing/taxbandits.ts",
+            "lib/services/books/vendor-1099-filing-rules.ts",
+            "lib/services/books/vendor-1099-packages.ts",
+            "lib/services/books/tax-register.ts",
+            "components/books/vendor-1099-packages.tsx",
+            "app/(app)/books/actions.ts",
+            "scripts/books-acceptance/scenarios/tax-01.cjs",
+            "scripts/books-acceptance/expected/TAX-01.json",
+            "tests/vendor-1099-report.test.js",
+            "docs/books-1099.md"
+          ],
+          "test_scenario_ids": [
+            "TAX-01",
+            "AUTH-01",
+            "RESTORE-01"
+          ],
+          "commands": [
+            "scenario-runner --scenario TAX-01 --taxbandits-env <sandbox key file>",
+            "node --test tests/vendor-1099-report.test.js",
+            "pnpm test:financials",
+            "vendor-1099 browser journey"
+          ],
+          "observed_results": [
+            "TAX-01 3/3: accepted (TaxBandits: every return accepted by the IRS (3)), rejected (TIN ERROR), identical refiling refused as duplicate with nothing left filed and the correction still approved.",
+            "AUTH-01, RESTORE-01 and the vendor-1099 journey pass with the realistic fixture SSN; test:financials 2,532 pass."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-09-taxbandits-sandbox"
         }
       ],
-      "remaining_criteria": [
-        "package totals reconcile to reviewed report and payment evidence",
-        "ordinary users cannot retrieve full TINs",
-        "provider sandbox/import validates the exact format",
-        "corrected package retains original evidence",
-        "status distinguishes prepared/submitted/accepted/rejected",
-        "a partner outage leaves a downloadable reviewed package without pretending filing succeeded"
-      ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
       "verified_at": null,

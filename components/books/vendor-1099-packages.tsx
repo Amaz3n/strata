@@ -10,7 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { cn } from "@/lib/utils"
 import {
   approve1099PackageAction, loadVendor1099PackagesAction, prepare1099PackageAction, record1099OutcomeAction,
-  record1099SubmissionAction, setPayerTaxIdentityAction, withdraw1099PackageAction,
+  record1099SubmissionAction, refresh1099PackageFromTaxBanditsAction, setPayerTaxIdentityAction, submit1099PackageToTaxBanditsAction, withdraw1099PackageAction,
 } from "@/app/(app)/books/actions"
 
 type Workspace = Awaited<ReturnType<typeof import("@/lib/services/books/vendor-1099-packages").getVendor1099Packages>>
@@ -87,7 +87,7 @@ export function Vendor1099Packages({ defaultYear }: { defaultYear: number }) {
             <thead><tr className="border-b bg-muted/30 text-left text-xs text-muted-foreground">
               <th className="px-3 py-2 font-medium">Status</th><th className="px-3 py-2 text-right font-medium">Payees</th><th className="px-3 py-2 text-right font-medium">Total</th><th className="px-3 py-2 font-medium">Record</th><th className="px-3 py-2 font-medium" />
             </tr></thead>
-            <tbody>{packages.map((row) => <PackageRow key={row.id} row={row} userId={workspace.userId} pending={pending} act={act} />)}</tbody>
+            <tbody>{packages.map((row) => <PackageRow key={row.id} row={row} userId={workspace.userId} taxBandits={workspace.taxBanditsConfigured} pending={pending} act={act} />)}</tbody>
           </table>
         </div>}
       </div>
@@ -95,7 +95,7 @@ export function Vendor1099Packages({ defaultYear }: { defaultYear: number }) {
   </section>
 }
 
-function PackageRow({ row, userId, pending, act }: { row: Package; userId: string; pending: boolean; act: (work: () => Promise<{ success: boolean; error?: string }>, done: string) => void }) {
+function PackageRow({ row, userId, taxBandits, pending, act }: { row: Package; userId: string; taxBandits: boolean; pending: boolean; act: (work: () => Promise<{ success: boolean; error?: string }>, done: string) => void }) {
   const [form, setForm] = useState<null | "approve" | "withdraw" | "submit" | "outcome">(null)
   const [text, setText] = useState(""), [reference, setReference] = useState(""), [outcome, setOutcome] = useState<"accepted" | "rejected">("accepted")
   const close = () => { setForm(null); setText(""); setReference("") }
@@ -114,7 +114,9 @@ function PackageRow({ row, userId, pending, act }: { row: Package; userId: strin
         {row.status === "prepared" && row.prepared_by !== userId && <Button size="sm" variant="outline" disabled={pending} onClick={() => setForm("approve")}>Approve</Button>}
         {["prepared", "approved"].includes(row.status) && <Button size="sm" variant="ghost" disabled={pending} onClick={() => setForm("withdraw")}>Withdraw</Button>}
         {LIVE.includes(row.status) && <Button size="sm" variant="outline" asChild><a href={`/api/books/1099-packages/${row.id}/filing`}>Filing file</a></Button>}
+        {row.status === "approved" && taxBandits && <Button size="sm" disabled={pending} onClick={() => act(() => submit1099PackageToTaxBanditsAction(row.id), "Filed with TaxBandits")}>File with TaxBandits</Button>}
         {["approved", "rejected"].includes(row.status) && <Button size="sm" variant="outline" disabled={pending} onClick={() => setForm("submit")}>Record submission</Button>}
+        {row.status === "submitted" && row.partner === "TaxBandits" && taxBandits && <Button size="sm" variant="outline" disabled={pending} onClick={() => act(() => refresh1099PackageFromTaxBanditsAction(row.id), "IRS status checked")}>Check IRS status</Button>}
         {row.status === "submitted" && <Button size="sm" variant="outline" disabled={pending} onClick={() => setForm("outcome")}>Record outcome</Button>}
       </div></td>
     </tr>

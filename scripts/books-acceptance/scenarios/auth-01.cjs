@@ -7,7 +7,7 @@
 const { randomUUID } = require("node:crypto")
 const { app } = require("./shared.cjs")
 
-const TINS = ["123456781", "987654324", "555443333", "444556666", "112223334"]
+const TINS = ["123456781", "487654324", "555443333", "444556666", "112223334"]
 
 function member(kit, org, role) {
   const userId = randomUUID(), email = `${userId}@acceptance.example.test`

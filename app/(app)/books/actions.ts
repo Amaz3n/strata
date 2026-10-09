@@ -1526,6 +1526,12 @@ export async function withdraw1099PackageAction(input: Parameters<Awaited<Return
 export async function record1099SubmissionAction(input: Parameters<Awaited<ReturnType<typeof vendor1099>>["record1099Submission"]>[0]) {
   return run(async () => (await vendor1099()).record1099Submission(input))
 }
+export async function submit1099PackageToTaxBanditsAction(id: string) {
+  return run(async () => (await vendor1099()).submit1099PackageToTaxBandits(id))
+}
+export async function refresh1099PackageFromTaxBanditsAction(id: string) {
+  return run(async () => (await vendor1099()).refresh1099PackageFromTaxBandits(id))
+}
 export async function record1099OutcomeAction(input: Parameters<Awaited<ReturnType<typeof vendor1099>>["record1099Outcome"]>[0]) {
   return run(async () => (await vendor1099()).record1099Outcome(input))
 }

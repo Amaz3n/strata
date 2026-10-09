@@ -9,7 +9,8 @@ requests):
 
 ```sh
 node scripts/books-acceptance/ci.cjs --workspace NEW_DIR --db-port PORT \
-  --evidence-dir NEW_DIR [--storage-env FILE] [--plaid-env FILE]
+  --evidence-dir NEW_DIR [--storage-env FILE] [--plaid-env FILE] \\
+  [--taxbandits-env FILE]
 ```
 
 It bootstraps a fresh isolated stack from the repository's migrations, starts its
@@ -223,6 +224,11 @@ holds `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
 bucket is `arc-books-acceptance`, with a key limited to that bucket. STORE-01
 runs only with it; without it STORE-01 reports blocked and the run is not a
 pass.
+
+**TaxBandits.** `--taxbandits-env FILE` (`TAXBANDITS_ENV=sandbox`,
+`TAXBANDITS_CLIENT_ID`, `TAXBANDITS_CLIENT_SECRET`, `TAXBANDITS_USER_TOKEN`) opts
+a run into the TaxBandits sandbox, which never reaches the IRS; the kit refuses
+any other environment. TAX-01 `taxbandits-sandbox` requires it.
 
 **Plaid.** `--plaid-env FILE` (`PLAID_ENV=sandbox`, `PLAID_CLIENT_ID`,
 `PLAID_SECRET`) opts a run into Plaid's sandbox; the kit refuses any other Plaid

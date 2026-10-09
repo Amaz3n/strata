@@ -1,0 +1,259 @@
+{
+  "scenario": "TAX-01",
+  "status": "PASSED",
+  "reviewedFrom": "1099-NEC reporting as configured in tax_policy_versions (2026 threshold $2,000 per the IRS page cited there; 2025 $600); card payments are reported by the card network (1099-K) and excluded; refunds reduce the year they occur in. Pending licensed-CPA review (B16.3). Amounts are integer cents.",
+  "subcases": [
+    {
+      "name": "annual-classification",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "760e3d10-363c-4816-84a1-6e7192e16b73"
+      },
+      "checks": [
+        {
+          "label": "each vendor's reportable payments for 2026, the threshold from the year's policy, and what blocks filing",
+          "pass": true,
+          "expected": {
+            "threshold": 200000,
+            "vendors": {
+              "Cedar Framing LLC": {
+                "paid": 1262000,
+                "reportable": true,
+                "blocked": []
+              },
+              "Summit Roofing LLC": {
+                "paid": 300000,
+                "reportable": true,
+                "blocked": [
+                  "No W-9 on file",
+                  "Complete taxpayer ID is not secured in Vault"
+                ]
+              },
+              "Pat Rivera": {
+                "paid": 250000,
+                "reportable": true,
+                "blocked": []
+              },
+              "Gulf Painting LLC": {
+                "paid": 150000,
+                "reportable": false,
+                "blocked": []
+              }
+            },
+            "total": 1962000,
+            "priorYear": {
+              "threshold": 60000,
+              "framing": 50000
+            },
+            "readerSeesLastFourOnly": true
+          },
+          "observed": {
+            "threshold": 200000,
+            "vendors": {
+              "Cedar Framing LLC": {
+                "paid": 1262000,
+                "reportable": true,
+                "blocked": []
+              },
+              "Summit Roofing LLC": {
+                "paid": 300000,
+                "reportable": true,
+                "blocked": [
+                  "No W-9 on file",
+                  "Complete taxpayer ID is not secured in Vault"
+                ]
+              },
+              "Pat Rivera": {
+                "paid": 250000,
+                "reportable": true,
+                "blocked": []
+              },
+              "Gulf Painting LLC": {
+                "paid": 150000,
+                "reportable": false,
+                "blocked": []
+              }
+            },
+            "total": 1962000,
+            "priorYear": {
+              "threshold": 60000,
+              "framing": 50000
+            },
+            "readerSeesLastFourOnly": true
+          }
+        }
+      ],
+      "startedAt": "2026-10-09T01:20:38.216Z"
+    },
+    {
+      "name": "package-review-and-handoff",
+      "status": "PASSED",
+      "identities": {
+        "orgId": "59a3d4ef-04c9-4d65-a772-ae649f3edef6",
+        "packages": [
+          "2d5190b3-323a-41ec-9396-4f838f38f143",
+          "4def57bd-237c-4246-bf9c-80aecba5abec",
+          "08f67760-f16a-4d0f-ba95-740782e27913"
+        ]
+      },
+      "checks": [
+        {
+          "label": "blocked until every payee can be filed; reviewed by someone else against current payments; the file for filers only; handoff, rejection, acceptance and correction on record",
+          "pass": true,
+          "expected": {
+            "blocked": [
+              true,
+              true
+            ],
+            "selfApprovalRefused": true,
+            "staleRefused": true,
+            "readerFileRefused": true,
+            "readerSeesNoFullTin": true,
+            "file": {
+              "header": "Payer TIN,Payer Name,Payer Address,Payer City,Payer State,Payer ZIP,Recipient TIN,Recipient TIN Type,Recipient Name,Recipient Address,Recipient City,Recipient State,Recipient ZIP,Box 1 Nonemployee Compensation,Tax Year,Arc Payee ID",
+              "rows": 3,
+              "rivera": [
+                "487654324",
+                "SSN",
+                "2600.00"
+              ],
+              "payerTin": "112223334"
+            },
+            "statusBeforeHandoff": "approved",
+            "history": [
+              {
+                "status": "withdrawn",
+                "reference": null,
+                "outcome": null,
+                "reviewed": false,
+                "payees": 3,
+                "total": 1812000
+              },
+              {
+                "status": "superseded",
+                "reference": "SANDBOX-002",
+                "outcome": "Accepted by the partner",
+                "reviewed": true,
+                "payees": 3,
+                "total": 1822000
+              },
+              {
+                "status": "approved",
+                "reference": null,
+                "outcome": null,
+                "reviewed": true,
+                "payees": 4,
+                "total": 2032000
+              }
+            ],
+            "correctedFileRows": 4
+          },
+          "observed": {
+            "blocked": [
+              true,
+              true
+            ],
+            "selfApprovalRefused": true,
+            "staleRefused": true,
+            "readerFileRefused": true,
+            "readerSeesNoFullTin": true,
+            "file": {
+              "header": "Payer TIN,Payer Name,Payer Address,Payer City,Payer State,Payer ZIP,Recipient TIN,Recipient TIN Type,Recipient Name,Recipient Address,Recipient City,Recipient State,Recipient ZIP,Box 1 Nonemployee Compensation,Tax Year,Arc Payee ID",
+              "rows": 3,
+              "rivera": [
+                "487654324",
+                "SSN",
+                "2600.00"
+              ],
+              "payerTin": "112223334"
+            },
+            "statusBeforeHandoff": "approved",
+            "history": [
+              {
+                "status": "withdrawn",
+                "reference": null,
+                "outcome": null,
+                "reviewed": false,
+                "payees": 3,
+                "total": 1812000
+              },
+              {
+                "status": "superseded",
+                "reference": "SANDBOX-002",
+                "outcome": "Accepted by the partner",
+                "reviewed": true,
+                "payees": 3,
+                "total": 1822000
+              },
+              {
+                "status": "approved",
+                "reference": null,
+                "outcome": null,
+                "reviewed": true,
+                "payees": 4,
+                "total": 2032000
+              }
+            ],
+            "correctedFileRows": 4
+          }
+        }
+      ],
+      "startedAt": "2026-10-09T01:20:41.150Z"
+    },
+    {
+      "name": "taxbandits-sandbox",
+      "status": "PASSED",
+      "identities": {
+        "orgIds": [
+          "bcd82bc3-099f-4afc-bc7b-cece96469534",
+          "c47406cf-c287-4f92-a58d-eed9e1898206"
+        ]
+      },
+      "checks": [
+        {
+          "label": "filed with TaxBandits under its submission ID; the sandbox's accepted and rejected outcomes are recorded with their reasons; a refused filing leaves nothing behind",
+          "pass": true,
+          "expected": {
+            "accepted": {
+              "status": "accepted",
+              "partner": "TaxBandits",
+              "referenceIsSubmissionId": true,
+              "notes": true
+            },
+            "rejected": {
+              "status": "rejected",
+              "partner": "TaxBandits",
+              "referenceIsSubmissionId": true,
+              "notes": true
+            },
+            "refusedAgain": {
+              "refused": true,
+              "status": "approved"
+            }
+          },
+          "observed": {
+            "accepted": {
+              "status": "accepted",
+              "partner": "TaxBandits",
+              "referenceIsSubmissionId": true,
+              "notes": true
+            },
+            "rejected": {
+              "status": "rejected",
+              "partner": "TaxBandits",
+              "referenceIsSubmissionId": true,
+              "notes": true
+            },
+            "refusedAgain": {
+              "refused": true,
+              "status": "approved"
+            }
+          }
+        }
+      ],
+      "startedAt": "2026-10-09T01:20:43.218Z"
+    }
+  ],
+  "container": "supabase_db_arc-books-acceptance-e1c88d89280b",
+  "finishedAt": "2026-10-09T01:28:00.716Z"
+}

@@ -18,6 +18,21 @@ export const packageSnapshotSchema = z.object({ version: z.literal(1), tax_year:
 export type PackagePayee = z.infer<typeof payeeSchema>
 export type PackageSnapshot = z.infer<typeof packageSnapshotSchema>
 
+/** A payee who is an individual or sole proprietor files under an SSN; everyone else under an EIN. */
+export const isSsnFiler = (taxEntityType: string | null | undefined) => ["individual", "sole_prop"].includes(taxEntityType ?? "")
+
+/**
+ * Why nine digits cannot be a Social Security number, or null. The SSA never
+ * issues an area of 000, 666 or 900-999, a group of 00 or a serial of 0000, and
+ * the IRS refuses a 1099 that names one.
+ */
+export function ssnProblem(tin: string) {
+  if (!/^\d{9}$/.test(tin)) return "A Social Security number has nine digits"
+  if (tin.startsWith("000") || tin.startsWith("666") || tin.startsWith("9")) return "A Social Security number cannot start with 000, 666 or 9"
+  if (tin.slice(3, 5) === "00" || tin.slice(5) === "0000") return "A Social Security number cannot have 00 in the middle or 0000 at the end"
+  return null
+}
+
 /**
  * Everyone at or over the threshold is filed; anyone blocked stops the package
  * with the reason, so nothing is filed with a guess.
@@ -38,7 +53,7 @@ export function buildPackageSnapshot(input: {
     if (!payeeAddress.success) problems.push(`${row.vendor_name}: add the vendor's street, city, state and ZIP`)
     if (!row.tax_id_last4) problems.push(`${row.vendor_name}: no taxpayer ID on file`)
     if (row.blocking_reasons.length || !payeeAddress.success || !row.tax_id_last4) continue
-    payees.push({ company_id: row.company_id, name: row.vendor_name, tin_last4: row.tax_id_last4, tin_type: ["individual", "sole_prop"].includes(row.tax_entity_type ?? "") ? "SSN" : "EIN",
+    payees.push({ company_id: row.company_id, name: row.vendor_name, tin_last4: row.tax_id_last4, tin_type: isSsnFiler(row.tax_entity_type) ? "SSN" : "EIN",
       amount_cents: row.total_paid_cents, address: normalizeAddress(payeeAddress.data) })
   }
   if (problems.length || !payerAddress.success || !input.payer.tinLast4) return { problems }
@@ -54,13 +69,25 @@ function normalizeAddress(value: FilingAddress): FilingAddress {
 const csvCell = (value: string) => /[",\n]/.test(value) ? `"${value.replace(/"/g, "\"\"")}"` : value
 const dollars = (cents: number) => `${Math.trunc(cents / 100)}.${String(cents % 100).padStart(2, "0")}`
 
-/** The import file, with each full taxpayer ID checked against the last four frozen in the package. */
-export function buildFilingFile(snapshot: PackageSnapshot, identities: { payer: string | null; payees: Record<string, string> }) {
+type FilingIdentities = { payer: string | null; payees: Record<string, string> }
+
+/** Each full taxpayer ID read from Vault must still end in the last four frozen in the package. */
+function verifiedIdentities(snapshot: PackageSnapshot, identities: FilingIdentities) {
   const payerTin = identities.payer
   if (!payerTin || payerTin.slice(-4) !== snapshot.payer.tin_last4) throw new Error("The company's taxpayer ID changed after this package was approved; prepare a corrected package")
-  const rows = snapshot.payees.map((payee) => {
+  const tinOf = (payee: PackagePayee) => {
     const tin = identities.payees[payee.company_id]
     if (!tin || tin.slice(-4) !== payee.tin_last4) throw new Error(`${payee.name}'s taxpayer ID changed after this package was approved; prepare a corrected package`)
+    return tin
+  }
+  return { payerTin, tinOf }
+}
+
+/** The import file, with each full taxpayer ID checked against the last four frozen in the package. */
+export function buildFilingFile(snapshot: PackageSnapshot, identities: FilingIdentities) {
+  const { payerTin, tinOf } = verifiedIdentities(snapshot, identities)
+  const rows = snapshot.payees.map((payee) => {
+    const tin = tinOf(payee)
     return [payerTin, snapshot.payer.name, snapshot.payer.address.street1, snapshot.payer.address.city, snapshot.payer.address.state, snapshot.payer.address.postal_code,
       tin, payee.tin_type, payee.name, payee.address.street1, payee.address.city, payee.address.state, payee.address.postal_code, dollars(payee.amount_cents), String(snapshot.tax_year), payee.company_id]
   })
@@ -85,4 +112,45 @@ export function validateFilingFile(content: string, snapshot: PackageSnapshot) {
   }
   if (total !== snapshot.payees.reduce((sum, payee) => sum + payee.amount_cents, 0)) throw new Error("Filing file total does not match the approved package")
   return { rows: lines.length - 1, totalCents: total }
+}
+
+const usAddress = (value: FilingAddress) => ({ Address1: value.street1, City: value.city, State: value.state, ZipCd: value.postal_code })
+
+/**
+ * The approved package as one TaxBandits 1099-NEC submission (federal e-file
+ * through IRIS, no state filing, no mailing). An individual filed under an SSN
+ * is named first and last, the last word being the last name; a name longer
+ * than TaxBandits accepts is refused rather than cut short.
+ */
+export function taxBanditsNecRequest(snapshot: PackageSnapshot, identities: FilingIdentities) {
+  const { payerTin, tinOf } = verifiedIdentities(snapshot, identities)
+  const fits = (value: string, limit: number, who: string) => {
+    if (value.length > limit) throw new Error(`${who} is longer than the ${limit} characters the filing partner accepts; shorten it on the company record`)
+    return value
+  }
+  return {
+    SubmissionManifest: { TaxYear: String(snapshot.tax_year), IRSFilingType: "IRIS", IsFederalFiling: true, IsStateFiling: false, IsPostal: false, IsOnlineAccess: false, IsScheduleFiling: false },
+    ReturnHeader: { Business: { BusinessNm: fits(snapshot.payer.name, 75, snapshot.payer.name), PayerRef: snapshot.payer.legal_entity_id, IsEIN: true, EINorSSN: payerTin,
+      IsBusinessTerminated: false, IsForeign: false, USAddress: usAddress(snapshot.payer.address) } },
+    ReturnData: snapshot.payees.map((payee) => {
+      const parts = payee.name.trim().split(/\s+/)
+      const name = payee.tin_type === "SSN"
+        ? { FirstNm: fits(parts.slice(0, -1).join(" ") || parts[0], 20, payee.name), LastNm: fits(parts.length > 1 ? parts[parts.length - 1] : parts[0], 20, payee.name) }
+        : { FirstPayeeNm: fits(payee.name, 75, payee.name) }
+      return {
+        SequenceId: payee.company_id,
+        Recipient: { TINType: payee.tin_type, TIN: tinOf(payee), PayeeRef: payee.company_id, ...name, IsForeign: false, USAddress: usAddress(payee.address) },
+        NECFormData: { B1NEC: Number(dollars(payee.amount_cents)), B2IsDirectSales: false, B4FedTaxWH: 0, Is2ndTINnot: false, States: [] },
+      }
+    }),
+  }
+}
+
+/** What the partner's per-record federal statuses add up to for the package. */
+export function taxBanditsOutcome(records: Array<{ status: string | null; errors: string[] }>) {
+  const statuses = records.map((record) => (record.status ?? "").toUpperCase().replace(/\s+/g, "_"))
+  if (records.length === 0) return { outcome: "pending" as const, statuses }
+  if (statuses.some((status) => status === "REJECTED")) return { outcome: "rejected" as const, statuses, reasons: [...new Set(records.flatMap((record) => record.errors))] }
+  if (statuses.every((status) => status === "ACCEPTED" || status === "ACCEPTEDWITHERRORS")) return { outcome: "accepted" as const, statuses }
+  return { outcome: "pending" as const, statuses }
 }

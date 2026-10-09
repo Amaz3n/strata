@@ -90,7 +90,7 @@
           "header": "Payer TIN,Payer Name,Payer Address,Payer City,Payer State,Payer ZIP,Recipient TIN,Recipient TIN Type,Recipient Name,Recipient Address,Recipient City,Recipient State,Recipient ZIP,Box 1 Nonemployee Compensation,Tax Year,Arc Payee ID",
           "rows": 3,
           "rivera": [
-            "987654324",
+            "487654324",
             "SSN",
             "2600.00"
           ],
@@ -124,6 +124,34 @@
           }
         ],
         "correctedFileRows": 4
+      }
+    },
+    "taxbandits-sandbox": {
+      "requires": "taxbandits",
+      "inputs": {
+        "acceptedPayerTinSuffix": "200",
+        "rejectedPayerTinSuffix": "400",
+        "pollAttempts": 20,
+        "pollSeconds": 15
+      },
+      "derivation": "The package-review company's 2026 payments, approved by a second member, filed with the TaxBandits sandbox (federal, IRIS). The sandbox decides the IRS outcome by the payer TIN (each run a new payer, so the sandbox's duplicate check never fires): \u2026200 is accepted, \u2026400 is rejected for a TIN error, about two minutes after transmission. Each package is submitted under TaxBandits' submission ID, and checking the status records accepted (every return accepted by the IRS) or rejected with the reason. A correction filing the same returns again is refused by TaxBandits as a duplicate: the submission it created is deleted, the refusal says so, and the correction stays approved.",
+      "expected": {
+        "accepted": {
+          "status": "accepted",
+          "partner": "TaxBandits",
+          "referenceIsSubmissionId": true,
+          "notes": true
+        },
+        "rejected": {
+          "status": "rejected",
+          "partner": "TaxBandits",
+          "referenceIsSubmissionId": true,
+          "notes": true
+        },
+        "refusedAgain": {
+          "refused": true,
+          "status": "approved"
+        }
       }
     }
   }

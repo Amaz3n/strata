@@ -115,3 +115,33 @@ test("the filing file carries full IDs only when they still match the approved l
   assert.throws(() => validateFilingFile(file.replace("3000.01", "3000.02"), snapshot), /total does not match/)
   assert.throws(() => validateFilingFile(file.replace("123454321", "12345432"), snapshot), /nine digits/)
 })
+
+test("an approved package becomes one TaxBandits 1099-NEC submission with the same checked IDs and amounts", () => {
+  const { taxBanditsNecRequest } = require("../lib/services/books/vendor-1099-filing-rules")
+  const { snapshot } = buildPackageSnapshot({ taxYear: 2026, thresholdCents: 200000, payer, rows: [row(1, "Framing, Inc.", 300001), row(2, "Pat Rivera", 250000, { tax_entity_type: "individual" })], addresses: new Map([[id(1), address], [id(2), address]]) })
+  const identities = { payer: "112223334", payees: { [id(1)]: "123454321", [id(2)]: "987654321" } }
+  const request = taxBanditsNecRequest(snapshot, identities)
+  assert.deepEqual(request.SubmissionManifest, { TaxYear: "2026", IRSFilingType: "IRIS", IsFederalFiling: true, IsStateFiling: false, IsPostal: false, IsOnlineAccess: false, IsScheduleFiling: false })
+  assert.equal(request.ReturnHeader.Business.EINorSSN, "112223334")
+  assert.deepEqual(request.ReturnData.map((record) => [record.SequenceId, record.Recipient.TINType, record.Recipient.TIN, record.Recipient.FirstPayeeNm ?? `${record.Recipient.FirstNm} ${record.Recipient.LastNm}`, record.NECFormData.B1NEC]),
+    [[id(1), "EIN", "123454321", "Framing, Inc.", 3000.01], [id(2), "SSN", "987654321", "Pat Rivera", 2500]])
+  assert.deepEqual(request.ReturnData[0].Recipient.USAddress, { Address1: "1 Main St", City: "Naples", State: "FL", ZipCd: "34102" })
+  assert.throws(() => taxBanditsNecRequest(snapshot, { ...identities, payees: { ...identities.payees, [id(1)]: "123450000" } }), /Framing, Inc\.'s taxpayer ID changed/)
+  assert.throws(() => taxBanditsNecRequest({ ...snapshot, payer: { ...snapshot.payer, name: "B".repeat(76) } }, identities), /longer than the 75 characters/)
+})
+
+test("the IRS outcome is recorded only once every return has one, and a rejection carries its reasons", () => {
+  const { taxBanditsOutcome } = require("../lib/services/books/vendor-1099-filing-rules")
+  assert.equal(taxBanditsOutcome([{ status: "ACCEPTED", errors: [] }, { status: "SENT TO AGENCY", errors: [] }]).outcome, "pending")
+  assert.equal(taxBanditsOutcome([{ status: "ACCEPTED", errors: [] }, { status: "ACCEPTEDWITHERRORS", errors: [] }]).outcome, "accepted")
+  assert.deepEqual(taxBanditsOutcome([{ status: "ACCEPTED", errors: [] }, { status: "REJECTED", errors: ["TIN Error"] }]), { outcome: "rejected", statuses: ["ACCEPTED", "REJECTED"], reasons: ["TIN Error"] })
+  assert.equal(taxBanditsOutcome([]).outcome, "pending")
+})
+
+test("an individual's taxpayer ID must be a number the SSA issues", () => {
+  const { ssnProblem, isSsnFiler } = require("../lib/services/books/vendor-1099-filing-rules")
+  assert.equal(ssnProblem("487654324"), null)
+  for (const tin of ["987654324", "666123456", "000123456"]) assert.match(ssnProblem(tin), /cannot start with 000, 666 or 9/)
+  for (const tin of ["123004567", "123450000"]) assert.match(ssnProblem(tin), /00 in the middle or 0000 at the end/)
+  assert.deepEqual(["individual", "sole_prop", "llc", null].map(isSsnFiler), [true, true, false, false])
+})

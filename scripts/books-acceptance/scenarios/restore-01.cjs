@@ -167,7 +167,7 @@ async function taxRecords(kit, expected, check) {
     ready: result.plan.preflight.readyForRestoreAttempt,
     secretRecovery: result.plan.preflight.secretRecovery.map((row) => row.table).sort(),
     fileRefusedUntilPayerTinReentered: /taxpayer ID changed/.test(restoredPayer),
-    noTaxpayerIdArchived: !/\b(123456781|987654324|555443333|444556666|112223334)\b/.test(archived) && !archived.includes("payer_tin_secret_id"),
+    noTaxpayerIdArchived: !/\b(123456781|487654324|555443333|444556666|112223334)\b/.test(archived) && !archived.includes("payer_tin_secret_id"),
     packageStatuses: result.bundle.tables.books_1099_packages.map((row) => row.status).sort(),
     changedTables: Object.keys(before.digests).filter((table) => before.digests[table] !== after.digests[table]),
     filingFileIdentical: before.file === after.file, reportIdentical: before.report === after.report,

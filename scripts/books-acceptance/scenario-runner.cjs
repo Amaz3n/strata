@@ -80,10 +80,11 @@ if (require.main === module) {
       scenario = process.argv.includes("--all") ? null : arg("--scenario"),
       evidenceDir = arg("--evidence-dir"),
       storageEnv = process.argv.includes("--storage-env") ? arg("--storage-env") : null,
-      plaidEnv = process.argv.includes("--plaid-env") ? arg("--plaid-env") : null
+      plaidEnv = process.argv.includes("--plaid-env") ? arg("--plaid-env") : null,
+      taxbanditsEnv = process.argv.includes("--taxbandits-env") ? arg("--taxbandits-env") : null
     if (!container || !apiUrl || (!scenario && !process.argv.includes("--all")) || !evidenceDir || fs.existsSync(evidenceDir))
-      throw Error("Use --container NAME --api-url http://127.0.0.1:PORT (--scenario ID | --all) --evidence-dir NEW_DIRECTORY [--storage-env FILE] [--plaid-env FILE]")
-    const kit = createKit({ container, apiUrl, storageEnv, plaidEnv })
+      throw Error("Use --container NAME --api-url http://127.0.0.1:PORT (--scenario ID | --all) --evidence-dir NEW_DIRECTORY [--storage-env FILE] [--plaid-env FILE] [--taxbandits-env FILE]")
+    const kit = createKit({ container, apiUrl, storageEnv, plaidEnv, taxbanditsEnv })
     if (!scenario) return runAll(kit, container, evidenceDir)
     const only = process.argv.includes("--only") ? arg("--only").split(",") : null
     const result = { ...(await runScenario(scenario, kit, {}, only)), container, finishedAt: new Date().toISOString() }
