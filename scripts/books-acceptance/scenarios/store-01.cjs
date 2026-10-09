@@ -155,6 +155,55 @@ async function taxAttachmentEvidence(kit, expected, check) {
   return { orgId: job.orgId }
 }
 
+// An archive's memory does not grow with its documents (B06.1): a company holding
+// a document far larger than the budget is archived while the process's memory
+// is sampled; the growth stays inside the budget, and the archive still verifies
+// and carries the document's exact bytes.
+async function largeDocumentArchive(kit, expected, check) {
+  const input = expected.inputs
+  const job = await contractJob(kit, { name: "STORE-01 large archive", contractCents: 1000000, retainagePercent: 0, periods: ["2026-07"] })
+  const storage = app("../storage/files-storage")
+  const path = `${job.orgId}/projects/${job.projectId}/survey-scan.bin`
+  // Deterministic bytes, generated as they upload, so the test never holds them either.
+  const chunk = (index) => createHash("sha256").update(`survey-${index}`).digest()
+  const chunks = Math.ceil((input.documentMb * 1024 * 1024) / 32)
+  const digest = createHash("sha256")
+  let index = 0
+  await kit.service(() => storage.uploadFilesStream({ orgId: job.orgId, path, contentType: "application/octet-stream", stream: new ReadableStream({
+    pull(controller) {
+      if (index >= chunks) return controller.close()
+      const batch = []
+      for (let n = 0; n < 2048 && index < chunks; n++, index++) batch.push(chunk(index))
+      const bytes = Buffer.concat(batch); digest.update(bytes); controller.enqueue(bytes)
+    } }) }))
+  const sha256 = digest.digest("hex"), size = chunks * 32
+  kit.sql(`insert into public.files(org_id,project_id,file_name,storage_path,mime_type,size_bytes,checksum,category)
+    values(${kit.q(job.orgId)},${kit.q(job.projectId)},'survey-scan.bin',${kit.q(path)},'application/octet-stream',${size},${kit.q(sha256)},'other')`)
+  const exports = app("books/exports")
+  const { exportId } = await kit.as(job.owner, () => exports.requestBooksExport({ exportType: "complete" }))
+  // Live memory: heap and buffers after a collection, so garbage awaiting
+  // collection is not mistaken for memory the archive holds (needs --expose-gc).
+  if (typeof global.gc !== "function") throw Error("Run with NODE_OPTIONS=--expose-gc to measure archive memory")
+  const live = () => { global.gc(); const usage = process.memoryUsage(); return usage.heapUsed + usage.arrayBuffers }
+  const baseline = live()
+  let peak = baseline
+  const sampler = setInterval(() => { peak = Math.max(peak, live()) }, 200)
+  try { await kit.drainOutbox(job.orgId) } finally { clearInterval(sampler) }
+  const row = kit.rows(`select status, storage_path from public.books_exports where id=${kit.q(exportId)}`)[0]
+  // Read back: the archive's embedded document hashes to the original.
+  const archived = JSON.parse(require("node:zlib").gunzipSync(Buffer.from(await kit.service(() => storage.downloadFilesObject({ supabase: null, orgId: job.orgId, path: row.storage_path })))).toString("utf8"))
+  const embedded = archived.supportingObjects.find((object) => archived.manifest.supportingFiles.some((file) => file.id === object.fileId && file.storagePath === path))
+  check.equal("an archive of a company with a document larger than the memory budget stays inside the budget, verifies, and carries the exact bytes", expected.expected, {
+    status: row.status, documentMb: input.documentMb,
+    growthWithinBudget: (peak - baseline) / (1024 * 1024) < input.memoryBudgetMb,
+    verifies: exports.verifyBooksExportBundle(archived).valid,
+    bytesExact: Boolean(embedded) && createHash("sha256").update(Buffer.from(embedded.dataBase64, "base64")).digest("hex") === sha256,
+  })
+  // The bucket keeps nothing this large between runs.
+  await kit.service(() => storage.deleteFilesObjects({ supabase: null, orgId: job.orgId, paths: [path, row.storage_path] }))
+  return { orgId: job.orgId, peakGrowthMb: Math.round((peak - baseline) / (1024 * 1024)) }
+}
+
 module.exports = {
   id: "STORE-01",
   subcases: {
@@ -163,5 +212,6 @@ module.exports = {
     "archive-with-documents": archiveWithDocuments,
     "restore-documents": restoreDocuments,
     "tax-attachment-evidence": taxAttachmentEvidence,
+    "large-document-archive": largeDocumentArchive,
   },
 }

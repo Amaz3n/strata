@@ -20,7 +20,8 @@ let status = 1
 try {
   execute(job)
   const { apiUrl, container } = startApi(workspace)
-  const run = spawnSync(process.execPath, [path.join(__dirname, "scenario-runner.cjs"), "--container", container, "--api-url", apiUrl, "--all",
+  // --expose-gc lets STORE-01 measure live memory while it archives a large document.
+  const run = spawnSync(process.execPath, ["--expose-gc", path.join(__dirname, "scenario-runner.cjs"), "--container", container, "--api-url", apiUrl, "--all",
     "--evidence-dir", evidenceDir, ...(storageEnv ? ["--storage-env", storageEnv] : []), ...(plaidEnv ? ["--plaid-env", plaidEnv] : []), ...(taxbanditsEnv ? ["--taxbandits-env", taxbanditsEnv] : [])], { stdio: "inherit" })
   status = run.status ?? 1
 } finally {

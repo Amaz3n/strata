@@ -67,6 +67,20 @@
         "reviewAfterAlteration": true,
         "downloadAfterAlteration": true
       }
+    },
+    "large-document-archive": {
+      "inputs": {
+        "documentMb": 240,
+        "memoryBudgetMb": 96
+      },
+      "derivation": "A 240 MB document is streamed into storage and recorded with its SHA-256. Archiving the company with the background job grows live memory (heap and buffers, measured after collection; run with --expose-gc) by less than 96 MB. Measured: about 70 MB for a 120 MB document and 69 MB for a 240 MB one, so the cost is fixed (upload parts, compression and stream buffers) and does not follow document size. The archive is ready, verifies, and its embedded document hashes to the original.",
+      "expected": {
+        "status": "ready",
+        "documentMb": 240,
+        "growthWithinBudget": true,
+        "verifies": true,
+        "bytesExact": true
+      }
     }
   }
 }

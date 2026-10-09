@@ -141,10 +141,17 @@ export const EXPORT_TABLES = [
 /** Records first archived in schema 34; an older archive simply has none. */
 const SCHEMA34_TABLES = new Set<string>(["bank_feed_connections", "books_revenue_policies", "books_development_allocations", "books_cost_allocations", "books_wip_cost_allocations", "books_inventory_impairments", "books_bank_offsets", "books_bank_offset_lines", "books_1099_packages"]);
 
+/**
+ * A supporting object checked while it streamed into an archive: its SHA-256 and
+ * length stand in for its bytes when the archive is verified before upload, so
+ * the archive's documents never have to be held in memory at once.
+ */
+export type StreamedObjectDigest = { sha256: string; size: number };
+
 export function verifyBooksExportBundle(bundle: {
   tables: Record<string, Record<string, unknown>[]>;
-  supportingObjects?: { fileId: string; dataBase64: string }[];
-  supportingHistoricalObjects?: { attachmentId: string; dataBase64: string }[];
+  supportingObjects?: { fileId: string; dataBase64?: string }[];
+  supportingHistoricalObjects?: { attachmentId: string; dataBase64?: string }[];
   manifest?: {
     schemaVersion: number;
     orgId: string;
@@ -157,7 +164,15 @@ export function verifyBooksExportBundle(bundle: {
     }[];
     supportingHistoricalFiles?: ArchivedTaxAttachment[];
   };
-}) {
+}, streamed?: { files: Map<string, StreamedObjectDigest>; historical: Map<string, StreamedObjectDigest> }) {
+  // Bytes when the archive carries them; otherwise the digest taken while streaming.
+  const objectDigest = (encoded: string | undefined, digest: StreamedObjectDigest | undefined) => {
+    if (typeof encoded === "string") {
+      const bytes = Buffer.from(encoded, "base64");
+      return bytes.toString("base64") === encoded ? { sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length } : null;
+    }
+    return digest ?? null;
+  };
   const entries = bundle.tables.journal_entries ?? [];
   const postedEntryIds = new Set(
     entries
@@ -1246,16 +1261,15 @@ export function verifyBooksExportBundle(bundle: {
         description.sizeBytes !== file.size_bytes
       )
         integrityErrors.push(`Supporting file metadata differs: ${file.id}`);
-      if (typeof object.dataBase64 !== "string") {
+      const digest = objectDigest(object.dataBase64, streamed?.files.get(String(file.id)));
+      if (!digest) {
         integrityErrors.push(`Invalid supporting file encoding: ${file.id}`);
         continue;
       }
-      const bytes = Buffer.from(object.dataBase64, "base64");
       if (
-        bytes.toString("base64") !== object.dataBase64 ||
         !Number.isSafeInteger(file.size_bytes) ||
-        bytes.length !== file.size_bytes ||
-        createHash("sha256").update(bytes).digest("hex") !== file.checksum
+        digest.size !== file.size_bytes ||
+        digest.sha256 !== file.checksum
       )
         integrityErrors.push(`Supporting file bytes differ: ${file.id}`);
     }
@@ -1302,22 +1316,18 @@ export function verifyBooksExportBundle(bundle: {
       )
         integrityErrors.push("Frozen tax attachment object inventory differs");
       for (const item of expected) {
-        const encoded = item.currentFileId
-          ? bundle.supportingObjects?.find(
-              (object) => object.fileId === item.currentFileId,
-            )?.dataBase64
-          : byId.get(item.id)?.dataBase64;
-        if (typeof encoded !== "string") {
+        const digest = item.currentFileId
+          ? objectDigest(bundle.supportingObjects?.find((object) => object.fileId === item.currentFileId)?.dataBase64, streamed?.files.get(item.currentFileId))
+          : objectDigest(byId.get(item.id)?.dataBase64, streamed?.historical.get(item.id));
+        if (!digest) {
           integrityErrors.push(
             `Missing frozen tax attachment bytes: ${item.id}`,
           );
           continue;
         }
-        const bytes = Buffer.from(encoded, "base64");
         if (
-          bytes.toString("base64") !== encoded ||
-          bytes.length !== item.sizeBytes ||
-          createHash("sha256").update(bytes).digest("hex") !== item.checksum
+          digest.size !== item.sizeBytes ||
+          digest.sha256 !== item.checksum
         )
           integrityErrors.push(
             `Frozen tax attachment bytes differ: ${item.id}`,

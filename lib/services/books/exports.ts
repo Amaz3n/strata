@@ -1,10 +1,12 @@
 import "server-only";
-import { BOOKS_EXPORT_SCHEMA_VERSION, EXPORT_TABLES, verifyBooksExportBundle } from "@/lib/services/books/export-contract";
+import { BOOKS_EXPORT_SCHEMA_VERSION, EXPORT_TABLES, verifyBooksExportBundle, type StreamedObjectDigest } from "@/lib/services/books/export-contract";
 export { verifyBooksExportBundle } from "@/lib/services/books/export-contract";
 
 import { historicalDocumentInventory } from "./tax-attachment-archive";
 import { createHash } from "node:crypto";
-import { gzipSync } from "node:zlib";
+import { once } from "node:events";
+import { Readable } from "node:stream";
+import { createGzip } from "node:zlib";
 import { z } from "zod";
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
@@ -13,7 +15,7 @@ import { booksDigest } from "@/lib/services/books/hash";
 import { requireOrgContext, runWithServiceOrgContext } from "@/lib/services/context";
 import { normalizeProductTier } from "@/lib/product-tier";
 import { recordEvent } from "@/lib/services/events";
-import { uploadFilesObject, getFilesObjectStream } from "@/lib/storage/files-storage";
+import { ensureOrgScopedPath, getFilesObjectStream, uploadFilesStream } from "@/lib/storage/files-storage";
 
 
 
@@ -42,6 +44,96 @@ function redact(table: string, rows: Record<string, unknown>[]) {
   }));
 }
 
+
+const RESTORE_INSTRUCTIONS =
+  "This data bundle includes supporting storage objects in supportingObjects as base64 bytes keyed by fileId. Verify the archive offline, then decode each object to its manifest storage path, preserving bytes. Schema 8 also retains frozen historical tax objects in supportingHistoricalObjects keyed by attachmentId; supportingHistoricalFiles identifies their original paths and any shared current-file object. Tax attachments lacking frozen metadata do not establish review-time byte identity. Restore data into an empty isolated organization, preserve UUIDs, verify the copied file checksums, and run ledger rebuild and subledger tie-outs before enabling access. Credentials and full tax identities must be re-established separately.";
+
+type Service = ReturnType<typeof createServiceSupabaseClient>;
+
+/** Reads one stored object chunk by chunk, handing each on, and returns its SHA-256 and length. */
+async function streamObject(service: Service, orgId: string, path: string, onChunk?: (chunk: Uint8Array) => Promise<void>, limit?: number): Promise<StreamedObjectDigest> {
+  const object = await getFilesObjectStream({ supabase: service, orgId, path });
+  const reader = object.body.getReader(), digest = createHash("sha256");
+  let size = 0;
+  try {
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      size += chunk.value.byteLength;
+      if (limit !== undefined && size > limit) { await reader.cancel(); throw new Error("Frozen tax attachment size differs"); }
+      digest.update(chunk.value);
+      if (onChunk) await onChunk(chunk.value);
+    }
+  } finally { reader.releaseLock(); }
+  return { sha256: digest.digest("hex"), size };
+}
+
+/** One object's bytes, for the few the verifier must re-read (payroll registers). */
+async function readObject(service: Service, orgId: string, path: string) {
+  const chunks: Uint8Array[] = [];
+  await streamObject(service, orgId, path, async (chunk) => { chunks.push(chunk); });
+  return Buffer.concat(chunks);
+}
+
+/** The archive objects the payroll evidence names, which verification re-reads. */
+function payrollSourceIds(tables: Record<string, Record<string, unknown>[]>) {
+  const ids = new Set<string>();
+  for (const row of [...(tables.books_payroll_imports ?? []), ...(tables.books_payroll_correction_sources ?? [])]) {
+    const proof = z.object({ storage_path: z.string(), size_bytes: z.number(), checksum: z.string() }).passthrough().safeParse(row.source_proof);
+    if (proof.success) ids.add(booksDigest({ storagePath: proof.data.storage_path, sizeBytes: proof.data.size_bytes, checksum: proof.data.checksum }));
+  }
+  return ids;
+}
+
+/**
+ * Writes the archive JSON into a gzip stream feeding a multipart upload, so the
+ * bytes in memory are one upload part and one document chunk at a time. Each
+ * document is base64-encoded as it streams and must match the digest taken in
+ * the first pass. Returns the same content hash `booksDigest(json)` gives.
+ */
+async function streamArchive(service: Service, orgId: string, storagePath: string, archive: {
+  head: string;
+  files: Array<{ key: "fileId"; id: string; path: string; digest: StreamedObjectDigest | undefined }>;
+  historical: Array<{ key: "attachmentId"; id: string; path: string; digest: StreamedObjectDigest | undefined }>;
+}) {
+  const gzip = createGzip();
+  const upload = uploadFilesStream({ orgId, path: storagePath, stream: Readable.toWeb(gzip) as ReadableStream<Uint8Array>,
+    contentType: "application/gzip", cacheControl: "private, no-store" });
+  // booksDigest of a string hashes its JSON literal: the quoted, escaped text.
+  const content = createHash("sha256").update("\"");
+  const write = async (text: string) => {
+    content.update(JSON.stringify(text).slice(1, -1));
+    if (!gzip.write(text)) await once(gzip, "drain");
+  };
+  try {
+    await write(archive.head);
+    for (const [name, objects] of [["supportingObjects", archive.files], ["supportingHistoricalObjects", archive.historical]] as const) {
+      await write(`,"${name}":[`);
+      for (const [index, object] of objects.entries()) {
+        await write(`${index ? "," : ""}{"${object.key}":${JSON.stringify(object.id)},"dataBase64":"`);
+        let carry = Buffer.alloc(0);
+        const digest = await streamObject(service, orgId, object.path, async (chunk) => {
+          const bytes = Buffer.concat([carry, chunk]);
+          const whole = bytes.length - (bytes.length % 3);
+          carry = bytes.subarray(whole);
+          if (whole) await write(bytes.subarray(0, whole).toString("base64"));
+        });
+        await write(`${carry.toString("base64")}"}`);
+        if (!object.digest || digest.sha256 !== object.digest.sha256 || digest.size !== object.digest.size)
+          throw new Error(`A supporting document changed while the archive was written: ${object.id}`);
+      }
+      await write("]");
+    }
+    await write("}");
+    gzip.end();
+    await upload;
+  } catch (error) {
+    gzip.destroy(error instanceof Error ? error : new Error(String(error)));
+    await upload.catch(() => undefined);
+    throw error;
+  }
+  return content.update("\"").digest("hex");
+}
 
 const EXPORT_JOB_TYPE = "generate_books_export";
 export const BOOKS_EXPORT_JOB_TYPE = EXPORT_JOB_TYPE;
@@ -151,36 +243,33 @@ export async function buildBooksExport(exportId: string, orgId?: string) {
       if (!snapshot.tables[table]) throw new Error(`Books export snapshot missing ${table}`);
       tables[table] = redact(table, snapshot.tables[table]);
     }
-    // Include the same bytes we verify; recovery must not depend on live storage.
-    const supportingObjects: { fileId: string; dataBase64: string }[] = [];
+    // Every document is read twice and never held whole: once to check it against
+    // its record, then straight into the compressed upload, checked again on the
+    // way. Only payroll registers, which the verifier re-reads, stay in memory.
+    const fileDigests = new Map<string, StreamedObjectDigest>()
     for (const file of tables.files ?? []) {
       if (typeof file.storage_path !== "string" || !file.storage_path) throw new Error(`Supporting file ${file.id} has no storage path`);
-      const object = await getFilesObjectStream({ supabase: service, orgId: context.orgId, path: file.storage_path });
-      const digest = createHash("sha256"); let bytes = 0;
-      const chunks: Uint8Array[] = [];
-      const reader = object.body.getReader();
-      try { for (;;) { const chunk = await reader.read(); if (chunk.done) break; digest.update(chunk.value); bytes += chunk.value.byteLength; chunks.push(chunk.value); } } finally { reader.releaseLock(); }
-      const checksum = digest.digest("hex");
-      if (file.checksum && file.checksum !== checksum) throw new Error(`Supporting file checksum mismatch: ${file.id}`);
-      if (file.size_bytes != null && Number(file.size_bytes) !== bytes) throw new Error(`Supporting file size mismatch: ${file.id}`);
-      file.checksum = checksum; file.size_bytes = bytes;
-      supportingObjects.push({ fileId: String(file.id), dataBase64: Buffer.concat(chunks).toString("base64") });
+      const digest = await streamObject(service, context.orgId, file.storage_path);
+      if (file.checksum && file.checksum !== digest.sha256) throw new Error(`Supporting file checksum mismatch: ${file.id}`);
+      if (file.size_bytes != null && Number(file.size_bytes) !== digest.size) throw new Error(`Supporting file size mismatch: ${file.id}`);
+      file.checksum = digest.sha256; file.size_bytes = digest.size;
+      fileDigests.set(String(file.id), digest);
     }
-    const supportingHistoricalFiles = historicalDocumentInventory(tables,context.orgId);
-    const supportingHistoricalObjects: { attachmentId: string; dataBase64: string }[] = [];
+    const supportingHistoricalFiles = historicalDocumentInventory(tables, context.orgId);
+    const historicalDigests = new Map<string, StreamedObjectDigest>()
     for (const attachment of supportingHistoricalFiles) {
-      if (attachment.currentFileId) continue; // Reuse the already embedded current object.
-      const object = await getFilesObjectStream({ supabase: service, orgId: context.orgId, path: attachment.storagePath });
-      const reader = object.body.getReader(), digest = createHash("sha256"), chunks: Uint8Array[] = [];
-      let size = 0;
-      try { for (;;) {
-        const chunk = await reader.read(); if (chunk.done) break;
-        size += chunk.value.byteLength;
-        if (!Number.isSafeInteger(size) || size > attachment.sizeBytes) { await reader.cancel(); throw new Error("Frozen tax attachment size differs"); }
-        digest.update(chunk.value); chunks.push(chunk.value);
-      } } finally { reader.releaseLock(); }
-      if (size !== attachment.sizeBytes || digest.digest("hex") !== attachment.checksum) throw new Error("Frozen tax attachment bytes differ from reviewed evidence");
-      supportingHistoricalObjects.push({ attachmentId: attachment.id, dataBase64: Buffer.concat(chunks).toString("base64") });
+      if (attachment.currentFileId) continue; // The current file's object already carries these bytes.
+      const digest = await streamObject(service, context.orgId, attachment.storagePath, undefined, attachment.sizeBytes);
+      if (digest.size !== attachment.sizeBytes || digest.sha256 !== attachment.checksum) throw new Error("Frozen tax attachment bytes differ from reviewed evidence");
+      historicalDigests.set(attachment.id, digest);
+    }
+    const payrollSources = payrollSourceIds(tables);
+    const heldFiles = new Map<string, string>(), heldHistorical = new Map<string, string>();
+    for (const attachment of supportingHistoricalFiles) {
+      if (!payrollSources.has(attachment.id)) continue;
+      const bytes = await readObject(service, context.orgId, attachment.storagePath);
+      if (attachment.currentFileId) heldFiles.set(attachment.currentFileId, bytes.toString("base64"));
+      else heldHistorical.set(attachment.id, bytes.toString("base64"));
     }
     const generatedAt = new Date().toISOString();
     const manifest = {
@@ -208,33 +297,30 @@ export async function buildBooksExport(exportId: string, orgId?: string) {
         mimeType: file.mime_type,
       })),
       supportingHistoricalFiles,
-      restoreInstructions:
-        "This data bundle includes supporting storage objects in supportingObjects as base64 bytes keyed by fileId. Verify the archive offline, then decode each object to its manifest storage path, preserving bytes. Schema 8 also retains frozen historical tax objects in supportingHistoricalObjects keyed by attachmentId; supportingHistoricalFiles identifies their original paths and any shared current-file object. Tax attachments lacking frozen metadata do not establish review-time byte identity. Restore data into an empty isolated organization, preserve UUIDs, verify the copied file checksums, and run ledger rebuild and subledger tie-outs before enabling access. Credentials and full tax identities must be re-established separately.",
+      restoreInstructions: RESTORE_INSTRUCTIONS,
     };
-    const bundle = { manifest, tables, supportingObjects, supportingHistoricalObjects };
-    const verification = verifyBooksExportBundle(bundle);
+    const historicalToEmbed = supportingHistoricalFiles.filter((attachment) => !attachment.currentFileId);
+    const verification = verifyBooksExportBundle({
+      manifest, tables,
+      supportingObjects: (tables.files ?? []).map((file) => ({ fileId: String(file.id), dataBase64: heldFiles.get(String(file.id)) })),
+      supportingHistoricalObjects: historicalToEmbed.map((attachment) => ({ attachmentId: attachment.id, dataBase64: heldHistorical.get(attachment.id) })),
+    }, { files: fileDigests, historical: historicalDigests });
     if (!verification.valid)
       throw new Error(
         `Books export verification failed: ${verification.integrityErrors[0] ?? "Unbalanced or incomplete journal entries"}`,
       );
-    const json = JSON.stringify(bundle);
-    const contentHash = booksDigest(json);
     // Each attempt writes its own object; only the attempt that finishes names it.
-    const path = `books/exports/${exportId}/attempt-${attempt}.json.gz`;
-    const uploaded = await uploadFilesObject({
-      supabase: service,
-      orgId: context.orgId,
-      path,
-      bytes: gzipSync(Buffer.from(json)),
-      contentType: "application/gzip",
-      cacheControl: "private, no-store",
-      upsert: false,
+    const storagePath = ensureOrgScopedPath(context.orgId, `books/exports/${exportId}/attempt-${attempt}.json.gz`);
+    const contentHash = await streamArchive(service, context.orgId, storagePath, {
+      head: `{"manifest":${JSON.stringify(manifest)},"tables":${JSON.stringify(tables)}`,
+      files: (tables.files ?? []).map((file) => ({ key: "fileId", id: String(file.id), path: String(file.storage_path), digest: fileDigests.get(String(file.id)) })),
+      historical: historicalToEmbed.map((attachment) => ({ key: "attachmentId", id: attachment.id, path: attachment.storagePath, digest: historicalDigests.get(attachment.id) })),
     });
     const { error: updateError } = await service
       .from("books_exports")
       .update({
         status: "ready",
-        storage_path: uploaded.storagePath,
+        storage_path: storagePath,
         content_hash: contentHash,
         manifest,
         verification,
@@ -265,7 +351,7 @@ export async function buildBooksExport(exportId: string, orgId?: string) {
     });
     return {
       exportId,
-      storagePath: uploaded.storagePath,
+      storagePath,
       contentHash,
       manifest,
       verification,

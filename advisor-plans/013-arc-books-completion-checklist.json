@@ -5448,8 +5448,8 @@
       "id": "B06.1",
       "workstream": "B06",
       "title": "Consistent streamed capture and archive jobs",
-      "status": "PARTIAL",
-      "status_basis": "Progress (2026-10-08, RESTORE-01 background-archive): archives are built by a durable outbox job (generate_books_export) as the member who requested them, permission rechecked; attempts are numbered and kept, a dead attempt is recorded as interrupted when the next starts, a failure keeps its reason and names no file, each attempt writes its own object and only the current attempt marks the archive ready after verify and upload; the maintenance sweep fails exports whose job is gone. One stable-statement capture proved consistent: a journal committed during a 2 s capture is absent from it. Verification of omitted tables, changed bytes, unsafe cents and older schemas, and the no-secrets rule, were already covered (books-export-continuity, RESTORE-01). Remaining: bounded memory (capture and documents are held in memory during an attempt) and a ready archive built against real storage (STORE-01). The acceptance kit now clears R2_* settings so a scenario can never upload to production storage. Migration 20261008050000_books_export_attempts pending production approval. (2026-10-08) A ready archive is now proven against real storage: built by the background job, downloaded no-store, verified, carrying each document's exact bytes (STORE-01 archive-with-documents; RESTORE-01 background-archive with storage). Remaining: bounded memory.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified locally (2026-10-09): archives are built by the background job (attempts kept, crashes recorded, stranded exports failed; RESTORE-01 background-archive), from one consistent snapshot (a journal committed mid-capture is absent), and now with bounded memory: each document is streamed once to check it against its record and again straight into a gzip stream feeding an 8 MB-part multipart upload, base64-encoded as it goes and re-checked; verification before upload uses the streamed digests (verifyBooksExportBundle's streamed option), holding only payroll registers. Measured against real storage (STORE-01 large-document-archive, --expose-gc): live memory grew ~70 MB for a 120 MB document and 69 MB / 32 MB for 240 MB, a fixed cost independent of document size; the archive verifies and carries the exact bytes. The streamed JSON and content hash equal a whole-built archive (unit test), so offline verification and restore are unchanged. Bounded: the table capture itself is held in memory, proportional to the company's records, not its documents.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "source edits during capture cannot mix revisions",
@@ -6566,11 +6566,39 @@
             "Export unit suites 22/22; test:financials 2,527 pass."
           ],
           "evidence_dir": "docs/books-evidence/2026-10-08-background-archive"
+        },
+        {
+          "verified_at": "2026-10-09T02:10:33.311521+00:00",
+          "implemented_paths": [
+            "lib/services/books/exports.ts",
+            "lib/services/books/export-contract.ts",
+            "lib/storage/files-storage.ts",
+            "tests/books-export-continuity.test.js",
+            "tests/books-historical-document-export.test.js",
+            "scripts/books-acceptance/scenarios/store-01.cjs",
+            "scripts/books-acceptance/expected/STORE-01.json",
+            "scripts/books-acceptance/ci.cjs",
+            "docs/books-restore.md",
+            "docs/books-acceptance-runner.md"
+          ],
+          "test_scenario_ids": [
+            "STORE-01",
+            "RESTORE-01"
+          ],
+          "commands": [
+            "NODE_OPTIONS=--expose-gc scenario-runner --scenario STORE-01 --storage-env <key file>",
+            "scenario-runner --scenario RESTORE-01 --storage-env <key file>",
+            "node --test tests/books-export-continuity.test.js tests/books-historical-document-export.test.js",
+            "pnpm test:financials"
+          ],
+          "observed_results": [
+            "STORE-01 6/6 including large-document-archive (240 MB document, 32 MB live growth this run; 69 MB and ~70 MB in earlier runs).",
+            "RESTORE-01 4/4 with storage; export unit suites 22/22; test:financials 2,532 pass."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-09-bounded-archive"
         }
       ],
-      "remaining_criteria": [
-        "bounded memory: stream the capture and supporting documents instead of holding them in one attempt"
-      ],
+      "remaining_criteria": [],
       "external_dependency": null,
       "reviewer": null,
       "verified_at": null,

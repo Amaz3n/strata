@@ -9,6 +9,15 @@ RESTORE-01 acceptance scenario.
   `EXPORT_TABLES` for one organization, so no table mixes revisions: the capture
   is one `stable` statement, and an entry committed while it runs is not in it
   (RESTORE-01 `background-archive`).
+- **Bounded memory.** Documents are never held whole: each is streamed once to
+  check its size and checksum against its record, then again straight into the
+  gzip stream feeding an 8 MB-part multipart upload, base64-encoded as it goes and
+  checked against the first pass. Verification before upload uses those
+  digests; only payroll registers, which it re-reads, are held. The table capture
+  is the one part held in memory, bounded by the company's records rather than its
+  documents. A 240 MB document archives with under 96 MB of live memory growth
+  (STORE-01 `large-document-archive`). The archive JSON and content hash are the
+  same as when it was built whole.
 - **Built in the background.** Requesting an export queues it
   (`requestBooksExport`); the `generate_books_export` outbox job builds it as the
   member who asked, with their export permission checked again. Each attempt is
@@ -65,6 +74,4 @@ back from the archive at its manifest path keeps its checksum and privacy.
 
 ## Not covered yet
 
-- Bounded memory for large companies (B06.1): the capture and the supporting
-  documents are held in memory while one attempt builds the archive.
 - An automated loader: step 4 is run by an operator from the plan.

@@ -222,7 +222,8 @@ scenario files. `--storage-env FILE` opts a run into real storage: the file
 holds `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
 `R2_BUCKET`, and the kit refuses any bucket not named `*-acceptance`. The test
 bucket is `arc-books-acceptance`, with a key limited to that bucket. STORE-01
-runs only with it; without it STORE-01 reports blocked and the run is not a
+runs only with it, under `node --expose-gc` (its large-document subcase measures
+live memory; `ci.cjs` passes the flag); without it STORE-01 reports blocked and the run is not a
 pass.
 
 **TaxBandits.** `--taxbandits-env FILE` (`TAXBANDITS_ENV=sandbox`,

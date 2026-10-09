@@ -89,7 +89,7 @@ test('supporting file extraction rejects path traversal before creating output',
 });
 test('export service uploads embedded documents and refuses a changed source file',async()=>{
  const Module=require('node:module');const {database}=require('./helpers/report-database');const {gunzipSync}=require('node:zlib');
- const {bundle,bytes}=embeddedFixture();const source=database(bundle.tables);let upload,changed=false,snapshotMode="valid";const updates=[];
+ const {bundle,bytes}=embeddedFixture();const source=database(bundle.tables);let upload,changed=false,changedOnRead=0,reads=0,snapshotMode="valid";const updates=[];
  const service={rpc:async(name,args)=>{if(name==='start_books_export_attempt')return {data:1,error:null};if(name==='fail_books_export_attempt'){updates.push({status:'failed'});return {data:null,error:null}};assert.equal(name,"capture_books_export_snapshot");assert.equal(args.p_org_id,"org");if(snapshotMode==="error")return {data:null,error:{message:"snapshot unavailable"}};const tables={...bundle.tables};if(snapshotMode==="missing")delete tables.journal_lines;return {data:{orgId:snapshotMode==="wrong-org"?"other":"org",capturedAt:"2026-10-03T00:00:00Z",databaseSnapshot:"1:2:",tables},error:null}},from(table){
   if(table!=='books_exports')return source.from(table);
   const query={insert(row){assert.equal(row.schema_version,BOOKS_EXPORT_SCHEMA_VERSION);return query},select(){return query},single:async()=>({data:{id:'00000000-0000-4000-8000-000000000001',export_type:'complete'},error:null}),update(row){updates.push(row);return query},eq(){return query},then(resolve){return Promise.resolve({error:null}).then(resolve)}};return query;
@@ -102,13 +102,15 @@ test('export service uploads embedded documents and refuses a changed source fil
    if(name==='@/lib/services/context')return {requireOrgContext:async()=>({orgId:'org',userId:'user',supabase:service})};
    if(name==='@/lib/services/books/access')return {requireBooksAuthorization:async()=>{}};
    if(name==='@/lib/services/events')return {recordEvent:async()=>{}};
-   if(name==='@/lib/storage/files-storage')return {getFilesObjectStream:async()=>({body:new ReadableStream({start(controller){controller.enqueue(changed?Buffer.from('changed'):bytes);controller.close()}})}),uploadFilesObject:async input=>{upload=input;return {storagePath:input.path}}};
+   if(name==='@/lib/storage/files-storage')return {getFilesObjectStream:async()=>{reads+=1;const served=changed||(changedOnRead===reads)?Buffer.from('changed'):bytes;return {body:new ReadableStream({start(controller){controller.enqueue(served);controller.close()}})}},uploadFilesStream:async input=>{const chunks=[];const reader=input.stream.getReader();for(;;){const r=await reader.read();if(r.done)break;chunks.push(Buffer.from(r.value))}upload={...input,bytes:Buffer.concat(chunks)}},ensureOrgScopedPath:(_org,path)=>path};
    return original.call(this,name,...args);
   };
   const {createBooksExportNow}=require('../lib/services/books/exports');createExport=input=>createBooksExportNow({exportType:'complete',...input});
  }finally{Module._load=original;}
  const result=await createExport({});assert.equal(result.verification.valid,true);
- const archive=JSON.parse(gunzipSync(upload.bytes));assert.equal(archive.manifest.schemaVersion,BOOKS_EXPORT_SCHEMA_VERSION);
+ const text=gunzipSync(upload.bytes).toString('utf8'),archive=JSON.parse(text);assert.equal(archive.manifest.schemaVersion,BOOKS_EXPORT_SCHEMA_VERSION);
+ // Streamed, the archive is the same JSON with the same content hash as one built whole.
+ assert.equal(text,JSON.stringify(archive));assert.equal(result.contentHash,require('../lib/services/books/hash').booksDigest(text));assert.equal(upload.cacheControl,'private, no-store');
  assert.deepEqual(Buffer.from(archive.supportingObjects[0].dataBase64,'base64'),bytes);
  assert.equal(verifyBooksExportBundle(archive).valid,true);
  assert.equal(archive.manifest.databaseSnapshot.visibility,'1:2:');
@@ -117,6 +119,9 @@ test('export service uploads embedded documents and refuses a changed source fil
  }
  snapshotMode='valid';
  changed=true;upload=null;await assert.rejects(createExport({}),/checksum mismatch/);
+ assert.equal(upload,null);assert.equal(updates.at(-1).status,'failed');
+ // A document that changes between the check and the write stops the archive.
+ changed=false;reads=0;changedOnRead=2;upload=null;await assert.rejects(createExport({}),/changed while the archive was written/);
  assert.equal(upload,null);assert.equal(updates.at(-1).status,'failed');
 });
 test('journal verification catches one-cent imbalances beyond JavaScript sum precision',()=>{

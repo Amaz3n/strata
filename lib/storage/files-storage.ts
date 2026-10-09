@@ -624,13 +624,13 @@ export async function listFilesMultipartParts(params: { orgId: string; path: str
 
 /** Server-side streaming archive upload, bounded to one 8 MiB part. */
 export async function uploadFilesStream(params: {
-  orgId: string; path: string; stream: ReadableStream<Uint8Array>; contentType: string
+  orgId: string; path: string; stream: ReadableStream<Uint8Array>; contentType: string; cacheControl?: string
 }): Promise<void> {
   const path = ensureOrgScopedPath(params.orgId, params.path)
   if (await isPayrollDocumentPrivate(params.orgId, path)) throw new Error("Use the private payroll document workflow")
   const key = normalizeKey(path)
   const client = getR2Client()
-  const created = await client.send(new CreateMultipartUploadCommand({ Bucket: R2_BUCKET, Key: key, ContentType: params.contentType }))
+  const created = await client.send(new CreateMultipartUploadCommand({ Bucket: R2_BUCKET, Key: key, ContentType: params.contentType, CacheControl: params.cacheControl }))
   if (!created.UploadId) throw new Error("Storage omitted upload ID")
   const uploadId = created.UploadId
   const reader = params.stream.getReader()

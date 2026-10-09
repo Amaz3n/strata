@@ -75,7 +75,7 @@ test('actual export service streams retained originals, reuses current objects, 
      assert.equal(input.orgId,org);downloads.push(input.path)
      const bytes=input.path.endsWith('/original.txt')?(corrupt?Buffer.from('corrupt retained object'):original):revised
      return {body:new ReadableStream({start(controller){controller.enqueue(bytes);controller.close()}})}
-    },uploadFilesObject:async input=>{upload=input;return {storagePath:input.path}}
+    },uploadFilesStream:async input=>{const chunks=[];const reader=input.stream.getReader();for(;;){const r=await reader.read();if(r.done)break;chunks.push(Buffer.from(r.value))}upload={...input,bytes:Buffer.concat(chunks)}},ensureOrgScopedPath:(_org,path)=>path
    }
    return originalLoad.call(this,name,...args)
   }
@@ -83,7 +83,8 @@ test('actual export service streams retained originals, reuses current objects, 
  }finally{Module._load=originalLoad}
  const result=await createExport({});assert.equal(result.verification.valid,true)
  const archived=JSON.parse(gunzipSync(upload.bytes));assert.equal(verifyBooksExportBundle(archived).valid,true)
- assert.deepEqual(downloads.sort(),[org+'/tax/original.txt',org+'/tax/revised.txt'].sort())
+ // Each document is read twice, to check it and then into the archive, never held whole.
+ assert.deepEqual(downloads.sort(),[org+'/tax/original.txt',org+'/tax/original.txt',org+'/tax/revised.txt',org+'/tax/revised.txt'].sort())
  assert.equal(archived.supportingHistoricalObjects.length,1)
  assert.deepEqual(Buffer.from(archived.supportingHistoricalObjects[0].dataBase64,'base64'),original)
  corrupt=true;upload=null
