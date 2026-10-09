@@ -9,14 +9,16 @@ requests):
 
 ```sh
 node scripts/books-acceptance/ci.cjs --workspace NEW_DIR --db-port PORT \
-  --evidence-dir NEW_DIR [--storage-env FILE]
+  --evidence-dir NEW_DIR [--storage-env FILE] [--plaid-env FILE]
 ```
 
 It bootstraps a fresh isolated stack from the repository's migrations, starts its
 API, runs every golden scenario, keeps the evidence, and stops the stack and
 removes its volume whatever the result. In CI the acceptance bucket's key comes
-from the `BOOKS_ACCEPTANCE_R2_*` secrets; without them STORE-01 reports blocked
-and the run fails as incomplete.
+from the `BOOKS_ACCEPTANCE_R2_*` secrets and the Plaid sandbox key from
+`BOOKS_ACCEPTANCE_PLAID_CLIENT_ID` / `BOOKS_ACCEPTANCE_PLAID_SANDBOX_SECRET`;
+without them STORE-01 and BANK-01's `plaid-sandbox-feed` report blocked and the
+run fails as incomplete.
 
 `SCHEMA-01` runs every current `supabase/tests/*.sql` file using native PostgreSQL
 and pgTAP. It verifies the isolated database marker and the complete installed
@@ -221,6 +223,13 @@ holds `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
 bucket is `arc-books-acceptance`, with a key limited to that bucket. STORE-01
 runs only with it; without it STORE-01 reports blocked and the run is not a
 pass.
+
+**Plaid.** `--plaid-env FILE` (`PLAID_ENV=sandbox`, `PLAID_CLIENT_ID`,
+`PLAID_SECRET`) opts a run into Plaid's sandbox; the kit refuses any other Plaid
+environment and generates a throwaway `TOKEN_ENCRYPTION_KEY` for the run, so no
+production key is involved. A subcase whose expected entry says
+`"requires": "plaid"` (or `"storage"`) reports `BLOCKED` when the run was not
+given it, and its scenario stays `INCOMPLETE`.
 
 `--all` runs every golden scenario; nothing else should use the stack while it
 runs (RACE-01 holds locks on timing). Status (October 8): every scenario in the

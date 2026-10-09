@@ -602,6 +602,49 @@
         "outstanding": 0,
         "book": -2500
       }
+    },
+    "plaid-sandbox-feed": {
+      "requires": "plaid",
+      "inputs": {
+        "institutionId": "ins_109508",
+        "newTransactions": [
+          {
+            "description": "Arc acceptance bank fee",
+            "amountCents": 2500
+          },
+          {
+            "description": "Arc acceptance client deposit",
+            "amountCents": -180000
+          }
+        ]
+      },
+      "derivation": "Plaid sandbox, First Platypus Bank, dynamic-transactions test user. Connecting through connectPlaidItem imports the bank's history (Plaid delivers it in batches, and this test user keeps adding transactions). With the sync position lost, the whole history is replayed and no transaction is stored twice. Two transactions created at the bank (a 25.00 fee out, a 1,800.00 deposit in) arrive through a processed TRANSACTIONS.SYNC_UPDATES_AVAILABLE event exactly once each, also when the event is processed twice. Categorizing the fee to 6050 posts 25.00 of bank fees. After Plaid's reset_login the sync is refused with ITEM_LOGIN_REQUIRED, the connection reads reauth_required with its error, and a statement line still imports onto the account by hand.",
+      "expected": {
+        "initialHistory": true,
+        "replay": {
+          "replayedEverything": true,
+          "storedTwice": 0
+        },
+        "newTransactions": [
+          {
+            "description": "Arc acceptance bank fee",
+            "direction": "outflow",
+            "cents": 2500
+          },
+          {
+            "description": "Arc acceptance client deposit",
+            "direction": "inflow",
+            "cents": 180000
+          }
+        ],
+        "bankFeeExpense": 2500,
+        "failure": {
+          "refused": true,
+          "status": "reauth_required",
+          "hasError": true
+        },
+        "manualImportWhileFailing": 1
+      }
     }
   }
 }

@@ -25,6 +25,12 @@ async function runScenario(id, kit, fixtures = {}, only = null) {
       subcases.push({ name, status: "NOT_IMPLEMENTED", checks: [] })
       continue
     }
+    // A subcase that needs an outside sandbox (`requires`) is blocked, never
+    // skipped, when the run was not given it; the scenario stays INCOMPLETE.
+    if (spec.requires && !kit[spec.requires]) {
+      subcases.push({ name, status: "BLOCKED", reason: `needs --${spec.requires}-env`, checks: [] })
+      continue
+    }
     const check = recorder(),
       startedAt = new Date().toISOString()
     try {
@@ -73,10 +79,11 @@ if (require.main === module) {
       apiUrl = arg("--api-url"),
       scenario = process.argv.includes("--all") ? null : arg("--scenario"),
       evidenceDir = arg("--evidence-dir"),
-      storageEnv = process.argv.includes("--storage-env") ? arg("--storage-env") : null
+      storageEnv = process.argv.includes("--storage-env") ? arg("--storage-env") : null,
+      plaidEnv = process.argv.includes("--plaid-env") ? arg("--plaid-env") : null
     if (!container || !apiUrl || (!scenario && !process.argv.includes("--all")) || !evidenceDir || fs.existsSync(evidenceDir))
-      throw Error("Use --container NAME --api-url http://127.0.0.1:PORT (--scenario ID | --all) --evidence-dir NEW_DIRECTORY [--storage-env FILE]")
-    const kit = createKit({ container, apiUrl, storageEnv })
+      throw Error("Use --container NAME --api-url http://127.0.0.1:PORT (--scenario ID | --all) --evidence-dir NEW_DIRECTORY [--storage-env FILE] [--plaid-env FILE]")
+    const kit = createKit({ container, apiUrl, storageEnv, plaidEnv })
     if (!scenario) return runAll(kit, container, evidenceDir)
     const only = process.argv.includes("--only") ? arg("--only").split(",") : null
     const result = { ...(await runScenario(scenario, kit, {}, only)), container, finishedAt: new Date().toISOString() }

@@ -133,6 +133,7 @@ the operator holds access.
 |---|---|---|
 | Supabase service role, `CRON_SECRET` | Vercel environment | Rotate in Supabase / Vercel; jobs resume on the next run |
 | R2 storage keys | Vercel (`R2_*`); the acceptance bucket's key only in the operator's local key file | Create a new key scoped to the bucket in Cloudflare; old links stop working |
+| Acceptance-run keys: the acceptance bucket and Plaid sandbox | GitHub secrets `BOOKS_ACCEPTANCE_R2_*`, `BOOKS_ACCEPTANCE_PLAID_CLIENT_ID`, `BOOKS_ACCEPTANCE_PLAID_SANDBOX_SECRET`; locally, owner-only key files passed with `--storage-env` / `--plaid-env` | Replace the secret; the nightly run reports the affected scenario blocked until then |
 | Taxpayer IDs (vendors and payer companies) | Supabase Vault, never in exports | Re-enter from W-9s / the company's EIN letter; the 1099 filing file refuses until the payer EIN is present |
 | Bank feeds (Plaid) | A secret reference on each feed connection (`bank_feed_connections.secret_ref`), never archived | Reconnect from `/books/banking`; restored copies always start disconnected |
 | Connected accounting system (QuickBooks) | OAuth tokens on the accounting connection, server-only, never archived | Reconnect from `/settings/integrations` |

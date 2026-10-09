@@ -14,6 +14,19 @@ test("incorrect accounting fails the scenario with the exact difference", async 
   assert.deepEqual(result.subcases[0].checks[0], { label: "revenue", pass: false, expected: 100, observed: 99 })
 })
 
+test("a subcase that needs an outside sandbox is blocked, not skipped, when the run was not given it", async () => {
+  let ran = false
+  const run = (kit) => runScenario("UNIT-01", kit, {
+    expected: expected({ main: { cents: 1 }, sandbox: { requires: "plaid" } }),
+    scenario: scenario({ main: async (_kit, spec, check) => { check.equal("main", 1, 1) }, sandbox: async (_kit, _spec, check) => { ran = true; check.equal("sandbox", 1, 1) } }),
+  })
+  const without = await run({})
+  assert.equal(without.status, "INCOMPLETE")
+  assert.deepEqual(without.subcases.map((s) => s.status), ["PASSED", "BLOCKED"])
+  assert.equal(ran, false)
+  assert.equal((await run({ plaid: { env: "sandbox" } })).status, "PASSED")
+})
+
 test("a required subcase that is not implemented keeps the scenario from passing", async () => {
   const result = await runScenario("UNIT-01", {}, {
     expected: expected({ main: { cents: 100 }, later: { status: "NOT_IMPLEMENTED" } }),

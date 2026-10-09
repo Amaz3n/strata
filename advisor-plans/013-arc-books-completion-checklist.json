@@ -8712,8 +8712,8 @@
       "id": "B08.2",
       "workstream": "B08",
       "title": "Concurrent statement lifecycle and feed/import resilience",
-      "status": "BLOCKED_EXTERNAL",
-      "status_basis": "Every local B08.2 criterion is verified (2026-10-06); only actual provider (Plaid sandbox) read-only evidence remains, which needs provider access.",
+      "status": "LOCALLY_VERIFIED",
+      "status_basis": "Verified against Plaid's sandbox (2026-10-09, BANK-01 plaid-sandbox-feed, three consecutive passes plus the full scenario): a sandbox bank login (First Platypus Bank, dynamic-transactions user) connected through connectPlaidItem and mapped to cash; Plaid's batched history stored once, also when replayed with the sync position lost; two transactions created at the bank arrive exactly once through processed TRANSACTIONS.SYNC_UPDATES_AVAILABLE events, also when the event repeats; one categorized into the ledger (25.00 bank fees); after Plaid's reset_login the sync is refused with ITEM_LOGIN_REQUIRED, the connection reads reauth_required with its error, and a statement still imports by hand. Runs only with --plaid-env (the kit refuses any Plaid environment but sandbox and uses a throwaway token-encryption key); no key or token in the evidence. Webhook delivery itself cannot reach a local stack: the event is recorded as the verified webhook route records it.",
       "global_definition_of_done_required": true,
       "definition_of_done": [
         "racing closes/matches produce one valid state or explicit retry",
@@ -8796,12 +8796,36 @@
           ],
           "external_dependency": "Plaid sandbox access",
           "reviewer": null
+        },
+        {
+          "verified_at": "2026-10-09T00:49:00.816693+00:00",
+          "implemented_paths": [
+            "scripts/books-acceptance/scenarios/bank-01.cjs",
+            "scripts/books-acceptance/expected/BANK-01.json",
+            "scripts/books-acceptance/scenario-kit.cjs",
+            "scripts/books-acceptance/scenario-runner.cjs",
+            "scripts/books-acceptance/ci.cjs",
+            ".github/workflows/books-acceptance.yml",
+            "tests/books-acceptance-scenarios.test.js",
+            "docs/books-acceptance-runner.md",
+            "docs/books-operations.md"
+          ],
+          "test_scenario_ids": [
+            "BANK-01"
+          ],
+          "commands": [
+            "scenario-runner --scenario BANK-01 --plaid-env <sandbox key file>",
+            "node --test tests/books-acceptance-scenarios.test.js"
+          ],
+          "observed_results": [
+            "BANK-01 10/10 including plaid-sandbox-feed; the Plaid subcase passed three runs in a row.",
+            "Without --plaid-env the subcase reports BLOCKED and BANK-01 reads INCOMPLETE."
+          ],
+          "evidence_dir": "docs/books-evidence/2026-10-09-plaid-sandbox"
         }
       ],
-      "remaining_criteria": [
-        "actual provider read-only/sandbox evidence retained"
-      ],
-      "external_dependency": "Plaid sandbox (or read-only production item) access to retain actual provider sync evidence",
+      "remaining_criteria": [],
+      "external_dependency": null,
       "reviewer": null,
       "verified_at": null,
       "scenario_coverage": {

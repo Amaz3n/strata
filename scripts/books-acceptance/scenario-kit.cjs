@@ -6,7 +6,7 @@
 const fs = require("node:fs"),
   path = require("node:path"),
   Module = require("node:module"),
-  { createHmac, randomUUID } = require("node:crypto"),
+  { createHmac, randomBytes, randomUUID } = require("node:crypto"),
   { spawnSync } = require("node:child_process")
 
 // Published default of every local Supabase stack; never a deployed secret.
@@ -40,6 +40,19 @@ function createKit(stack) {
     for (const [name, value] of Object.entries(settings)) if (name.startsWith("R2_")) process.env[name] = value
     process.env.FILES_STORAGE = "r2"
     storage = { bucket: settings.R2_BUCKET }
+  }
+  // Plaid likewise: only Plaid's sandbox, only from the file `--plaid-env` names,
+  // with a throwaway token-encryption key so no production key is ever involved.
+  for (const name of ["PLAID_CLIENT_ID", "PLAID_SECRET", "PLAID_ENV", "TOKEN_ENCRYPTION_KEY"]) delete process.env[name]
+  let plaid = null
+  if (stack.plaidEnv) {
+    const settings = Object.fromEntries(fs.readFileSync(stack.plaidEnv, "utf8").split("\n").filter((line) => line.includes("="))
+      .map((line) => [line.slice(0, line.indexOf("=")).trim(), line.slice(line.indexOf("=") + 1).trim().replace(/^"|"$/g, "")]))
+    if (settings.PLAID_ENV !== "sandbox") throw Error("Scenarios only use Plaid's sandbox")
+    for (const name of ["PLAID_CLIENT_ID", "PLAID_SECRET"]) if (!settings[name]) throw Error(`${stack.plaidEnv} is missing ${name}`)
+    Object.assign(process.env, { PLAID_ENV: "sandbox", PLAID_CLIENT_ID: settings.PLAID_CLIENT_ID, PLAID_SECRET: settings.PLAID_SECRET,
+      TOKEN_ENCRYPTION_KEY: randomBytes(32).toString("hex"), NEXT_PUBLIC_APP_URL: "https://acceptance.example.test" })
+    plaid = { env: "sandbox" }
   }
   require("../register-ts-node-test")
   // Route handlers give `after()` a request scope; scenarios await the work instead.
@@ -148,7 +161,7 @@ function createKit(stack) {
     return result
   }
 
-  return { container: stack.container, apiUrl: stack.apiUrl, storage, sql, rows, q, as, service, settle, organization, postedNet, drainOutbox, localJwt }
+  return { container: stack.container, apiUrl: stack.apiUrl, storage, plaid, sql, rows, q, as, service, settle, organization, postedNet, drainOutbox, localJwt }
 }
 
 // Expected-versus-observed recorder. A subcase passes only if every check passes.

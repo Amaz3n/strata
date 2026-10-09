@@ -465,6 +465,77 @@ async function refusalOf(work) {
   try { await work(); return null } catch (error) { return error instanceof Error ? error.message : String(error) }
 }
 
+// B08.2 against Plaid's sandbox (`--plaid-env`): a test bank login connected
+// through Arc's own connect, a history that is stored once even when replayed, new
+// transactions arriving through a "new transactions" event exactly once even
+// when the event repeats, one of them categorized into the ledger, and Plaid's
+// own "login required" failure recorded on the connection while a statement can
+// still be imported by hand. Only the sandbox login and its new transactions are
+// created with Plaid's sandbox endpoints, standing in for the person at Link.
+async function plaidSandboxFeed(kit, expected, check) {
+  const input = expected.inputs
+  const today = new Date().toISOString().slice(0, 10), month = today.slice(0, 7)
+  const org = await greenfieldOrg(kit, { name: "BANK-01 Plaid sandbox", periods: [month] })
+  const { q } = kit
+  const sandbox = async (path, body) => {
+    const response = await fetch(`https://sandbox.plaid.com${path}`, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ client_id: process.env.PLAID_CLIENT_ID, secret: process.env.PLAID_SECRET, ...body }) })
+    const payload = await response.json()
+    if (!response.ok) throw Error(`Plaid sandbox ${path}: ${payload.error_code}`)
+    return payload
+  }
+  const feeds = app("books/bank-feeds")
+  const { public_token } = await sandbox("/sandbox/public_token/create", { institution_id: input.institutionId, initial_products: ["transactions"],
+    options: { override_username: "user_transactions_dynamic", override_password: "pass_good" } })
+  const { connectionId } = await kit.as(org.owner, () => feeds.connectPlaidItem({ publicToken: public_token, institutionId: input.institutionId, institutionName: "First Platypus Bank" }))
+  const checking = kit.rows(`select id from public.bank_accounts where org_id=${q(org.orgId)} and connection_id=${q(connectionId)} and account_type='depository' and account_subtype='checking' limit 1`)[0].id
+  await kit.as(org.owner, () => feeds.mapBankAccountToGl({ bankAccountId: checking, glAccountId: glId(kit, org, "1000") }))
+  const feedRows = () => Number(kit.rows(`select count(*) n from public.bank_transactions where org_id=${q(org.orgId)} and external_transaction_id is not null`)[0].n)
+  // Plaid can take minutes to prepare a new sandbox item's history.
+  const until = async (condition, label) => { for (let i = 0; i < 60; i++) { if (await condition()) return; await new Promise((r) => setTimeout(r, 5000)) } throw Error(`Timed out waiting for ${label}`) }
+  // Plaid prepares the sandbox history in the background, in batches, and this
+  // test user keeps adding transactions, so "exactly once" is proven by replay:
+  // with the sync position lost, the whole history comes again and nothing is
+  // stored twice.
+  const sync = () => kit.service(() => feeds.syncBankFeedConnection(connectionId, undefined, { runAiSuggestions: false }))
+  await until(async () => { await sync(); return feedRows() > 0 }, "the initial history")
+  const storedTwice = () => Number(kit.rows(`select count(*) - count(distinct external_transaction_id) n from public.bank_transactions where org_id=${q(org.orgId)} and external_transaction_id is not null`)[0].n)
+  const beforeReplay = feedRows()
+  kit.sql(`update public.bank_feed_connections set cursor=null where id=${q(connectionId)}`)
+  await sync()
+  const replay = { replayedEverything: feedRows() >= beforeReplay, storedTwice: storedTwice() }
+
+  // New transactions at the bank, announced by the event Plaid's webhook stores.
+  const accessToken = require("../../../lib/integrations/secrets").decryptIntegrationSecret(kit.rows(`select secret_ref from public.bank_feed_connections where id=${q(connectionId)}`)[0].secret_ref)
+  await sandbox("/sandbox/transactions/create", { access_token: accessToken, transactions: input.newTransactions.map((t) => ({
+    date_transacted: today, date_posted: today, amount: t.amountCents / 100, description: t.description, iso_currency_code: "USD" })) })
+  const event = () => kit.sql(`insert into public.bank_feed_events(org_id,connection_id,provider,provider_event_id,event_type,signature_verified,payload_hash,payload,processing_status)
+    values(${q(org.orgId)},${q(connectionId)},'plaid','TRANSACTIONS:SYNC_UPDATES_AVAILABLE:${randomUUID()}','TRANSACTIONS.SYNC_UPDATES_AVAILABLE',true,${q(randomUUID())},'{}'::jsonb,'pending')`)
+  const described = () => kit.rows(`select description, direction, amount_cents from public.bank_transactions where org_id=${q(org.orgId)} and description in (${input.newTransactions.map((t) => q(t.description)).join(",")}) order by description`)
+  await until(async () => { event(); await kit.service(() => feeds.processPendingBankFeedEvents(25)); return described().length === input.newTransactions.length }, "the new transactions")
+  event(); await kit.service(() => feeds.processPendingBankFeedEvents(25))
+  const arrived = described().map((row) => ({ description: row.description, direction: row.direction, cents: Number(row.amount_cents) }))
+
+  // One of them into the ledger.
+  const fee = kit.rows(`select id from public.bank_transactions where org_id=${q(org.orgId)} and description=${q(input.newTransactions[0].description)}`)[0].id
+  await kit.as(org.owner, () => app("books/bank-rules").categorizeBankTransaction({ bankTransactionId: fee, glAccountId: glId(kit, org, "6050"), memo: "Bank fee", learn: false }))
+  await project(kit, org)
+  const bankFeeExpense = Number(kit.rows(`select coalesce(sum(l.debit_cents - l.credit_cents),0)::bigint n from public.journal_lines l join public.journal_entries e on e.id=l.entry_id join public.gl_accounts a on a.id=l.account_id
+    where l.org_id=${q(org.orgId)} and a.code='6050' and e.status in ('posted','reversed')`)[0].n)
+
+  // Plaid's own failure: the bank wants the user to sign in again.
+  await sandbox("/sandbox/item/reset_login", { access_token: accessToken })
+  const failed = await refusalOf(() => kit.service(() => feeds.syncBankFeedConnection(connectionId, undefined, { runAiSuggestions: false })))
+  const connection = kit.rows(`select status, last_error is not null has_error from public.bank_feed_connections where id=${q(connectionId)}`)[0]
+  await kit.as(org.owner, () => feeds.importBankStatement({ bankAccountId: checking, fileName: "statement.csv", contents: `Date,Description,Amount,Id\n${today},Wire received while the feed is down,125.00,manual-1` }))
+  check.equal("the sandbox bank connects, syncs once, takes new transactions exactly once, posts one to the ledger, and its own login failure is recorded while statements still import", expected.expected, {
+    initialHistory: beforeReplay > 0, replay, newTransactions: arrived, bankFeeExpense,
+    failure: { refused: /ITEM_LOGIN_REQUIRED|login/i.test(failed ?? ""), status: connection.status, hasError: connection.has_error },
+    manualImportWhileFailing: Number(kit.rows(`select count(*) n from public.bank_transactions where bank_account_id=${q(checking)} and description='Wire received while the feed is down'`)[0].n),
+  })
+  return { orgId: org.orgId, connectionId }
+}
+
 module.exports = {
   id: "BANK-01",
   subcases: {
@@ -477,5 +548,6 @@ module.exports = {
     "voided-after-posting": voidedAfterPosting,
     "funding-ownership": fundingOwnership,
     "feed-failure-manual-fallback": feedFailureManualFallback,
+    "plaid-sandbox-feed": plaidSandboxFeed,
   },
 }

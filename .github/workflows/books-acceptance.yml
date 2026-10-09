@@ -3,8 +3,9 @@ name: Books acceptance
 # Every golden Books scenario against a fresh isolated Supabase stack built from
 # the repository's migrations (scripts/books-acceptance/ci.cjs). No production
 # credentials: the stack mints its own development keys. Real storage runs only
-# against the acceptance bucket, when its secrets are configured; without them
-# STORE-01 reports blocked and the run fails as incomplete.
+# against the acceptance bucket and Plaid only against its sandbox, each when its
+# secrets are configured; without them STORE-01 and BANK-01's Plaid subcase
+# report blocked and the run fails as incomplete.
 on:
   schedule:
     - cron: "30 6 * * *"
@@ -49,16 +50,26 @@ jobs:
               "$R2_ACCOUNT_ID" "$R2_ACCESS_KEY_ID" "$R2_SECRET_ACCESS_KEY" > "$RUNNER_TEMP/r2.env"
             echo "STORAGE_ARGS=--storage-env $RUNNER_TEMP/r2.env" >> "$GITHUB_ENV"
           fi
+      - name: Plaid sandbox key
+        env:
+          PLAID_CLIENT_ID: ${{ secrets.BOOKS_ACCEPTANCE_PLAID_CLIENT_ID }}
+          PLAID_SECRET: ${{ secrets.BOOKS_ACCEPTANCE_PLAID_SANDBOX_SECRET }}
+        run: |
+          if [ -n "$PLAID_SECRET" ]; then
+            umask 077
+            printf 'PLAID_ENV=sandbox\nPLAID_CLIENT_ID=%s\nPLAID_SECRET=%s\n' "$PLAID_CLIENT_ID" "$PLAID_SECRET" > "$RUNNER_TEMP/plaid.env"
+            echo "PLAID_ARGS=--plaid-env $RUNNER_TEMP/plaid.env" >> "$GITHUB_ENV"
+          fi
       - name: Golden scenarios
         run: >
           node scripts/books-acceptance/ci.cjs
           --workspace "$RUNNER_TEMP/books-stack"
           --db-port 55480
           --evidence-dir "$RUNNER_TEMP/books-evidence"
-          $STORAGE_ARGS
+          $STORAGE_ARGS $PLAID_ARGS
       - name: Remove the storage key
         if: always()
-        run: rm -f "$RUNNER_TEMP/r2.env"
+        run: rm -f "$RUNNER_TEMP/r2.env" "$RUNNER_TEMP/plaid.env"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
