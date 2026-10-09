@@ -83,7 +83,8 @@ import {
 import { uploadExecutedWaiverAction } from "@/app/(app)/invoices/physical-waiver-actions";
 import type { loadInvoiceWaiverPreparation } from "@/lib/services/invoice-waiver-workflow";
 import { formatMoneyFromCents } from "./invoice-presentation";
-import { WaiverPdfPreview } from "./waiver-pdf-preview";
+// pdf.js needs the browser (DOMMatrix); it is never rendered on the server.
+const WaiverPdfPreview = dynamic(() => import("./waiver-pdf-preview").then((m) => m.WaiverPdfPreview), { ssr: false });
 const LivePreview = dynamic(
   () => import("@/components/settings/waiver-template-live-preview"),
   {

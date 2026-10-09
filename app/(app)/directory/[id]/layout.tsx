@@ -96,6 +96,7 @@ async function loadVendorHeaderSignals(
  * immediately and survives navigation between tabs.
  */
 async function PartyAccountHeaderData({ params }: Pick<PartyAccountLayoutProps, "params">) {
+  await connection();
   const { id } = await params;
   if (!z.string().uuid().safeParse(id).success) notFound();
 

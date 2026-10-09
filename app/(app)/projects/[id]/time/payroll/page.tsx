@@ -78,7 +78,7 @@ async function ProjectPayrollContent({
         />
         {draftPage.success ? (
           <PayrollDraftWorkspace
-            key={`${id}:${draft ?? ""}`}
+            key={`draft:${id}:${draft ?? ""}`}
             initial={draftPage.data}
             initialDetail={selectedDraft?.success ? selectedDraft.data : null}
             initialError={
@@ -93,7 +93,7 @@ async function ProjectPayrollContent({
           </p>
         )}
         <PayrollCorrectionWorkspace
-          key={`${workspace.projectId}:${source ?? ""}`}
+          key={`correction:${workspace.projectId}:${source ?? ""}`}
           initial={workspace}
           initialDetail={detail}
           initialError={error}

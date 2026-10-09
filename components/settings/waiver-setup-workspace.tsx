@@ -11,7 +11,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { resolveWaiverValues } from "@/lib/templates/waiver-engine";
-import { PdfDocumentPreview } from "@/components/invoices/waiver-pdf-preview";
 import {
   templateFields,
   type WaiverTemplateDraft,
@@ -37,6 +36,11 @@ const Mapper = dynamic(() => import("./waiver-original-mapper"), {
 const Preview = dynamic(() => import("./waiver-template-live-preview"), {
   ssr: false,
 });
+// pdf.js needs the browser (DOMMatrix); it is never rendered on the server.
+const PdfDocumentPreview = dynamic(
+  () => import("@/components/invoices/waiver-pdf-preview").then((m) => m.PdfDocumentPreview),
+  { ssr: false },
+);
 const selectClass = "h-10 w-full border bg-background px-3 text-sm";
 
 export function WaiverSetupWorkspace({

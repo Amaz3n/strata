@@ -347,11 +347,16 @@ async function ensureWarrantyDefaults(supabase: SupabaseClient, orgId: string) {
     const { data: program, error: programError } = await supabase.from("warranty_programs").insert({
       org_id: orgId, name: defaults.name, description: defaults.description, is_default: true,
     }).select("id").single()
-    if (programError || !program) throw new Error(`Failed to seed warranty program: ${programError?.message}`)
-    const { error: termsError } = await supabase.from("warranty_coverage_terms").insert(DEFAULT_TERMS_BY_TIER[tier].map((term, index) => ({
-      org_id: orgId, program_id: program.id, ...term, sort_order: index,
-    })))
-    if (termsError) throw new Error(`Failed to seed warranty terms: ${termsError.message}`)
+    // Two first visits can seed at once; the one-default index lets only one win,
+    // and the winner seeds the terms.
+    const seededConcurrently = programError?.code === "23505"
+    if (!seededConcurrently) {
+      if (programError || !program) throw new Error(`Failed to seed warranty program: ${programError?.message}`)
+      const { error: termsError } = await supabase.from("warranty_coverage_terms").insert(DEFAULT_TERMS_BY_TIER[tier].map((term, index) => ({
+        org_id: orgId, program_id: program.id, ...term, sort_order: index,
+      })))
+      if (termsError) throw new Error(`Failed to seed warranty terms: ${termsError.message}`)
+    }
   }
   const { error: slaError } = await supabase.from("warranty_sla_targets").upsert(
     DEFAULT_SLAS.map((target) => ({ org_id: orgId, ...target })), { onConflict: "org_id,severity", ignoreDuplicates: true },

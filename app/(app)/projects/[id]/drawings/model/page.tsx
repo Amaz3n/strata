@@ -1,4 +1,5 @@
 import { notFound, redirect } from "next/navigation"
+import { connection } from "next/server"
 
 import { isProjectModelEnabled } from "@/lib/project-model-access"
 import { getProjectAction } from "../../actions"
@@ -9,6 +10,8 @@ import { getProjectAction } from "../../actions"
  * model is withheld from an organization, which lands on the sheets.
  */
 export default async function ProjectFloorplanModelPage({ params }: { params: Promise<{ id: string }> }) {
+  // A redirect read from the project: request time, never prerendered.
+  await connection()
   const { id } = await params
   const project = await getProjectAction(id)
   if (!project) notFound()
