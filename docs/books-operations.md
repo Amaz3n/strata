@@ -59,6 +59,40 @@ ahead of it: the running app is written for the schema it shipped with.
 5. After the deploy: confirm the scheduled jobs ran (job runs page) and open
    `/books/close` for each Books organization.
 
+## Rebaselining
+
+Once production has applied every migration in `supabase/migrations/`, they can
+be replaced by one baseline, so a fresh database is built from one file and the
+production ledger holds one row. Do it right after a deploy, with no other
+migration work in flight (tests that load migration files by name read them
+from `supabase/migrations-history/` through `tests/support/migration-sql.js`).
+
+1. **Dump production's schema** (read-only, no data): `supabase db dump --linked
+   -f prod-schema.sql`. Production is the truth: the comparison on 2026-10-09
+   found objects no migration created (the outreach role and policies, a QBO
+   legacy archive table, four storage buckets and their policies), an applied
+   migration edited afterwards (the photo list), and functions applied without
+   their comments.
+2. **Dump the seeded rows from a replay**, never from production (customer
+   data): bootstrap the acceptance stack from `supabase/migrations/`, then
+   `supabase db dump --db-url <replay> --data-only -f seed.sql`.
+3. **Read what dumps leave out**: run `scripts/production-baseline/extras.sql`
+   against production and save its JSON.
+4. **Build**: `node scripts/production-baseline/build.cjs --schema prod-schema.sql
+   --data seed.sql --extras extras.json --out
+   supabase/migrations/<version>_production_baseline.sql`, with a version before
+   every remaining file; move the replaced files to `supabase/migrations-history/`.
+5. **Prove it**: replay the baseline alone and compare
+   `scripts/production-baseline/fingerprint.sql` with production's output. Every
+   row must match except the storage triggers Supabase manages. Also check
+   function grants: a CLI dump restored without the builder's cleared default
+   privileges makes service-only functions executable by `anon`. Then run
+   SCHEMA-01, `ci.cjs` and the node suites.
+6. **Swap the ledger** (owner-approved, one transaction): delete production's
+   `supabase_migrations.schema_migrations` rows for the replaced files and insert
+   the baseline's version, after saving a read-only export of the old ledger as
+   evidence. `pnpm db:ledger:check` must then pass.
+
 ## Bringing a builder on
 
 - **New company, no history** (`/books/cutover`): create the first period, make

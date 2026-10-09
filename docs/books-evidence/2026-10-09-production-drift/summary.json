@@ -1,0 +1,51 @@
+{
+  "recorded_at": "2026-10-09T23:30:37.395Z",
+  "method": "scripts/production-baseline/fingerprint.sql run read-only against production (Supabase MCP) and against a fresh replay of the 411 migrations production has applied; per-table and per-function hashes compared, then each differing object read in full",
+  "result": "production matches the replay except the items below",
+  "drift": [
+    {
+      "object": "public.project_photo_entries",
+      "kind": "view",
+      "finding": "production lacks the paperwork filter; 20260825120000_photo_records was edited after it was applied",
+      "action": "20261009030000_photo_list_excludes_paperwork (pending)"
+    },
+    {
+      "object": "public.accounting_d2_legacy_archive and its id sequence",
+      "kind": "table",
+      "finding": "exists only in production (1,633 rows); no migration creates it, though applied functions read it",
+      "action": "carried by a baseline built from a production dump"
+    },
+    {
+      "object": "outreach schema",
+      "kind": "role, policies, grants",
+      "finding": "role arc_outreach_app, policy outreach_app_all on three tables and their grants exist only in production",
+      "action": "production dump plus extras.sql roles"
+    },
+    {
+      "object": "storage",
+      "kind": "buckets, policies",
+      "finding": "buckets project-files, org-logos, drawings-images, drawings-tiles and four project-files policies on storage.objects were made outside migrations",
+      "action": "extras.sql"
+    },
+    {
+      "object": "storage.buckets protect_bucket_control_* triggers",
+      "kind": "trigger",
+      "finding": "managed by Supabase",
+      "action": "none"
+    },
+    {
+      "object": "public.contracts, public.platform_bugs",
+      "kind": "column order",
+      "finding": "columns were added in a different order",
+      "action": "carried by a production dump"
+    },
+    {
+      "object": "11 functions",
+      "kind": "function",
+      "finding": "identical apart from comments and whitespace (applied through the MCP without them)",
+      "action": "none"
+    }
+  ],
+  "dump_finding": "a Supabase CLI dump restored into a Supabase database takes the platform default privileges, granting anon and authenticated access to service-only functions and tables; build.cjs clears them before the dump and the dump restores them",
+  "baseline_proof": "a baseline built from the replay dump plus the drift above, replayed alone, matched production's catalog per table, per function and per grant, apart from the Supabase storage triggers; with it in place of the 411 files the 95-file set replayed to the unconsolidated schema plus exactly the production-only objects, and SCHEMA-01 passed (623 assertions)"
+}
