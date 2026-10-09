@@ -10,6 +10,8 @@ function source(relativePath) {
 }
 
 const MIGRATION = "supabase/migrations/20260825120000_photo_records.sql"
+// The view's current definition: production got the paperwork filter here.
+const VIEW_MIGRATION = "supabase/migrations/20261009030000_photo_list_excludes_paperwork.sql"
 
 /** The category list as `lib/media/photo-media.ts` declares it. */
 function typescriptCategories() {
@@ -20,7 +22,7 @@ function typescriptCategories() {
 
 /** The same list as the `project_photo_entries` view applies it. */
 function sqlCategories() {
-  const clause = /f\.category\s+not\s+in\s*\(([^)]*)\)/.exec(source(MIGRATION))
+  const clause = /f\.category\s+not\s+in\s*\(([^)]*)\)/.exec(source(VIEW_MIGRATION))
   assert.ok(clause, "the view must exclude business-document categories")
   return [...clause[1].matchAll(/'([a-z_]+)'/g)].map((match) => match[1])
 }
