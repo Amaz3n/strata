@@ -85,7 +85,7 @@ export async function buildSettlement(closingId: string, orgId?: string) {
     projectId: closing.project_id, supabase: context.supabase, resourceType: "closing", resourceId: closing.id, logDecision: true })
   if (closing.status === "closed") return readClosedSettlementEvidence(closing.settlement)
   const [contractResult, changes, depositInvoices, closingInvoice] = await Promise.all([
-    context.supabase.from("contracts").select("id,number,total_cents,snapshot,signed_at").eq("org_id", context.orgId).eq("project_id", closing.project_id).eq("contract_type", "purchase_agreement").eq("status", "active").order("id").limit(2),
+    context.supabase.from("contracts").select("id,number,total_cents,snapshot,signed_at,buyer_contact_id").eq("org_id", context.orgId).eq("project_id", closing.project_id).eq("contract_type", "purchase_agreement").eq("status", "active").order("id").limit(2),
     readAllRows((from, to) => context.supabase.from("change_orders").select("id,title,total_cents,metadata").eq("org_id", context.orgId).eq("project_id", closing.project_id).eq("status", "approved").order("id").range(from, to), { cap: 10001, label: "Unable to read approved closing changes" }),
     readAllRows((from, to) => context.supabase.from("invoices").select("id,title,status,metadata").eq("org_id", context.orgId).eq("project_id", closing.project_id).contains("metadata", { invoice_kind: "earnest_deposit" }).order("id").range(from, to), { cap: 10001, label: "Unable to read earnest deposit invoices" }),
     context.supabase.from("invoices").select("id").eq("org_id", context.orgId).eq("project_id", closing.project_id).contains("metadata", { invoice_kind: "closing", source_closing_id: closing.id }).maybeSingle(),
@@ -96,7 +96,12 @@ export async function buildSettlement(closingId: string, orgId?: string) {
   const contract = contractResult.data[0]
   if (changes.truncated || depositInvoices.truncated) throw new Error("Settlement source records exceed the supported limit; reconcile them before closing")
   const changeOrders = changes.rows
-  const invoices = depositInvoices.rows
+  // A project can carry earnest deposits from more than one customer (a lost
+  // buyer, a co-signer); only the agreement's own buyer's money settles here.
+  const invoices = depositInvoices.rows.filter(invoice => {
+    const customerId = (invoice.metadata as Record<string, unknown> | null)?.customer_id
+    return !contract.buyer_contact_id || !customerId || customerId === contract.buyer_contact_id
+  })
   const deposits: SettlementDeposit[] = []
   const labels = new Map(invoices.map(invoice => [invoice.id, invoice.title ?? "Earnest deposit"]))
   for (let offset = 0; offset < invoices.length; offset += 100) {

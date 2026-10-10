@@ -233,6 +233,10 @@ function withIssue(row: ImportRowRecord, issue: ImportIssue) {
   row.issues.push(issue)
 }
 
+function settleRowStatus(row: ImportRowRecord) {
+  row.status = row.issues.some((issue) => issue.level === "error") ? "error" : row.issues.some((issue) => issue.level === "warning") ? "warning" : "valid"
+}
+
 async function validateRows(importer: ImporterKey, rows: ImportRowRecord[], context: ResolvedImportContext) {
   const lookups = await loadValidationLookups(context)
   const duplicates = new Map<string, number>()
@@ -305,7 +309,7 @@ async function validateRows(importer: ImporterKey, rows: ImportRowRecord[], cont
 
   for (const row of rows) {
     if (row.status === "skipped") continue
-    row.status = row.issues.some((issue) => issue.level === "error") ? "error" : row.issues.some((issue) => issue.level === "warning") ? "warning" : "valid"
+    settleRowStatus(row)
   }
   return rows
 }
@@ -387,13 +391,13 @@ async function validateOpenWipCompanions(rows: ImportRowRecord[], context: Resol
   if (batchContext.file_kind !== "houses") return rows
   const asOfDate = typeof batchContext.as_of_date === "string" ? batchContext.as_of_date : null
   if (!asOfDate) {
-    rows.forEach((row) => withIssue(row, { level: "error", code: "missing_as_of_date", message: "Open-WIP houses require an as-of date" }))
+    rows.forEach((row) => { withIssue(row, { level: "error", code: "missing_as_of_date", message: "Open-WIP houses require an as-of date" }); settleRowStatus(row) })
     return rows
   }
   const batches = await loadOpenWipCompanionBatches(context, asOfDate, onboardingRunId, batchContext)
   const budgetBatchIds = (batches ?? []).filter((batch) => batch.context?.file_kind === "budgets" && batch.context?.as_of_date === asOfDate).map((batch) => batch.id)
   if (!budgetBatchIds.length) {
-    rows.forEach((row) => withIssue(row, { level: "error", code: "missing_budget_file", message: `Stage the ${asOfDate} budget snapshot before the house file` }))
+    rows.forEach((row) => { withIssue(row, { level: "error", code: "missing_budget_file", message: `Stage the ${asOfDate} budget snapshot before the house file` }); settleRowStatus(row) })
     return rows
   }
   const explicit = batchContext.companion_batch_ids !== undefined
@@ -407,6 +411,7 @@ async function validateOpenWipCompanions(rows: ImportRowRecord[], context: Resol
     const houseKey = openWipHouseKey(row.parsed)
     const sum = (budgetRows.get(houseKey) ?? []).reduce((total, item) => total + Number(item.parsed?.budget_cents ?? 0), 0)
     if (sum !== Number(row.parsed.budget_total_cents)) withIssue(row, { level: "error", code: "budget_total_mismatch", message: `Budget snapshot totals ${sum} cents; the house row declares ${Number(row.parsed.budget_total_cents)} cents`, column: "budget_total_cents" })
+    settleRowStatus(row)
   }
   return rows
 }

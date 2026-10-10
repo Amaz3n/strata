@@ -537,7 +537,7 @@ async function enqueueBidInviteEmail({
   bidLink: string
   resentBy?: string
 }) {
-  return enqueueBidEmail(orgId, {
+  const queued = await enqueueBidEmail(orgId, {
     kind: "invite",
     to,
     companyName: invite.company?.name,
@@ -554,6 +554,8 @@ async function enqueueBidInviteEmail({
     inviteId: invite.id,
     ...(resentBy ? { resentBy } : {}),
   })
+  if (!queued.enqueued) throw new Error("The invite email could not be queued")
+  return queued
 }
 
 function getBidEmailRecipient(invite: BidInvite) {

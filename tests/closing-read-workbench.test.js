@@ -208,3 +208,18 @@ test('actual adjustment form retains failed/uncertain drafts and clears only a c
     assert.equal(find(element, n => n.props.id === 'adjustment-amount')[0].props.value, mode === 'success' ? '' : '-1200.00')
   }
 })
+test('settlement counts only the agreement buyer\'s earnest deposits', async () => {
+  const h = harness()
+  const BUYER = '00000000-0000-4000-8000-0000000000b1', OTHER = '00000000-0000-4000-8000-0000000000b2'
+  h.db.store.contracts[0].buyer_contact_id = BUYER
+  h.db.store.invoices = [
+    { id: 'inv-buyer', org_id: ORG, project_id: PROJECT, title: 'Buyer deposit', metadata: { invoice_kind: 'earnest_deposit', customer_id: BUYER } },
+    { id: 'inv-other', org_id: ORG, project_id: PROJECT, title: 'Other deposit', metadata: { invoice_kind: 'earnest_deposit', customer_id: OTHER } },
+  ]
+  h.db.store.payments = [
+    { id: 'pay-buyer', org_id: ORG, invoice_id: 'inv-buyer', amount_cents: 5000, status: 'succeeded', created_at: '2026-10-01T00:00:00Z' },
+    { id: 'pay-other', org_id: ORG, invoice_id: 'inv-other', amount_cents: 7000, status: 'succeeded', created_at: '2026-10-01T00:00:00Z' },
+  ]
+  const settlement = await h.buildSettlement(PACKAGE)
+  assert.deepEqual(settlement.depositsApplied.map(deposit => deposit.paymentId), ['pay-buyer'])
+})

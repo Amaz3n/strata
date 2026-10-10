@@ -107,3 +107,13 @@ test("a deposit refunded to the buyer cannot also be applied, and an applied dep
   assert.equal(await home.applied(), 750_000)
   await assert.rejects(home.refund(1), /still available/)
 })
+
+test("replaying a deposit application with a different amount is refused", async (t) => {
+  const db = await createDatabase(t)
+  const home = await depositAndClosingInvoice(db)
+
+  await home.apply(400_000)
+
+  await assert.rejects(home.apply(300_000), /already applied to the invoice for a different amount/)
+  assert.equal(await home.applied(), 400_000)
+})

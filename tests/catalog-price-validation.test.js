@@ -29,3 +29,10 @@ test("a catalog price is whole non-negative cents, single or bulk", () => {
   }
   assert.equal(catalogPriceSchema.safeParse({ ...item, priceCents: 0 }).success, true)
 })
+test("a single catalog price carries the same 32-bit ceiling as the bulk schema", () => {
+  const item = { ...cell, optionId: id(2) }
+  for (const field of ["priceCents", "costCents"]) {
+    assert.equal(catalogPriceSchema.safeParse({ ...item, [field]: 2147483647 }).success, true, `${field} at the limit`)
+    assert.equal(catalogPriceSchema.safeParse({ ...item, [field]: 2147483648 }).success, false, `${field} over the limit`)
+  }
+})

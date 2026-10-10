@@ -7,6 +7,7 @@ import { readAllRows } from "@/lib/land/paging"
 import { buildRunway, runwayVerdict, type RunwayPoint, type RunwayVerdict } from "@/lib/land/runway"
 import { compareSupplyUrgency, dryDateFrom, lotShortfallByYear, type YearShortfall } from "@/lib/land/supply"
 import { listCommunities, type CommunityListItemDTO } from "@/lib/services/communities"
+import { specInventoryAge } from "@/lib/sales/spec-inventory"
 import { requireOrgContext } from "@/lib/services/context"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
 import { getProductionPortfolioReport } from "@/lib/services/production-reporting"
@@ -289,11 +290,11 @@ export async function getCommunityPortfolio(
     // from the status aggregate on each community, so this read exists purely to
     // find the houses behind the aging and cutoff alerts — and a flat 5,000-row
     // cap across every community under-reported both on the biggest ones.
-    readAllRows<{ id: string; community_id: string; status: LotStatus; project_id: string | null; project: { start_date?: string | null } | Array<{ start_date?: string | null }> | null }>(
+    readAllRows<{ id: string; community_id: string; status: LotStatus; project_id: string | null; project: { status?: string | null } | Array<{ status?: string | null }> | null }>(
       (from, to) =>
         context.supabase
           .from("lots")
-          .select("id, community_id, status, project_id, project:projects(start_date)")
+          .select("id, community_id, status, project_id, project:projects(status)")
           .eq("org_id", context.orgId)
           .in("community_id", ids)
           .not("project_id", "is", null)
@@ -324,7 +325,9 @@ export async function getCommunityPortfolio(
   // Chunked rather than truncated: a silently dropped tail would under-report
   // cutoffs on exactly the largest communities.
   const projectIds = [...projectCommunity.keys()]
-  const cutoffBatches = await Promise.all(
+  const startedProjectList = [...startedProjectIds]
+  const [cutoffBatches, completionBatches] = await Promise.all([
+    Promise.all(
     Array.from({ length: Math.ceil(projectIds.length / PROJECT_FILTER_BATCH) }, (_, index) =>
       readAllRows<{ project_id: string }>(
         (from, to) =>
@@ -340,9 +343,30 @@ export async function getCommunityPortfolio(
             .range(from, to),
         { cap: FACT_SCAN_CAP, label: "Failed to load selection cutoffs" },
       ),
+    )
     ),
-  )
+    // The recorded completion date is the only clock a spec ages on; see specInventoryAge.
+    Promise.all(
+      Array.from({ length: Math.ceil(startedProjectList.length / PROJECT_FILTER_BATCH) }, (_, index) =>
+        readAllRows<{ project_id: string; books_inventory_completed_on: string | null }>(
+          (from, to) =>
+            context.supabase
+              .from("project_financial_settings")
+              .select("project_id, books_inventory_completed_on")
+              .eq("org_id", context.orgId)
+              .in("project_id", startedProjectList.slice(index * PROJECT_FILTER_BATCH, (index + 1) * PROJECT_FILTER_BATCH))
+              .not("books_inventory_completed_on", "is", null)
+              .order("project_id")
+              .range(from, to),
+          { cap: FACT_SCAN_CAP, label: "Failed to load spec completion dates" },
+        ),
+      ),
+    ),
+  ])
   const cutoffRows = cutoffBatches.flatMap((batch) => batch.rows)
+  const completedOnByProject = new Map(
+    completionBatches.flatMap((batch) => batch.rows).map((row) => [row.project_id, row.books_inventory_completed_on] as const),
+  )
 
   const months = Array.from({ length: RUNWAY_HORIZON_MONTHS }, (_, index) => {
     const month = new Date(today.getFullYear(), today.getMonth() + index, 1)
@@ -383,10 +407,9 @@ export async function getCommunityPortfolio(
   for (const row of lots.rows) {
     if (!row.project_id || !startedProjectIds.has(row.project_id)) continue
     const relation = row.project
-    const startDate = (Array.isArray(relation) ? relation[0]?.start_date : relation?.start_date) ?? null
-    if (!startDate) continue
-    const agingDays = Math.floor((today.getTime() - Date.parse(startDate)) / MS_PER_DAY)
-    if (agingDays < SPEC_AGING_ALERT_DAYS) continue
+    const project = Array.isArray(relation) ? relation[0] : relation
+    const { completedAt, agingDays } = specInventoryAge(project, completedOnByProject.get(row.project_id), today.getTime())
+    if (!completedAt || agingDays < SPEC_AGING_ALERT_DAYS) continue
     agingByCommunity.set(row.community_id, (agingByCommunity.get(row.community_id) ?? 0) + 1)
   }
 
@@ -519,6 +542,7 @@ export async function getCommunityPortfolio(
     truncated:
       lots.truncated ||
       cutoffBatches.some((batch) => batch.truncated) ||
+      completionBatches.some((batch) => batch.truncated) ||
       [liveReservations, convertedReservations, cancelledReservations, releasedStarts, closings, takedowns, blockedStarts].some(
         (fact) => fact.truncated,
       ),

@@ -78,8 +78,8 @@ const catalogPriceFields = z
     packageId: optionalUuid,
     housePlanVersionId: z.string().uuid(),
     communityId: optionalUuid,
-    priceCents: z.number().int().min(0),
-    costCents: z.number().int().min(0).nullable().optional(),
+    priceCents: z.number().int().min(0).max(2147483647),
+    costCents: z.number().int().min(0).max(2147483647).nullable().optional(),
     isAvailable: z.boolean().default(true),
   })
 export const catalogPriceSchema = catalogPriceFields

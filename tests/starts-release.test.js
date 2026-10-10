@@ -963,3 +963,26 @@ test("lost job completion reuses release event and per-user notification identit
   assert.equal(harness.calls.notifications.length, 1)
   assert.equal(harness.store.start_packages[0].released_by, ACTOR)
 })
+
+test("a configuration rule that rejects the home stops the release before trades are told or the lot starts", async () => {
+  const harness = buildHarness({ purchasing: false, instantiate: succeedingInstantiation() })
+  const rulesPath = require.resolve("@/lib/services/configuration-rules")
+  const { stubModule } = require("./support/starts-harness")
+  stubModule("@/lib/services/configuration-rules", {
+    assertProjectConfiguration: async () => {
+      throw new Error("Elevation B is not offered in this community")
+    },
+  })
+  try {
+    await loadPipeline().runStartsPipeline({ deadlineMs: Date.now() + 5_000 })
+  } finally {
+    delete require.cache[rulesPath]
+  }
+
+  const steps = stepsByKey(harness.store)
+  assert.equal(harness.store.start_packages[0].status, "releasing")
+  assert.equal(harness.store.lots[0].status, "assigned")
+  assert.equal(steps.get("notify_trades").status, "failed")
+  assert.equal(steps.get("finalize").status, "pending")
+  assert.equal(harness.store.outbox[0].last_error, "Elevation B is not offered in this community")
+})

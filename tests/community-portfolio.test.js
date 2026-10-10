@@ -64,3 +64,38 @@ test("sales pace counts every conversion even when each response is capped", asy
   assert.equal(portfolio.lanes[0].salesLast90, 2500)
   assert.equal(portfolio.truncated, false)
 })
+
+test("a spec ages from its recorded completion, not from the day it started", async () => {
+  const day = 86_400_000
+  const ago = (days) => new Date(Date.now() - days * day).toISOString().slice(0, 10)
+  const lot = (n, projectStatus) => ({
+    id: id(300 + n),
+    org_id: ORG,
+    community_id: COMMUNITY,
+    status: "started",
+    project_id: id(400 + n),
+    project: { status: projectStatus },
+  })
+  const service = createServiceHarness({
+    permissions: ["community.read"],
+    tables: {
+      lot_reservations: [],
+      start_packages: [],
+      closings: [],
+      lot_takedowns: [],
+      project_selections: [],
+      lots: [lot(1, "completed"), lot(2, "active"), lot(3, "completed"), lot(4, "completed")],
+      project_financial_settings: [
+        { org_id: ORG, project_id: id(401), books_inventory_completed_on: ago(120) },
+        { org_id: ORG, project_id: id(403), books_inventory_completed_on: ago(10) },
+      ],
+    },
+  })
+
+  const portfolio = await service.run(() => getCommunityPortfolio())
+
+  const aging = portfolio.lanes[0].urgencies.filter((urgency) => urgency.kind === "specs_aging")
+  // Only the one finished 120 days ago: an in-progress house, a recent finish and a
+  // completed home with no recorded date carry no aging clock.
+  assert.deepEqual(aging.map((urgency) => urgency.count), [1])
+})
