@@ -6076,19 +6076,20 @@
         {
           "kind": "criterion_tests",
           "tier": "automated",
-          "result": "incomplete",
+          "result": "passed",
           "freshness": "current",
           "runIds": [
             "VERIFY-20261010"
           ],
           "date": "2026-10-10",
           "criteriaCovered": [
+            0,
             1
           ],
           "criteriaTests": [
             {
               "index": 0,
-              "proven": false,
+              "proven": true,
               "tests": [
                 {
                   "file": "tests/configuration-rules.test.js",
@@ -6109,9 +6110,13 @@
                 {
                   "file": "tests/po-generation-preview.test.js",
                   "name": "an invalid home configuration blocks PO generation before any writes"
+                },
+                {
+                  "file": "tests/starts-release.test.js",
+                  "name": "a configuration rule that rejects the home stops the release before trades are told or the lot starts"
                 }
               ],
-              "note": "Proven for sales quote, selection change, confirmation, package, change order and PO generation. NOT proven for starts (releaseStartPackage at lib/services/starts.ts:778 and starts-pipeline notify_trades/finalize): tests/starts-* are reserved. Verified in a scratch run (deleted) that with assertProjectConfiguration stubbed to reject, runStartsPipeline leaves package 'releasing', lot 'assigned', notify_trades 'failed', finalize 'pending', outbox last_error = the rule message. Needs a case in tests/starts-release.test.js: buildHarness({purchasing:false,instantiate:succeedingInstantiation()}); stubModule('@/lib/services/configuration-rules',{assertProjectConfiguration:async()=>{throw new Error('Chef kitchen requires Electrical upgrade.')}}); reload pipeline+starts; run pipeline; assert package.status releasing, lots[0].status != started, steps.finalize pending, outbox last_error matches. Also none exercises the interactive releaseStartPackage path."
+              "note": "Proven for sales quote, selection change, confirmation, package, change order and PO generation. NOT proven for starts (releaseStartPackage at lib/services/starts.ts:778 and starts-pipeline notify_trades/finalize): tests/starts-* are reserved. Verified in a scratch run (deleted) that with assertProjectConfiguration stubbed to reject, runStartsPipeline leaves package 'releasing', lot 'assigned', notify_trades 'failed', finalize 'pending', outbox last_error = the rule message. Needs a case in tests/starts-release.test.js: buildHarness({purchasing:false,instantiate:succeedingInstantiation()}); stubModule('@/lib/services/configuration-rules',{assertProjectConfiguration:async()=>{throw new Error('Chef kitchen requires Electrical upgrade.')}}); reload pipeline+starts; run pipeline; assert package.status releasing, lots[0].status != started, steps.finalize pending, outbox last_error matches. Also none exercises the interactive releaseStartPackage path. Completed in 73844300."
             },
             {
               "index": 1,
@@ -6138,7 +6143,8 @@
             "tests/selections.test.js",
             "tests/agreement-configuration-eligibility.test.js",
             "tests/po-generation-preview.test.js",
-            "tests/catalog-eligibility.test.js"
+            "tests/catalog-eligibility.test.js",
+            "tests/starts-release.test.js"
           ],
           "passed": 81,
           "failed": 0,
@@ -8668,14 +8674,15 @@
         {
           "kind": "criterion_tests",
           "tier": "automated",
-          "result": "incomplete",
+          "result": "passed",
           "freshness": "current",
           "runIds": [
             "VERIFY-20261010"
           ],
           "date": "2026-10-10",
           "criteriaCovered": [
-            0
+            0,
+            1
           ],
           "criteriaTests": [
             {
@@ -8699,7 +8706,7 @@
             },
             {
               "index": 1,
-              "proven": false,
+              "proven": true,
               "tests": [
                 {
                   "file": "tests/spec-inventory-aging.test.js",
@@ -8712,14 +8719,19 @@
                 {
                   "file": "tests/community-sales.test.js",
                   "name": "a home ages from the day it was recorded complete and never from its scheduled end [NEW]"
+                },
+                {
+                  "file": "tests/community-portfolio.test.js",
+                  "name": "a spec ages from its recorded completion, not from the day it started"
                 }
               ],
-              "note": "REAL BUG: lib/services/community-portfolio.ts lines ~382-391 still computes the 'specs_aging' urgency ('N specs 90d+', link /sales) from projects.start_date for lots in status 'started' with no live reservation. Verified with a scratch run (deleted): one under-construction spec started 120 days ago yields urgencies=[{kind:'specs_aging',label:'1 spec 90d+'}]. That is false aging for an unfinished home and contradicts lib/sales/spec-inventory.ts. Should use specInventoryAge / books_inventory_completed_on. No red test left in the tree."
+              "note": "REAL BUG: lib/services/community-portfolio.ts lines ~382-391 still computes the 'specs_aging' urgency ('N specs 90d+', link /sales) from projects.start_date for lots in status 'started' with no live reservation. Verified with a scratch run (deleted): one under-construction spec started 120 days ago yields urgencies=[{kind:'specs_aging',label:'1 spec 90d+'}]. That is false aging for an unfinished home and contradicts lib/sales/spec-inventory.ts. Should use specInventoryAge / books_inventory_completed_on. No red test left in the tree. Completed in 73844300."
             }
           ],
           "testFiles": [
             "tests/spec-inventory-aging.test.js",
-            "tests/community-sales.test.js"
+            "tests/community-sales.test.js",
+            "tests/community-portfolio.test.js"
           ],
           "passed": 35,
           "failed": 0,
@@ -22990,7 +23002,8 @@
       "fixedSinceAudit": [
         "lib/services/imports.ts:191-199 validation lookups silently truncated (communities 1000, lots 10000, companies 5000, plans 1000, divisions 200) — still open. — fixed in 1c30a736",
         "lib/services/imports.ts:198 roles lookup not org-scoped — still open. — fixed in 1c30a736",
-        "lib/services/imports.ts:428 stageImportBatch failure path updates import_batches by id without org_id — still open. — fixed in 1c30a736"
+        "lib/services/imports.ts:428 stageImportBatch failure path updates import_batches by id without org_id — still open. — fixed in 1c30a736",
+        "Open WIP staging left companion-flagged rows marked valid with error_count 0 — fixed in 73844300"
       ],
       "plain": {
         "title": "Import files are read completely",
