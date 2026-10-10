@@ -24,7 +24,6 @@ export const commitmentChangeOrderInputSchema = z.object({
   commitment_id: z.string().uuid(),
   reason_code_id: z.string().uuid().nullable().optional(),
   origin: z.enum(["field_mobile", "office", "design_studio_co", "trade_portal"]).nullable().optional(),
-  requested_by: z.string().uuid().nullable().optional(),
   photo_file_ids: z.array(z.string().uuid()).max(20).default([]),
   title: z.string().trim().min(2, "Title is required").max(255),
   description: z.string().trim().max(5000).nullable().optional(),

@@ -403,7 +403,8 @@ async function runGeneration(
 
   const { data: prior } = await supabase.from("po_generation_runs").select("id,input_fingerprint,status,summary")
     .eq("org_id", orgId).eq("project_id", parsed.projectId).eq("mode", "commit")
-    .in("status", ["succeeded", "succeeded_with_exceptions"]).order("created_at", { ascending: false }).limit(1).maybeSingle()
+    .in("status", ["succeeded", "succeeded_with_exceptions"]).order("created_at", { ascending: false }).order("id", { ascending: false })
+    .limit(1).maybeSingle()
   if (parsed.mode === "commit" && prior?.input_fingerprint === inputFingerprint) {
     return { runId: prior.id, mode: "commit", status: prior.status, inputFingerprint, purchaseOrders, exceptions, budgetLinesWritten: budgetLines.length, expiringAgreements }
   }
@@ -453,6 +454,9 @@ async function runGeneration(
         // A scoped commit adds to what is already issued. Nothing is superseded and
         // nothing is deleted, so approved and issued POs survive the resolution.
         prior_run_id: incremental ? null : prior?.id ?? null,
+        // The commit re-reads the latest run under the project lock and refuses
+        // this payload if `prior_run_id` is no longer it (a concurrent commit).
+        incremental,
         total_cents: summary.total_cents,
         summary: { ...summary, incremental, committed_po_count: committedPurchaseOrders.length },
         budget_lines: budgetLines.map((line, index) => ({ cost_code_id: line.costCodeId, cost_type: line.costType, description: line.description, amount_cents: line.amountCents, sort_order: index })),
@@ -574,13 +578,17 @@ export async function resolvePoException(exceptionId: string, resolution: PoExce
 
 export async function dismissPoException(exceptionId: string, note: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId, existing } = await authorizeExceptionAction(exceptionId, orgId)
+  if (existing.status !== "open") throw new Error("This PO exception has already been resolved or dismissed.")
+  // Conditional on still being open: a resolution that lands first keeps its
+  // purchase order and its resolution record instead of being relabelled.
   const { data, error } = await supabase.from("po_generation_exceptions").update({
     status: "dismissed",
     resolution: { note: note.trim() || "Dismissed by purchasing" },
     resolved_by: userId,
     resolved_at: new Date().toISOString(),
-  }).eq("org_id", resolvedOrgId).eq("id", exceptionId).select("*").single()
-  if (error || !data) throw new Error(`Failed to dismiss PO exception: ${error?.message}`)
+  }).eq("org_id", resolvedOrgId).eq("id", exceptionId).eq("status", "open").select("*").maybeSingle()
+  if (error) throw new Error(`Failed to dismiss PO exception: ${error.message}`)
+  if (!data) throw new Error("This PO exception has already been resolved or dismissed.")
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "po_generation_exception", entityId: exceptionId, before: existing, after: data })
   await recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "po_exception.dismissed", entityType: "po_generation_exception", entityId: exceptionId, payload: { project_id: existing.project_id } })
   return data

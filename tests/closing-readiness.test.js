@@ -24,6 +24,16 @@ test('reopened gates, revoked agreement, open punch and new final waiver gaps bl
  h.db.store.punch_items.push({id:ACTOR,org_id:ORG,project_id:PROJECT,status:'open'});await assert.rejects(h.check(),/Open punch/)
  h.db.store.punch_items=[];h.setWaivers({ready:false,missing:['Final contractor waiver']});await assert.rejects(h.check(),/Final contractor waiver/)
 })
+test('a resolved or closed punch item that still needs verification blocks the closing',async()=>{
+ const h=harness()
+ const item=(overrides)=>({id:ACTOR,org_id:ORG,project_id:PROJECT,verification_required:true,verified_at:null,...overrides})
+ for(const status of ['resolved','closed']){
+  h.db.store.punch_items=[item({status})]
+  await assert.rejects(h.check(),/Open punch/,status)
+ }
+ h.db.store.punch_items=[item({status:'closed',verified_at:'2026-10-09T00:00:00Z'}),item({status:'closed',verification_required:false})]
+ await h.check()
+})
 test('punch read failures and unavailable counts fail closed',async()=>{
  for(const error of [{message:'punch_items unavailable'},null]){
   const h=harness(),from=h.db.from.bind(h.db)

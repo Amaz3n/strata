@@ -1,0 +1,59 @@
+const assert = require("node:assert/strict")
+const { test } = require("node:test")
+
+const { createServiceHarness, id, ORG, ACTOR } = require("./support/service")
+const { freshRequire } = require("./support/modules")
+
+const { completeMyHouseScheduleItem, listMyHouses } = freshRequire("lib/services/my-houses.ts")
+
+const NORTH = id(1)
+const SOUTH = id(2)
+const NORTH_HOUSE = id(3)
+const SOUTH_HOUSE = id(4)
+const SOUTH_ITEM = id(5)
+
+const house = (projectId, divisionId, lotNumber) => ({
+  id: projectId,
+  org_id: ORG,
+  division_id: divisionId,
+  superintendent_id: ACTOR,
+  phase: "delivery",
+  property_type: "production",
+  status: "active",
+  start_date: "2026-09-01",
+  lot: { lot_number: lotNumber, block: null, community_id: id(9), community: { name: "Oak Ridge" } },
+})
+
+/** A superintendent still assigned to a South house after moving to North. */
+function movedSuperintendent(permissions = ["project.read", "start.read", "schedule.edit"]) {
+  return createServiceHarness({
+    permissions,
+    divisions: [NORTH],
+    tables: {
+      projects: [house(NORTH_HOUSE, NORTH, "12"), house(SOUTH_HOUSE, SOUTH, "40")],
+      schedule_items: [{ id: SOUTH_ITEM, org_id: ORG, project_id: SOUTH_HOUSE, name: "Drywall", status: "in_progress", progress: 50 }],
+      punch_items: [],
+      tasks: [],
+      daily_logs: [],
+    },
+  })
+}
+
+test("a stale assignment outside the superintendent's divisions drops off My Houses", async () => {
+  const service = movedSuperintendent()
+
+  const { houses } = await service.run(() => listMyHouses())
+
+  assert.deepEqual(houses.map((row) => row.lotLabel), ["12"])
+})
+
+test("being the assigned superintendent does not complete work on a house outside one's divisions", async () => {
+  for (const permissions of [["project.read", "start.read"], ["project.read", "start.read", "schedule.edit"]]) {
+    const service = movedSuperintendent(permissions)
+
+    await assert.rejects(service.run(() => completeMyHouseScheduleItem(SOUTH_ITEM)), /Missing permission: schedule.edit/)
+
+    assert.equal(service.db.schedule_items[0].status, "in_progress")
+    assert.deepEqual(service.writes(), [])
+  }
+})

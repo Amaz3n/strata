@@ -596,9 +596,17 @@ export async function uploadMobileDailyLogPhoto(
   if (!log) throw new MobileAPIError(409, "daily_log_pending", "The daily log must sync before its photos.")
 
   const existing = await context.serviceSupabase.from("files")
-    .select("id, file_name, mime_type, storage_path")
+    .select("id, file_name, mime_type, storage_path, project_id, daily_log_id")
     .eq("org_id", context.orgId).eq("id", clientId.data).maybeSingle()
-  if (existing.data) return signedPhoto(context, existing.data)
+  if (existing.data) {
+    // A retry replays this log's own upload. A client_id naming a file on
+    // another house or another log is a collision — answering it would sign a
+    // URL to a file this request never had access to.
+    if (existing.data.project_id !== projectId || existing.data.daily_log_id !== dailyLogId) {
+      throw new MobileAPIError(409, "photo_client_id_conflict", "This upload id is already used by another file.")
+    }
+    return signedPhoto(context, existing.data)
+  }
 
   const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_") || `${clientId.data}.jpg`
   const storagePath = `${context.orgId}/${projectId}/daily-logs/uploads/${clientId.data}_${safeName}`

@@ -1,7 +1,8 @@
 import "server-only"
 
 import { calendarDaysBetween, normalizeWorkGroupKey } from "@/lib/starts/even-flow-math"
-import { requireOrgContext } from "@/lib/services/context"
+import { getProjectReadScopeForUser } from "@/lib/services/authorization"
+import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
 import { updateScheduleItem } from "@/lib/services/schedule"
 
@@ -50,6 +51,34 @@ function lotLabel(lot: Record<string, unknown> | null) {
   return lot.block ? `${lot.block}-${lot.lot_number}` : String(lot.lot_number ?? "Lot")
 }
 
+type AssignedHouseRow = { id: string; start_date: string | null; lot: unknown }
+
+/**
+ * A superintendent assignment is a pointer, not a grant: it outlives a move to
+ * another division or removal from the job. The houses list keeps only the
+ * assigned houses the VIEWER may still read — division scope, and project
+ * membership for an assigned-only member — so a stale assignment drops out.
+ */
+function assignedHousesQuery(
+  context: OrgServiceContext,
+  scope: Awaited<ReturnType<typeof getProjectReadScopeForUser>>,
+  select: string,
+  userId: string,
+  divisionId?: string,
+) {
+  const relations = scope.projectMembershipRequired ? ",access:project_members!project_members_project_id_fkey!inner()" : ""
+  const columns: string = `${select}${relations}`
+  let query = context.supabase.from("projects").select(columns, { count: "exact" })
+    .eq("org_id", context.orgId).eq("phase", "delivery").eq("superintendent_id", userId)
+    .eq("property_type", "production").eq("status", "active")
+  if (divisionId) query = query.eq("division_id", divisionId)
+  if (scope.divisionIds) query = query.in("division_id", scope.divisionIds)
+  if (scope.projectMembershipRequired) {
+    query = query.eq("access.org_id", context.orgId).eq("access.user_id", context.userId).eq("access.status", "active")
+  }
+  return query
+}
+
 export async function listMyHouses(
   opts: { userId?: string; divisionId?: string; page?: number; pageSize?: number } = {},
   orgId?: string,
@@ -59,15 +88,15 @@ export async function listMyHouses(
   const userId = opts.userId ?? context.userId
   const page = Math.max(1, opts.page ?? 1)
   const pageSize = Math.min(100, Math.max(1, opts.pageSize ?? 25))
-  let projectQuery = context.supabase.from("projects").select(`
+  const scope = await getProjectReadScopeForUser({ orgId: context.orgId, userId: context.userId })
+  if (scope.divisionIds?.length === 0) return { houses: [], total: 0 }
+  const projectQuery = assignedHousesQuery(context, scope, `
     id,start_date,metadata,
     lot:lots!lots_project_id_fkey(id,lot_number,block,community_id,house_plan_id,house_plan_elevation_id,
       community:communities(name),plan:house_plans(code),elevation:house_plan_elevations(code))
-  `, { count: "exact" }).eq("org_id", context.orgId).eq("phase", "delivery").eq("superintendent_id", userId)
-    .eq("property_type", "production").eq("status", "active")
-  if (opts.divisionId) projectQuery = projectQuery.eq("division_id", opts.divisionId)
+  `, userId, opts.divisionId)
   const { data: projects, error, count } = await projectQuery.order("start_date", { ascending: true, nullsFirst: false })
-    .range((page - 1) * pageSize, page * pageSize - 1)
+    .range((page - 1) * pageSize, page * pageSize - 1).returns<AssignedHouseRow[]>()
   if (error) throw new Error(`Failed to load assigned houses: ${error.message}`)
   const projectIds = (projects ?? []).map((project) => project.id)
   if (!projectIds.length) return { houses: [], total: count ?? 0 }
@@ -118,11 +147,12 @@ export async function listMyHouseWork(
   const context = await requireOrgContext(orgId)
   await requirePermission("start.read", context)
   const userId = opts.userId ?? context.userId
-  let projectQuery = context.supabase.from("projects").select(`
+  const scope = await getProjectReadScopeForUser({ orgId: context.orgId, userId: context.userId })
+  if (scope.divisionIds?.length === 0) return []
+  const projectQuery = assignedHousesQuery(context, scope, `
     id,lot:lots!lots_project_id_fkey(lot_number,block,community:communities(name))
-  `).eq("org_id", context.orgId).eq("phase", "delivery").eq("superintendent_id", userId).eq("property_type", "production").eq("status", "active")
-  if (opts.divisionId) projectQuery = projectQuery.eq("division_id", opts.divisionId)
-  const { data: projects, error: projectError } = await projectQuery.limit(100)
+  `, userId, opts.divisionId)
+  const { data: projects, error: projectError } = await projectQuery.limit(100).returns<Pick<AssignedHouseRow, "id" | "lot">[]>()
   if (projectError) throw new Error(`Failed to load assigned houses: ${projectError.message}`)
   const projectIds = (projects ?? []).map((project) => project.id)
   if (!projectIds.length) return []
@@ -154,12 +184,12 @@ export async function listMyHouseWork(
   return Array.from(groups.values()).sort((a, b) => b.items.length - a.items.length || a.groupLabel.localeCompare(b.groupLabel))
 }
 
+/**
+ * Being the house's superintendent is not itself a grant — the assignment
+ * outlives a division move or removal from the job. Completing work is
+ * `schedule.edit` on the item's project, checked by `updateScheduleItem` with
+ * membership and division scope, for the superintendent like anyone else.
+ */
 export async function completeMyHouseScheduleItem(scheduleItemId: string, orgId?: string, progress = 100) {
-  const context = await requireOrgContext(orgId)
-  const { data: item, error } = await context.supabase.from("schedule_items").select("id,project_id")
-    .eq("org_id", context.orgId).eq("id", scheduleItemId).maybeSingle()
-  if (error || !item) throw new Error("Schedule item not found")
-  const { data: project } = await context.supabase.from("projects").select("superintendent_id").eq("org_id", context.orgId).eq("id", item.project_id).maybeSingle()
-  if (project?.superintendent_id !== context.userId) await requirePermission("schedule.edit", context)
-  await updateScheduleItem({ itemId: scheduleItemId, input: { status: "completed", progress }, orgId: context.orgId })
+  await updateScheduleItem({ itemId: scheduleItemId, input: { status: "completed", progress }, orgId })
 }

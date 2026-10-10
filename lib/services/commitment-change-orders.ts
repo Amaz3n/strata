@@ -23,6 +23,9 @@ import { parseVpoApprovalBands, requiredVpoApprovalPermission, vpoApprovalBlockR
 
 export type CommitmentChangeOrderStatus = "draft" | "sent" | "approved" | "rejected" | "voided"
 
+/** A change order still awaiting a decision: editable, approvable, rejectable. */
+const PENDING_STATUSES: readonly CommitmentChangeOrderStatus[] = ["draft", "sent"]
+
 export interface CommitmentChangeOrderLine {
   id: string
   org_id: string
@@ -441,10 +444,14 @@ export async function rejectVarianceOrder({
     supabase, logDecision: true, resourceType: "commitment_change_order", resourceId: commitmentChangeOrderId,
   })
   if (!reason.trim()) throw new Error("A rejection reason is required.")
-  const { error } = await supabase.from("commitment_change_orders").update({
+  if (!PENDING_STATUSES.includes(existing.status)) throw new Error("Only a pending variance order can be rejected.")
+  // Conditional on the status read above: an approval that lands first wins,
+  // and this rejection reports it instead of overwriting an approved VPO.
+  const { data: rejectedRows, error } = await supabase.from("commitment_change_orders").update({
     status: "rejected", metadata: { ...(existing.metadata ?? {}), rejection_reason: reason.trim(), rejected_by: userId },
-  }).eq("org_id", resolvedOrgId).eq("id", commitmentChangeOrderId)
+  }).eq("org_id", resolvedOrgId).eq("id", commitmentChangeOrderId).eq("status", existing.status).select("id")
   if (error) throw new Error(`Failed to reject variance order: ${error.message}`)
+  if (!rejectedRows?.length) throw new Error("This variance order changed while you were reviewing it. Reload and try again.")
   const rejected = await loadSingle(supabase, resolvedOrgId, commitmentChangeOrderId)
   if (!rejected) throw new Error("Rejected variance order could not be reloaded")
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "commitment_change_order", entityId: commitmentChangeOrderId, before: existing as any, after: rejected as any })
@@ -502,7 +509,9 @@ export async function createCommitmentChangeOrder({
       currency: "usd",
       reason_code_id: parsed.reason_code_id ?? null,
       origin: parsed.origin ?? (parsed.reason_code_id ? "office" : null),
-      requested_by: parsed.requested_by ?? (parsed.reason_code_id ? userId : null),
+      // The requester is whoever is signed in — never a field the client sends,
+      // or separation of duties (requester ≠ approver) is one form field away.
+      requested_by: parsed.reason_code_id ? userId : null,
       photo_file_ids: parsed.photo_file_ids,
       metadata: parsed.metadata ?? {},
     })
@@ -573,8 +582,20 @@ export async function updateCommitmentChangeOrder({
     resourceId: commitmentChangeOrderId,
   })
 
-  if (existing.status !== "draft" && existing.status !== "sent") {
+  if (!PENDING_STATUSES.includes(existing.status)) {
     throw new Error("Only draft or sent commitment change orders can be edited.")
+  }
+  // The reason decides the approval band (and whether a back-charge must be a
+  // credit), so a requested VPO keeps the reason it was requested under.
+  if (parsed.reason_code_id !== undefined && parsed.reason_code_id !== existing.reason_code_id) {
+    throw new Error("A variance reason cannot be changed after the request. Void it and raise a new one.")
+  }
+  if (parsed.lines && existing.reason_code_id) {
+    const { data: reason, error: reasonError } = await supabase.from("variance_reason_codes")
+      .select("is_backcharge").eq("org_id", resolvedOrgId).eq("id", existing.reason_code_id).maybeSingle()
+    if (reasonError || !reason) throw new Error("Variance reason not found.")
+    const nextTotal = parsed.lines.reduce((sum, line) => sum + calculateLineAmount(line), 0)
+    if (reason.is_backcharge && nextTotal >= 0) throw new Error("Trade back-charges must have a negative total.")
   }
 
   const totalCents = parsed.lines
@@ -591,7 +612,6 @@ export async function updateCommitmentChangeOrder({
     .update({
       title: parsed.title ?? existing.title,
       description: parsed.description ?? existing.description ?? null,
-      reason_code_id: parsed.reason_code_id === undefined ? existing.reason_code_id : parsed.reason_code_id,
       origin: parsed.origin === undefined ? existing.origin : parsed.origin,
       photo_file_ids: parsed.photo_file_ids ?? existing.photo_file_ids,
       total_cents: totalCents,
@@ -641,6 +661,7 @@ export async function approveCommitmentChangeOrder({
     approverId: userId,
   })
   if (blocked) throw new Error(blocked)
+  if (!PENDING_STATUSES.includes(existing.status)) throw new Error("This change order is already approved.")
 
   let approvalPermission = "commitment.write"
   if (existing.reason_code_id) {
@@ -671,20 +692,29 @@ export async function approveCommitmentChangeOrder({
     approved_note: note ?? (existing.metadata ?? {}).approved_note ?? null,
   }
 
-  const { error } = await supabase
+  // Conditional on the status (and total) the approval band was computed from:
+  // a concurrent reject, void or line edit makes this update miss instead of
+  // approving something nobody reviewed.
+  const { data: approvedRows, error } = await supabase
     .from("commitment_change_orders")
     .update({
       status: "approved",
-      approved_at: existing.approved_at ?? nowIso,
-      approved_by: existing.approved_by ?? userId,
+      approved_at: nowIso,
+      approved_by: userId,
       metadata,
       updated_at: nowIso,
     })
     .eq("org_id", resolvedOrgId)
     .eq("id", commitmentChangeOrderId)
+    .eq("status", existing.status)
+    .eq("total_cents", existing.total_cents)
+    .select("id")
 
   if (error) {
     throw new Error(`Failed to approve commitment change order: ${error.message}`)
+  }
+  if (!approvedRows?.length) {
+    throw new Error("This change order changed while you were reviewing it. Reload and try again.")
   }
 
   const approved = await loadSingle(supabase, resolvedOrgId, commitmentChangeOrderId)

@@ -29,8 +29,11 @@ export async function assertClosingReadiness(input: ClosingScope) {
     readAllRows((from, to) => input.supabase.from("closing_checklist_items").select("id,title,is_gate,status,notes,file_id,completed_at,completed_by")
       .eq("org_id", input.orgId).eq("closing_id", input.closingId).order("id").range(from, to), { cap: 1001, label: "Unable to verify closing checklist" }),
     hasExecutedPurchaseAgreement(input.projectId, input.orgId),
+    // An item blocks until it is closed, and a verification-required item
+    // blocks until someone verified it — "resolved" or closed without a
+    // verification stamp is not done, the same rule project close-out reads.
     input.supabase.from("punch_items").select("id", { count: "exact", head: true }).eq("org_id", input.orgId)
-      .eq("project_id", input.projectId).not("status", "in", "(closed,resolved)"),
+      .eq("project_id", input.projectId).or("status.neq.closed,status.is.null,and(verification_required.eq.true,verified_at.is.null)"),
     getProjectWaiverReadiness(input.projectId, "closing.manage", input.orgId),
   ])
   if (items.truncated) throw new Error("Closing checklist exceeds the supported limit; reconcile it before settlement")
@@ -44,7 +47,7 @@ export async function assertClosingReadiness(input: ClosingScope) {
   if (!executed) throw new Error("An executed purchase agreement is required")
   if (punch.error) throw new Error(`Unable to verify punch list: ${punch.error.message}`)
   if (punch.count === null || punch.count === undefined) throw new Error("Punch list count is unavailable")
-  if (punch.count > 0) throw new Error("Open punch items must be cleared before closing")
+  if (punch.count > 0) throw new Error("Open punch items must be cleared, and verified where required, before closing")
   if (!waivers.ready) throw new Error(`Final waivers outstanding: ${waivers.missing.join(", ")}`)
   await assertNoBillingOutsideClosing(input)
   const fileIds = [...new Set(gates.flatMap(gate => gate.file_id ? [gate.file_id] : []))]

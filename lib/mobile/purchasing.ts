@@ -2,9 +2,9 @@ import { z } from "zod"
 
 import { MobileAPIError } from "@/lib/mobile/api"
 import type { MobileOrgContext } from "@/lib/mobile/auth"
+import { allowed } from "@/lib/mobile/workspace"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
-import { hasPermission } from "@/lib/services/permissions"
 
 const mobileVpoSchema = z.object({
   commitment_id: z.string().uuid(),
@@ -15,19 +15,19 @@ const mobileVpoSchema = z.object({
   client_id: z.string().uuid().optional(),
 })
 
-async function requireProject(context: MobileOrgContext, projectId: string) {
+/**
+ * The project exists in this org, and the caller holds `permission` on THIS
+ * project — project assignment and division scope included, not just an
+ * org-level grant that would reach every house in the org.
+ */
+async function requireProjectPurchasing(context: MobileOrgContext, projectId: string, permission: "price_book.read" | "vpo.request") {
   const { data, error } = await context.serviceSupabase.from("projects").select("id").eq("org_id", context.orgId).eq("id", projectId).maybeSingle()
   if (error || !data) throw new MobileAPIError(404, "project_not_found", "Project not found.")
-}
-
-async function requirePurchasingPermission(context: MobileOrgContext, permission: "price_book.read" | "vpo.request") {
-  const allowed = await hasPermission(permission, context.serviceContext)
-  if (!allowed) throw new MobileAPIError(403, "purchasing_forbidden", "You do not have permission to use project purchasing.")
+  if (!await allowed(context, permission, projectId)) throw new MobileAPIError(403, "purchasing_forbidden", "You do not have permission to use project purchasing.")
 }
 
 export async function listMobileVarianceOrders(context: MobileOrgContext, projectId: string) {
-  await requireProject(context, projectId)
-  await requirePurchasingPermission(context, "price_book.read")
+  await requireProjectPurchasing(context, projectId, "price_book.read")
   const { data, error } = await context.serviceSupabase.from("commitment_change_orders").select(`
     id,project_id,commitment_id,title,description,status,total_cents,reason_code_id,origin,requested_by,photo_file_ids,created_at,updated_at,
     commitment:commitments(title),company:companies(name),reason:variance_reason_codes(code,label,is_backcharge)
@@ -44,8 +44,7 @@ export async function listMobileVarianceOrders(context: MobileOrgContext, projec
  * makes the first variance on a house impossible to file from the field.
  */
 export async function listMobileProjectPurchaseOrders(context: MobileOrgContext, projectId: string) {
-  await requireProject(context, projectId)
-  await requirePurchasingPermission(context, "price_book.read")
+  await requireProjectPurchasing(context, projectId, "price_book.read")
   const { data, error } = await context.serviceSupabase
     .from("commitments")
     .select("id,title,contract_number,status,total_cents,company_id,company:companies(name)")
@@ -72,8 +71,7 @@ export async function listMobileProjectPurchaseOrders(context: MobileOrgContext,
 }
 
 export async function createMobileVarianceOrder(context: MobileOrgContext, projectId: string, input: unknown) {
-  await requireProject(context, projectId)
-  await requirePurchasingPermission(context, "vpo.request")
+  await requireProjectPurchasing(context, projectId, "vpo.request")
   const parsed = mobileVpoSchema.safeParse(input)
   if (!parsed.success) throw new MobileAPIError(422, "invalid_vpo", "Some variance purchase-order information is invalid.", { fields: parsed.error.issues.map((issue) => issue.path.join(".")).join(", ") })
   const [{ data: commitment }, { data: reason }] = await Promise.all([
@@ -85,7 +83,12 @@ export async function createMobileVarianceOrder(context: MobileOrgContext, proje
   if (reason.is_backcharge && parsed.data.amount_cents > 0) throw new MobileAPIError(422, "invalid_backcharge", "Backcharges must use a negative amount.")
   const id = parsed.data.client_id ?? crypto.randomUUID()
   const { data: existing } = await context.serviceSupabase.from("commitment_change_orders").select("*").eq("org_id", context.orgId).eq("id", id).maybeSingle()
-  if (existing) return existing
+  if (existing) {
+    // A retry replays the same request; a client_id that names someone else's
+    // VPO (another house, another PO) is a collision, never a read of it.
+    if (existing.project_id !== projectId || existing.commitment_id !== commitment.id) throw new MobileAPIError(409, "vpo_client_id_conflict", "This request id is already used by another variance purchase order.")
+    return existing
+  }
   const { data, error } = await context.serviceSupabase.from("commitment_change_orders").insert({
     id, org_id: context.orgId, project_id: projectId, commitment_id: commitment.id, company_id: commitment.company_id,
     title: `VPO — ${reason.label}`, description: parsed.data.note, status: "draft", total_cents: parsed.data.amount_cents,

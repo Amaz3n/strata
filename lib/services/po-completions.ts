@@ -196,9 +196,22 @@ export async function approvePoCompletion(completionId: string, orgId?: string) 
   try {
     await postJobCostActualsForVendorBill({ billId: data.vendor_bill_id, orgId: resolvedOrgId })
   } catch (ledgerError) {
-    await service.from("po_completions").update({ status: completion.status, vendor_bill_id: null, amount_cents: null, approved_at: null, approved_by: null }).eq("org_id", resolvedOrgId).eq("id", completionId)
-    await service.from("vendor_bills").delete().eq("org_id", resolvedOrgId).eq("id", data.vendor_bill_id)
-    throw new Error(`Completion approval was rolled back because AP posting failed: ${ledgerError instanceof Error ? ledgerError.message : String(ledgerError)}`)
+    // Unwind by rejecting the minted bill, not deleting it: it was numbered and
+    // audited, so it stays on record and simply bills nothing (the approval RPC
+    // ignores rejected bills). The completion returns to where it stood.
+    const reason = `AP posting failed: ${ledgerError instanceof Error ? ledgerError.message : String(ledgerError)}`
+    const now = new Date().toISOString()
+    const [{ error: billError }, { error: completionError }] = await Promise.all([
+      service.from("vendor_bills").update({ status: "rejected", rejected_at: now, rejected_by: userId, rejection_reason: reason })
+        .eq("org_id", resolvedOrgId).eq("id", data.vendor_bill_id),
+      service.from("po_completions").update({ status: completion.status, vendor_bill_id: null, amount_cents: null, approved_at: null, approved_by: null })
+        .eq("org_id", resolvedOrgId).eq("id", completionId),
+    ])
+    if (billError || completionError) {
+      throw new Error(`${reason}. The approval could not be unwound (${billError?.message ?? completionError?.message}); reconcile bill ${data.vendor_bill_id} before retrying.`)
+    }
+    await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "vendor_bill", entityId: data.vendor_bill_id, after: { status: "rejected", rejection_reason: reason, po_completion_id: completionId } })
+    throw new Error(`Completion approval was rolled back because ${reason}`)
   }
   try {
     const syncResult = await enqueueVendorBillSync(data.vendor_bill_id, resolvedOrgId)
@@ -268,6 +281,12 @@ function firstRelation(value: unknown) {
   return row && typeof row === "object" ? row as Record<string, unknown> : null
 }
 
+/**
+ * A purchase order the trade has been issued. Drafts were never sent and
+ * cancelled orders no longer bind anyone, so neither reaches the vendor portal.
+ */
+const ISSUED_PURCHASE_ORDER_STATUSES = ["approved", "active", "complete", "completed"] as const
+
 export async function listPortalPurchaseOrders(access: ProjectScopedPortalAccess): Promise<PortalPurchaseOrder[]> {
   if (!access.company_id || access.permissions.can_view_purchase_orders !== true) throw new Error("Access denied")
   const service = createServiceSupabaseClient()
@@ -283,7 +302,8 @@ export async function listPortalPurchaseOrders(access: ProjectScopedPortalAccess
     changes:commitment_change_orders(id,title,status,total_cents,reason:variance_reason_codes(label)),
     completions:po_completions(id,status,reported_at,rejected_reason,amount_cents,commitment_line_ids,vendor_bill:vendor_bills(status,paid_cents,total_cents))
   `).eq("org_id", access.org_id).eq("project_id", access.project_id).eq("company_id", access.company_id)
-    .eq("commitment_type", "purchase_order").order("created_at", { ascending: false }).limit(100)
+    .eq("commitment_type", "purchase_order").in("status", [...ISSUED_PURCHASE_ORDER_STATUSES])
+    .order("created_at", { ascending: false }).limit(100)
   if (error) throw new Error(`Failed to load portal purchase orders: ${error.message}`)
   return (data ?? []).map((row) => {
     const rawCompletions: CompletionCoverage[] = (row.completions ?? []).map((completion: Record<string, unknown>) => ({
@@ -307,7 +327,9 @@ export async function listPortalPurchaseOrders(access: ProjectScopedPortalAccess
       contractNumber: typeof row.contract_number === "string" ? row.contract_number : null,
       scope: typeof row.scope === "string" ? row.scope : null,
       lines,
-      changes: (row.changes ?? []).map((change: Record<string, unknown>) => ({
+      // A trade sees the revisions it is held to: approved VPOs, not drafts
+      // or requests still under review.
+      changes: (row.changes ?? []).filter((change: Record<string, unknown>) => change.status === "approved").map((change: Record<string, unknown>) => ({
         id: String(change.id), title: String(change.title ?? ""), status: String(change.status),
         totalCents: Number(change.total_cents ?? 0),
         reasonLabel: typeof firstRelation(change.reason)?.label === "string" ? String(firstRelation(change.reason)?.label) : null,

@@ -47,8 +47,14 @@ import { getProjectWithFinancials, updateProject } from "@/lib/services/projects
 import { deleteSampleProject } from "@/lib/services/demo-seed"
 import type { ProjectVendorInput } from "@/lib/validation/project-vendors"
 import { addProjectVendor, listProjectVendors, removeProjectVendor, updateProjectVendor } from "@/lib/services/project-vendors"
-import { sendPunchDispatchEmail } from "@/lib/services/punch-lists"
-import { resolveProjectLocation } from "@/lib/services/locations"
+import {
+  bulkAssignPunchCompany,
+  createProjectPunchItem,
+  listProjectPunchItems,
+  updateProjectPunchItem,
+  type ProjectPunchItem,
+} from "@/lib/services/punch-lists"
+import type { PunchItemCreateInput, PunchItemUpdateInput } from "@/lib/validation/punch-items"
 import { createContact } from "@/lib/services/contacts"
 import { createCompany, listCompanies } from "@/lib/services/companies"
 import { getProjectContract } from "@/lib/services/contracts"
@@ -1238,275 +1244,32 @@ export async function listProjectRetainageAction(projectId: string) {
       return (data ?? []) as (Retainage & { invoice?: { invoice_number: string; title: string }; release_invoice?: { invoice_number: string; title: string } })[]
 }
 
-export interface ProjectPunchItem {
-  id: string
-  org_id: string
-  project_id: string
-  title: string
-  description?: string | null
-  status: string
-  due_date?: string | null
-  severity?: string | null
-  location?: string | null
-  location_id?: string | null
-  assigned_to?: string | null
-  assigned_company_id?: string | null
-  assigned_company_name?: string | null
-  dispatched_at?: string | null
-  sub_completed_at?: string | null
-  back_charge_flag?: boolean | null
-  resolved_at?: string | null
-  schedule_item_id?: string | null
-  created_from_inspection?: boolean | null
-  verification_required?: boolean | null
-  verified_at?: string | null
-  verified_by?: string | null
-  verification_notes?: string | null
-  created_at: string
-  updated_at: string
-}
-
-const PUNCH_ITEM_SELECT =
-  "id, org_id, project_id, title, description, status, due_date, severity, location, location_id, assigned_to, assigned_company_id, dispatched_at, sub_completed_at, back_charge_flag, resolved_at, schedule_item_id, created_from_inspection, verification_required, verified_at, verified_by, verification_notes, created_at, updated_at, assigned_company:companies(id, name)"
-
-function mapPunchItem(row: Record<string, any>): ProjectPunchItem {
-  const { assigned_company, ...rest } = row
-  const company = Array.isArray(assigned_company) ? assigned_company[0] : assigned_company
-  return { ...rest, assigned_company_name: company?.name ?? null } as ProjectPunchItem
-}
+export type { ProjectPunchItem } from "@/lib/services/punch-lists"
 
 export async function listProjectPunchItemsAction(projectId: string): Promise<ProjectPunchItem[]> {
-      const { supabase, orgId } = await requireOrgContext()
-
-      const { data, error } = await supabase
-        .from("punch_items")
-        .select(PUNCH_ITEM_SELECT)
-        .eq("org_id", orgId)
-        .eq("project_id", projectId)
-        .order("created_at", { ascending: false })
-
-      if (error) {
-        console.error("Failed to list punch items", error.message)
-        return []
-      }
-
-      return (data ?? []).map(mapPunchItem)
+  return listProjectPunchItems(projectId)
 }
 
 export async function createProjectPunchItemAction(
   projectId: string,
-  input: {
-    title: string
-    description?: string | null
-    location?: string | null
-    location_id?: string | null
-    severity?: string | null
-    due_date?: string | null
-    assigned_to?: string | null
-    assigned_company_id?: string | null
-    verification_required?: boolean | null
-  },
+  input: PunchItemCreateInput,
 ): Promise<ActionResult<ProjectPunchItem>> {
   return run(async () => {
-      const { supabase, orgId, userId } = await requireOrgContext()
-      const location = await resolveProjectLocation(projectId, input.location_id, orgId)
-
-      const { data, error } = await supabase
-        .from("punch_items")
-        .insert({
-          org_id: orgId,
-          project_id: projectId,
-          title: input.title,
-          description: input.description ?? null,
-          status: "open",
-          due_date: input.due_date ?? null,
-          severity: input.severity ?? null,
-          location_id: location?.id ?? null,
-          location: location?.full_path ?? input.location ?? null,
-          assigned_to: input.assigned_to ?? null,
-          assigned_company_id: input.assigned_company_id ?? null,
-          dispatched_at: input.assigned_company_id ? new Date().toISOString() : null,
-          verification_required: input.verification_required ?? false,
-          created_by: userId,
-        })
-        .select(PUNCH_ITEM_SELECT)
-        .single()
-
-      if (error || !data) {
-        throw new Error(`Failed to create punch item: ${error?.message}`)
-      }
-
-      await recordEvent({
-        orgId,
-        eventType: "punch_item_created",
-        entityType: "punch_item",
-        entityId: data.id as string,
-        payload: { project_id: projectId, title: data.title },
-      })
-
-      await recordAudit({
-        orgId,
-        actorId: userId,
-        action: "insert",
-        entityType: "punch_item",
-        entityId: data.id as string,
-        after: data,
-      })
-
-      const item = mapPunchItem(data)
-      if (item.assigned_company_id) {
-        await sendPunchDispatchEmail({
-          supabase,
-          orgId,
-          projectId,
-          companyId: item.assigned_company_id,
-          items: [item],
-          createdBy: userId,
-        })
-      }
-
-      revalidatePath(`/projects/${projectId}`)
-      return item
+    const item = await createProjectPunchItem(projectId, input)
+    revalidatePath(`/projects/${projectId}`)
+    return item
   })
 }
 
 export async function updateProjectPunchItemAction(
   projectId: string,
   punchItemId: string,
-  input: Partial<Pick<ProjectPunchItem, "title" | "description" | "status" | "due_date" | "severity" | "location" | "location_id" | "assigned_to" | "assigned_company_id" | "back_charge_flag" | "verification_required" | "verification_notes">>,
+  input: PunchItemUpdateInput,
 ): Promise<ActionResult<ProjectPunchItem>> {
   return run(async () => {
-      const { supabase, orgId, userId } = await requireOrgContext()
-
-      const { data: existing, error: fetchError } = await supabase
-        .from("punch_items")
-        .select("*")
-        .eq("org_id", orgId)
-        .eq("project_id", projectId)
-        .eq("id", punchItemId)
-        .single()
-
-      if (fetchError || !existing) {
-        throw new Error("Punch item not found")
-      }
-
-      const now = new Date().toISOString()
-      const updateData: Record<string, any> = {}
-      if (input.title !== undefined) updateData.title = input.title
-      if (input.description !== undefined) updateData.description = input.description
-      if (input.due_date !== undefined) updateData.due_date = input.due_date
-      if (input.severity !== undefined) updateData.severity = input.severity
-      if (input.location_id !== undefined) {
-        const location = await resolveProjectLocation(projectId, input.location_id, orgId)
-        updateData.location_id = location?.id ?? null
-        updateData.location = location?.full_path ?? null
-      } else if (input.location !== undefined) updateData.location = input.location
-      if (input.assigned_to !== undefined) updateData.assigned_to = input.assigned_to
-      if (input.back_charge_flag !== undefined) updateData.back_charge_flag = input.back_charge_flag
-      if (input.verification_required !== undefined) updateData.verification_required = input.verification_required
-      if (input.verification_notes !== undefined) updateData.verification_notes = input.verification_notes
-
-      const newlyAssignedCompany =
-        input.assigned_company_id !== undefined &&
-        input.assigned_company_id !== null &&
-        input.assigned_company_id !== existing.assigned_company_id
-      if (input.assigned_company_id !== undefined) {
-        updateData.assigned_company_id = input.assigned_company_id
-        if (newlyAssignedCompany) {
-          updateData.dispatched_at = now
-          updateData.sub_completed_at = null
-        } else if (input.assigned_company_id === null) {
-          updateData.dispatched_at = null
-          updateData.sub_completed_at = null
-        }
-      }
-
-      // GC bounced a sub-completed item back to open/in_progress: the ball
-      // returns to the sub, so clear their completion stamp and re-notify.
-      const rejectedSubWork =
-        input.status !== undefined &&
-        (input.status === "open" || input.status === "in_progress") &&
-        existing.status === "ready_for_review" &&
-        Boolean(existing.sub_completed_at) &&
-        Boolean(existing.assigned_company_id) &&
-        !newlyAssignedCompany
-
-      if (input.status !== undefined) {
-        updateData.status = input.status
-        if (rejectedSubWork) {
-          updateData.sub_completed_at = null
-        }
-        if (input.status === "closed") {
-          updateData.resolved_at = now
-          updateData.resolved_by = userId
-          const requireVerification = input.verification_required ?? existing.verification_required
-          if (requireVerification && !existing.verified_at) {
-            updateData.verified_at = now
-            updateData.verified_by = userId
-          }
-        } else if (existing.status === "closed") {
-          updateData.resolved_at = null
-          updateData.resolved_by = null
-          updateData.verified_at = null
-          updateData.verified_by = null
-        }
-      }
-
-      const { data, error } = await supabase
-        .from("punch_items")
-        .update(updateData)
-        .eq("org_id", orgId)
-        .eq("project_id", projectId)
-        .eq("id", punchItemId)
-        .select(PUNCH_ITEM_SELECT)
-        .single()
-
-      if (error || !data) {
-        throw new Error(`Failed to update punch item: ${error?.message}`)
-      }
-
-      await recordEvent({
-        orgId,
-        eventType: "punch_item_updated",
-        entityType: "punch_item",
-        entityId: data.id as string,
-        payload: { project_id: projectId, status: data.status },
-      })
-
-      await recordAudit({
-        orgId,
-        actorId: userId,
-        action: "update",
-        entityType: "punch_item",
-        entityId: data.id as string,
-        before: existing,
-        after: data,
-      })
-
-      const item = mapPunchItem(data)
-      if (newlyAssignedCompany && item.assigned_company_id) {
-        await sendPunchDispatchEmail({
-          supabase,
-          orgId,
-          projectId,
-          companyId: item.assigned_company_id,
-          items: [item],
-          createdBy: userId,
-        })
-      } else if (rejectedSubWork && item.assigned_company_id) {
-        await sendPunchDispatchEmail({
-          supabase,
-          orgId,
-          projectId,
-          companyId: item.assigned_company_id,
-          items: [item],
-          rejectionNote: input.verification_notes ?? item.verification_notes ?? "",
-          createdBy: userId,
-        })
-      }
-
-      revalidatePath(`/projects/${projectId}`)
-      return item
+    const item = await updateProjectPunchItem(projectId, punchItemId, input)
+    revalidatePath(`/projects/${projectId}`)
+    return item
   })
 }
 
@@ -1516,44 +1279,9 @@ export async function bulkAssignPunchCompanyAction(
   companyId: string,
 ): Promise<ActionResult<ProjectPunchItem[]>> {
   return run(async () => {
-      const { supabase, orgId, userId } = await requireOrgContext()
-      if (punchItemIds.length === 0) return []
-
-      const { data, error } = await supabase
-        .from("punch_items")
-        .update({ assigned_company_id: companyId, dispatched_at: new Date().toISOString(), sub_completed_at: null })
-        .eq("org_id", orgId)
-        .eq("project_id", projectId)
-        .in("id", punchItemIds)
-        .neq("status", "closed")
-        .select(PUNCH_ITEM_SELECT)
-
-      if (error) {
-        throw new Error(`Failed to assign punch items: ${error.message}`)
-      }
-
-      const items = (data ?? []).map(mapPunchItem)
-      if (items.length > 0) {
-        await recordAudit({
-          orgId,
-          actorId: userId,
-          action: "update",
-          entityType: "punch_item",
-          entityId: items[0].id,
-          after: { bulk_assigned_company_id: companyId, item_ids: items.map((item) => item.id) },
-        })
-        await sendPunchDispatchEmail({
-          supabase,
-          orgId,
-          projectId,
-          companyId,
-          items,
-          createdBy: userId,
-        })
-      }
-
-      revalidatePath(`/projects/${projectId}`)
-      return items
+    const items = await bulkAssignPunchCompany(projectId, punchItemIds, companyId)
+    revalidatePath(`/projects/${projectId}`)
+    return items
   })
 }
 
