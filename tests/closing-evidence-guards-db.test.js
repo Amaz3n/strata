@@ -1,5 +1,6 @@
+const { migrationSql } = require("./support/migration-sql")
 require('../scripts/register-ts-node-test')
-const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path')
+const test=require('node:test'),assert=require('node:assert/strict')
 const {PGlite}=require('@electric-sql/pglite')
 const ORG='00000000-0000-4000-8000-000000000001',HOME='00000000-0000-4000-8000-000000000002',CLOSING='00000000-0000-4000-8000-000000000003',ACTOR='00000000-0000-4000-8000-000000000004',FILE='00000000-0000-4000-8000-000000000005'
 async function fixture(t){
@@ -11,7 +12,7 @@ async function fixture(t){
  await db.query("insert into closings(id,org_id,project_id,status,scheduled_date,settlement,closing_invoice_id,metadata) values($1,$2,$3,'cleared_to_close','2026-10-03','{}',$4,'{}')",[CLOSING,ORG,HOME,FILE])
  await db.query('insert into invoices values($1,$2,$3,100000)',[FILE,ORG,HOME]);await db.query('insert into files values($1,$2,$3,null)',[FILE,ORG,HOME])
  await db.query("insert into closing_checklist_items values($1,$2,$3,'Occupancy','complete',true,null,$4,now(),$5)",[ACTOR,ORG,CLOSING,FILE,ACTOR])
- await db.exec(fs.readFileSync(path.join(__dirname,'../supabase/migrations/20261003050000_closing_evidence_guards.sql'),'utf8'))
+ await db.exec(migrationSql("20261003050000_closing_evidence_guards"))
  await db.exec("alter table closing_checklist_items add constraint checklist_parent_fk foreign key(closing_id) references closings(id) on delete cascade")
  const close=()=>db.exec("update closings set status='closed',actual_date='2026-10-03',settlement='{\"finalPriceCents\":100000}'")
  return {db,close}

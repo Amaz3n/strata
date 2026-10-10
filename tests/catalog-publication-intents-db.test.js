@@ -1,11 +1,12 @@
-const fs=require('node:fs'),test=require('node:test'),assert=require('node:assert/strict')
+const { migrationSql } = require("./support/migration-sql")
+const test=require('node:test'),assert=require('node:assert/strict')
 const {database:base,id}=require('./fixtures/catalog-publication-database')
 async function database(t){
  const f=await base(t,{withPrices:true,margin:true})
  await f.db.exec("alter table house_plans add column name text,add column status text default 'active';alter table house_plan_versions add column house_plan_id uuid references house_plans(id),add column status text default 'released',add column version_number integer,add column label text;")
  await f.db.query('insert into house_plans(id,org_id,name) values($1,$2,$3)',[id(30),f.org,'Alpha'])
  await f.db.query('insert into house_plan_versions(id,org_id,house_plan_id,version_number) values($1,$2,$3,1)',[id(31),f.org,id(30)])
- for(const name of ['20261004015201_catalog_price_publication.sql','20261004025518_catalog_publication_reconciliation.sql','20261004033000_catalog_publication_intents.sql','20261004034500_catalog_publication_history.sql','20261004043000_catalog_publication_pending_scopes.sql','20261004050000_catalog_archived_package_queue.sql'])await f.db.exec(fs.readFileSync(`supabase/migrations/${name}`,'utf8'))
+ for(const name of ['20261004015201_catalog_price_publication.sql','20261004025518_catalog_publication_reconciliation.sql','20261004033000_catalog_publication_intents.sql','20261004034500_catalog_publication_history.sql','20261004043000_catalog_publication_pending_scopes.sql','20261004050000_catalog_archived_package_queue.sql'])await f.db.exec(migrationSql(name.replace(/\.sql$/, "")))
  await require('./fixtures/catalog-group-recovery-database').installGroupRecovery(f.db)
  const prices={communityId:null,items:[{optionId:id(50),packageId:null,housePlanVersionId:id(31),priceCents:123,isAvailable:true,expectedPrice:null}]}
  const register=(kind='prices',request=prices,key=id(80),actor=f.actor)=>f.db.query('select register_catalog_publication($1,$2,$3,$4,$5) result',[f.org,actor,kind,key,JSON.stringify(request)])
@@ -161,7 +162,7 @@ test('cross-scope live queue reaches all own active requests with tied timestamp
  const second=(await list(first.nextCursor)).rows[0].result;assert.equal(second.entries.length,5);assert.equal(second.nextCursor,null)
  const seen=[...first.entries,...second.entries];assert.deepEqual(new Set(seen.map(row=>row.id)),new Set(ids));assert.ok(seen.every(row=>row.communityName===`Community ${Number(row.communityId.slice(-12))}`));assert.ok(!JSON.stringify(seen).includes('priceCents'));assert.ok(!JSON.stringify(seen).includes('cost'))
  await f.cancel('prices',{...f.prices,communityId:id(100)},id(600));assert.equal((await list()).rows[0].result.entries.length,25)
- const sql=fs.readFileSync('supabase/migrations/20261004043000_catalog_publication_pending_scopes.sql','utf8');assert.match(sql,/active_claims as materialized/);assert.match(sql,/jsonb_array_length\(rows\)=25/)
+ const sql=migrationSql("20261004043000_catalog_publication_pending_scopes");assert.match(sql,/active_claims as materialized/);assert.match(sql,/jsonb_array_length\(rows\)=25/)
 })
 test('cross-scope queue filters current division access and membership denies, and rechecks continuation authorization',async t=>{
  const f=await database(t),outside=id(14);await f.db.query('insert into communities(id,org_id,division_id) values($1,$2,$3)',[outside,f.org,id(999)])
@@ -189,7 +190,7 @@ test('archived package queue reaches complete bounded pages, enforces actor scop
 
 test('server member discovery paginates complete scoped public options, escapes search and redacts unavailable selected references',async t=>{
  const f=await database(t);await f.db.exec("alter table selection_options add column name text,add column parent_option_id uuid;alter table selection_categories add column name text;update selection_categories set name='Kitchen';update selection_options set name='Original option'")
- await f.db.exec(fs.readFileSync('supabase/migrations/20261004060000_catalog_package_member_discovery.sql','utf8'))
+ await f.db.exec(migrationSql("20261004060000_catalog_package_member_discovery"))
  for(let n=200;n<230;n++)await f.db.query("insert into selection_options(id,org_id,category_id,name) values($1,$2,$3,$4)",[id(n),f.org,id(40),`Upgrade ${n}`])
  const discover=(query='',cursor=null,ids=null,community=null)=>f.db.query('select discover_catalog_package_members($1,$2,$3,$4,$5,$6) result',[f.org,f.actor,community,query,cursor,ids])
  const first=(await discover('Upgrade')).rows[0].result;assert.equal(first.items.length,20);assert.equal(first.nextCursor,first.items.at(-1).id);const second=(await discover('Upgrade',first.nextCursor)).rows[0].result;assert.equal(second.items.length,10);assert.equal(second.nextCursor,null);assert.equal(new Set([...first.items,...second.items].map(row=>row.id)).size,30);assert.ok(!JSON.stringify(first).includes('cost'))
@@ -199,7 +200,7 @@ test('server member discovery paginates complete scoped public options, escapes 
 })
 test('server discovery applies community option/category override precedence without falling back to archived overrides',async t=>{
  const f=await database(t);await f.db.exec("alter table selection_options add column name text,add column parent_option_id uuid;alter table selection_categories add column name text;update selection_categories set name='Base category';update selection_options set name='Base option'")
- await f.db.exec(fs.readFileSync('supabase/migrations/20261004060000_catalog_package_member_discovery.sql','utf8'))
+ await f.db.exec(migrationSql("20261004060000_catalog_package_member_discovery"))
  await f.db.query("insert into selection_categories(id,org_id,community_id,parent_category_id,name) values($1,$2,$3,$4,'Community category')",[id(70),f.org,id(13),id(40)])
  await f.db.query("insert into selection_options(id,org_id,category_id,community_id,parent_option_id,name) values($1,$2,$3,$4,$5,'Community option')",[id(71),f.org,id(70),id(13),id(50)])
  const list=()=>f.db.query("select discover_catalog_package_members($1,$2,$3,'',null,null) result",[f.org,f.actor,id(13)])

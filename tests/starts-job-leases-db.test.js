@@ -1,10 +1,11 @@
-const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs")
+const { migrationSql } = require("./support/migration-sql")
+const test = require("node:test"), assert = require("node:assert/strict")
 const { PGlite } = require("@electric-sql/pglite")
 const ORG = "00000000-0000-4000-8000-000000000001", OTHER = "00000000-0000-4000-8000-000000000002"
 async function setup(t) {
   const db = new PGlite(); t.after(() => db.close())
   await db.exec("create role anon; create role authenticated; create role service_role; create table outbox(id bigint generated always as identity primary key,org_id uuid,job_type text,payload jsonb default '{}'::jsonb,status text default 'pending',retry_count integer default 0,last_error text,run_at timestamptz default now(),updated_at timestamptz default now(),created_at timestamptz default now(),priority integer default 0);")
-  await db.exec(fs.readFileSync(require.resolve("../supabase/migrations/20261003023000_starts_job_claim_leases.sql"), "utf8"))
+  await db.exec(migrationSql("20261003023000_starts_job_claim_leases"))
   const insert = (type = "start_release", priority = 0) => db.query("insert into outbox(org_id,job_type,priority) values($1,$2,$3)", [ORG, type, priority])
   const claim = async (limit = 2) => (await db.query("select * from claim_starts_jobs($1)", [limit])).rows
   const transition = async (job, action, org = ORG) => (await db.query("select transition_starts_job_lease($1,$2,$3,$4,'failed') ok", [org, job.job_id, job.claim_token, action])).rows[0].ok

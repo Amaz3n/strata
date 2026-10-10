@@ -1,7 +1,8 @@
-const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs')
+const { migrationSql } = require("./support/migration-sql")
+const test=require('node:test'),assert=require('node:assert/strict')
 const {createBooksLedgerDb}=require('./helpers/books-ledger-db')
 const ORG='00000000-0000-4000-8000-000000000001',PKG='00000000-0000-4000-8000-000000000002',HOME='00000000-0000-4000-8000-000000000003',LOT='00000000-0000-4000-8000-000000000004',OTHER='00000000-0000-4000-8000-000000000005',ACTOR='00000000-0000-4000-8000-000000000006'
-const read=name=>fs.readFileSync(require.resolve(`../supabase/migrations/${name}`),'utf8')
+const read=name=>migrationSql(name.replace(/\.sql$/, ""))
 async function setup(t){
  const db=await createBooksLedgerDb();t.after(()=>db.close())
  await db.exec(`create table outbox(id bigint generated always as identity primary key,org_id uuid,job_type text,payload jsonb,status text default 'pending',retry_count integer default 0,last_error text,run_at timestamptz default now(),updated_at timestamptz default now(),created_at timestamptz default now(),priority integer default 0);

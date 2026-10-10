@@ -1,3 +1,4 @@
+const { migrationSql } = require("./support/migration-sql")
 const fs=require('node:fs'),test=require('node:test'),assert=require('node:assert/strict')
 const {database:base,id}=require('./fixtures/catalog-publication-database')
 async function database(t){
@@ -6,7 +7,7 @@ async function database(t){
  await f.db.query('insert into house_plans(id,org_id,name) values($1,$2,$3)',[id(30),f.org,'Alpha'])
  await f.db.query('insert into house_plan_versions(id,org_id,house_plan_id,version_number) values($1,$2,$3,1)',[id(31),f.org,id(30)])
  await f.db.exec(fs.readFileSync('supabase/migrations/20261004015201_catalog_price_publication.sql','utf8'))
- await f.db.exec(fs.readFileSync('supabase/migrations/20261004025518_catalog_publication_reconciliation.sql','utf8'))
+ await f.db.exec(migrationSql("20261004025518_catalog_publication_reconciliation"))
  await require('./fixtures/catalog-group-recovery-database').installGroupRecovery(f.db)
  const prices={communityId:null,items:[{optionId:id(50),packageId:null,housePlanVersionId:id(31),priceCents:123,isAvailable:true,expectedPrice:null}]}
  const publishPrice=()=>f.db.query('select publish_catalog_prices_contents($1,$2,$3,$4) result',[f.org,f.actor,id(80),JSON.stringify(prices)])

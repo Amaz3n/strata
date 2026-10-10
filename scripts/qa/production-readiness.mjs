@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, statSync } from "node:fs"
+import { readFileSync, readdirSync, existsSync, statSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { resolve, relative } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -15,6 +15,15 @@ const verified = new Set(["verified", "accepted"])
 const errors = []
 const warnings = []
 const hash = (value) => createHash("sha256").update(value).digest("hex")
+// Unapplied migrations consolidated before deploy keep their SQL as a section of
+// the consolidated file, marked `-- ==== <name> ====`.
+const migrationsDir = resolve(root, "supabase/migrations")
+const migrationSections = readdirSync(migrationsDir).filter((file) => file.endsWith(".sql"))
+  .map((file) => readFileSync(resolve(migrationsDir, file), "utf8")).join("\n")
+const consolidatedMigration = (source) => {
+  const name = /^supabase\/migrations\/(\d{14}_[a-z0-9_]+)\.sql$/.exec(source)?.[1]
+  return Boolean(name) && migrationSections.includes(`\n-- ==== ${name} ====\n`)
+}
 const scopeKeys = ["id", "workstream", "outcome", "mandatory", "weight", "acceptanceCriteria", "verificationRequired", "dependencies"]
 const projection = checklist.items.map((item) => Object.fromEntries(scopeKeys.map((key) => [key, item[key]])))
 if (JSON.stringify(projection) !== JSON.stringify(checklist.scopeBaseline)) {
@@ -42,7 +51,7 @@ for (const item of checklist.items) {
   if (!item.acceptanceCriteria.length || !item.verificationRequired.length) errors.push(`${item.id}: missing criteria or verification requirements.`)
   for (const dependency of item.dependencies) if (!ids.has(dependency)) errors.push(`${item.id}: unknown dependency ${dependency}.`)
   for (const source of [...item.sources, ...item.testFiles]) {
-    if (!existsSync(resolve(root, source))) errors.push(`${item.id}: missing source ${source}.`)
+    if (!existsSync(resolve(root, source)) && !consolidatedMigration(source)) errors.push(`${item.id}: missing source ${source}.`)
   }
   if (implemented.has(item.status) && !item.sources.length && !item.evidence.some((proof) => proof.kind === "engineering_artifact")) {
     errors.push(`${item.id}: implemented without source or engineering artifact.`)

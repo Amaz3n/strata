@@ -1,4 +1,5 @@
-const test=require("node:test"),assert=require("node:assert/strict"),fs=require("node:fs")
+const { migrationSql } = require("./support/migration-sql")
+const test=require("node:test"),assert=require("node:assert/strict")
 const {PGlite}=require("@electric-sql/pglite")
 const ORG="00000000-0000-4000-8000-000000000001",PKG="00000000-0000-4000-8000-000000000002",HOME="00000000-0000-4000-8000-000000000003",OTHER="00000000-0000-4000-8000-000000000004"
 async function setup(t){
@@ -6,7 +7,7 @@ async function setup(t){
  await db.exec("create role anon;create role authenticated;create role service_role;create table outbox(id bigint generated always as identity primary key,org_id uuid,job_type text,payload jsonb,status text default 'pending',retry_count integer default 0,last_error text,run_at timestamptz default now(),updated_at timestamptz default now(),created_at timestamptz default now(),priority integer default 0);create table start_packages(id uuid primary key,org_id uuid,project_id uuid,status text,metadata jsonb default '{}');")
  for(const table of ['schedule_items','budgets','inspections'])await db.exec(`create table ${table}(id uuid primary key default gen_random_uuid(),org_id uuid,project_id uuid,name text)`)
  await db.exec("create table budget_lines(id uuid primary key default gen_random_uuid(),org_id uuid,budget_id uuid,name text);create table inspection_items(id uuid primary key default gen_random_uuid(),org_id uuid,inspection_id uuid,name text);create table schedule_assignments(id uuid primary key default gen_random_uuid(),org_id uuid,project_id uuid,schedule_item_id uuid);create table schedule_dependencies(id uuid primary key default gen_random_uuid(),org_id uuid,project_id uuid,item_id uuid,depends_on_item_id uuid);")
- for(const file of ['20261003023000_starts_job_claim_leases.sql','20261003025000_starts_generated_artifact_fences.sql'])await db.exec(fs.readFileSync(require.resolve(`../supabase/migrations/${file}`),'utf8'))
+ for(const file of ['20261003023000_starts_job_claim_leases.sql','20261003025000_starts_generated_artifact_fences.sql'])await db.exec(migrationSql(file.replace(/\.sql$/, "")))
  await db.query("insert into start_packages(id,org_id,project_id,status) values($1,$2,$3,'releasing')",[PKG,ORG,HOME])
  await db.query("insert into outbox(org_id,job_type,payload) values($1,'start_release',$2)",[ORG,{start_package_id:PKG}])
  const job=(await db.query("select * from claim_starts_jobs(1)")).rows[0]

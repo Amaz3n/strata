@@ -1,10 +1,10 @@
+const { migrationSql } = require("./support/migration-sql")
 const fs=require('node:fs'),test=require('node:test'),assert=require('node:assert/strict')
 const {database,id}=require('./fixtures/catalog-publication-database')
-const migration='supabase/migrations/20261004065019_catalog_group_publication.sql'
 async function setup(t){
  const f=await database(t),ddl=fs.readFileSync('supabase/migrations/20260718182717_option_catalog_design_studio.sql','utf8')
  for(const table of ['selection_groups','selection_group_categories'])await f.db.exec(ddl.match(new RegExp(`create table public\\.${table} \\([\\s\\S]*?\\n\\);`))[0])
- await f.db.exec(fs.readFileSync(migration,'utf8'))
+ await f.db.exec(migrationSql("20261004065019_catalog_group_publication"))
  const review=async request=>({...request,expectedCategoryVersions:(await f.db.query('select catalog_group_category_versions($1,$2::uuid[]) versions',[f.org,request.categoryIds])).rows[0].versions})
  const request=await review({id:null,communityId:null,name:'Kitchen cutoff',scheduleTaskKey:'frame',cutoffOffsetDays:-14,cutoffAnchor:'start',sortOrder:0,categoryIds:[id(40),id(41)],expectedGroup:null})
  const publish=(patch={})=>f.db.query('select publish_catalog_group_contents($1,$2,$3,$4) receipt',[patch.org??f.org,patch.actor??f.actor,patch.key??id(190),JSON.stringify(patch.request??request)])

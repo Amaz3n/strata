@@ -1,3 +1,4 @@
+const { migrationSql } = require("./support/migration-sql")
 const test = require('node:test'), assert = require('node:assert/strict'), fs = require('node:fs')
 const { PGlite } = require('@electric-sql/pglite')
 const { preparationOwner } = require('./support/reservation-creation-owners')
@@ -38,7 +39,7 @@ async function fixture(t,{existing=false,started=false}={}) {
   }
   await db.exec(`create table lots(id uuid primary key,org_id uuid,community_id uuid,division_id uuid,project_id uuid,lot_number text,status text,updated_at timestamptz default now());
     create table budgets(id uuid primary key,org_id uuid,project_id uuid);create table budget_lines(id uuid primary key,org_id uuid,budget_id uuid);`)
-  const authority=fs.readFileSync('supabase/migrations/20261003232615_purchase_agreement_signing_ownership.sql','utf8')
+  const authority=migrationSql("20261003232615_purchase_agreement_signing_ownership")
   await db.exec(authority.slice(authority.indexOf('create function public.assert_agreement_signing_actor'),authority.indexOf('create function public.purchase_agreement_signing_input')))
   const invoice=fs.readFileSync('supabase/migrations/20260905004943_invoice_budget_mapping.sql','utf8')
   await db.exec(invoice.slice(invoice.indexOf('create or replace function public.create_invoice_atomic'),invoice.indexOf('create or replace function public.update_invoice_atomic')))

@@ -1,11 +1,12 @@
-const fs=require('node:fs'),test=require('node:test'),assert=require('node:assert/strict')
+const { migrationSql } = require("./support/migration-sql")
+const test=require('node:test'),assert=require('node:assert/strict')
 const {database:base,id}=require('./fixtures/catalog-publication-database')
 async function database(t){
  const f=await base(t,{withPrices:true,margin:true})
  await f.db.exec("alter table house_plans add column name text,add column status text default 'active';alter table house_plan_versions add column house_plan_id uuid references house_plans(id),add column status text default 'released',add column version_number integer,add column label text;")
  await f.db.query('insert into house_plans(id,org_id,name) values($1,$2,$3)',[id(30),f.org,'Alpha'])
  await f.db.query('insert into house_plan_versions(id,org_id,house_plan_id,version_number) values($1,$2,$3,1)',[id(31),f.org,id(30)])
- for(const name of ['20261004015201_catalog_price_publication.sql','20261004025518_catalog_publication_reconciliation.sql','20261004034500_catalog_publication_history.sql'])await f.db.exec(fs.readFileSync(`supabase/migrations/${name}`,'utf8'))
+ for(const name of ['20261004015201_catalog_price_publication.sql','20261004025518_catalog_publication_reconciliation.sql','20261004034500_catalog_publication_history.sql'])await f.db.exec(migrationSql(name.replace(/\.sql$/, "")))
  await require('./fixtures/catalog-group-recovery-database').installGroupRecovery(f.db)
  const prices={communityId:null,items:[{optionId:id(50),packageId:null,housePlanVersionId:id(31),priceCents:123,isAvailable:true,expectedPrice:null}]}
  const list=(cursor=null,patch={})=>f.db.query('select list_catalog_publication_history($1,$2,$3,$4) result',[patch.org??f.org,patch.actor??f.actor,patch.community??null,cursor?JSON.stringify(cursor):null])

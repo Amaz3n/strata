@@ -1,5 +1,6 @@
+const { migrationSql } = require("./support/migration-sql")
 require('../scripts/register-ts-node-test')
-const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path')
+const test=require('node:test'),assert=require('node:assert/strict')
 const {PGlite}=require('@electric-sql/pglite')
 const ORG='00000000-0000-4000-8000-000000000001',PROJECT='00000000-0000-4000-8000-000000000002',COVERAGE='00000000-0000-4000-8000-000000000003',OTHER='00000000-0000-4000-8000-000000000004'
 async function fixture(t){
@@ -12,7 +13,7 @@ async function fixture(t){
  create table warranty_sla_targets(org_id uuid,severity text,first_response_hours integer,resolution_days integer,unique(org_id,severity));
  create table events(id uuid primary key default gen_random_uuid(),org_id uuid,event_type text,entity_type text,entity_id uuid,payload jsonb,channel text);
  create table audit_log(id bigint generated always as identity primary key,org_id uuid,actor_user_id uuid,action text,entity_type text,entity_id uuid,after_data jsonb,source text);`)
- await db.exec(fs.readFileSync(path.join(__dirname,'../supabase/migrations/20261003049000_warranty_courtesy_reservations.sql'),'utf8'))
+ await db.exec(migrationSql("20261003049000_warranty_courtesy_reservations"))
  await db.query('insert into orgs values($1),($2)',[ORG,OTHER]);await db.query('insert into projects values($1,$2)',[PROJECT,ORG]);await db.query("insert into project_warranty_coverage values($1,$2,$3,'2026-09-03')",[COVERAGE,ORG,PROJECT])
  const reserve=async(milestone='day_30',asOf='2026-10-03',org=ORG)=>(await db.query('select reserve_warranty_courtesy_inspection($1,$2,$3,$4::date) result',[org,COVERAGE,milestone,asOf])).rows[0].result
  const counts=async()=>(await db.query('select (select count(*)::int from warranty_requests) requests,(select count(*)::int from events) events,(select count(*)::int from audit_log) audits,(select count(*)::int from warranty_courtesy_reservations) receipts')).rows[0]

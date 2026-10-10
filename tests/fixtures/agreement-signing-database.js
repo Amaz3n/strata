@@ -1,7 +1,8 @@
+const { migrationSql } = require("../support/migration-sql")
 const fs=require('node:fs')
 const {PGlite}=require('@electric-sql/pglite')
 const id=n=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`
-const ownership=fs.readFileSync('supabase/migrations/20261003232615_purchase_agreement_signing_ownership.sql','utf8')
+const ownership=migrationSql("20261003232615_purchase_agreement_signing_ownership")
 async function setup(t,apply=true) {
  const db=new PGlite();t.after(()=>db.close())
  await db.exec(fs.readFileSync('tests/fixtures/esign-schema.sql','utf8'))

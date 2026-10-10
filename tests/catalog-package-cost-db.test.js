@@ -1,3 +1,4 @@
+const { migrationSql } = require("./support/migration-sql")
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs')
 const {database,id}=require('./fixtures/catalog-publication-database')
 test('unprivileged package create omits cost; price/member edit preserves undisclosed cost and redacts commit/replay replies',async t=>{
@@ -39,7 +40,7 @@ test('margin revocation fences cost-bearing replay and receipt matching without 
  // Inspector itself exposes metadata only, and must not be a private-input equality oracle.
  await f.db.exec("alter table house_plans add column name text,add column status text default 'active';alter table house_plan_versions add column house_plan_id uuid references house_plans(id),add column status text default 'released',add column version_number integer,add column label text;")
  await f.db.exec(fs.readFileSync('supabase/migrations/20261004015201_catalog_price_publication.sql','utf8'))
- await f.db.exec(fs.readFileSync('supabase/migrations/20261004025518_catalog_publication_reconciliation.sql','utf8'))
+ await f.db.exec(migrationSql("20261004025518_catalog_publication_reconciliation"))
  await assert.rejects(f.db.query('select inspect_catalog_publication($1,$2,$3,$4,$5)',[f.org,f.actor,'package',id(90),JSON.stringify(f.request)]),/Margin permission/)
  assert.equal(await f.count('catalog_package_publication_receipts'),1);assert.equal(saved.package.cost_cents,5000)
 })

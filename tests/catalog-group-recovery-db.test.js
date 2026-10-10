@@ -1,4 +1,5 @@
-const fs=require('node:fs'),test=require('node:test'),assert=require('node:assert/strict')
+const { migrationSql } = require("./support/migration-sql")
+const test=require('node:test'),assert=require('node:assert/strict')
 const {database:base,id}=require('./fixtures/catalog-publication-database')
 async function setup(t){
  const f=await base(t,{withPrices:true,margin:true})
@@ -6,7 +7,7 @@ async function setup(t){
  await f.db.query('insert into house_plans(id,org_id,name) values($1,$2,$3)',[id(30),f.org,'Alpha'])
  await f.db.query('insert into house_plan_versions(id,org_id,house_plan_id,version_number) values($1,$2,$3,1)',[id(31),f.org,id(30)])
  await f.db.query('update selection_categories set name=$1 where id=$2',['Original kitchen',id(40)])
- for(const name of ['20261004015201_catalog_price_publication.sql','20261004025518_catalog_publication_reconciliation.sql','20261004033000_catalog_publication_intents.sql','20261004034500_catalog_publication_history.sql','20261004043000_catalog_publication_pending_scopes.sql'])await f.db.exec(fs.readFileSync(`supabase/migrations/${name}`,'utf8'))
+ for(const name of ['20261004015201_catalog_price_publication.sql','20261004025518_catalog_publication_reconciliation.sql','20261004033000_catalog_publication_intents.sql','20261004034500_catalog_publication_history.sql','20261004043000_catalog_publication_pending_scopes.sql'])await f.db.exec(migrationSql(name.replace(/\.sql$/, "")))
  await require('./fixtures/catalog-group-recovery-database').installGroupRecovery(f.db)
  const versions=(await f.db.query('select catalog_group_category_versions($1,$2::uuid[]) versions',[f.org,[id(40),id(41)]])).rows[0].versions
  const request={id:null,communityId:null,name:'Kitchen cutoff',scheduleTaskKey:'frame',cutoffOffsetDays:-14,cutoffAnchor:'start',sortOrder:0,categoryIds:[id(40),id(41)],expectedGroup:null,expectedCategoryVersions:versions}
