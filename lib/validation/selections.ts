@@ -180,6 +180,8 @@ export const cutoffOverrideSchema = z.object({
   reason: z.string().trim().min(5).max(500),
 })
 
+export const revertCutoffSchema = cutoffOverrideSchema.pick({ projectId: true, groupId: true, reason: true })
+
 export const appointmentSchema = z.object({
   id: optionalUuid,
   communityId: optionalUuid,

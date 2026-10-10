@@ -35,6 +35,7 @@ const withdrawPlanSchema = z.object({
   housePlanId: z.string().uuid(),
 })
 import { recordPaymentReversal } from "@/lib/services/payments"
+import { revokePortalToken } from "@/lib/services/portal-access"
 import { getPlanLadder } from "@/lib/services/house-plans"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
 import { createProject } from "@/lib/services/projects"
@@ -762,24 +763,40 @@ export async function bulkRepriceCommunityPlans(input: unknown, orgId?: string) 
   if ((rows ?? []).length !== parsed.availabilityIds.length) throw new Error("One or more plans were not found on this price sheet.")
 
   let repriced = 0
+  const conflicts: string[] = []
   for (const row of rows ?? []) {
     const current = Number(row.base_price_cents)
+    // Targets come from the price the caller saw, never from the current one,
+    // so a retry of the same request lands on the same price instead of
+    // compounding the percentage.
+    const basis = parsed.basisCents[row.id]
     const next = Math.max(
       0,
-      Math.round(parsed.mode === "percent" ? current * (1 + parsed.value / 100) : current + parsed.value),
+      Math.round(parsed.mode === "percent" ? basis * (1 + parsed.value / 100) : basis + parsed.value),
     )
-    if (next === current) continue
-    const { error: updateError } = await context.supabase
+    if (current === next) continue
+    if (current !== basis) {
+      conflicts.push(row.id)
+      continue
+    }
+    const { data: updated, error: updateError } = await context.supabase
       .from("community_plan_availability")
       .update({ base_price_cents: next, metadata: repriceMetadata(row) })
       .eq("org_id", context.orgId)
       .eq("id", row.id)
+      .eq("base_price_cents", basis)
+      .select("id")
+      .maybeSingle()
     if (updateError) throw new Error(`Failed to reprice: ${updateError.message}`)
+    if (!updated) {
+      conflicts.push(row.id)
+      continue
+    }
     repriced += 1
     await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "community_plan_availability.repriced", entityType: "house_plan", entityId: row.house_plan_id, payload: { community_id: parsed.communityId, elevation_id: row.elevation_id, base_price_cents: next, bulk: true } })
   }
-  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "community", entityId: parsed.communityId, after: { repriced, mode: parsed.mode, value: parsed.value } })
-  return { repriced }
+  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "community", entityId: parsed.communityId, after: { repriced, conflicts: conflicts.length, mode: parsed.mode, value: parsed.value } })
+  return { repriced, conflicts }
 }
 
 /**
@@ -1531,25 +1548,58 @@ export async function executePurchaseAgreementFromEnvelopeExecution(input: { org
   checked(await supabase.from("contracts").update({ signature_data: { ...signatureData, execution_effects_completed: true } }).eq("org_id", input.orgId).eq("id", contract.id))
 }
 
+/**
+ * Voiding unwinds a sale: the deposit is refunded or forfeited, the lot goes
+ * back on the market, the lead is un-won, the closing is cancelled, selections
+ * unlock and the buyer loses the project. Each of those is checked — a void that
+ * silently left the buyer's portal open is not a void.
+ *
+ * The contract's status transition is the fence, and it runs before any money
+ * moves: two voids racing on one agreement cannot both refund the deposit.
+ * Revoking the buyer's portal access goes through `revokePortalToken`, the one
+ * path that also ends the claimed-account grants behind the link, so the voider
+ * must hold that permission too — checked before anything changes.
+ */
 export async function voidPurchaseAgreement(input: unknown, orgId?: string) {
   const parsed = voidPurchaseAgreementSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.manage", context)
-  const { data: contract } = await context.supabase.from("contracts").select("id, project_id, status, snapshot").eq("org_id", context.orgId).eq("id", parsed.contractId).eq("contract_type", "purchase_agreement").maybeSingle()
+  await requirePermission("project.manage", context)
+  const { data: contract, error: contractError } = await context.supabase.from("contracts").select("id, project_id, status, snapshot").eq("org_id", context.orgId).eq("id", parsed.contractId).eq("contract_type", "purchase_agreement").maybeSingle()
+  if (contractError) throw new Error(`Failed to load purchase agreement: ${contractError.message}`)
   if (!contract || !["draft", "active"].includes(contract.status)) throw new Error("Active purchase agreement not found")
-  const { data: reservation } = await context.supabase.from("lot_reservations").select("id, prospect_id").eq("org_id", context.orgId).eq("contract_id", contract.id).maybeSingle()
+  const { data: reservation, error: reservationError } = await context.supabase.from("lot_reservations").select("id, prospect_id, deposit_invoice_id").eq("org_id", context.orgId).eq("contract_id", contract.id).in("status", LIVE_RESERVATION_STATUSES).maybeSingle()
+  if (reservationError) throw new Error(`Failed to load the agreement's reservation: ${reservationError.message}`)
+  // Releasing the reservation refunds or forfeits its deposit; refuse before the fence, not after it.
+  if (reservation?.deposit_invoice_id) await requirePermission("payment.release", context)
+
+  const now = new Date().toISOString()
+  const snapshot = { ...(contract.snapshot ?? {}), cancellation_reason: parsed.reason, cancelled_at: now }
+  const { data: voided, error: voidError } = await context.supabase.from("contracts").update({ status: "void", snapshot }).eq("org_id", context.orgId).eq("id", contract.id).in("status", ["draft", "active"]).select("id").maybeSingle()
+  if (voidError) throw new Error(`Failed to void purchase agreement: ${voidError.message}`)
+  if (!voided) throw new Error("Active purchase agreement not found")
+
   if (reservation) await releaseReservation({ reservationId: reservation.id, reason: parsed.reason, depositDisposition: parsed.depositDisposition }, context.orgId)
-  // A voided agreement un-wins the lead: back to qualified so the funnel stays truthful.
-  if (reservation?.prospect_id) {
-    await context.supabase.from("prospects").update({ status: "qualified", won_at: null, updated_at: new Date().toISOString() }).eq("org_id", context.orgId).eq("id", reservation.prospect_id).eq("status", "won")
+
+  const checked = (label: string) => ({ error }: { error: { message: string } | null }) => {
+    if (error) throw new Error(`Purchase agreement voided, but ${label} failed: ${error.message}`)
   }
+  const { data: clientTokens, error: tokenError } = await context.supabase.from("portal_access_tokens").select("id").eq("org_id", context.orgId).eq("project_id", contract.project_id).eq("portal_type", "client").is("revoked_at", null)
+  if (tokenError) throw new Error(`Purchase agreement voided, but loading the buyer's portal access failed: ${tokenError.message}`)
   await Promise.all([
-    context.supabase.from("contracts").update({ status: "void", snapshot: { ...(contract.snapshot ?? {}), cancellation_reason: parsed.reason, cancelled_at: new Date().toISOString() } }).eq("org_id", context.orgId).eq("id", contract.id),
-    context.supabase.from("closings").update({ status: "cancelled", cancel_reason: parsed.reason }).eq("org_id", context.orgId).eq("project_id", contract.project_id).neq("status", "closed"),
-    context.supabase.from("project_selections").update({ locked_at: null }).eq("org_id", context.orgId).eq("project_id", contract.project_id),
-    context.supabase.from("portal_access_tokens").update({ revoked_at: new Date().toISOString() }).eq("org_id", context.orgId).eq("project_id", contract.project_id).eq("portal_type", "client").is("revoked_at", null),
-    context.supabase.from("projects").update({ client_id: null }).eq("org_id", context.orgId).eq("id", contract.project_id),
+    // A voided agreement un-wins the lead: back to qualified so the funnel stays truthful.
+    reservation?.prospect_id
+      ? context.supabase.from("prospects").update({ status: "qualified", won_at: null, updated_at: now }).eq("org_id", context.orgId).eq("id", reservation.prospect_id).eq("status", "won").then(checked("re-opening the lead"))
+      : null,
+    context.supabase.from("closings").update({ status: "cancelled", cancel_reason: parsed.reason }).eq("org_id", context.orgId).eq("project_id", contract.project_id).neq("status", "closed").then(checked("cancelling the closing")),
+    context.supabase.from("project_selections").update({ locked_at: null }).eq("org_id", context.orgId).eq("project_id", contract.project_id).then(checked("unlocking selections")),
+    context.supabase.from("projects").update({ client_id: null }).eq("org_id", context.orgId).eq("id", contract.project_id).then(checked("detaching the buyer")),
+    ...(clientTokens ?? []).map((token) => revokePortalToken(token.id, context.orgId)),
   ])
-  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "purchase_agreement_voided", entityType: "contract", entityId: contract.id, payload: { reason: parsed.reason } })
+
+  await Promise.all([
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "purchase_agreement_voided", entityType: "contract", entityId: contract.id, payload: { reason: parsed.reason, deposit_disposition: parsed.depositDisposition, revoked_portal_tokens: (clientTokens ?? []).length } }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "contract", entityId: contract.id, before: { status: contract.status }, after: { status: "void", cancellation_reason: parsed.reason, deposit_disposition: parsed.depositDisposition } }),
+  ])
 }
 import { createHash, randomUUID } from "crypto"

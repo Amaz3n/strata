@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache"
 import { z } from "zod"
 import { discoverCatalogGroupCategories } from "@/lib/services/catalog-group-categories"
 import { reviewCatalogGroupCategories } from "@/lib/services/catalog-group-publication"
-import { selectionGroupSchema } from "@/lib/validation/selections"
+import { revertCutoffSchema, selectionGroupSchema } from "@/lib/validation/selections"
 
 import { createHash } from "node:crypto"
 
@@ -150,7 +150,7 @@ export async function overrideGroupCutoffAction(input: unknown) {
 }
 
 export async function revertGroupCutoffAction(input: unknown) {
-  const parsed = z.object({ projectId: z.string().uuid(), groupId: z.string().uuid() }).parse(input)
+  const parsed = revertCutoffSchema.parse(input)
   return run(() => revertCutoffToSchedule(parsed))
 }
 

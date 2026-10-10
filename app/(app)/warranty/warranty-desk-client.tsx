@@ -32,6 +32,7 @@ import {
   findOriginatingCommitmentsAction, generateWarrantyCourtesyInspectionsAction, getWarrantyRequestCostBasisAction,
   issueWarrantyBackchargeAction, resolveWarrantyBackchargeAction, scheduleWarrantyVisitAction,
   verifyWarrantyVisitAction,
+  rejectWarrantyVisitCompletionAction,
 } from "./actions"
 
 type DeskRequest = WarrantyRequest & { project_name?: string | null; community_name?: string | null }
@@ -348,24 +349,40 @@ export function WarrantyDeskClient({
                       <Input
                         value={verifyNote[visit.id] ?? ""}
                         onChange={(event) => setVerifyNote((state) => ({ ...state, [visit.id]: event.target.value }))}
-                        placeholder="What the homeowner is told"
+                        placeholder="What the homeowner is told, or why the work is sent back"
                       />
                     </td>
-                    <td className="px-3 py-2 text-right">
-                      <Button
-                        size="sm"
-                        disabled={pending}
-                        onClick={() => startTransition(async () => {
-                          const result = await verifyWarrantyVisitAction(visit.id, verifyNote[visit.id]?.trim() || undefined)
-                          if (!result.success) { toast.error(result.error); return }
-                          setAwaitingVerification((rows) => rows.filter((row) => row.id !== visit.id))
-                          setRequests((rows) => rows.filter((row) => row.id !== visit.request_id || visit.outcome !== "resolved"))
-                          toast.success(visit.outcome === "resolved" ? "Verified and resolved" : "Verified — request stays open")
-                          router.refresh()
-                        })}
-                      >
-                        Verify
-                      </Button>
+                    <td className="px-3 py-2">
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={pending || (verifyNote[visit.id]?.trim().length ?? 0) < 3}
+                          onClick={() => startTransition(async () => {
+                            const result = await rejectWarrantyVisitCompletionAction(visit.id, verifyNote[visit.id]?.trim() ?? "")
+                            if (!result.success) { toast.error(result.error); return }
+                            setAwaitingVerification((rows) => rows.filter((row) => row.id !== visit.id))
+                            toast.success("Sent back — book the corrective visit from the request")
+                            router.refresh()
+                          })}
+                        >
+                          Send back
+                        </Button>
+                        <Button
+                          size="sm"
+                          disabled={pending}
+                          onClick={() => startTransition(async () => {
+                            const result = await verifyWarrantyVisitAction(visit.id, verifyNote[visit.id]?.trim() || undefined)
+                            if (!result.success) { toast.error(result.error); return }
+                            setAwaitingVerification((rows) => rows.filter((row) => row.id !== visit.id))
+                            setRequests((rows) => rows.filter((row) => row.id !== visit.request_id || visit.outcome !== "resolved"))
+                            toast.success(visit.outcome === "resolved" ? "Verified and resolved" : "Verified — request stays open")
+                            router.refresh()
+                          })}
+                        >
+                          Verify
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 ))}

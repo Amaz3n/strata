@@ -1,7 +1,8 @@
 import { publishCatalogGroup } from "@/lib/services/catalog-group-publication"
 import { publishCatalogPriceBatch } from "@/lib/services/catalog-price-publication"
 import { z } from "zod"
-import { getDivisionAccessForUser } from "@/lib/services/authorization"
+import { getDivisionAccessForUser, requireAuthorization } from "@/lib/services/authorization"
+import { resolveVisibleProjectIds } from "@/lib/services/projects"
 import { publishCatalogPackage } from "@/lib/services/catalog-package-publication"
 import { readAllRows, readAllRowsById } from "@/lib/land/paging"
 import { recordAudit } from "@/lib/services/audit"
@@ -1019,12 +1020,17 @@ export async function listAppointments(opts: {
   // superintendent checking a cutoff must not be blocked by the coordinator's
   // manage permission. Booking and rescheduling keep the stricter gate.
   await requirePermission("selections.read", context)
+  // The calendar shows the homes the reader can see: a division- or
+  // project-scoped coordinator does not read another division's buyers.
+  const visibleProjectIds = await resolveVisibleProjectIds({ ...context, includePrecon: true })
+  if (visibleProjectIds?.length === 0) return []
   let query = context.supabase
     .from("design_studio_appointments")
     .select("id, community_id, project_id, contact_id, coordinator_user_id, scheduled_at, duration_minutes, location, status, group_ids, notes, project:projects(name), community:communities(name), buyer:contacts(full_name), coordinator:app_users(full_name)")
     .eq("org_id", context.orgId)
     .order("scheduled_at")
     .limit(Math.min(opts.limit ?? 50, 100))
+  if (visibleProjectIds) query = query.in("project_id", visibleProjectIds)
   if (opts.communityId) query = query.eq("community_id", opts.communityId)
   if (opts.from) query = query.gte("scheduled_at", opts.from)
   if (opts.to) query = query.lte("scheduled_at", opts.to)
@@ -1051,6 +1057,27 @@ export async function upsertAppointment(raw: AppointmentInput): Promise<Appointm
   const input = appointmentSchema.parse(raw)
   const context = await requireOrgContext()
   await requirePermission("design_studio.manage", context)
+  // Booking is a mutation on a home, so it is authorized on the home — its
+  // project and division scope — not just the org-wide permission. A
+  // reschedule is authorized on the home the appointment already belongs to
+  // as well as the one it is being moved to.
+  const authorizeHome = (projectId: string) =>
+    requireAuthorization({ permission: "design_studio.manage", orgId: context.orgId, userId: context.userId, projectId,
+      supabase: context.supabase, resourceType: "project", resourceId: projectId, logDecision: true })
+  if (input.id) {
+    const { data: existing, error: existingError } = await context.supabase.from("design_studio_appointments")
+      .select("project_id").eq("org_id", context.orgId).eq("id", input.id).maybeSingle()
+    if (existingError) throw new Error(`Failed to load appointment: ${existingError.message}`)
+    if (!existing) throw new Error("Appointment not found")
+    if (existing.project_id !== input.projectId) await authorizeHome(existing.project_id)
+  }
+  await authorizeHome(input.projectId)
+  if (input.communityId) {
+    const { data: lot, error: lotError } = await context.supabase.from("lots")
+      .select("community_id").eq("org_id", context.orgId).eq("project_id", input.projectId).maybeSingle()
+    if (lotError) throw new Error(`Failed to verify the home's community: ${lotError.message}`)
+    if (lot?.community_id !== input.communityId) throw new Error("The appointment's community must be the home's community")
+  }
   const payload = {
     community_id: input.communityId ?? null,
     project_id: input.projectId,

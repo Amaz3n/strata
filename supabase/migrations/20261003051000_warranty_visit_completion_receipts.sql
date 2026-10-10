@@ -96,7 +96,7 @@ declare
  v public.warranty_service_visits; req public.warranty_requests; receipt public.warranty_visit_completion_receipts;
  parent_id uuid; home_id uuid; normalized jsonb; photos uuid[]; signature uuid; hours numeric; rate numeric; material numeric; labor bigint;
  outcome_value text; note_value text; signoff text; now_at timestamptz:=clock_timestamp(); evidence jsonb;
- event_id_value uuid; audit_id_value bigint; prior jsonb;
+ event_id_value uuid; audit_id_value bigint; prior jsonb; pending boolean;
 begin
  if p_org_id is null or p_visit_id is null or p_actor_id is null or jsonb_typeof(p_input) is distinct from 'object' then raise exception 'Warranty completion identity and input are required'; end if;
  outcome_value:=p_input->>'outcome'; note_value:=p_input->>'outcome_note'; signoff:=p_input->>'buyer_signoff_name';
@@ -107,6 +107,9 @@ begin
  if jsonb_array_length(coalesce(p_input->'photo_file_ids','[]'))>20 then raise exception 'Warranty completion photos exceed limit'; end if;
  select coalesce(array_agg(distinct x::uuid order by x::uuid),'{}') into photos from jsonb_array_elements_text(coalesce(p_input->'photo_file_ids','[]')) x;
  signature:=(p_input->>'buyer_signature_file_id')::uuid;
+ -- A resolution with no photo and no homeowner sign-off is a claim, not a verified
+ -- closure: the request waits in the verification queue like a trade's report.
+ pending:=outcome_value='resolved' and cardinality(photos)=0 and nullif(btrim(signoff),'') is null;
  if exists(select 1 from unnest(array['labor_hours','labor_rate_cents','material_cents']) k where p_input ? k and p_input->k<>'null'::jsonb and jsonb_typeof(p_input->k)<>'number') then raise exception 'Warranty completion costs must be numeric'; end if;
  hours:=(p_input->>'labor_hours')::numeric; rate:=(p_input->>'labor_rate_cents')::numeric; material:=coalesce((p_input->>'material_cents')::numeric,0);
  if hours<0 or hours>24 or rate<0 or rate>100000000 or rate<>trunc(rate) or material<0 or material>100000000 or material<>trunc(material) then raise exception 'Warranty completion costs are invalid'; end if;
@@ -129,7 +132,7 @@ begin
   evidence:=jsonb_build_object('status',v.status,'outcome',v.outcome,'outcome_note',v.outcome_note,'completed_at',v.completed_at,'completed_by',v.completed_by,'buyer_signoff_name',v.buyer_signoff_name,'buyer_signoff_at',v.buyer_signoff_at,'buyer_signature_file_id',v.buyer_signature_file_id,'labor_hours',v.labor_hours,'labor_rate_cents',v.labor_rate_cents,'internal_labor_cents',v.internal_labor_cents,'internal_material_cents',v.internal_material_cents);
   if evidence<>receipt.visit_evidence then raise exception 'Recorded warranty completion evidence changed'; end if;
   perform 1 from public.events where id=receipt.event_id and org_id=p_org_id and event_type='warranty_visit_completed' and entity_type='warranty_service_visit' and entity_id=v.id
-   and payload=jsonb_build_object('actor_id',receipt.actor_id,'request_id',req.id,'project_id',v.project_id,'outcome',outcome_value,'pending_verification',false,'internal_cost_cents',labor+material);
+   and payload=jsonb_build_object('actor_id',receipt.actor_id,'request_id',req.id,'project_id',v.project_id,'outcome',outcome_value,'pending_verification',pending,'internal_cost_cents',labor+material);
   if not found then raise exception 'Warranty completion event evidence changed'; end if;
   perform 1 from public.audit_log where id=receipt.audit_id and org_id=p_org_id and actor_user_id=receipt.actor_id and entity_type='warranty_service_visit' and entity_id=v.id and source='warranty_completion_transaction' and after_data=receipt.visit_evidence;
   if not found then raise exception 'Warranty completion audit evidence changed'; end if;
@@ -146,12 +149,12 @@ begin
  buyer_signoff_name=signoff,buyer_signoff_at=case when signoff is not null then now_at else null end,buyer_signature_file_id=signature,
  labor_hours=hours,labor_rate_cents=rate,internal_labor_cents=labor,internal_material_cents=material,updated_at=now_at where id=v.id and org_id=p_org_id returning * into v;
  insert into public.warranty_visit_photos(org_id,visit_id,file_id,created_by) select p_org_id,v.id,f,p_actor_id from unnest(photos) f on conflict(visit_id,file_id) do nothing;
- update public.warranty_requests set status=case when outcome_value='resolved' then 'resolved' else 'in_progress' end,
- closed_at=case when outcome_value='resolved' then now_at else null end,
- metadata=coalesce(metadata,'{}')||jsonb_build_object('pending_verification',false,'completed_visit_id',v.id),updated_at=now_at
+ update public.warranty_requests set status=case when outcome_value='resolved' and not pending then 'resolved' else 'in_progress' end,
+ closed_at=case when outcome_value='resolved' and not pending then now_at else null end,
+ metadata=coalesce(metadata,'{}')||jsonb_build_object('pending_verification',pending,'completed_visit_id',v.id),updated_at=now_at
  where id=req.id and org_id=p_org_id returning * into req;
  evidence:=jsonb_build_object('status',v.status,'outcome',v.outcome,'outcome_note',v.outcome_note,'completed_at',v.completed_at,'completed_by',v.completed_by,'buyer_signoff_name',v.buyer_signoff_name,'buyer_signoff_at',v.buyer_signoff_at,'buyer_signature_file_id',v.buyer_signature_file_id,'labor_hours',v.labor_hours,'labor_rate_cents',v.labor_rate_cents,'internal_labor_cents',v.internal_labor_cents,'internal_material_cents',v.internal_material_cents);
- insert into public.events(org_id,event_type,entity_type,entity_id,payload,channel) values(p_org_id,'warranty_visit_completed','warranty_service_visit',v.id,jsonb_build_object('actor_id',p_actor_id,'request_id',req.id,'project_id',v.project_id,'outcome',outcome_value,'pending_verification',false,'internal_cost_cents',labor+material),'activity') returning id into event_id_value;
+ insert into public.events(org_id,event_type,entity_type,entity_id,payload,channel) values(p_org_id,'warranty_visit_completed','warranty_service_visit',v.id,jsonb_build_object('actor_id',p_actor_id,'request_id',req.id,'project_id',v.project_id,'outcome',outcome_value,'pending_verification',pending,'internal_cost_cents',labor+material),'activity') returning id into event_id_value;
  insert into public.audit_log(org_id,actor_user_id,action,entity_type,entity_id,before_data,after_data,source) values(p_org_id,p_actor_id,'update','warranty_service_visit',v.id,prior,evidence,'warranty_completion_transaction') returning id into audit_id_value;
  insert into public.warranty_visit_completion_receipts(org_id,project_id,request_id,visit_id,actor_id,input,visit_evidence,request_evidence,event_id,audit_id)
  values(p_org_id,v.project_id,req.id,v.id,p_actor_id,normalized,evidence,to_jsonb(req),event_id_value,audit_id_value) returning * into receipt;

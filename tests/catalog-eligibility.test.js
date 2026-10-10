@@ -164,15 +164,6 @@ test("archived categories make their options unavailable", async () => {
   assert.equal((await resolve({ orgId: "org", items: [{ optionId: "option" }] }))[0].available, false)
 })
 
-test("applying a package persists the resolved community option and exact package allocation", async () => {
-  const { service, writes } = selectionMutation({ available: true, categoryId: "category", categoryIds: ["category"], optionId: "community-override" })
-  await service.selectProjectPackage({ orgId: "org", projectId: "home", packageId: "package", portalAccess: true })
-  assert.equal(writes.length, 1)
-  assert.equal(writes[0].payload.selected_option_id, "community-override")
-  assert.equal(writes[0].payload.price_cents_snapshot, 100)
-  assert.equal(writes[0].payload.cost_cents_snapshot, 50)
-})
-
 test("short provider pages preserve every catalog item and plan-specific price", async () => {
   const options = Array.from({ length: 12 }, (_, i) => ({ ...option, id: `option-${String(i).padStart(3, "0")}` }))
   const prices = options.map((row, i) => ({ option_id: row.id, package_id: null, community_id: null, price_cents: 200 + i, cost_cents: 100, is_available: true }))

@@ -142,7 +142,9 @@ test('every request SLA filter is applied to the database count and selected pag
     assert.equal(q.get('status'), 'in.(open,in_progress)')
     assert.equal(q.get('offset'), '300');assert.equal(q.get('limit'), '100')
     if (sla.startsWith('first_response') || sla === 'awaiting_first_response') assert.equal(q.get('first_responded_at'), 'is.null')
-    if (sla.includes('breached')) assert.ok(q.get(sla.startsWith('first_response') ? 'first_response_due_at' : 'resolution_due_at').startsWith('lt.'))
+    if (sla === 'first_response_breached') assert.ok(q.get('first_response_due_at').startsWith('lt.'))
+    // A breach recorded before a severity change moved the due date out still counts.
+    if (sla === 'breached') assert.match(q.get('or'), /^\(resolution_due_at\.lt\.[^,]+,metadata->>sla_breached_at\.not\.is\.null\)$/)
     if (sla.includes('due_soon')) {
       const bounds = q.getAll(sla.startsWith('first_response') ? 'first_response_due_at' : 'resolution_due_at')
       assert.equal(bounds.length, 2)

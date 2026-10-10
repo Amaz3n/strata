@@ -39,10 +39,12 @@ import {
   assertBackchargeTransition,
   buildCoverageSnapshot,
   classifyCoverage,
+  completionAwaitsVerification,
   computeVisitInternalCost,
   dueCourtesyInspections,
   findOverlappingVisits,
   mergeMetadata,
+  warrantySlaBreachStamps,
   rankOriginatingCommitments,
   shouldFlagWarrantyCostDump,
   stampWarrantySla,
@@ -59,6 +61,7 @@ import {
 } from "@/lib/services/warranty/domain"
 import {
   warrantyAcknowledgeSchema,
+  warrantyRejectionReasonSchema,
   warrantyScheduleOverrideSchema,
   warrantyVisitCompleteWithCostSchema,
   warrantyVisitPortalOutcomeSchema,
@@ -336,7 +339,14 @@ async function resolveOrgProductTier(supabase: SupabaseClient, orgId: string): P
   return normalizeProductTier(data?.product_tier)
 }
 
-async function ensureWarrantyDefaults(supabase: SupabaseClient, orgId: string) {
+/**
+ * Seeds the org's first warranty program on first use. Seeding is a system
+ * write — the caller has already been authorized for whatever brought them
+ * here (logging a request, opening the desk) — and program writes need
+ * `warranty.manage` under RLS, so it runs on the service client.
+ */
+async function ensureWarrantyDefaults(orgId: string) {
+  const supabase = createServiceSupabaseClient()
   const { data: existing, error } = await supabase.from("warranty_programs").select("id").eq("org_id", orgId).limit(1)
   if (error) throw new Error(`Failed to load warranty programs: ${error.message}`)
   if ((existing ?? []).length === 0) {
@@ -376,7 +386,7 @@ async function loadPrograms(supabase: SupabaseClient, orgId: string): Promise<Wa
 export async function listWarrantyPrograms(orgId?: string): Promise<WarrantyProgramWithUsageDTO[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.manage", { supabase, orgId: resolvedOrgId, userId })
-  await ensureWarrantyDefaults(supabase, resolvedOrgId)
+  await ensureWarrantyDefaults(resolvedOrgId)
   const programs = await loadPrograms(supabase, resolvedOrgId)
   // Counted per program rather than by loading coverage rows — an org can have
   // thousands of enrolled homes, and only the tally is shown.
@@ -407,7 +417,8 @@ export async function upsertWarrantyProgram(input: WarrantyProgramInput, orgId?:
     ? await supabase.from("warranty_programs").update(payload).eq("org_id", resolvedOrgId).eq("id", parsed.id).select("id").single()
     : await supabase.from("warranty_programs").insert(payload).select("id").single()
   if (error || !program) throw new Error(`Failed to save warranty program: ${error?.message}`)
-  await supabase.from("warranty_coverage_terms").delete().eq("org_id", resolvedOrgId).eq("program_id", program.id)
+  const { error: clearError } = await supabase.from("warranty_coverage_terms").delete().eq("org_id", resolvedOrgId).eq("program_id", program.id)
+  if (clearError) throw new Error(`Failed to replace warranty terms: ${clearError.message}`)
   const { error: termsError } = await supabase.from("warranty_coverage_terms").insert(parsed.terms.map((term, index) => ({ org_id: resolvedOrgId, program_id: program.id, ...term, description: term.description ?? null, sort_order: index })))
   if (termsError) throw new Error(`Failed to save warranty terms: ${termsError.message}`)
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: parsed.id ? "update" : "insert", entityType: "warranty_program", entityId: program.id, after: payload })
@@ -417,7 +428,7 @@ export async function upsertWarrantyProgram(input: WarrantyProgramInput, orgId?:
 export async function listWarrantySlaTargets(orgId?: string): Promise<WarrantySlaTargetDTO[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.manage", { supabase, orgId: resolvedOrgId, userId })
-  await ensureWarrantyDefaults(supabase, resolvedOrgId)
+  await ensureWarrantyDefaults(resolvedOrgId)
   const { data, error } = await supabase.from("warranty_sla_targets").select("severity,first_response_hours,resolution_days").eq("org_id", resolvedOrgId).order("severity")
   if (error) throw new Error(`Failed to load SLA targets: ${error.message}`)
   return (data ?? []).map((row) => ({
@@ -472,7 +483,7 @@ export async function enrollProjectWarrantyCoverage(input: { projectId: string; 
   const effectiveDateValue = input.effectiveDate ?? (closing?.status === "closed" ? closing.actual_date : null)
   if (!effectiveDateValue) throw new Error("An effective date is required until the home is closed")
   const effectiveDate = warrantyEffectiveDateSchema.parse(effectiveDateValue)
-  await ensureWarrantyDefaults(supabase, resolvedOrgId)
+  await ensureWarrantyDefaults(resolvedOrgId)
   let query = supabase.from("warranty_programs").select("id").eq("org_id", resolvedOrgId).eq("is_active", true)
   query = input.programId ? query.eq("id", input.programId) : query.eq("is_default", true)
   const programResult = await query.order("id").limit(2)
@@ -498,11 +509,11 @@ export async function enrollProjectWarrantyCoverage(input: { projectId: string; 
  */
 export async function enrollProjectWarrantyCoverageFromSystem(input: { orgId: string; projectId: string; effectiveDate: string; source: "closing" | "completion" }) {
   const supabase = createServiceSupabaseClient()
-  return enrollSystemWarrantyCoverage(supabase, input, () => ensureWarrantyDefaults(supabase, input.orgId))
+  return enrollSystemWarrantyCoverage(supabase, input, () => ensureWarrantyDefaults(input.orgId))
 }
 
 async function prepareRequestData(supabase: SupabaseClient, orgId: string, projectId: string, input: WarrantyRequestInput, source: "office" | "buyer_portal" | "mobile") {
-  await ensureWarrantyDefaults(supabase, orgId)
+  await ensureWarrantyDefaults(orgId)
   const createdAt = new Date()
   const severity = input.severity ?? "routine_30"
   const [{ data: target, error: targetError }, coverage, { count: openPunchCount, error: punchError }] = await Promise.all([
@@ -594,7 +605,12 @@ export async function updateWarrantyRequest({ requestId, input, orgId }: { reque
   }
   if (parsed.severity && parsed.severity !== current.severity) {
     const { data: target } = await supabase.from("warranty_sla_targets").select("first_response_hours,resolution_days").eq("org_id", resolvedOrgId).eq("severity", parsed.severity).maybeSingle()
-    Object.assign(updates, { severity: parsed.severity, ...stampWarrantySla(new Date(current.created_at), target ?? DEFAULT_SLAS.find((item) => item.severity === parsed.severity)!) })
+    Object.assign(updates, {
+      severity: parsed.severity,
+      ...stampWarrantySla(new Date(current.created_at), target ?? DEFAULT_SLAS.find((item) => item.severity === parsed.severity)!),
+      // Re-grading moves the due dates; a breach already incurred stays on the record.
+      metadata: mergeMetadata(current.metadata, warrantySlaBreachStamps(current, new Date())),
+    })
   }
   if (parsed.coverage_status) {
     const coverage = await loadCoverage(supabase, resolvedOrgId, current.project_id)
@@ -685,7 +701,8 @@ export async function listWarrantyRequestsForOrg(params: { orgId?: string; statu
   if (params.coverageStatus?.length) query = query.in("coverage_status", params.coverageStatus)
   const nowIso = new Date().toISOString()
   const openStatuses = ["open", "in_progress"]
-  if (params.slaState === "breached") query = query.lt("resolution_due_at", nowIso).in("status", openStatuses)
+  // A recorded breach stays breached even after a severity change moved the due date out.
+  if (params.slaState === "breached") query = query.or(`resolution_due_at.lt.${nowIso},metadata->>sla_breached_at.not.is.null`).in("status", openStatuses)
   if (params.slaState === "due_soon") query = query.gte("resolution_due_at", nowIso).lte("resolution_due_at", new Date(Date.now() + 3 * 86_400_000).toISOString()).in("status", openStatuses)
   // First response is its own promise to the homeowner and breaches on its own
   // clock, so it filters independently of the resolution target.
@@ -870,6 +887,10 @@ export async function findWarrantyVisitConflicts(
   return conflicts
 }
 
+const VISIT_DOUBLE_BOOKED = "This assignee is already booked for the requested window"
+/** Postgres exclusion_violation: `warranty_service_visits_*_no_double_book` refused an overlapping window. */
+const DOUBLE_BOOKING_VIOLATION = "23P01"
+
 export async function scheduleWarrantyVisit(input: WarrantyVisitScheduleInput & { allow_conflict?: boolean }, orgId?: string) {
   const parsed = warrantyVisitScheduleSchema.parse(input)
   const { allow_conflict: allowConflict } = warrantyScheduleOverrideSchema.parse(input)
@@ -881,13 +902,11 @@ export async function scheduleWarrantyVisit(input: WarrantyVisitScheduleInput & 
   const request = mapWarranty(requestRow as unknown as Record<string, unknown>)
   await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, request.project_id, "warranty.write")
   const assigneeId = parsed.assignee_kind === "tech" ? parsed.assigned_user_id : parsed.assigned_company_id
-  if (!allowConflict && assigneeId) {
-    const candidates = await loadAssigneeVisitWindows(supabase, resolvedOrgId, { kind: parsed.assignee_kind, id: assigneeId }, { start: parsed.window_start, end: parsed.window_end }, { firstOnly: true })
-    const [conflict] = findOverlappingVisits(candidates, { window_start: parsed.window_start, window_end: parsed.window_end })
-    if (conflict) {
-      throw new Error("This assignee is already booked for the requested window")
-    }
-  }
+  const candidates = assigneeId
+    ? await loadAssigneeVisitWindows(supabase, resolvedOrgId, { kind: parsed.assignee_kind, id: assigneeId }, { start: parsed.window_start, end: parsed.window_end }, { firstOnly: true })
+    : []
+  const [conflict] = findOverlappingVisits(candidates, { window_start: parsed.window_start, window_end: parsed.window_end })
+  if (conflict && !allowConflict) throw new Error(VISIT_DOUBLE_BOOKED)
   const { data: last } = await supabase.from("warranty_service_visits").select("visit_number").eq("org_id", resolvedOrgId).eq("request_id", parsed.request_id).order("visit_number", { ascending: false }).limit(1).maybeSingle()
   const { data, error } = await supabase.from("warranty_service_visits").insert({
     org_id: resolvedOrgId, request_id: parsed.request_id, project_id: request.project_id,
@@ -895,8 +914,12 @@ export async function scheduleWarrantyVisit(input: WarrantyVisitScheduleInput & 
     assigned_user_id: parsed.assignee_kind === "tech" ? parsed.assigned_user_id : null,
     assigned_company_id: parsed.assignee_kind === "trade" ? parsed.assigned_company_id : null,
     window_start: parsed.window_start, window_end: parsed.window_end,
+    // Only a booking made over a conflict the coordinator saw is exempt from
+    // the database's double-booking fence; every other booking is held to it.
+    overlap_allowed: Boolean(conflict),
     metadata: parsed.note ? { schedule_note: parsed.note } : {},
   }).select(VISIT_SELECT).single()
+  if (error?.code === DOUBLE_BOOKING_VIOLATION) throw new Error(VISIT_DOUBLE_BOOKED)
   if (error || !data) throw new Error(`Failed to schedule warranty visit: ${error?.message}`)
   const now = new Date().toISOString()
   // Assignment belongs to the visit. Recording who is going out on visit 2 must
@@ -934,7 +957,8 @@ export async function rescheduleWarrantyVisit(input: unknown, orgId?: string) {
   const candidates = await loadAssigneeVisitWindows(supabase, resolvedOrgId, { kind: existing.assignee_kind, id: assigneeId }, { start: parsed.window_start, end: parsed.window_end }, { firstOnly: true, excludeVisitId: existing.id })
   if (findOverlappingVisits(candidates, { ...parsed, exclude_visit_id: existing.id }).length) throw new Error("This assignee has an overlapping visit; choose another window before rescheduling")
 
-  const { data, error } = await supabase.from("warranty_service_visits").update({ window_start: parsed.window_start, window_end: parsed.window_end, status: "scheduled", confirmed_at: null, metadata: mergeMetadata(existing.metadata, { reschedule_note: parsed.note ?? null }) }).eq("org_id", resolvedOrgId).eq("id", parsed.visit_id).eq("project_id", existing.project_id).eq("request_id", existing.request_id).eq("updated_at", existing.updated_at).eq("status", existing.status).select(VISIT_SELECT).single()
+  const { data, error } = await supabase.from("warranty_service_visits").update({ window_start: parsed.window_start, window_end: parsed.window_end, status: "scheduled", confirmed_at: null, overlap_allowed: false, metadata: mergeMetadata(existing.metadata, { reschedule_note: parsed.note ?? null }) }).eq("org_id", resolvedOrgId).eq("id", parsed.visit_id).eq("project_id", existing.project_id).eq("request_id", existing.request_id).eq("updated_at", existing.updated_at).eq("status", existing.status).select(VISIT_SELECT).single()
+  if (error?.code === DOUBLE_BOOKING_VIOLATION) throw new Error("This assignee has an overlapping visit; choose another window before rescheduling")
   if (error || !data) throw new Error(`Warranty visit changed concurrently or could not be rescheduled: ${error?.message ?? "Refresh before retrying"}`)
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "warranty_service_visit", entityId: parsed.visit_id, before: existing as unknown as Record<string, unknown>, after: data as unknown as Record<string, unknown> })
   return mapVisit(data as unknown as Record<string, unknown>)
@@ -982,7 +1006,13 @@ async function completeVisitWithClient(input: WarrantyVisitCompleteWithCostInput
   if (["resolved", "closed"].includes(requestState.status)) throw new Error("Resolved or closed warranty requests cannot receive a visit completion; reopen the request first")
   await assertWarrantyFiles(context.supabase, context.orgId, existing.project_id, [...(parsed.photo_file_ids ?? []), ...(parsed.buyer_signature_file_id ? [parsed.buyer_signature_file_id] : [])])
   const cost = computeVisitInternalCost({ labor_hours: parsed.labor_hours, labor_rate_cents: parsed.labor_rate_cents, material_cents: parsed.material_cents })
-  const now = new Date().toISOString(), pendingVerification = Boolean(context.portalCompanyId)
+  const now = new Date().toISOString()
+  const pendingVerification = completionAwaitsVerification({
+    source: context.portalCompanyId ? "portal" : "office",
+    outcome: parsed.outcome,
+    photoCount: new Set(parsed.photo_file_ids ?? []).size,
+    buyerSignoffName: parsed.buyer_signoff_name,
+  })
   const { data, error } = await context.supabase.from("warranty_service_visits").update({
     status: "completed", outcome: parsed.outcome, outcome_note: parsed.outcome_note ?? null, completed_at: now,
     completed_by: context.userId, buyer_signoff_name: parsed.buyer_signoff_name ?? null,
@@ -1077,6 +1107,36 @@ export async function verifyWarrantyVisit(visitId: string, resolutionNote?: stri
   // Verification is what actually closes a request, so it owes the homeowner the
   // same note the office path sends.
   if (resolved) await sendWarrantyResolvedEmail(resolvedOrgId, mapWarranty(updatedRequest as unknown as Record<string, unknown>))
+  return visit
+}
+
+/**
+ * The other answer to a completion claim: the work is not done. The request
+ * leaves the verification queue and goes back to in progress with the reason
+ * on the record, and the office books the corrective visit from the request.
+ * The visit itself stays as reported — what the trade claimed is evidence too.
+ */
+export async function rejectWarrantyVisitCompletion(visitId: string, reason: string, orgId?: string) {
+  const note = warrantyRejectionReasonSchema.parse(reason)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("warranty.write", { supabase, orgId: resolvedOrgId, userId })
+  const visit = await loadVisit(supabase, resolvedOrgId, visitId)
+  await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, visit.project_id, "warranty.write")
+  await assertWarrantyRequestHome(supabase, resolvedOrgId, visit.request_id, visit.project_id)
+  if (visit.status !== "completed") throw new Error("Only completed visits can be sent back")
+  const requestState = await loadWarrantyRequestState(supabase, resolvedOrgId, visit.request_id, visit.project_id)
+  const requestMetadata = requestState.metadata
+  if (["resolved", "closed"].includes(requestState.status) || requestMetadata.pending_verification !== true || requestMetadata.completed_visit_id !== visitId) throw new Error("This visit is no longer awaiting verification for the request; refresh before making changes")
+  const now = new Date().toISOString()
+  const { data: updatedRequest, error } = await supabase.from("warranty_requests").update({
+    status: "in_progress",
+    closed_at: null,
+    metadata: mergeMetadata(requestMetadata, { pending_verification: false, rejected_visit_id: visitId, rejected_by: userId, rejected_at: now, rejection_reason: note }),
+  }).eq("org_id", resolvedOrgId).eq("id", visit.request_id).eq("project_id", visit.project_id).eq("updated_at", requestState.updated_at).eq("status", requestState.status).select("id").maybeSingle()
+  if (error) throw new Error(`Failed to send the visit back: ${error.message}`)
+  if (!updatedRequest) throw new Error("The warranty request changed while you were reviewing it; refresh before sending the visit back")
+  await recordEvent({ orgId: resolvedOrgId, eventType: "warranty_visit_rejected", entityType: "warranty_service_visit", entityId: visitId, payload: { request_id: visit.request_id, project_id: visit.project_id, reason: note } })
+  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "warranty_request", entityId: visit.request_id, before: { status: requestState.status, pending_verification: true }, after: { status: "in_progress", pending_verification: false, rejected_visit_id: visitId, rejection_reason: note } })
   return visit
 }
 
@@ -1219,6 +1279,46 @@ async function sendBackchargeNotice(orgId: string, backcharge: WarrantyBackcharg
   await sendEmail({ to: recipients, subject: `Warranty backcharge WB-${backcharge.backcharge_number}`, html, from: getOrgSenderEmail(org?.slug, org?.name) })
 }
 
+/** A transition claim older than this belongs to an attempt that died; another may take it over. */
+const BACKCHARGE_CLAIM_TTL_MS = 10 * 60_000
+
+/**
+ * Issuing and resolving a backcharge move money (a vendor credit, a reversing
+ * bill) before the status changes. Two clicks used to both pass the status
+ * check and both create the credit. The claim is a conditional write on the
+ * status the caller read, taken BEFORE any side effect: the loser stops with
+ * nothing created. A claim from an attempt that died expires, and the money
+ * steps look for what that attempt already created before creating again.
+ */
+async function claimBackchargeTransition(supabase: SupabaseClient, orgId: string, existing: WarrantyBackchargeDTO, metadata: Record<string, unknown>, target: BackchargeStatus) {
+  const claimedAt = new Date().toISOString()
+  const stale = new Date(Date.now() - BACKCHARGE_CLAIM_TTL_MS).toISOString()
+  const { data, error } = await supabase.from("warranty_backcharges")
+    .update({ metadata: mergeMetadata(metadata, { transition_claimed_at: claimedAt, transition_target: target }) })
+    .eq("org_id", orgId).eq("id", existing.id).eq("project_id", existing.project_id).eq("status", existing.status)
+    .or(`metadata->>transition_claimed_at.is.null,metadata->>transition_claimed_at.lt.${stale}`)
+    .select("metadata").maybeSingle()
+  if (error) throw new Error(`Unable to claim the warranty backcharge: ${error.message}`)
+  if (!data) throw new Error("This backcharge is already being issued or resolved. Refresh before trying again.")
+  const claimed = mergeMetadata(data.metadata, {})
+  const release = async () => {
+    const { error: releaseError } = await supabase.from("warranty_backcharges")
+      .update({ metadata: mergeMetadata(claimed, { transition_claimed_at: null, transition_target: null }) })
+      .eq("org_id", orgId).eq("id", existing.id).eq("metadata->>transition_claimed_at", claimedAt)
+    if (releaseError) throw new Error(`Unable to release the warranty backcharge claim: ${releaseError.message}`)
+  }
+  return { claimedAt, metadata: claimed, release }
+}
+
+/** A vendor bill an earlier, interrupted attempt already created for this backcharge. */
+async function findBackchargeBill(supabase: SupabaseClient, orgId: string, backcharge: WarrantyBackchargeDTO, billNumber: string) {
+  const { data, error } = await supabase.from("vendor_bills").select("id").eq("org_id", orgId).eq("company_id", backcharge.company_id).eq("bill_number", billNumber).limit(2)
+  if (error) throw new Error(`Unable to check for an existing backcharge bill: ${error.message}`)
+  if ((data ?? []).length > 1) throw new Error(`More than one bill ${billNumber} exists for this trade; reconcile them before continuing`)
+  const existingId = data?.[0]?.id
+  return typeof existingId === "string" ? existingId : null
+}
+
 export async function issueWarrantyBackcharge({ backchargeId }: { backchargeId: string }, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await Promise.all([
@@ -1230,21 +1330,33 @@ export async function issueWarrantyBackcharge({ backchargeId }: { backchargeId: 
   await assertWarrantyRequestHome(supabase, resolvedOrgId, existing.warranty_request_id, existing.project_id)
   await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, existing.project_id, "bill.write")
   assertBackchargeTransition(existing.status, "issued")
-  const { count: payableCount } = await supabase.from("vendor_bills").select("id", { count: "exact", head: true }).eq("org_id", resolvedOrgId).eq("company_id", existing.company_id)
+  const { count: payableCount, error: payableError } = await supabase.from("vendor_bills").select("id", { count: "exact", head: true }).eq("org_id", resolvedOrgId).eq("company_id", existing.company_id)
+  if (payableError) throw new Error(`Unable to check the trade's AP history: ${payableError.message}`)
   if ((payableCount ?? 0) === 0 && (row.metadata as unknown as Record<string, unknown> | null)?.no_ap_history_confirmed !== true) {
     throw new Error("This trade has no AP history. Confirm recoverability before issuing the backcharge.")
   }
-  const credit = await createProjectVendorCredit({
-    projectId: existing.project_id, companyId: existing.company_id, commitmentId: existing.commitment_id,
-    billNumber: `WB-${existing.backcharge_number}`, billDate: new Date().toISOString().slice(0, 10),
-    description: existing.reason, lines: existing.cost_basis.map((item) => ({ description: item.label, amount_cents: -item.amount_cents, cost_code_id: existing.cost_code_id })),
-    metadata: { origin: "warranty_backcharge", warranty_backcharge_id: existing.id, warranty_request_id: existing.warranty_request_id, commitment_id: existing.commitment_id },
-  }, resolvedOrgId)
+  const claim = await claimBackchargeTransition(supabase, resolvedOrgId, existing, mergeMetadata(row.metadata, {}), "issued")
+  const billNumber = `WB-${existing.backcharge_number}`
+  let creditId: string
+  try {
+    creditId = await findBackchargeBill(supabase, resolvedOrgId, existing, billNumber) ?? (await createProjectVendorCredit({
+      projectId: existing.project_id, companyId: existing.company_id, commitmentId: existing.commitment_id,
+      billNumber, billDate: new Date().toISOString().slice(0, 10),
+      description: existing.reason, lines: existing.cost_basis.map((item) => ({ description: item.label, amount_cents: -item.amount_cents, cost_code_id: existing.cost_code_id })),
+      metadata: { origin: "warranty_backcharge", warranty_backcharge_id: existing.id, warranty_request_id: existing.warranty_request_id, commitment_id: existing.commitment_id },
+    }, resolvedOrgId)).id
+  } catch (creditError) {
+    await claim.release()
+    throw creditError
+  }
   const now = new Date().toISOString()
-  const { data, error } = await supabase.from("warranty_backcharges").update({ status: "issued", vendor_credit_bill_id: credit.id, issued_at: now, issued_by: userId }).eq("org_id", resolvedOrgId).eq("id", backchargeId).eq("project_id", existing.project_id).eq("warranty_request_id", existing.warranty_request_id).select(BACKCHARGE_SELECT).single()
-  if (error || !data) throw new Error(`Failed to issue warranty backcharge: ${error?.message}`)
+  const { data, error } = await supabase.from("warranty_backcharges").update({ status: "issued", vendor_credit_bill_id: creditId, issued_at: now, issued_by: userId, metadata: mergeMetadata(claim.metadata, { transition_claimed_at: null, transition_target: null }) })
+    .eq("org_id", resolvedOrgId).eq("id", backchargeId).eq("project_id", existing.project_id).eq("warranty_request_id", existing.warranty_request_id)
+    .eq("status", existing.status).eq("metadata->>transition_claimed_at", claim.claimedAt).select(BACKCHARGE_SELECT).maybeSingle()
+  if (error) throw new Error(`Failed to issue warranty backcharge: ${error.message}`)
+  if (!data) throw new Error("The backcharge changed while it was being issued; refresh and reconcile its vendor credit")
   const issued = mapBackcharge(data as unknown as Record<string, unknown>)
-  await recordEvent({ orgId: resolvedOrgId, eventType: "warranty_backcharge_issued", entityType: "warranty_backcharge", entityId: backchargeId, payload: { vendor_credit_bill_id: credit.id, amount_cents: issued.amount_cents } })
+  await recordEvent({ orgId: resolvedOrgId, eventType: "warranty_backcharge_issued", entityType: "warranty_backcharge", entityId: backchargeId, payload: { vendor_credit_bill_id: creditId, amount_cents: issued.amount_cents } })
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "warranty_backcharge", entityId: backchargeId, before: row, after: data })
   await sendBackchargeNotice(resolvedOrgId, issued)
   return issued
@@ -1275,36 +1387,45 @@ export async function resolveWarrantyBackcharge({ backchargeId, resolution, reco
   const recovered = recoveredCents ?? (resolution === "recovered" ? existing.amount_cents : existing.recovered_cents)
   if (!Number.isInteger(recovered) || recovered < existing.recovered_cents || recovered > existing.amount_cents) throw new Error("Recovered amount is invalid")
   if (resolution === "recovered" && recovered !== existing.amount_cents) throw new Error("A recovered backcharge must be fully recovered")
-  const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata as Record<string, unknown> : {}
+  const reversing = resolution !== "recovered" && Boolean(existing.vendor_credit_bill_id)
+  if (reversing) await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, existing.project_id, "bill.write")
+  const claim = await claimBackchargeTransition(supabase, resolvedOrgId, existing, mergeMetadata(row.metadata, {}), resolution)
+  const metadata = claim.metadata
   // Writing off or waiving does not un-happen the credit. Deleting the Arc row
   // stranded a live VendorCredit in the accounting provider with nothing
   // pointing at it; a reversing bill is both the correct artifact and the
   // auditable one, and the original credit stays linked.
   let reversalBillId = typeof metadata.reversal_bill_id === "string" ? metadata.reversal_bill_id : null
-  if (resolution !== "recovered" && existing.vendor_credit_bill_id && !reversalBillId) {
-    await authorizeWarrantyHome({ supabase, orgId: resolvedOrgId, userId }, existing.project_id, "bill.write")
-    const reversal = await createProjectVendorBill({
-      projectId: existing.project_id,
-      input: {
-        company_id: existing.company_id,
-        commitment_id: existing.commitment_id,
-        bill_number: `WB-${existing.backcharge_number}-R`,
-        bill_date: new Date().toISOString().slice(0, 10),
-        total_cents: existing.amount_cents,
-        description: `Reversal of warranty backcharge WB-${existing.backcharge_number} (${resolution.replace("_", " ")})`,
-        actual_lines: existing.cost_basis.map((item) => ({ description: item.label, amount_cents: item.amount_cents, cost_code_id: existing.cost_code_id })),
-      },
-      orgId: resolvedOrgId,
-    })
-    reversalBillId = reversal.id
+  if (reversing && !reversalBillId) {
+    try {
+      const reversalNumber = `WB-${existing.backcharge_number}-R`
+      reversalBillId = await findBackchargeBill(supabase, resolvedOrgId, existing, reversalNumber) ?? (await createProjectVendorBill({
+        projectId: existing.project_id,
+        input: {
+          company_id: existing.company_id,
+          commitment_id: existing.commitment_id,
+          bill_number: reversalNumber,
+          bill_date: new Date().toISOString().slice(0, 10),
+          total_cents: existing.amount_cents,
+          description: `Reversal of warranty backcharge WB-${existing.backcharge_number} (${resolution.replace("_", " ")})`,
+          actual_lines: existing.cost_basis.map((item) => ({ description: item.label, amount_cents: item.amount_cents, cost_code_id: existing.cost_code_id })),
+        },
+        orgId: resolvedOrgId,
+      })).id
+    } catch (reversalError) {
+      await claim.release()
+      throw reversalError
+    }
   }
   const { data, error } = await supabase.from("warranty_backcharges").update({
     status: resolution, recovered_cents: recovered, resolved_at: new Date().toISOString(),
     notes: note?.trim() ?? existing.notes,
     vendor_credit_bill_id: existing.vendor_credit_bill_id,
-    metadata: mergeMetadata(metadata, { reversal_bill_id: reversalBillId }),
-  }).eq("org_id", resolvedOrgId).eq("id", backchargeId).eq("project_id", existing.project_id).eq("warranty_request_id", existing.warranty_request_id).select(BACKCHARGE_SELECT).single()
-  if (error || !data) throw new Error(`Failed to resolve warranty backcharge: ${error?.message}`)
+    metadata: mergeMetadata(metadata, { reversal_bill_id: reversalBillId, transition_claimed_at: null, transition_target: null }),
+  }).eq("org_id", resolvedOrgId).eq("id", backchargeId).eq("project_id", existing.project_id).eq("warranty_request_id", existing.warranty_request_id)
+    .eq("status", existing.status).eq("metadata->>transition_claimed_at", claim.claimedAt).select(BACKCHARGE_SELECT).maybeSingle()
+  if (error) throw new Error(`Failed to resolve warranty backcharge: ${error.message}`)
+  if (!data) throw new Error("The backcharge changed while it was being resolved; refresh and reconcile its reversing bill")
   await recordEvent({ orgId: resolvedOrgId, eventType: "warranty_backcharge_resolved", entityType: "warranty_backcharge", entityId: backchargeId, payload: { resolution, recovered_cents: recovered, reversal_bill_id: reversalBillId } })
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "warranty_backcharge", entityId: backchargeId, before: row, after: data })
   return mapBackcharge(data as unknown as Record<string, unknown>)

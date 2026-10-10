@@ -287,16 +287,34 @@ export type WarrantySlaState = "unset" | "met" | "on_track" | "due_soon" | "brea
 const FIRST_RESPONSE_DUE_SOON_MS = 12 * 3_600_000
 const RESOLUTION_DUE_SOON_MS = 3 * 86_400_000
 
+type SlaMetadata = { metadata?: Record<string, unknown> | null }
+
+/** A breach the sweep (or a severity change) recorded. Once recorded, it stays. */
+function recordedBreach(request: SlaMetadata, key: "sla_breached_at" | "first_response_breached_at") {
+  const value = request.metadata?.[key]
+  return typeof value === "string" && value.length > 0 ? value : null
+}
+
+const later = (actual: string, due: string) => new Date(actual).getTime() > new Date(due).getTime()
+
 /**
  * First response and resolution are two different promises to the homeowner:
  * "we called you back" and "we fixed it". They breach independently and are
  * reported independently.
+ *
+ * A breach is a fact about the past. Calling back late, closing late, or
+ * re-grading the severity to a longer target afterwards does not make the
+ * promise kept: a recorded breach, or a completion after the due time, reports
+ * breached forever.
  */
 export function warrantyFirstResponseState(
-  request: { first_response_due_at?: string | null; first_responded_at?: string | null },
+  request: { first_response_due_at?: string | null; first_responded_at?: string | null } & SlaMetadata,
   asOf: Date,
 ): WarrantySlaState {
-  if (request.first_responded_at) return "met"
+  if (recordedBreach(request, "first_response_breached_at")) return "breached"
+  if (request.first_responded_at) {
+    return request.first_response_due_at && later(request.first_responded_at, request.first_response_due_at) ? "breached" : "met"
+  }
   if (!request.first_response_due_at) return "unset"
   const remaining = new Date(request.first_response_due_at).getTime() - asOf.getTime()
   if (remaining < 0) return "breached"
@@ -304,14 +322,60 @@ export function warrantyFirstResponseState(
 }
 
 export function warrantyResolutionState(
-  request: { resolution_due_at?: string | null; status?: string | null },
+  request: { resolution_due_at?: string | null; status?: string | null; closed_at?: string | null } & SlaMetadata,
   asOf: Date,
 ): WarrantySlaState {
-  if (request.status === "resolved" || request.status === "closed") return "met"
+  if (recordedBreach(request, "sla_breached_at")) return "breached"
+  if (request.status === "resolved" || request.status === "closed") {
+    return request.closed_at && request.resolution_due_at && later(request.closed_at, request.resolution_due_at) ? "breached" : "met"
+  }
   if (!request.resolution_due_at) return "unset"
   const remaining = new Date(request.resolution_due_at).getTime() - asOf.getTime()
   if (remaining < 0) return "breached"
   return remaining <= RESOLUTION_DUE_SOON_MS ? "due_soon" : "on_track"
+}
+
+/**
+ * The breaches a request has already incurred under its current targets, as
+ * the metadata stamps that record them (each dated when its clock ran out).
+ * Written before the targets move — a severity change re-stamps both due
+ * dates, and without this a request already past due would quietly un-breach.
+ */
+export function warrantySlaBreachStamps(
+  request: {
+    first_response_due_at?: string | null
+    first_responded_at?: string | null
+    resolution_due_at?: string | null
+    status?: string | null
+    closed_at?: string | null
+  } & SlaMetadata,
+  asOf: Date,
+): { first_response_breached_at?: string; sla_breached_at?: string } {
+  const stamps: { first_response_breached_at?: string; sla_breached_at?: string } = {}
+  if (!recordedBreach(request, "first_response_breached_at") && warrantyFirstResponseState(request, asOf) === "breached" && request.first_response_due_at) {
+    stamps.first_response_breached_at = request.first_response_due_at
+  }
+  if (!recordedBreach(request, "sla_breached_at") && warrantyResolutionState(request, asOf) === "breached" && request.resolution_due_at) {
+    stamps.sla_breached_at = request.resolution_due_at
+  }
+  return stamps
+}
+
+/**
+ * Whether a completed visit closes its request or waits for the office to
+ * verify it. A trade reporting its own work is always a claim. The office's
+ * own "resolved" closes the request only with evidence a reviewer could check
+ * later — a photo of the repair or the homeowner's sign-off; without either it
+ * joins the same verification queue.
+ */
+export function completionAwaitsVerification(input: {
+  source: "office" | "portal"
+  outcome: WarrantyVisitOutcome
+  photoCount: number
+  buyerSignoffName?: string | null
+}): boolean {
+  if (input.source === "portal") return true
+  return input.outcome === "resolved" && input.photoCount === 0 && !input.buyerSignoffName?.trim()
 }
 
 export type CourtesyMilestoneKey = "day_30" | "month_11"

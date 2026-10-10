@@ -102,6 +102,12 @@ export const communityBulkRepriceSchema = z
     availabilityIds: z.array(z.string().uuid()).min(1).max(200),
     mode: z.enum(["percent", "amount"]),
     value: z.number(),
+    /** The price each row showed the caller, by availability id. Targets are computed from it, so a replay lands on the same price. */
+    basisCents: z.record(z.string().uuid(), z.number().int().min(0).max(100_000_000_00)),
+  })
+  .refine((input) => input.availabilityIds.every((id) => input.basisCents[id] !== undefined), {
+    message: "Every plan needs the price it was repriced from.",
+    path: ["basisCents"],
   })
   .refine((input) => (input.mode === "percent" ? Math.abs(input.value) <= 50 : Math.abs(input.value) <= 100_000_00), {
     message: "That is larger than a repricing. Set the prices individually if it is really intended.",

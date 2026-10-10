@@ -483,9 +483,18 @@ export async function getProspect(
 export async function createProspect({
   input,
   orgId,
+  traffic,
 }: {
   input: CreateProspectInput;
   orgId?: string;
+  /**
+   * How the lead counts against its community's daily traffic. Omitted, it
+   * counts today in the bucket its source implies; a caller that knows the
+   * arrival channel and visit date (registering an inquiry) says so here, and
+   * `null` keeps a lead that is not footfall (a phone call) out of the tally.
+   * This is the ONE place a new lead moves the count.
+   */
+  traffic?: { source: string | null; occurredOn?: string } | null;
 }): Promise<Prospect> {
   const parsed = createProspectInputSchema.parse(input);
   const {
@@ -539,10 +548,11 @@ export async function createProspect({
     ];
   }
 
-  if (parsed.community_id) {
+  const trafficHint = traffic === undefined ? { source: parsed.source ?? null } : traffic;
+  if (parsed.community_id && trafficHint) {
     await recordLeadTraffic(
       { supabase, orgId: resolvedOrgId, userId },
-      { communityId: parsed.community_id, source: parsed.source ?? null },
+      { communityId: parsed.community_id, ...trafficHint },
     );
   }
 

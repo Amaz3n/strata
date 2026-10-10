@@ -51,3 +51,6 @@ export const warrantyVisitVerifySchema = z.object({
 export type WarrantyVisitCompleteWithCostInput = z.infer<typeof warrantyVisitCompleteWithCostSchema>
 export type WarrantyVisitPortalOutcomeInput = z.infer<typeof warrantyVisitPortalOutcomeSchema>
 export type WarrantyAcknowledgeInput = z.infer<typeof warrantyAcknowledgeSchema>
+
+/** Why the office will not accept a reported completion — recorded on the request. */
+export const warrantyRejectionReasonSchema = z.string().trim().min(3, "Say why the work is not accepted").max(2000)

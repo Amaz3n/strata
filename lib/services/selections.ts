@@ -211,7 +211,7 @@ export async function assertSelectionMutable(
   }
 }
 
-async function updateSingleSelection(input: {
+type SingleSelectionInput = {
   orgId: string
   projectId: string
   selectionId: string
@@ -225,7 +225,10 @@ async function updateSingleSelection(input: {
   packageId?: string | null
   priceCentsOverride?: number
   costCentsOverride?: number | null
-}) {
+}
+
+/** Validates one selection change and returns the row it would write, without writing it. */
+async function prepareSingleSelection(input: SingleSelectionInput) {
   const mutation = await loadSelectionMutationContext(input)
   if (!input.skipGate) await assertSelectionMutable(mutation, { portal: input.portal })
   const [pricing] = await resolveOptionPricing({
@@ -249,6 +252,28 @@ async function updateSingleSelection(input: {
     cost_cents_snapshot: input.costCentsOverride !== undefined ? input.costCentsOverride : pricing.costCents,
     source_change_order_id: input.sourceChangeOrderId ?? null,
   }
+  return { mutation, payload, previousOptionId: (mutation.selection.selected_option_id as string | null) ?? null }
+}
+
+async function recordSelectionWrite(input: SingleSelectionInput, payload: Record<string, unknown>) {
+  await Promise.all([
+    recordEvent({ orgId: input.orgId, eventType: input.forceConfirmed ? "selection_confirmed" : "selection_updated", entityType: "selection", entityId: input.selectionId, payload: { project_id: input.projectId, option_id: input.optionId, source_change_order_id: input.sourceChangeOrderId ?? null } }),
+    recordAudit({ orgId: input.orgId, actorId: undefined, action: "update", entityType: "selection", entityId: input.selectionId, after: payload }),
+  ])
+}
+
+/**
+ * Writes several selection rows on one home in ONE transaction
+ * (`apply_project_selection_writes`): a package or a change order lands whole
+ * or not at all, never as half a package on the house.
+ */
+async function applySelectionWrites(orgId: string, projectId: string, writes: Array<{ id: string } & Record<string, unknown>>) {
+  const { error } = await createServiceSupabaseClient().rpc("apply_project_selection_writes", { p_org_id: orgId, p_project_id: projectId, p_writes: writes })
+  if (error) throw new Error(`Failed to apply selections: ${error.message}`)
+}
+
+async function updateSingleSelection(input: SingleSelectionInput) {
+  const { mutation, payload } = await prepareSingleSelection(input)
   const { data, error } = await mutation.supabase
     .from("project_selections")
     .update(payload)
@@ -258,10 +283,7 @@ async function updateSingleSelection(input: {
     .select("id, selected_option_id, status, price_cents_snapshot")
     .single()
   if (error || !data) throw new Error(`Failed to update selection: ${error?.message ?? "missing row"}`)
-  await Promise.all([
-    recordEvent({ orgId: input.orgId, eventType: input.forceConfirmed ? "selection_confirmed" : "selection_updated", entityType: "selection", entityId: input.selectionId, payload: { project_id: input.projectId, option_id: input.optionId, source_change_order_id: input.sourceChangeOrderId ?? null } }),
-    recordAudit({ orgId: input.orgId, actorId: undefined, action: "update", entityType: "selection", entityId: input.selectionId, after: payload }),
-  ])
+  await recordSelectionWrite(input, payload)
   return data
 }
 
@@ -345,23 +367,17 @@ export async function selectProjectPackage(input: {
   const nowIso = new Date().toISOString()
   const priceAllocations = allocatePackageTotal(pricing.priceCents, plan.members.length)
   const costAllocations = pricing.costCents == null ? null : allocatePackageTotal(pricing.costCents, plan.members.length)
-  for (const member of plan.members) {
-    const { error: updateError } = await supabase
-      .from("project_selections")
-      .update({
-        selected_option_id: memberPrices[member.index].optionId ?? member.optionId,
-        package_id: input.packageId,
-        status: "selected",
-        selected_at: nowIso,
-        selected_by_contact_id: input.selectedByContactId ?? null,
-        price_cents_snapshot: priceAllocations[member.index],
-        cost_cents_snapshot: costAllocations?.[member.index] ?? null,
-        metadata: { package_allocated: true, package_member_index: member.index },
-      })
-      .eq("org_id", input.orgId)
-      .eq("id", member.selectionId)
-    if (updateError) throw new Error(`Failed to apply package: ${updateError.message}`)
-  }
+  await applySelectionWrites(input.orgId, input.projectId, plan.members.map((member) => ({
+    id: member.selectionId,
+    selected_option_id: memberPrices[member.index].optionId ?? member.optionId,
+    package_id: input.packageId,
+    status: "selected",
+    selected_at: nowIso,
+    selected_by_contact_id: input.selectedByContactId ?? null,
+    price_cents_snapshot: priceAllocations[member.index],
+    cost_cents_snapshot: costAllocations?.[member.index] ?? null,
+    metadata: { package_allocated: true, package_member_index: member.index },
+  })))
   await recordEvent({ orgId: input.orgId, eventType: "selection_updated", entityType: "selection_package", entityId: input.packageId, payload: { project_id: input.projectId, group_id: plan.groupId } })
   return { success: true }
 }
@@ -406,8 +422,11 @@ export async function confirmSelection(input: { orgId: string; projectId: string
   const payload = {
     status: "confirmed",
     confirmed_at: nowIso,
-    price_cents_snapshot: mutation.selection.package_id ? mutation.selection.price_cents_snapshot : pricing.priceCents,
-    cost_cents_snapshot: mutation.selection.package_id ? mutation.selection.cost_cents_snapshot : pricing.costCents,
+    // Confirming (or the buyer signing) commits the price the option was
+    // chosen at — the price on the document — not whatever the catalog says
+    // today. Only a selection made before snapshots existed prices live.
+    price_cents_snapshot: mutation.selection.price_cents_snapshot ?? pricing.priceCents,
+    cost_cents_snapshot: mutation.selection.price_cents_snapshot == null ? pricing.costCents : mutation.selection.cost_cents_snapshot,
   }
   const { error } = await mutation.supabase.from("project_selections").update(payload).eq("org_id", input.orgId).eq("id", input.selectionId)
   if (error) throw new Error(`Failed to confirm selection: ${error.message}`)
@@ -439,11 +458,12 @@ export async function applySelectionChangeFromChangeOrder(changeOrderId: string,
   await assertProjectConfiguration(changeOrder.org_id, changeOrder.project_id, selectionChange.changes
     .filter((change: { selection_id?: unknown; new_option_id?: unknown }) => typeof change?.selection_id === "string" && typeof change?.new_option_id === "string")
     .map((change: { selection_id: string; new_option_id: string }) => ({ selectionId: change.selection_id, optionId: change.new_option_id })))
-  let applied = 0
+  // Every change is validated and priced before any is written, then all of
+  // them land in one transaction: a change order is never half applied.
+  const prepared: Array<Awaited<ReturnType<typeof prepareSingleSelection>> & { change: typeof selectionChange.changes[number]; input: SingleSelectionInput }> = []
   for (const change of selectionChange.changes) {
     if (!change || typeof change !== "object" || typeof change.selection_id !== "string" || typeof change.new_option_id !== "string") continue
-    const { data: before } = await supabase.from("project_selections").select("selected_option_id").eq("org_id", changeOrder.org_id).eq("id", change.selection_id).maybeSingle()
-    await updateSingleSelection({
+    const input: SingleSelectionInput = {
       orgId: changeOrder.org_id,
       projectId: changeOrder.project_id,
       selectionId: change.selection_id,
@@ -456,22 +476,29 @@ export async function applySelectionChangeFromChangeOrder(changeOrderId: string,
       packageId: typeof change.new_package_id === "string" ? change.new_package_id : null,
       priceCentsOverride: typeof change.price_cents === "number" ? change.price_cents : undefined,
       costCentsOverride: typeof change.cost_cents === "number" || change.cost_cents === null ? change.cost_cents : undefined,
-    })
+    }
+    prepared.push({ change, input, ...(await prepareSingleSelection(input)) })
+  }
+  if (prepared.length) {
+    await applySelectionWrites(changeOrder.org_id, changeOrder.project_id, prepared.map(({ input, payload }) => ({ id: input.selectionId, ...payload })))
+  }
+  for (const { change, input, payload, previousOptionId } of prepared) {
+    await recordSelectionWrite(input, payload)
     await recordEvent({
       orgId: changeOrder.org_id,
       eventType: "selection_changed_post_cutoff",
       entityType: "selection",
       entityId: change.selection_id,
       payload: {
-        old_option_id: before?.selected_option_id ?? null,
+        old_option_id: previousOptionId,
         new_option_id: change.new_option_id,
         cost_delta_cents: change.cost_delta_cents ?? 0,
         cost_code_id: change.cost_code_id ?? null,
         project_id: changeOrder.project_id,
       },
     })
-    applied += 1
   }
+  const applied = prepared.length
   // The buyer half is now flipped; the trade half has to follow or the granite
   // upgrade is billed and the countertop purchase order is never revised.
   const variance = await createVarianceOrdersForSelectionChange({

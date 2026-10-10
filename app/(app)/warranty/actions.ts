@@ -23,6 +23,7 @@ import {
   upsertWarrantyProgram,
   upsertWarrantySlaTargets,
   verifyWarrantyVisit,
+  rejectWarrantyVisitCompletion,
   type ProjectWarrantyCoverageDTO,
   type WarrantyBackchargeDTO,
   type WarrantyProgramDTO,
@@ -169,6 +170,14 @@ export async function completeWarrantyVisitAction(input: unknown): Promise<Actio
 export async function verifyWarrantyVisitAction(visitId: string, resolutionNote?: string): Promise<ActionResult<WarrantyServiceVisitDTO>> {
   try {
     const visit = await verifyWarrantyVisit(visitId, resolutionNote)
+    revalidateWarranty(visit.project_id)
+    return { success: true, data: visit }
+  } catch (error) { return actionError(error) }
+}
+
+export async function rejectWarrantyVisitCompletionAction(visitId: string, reason: string): Promise<ActionResult<WarrantyServiceVisitDTO>> {
+  try {
+    const visit = await rejectWarrantyVisitCompletion(visitId, reason)
     revalidateWarranty(visit.project_id)
     return { success: true, data: visit }
   } catch (error) { return actionError(error) }

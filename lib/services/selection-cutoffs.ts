@@ -5,7 +5,7 @@ import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
 import { requirePermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { cutoffOverrideSchema, type CutoffOverrideInput } from "@/lib/validation/selections"
+import { cutoffOverrideSchema, revertCutoffSchema, type CutoffOverrideInput } from "@/lib/validation/selections"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import {
   addCalendarDays,
@@ -244,17 +244,43 @@ export async function overrideGroupCutoff(raw: CutoffOverrideInput) {
   ])
 }
 
-export async function revertCutoffToSchedule(input: { projectId: string; groupId: string }) {
+/**
+ * Drops a manual cutoff and goes back to the schedule-derived date. It moves a
+ * buyer's deadline exactly as an override does, so it is held to the same
+ * record: a reason, the override it discards in the audit, and an event.
+ */
+export async function revertCutoffToSchedule(raw: { projectId: string; groupId: string; reason: string }) {
+  const input = revertCutoffSchema.parse(raw)
   const context = await requireOrgContext()
   await requirePermission("selections.cutoff.override", context)
-  const { error } = await context.supabase
+  const { data: before, error: beforeError } = await context.supabase
     .from("project_selection_groups")
-    .update({ cutoff_source: "schedule", override_reason: null, overridden_by: null })
+    .select("id, cutoff_date, cutoff_source, override_reason, overridden_by")
     .eq("org_id", context.orgId)
     .eq("project_id", input.projectId)
     .eq("group_id", input.groupId)
+    .maybeSingle()
+  if (beforeError) throw new Error(`Failed to load selection cutoff: ${beforeError.message}`)
+  if (!before) throw new Error("Selection group not found on this home")
+  if (before.cutoff_source !== "manual_override") throw new Error("This cutoff already follows the schedule")
+  const { data, error } = await context.supabase
+    .from("project_selection_groups")
+    .update({ cutoff_source: "schedule", override_reason: null, overridden_by: null })
+    .eq("org_id", context.orgId)
+    .eq("id", before.id)
+    .eq("cutoff_source", "manual_override")
+    .select("id")
+    .maybeSingle()
   if (error) throw new Error(`Failed to restore schedule cutoff: ${error.message}`)
-  return recomputeProjectSelectionCutoffs(input.projectId, context.orgId)
+  if (!data) throw new Error("This cutoff changed while you were reverting it. Refresh and try again.")
+  const result = await recomputeProjectSelectionCutoffs(input.projectId, context.orgId)
+  await Promise.all([
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "selection_cutoff_reverted", entityType: "project_selection_group", entityId: before.id, payload: { project_id: input.projectId, group_id: input.groupId, reason: input.reason, discarded_cutoff_date: before.cutoff_date } }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "project_selection_group", entityId: before.id,
+      before: { cutoff_date: before.cutoff_date, cutoff_source: before.cutoff_source, override_reason: before.override_reason, overridden_by: before.overridden_by },
+      after: { cutoff_source: "schedule", revert_reason: input.reason } }),
+  ])
+  return result
 }
 
 const LOCK_SWEEP_BATCH = 200

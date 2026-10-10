@@ -1,7 +1,5 @@
 import { COOP_AGENT_ROLE, INQUIRY_CHANNEL_LABELS } from "@/lib/sales/activity"
-import { incrementCommunityTraffic } from "@/lib/services/community-traffic"
 import { requireOrgContext } from "@/lib/services/context"
-import { hasPermission } from "@/lib/services/permissions"
 import { createProspect, createProspectContact, type Prospect } from "@/lib/services/prospects"
 import { productionInquiryInputSchema, type ProductionInquiryInput } from "@/lib/validation/prospects"
 
@@ -38,6 +36,12 @@ export async function registerProductionInquiry(
       },
     },
     orgId: context.orgId,
+    // The lead is the traffic: createProspect counts it once, on the visit
+    // date, in the channel the consultant picked. A phone call is not footfall.
+    traffic:
+      parsed.channel === "phone"
+        ? null
+        : { source: INQUIRY_CHANNEL_LABELS[parsed.channel], occurredOn: parsed.loggedDate },
   })
 
   const coopName = parsed.coopAgentName?.trim()
@@ -52,21 +56,6 @@ export async function registerProductionInquiry(
       },
       orgId: context.orgId,
     })
-  }
-
-  // Traffic is a sales-manager number, so a user who may create leads but not
-  // manage sales (an OSC taking web inquiries) simply does not move the tally.
-  if (parsed.communityId && (await hasPermission("sales.manage", context))) {
-    await incrementCommunityTraffic(
-      {
-        communityId: parsed.communityId,
-        loggedDate: parsed.loggedDate,
-        walkIns: parsed.channel === "walk_in" ? 1 : 0,
-        appointments: parsed.channel === "appointment" ? 1 : 0,
-        webInquiries: parsed.channel === "web" ? 1 : 0,
-      },
-      context.orgId,
-    )
   }
 
   return prospect

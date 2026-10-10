@@ -121,6 +121,13 @@ begin
  perform 1 from public.job_cost_entries j where j.org_id=p_org_id and j.id in(select (x->>'job_cost_entry_id')::uuid from jsonb_array_elements(p_sources) x) order by j.id for update;
  select * into visit from public.warranty_service_visits where org_id=p_org_id and id=p_visit_id for update;
  if not found or visit.status<>'completed' then raise exception 'Only completed warranty visits can receive cost approval'; end if;
+ -- A completion still waiting on the office's verification is a claim, not
+ -- finished work, and one the office sent back is not the work at all: neither
+ -- has its cost approved.
+ if visit.books_cost_approved_at is null and exists(select 1 from public.warranty_requests r where r.org_id=p_org_id and r.id=visit.request_id
+      and ((r.metadata->>'pending_verification'='true' and r.metadata->>'completed_visit_id'=visit.id::text) or r.metadata->>'rejected_visit_id'=visit.id::text)) then
+   raise exception 'Verify the warranty visit before approving its cost';
+ end if;
  if visit.books_cost_approved_at is not null then
    if visit.books_cost_sources=p_sources and visit.books_cost_date=p_date and visit.books_cost_evidence_url=p_evidence_url then return jsonb_build_object('id',visit.books_cost_journal_entry_id,'approved_cents',visit.books_approved_cost_cents,'reserve_cents',visit.books_reserve_consumed_cents); end if;
    raise exception 'Reverse the prior cost approval before changing its sources';

@@ -404,12 +404,24 @@ export async function recoverClosingCompletion(projectId: string, closingId: str
   return { closingId: closing.id, lotClosed: Boolean(closing.lot_id), warrantyQueued: true, statementFiled: true }
 }
 
+/** The unique index that allows one closing invoice per closing (migration 20261010120000). */
+const CLOSING_INVOICE_FENCE = "invoices_closing_source_unique"
+
+async function readAgreementBuyer(context: { supabase: SupabaseClient; orgId: string }, contractId: string) {
+  const { data: contract, error } = await context.supabase.from("contracts").select("buyer_contact_id").eq("org_id", context.orgId).eq("id", contractId).single()
+  if (error || !contract) throw new Error(`Unable to read the agreement's buyer: ${error?.message ?? "agreement not found"}`)
+  if (!contract.buyer_contact_id) return null
+  const { data: buyer, error: buyerError } = await context.supabase.from("contacts").select("id, full_name, email").eq("org_id", context.orgId).eq("id", contract.buyer_contact_id).single()
+  if (buyerError || !buyer) throw new Error(`Unable to read the agreement's buyer: ${buyerError?.message ?? "contact not found"}`)
+  return buyer
+}
+
 export async function settleClosing(input: unknown, orgId?: string) {
   const parsed = settleClosingSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("closing.manage", context)
   await requirePermission("payment.release", context)
-  const { data: closing } = await context.supabase.from("closings").select("*, project:projects(name, client_id, client:contacts(full_name, email)), lot:lots(lot_number, house_plan_id, plan:house_plans(name))").eq("org_id", context.orgId).eq("id", parsed.closingId).maybeSingle()
+  const { data: closing } = await context.supabase.from("closings").select("*, project:projects(name), lot:lots(lot_number, house_plan_id, plan:house_plans(name))").eq("org_id", context.orgId).eq("id", parsed.closingId).maybeSingle()
   if (!closing) throw new Error("Closing not found")
   if (closing.status === "closed") {
     if (closing.actual_date !== parsed.actualDate) throw new Error("Retry must use the recorded closing date")
@@ -436,11 +448,14 @@ export async function settleClosing(input: unknown, orgId?: string) {
   if (linesTotalCents !== settlement.finalPriceCents) {
     throw new Error(`Closing invoice lines total ${linesTotalCents} but the settlement final price is ${settlement.finalPriceCents}. Re-sync the purchase agreement pricing snapshot before settling.`)
   }
+  // The closing invoice bills whoever signed the agreement — the deposits were
+  // taken from them — not whoever the project currently names as its client.
+  const buyer = await readAgreementBuyer(context, settlement.contractId)
   // Deposit application is keyed on the customer both invoices name. Catch a
   // missing buyer here rather than letting the atomic apply reject with
   // "a customer deposit can only be applied to that customer's invoice".
-  if (settlement.depositsApplied.length > 0 && !project?.client_id) {
-    throw new Error("This home has no buyer on file, so collected deposits cannot be applied at settlement. Restore the buyer on the project first.")
+  if (settlement.depositsApplied.length > 0 && !buyer) {
+    throw new Error("The purchase agreement names no buyer, so collected deposits cannot be applied at settlement. Reconcile the agreement's buyer first.")
   }
   // Settlement can fail partway (deposit application, payment, status write).
   // Reuse this closing's invoice on retry instead of stranding the first one.
@@ -452,13 +467,21 @@ export async function settleClosing(input: unknown, orgId?: string) {
       throw new Error("Existing closing invoice settlement evidence differs or is missing; reconcile the recorded invoice before retrying")
     }
   }
+  // `invoices_closing_source_unique` is the fence: two settlements racing past
+  // the lookup above cannot both bill the home. The loser stops here, before
+  // any deposit is applied or cash recorded, and a retry resumes the winner's invoice.
   const invoice = priorInvoice ?? await createInvoice({ input: {
     project_id: closing.project_id, invoice_number: `CLOSE-${Date.now().toString().slice(-9)}`, title: `Closing — ${project?.name ?? "Home"}`,
     issue: true, issue_date: parsed.actualDate, due_date: parsed.actualDate, tax_rate: 0,
-    customer_id: project?.client_id ?? null, customer_name: project?.client?.full_name ?? null, sent_to_emails: project?.client?.email ? [project.client.email] : undefined,
+    customer_id: buyer?.id ?? null, customer_name: buyer?.full_name ?? null, sent_to_emails: buyer?.email ? [buyer.email] : undefined,
     lines: invoiceLines.map((line) => ({ description: line.description, quantity: 1, unit: "closing", unit_cost: line.amountCents / 100, taxable: false })),
     metadata: { invoice_kind: "closing", source_closing_id: closing.id, settlement },
-  }, orgId: context.orgId, context, authorizationPermission: "closing.manage", sendAuthorizationPermission: "closing.manage" })
+  }, orgId: context.orgId, context, authorizationPermission: "closing.manage", sendAuthorizationPermission: "closing.manage" }).catch((createError: unknown) => {
+    if (createError instanceof Error && createError.message.includes(CLOSING_INVOICE_FENCE)) {
+      throw new Error("This closing is already being settled. Refresh, then retry to resume that settlement.")
+    }
+    throw createError
+  })
   const { data: issuedInvoice, error: issuedError } = await context.supabase.from("invoices").select("total_cents").eq("org_id", context.orgId).eq("id", invoice.id).single()
   if (issuedError || !issuedInvoice) throw new Error(`Failed to verify the closing invoice: ${issuedError?.message}`)
   if (Number(issuedInvoice.total_cents) !== settlement.finalPriceCents) {
@@ -481,8 +504,10 @@ export async function settleClosing(input: unknown, orgId?: string) {
     await applyCustomerDepositWithContext(context, { depositPaymentId: deposit.paymentId, targetInvoiceId: invoice.id, amountCents: deposit.amountCents, appliedAt: `${parsed.actualDate}T12:00:00Z` })
   }
   for (const deposit of settlement.depositsApplied) {
-    const { data: depositInvoice } = await context.supabase.from("invoices").select("metadata").eq("org_id", context.orgId).eq("id", deposit.invoiceId).maybeSingle()
-    await receivablesWriter().from("invoices").update({ metadata: { ...(depositInvoice?.metadata ?? {}), settled_into_closing_id: closing.id } }).eq("org_id", context.orgId).eq("id", deposit.invoiceId)
+    const { data: depositInvoice, error: depositReadError } = await context.supabase.from("invoices").select("metadata").eq("org_id", context.orgId).eq("id", deposit.invoiceId).maybeSingle()
+    if (depositReadError || !depositInvoice) throw new Error(`Failed to read deposit invoice ${deposit.invoiceId}: ${depositReadError?.message ?? "not found"}`)
+    const { error: depositWriteError } = await receivablesWriter().from("invoices").update({ metadata: { ...(depositInvoice.metadata ?? {}), settled_into_closing_id: closing.id } }).eq("org_id", context.orgId).eq("id", deposit.invoiceId)
+    if (depositWriteError) throw new Error(`Failed to mark deposit invoice ${deposit.invoiceId} settled: ${depositWriteError.message}`)
   }
   if (pending.recordBalance) {
     await recordPayment({ invoice_id: invoice.id, amount_cents: settlement.balanceDueCents, fee_cents: 0, currency: "usd", method: parsed.paymentMethod, received_at: `${parsed.actualDate}T12:00:00Z`, provider: "manual", provider_payment_id: balanceProviderPaymentId, reference: parsed.paymentReference, status: "succeeded", metadata: { source_closing_id: closing.id } }, context.orgId)

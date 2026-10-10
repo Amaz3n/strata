@@ -245,9 +245,15 @@ export function OfferingPriceSheet({
             availabilityIds: batchTargets.map((row) => row.availabilityId),
             mode: batch.mode,
             value: batch.mode === "percent" ? Number(batch.value) : Math.round(Number(batch.value) * 100),
+            basisCents: Object.fromEntries(batchTargets.map((row) => [row.availabilityId, row.basePriceCents])),
           }),
         )
         toast.success(`${result.repriced} ${result.repriced === 1 ? "plan" : "plans"} repriced`)
+        if (result.conflicts.length > 0) {
+          toast.error(`${result.conflicts.length} ${result.conflicts.length === 1 ? "plan" : "plans"} changed since you opened the sheet`, {
+            description: "Their prices were left as they are. Review them and reprice again.",
+          })
+        }
         setBatch(null)
         router.refresh()
       } catch (error) {
