@@ -117,3 +117,32 @@ test('dimension rollout preserves unchanged historical facts and enriches the ne
  const revised={...enriched,total_cents:12000};
  assert.deepEqual(preserveLegacyDimensionPayload('invoice','2026-01-01',revised,previous),revised);
 });
+
+const { forLegalEntity, consolidated } = require("../lib/services/books/statements");
+test("each company's books balance on their own, and consolidation removes what the companies owe each other", async () => {
+  const build = account;
+  const accounts = [build("cash", "1000", "asset", "debit"), build("landbank", "1010", "asset", "debit"), build("due-from", "1180", "asset", "debit"), build("due-to", "2180", "liability", "credit"), build("equity", "3000", "equity", "credit")];
+  const owned = (entryId, accountId, debit, credit, legalEntityId, dimensions = {}) => ({ ...line(entryId, accountId, debit, credit), legal_entity_id: legalEntityId, dimensions });
+  const leg = { intercompany: true };
+  const snapshot = {
+    accounts,
+    entries: [entry("capital", "2026-01-01"), entry("transfer", "2026-02-01")],
+    lines: [
+      owned("capital", "cash", 100000, 0, "builder"), owned("capital", "equity", 0, 100000, "builder"),
+      // The builder funds the land company's bank account: each company balances through the due-from / due-to pair.
+      owned("transfer", "landbank", 30000, 0, "land"), owned("transfer", "due-to", 0, 30000, "land", leg),
+      owned("transfer", "cash", 0, 30000, "builder"), owned("transfer", "due-from", 30000, 0, "builder", leg),
+    ],
+  };
+
+  const builder = await buildBalanceSheet("org", "2026-12-31", forLegalEntity(snapshot, "builder"));
+  const land = await buildBalanceSheet("org", "2026-12-31", forLegalEntity(snapshot, "land"));
+  assert.deepEqual([builder.differenceCents, land.differenceCents], [0, 0]);
+  assert.equal(builder.assetCents, 100000);
+  assert.equal(land.assetCents, 30000);
+
+  const group = await buildBalanceSheet("org", "2026-12-31", consolidated(snapshot, { entries: [], lines: [] }));
+  assert.equal(group.differenceCents, 0);
+  assert.equal(group.assetCents, 100000);
+  assert.equal(group.liabilityCents ?? 0, 0);
+});

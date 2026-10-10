@@ -90,6 +90,23 @@ describe("who may change a project's punch list", () => {
     assert.equal(service.audits[0].action, "insert")
   })
 
+  test("a corrective item from a failed inspection keeps its owner, due date and dispatch time", async () => {
+    const service = harness({ permissions: ["project.read", "inspection.write"], items: [] })
+    const context = { supabase: service.client, orgId: ORG, userId: ACTOR }
+
+    const item = await service.run(() =>
+      createPunchItemFromInspection(context, PROJECT, { title: "Rail loose", assigned_company_id: id(20), due_date: "2026-10-20", verification_required: true }, id(40)),
+    )
+
+    assert.equal(item.assigned_company_id, id(20))
+    assert.equal(item.due_date, "2026-10-20")
+    const row = service.db.punch_items[0]
+    assert.equal(row.created_by, ACTOR)
+    assert.equal(row.created_from_inspection, true)
+    assert.equal(row.verification_required, true)
+    assert.ok(row.dispatched_at)
+  })
+
   test("an assignee from outside the org's directory is refused", async () => {
     const service = harness({ items: [] })
     await assert.rejects(

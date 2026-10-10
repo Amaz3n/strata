@@ -11,7 +11,7 @@ const { describe, test } = require("node:test")
 const { createServiceHarness, id, ORG } = require("./support/service")
 const { freshRequire } = require("./support/modules")
 
-const { assignPlanToLot, attachProjectToLot, recordLotDeliveryException } = freshRequire("lib/services/lots.ts")
+const { assignPlanToLot, attachProjectToLot, detachProjectFromLot, recordLotDeliveryException, setLotStatus } = freshRequire("lib/services/lots.ts")
 
 const COMMUNITY = id(1)
 const LOT = id(2)
@@ -143,5 +143,70 @@ describe("assignPlanToLot", () => {
   test("assigning a plan takes plan authority as well as lot authority", async () => {
     const clerk = harness({ permissions: ["lot.write", "community.read"] })
     await assert.rejects(assign(clerk), /Missing permission/)
+  })
+})
+
+describe("lot status and home association", () => {
+  const withHome = (service) => Object.assign(service.db.lots[0], { project_id: HOME })
+  const lotRow = (service) => service.db.lots[0]
+
+  test("a lot cannot be marked started without a home, and can once one is attached", async () => {
+    const service = harness({ status: "assigned" })
+    await assert.rejects(service.run(() => setLotStatus(LOT, "started")), /project must be attached/i)
+    assert.equal(lotRow(service).status, "assigned")
+    assert.deepEqual(service.writes(), [])
+
+    withHome(service)
+    await service.run(() => setLotStatus(LOT, "started"))
+    assert.equal(lotRow(service).status, "started")
+    assert.equal(service.events.at(-1).eventType, "lot.status_changed")
+  })
+
+  test("a settled lot goes back to work only with the confirmation and the authority to give it", async () => {
+    const service = harness({ status: "closed" })
+    withHome(service)
+    await assert.rejects(service.run(() => setLotStatus(LOT, "assigned")), /force confirmation/i)
+
+    service.grant(["lot.write", "project.manage", "community.read"])
+    await assert.rejects(service.run(() => setLotStatus(LOT, "assigned", { force: true })), /community\.write/)
+    assert.equal(lotRow(service).status, "closed")
+    assert.deepEqual(service.writes(), [])
+
+    service.grant(["lot.write", "project.manage", "community.write", "community.read"])
+    await service.run(() => setLotStatus(LOT, "assigned", { force: true }))
+    assert.equal(lotRow(service).status, "assigned")
+  })
+
+  test("a home cannot be attached to a settled lot without the same confirmation", async () => {
+    const service = harness({ status: "closed" })
+    await assert.rejects(attach(service), /force confirmation/i)
+    assert.deepEqual(service.writes(), [])
+    assert.equal(lotRow(service).project_id, null)
+
+    await service.run(() => attachProjectToLot(LOT, HOME, { force: true }))
+    assert.deepEqual([lotRow(service).project_id, lotRow(service).status], [HOME, "started"])
+  })
+
+  test("detaching a building or settled home asks first; detaching an unstarted one returns the lot to inventory", async () => {
+    for (const status of ["started", "closed"]) {
+      const service = harness({ status })
+      withHome(service)
+      await assert.rejects(service.run(() => detachProjectFromLot(LOT)), /force confirmation/i, status)
+      assert.equal(lotRow(service).project_id, HOME, status)
+      await service.run(() => detachProjectFromLot(LOT, { force: true }))
+      assert.deepEqual([lotRow(service).project_id, lotRow(service).status], [null, "assigned"], status)
+    }
+    const unstarted = harness({ status: "assigned" })
+    withHome(unstarted)
+    await unstarted.run(() => detachProjectFromLot(LOT))
+    assert.equal(unstarted.db.lots[0].project_id, null)
+
+    await assert.rejects(unstarted.run(() => detachProjectFromLot(LOT)), /does not have a project/)
+  })
+
+  test("a lot's status moves one step back at a time", async () => {
+    const service = harness({ status: "developed" })
+    await assert.rejects(service.run(() => setLotStatus(LOT, "controlled")), /only one step/i)
+    assert.equal(lotRow(service).status, "developed")
   })
 })

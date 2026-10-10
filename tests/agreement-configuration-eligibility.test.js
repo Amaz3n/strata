@@ -7,7 +7,7 @@ const test = require("node:test")
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`
 const ORG = id(1), LOT = id(2), COMMUNITY = id(3), PLAN = id(4), VERSION = id(5), ELEVATION = id(6), HOME = id(7), DIVISION = id(8)
 
-function harness({ lot = {}, version = {}, elevation = {}, offer = {}, assignedOnly = false, divisions = [DIVISION], homeDenied = false, resolved = [], failure = null, openCount = 0, linkedContract = null, insertConflict = false, writeFailure = null, missingWrite = null, versionRows = null, elevationRows = null, incentiveRows = [], rowCap = 1000, lateFailure = null, selectionOptions = [], selectionPackages = [], atomic = false, durable = true, savedReceipt = null, receiptError = false, signingFailure = false, catalogRevisions = ["1", "1"], capacityRows = [] } = {}) {
+function harness({ lot = {}, version = {}, elevation = {}, offer = {}, assignedOnly = false, divisions = [DIVISION], homeDenied = false, resolved = [], failure = null, openCount = 0, linkedContract = null, insertConflict = false, writeFailure = null, missingWrite = null, versionRows = null, elevationRows = null, incentiveRows = [], rowCap = 1000, lateFailure = null, selectionOptions = [], selectionPackages = [], atomic = false, durable = true, savedReceipt = null, receiptError = false, signingFailure = false, catalogRevisions = ["1", "1"], capacityRows = [], configurationError = null } = {}) {
   const calls = [], authorizations = [], writes = [], receiptCalls = [], signingCalls = [], logs = []
   const today = new Date().toISOString().slice(0, 10)
   const tables = {
@@ -95,7 +95,7 @@ function harness({ lot = {}, version = {}, elevation = {}, offer = {}, assignedO
         requireAuthorization: async args => { authorizations.push(args); if (homeDenied) throw new Error("Home access denied") },
       }
       if (name === "@/lib/services/option-catalog") return { resolveOptionPricing: async () => resolved, listCatalog: async () => ({ categories: [], packages: [] }) }
-      if (name === "@/lib/services/configuration-rules") return { assertSalesConfiguration: async () => {} }
+      if (name === "@/lib/services/configuration-rules") return { assertSalesConfiguration: async (...args) => { calls.push("configuration_rules"); if (configurationError) throw new Error(configurationError) } }
       return {}
     },
   })
@@ -155,6 +155,13 @@ test("community pricing honors open and inclusive date bounds and fails closed o
     await assert.rejects(harness({ offer }).price(input), /not available/)
   }
   await assert.rejects(harness({ failure: "community_plan_availability" }).price(input), /read failed/)
+})
+
+test("an invalid effective configuration cannot be quoted", async () => {
+  const { price, calls } = harness({ configurationError: "Chef kitchen requires Electrical upgrade.", resolved: [{ available: true, optionId: id(40), priceCents: 100 }] })
+  await assert.rejects(price({ ...input, optionItems: [{ optionId: id(40) }] }), /requires Electrical upgrade/)
+  assert.ok(calls.includes("configuration_rules"))
+  assert.ok(!calls.includes("selection_options"), "no quote work continues after the rule fails")
 })
 
 test("incomplete option resolution cannot produce a partial agreement quote", async () => {

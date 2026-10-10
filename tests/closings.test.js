@@ -25,7 +25,7 @@ const DEPOSIT_INVOICE = id(6)
 const DEPOSIT_PAYMENT = id(7)
 
 let active = null
-const calls = { invoices: [], depositApplications: [], payments: [] }
+const calls = { invoices: [], depositApplications: [], payments: [], reversals: [], credits: [] }
 
 stubModule("@/lib/services/closing-readiness", {
   authorizeClosingProject: async () => {},
@@ -45,8 +45,16 @@ stubModule("@/lib/services/payments", {
     calls.payments.push(payment)
     throw new Error("stop after the balance payment")
   },
-  recordPaymentReversal: async () => {},
+  recordPaymentReversal: async (reversal) => {
+    calls.reversals.push(reversal)
+  },
 })
+stubModule("@/lib/services/receivable-adjustments", {
+  createReceivableAdjustment: async (adjustment) => {
+    calls.credits.push(adjustment)
+  },
+})
+stubModule("@/lib/services/books/projector", { projectJournal: async () => ({ failures: [] }) })
 stubModule("@/lib/services/books/customer-deposits", {
   applyCustomerDepositWithContext: async (_context, application) => {
     calls.depositApplications.push(application)
@@ -55,16 +63,19 @@ stubModule("@/lib/services/books/customer-deposits", {
 stubModule("@/lib/services/receivables-writer", { receivablesWriter: () => active.service.client })
 
 const { composePurchaseAgreementPricing } = require("@/lib/financials/purchase-agreement-pricing")
-const { settleClosing } = freshRequire("lib/services/closings.ts")
+const { buildSettlement, reverseClosing, settleClosing } = freshRequire("lib/services/closings.ts")
 
 function harness() {
   calls.invoices = []
   calls.depositApplications = []
   calls.payments = []
+  calls.reversals = []
+  calls.credits = []
   const pricing = composePurchaseAgreementPricing({ basePriceCents: 400_000_00, lotPremiumCents: 0 })
   const service = createServiceHarness({
     permissions: ["closing.manage", "payment.release", "sales.read"],
     projects: [HOME],
+    rpc: { reverse_books_home_closing: (args) => ({ data: { closingId: args.p_closing_id, projectId: HOME, inventoryEntryId: null, warrantyEntryId: null }, error: null }) },
     tables: {
       closings: [
         { id: CLOSING, org_id: ORG, project_id: HOME, status: "cleared_to_close", metadata: {}, project: { name: "Lot 12" }, lot: { lot_number: "12" } },
@@ -133,5 +144,130 @@ describe("settleClosing", () => {
     service.tamper("invoices", replies.error("invoices unavailable"), { on: "update" })
     await assert.rejects(settle(service), /mark deposit invoice .* settled: invoices unavailable/)
     assert.deepEqual(calls.payments, [])
+  })
+})
+
+describe("what a closing bills and collects", () => {
+  test("an agreement total the pricing snapshot does not support is refused before anything is billed", async () => {
+    const service = harness()
+    service.db.contracts[0].total_cents = 410_000_00
+    await assert.rejects(settle(service), /Closing invoice lines total 40000000 but the settlement final price is 41000000/)
+    assert.deepEqual(calls.invoices, [])
+    assert.deepEqual(calls.depositApplications, [])
+    assert.deepEqual(calls.payments, [])
+  })
+
+  test("an issued invoice that does not total the final price stops settlement before any deposit or cash moves", async () => {
+    const service = harness()
+    active.createInvoice = (input) => {
+      const invoice = { id: id(50), org_id: ORG, project_id: input.project_id, total_cents: 399_999_99, metadata: input.metadata }
+      service.db.invoices.push(invoice)
+      return invoice
+    }
+    await assert.rejects(settle(service), /totals 39999999 cents but the final price is 40000000 cents/)
+    assert.deepEqual(calls.depositApplications, [])
+    assert.deepEqual(calls.payments, [])
+  })
+
+  test("the closing invoice bills the full final price, adjustments and approved changes included, as exact cents", async () => {
+    const service = harness()
+    service.db.change_orders.push({ id: id(60), org_id: ORG, project_id: HOME, status: "approved", title: "Pool prep", total_cents: 3_000_00, metadata: {} })
+    service.db.closings[0].metadata = { adjustments: [{ id: "credit", label: "Closing-cost assistance", kind: "seller_credit", amountCents: -6_000_01 }] }
+    active.createInvoice = (input) => {
+      const total = input.lines.reduce((sum, line) => sum + Math.round(line.unit_cost * 100), 0)
+      const invoice = { id: id(50), org_id: ORG, project_id: input.project_id, total_cents: total, metadata: input.metadata }
+      service.db.invoices.push(invoice)
+      return invoice
+    }
+    await assert.rejects(settle(service), /stop after the balance payment/)
+
+    const billed = calls.invoices[0].lines.reduce((sum, line) => sum + Math.round(line.unit_cost * 100), 0)
+    assert.equal(billed, 400_000_00 + 3_000_00 - 6_000_01)
+    assert.equal(calls.invoices[0].metadata.settlement.finalPriceCents, billed)
+    assert.equal(calls.payments[0].amount_cents, billed - 10_000_00)
+  })
+
+  test("a retry after an interruption resumes the closing invoice it already issued instead of billing again", async () => {
+    const service = harness()
+    await assert.rejects(settle(service), /stop after the balance payment/)
+    assert.equal(calls.invoices.length, 1)
+    assert.equal(service.db.invoices.filter((invoice) => invoice.metadata.invoice_kind === "closing").length, 1)
+
+    await assert.rejects(settle(service), /stop after the balance payment/)
+    assert.equal(calls.invoices.length, 1, "no second closing invoice")
+    assert.equal(service.db.invoices.filter((invoice) => invoice.metadata.invoice_kind === "closing").length, 1)
+  })
+
+  test("a deposit counts at what the buyer still has: refunds and deposits applied elsewhere come off", async () => {
+    const service = harness()
+    const settlement = () => service.run(() => buildSettlement(CLOSING))
+    assert.deepEqual((await settlement()).depositsApplied.map((deposit) => deposit.amountCents), [10_000_00])
+
+    service.db.payment_reversals.push({ id: id(70), org_id: ORG, payment_id: DEPOSIT_PAYMENT, amount_cents: 2_500_00, status: "succeeded" })
+    const refunded = await settlement()
+    assert.deepEqual(refunded.depositsApplied.map((deposit) => deposit.amountCents), [7_500_00])
+    assert.equal(refunded.balanceDueCents, 400_000_00 - 7_500_00)
+
+    service.db.payment_reversals[0].status = "failed"
+    assert.deepEqual((await settlement()).depositsApplied.map((deposit) => deposit.amountCents), [10_000_00], "a failed refund returned nothing")
+
+    service.db.payments.push({ id: id(71), org_id: ORG, invoice_id: id(72), status: "succeeded", amount_cents: 4_000_00, created_at: "2026-09-02T00:00:00Z", metadata: { deposit_payment_id: DEPOSIT_PAYMENT, customer_deposit_application: true }, payment_reversals: [] })
+    assert.deepEqual((await settlement()).depositsApplied.map((deposit) => deposit.amountCents), [6_000_00])
+
+    service.db.payments.push({ id: id(73), org_id: ORG, invoice_id: id(74), status: "succeeded", amount_cents: 6_000_00, created_at: "2026-09-02T00:00:00Z", metadata: { deposit_payment_id: DEPOSIT_PAYMENT, customer_deposit_application: true }, payment_reversals: [] })
+    const spent = await settlement()
+    assert.deepEqual(spent.depositsApplied, [])
+    assert.equal(spent.balanceDueCents, 400_000_00)
+  })
+})
+
+describe("reverseClosing", () => {
+  const CLOSING_INVOICE = id(50)
+  const CASH = id(81)
+  const APPLIED = id(82)
+  const reverse = (service) => service.run(() => reverseClosing({ closingId: CLOSING, reason: "Buyer financing fell through", date: "2026-10-15" }))
+
+  function closedClosing() {
+    const service = harness()
+    Object.assign(service.db.closings[0], { status: "closed", closing_invoice_id: CLOSING_INVOICE })
+    service.db.invoices.push({ id: CLOSING_INVOICE, org_id: ORG, project_id: HOME, total_cents: 400_000_00, metadata: { invoice_kind: "closing" } })
+    service.db.payments.push(
+      { id: CASH, org_id: ORG, invoice_id: CLOSING_INVOICE, status: "succeeded", amount_cents: 390_000_00, metadata: {}, payment_reversals: [] },
+      { id: APPLIED, org_id: ORG, invoice_id: CLOSING_INVOICE, status: "succeeded", amount_cents: 10_000_00, metadata: { customer_deposit_application: true, deposit_payment_id: DEPOSIT_PAYMENT }, payment_reversals: [] },
+    )
+    service.db.receivable_adjustments = []
+    return service
+  }
+
+  test("cash is refunded, deposit applications return to the buyer's deposit, and the sale is credited out of revenue", async () => {
+    const service = closedClosing()
+    await reverse(service)
+
+    assert.deepEqual(
+      calls.reversals.map((reversal) => [reversal.paymentId, reversal.amountCents, reversal.reversalType]),
+      [[CASH, 390_000_00, "refund"], [APPLIED, 10_000_00, "correction"]],
+    )
+    assert.deepEqual(calls.credits.map((credit) => [credit.invoiceId, credit.adjustmentType, credit.amountCents]), [[CLOSING_INVOICE, "credit_memo", 400_000_00]])
+    assert.deepEqual(service.events.map((event) => event.eventType), ["closing_reversed"])
+  })
+
+  test("an interrupted reversal resumes with only what is still open", async () => {
+    const service = closedClosing()
+    const payment = (paymentId) => service.db.payments.find((row) => row.id === paymentId)
+    payment(CASH).payment_reversals = [{ amount_cents: 390_000_00, status: "succeeded" }]
+    payment(APPLIED).payment_reversals = [{ amount_cents: 4_000_00, status: "pending" }, { amount_cents: 1_000_00, status: "failed" }]
+    service.db.receivable_adjustments.push({ org_id: ORG, invoice_id: CLOSING_INVOICE, adjustment_type: "credit_memo", status: "posted", amount_cents: 150_000_00 })
+    await reverse(service)
+
+    assert.deepEqual(calls.reversals.map((reversal) => [reversal.paymentId, reversal.amountCents]), [[APPLIED, 6_000_00]])
+    assert.deepEqual(calls.credits.map((credit) => credit.amountCents), [250_000_00])
+  })
+
+  test("a closing that was never recorded cannot be reversed, and a reason is required", async () => {
+    const open = harness()
+    await assert.rejects(reverse(open), /Only a recorded closing/)
+    const closed = closedClosing()
+    await assert.rejects(closed.run(() => reverseClosing({ closingId: CLOSING, reason: "short", date: "2026-10-15" })), /Say why/)
+    assert.deepEqual([calls.reversals, calls.credits], [[], []])
   })
 })

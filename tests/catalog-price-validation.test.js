@@ -18,3 +18,14 @@ test("bulk prices preserve duplicate-cell and database integer checks", () => {
   for (const field of ["priceCents", "costCents"]) assert.throws(() => catalogPricePublicationSchema.parse({ ...publication, items: [{ ...item, [field]: 2147483648 }] }))
   assert.throws(() => catalogPricePublicationSchema.parse({ items: [item] }))
 })
+test("a catalog price is whole non-negative cents, single or bulk", () => {
+  const item = { ...cell, optionId: id(2) }
+  for (const priceCents of [-1, 1.5, "100", null, Number.NaN]) {
+    assert.equal(catalogPriceSchema.safeParse({ ...item, priceCents }).success, false, `single ${priceCents}`)
+    assert.equal(catalogPricePublicationSchema.safeParse({ publicationKey: id(4), items: [{ ...item, priceCents }] }).success, false, `bulk ${priceCents}`)
+  }
+  for (const costCents of [-1, 0.5]) {
+    assert.equal(catalogPricePublicationSchema.safeParse({ publicationKey: id(4), items: [{ ...item, costCents }] }).success, false, `bulk cost ${costCents}`)
+  }
+  assert.equal(catalogPriceSchema.safeParse({ ...item, priceCents: 0 }).success, true)
+})

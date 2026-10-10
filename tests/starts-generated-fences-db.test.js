@@ -62,3 +62,33 @@ test("service-role worker calls have required helper privileges and ordinary bro
  await h.headers(true)
  await assert.rejects(h.db.query("insert into budgets(org_id,project_id) values($1,$2)",[ORG,HOME]),/Browser cannot use/)
 })
+
+// The fences above run on hand-built stand-in tables. This proves the same
+// guarantee on the real schema with every migration applied.
+const full = require("./support/pglite")
+
+test("on the real schema a claimed release writes its own home's artifacts and no other home's", async t => {
+  const db = await full.createDatabase(t)
+  const { orgId, userId } = await full.seedMember(db)
+  const community = await full.insert(db, "communities", { org_id: orgId, name: "Harbor Point" })
+  const home = await full.insert(db, "projects", { org_id: orgId, name: "Lot 7" })
+  const otherHome = await full.insert(db, "projects", { org_id: orgId, name: "Lot 8" })
+  const lot = await full.insert(db, "lots", { org_id: orgId, community_id: community.id, project_id: home.id, lot_number: "7", status: "developed" })
+  const pkg = await full.insert(db, "start_packages", { org_id: orgId, lot_id: lot.id, community_id: community.id, project_id: home.id, status: "releasing" })
+  await full.insert(db, "outbox", { org_id: orgId, job_type: "start_release", payload: { start_package_id: pkg.id, actor_id: userId } })
+  const [job] = await full.rpc(db, "claim_starts_jobs", { p_limit: 1 })
+  assert.equal(await full.rpc(db, "transition_starts_package_lease", { p_org_id: orgId, p_job_id: job.job_id, p_token: job.claim_token, p_action: "acquire" }), true)
+  await full.setRequestHeaders(db, { "x-starts-job-id": String(job.job_id), "x-starts-claim-token": job.claim_token })
+
+  const write = (table, project) => full.asRole(db, { role: "service_role" }, tx => full.insert(tx, table, { org_id: orgId, project_id: project.id, ...columns[table] }))
+  const columns = { schedule_items: { name: "Foundation" }, budgets: {}, inspections: { title: "Footing", inspection_number: 1, kind: "quality" } }
+  for (const table of Object.keys(columns)) {
+    await write(table, home)
+    await assert.rejects(write(table, otherHome), /mismatch/, table)
+  }
+
+  await full.setRequestHeaders(db, {})
+  await db.query("update outbox set start_job_lease_expires_at = now() - interval '1 second' where id = $1", [job.job_id])
+  await full.setRequestHeaders(db, { "x-starts-job-id": String(job.job_id), "x-starts-claim-token": job.claim_token })
+  await assert.rejects(write("schedule_items", home), /lease|expired|owner/i)
+})

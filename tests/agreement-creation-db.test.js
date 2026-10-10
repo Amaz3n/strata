@@ -75,10 +75,15 @@ test('revoked permissions and untrusted roles cannot create or recover a receipt
 })
 test('stale ownership, current lot facts, plan ancestry, availability and base pricing reject before commit',async t=>{
  const changes=["update lot_reservations set status='released'","update lot_reservations set buyer_contact_id=co_buyer_contact_id","update lots set swing='right'","update lots set status='closed'","update house_plan_versions set status='superseded'","update house_plans set status='retired'","update house_plan_elevations set is_active=false","update community_plan_availability set is_available=false","update community_plan_availability set base_price_cents=30000001"]
+ // One database; each stale fact is applied and undone inside a transaction.
+ const f=await database(t)
  for(const sql of changes){
-  const f=await database(t);await f.db.exec(sql);await assert.rejects(f.create())
+  await f.db.exec('begin');await f.db.exec(sql);await f.db.exec('savepoint attempt')
+  await assert.rejects(f.create(),undefined,sql);await f.db.exec('rollback to savepoint attempt')
   for(const table of ['contracts','events','audit_log','purchase_agreement_creation_receipts'])assert.equal((await f.db.query(`select count(*)::int n from ${table}`)).rows[0].n,0)
+  await f.db.exec('rollback')
  }
+ assert.ok((await f.create()).rows[0].receipt.created,'every rejection came from the stale fact, not the fixture')
 })
 test('malformed snapshots, missing swing, foreign quote identities and altered deposits fail closed',async t=>{
  const f=await database(t)
@@ -128,4 +133,15 @@ test('atomic sale reserves incentive capacity, rolls it back on audit failure, a
  await f.db.exec("update incentives set status='ended'")
  assert.equal((await f.create({probe:true,request})).rows[0].receipt.contract.id,saved.contract.id)
  assert.equal((await f.db.query('select used_count::int n from agreement_incentive_capacity')).rows[0].n,1)
+})
+test('only a live reservation can create an agreement: a hold, an expired hold or a released reservation cannot',async t=>{
+ const f=await database(t)
+ for(const sql of ["update lot_reservations set status='hold',expires_at=now()+interval '1 day'","update lot_reservations set status='hold',expires_at=now()-interval '1 day'","update lot_reservations set status='expired',expires_at=null","update lot_reservations set status='released',expires_at=null"]){
+  await f.db.exec(sql)
+  await assert.rejects(f.create(),undefined,sql)
+  for(const table of ['contracts','events','audit_log','purchase_agreement_creation_receipts'])assert.equal((await f.db.query(`select count(*)::int n from ${table}`)).rows[0].n,0,sql)
+  assert.equal((await f.db.query('select contract_id from lot_reservations')).rows[0].contract_id,null,sql)
+ }
+ await f.db.exec("update lot_reservations set status='reserved',expires_at=null")
+ assert.ok((await f.create()).rows[0].receipt.created,'every rejection came from the reservation status, not the fixture')
 })
